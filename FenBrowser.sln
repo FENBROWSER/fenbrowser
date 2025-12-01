@@ -1,0 +1,107 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.Core", "FenBrowser.Core\FenBrowser.Core.csproj", "{0B778E16-731E-4661-B98E-3234DD0F90B4}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.UI", "FenBrowser.UI\FenBrowser.UI.csproj", "{4FFAA9D3-F1D8-4B84-B595-EF5E3E016687}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.Desktop", "FenBrowser.Desktop\FenBrowser.Desktop.csproj", "{E46AC8B3-007B-4A07-9162-2AA03EC5EB7B}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Legacy_Engine", "Legacy_Engine", "{02EA681E-C7D8-13C7-8484-4AC65E1B71E8}"
+	ProjectSection(SolutionItems) = preProject
+		..\WEBVIEW\WEBVIEW\Engine\BrowserApi.cs = ..\WEBVIEW\WEBVIEW\Engine\BrowserApi.cs
+		..\WEBVIEW\WEBVIEW\Engine\CssComputed.cs = ..\WEBVIEW\WEBVIEW\Engine\CssComputed.cs
+		..\WEBVIEW\WEBVIEW\Engine\CssLoader.cs = ..\WEBVIEW\WEBVIEW\Engine\CssLoader.cs
+		..\WEBVIEW\WEBVIEW\Engine\CssMini.cs = ..\WEBVIEW\WEBVIEW\Engine\CssMini.cs
+		..\WEBVIEW\WEBVIEW\Engine\CssParser.cs = ..\WEBVIEW\WEBVIEW\Engine\CssParser.cs
+		..\WEBVIEW\WEBVIEW\Engine\CustomHtmlEngine.cs = ..\WEBVIEW\WEBVIEW\Engine\CustomHtmlEngine.cs
+		..\WEBVIEW\WEBVIEW\Engine\DomBasicRenderer.cs = ..\WEBVIEW\WEBVIEW\Engine\DomBasicRenderer.cs
+		..\WEBVIEW\WEBVIEW\Engine\fix_lines.py = ..\WEBVIEW\WEBVIEW\Engine\fix_lines.py
+		..\WEBVIEW\WEBVIEW\Engine\FlexPanel.cs = ..\WEBVIEW\WEBVIEW\Engine\FlexPanel.cs
+		..\WEBVIEW\WEBVIEW\Engine\FontRegistry.cs = ..\WEBVIEW\WEBVIEW\Engine\FontRegistry.cs
+		..\WEBVIEW\WEBVIEW\Engine\HtmlLite.cs = ..\WEBVIEW\WEBVIEW\Engine\HtmlLite.cs
+		..\WEBVIEW\WEBVIEW\Engine\HtmlLiteParser.cs = ..\WEBVIEW\WEBVIEW\Engine\HtmlLiteParser.cs
+		..\WEBVIEW\WEBVIEW\Engine\JavaScriptEngine.cs = ..\WEBVIEW\WEBVIEW\Engine\JavaScriptEngine.cs
+		..\WEBVIEW\WEBVIEW\Engine\JsRuntimeAbstraction.cs = ..\WEBVIEW\WEBVIEW\Engine\JsRuntimeAbstraction.cs
+		..\WEBVIEW\WEBVIEW\Engine\LiteDomUtil.cs = ..\WEBVIEW\WEBVIEW\Engine\LiteDomUtil.cs
+		..\WEBVIEW\WEBVIEW\Engine\MiniJs.cs = ..\WEBVIEW\WEBVIEW\Engine\MiniJs.cs
+		..\WEBVIEW\WEBVIEW\Engine\ModuleLoader.cs = ..\WEBVIEW\WEBVIEW\Engine\ModuleLoader.cs
+		..\WEBVIEW\WEBVIEW\Engine\RendererStyles.cs = ..\WEBVIEW\WEBVIEW\Engine\RendererStyles.cs
+		..\WEBVIEW\WEBVIEW\Engine\ResourceManager.cs = ..\WEBVIEW\WEBVIEW\Engine\ResourceManager.cs
+		..\WEBVIEW\WEBVIEW\Engine\SandboxPolicy.cs = ..\WEBVIEW\WEBVIEW\Engine\SandboxPolicy.cs
+		..\WEBVIEW\WEBVIEW\Engine\SimpleWrapPanel.cs = ..\WEBVIEW\WEBVIEW\Engine\SimpleWrapPanel.cs
+		..\WEBVIEW\WEBVIEW\Engine\text.py = ..\WEBVIEW\WEBVIEW\Engine\text.py
+		..\WEBVIEW\WEBVIEW\Engine\UiThreadHelper.cs = ..\WEBVIEW\WEBVIEW\Engine\UiThreadHelper.cs
+		..\WEBVIEW\WEBVIEW\Engine\VideoHost.cs = ..\WEBVIEW\WEBVIEW\Engine\VideoHost.cs
+	EndProjectSection
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.FenEngine", "FenBrowser.FenEngine\FenBrowser.FenEngine.csproj", "{4D098FB5-091F-4AF9-B094-38D089077574}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Debug|x64 = Debug|x64
+		Debug|x86 = Debug|x86
+		Release|Any CPU = Release|Any CPU
+		Release|x64 = Release|x64
+		Release|x86 = Release|x86
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{0B778E16-731E-4661-B98E-3234DD0F90B4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0B778E16-731E-4661-B98E-3234DD0F90B4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0B778E16-731E-4661-B98E-3234DD0F90B4}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{0B778E16-731E-4661-B98E-3234DD0F90B4}.Debug|x64.Build.0 = Debug|Any CPU
+		{0B778E16-731E-4661-B98E-3234DD0F90B4}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{0B778E16-731E-4661-B98E-3234DD0F90B4}.Debug|x86.Build.0 = Debug|Any CPU
+		{0B778E16-731E-4661-B98E-3234DD0F90B4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0B778E16-731E-4661-B98E-3234DD0F90B4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0B778E16-731E-4661-B98E-3234DD0F90B4}.Release|x64.ActiveCfg = Release|Any CPU
+		{0B778E16-731E-4661-B98E-3234DD0F90B4}.Release|x64.Build.0 = Release|Any CPU
+		{0B778E16-731E-4661-B98E-3234DD0F90B4}.Release|x86.ActiveCfg = Release|Any CPU
+		{0B778E16-731E-4661-B98E-3234DD0F90B4}.Release|x86.Build.0 = Release|Any CPU
+		{4FFAA9D3-F1D8-4B84-B595-EF5E3E016687}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4FFAA9D3-F1D8-4B84-B595-EF5E3E016687}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4FFAA9D3-F1D8-4B84-B595-EF5E3E016687}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{4FFAA9D3-F1D8-4B84-B595-EF5E3E016687}.Debug|x64.Build.0 = Debug|Any CPU
+		{4FFAA9D3-F1D8-4B84-B595-EF5E3E016687}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{4FFAA9D3-F1D8-4B84-B595-EF5E3E016687}.Debug|x86.Build.0 = Debug|Any CPU
+		{4FFAA9D3-F1D8-4B84-B595-EF5E3E016687}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4FFAA9D3-F1D8-4B84-B595-EF5E3E016687}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4FFAA9D3-F1D8-4B84-B595-EF5E3E016687}.Release|x64.ActiveCfg = Release|Any CPU
+		{4FFAA9D3-F1D8-4B84-B595-EF5E3E016687}.Release|x64.Build.0 = Release|Any CPU
+		{4FFAA9D3-F1D8-4B84-B595-EF5E3E016687}.Release|x86.ActiveCfg = Release|Any CPU
+		{4FFAA9D3-F1D8-4B84-B595-EF5E3E016687}.Release|x86.Build.0 = Release|Any CPU
+		{E46AC8B3-007B-4A07-9162-2AA03EC5EB7B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E46AC8B3-007B-4A07-9162-2AA03EC5EB7B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E46AC8B3-007B-4A07-9162-2AA03EC5EB7B}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{E46AC8B3-007B-4A07-9162-2AA03EC5EB7B}.Debug|x64.Build.0 = Debug|Any CPU
+		{E46AC8B3-007B-4A07-9162-2AA03EC5EB7B}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{E46AC8B3-007B-4A07-9162-2AA03EC5EB7B}.Debug|x86.Build.0 = Debug|Any CPU
+		{E46AC8B3-007B-4A07-9162-2AA03EC5EB7B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E46AC8B3-007B-4A07-9162-2AA03EC5EB7B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E46AC8B3-007B-4A07-9162-2AA03EC5EB7B}.Release|x64.ActiveCfg = Release|Any CPU
+		{E46AC8B3-007B-4A07-9162-2AA03EC5EB7B}.Release|x64.Build.0 = Release|Any CPU
+		{E46AC8B3-007B-4A07-9162-2AA03EC5EB7B}.Release|x86.ActiveCfg = Release|Any CPU
+		{E46AC8B3-007B-4A07-9162-2AA03EC5EB7B}.Release|x86.Build.0 = Release|Any CPU
+		{4D098FB5-091F-4AF9-B094-38D089077574}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4D098FB5-091F-4AF9-B094-38D089077574}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4D098FB5-091F-4AF9-B094-38D089077574}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{4D098FB5-091F-4AF9-B094-38D089077574}.Debug|x64.Build.0 = Debug|Any CPU
+		{4D098FB5-091F-4AF9-B094-38D089077574}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{4D098FB5-091F-4AF9-B094-38D089077574}.Debug|x86.Build.0 = Debug|Any CPU
+		{4D098FB5-091F-4AF9-B094-38D089077574}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4D098FB5-091F-4AF9-B094-38D089077574}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4D098FB5-091F-4AF9-B094-38D089077574}.Release|x64.ActiveCfg = Release|Any CPU
+		{4D098FB5-091F-4AF9-B094-38D089077574}.Release|x64.Build.0 = Release|Any CPU
+		{4D098FB5-091F-4AF9-B094-38D089077574}.Release|x86.ActiveCfg = Release|Any CPU
+		{4D098FB5-091F-4AF9-B094-38D089077574}.Release|x86.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {9F558FED-EC45-4D90-906A-E6B2C9A06E89}
+	EndGlobalSection
+EndGlobal
