@@ -1,0 +1,175 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="FenBrowser.UI.SettingsPage"
+             x:Name="SettingsRoot">
+
+	<UserControl.Resources>
+		<!-- Color Palette -->
+		<Color x:Key="BgColor">#F3F3F3</Color>
+		<Color x:Key="SurfaceColor">#FFFFFF</Color>
+		<Color x:Key="BorderColor">#E1E1E1</Color>
+		<Color x:Key="PrimaryText">#1F1F1F</Color>
+		<Color x:Key="SecondaryText">#605E5C</Color>
+		<Color x:Key="AccentColor">#0078D4</Color>
+		<Color x:Key="HoverColor">#F5F5F5</Color>
+
+		<SolidColorBrush x:Key="WindowBackgroundBrush" Color="{StaticResource BgColor}"/>
+		<SolidColorBrush x:Key="SurfaceBrush" Color="{StaticResource SurfaceColor}"/>
+		<SolidColorBrush x:Key="BorderBrush" Color="{StaticResource BorderColor}"/>
+		<SolidColorBrush x:Key="PrimaryTextBrush" Color="{StaticResource PrimaryText}"/>
+		<SolidColorBrush x:Key="SecondaryTextBrush" Color="{StaticResource SecondaryText}"/>
+		<SolidColorBrush x:Key="AccentBrush" Color="{StaticResource AccentColor}"/>
+	</UserControl.Resources>
+
+	<UserControl.Styles>
+		<!-- Radio Button Style -->
+		<Style Selector="RadioButton">
+			<Setter Property="Margin" Value="0,8,0,0"/>
+			<Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}"/>
+		</Style>
+
+		<!-- Primary Button -->
+		<Style Selector="Button.primary">
+			<Setter Property="Background" Value="{StaticResource AccentColor}"/>
+			<Setter Property="Foreground" Value="White"/>
+			<Setter Property="Padding" Value="16,8"/>
+			<Setter Property="CornerRadius" Value="4"/>
+			<Setter Property="BorderThickness" Value="0"/>
+			<Setter Property="MinWidth" Value="80"/>
+			<Setter Property="FontWeight" Value="SemiBold"/>
+		</Style>
+
+		<Style Selector="Button.primary:pointerover">
+			<Setter Property="Background" Value="#106EBE"/>
+		</Style>
+
+		<!-- Secondary Button -->
+		<Style Selector="Button.secondary">
+			<Setter Property="Background" Value="Transparent"/>
+			<Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}"/>
+			<Setter Property="Padding" Value="16,8"/>
+			<Setter Property="CornerRadius" Value="4"/>
+			<Setter Property="BorderBrush" Value="{StaticResource BorderColor}"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="MinWidth" Value="80"/>
+		</Style>
+
+		<Style Selector="Button.secondary:pointerover">
+			<Setter Property="Background" Value="{StaticResource HoverColor}"/>
+		</Style>
+	</UserControl.Styles>
+
+	<Grid ColumnDefinitions="Auto,*" Background="{StaticResource BgColor}" HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
+		<!-- Left Navigation Panel -->
+		<Border Grid.Column="0" Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,1,0" MinWidth="150" MaxWidth="200">
+			<StackPanel Margin="0,20,0,0">
+				<TextBlock Text="Settings" FontSize="20" FontWeight="Bold" Margin="20,0,0,20" Foreground="{StaticResource PrimaryTextBrush}"/>
+				
+				<!-- Navigation Items -->
+				<Border Background="#E6F4FF" Padding="12,10" Margin="0,0,0,2">
+					<TextBlock Text="General" FontWeight="SemiBold" Foreground="{StaticResource AccentColor}"/>
+				</Border>
+			</StackPanel>
+		</Border>
+
+		<!-- Right Content Panel -->
+		<ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+			<StackPanel Margin="20,20,20,20" MaxWidth="600" HorizontalAlignment="Stretch">
+				<!-- Header -->
+				<TextBlock Text="General Settings" FontSize="24" FontWeight="Bold" Margin="0,0,0,30" Foreground="{StaticResource PrimaryTextBrush}"/>
+
+				<!-- User-Agent Section -->
+				<Border Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="20" Margin="0,0,0,20">
+					<StackPanel>
+						<TextBlock Text="Browser Identity (User-Agent)" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,8" Foreground="{StaticResource PrimaryTextBrush}"/>
+						<TextBlock Text="Choose how websites identify your browser. Chrome is recommended for best compatibility." 
+								   TextWrapping="Wrap" 
+								   Margin="0,0,0,16"
+								   Foreground="{StaticResource SecondaryTextBrush}"/>
+
+						<StackPanel x:Name="UserAgentPanel">
+							<RadioButton x:Name="ChromeRadio" Content="Chrome (Recommended)" GroupName="UserAgent"/>
+							<TextBlock Text="Best compatibility with modern websites" 
+									   Margin="28,0,0,0" 
+									   FontSize="12" 
+									   Foreground="{StaticResource SecondaryTextBrush}"/>
+
+							<RadioButton x:Name="FirefoxRadio" Content="Firefox" GroupName="UserAgent" Margin="0,12,0,0"/>
+							<TextBlock Text="Alternative browser identity for privacy-focused sites" 
+									   Margin="28,0,0,0" 
+									   FontSize="12" 
+									   Foreground="{StaticResource SecondaryTextBrush}"/>
+
+							<RadioButton x:Name="FenBrowserRadio" Content="FenBrowser" GroupName="UserAgent" Margin="0,12,0,0"/>
+							<TextBlock Text="Custom FenBrowser identity - may not be recognized by all sites" 
+									   Margin="28,0,0,0" 
+									   FontSize="12" 
+									   Foreground="{StaticResource SecondaryTextBrush}"/>
+						</StackPanel>
+					</StackPanel>
+				</Border>
+
+				<!-- Logging Section -->
+				<Border Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="20" Margin="0,0,0,20">
+					<StackPanel>
+						<TextBlock Text="Debug Logging" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,8" Foreground="{StaticResource PrimaryTextBrush}"/>
+						<TextBlock Text="Enable detailed logging for debugging issues. Logs are saved to your AppData folder." 
+								   TextWrapping="Wrap" 
+								   Margin="0,0,0,16"
+								   Foreground="{StaticResource SecondaryTextBrush}"/>
+
+						<ToggleSwitch x:Name="EnableLoggingSwitch" Content="Enable Logging" Margin="0,0,0,16"/>
+
+						<TextBlock Text="Log Categories" FontWeight="SemiBold" Margin="0,0,0,8" Foreground="{StaticResource PrimaryTextBrush}"/>
+						<TextBlock Text="Choose which components to log:" 
+								   FontSize="12" 
+								   Margin="0,0,0,8"
+								   Foreground="{StaticResource SecondaryTextBrush}"/>
+
+						<StackPanel x:Name="LogCategoriesPanel" Spacing="4">
+							<CheckBox x:Name="LogNavigationCheck" Content="Navigation" IsEnabled="{Binding #EnableLoggingSwitch.IsChecked}"/>
+							<CheckBox x:Name="LogRenderingCheck" Content="Rendering" IsEnabled="{Binding #EnableLoggingSwitch.IsChecked}"/>
+							<CheckBox x:Name="LogCSSCheck" Content="CSS" IsEnabled="{Binding #EnableLoggingSwitch.IsChecked}"/>
+							<CheckBox x:Name="LogJavaScriptCheck" Content="JavaScript" IsEnabled="{Binding #EnableLoggingSwitch.IsChecked}"/>
+							<CheckBox x:Name="LogNetworkCheck" Content="Network" IsEnabled="{Binding #EnableLoggingSwitch.IsChecked}"/>
+							<CheckBox x:Name="LogImagesCheck" Content="Images" IsEnabled="{Binding #EnableLoggingSwitch.IsChecked}"/>
+							<CheckBox x:Name="LogLayoutCheck" Content="Layout" IsEnabled="{Binding #EnableLoggingSwitch.IsChecked}"/>
+							<CheckBox x:Name="LogEventsCheck" Content="Events" IsEnabled="{Binding #EnableLoggingSwitch.IsChecked}"/>
+							<CheckBox x:Name="LogStorageCheck" Content="Storage" IsEnabled="{Binding #EnableLoggingSwitch.IsChecked}"/>
+							<CheckBox x:Name="LogPerformanceCheck" Content="Performance" IsEnabled="{Binding #EnableLoggingSwitch.IsChecked}"/>
+							<CheckBox x:Name="LogErrorsCheck" Content="Errors (Recommended)" IsChecked="True" IsEnabled="{Binding #EnableLoggingSwitch.IsChecked}"/>
+						</StackPanel>
+
+						<StackPanel Orientation="Horizontal" Margin="0,16,0,0" Spacing="8">
+							<Button Content="View Logs" Click="OnViewLogsClick" IsEnabled="{Binding #EnableLoggingSwitch.IsChecked}"/>
+							<Button Content="Clear Logs" Click="OnClearLogsClick" IsEnabled="{Binding #EnableLoggingSwitch.IsChecked}"/>
+						</StackPanel>
+					</StackPanel>
+				</Border>
+
+				<!-- Action Buttons -->
+				<StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="12" Margin="0,20,0,0">
+					<Button Classes="secondary" Content="Close" Click="OnCloseClick" MinWidth="100"/>
+					<Button Classes="primary" Content="Save" Click="OnSaveClick" MinWidth="100"/>
+				</StackPanel>
+			</StackPanel>
+		</ScrollViewer>
+		<!-- Notification Popup -->
+		<Border x:Name="NotificationPopup" 
+				Grid.Column="1" 
+				HorizontalAlignment="Right" 
+				VerticalAlignment="Bottom" 
+				Margin="0,0,30,80" 
+				Background="#2B2B2B" 
+				BorderBrush="#454545"
+				BorderThickness="1"
+				CornerRadius="6" 
+				Padding="16,12" 
+				IsVisible="False">
+			<StackPanel Orientation="Horizontal" Spacing="10">
+				<TextBlock Text="✓" Foreground="#6CCB5F" FontWeight="Bold" FontSize="16"/>
+				<TextBlock Text="Settings Saved" Foreground="White" FontWeight="SemiBold" FontSize="14"/>
+			</StackPanel>
+		</Border>
+	</Grid>
+</UserControl>
