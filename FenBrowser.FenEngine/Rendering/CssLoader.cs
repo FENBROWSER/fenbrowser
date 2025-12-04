@@ -209,6 +209,42 @@ namespace FenBrowser.FenEngine.Rendering
             UserAgent
         }
 
+        // ===========================
+        // CSS Animations (@keyframes)
+        // ===========================
+        
+        /// <summary>
+        /// Storage for parsed @keyframes animations (keyed by animation name)
+        /// </summary>
+        private static readonly Dictionary<string, CssKeyframes> _keyframes = new Dictionary<string, CssKeyframes>(StringComparer.OrdinalIgnoreCase);
+        
+        /// <summary>
+        /// Represents a single @keyframes animation
+        /// </summary>
+        public class CssKeyframes
+        {
+            public string Name { get; set; }
+            public List<CssKeyframe> Frames { get; set; } = new List<CssKeyframe>();
+        }
+        
+        /// <summary>
+        /// Represents a single keyframe in an animation (e.g., "0%", "50%", "100%", "from", "to")
+        /// </summary>
+        public class CssKeyframe
+        {
+            public double Percentage { get; set; } // 0-100
+            public Dictionary<string, string> Properties { get; set; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+        
+        /// <summary>
+        /// Get a keyframes animation by name
+        /// </summary>
+        public static CssKeyframes GetKeyframes(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return null;
+            _keyframes.TryGetValue(name, out var kf);
+            return kf;
+        }
         private sealed class CssSource
         {
             public string CssText;
@@ -389,6 +425,145 @@ namespace FenBrowser.FenEngine.Rendering
             return string.Compare(s, idx, token, 0, token.Length, StringComparison.OrdinalIgnoreCase) == 0;
         }
 
+        /// <summary>
+        /// Extract and parse @keyframes rules from CSS text, storing them for animation use
+        /// </summary>
+        private static string ExtractKeyframes(string text, Action<string> log)
+        {
+            if (string.IsNullOrEmpty(text)) return text;
+            
+            var result = new StringBuilder();
+            int i = 0;
+            
+            while (i < text.Length)
+            {
+                // Look for @keyframes or @-webkit-keyframes
+                int kfPos = -1;
+                int prefixLen = 0;
+                
+                int pos1 = text.IndexOf("@keyframes", i, StringComparison.OrdinalIgnoreCase);
+                int pos2 = text.IndexOf("@-webkit-keyframes", i, StringComparison.OrdinalIgnoreCase);
+                
+                if (pos1 >= 0 && (pos2 < 0 || pos1 < pos2))
+                {
+                    kfPos = pos1;
+                    prefixLen = "@keyframes".Length;
+                }
+                else if (pos2 >= 0)
+                {
+                    kfPos = pos2;
+                    prefixLen = "@-webkit-keyframes".Length;
+                }
+                
+                if (kfPos < 0)
+                {
+                    // No more keyframes, append rest
+                    result.Append(text.Substring(i));
+                    break;
+                }
+                
+                // Append text before @keyframes
+                result.Append(text.Substring(i, kfPos - i));
+                
+                // Find the animation name (after @keyframes and before {)
+                int nameStart = kfPos + prefixLen;
+                int braceOpen = text.IndexOf('{', nameStart);
+                if (braceOpen < 0)
+                {
+                    i = nameStart;
+                    continue;
+                }
+                
+                string animName = text.Substring(nameStart, braceOpen - nameStart).Trim();
+                
+                // Find matching closing brace for the outer @keyframes block
+                int braceClose = FindMatchingBrace(text, braceOpen);
+                if (braceClose < 0)
+                {
+                    i = braceOpen + 1;
+                    continue;
+                }
+                
+                // Extract keyframes content
+                string keyframesBody = text.Substring(braceOpen + 1, braceClose - braceOpen - 1);
+                
+                // Parse keyframe stops
+                var keyframes = new CssKeyframes { Name = animName };
+                ParseKeyframeStops(keyframesBody, keyframes);
+                
+                // Store in dictionary
+                _keyframes[animName] = keyframes;
+                log?.Invoke($"[CSS] Parsed @keyframes: {animName} with {keyframes.Frames.Count} stops");
+                
+                i = braceClose + 1;
+            }
+            
+            return result.ToString();
+        }
+        
+        /// <summary>
+        /// Parse individual keyframe stops from the body of @keyframes
+        /// </summary>
+        private static void ParseKeyframeStops(string body, CssKeyframes keyframes)
+        {
+            int i = 0;
+            while (i < body.Length)
+            {
+                // Find next {
+                int open = body.IndexOf('{', i);
+                if (open < 0) break;
+                
+                string percentageText = body.Substring(i, open - i).Trim();
+                
+                int close = FindMatchingBrace(body, open);
+                if (close < 0) break;
+                
+                string propsText = body.Substring(open + 1, close - open - 1);
+                i = close + 1;
+                
+                // Parse percentages (can be comma-separated like "0%, 100%")
+                var percentages = new List<double>();
+                foreach (var pct in percentageText.Split(','))
+                {
+                    string p = pct.Trim().ToLowerInvariant();
+                    if (p == "from") percentages.Add(0);
+                    else if (p == "to") percentages.Add(100);
+                    else if (p.EndsWith("%"))
+                    {
+                        if (double.TryParse(p.TrimEnd('%'), out double val))
+                            percentages.Add(val);
+                    }
+                }
+                
+                // Parse properties
+                var props = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var decl in propsText.Split(';'))
+                {
+                    var colonIdx = decl.IndexOf(':');
+                    if (colonIdx > 0)
+                    {
+                        var propName = decl.Substring(0, colonIdx).Trim().ToLowerInvariant();
+                        var propValue = decl.Substring(colonIdx + 1).Trim();
+                        if (!string.IsNullOrEmpty(propName))
+                            props[propName] = propValue;
+                    }
+                }
+                
+                // Create keyframe for each percentage
+                foreach (var pct in percentages)
+                {
+                    keyframes.Frames.Add(new CssKeyframe
+                    {
+                        Percentage = pct,
+                        Properties = new Dictionary<string, string>(props, StringComparer.OrdinalIgnoreCase)
+                    });
+                }
+            }
+            
+            // Sort by percentage
+            keyframes.Frames.Sort((a, b) => a.Percentage.CompareTo(b.Percentage));
+        }
+
         private static string ExtractImportUrl(string importLine)
         {
             // Handles: @import "x.css";  @import url('x.css');
@@ -415,6 +590,9 @@ namespace FenBrowser.FenEngine.Rendering
             // (Very) basic @media handling: keep simple "screen" blocks; ignore others.
             // We flatten recognized @media blocks by inlining their contents.
             text = FlattenBasicMedia(text, viewportWidth, log);
+            
+            // Extract and parse @keyframes rules
+            text = ExtractKeyframes(text, log);
 
             // Split by braces into selector/declarations pairs.
             // This is a naive parser but resistant to most content without nested braces in values.
