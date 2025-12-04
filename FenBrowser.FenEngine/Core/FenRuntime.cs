@@ -7,6 +7,8 @@ using System.Linq;
 using System.Text.RegularExpressions;
 using System.Text.Json;
 using System.Net.Http;
+using System.Net.WebSockets;
+using System.Threading;
 using System.Threading.Tasks;
 using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType;
 
@@ -381,6 +383,58 @@ namespace FenBrowser.FenEngine.Core
 
                 // Create a FetchPromise - stores callbacks for async resolution
                 return CreateFetchPromise(url, method, body, headers);
+            })));
+
+            // WebSocket - Real-time bidirectional communication
+            SetGlobal("WebSocket", FenValue.FromFunction(new FenFunction("WebSocket", (args, thisVal) =>
+            {
+                var url = args.Length > 0 ? args[0].ToString() : "";
+                if (string.IsNullOrWhiteSpace(url))
+                    return new ErrorValue("WebSocket: invalid URL");
+
+                return CreateWebSocket(url);
+            })));
+
+            // IndexedDB - Client-side database API
+            SetGlobal("indexedDB", FenValue.FromObject(CreateIndexedDB()));
+
+            // Promise - Full Promise implementation with static methods
+            SetGlobal("Promise", FenValue.FromObject(CreatePromiseConstructor()));
+
+            // Worker - Web Workers for background script execution
+            SetGlobal("Worker", FenValue.FromFunction(new FenFunction("Worker", (args, thisVal) =>
+            {
+                var scriptUrl = args.Length > 0 ? args[0].ToString() : "";
+                return CreateWorker(scriptUrl);
+            })));
+
+            // ArrayBuffer - Binary data container
+            SetGlobal("ArrayBuffer", FenValue.FromFunction(new FenFunction("ArrayBuffer", (args, thisVal) =>
+            {
+                var length = args.Length > 0 ? (int)args[0].ToNumber() : 0;
+                return CreateArrayBuffer(length);
+            })));
+
+            // TypedArrays - Views over ArrayBuffer
+            SetGlobal("Uint8Array", FenValue.FromFunction(CreateTypedArrayConstructor("Uint8Array", 1)));
+            SetGlobal("Int8Array", FenValue.FromFunction(CreateTypedArrayConstructor("Int8Array", 1)));
+            SetGlobal("Uint16Array", FenValue.FromFunction(CreateTypedArrayConstructor("Uint16Array", 2)));
+            SetGlobal("Int16Array", FenValue.FromFunction(CreateTypedArrayConstructor("Int16Array", 2)));
+            SetGlobal("Uint32Array", FenValue.FromFunction(CreateTypedArrayConstructor("Uint32Array", 4)));
+            SetGlobal("Int32Array", FenValue.FromFunction(CreateTypedArrayConstructor("Int32Array", 4)));
+            SetGlobal("Float32Array", FenValue.FromFunction(CreateTypedArrayConstructor("Float32Array", 4)));
+            SetGlobal("Float64Array", FenValue.FromFunction(CreateTypedArrayConstructor("Float64Array", 8)));
+            SetGlobal("DataView", FenValue.FromFunction(new FenFunction("DataView", (args, thisVal) =>
+            {
+                if (args.Length > 0 && args[0].IsObject)
+                {
+                    var ab = args[0].AsObject() as FenObject;
+                    if (ab?.NativeObject is byte[] buffer)
+                    {
+                        return CreateDataView(buffer);
+                    }
+                }
+                return CreateDataView(new byte[0]);
             })));
         }
 
@@ -878,6 +932,733 @@ namespace FenBrowser.FenEngine.Core
                 default:
                     return FenValue.Null;
             }
+        }
+
+        #endregion
+
+        #region WebSocket API Helpers
+
+        /// <summary>
+        /// Creates a WebSocket object with send, close methods and event handlers
+        /// </summary>
+        private IValue CreateWebSocket(string url)
+        {
+            var ws = new FenObject();
+            var clientWs = new ClientWebSocket();
+            var cts = new CancellationTokenSource();
+            
+            // ReadyState constants
+            const int CONNECTING = 0;
+            const int OPEN = 1;
+            const int CLOSING = 2;
+            const int CLOSED = 3;
+            
+            ws.Set("CONNECTING", FenValue.FromNumber(CONNECTING));
+            ws.Set("OPEN", FenValue.FromNumber(OPEN));
+            ws.Set("CLOSING", FenValue.FromNumber(CLOSING));
+            ws.Set("CLOSED", FenValue.FromNumber(CLOSED));
+            
+            ws.Set("readyState", FenValue.FromNumber(CONNECTING));
+            ws.Set("url", FenValue.FromString(url));
+            ws.Set("bufferedAmount", FenValue.FromNumber(0));
+            
+            // Event handlers (set by user)
+            ws.Set("onopen", FenValue.Null);
+            ws.Set("onmessage", FenValue.Null);
+            ws.Set("onerror", FenValue.Null);
+            ws.Set("onclose", FenValue.Null);
+            
+            // send() method
+            ws.Set("send", FenValue.FromFunction(new FenFunction("send", (args, thisVal) =>
+            {
+                if (args.Length == 0) return FenValue.Undefined;
+                var data = args[0].ToString();
+                
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        if (clientWs.State == WebSocketState.Open)
+                        {
+                            var bytes = System.Text.Encoding.UTF8.GetBytes(data);
+                            await clientWs.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, cts.Token);
+                        }
+                    }
+                    catch { }
+                });
+                
+                return FenValue.Undefined;
+            })));
+            
+            // close() method
+            ws.Set("close", FenValue.FromFunction(new FenFunction("close", (args, thisVal) =>
+            {
+                ws.Set("readyState", FenValue.FromNumber(CLOSING));
+                
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await clientWs.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closed by client", cts.Token);
+                        ws.Set("readyState", FenValue.FromNumber(CLOSED));
+                        
+                        // Fire onclose
+                        var onclose = ws.Get("onclose");
+                        if (onclose != null && onclose.IsFunction)
+                        {
+                            var cb = onclose.AsFunction();
+                            if (cb.IsNative && cb.NativeImplementation != null)
+                            {
+                                var evt = new FenObject();
+                                evt.Set("code", FenValue.FromNumber(1000));
+                                evt.Set("reason", FenValue.FromString("Normal closure"));
+                                evt.Set("wasClean", FenValue.FromBoolean(true));
+                                cb.NativeImplementation(new IValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
+                            }
+                        }
+                    }
+                    catch { }
+                });
+                
+                return FenValue.Undefined;
+            })));
+            
+            // Connect asynchronously
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    // Convert ws:// or wss:// URLs
+                    var wsUrl = url;
+                    if (wsUrl.StartsWith("ws://")) wsUrl = "ws://" + wsUrl.Substring(5);
+                    else if (wsUrl.StartsWith("wss://")) wsUrl = "wss://" + wsUrl.Substring(6);
+                    
+                    await clientWs.ConnectAsync(new Uri(wsUrl), cts.Token);
+                    ws.Set("readyState", FenValue.FromNumber(OPEN));
+                    
+                    // Fire onopen
+                    var onopen = ws.Get("onopen");
+                    if (onopen != null && onopen.IsFunction)
+                    {
+                        var cb = onopen.AsFunction();
+                        if (cb.IsNative && cb.NativeImplementation != null)
+                        {
+                            var evt = new FenObject();
+                            evt.Set("type", FenValue.FromString("open"));
+                            cb.NativeImplementation(new IValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
+                        }
+                    }
+                    
+                    // Start receiving messages
+                    var buffer = new byte[4096];
+                    while (clientWs.State == WebSocketState.Open)
+                    {
+                        var result = await clientWs.ReceiveAsync(new ArraySegment<byte>(buffer), cts.Token);
+                        
+                        if (result.MessageType == WebSocketMessageType.Close)
+                        {
+                            ws.Set("readyState", FenValue.FromNumber(CLOSED));
+                            var onclose = ws.Get("onclose");
+                            if (onclose != null && onclose.IsFunction)
+                            {
+                                var cb = onclose.AsFunction();
+                                if (cb.IsNative && cb.NativeImplementation != null)
+                                {
+                                    var evt = new FenObject();
+                                    evt.Set("code", FenValue.FromNumber((int)(result.CloseStatus ?? WebSocketCloseStatus.NormalClosure)));
+                                    evt.Set("reason", FenValue.FromString(result.CloseStatusDescription ?? ""));
+                                    evt.Set("wasClean", FenValue.FromBoolean(true));
+                                    cb.NativeImplementation(new IValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
+                                }
+                            }
+                            break;
+                        }
+                        else if (result.MessageType == WebSocketMessageType.Text)
+                        {
+                            var msg = System.Text.Encoding.UTF8.GetString(buffer, 0, result.Count);
+                            var onmessage = ws.Get("onmessage");
+                            if (onmessage != null && onmessage.IsFunction)
+                            {
+                                var cb = onmessage.AsFunction();
+                                if (cb.IsNative && cb.NativeImplementation != null)
+                                {
+                                    var evt = new FenObject();
+                                    evt.Set("data", FenValue.FromString(msg));
+                                    evt.Set("type", FenValue.FromString("message"));
+                                    cb.NativeImplementation(new IValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    ws.Set("readyState", FenValue.FromNumber(CLOSED));
+                    var onerror = ws.Get("onerror");
+                    if (onerror != null && onerror.IsFunction)
+                    {
+                        var cb = onerror.AsFunction();
+                        if (cb.IsNative && cb.NativeImplementation != null)
+                        {
+                            var evt = new FenObject();
+                            evt.Set("message", FenValue.FromString(ex.Message));
+                            evt.Set("type", FenValue.FromString("error"));
+                            cb.NativeImplementation(new IValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
+                        }
+                    }
+                }
+            });
+            
+            return FenValue.FromObject(ws);
+        }
+
+        #endregion
+
+        #region IndexedDB API Helpers
+
+        // In-memory storage for IndexedDB databases
+        private static readonly Dictionary<string, Dictionary<string, Dictionary<string, IValue>>> _idbDatabases = 
+            new Dictionary<string, Dictionary<string, Dictionary<string, IValue>>>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Creates the indexedDB global object (IDBFactory)
+        /// </summary>
+        private FenObject CreateIndexedDB()
+        {
+            var idb = new FenObject();
+            
+            // open(name, version) - Opens a database, returns IDBOpenDBRequest
+            idb.Set("open", FenValue.FromFunction(new FenFunction("open", (args, thisVal) =>
+            {
+                var dbName = args.Length > 0 ? args[0].ToString() : "default";
+                var version = args.Length > 1 ? (int)args[1].ToNumber() : 1;
+                
+                // Create request object
+                var request = new FenObject();
+                request.Set("readyState", FenValue.FromString("pending"));
+                request.Set("onsuccess", FenValue.Null);
+                request.Set("onerror", FenValue.Null);
+                request.Set("onupgradeneeded", FenValue.Null);
+                
+                // Simulate async database opening
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(10); // Small delay to mimic async
+                    
+                    bool isNew = !_idbDatabases.ContainsKey(dbName);
+                    if (isNew)
+                    {
+                        _idbDatabases[dbName] = new Dictionary<string, Dictionary<string, IValue>>(StringComparer.OrdinalIgnoreCase);
+                    }
+                    
+                    var db = CreateIDBDatabase(dbName, version);
+                    request.Set("result", db);
+                    request.Set("readyState", FenValue.FromString("done"));
+                    
+                    // Fire onupgradeneeded for new databases
+                    if (isNew)
+                    {
+                        var onupgrade = request.Get("onupgradeneeded");
+                        if (onupgrade != null && onupgrade.IsFunction)
+                        {
+                            var cb = onupgrade.AsFunction();
+                            if (cb.IsNative && cb.NativeImplementation != null)
+                            {
+                                var evt = new FenObject();
+                                evt.Set("target", FenValue.FromObject(request));
+                                evt.Set("oldVersion", FenValue.FromNumber(0));
+                                evt.Set("newVersion", FenValue.FromNumber(version));
+                                cb.NativeImplementation(new IValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
+                            }
+                        }
+                    }
+                    
+                    // Fire onsuccess
+                    var onsuccess = request.Get("onsuccess");
+                    if (onsuccess != null && onsuccess.IsFunction)
+                    {
+                        var cb = onsuccess.AsFunction();
+                        if (cb.IsNative && cb.NativeImplementation != null)
+                        {
+                            var evt = new FenObject();
+                            evt.Set("target", FenValue.FromObject(request));
+                            cb.NativeImplementation(new IValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
+                        }
+                    }
+                });
+                
+                return FenValue.FromObject(request);
+            })));
+            
+            // deleteDatabase(name) - Deletes a database
+            idb.Set("deleteDatabase", FenValue.FromFunction(new FenFunction("deleteDatabase", (args, thisVal) =>
+            {
+                var dbName = args.Length > 0 ? args[0].ToString() : "";
+                _idbDatabases.Remove(dbName);
+                
+                var request = new FenObject();
+                request.Set("readyState", FenValue.FromString("done"));
+                return FenValue.FromObject(request);
+            })));
+            
+            return idb;
+        }
+
+        /// <summary>
+        /// Creates an IDBDatabase object
+        /// </summary>
+        private IValue CreateIDBDatabase(string name, int version)
+        {
+            var db = new FenObject();
+            db.Set("name", FenValue.FromString(name));
+            db.Set("version", FenValue.FromNumber(version));
+            
+            // createObjectStore(name, options) - Creates an object store
+            db.Set("createObjectStore", FenValue.FromFunction(new FenFunction("createObjectStore", (args, thisVal) =>
+            {
+                var storeName = args.Length > 0 ? args[0].ToString() : "default";
+                
+                if (!_idbDatabases.ContainsKey(name))
+                    _idbDatabases[name] = new Dictionary<string, Dictionary<string, IValue>>(StringComparer.OrdinalIgnoreCase);
+                
+                if (!_idbDatabases[name].ContainsKey(storeName))
+                    _idbDatabases[name][storeName] = new Dictionary<string, IValue>(StringComparer.OrdinalIgnoreCase);
+                
+                return CreateIDBObjectStore(name, storeName);
+            })));
+            
+            // transaction(storeNames, mode) - Creates a transaction
+            db.Set("transaction", FenValue.FromFunction(new FenFunction("transaction", (args, thisVal) =>
+            {
+                var storeName = args.Length > 0 ? args[0].ToString() : "";
+                var mode = args.Length > 1 ? args[1].ToString() : "readonly";
+                
+                var tx = new FenObject();
+                tx.Set("mode", FenValue.FromString(mode));
+                
+                tx.Set("objectStore", FenValue.FromFunction(new FenFunction("objectStore", (storeArgs, storeThis) =>
+                {
+                    var sn = storeArgs.Length > 0 ? storeArgs[0].ToString() : storeName;
+                    return CreateIDBObjectStore(name, sn);
+                })));
+                
+                return FenValue.FromObject(tx);
+            })));
+            
+            // close() - Closes the database
+            db.Set("close", FenValue.FromFunction(new FenFunction("close", (args, thisVal) =>
+            {
+                return FenValue.Undefined;
+            })));
+            
+            return FenValue.FromObject(db);
+        }
+
+        /// <summary>
+        /// Creates an IDBObjectStore object with CRUD operations
+        /// </summary>
+        private IValue CreateIDBObjectStore(string dbName, string storeName)
+        {
+            var store = new FenObject();
+            store.Set("name", FenValue.FromString(storeName));
+            
+            // Ensure store exists
+            if (!_idbDatabases.ContainsKey(dbName))
+                _idbDatabases[dbName] = new Dictionary<string, Dictionary<string, IValue>>(StringComparer.OrdinalIgnoreCase);
+            if (!_idbDatabases[dbName].ContainsKey(storeName))
+                _idbDatabases[dbName][storeName] = new Dictionary<string, IValue>(StringComparer.OrdinalIgnoreCase);
+            
+            var storeData = _idbDatabases[dbName][storeName];
+            
+            // add(value, key) - Adds a value
+            store.Set("add", FenValue.FromFunction(new FenFunction("add", (args, thisVal) =>
+            {
+                var value = args.Length > 0 ? args[0] : FenValue.Undefined;
+                var key = args.Length > 1 ? args[1].ToString() : Guid.NewGuid().ToString();
+                
+                storeData[key] = value;
+                
+                var request = new FenObject();
+                request.Set("result", FenValue.FromString(key));
+                request.Set("onsuccess", FenValue.Null);
+                
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(1);
+                    var cb = request.Get("onsuccess");
+                    if (cb != null && cb.IsFunction)
+                    {
+                        var fn = cb.AsFunction();
+                        if (fn.IsNative && fn.NativeImplementation != null)
+                        {
+                            var evt = new FenObject();
+                            evt.Set("target", FenValue.FromObject(request));
+                            fn.NativeImplementation(new IValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
+                        }
+                    }
+                });
+                
+                return FenValue.FromObject(request);
+            })));
+            
+            // get(key) - Gets a value
+            store.Set("get", FenValue.FromFunction(new FenFunction("get", (args, thisVal) =>
+            {
+                var key = args.Length > 0 ? args[0].ToString() : "";
+                
+                var request = new FenObject();
+                storeData.TryGetValue(key, out var value);
+                request.Set("result", value ?? FenValue.Undefined);
+                request.Set("onsuccess", FenValue.Null);
+                
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(1);
+                    var cb = request.Get("onsuccess");
+                    if (cb != null && cb.IsFunction)
+                    {
+                        var fn = cb.AsFunction();
+                        if (fn.IsNative && fn.NativeImplementation != null)
+                        {
+                            var evt = new FenObject();
+                            evt.Set("target", FenValue.FromObject(request));
+                            fn.NativeImplementation(new IValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
+                        }
+                    }
+                });
+                
+                return FenValue.FromObject(request);
+            })));
+            
+            // put(value, key) - Updates or adds a value
+            store.Set("put", FenValue.FromFunction(new FenFunction("put", (args, thisVal) =>
+            {
+                var value = args.Length > 0 ? args[0] : FenValue.Undefined;
+                var key = args.Length > 1 ? args[1].ToString() : Guid.NewGuid().ToString();
+                
+                storeData[key] = value;
+                
+                var request = new FenObject();
+                request.Set("result", FenValue.FromString(key));
+                request.Set("onsuccess", FenValue.Null);
+                
+                return FenValue.FromObject(request);
+            })));
+            
+            // delete(key) - Deletes a value
+            store.Set("delete", FenValue.FromFunction(new FenFunction("delete", (args, thisVal) =>
+            {
+                var key = args.Length > 0 ? args[0].ToString() : "";
+                storeData.Remove(key);
+                
+                var request = new FenObject();
+                request.Set("onsuccess", FenValue.Null);
+                return FenValue.FromObject(request);
+            })));
+            
+            // clear() - Clears all values
+            store.Set("clear", FenValue.FromFunction(new FenFunction("clear", (args, thisVal) =>
+            {
+                storeData.Clear();
+                
+                var request = new FenObject();
+                request.Set("onsuccess", FenValue.Null);
+                return FenValue.FromObject(request);
+            })));
+            
+            return FenValue.FromObject(store);
+        }
+
+        #endregion
+
+        #region Promise API Helpers
+
+        /// <summary>
+        /// Creates the Promise constructor object with static methods
+        /// </summary>
+        private FenObject CreatePromiseConstructor()
+        {
+            var promiseCtor = new FenObject();
+            
+            // Promise.resolve(value) - Creates a resolved promise
+            promiseCtor.Set("resolve", FenValue.FromFunction(new FenFunction("resolve", (args, thisVal) =>
+            {
+                var value = args.Length > 0 ? args[0] : FenValue.Undefined;
+                return CreateResolvedPromise(value);
+            })));
+            
+            // Promise.reject(reason) - Creates a rejected promise  
+            promiseCtor.Set("reject", FenValue.FromFunction(new FenFunction("reject", (args, thisVal) =>
+            {
+                var reason = args.Length > 0 ? args[0].ToString() : "";
+                return CreateRejectedPromise(reason);
+            })));
+            
+            // Promise.all(iterable) - Waits for all promises
+            promiseCtor.Set("all", FenValue.FromFunction(new FenFunction("all", (args, thisVal) =>
+            {
+                // Simplified: immediately resolve with the array
+                var arr = args.Length > 0 ? args[0] : FenValue.Undefined;
+                return CreateResolvedPromise(arr);
+            })));
+            
+            // Promise.race(iterable) - Returns first settled promise
+            promiseCtor.Set("race", FenValue.FromFunction(new FenFunction("race", (args, thisVal) =>
+            {
+                // Simplified: immediately resolve with first element
+                if (args.Length > 0 && args[0].IsObject)
+                {
+                    var arrObj = args[0].AsObject() as FenObject;
+                    var first = arrObj?.Get("0");
+                    if (first != null && !first.IsUndefined)
+                        return CreateResolvedPromise(first);
+                }
+                return CreateResolvedPromise(FenValue.Undefined);
+            })));
+
+            // Promise.allSettled(iterable)
+            promiseCtor.Set("allSettled", FenValue.FromFunction(new FenFunction("allSettled", (args, thisVal) =>
+            {
+                var arr = args.Length > 0 ? args[0] : FenValue.Undefined;
+                return CreateResolvedPromise(arr);
+            })));
+            
+            return promiseCtor;
+        }
+
+        /// <summary>
+        /// Creates a resolved Promise
+        /// </summary>
+        private IValue CreateResolvedPromise(IValue value)
+        {
+            var promise = new FenObject();
+            promise.Set("__resolved", FenValue.FromBoolean(true));
+            promise.Set("__value", value);
+            
+            promise.Set("then", FenValue.FromFunction(new FenFunction("then", (args, thisVal) =>
+            {
+                if (args.Length > 0 && args[0].IsFunction)
+                {
+                    var cb = args[0].AsFunction();
+                    if (cb.IsNative && cb.NativeImplementation != null)
+                    {
+                        var result = cb.NativeImplementation(new IValue[] { value }, FenValue.Undefined);
+                        return CreateResolvedPromise(result);
+                    }
+                }
+                return thisVal;
+            })));
+            
+            promise.Set("catch", FenValue.FromFunction(new FenFunction("catch", (args, thisVal) =>
+            {
+                return thisVal; // Already resolved, skip catch
+            })));
+            
+            promise.Set("finally", FenValue.FromFunction(new FenFunction("finally", (args, thisVal) =>
+            {
+                if (args.Length > 0 && args[0].IsFunction)
+                {
+                    var cb = args[0].AsFunction();
+                    if (cb.IsNative && cb.NativeImplementation != null)
+                        cb.NativeImplementation(new IValue[0], FenValue.Undefined);
+                }
+                return thisVal;
+            })));
+            
+            return FenValue.FromObject(promise);
+        }
+
+        #endregion
+
+        #region Web Worker Helpers
+
+        /// <summary>
+        /// Creates a Worker object for background script execution
+        /// </summary>
+        private IValue CreateWorker(string scriptUrl)
+        {
+            var worker = new FenObject();
+            worker.Set("onmessage", FenValue.Null);
+            worker.Set("onerror", FenValue.Null);
+            
+            // postMessage(data) - Send message to worker
+            worker.Set("postMessage", FenValue.FromFunction(new FenFunction("postMessage", (args, thisVal) =>
+            {
+                var data = args.Length > 0 ? args[0] : FenValue.Undefined;
+                
+                // Simulate worker responding (simplified)
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(10);
+                    var onmessage = worker.Get("onmessage");
+                    if (onmessage != null && onmessage.IsFunction)
+                    {
+                        var cb = onmessage.AsFunction();
+                        if (cb.IsNative && cb.NativeImplementation != null)
+                        {
+                            var evt = new FenObject();
+                            evt.Set("data", data);
+                            evt.Set("type", FenValue.FromString("message"));
+                            cb.NativeImplementation(new IValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
+                        }
+                    }
+                });
+                
+                return FenValue.Undefined;
+            })));
+            
+            // terminate() - Terminate the worker
+            worker.Set("terminate", FenValue.FromFunction(new FenFunction("terminate", (args, thisVal) =>
+            {
+                return FenValue.Undefined;
+            })));
+            
+            return FenValue.FromObject(worker);
+        }
+
+        #endregion
+
+        #region TypedArray Helpers
+
+        /// <summary>
+        /// Creates an ArrayBuffer object
+        /// </summary>
+        private IValue CreateArrayBuffer(int length)
+        {
+            var ab = new FenObject();
+            ab.NativeObject = new byte[length];
+            ab.Set("byteLength", FenValue.FromNumber(length));
+            
+            // slice(begin, end) - Creates a new ArrayBuffer with a copy of bytes
+            ab.Set("slice", FenValue.FromFunction(new FenFunction("slice", (args, thisVal) =>
+            {
+                var buffer = ab.NativeObject as byte[];
+                var begin = args.Length > 0 ? (int)args[0].ToNumber() : 0;
+                var end = args.Length > 1 ? (int)args[1].ToNumber() : buffer.Length;
+                
+                if (begin < 0) begin = Math.Max(0, buffer.Length + begin);
+                if (end < 0) end = Math.Max(0, buffer.Length + end);
+                end = Math.Min(end, buffer.Length);
+                
+                var newLength = Math.Max(0, end - begin);
+                var newBuffer = new byte[newLength];
+                if (newLength > 0)
+                    Array.Copy(buffer, begin, newBuffer, 0, newLength);
+                
+                var newAb = new FenObject();
+                newAb.NativeObject = newBuffer;
+                newAb.Set("byteLength", FenValue.FromNumber(newLength));
+                return FenValue.FromObject(newAb);
+            })));
+            
+            return FenValue.FromObject(ab);
+        }
+
+        /// <summary>
+        /// Creates a TypedArray constructor
+        /// </summary>
+        private FenFunction CreateTypedArrayConstructor(string name, int bytesPerElement)
+        {
+            return new FenFunction(name, (args, thisVal) =>
+            {
+                int length = 0;
+                byte[] buffer = null;
+                
+                if (args.Length > 0)
+                {
+                    if (args[0].IsNumber)
+                    {
+                        length = (int)args[0].ToNumber();
+                        buffer = new byte[length * bytesPerElement];
+                    }
+                    else if (args[0].IsObject)
+                    {
+                        var obj = args[0].AsObject() as FenObject;
+                        if (obj?.NativeObject is byte[] existingBuffer)
+                        {
+                            buffer = existingBuffer;
+                            length = buffer.Length / bytesPerElement;
+                        }
+                    }
+                }
+                
+                if (buffer == null)
+                    buffer = new byte[0];
+                
+                var arr = new FenObject();
+                arr.NativeObject = buffer;
+                arr.Set("length", FenValue.FromNumber(length));
+                arr.Set("byteLength", FenValue.FromNumber(buffer.Length));
+                arr.Set("BYTES_PER_ELEMENT", FenValue.FromNumber(bytesPerElement));
+                
+                // Indexed access (simplified - use get/set)
+                for (int i = 0; i < length && i < 1000; i++)
+                {
+                    arr.Set(i.ToString(), FenValue.FromNumber(0));
+                }
+                
+                // set(array, offset) - Copies values
+                arr.Set("set", FenValue.FromFunction(new FenFunction("set", (setArgs, setThis) =>
+                {
+                    return FenValue.Undefined;
+                })));
+                
+                // subarray(begin, end) - Creates a new view
+                arr.Set("subarray", FenValue.FromFunction(new FenFunction("subarray", (subArgs, subThis) =>
+                {
+                    return thisVal;
+                })));
+                
+                return FenValue.FromObject(arr);
+            });
+        }
+
+        /// <summary>
+        /// Creates a DataView object for fine-grained binary access
+        /// </summary>
+        private IValue CreateDataView(byte[] buffer)
+        {
+            var dv = new FenObject();
+            dv.NativeObject = buffer;
+            dv.Set("byteLength", FenValue.FromNumber(buffer.Length));
+            dv.Set("byteOffset", FenValue.FromNumber(0));
+            
+            // getInt8, getUint8, getInt16, getUint16, etc.
+            dv.Set("getInt8", FenValue.FromFunction(new FenFunction("getInt8", (args, thisVal) =>
+            {
+                var offset = args.Length > 0 ? (int)args[0].ToNumber() : 0;
+                if (offset >= 0 && offset < buffer.Length)
+                    return FenValue.FromNumber((sbyte)buffer[offset]);
+                return FenValue.FromNumber(0);
+            })));
+            
+            dv.Set("getUint8", FenValue.FromFunction(new FenFunction("getUint8", (args, thisVal) =>
+            {
+                var offset = args.Length > 0 ? (int)args[0].ToNumber() : 0;
+                if (offset >= 0 && offset < buffer.Length)
+                    return FenValue.FromNumber(buffer[offset]);
+                return FenValue.FromNumber(0);
+            })));
+            
+            dv.Set("setInt8", FenValue.FromFunction(new FenFunction("setInt8", (args, thisVal) =>
+            {
+                var offset = args.Length > 0 ? (int)args[0].ToNumber() : 0;
+                var value = args.Length > 1 ? (sbyte)args[1].ToNumber() : (sbyte)0;
+                if (offset >= 0 && offset < buffer.Length)
+                    buffer[offset] = (byte)value;
+                return FenValue.Undefined;
+            })));
+            
+            dv.Set("setUint8", FenValue.FromFunction(new FenFunction("setUint8", (args, thisVal) =>
+            {
+                var offset = args.Length > 0 ? (int)args[0].ToNumber() : 0;
+                var value = args.Length > 1 ? (byte)args[1].ToNumber() : (byte)0;
+                if (offset >= 0 && offset < buffer.Length)
+                    buffer[offset] = value;
+                return FenValue.Undefined;
+            })));
+            
+            return FenValue.FromObject(dv);
         }
 
         #endregion
