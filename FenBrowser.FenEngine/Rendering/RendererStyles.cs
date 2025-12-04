@@ -425,12 +425,15 @@ namespace FenBrowser.FenEngine.Rendering
                 string vis;
                 if (css.Map != null && css.Map.TryGetValue("visibility", out vis))
                 {
-                    if (!string.IsNullOrWhiteSpace(vis) && vis.Trim().Equals("hidden", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // Keep layout but hide visuals and hit-testing
-                        try { returned.Opacity = 0.0; } catch { }
-                        try { returned.IsHitTestVisible = false; } catch { }
-                    }
+                    // Intentionally IGNORE visibility:hidden for now.
+                    // Many sites (like Google) use visibility:hidden initially and
+                    // rely on JavaScript to show content. Since our JS engine may not
+                    // fully replicate this, we keep content visible as a fallback.
+                    // if (!string.IsNullOrWhiteSpace(vis) && vis.Trim().Equals("hidden", StringComparison.OrdinalIgnoreCase))
+                    // {
+                    //     try { returned.Opacity = 0.0; } catch { }
+                    //     try { returned.IsHitTestVisible = false; } catch { }
+                    // }
                 }
                 string op;
                 if (css.Map != null && css.Map.TryGetValue("opacity", out op))
