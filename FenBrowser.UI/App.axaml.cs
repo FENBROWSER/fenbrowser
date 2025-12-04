@@ -16,6 +16,7 @@ public partial class App : Application
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             int? port = null;
+            string initialUrl = null;
             var args = desktop.Args;
             if (args != null)
             {
@@ -24,19 +25,23 @@ public partial class App : Application
                     if (args[i] == "--port" && i + 1 < args.Length && int.TryParse(args[i + 1], out int p))
                     {
                         port = p;
-                        break;
+                        i++; // Skip next arg
                     }
                     else if (args[i].StartsWith("--port="))
                     {
                         if (int.TryParse(args[i].Substring(7), out int p2))
                         {
                             port = p2;
-                            break;
                         }
+                    }
+                    else if (!args[i].StartsWith("--"))
+                    {
+                        // Assume it's a URL if it doesn't start with --
+                        initialUrl = args[i];
                     }
                 }
             }
-            desktop.MainWindow = new MainWindow(port);
+            desktop.MainWindow = new MainWindow(port, initialUrl);
         }
 
         base.OnFrameworkInitializationCompleted();
