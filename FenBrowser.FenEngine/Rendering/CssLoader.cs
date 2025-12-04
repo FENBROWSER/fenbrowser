@@ -882,6 +882,13 @@ namespace FenBrowser.FenEngine.Rendering
                 var bgColor = TryColor(ExtractBackgroundColor(css.Map));
                 if (bgColor.HasValue) css.BackgroundColor = bgColor;
 
+                // font shorthand
+                var fontShorthand = Safe(DictGet(css.Map, "font"));
+                if (!string.IsNullOrEmpty(fontShorthand))
+                {
+                    ParseFontShorthand(fontShorthand, css);
+                }
+
                 // font-family (first concrete family)
                 try
                 {
@@ -1001,6 +1008,22 @@ namespace FenBrowser.FenEngine.Rendering
                 if (TryDouble(DictGet(css.Map, "flex-grow"), out flexVal)) css.FlexGrow = flexVal;
                 if (TryDouble(DictGet(css.Map, "flex-shrink"), out flexVal)) css.FlexShrink = flexVal;
                 if (TryPx(DictGet(css.Map, "flex-basis"), out flexVal)) css.FlexBasis = flexVal;
+
+                // New properties
+                // line-height
+                var lhRaw = Safe(DictGet(css.Map, "line-height"));
+                if (!string.IsNullOrEmpty(lhRaw))
+                {
+                    double lh;
+                    if (TryPx(lhRaw, out lh)) css.LineHeight = lh; // px value
+                    else if (double.TryParse(lhRaw, NumberStyles.Float, CultureInfo.InvariantCulture, out lh)) css.LineHeight = lh; // multiplier
+                }
+
+                css.VerticalAlign = Safe(DictGet(css.Map, "vertical-align"));
+                css.WhiteSpace = Safe(DictGet(css.Map, "white-space"));
+                css.TextOverflow = Safe(DictGet(css.Map, "text-overflow"));
+                css.BoxSizing = Safe(DictGet(css.Map, "box-sizing"));
+                css.Cursor = Safe(DictGet(css.Map, "cursor"));
 
                 result[n] = css;
             }
@@ -1398,6 +1421,123 @@ namespace FenBrowser.FenEngine.Rendering
         // ===========================
         // Utility helpers
         // ===========================
+
+        private static void ParseFontShorthand(string font, CssComputed css)
+        {
+            // Syntax: [ <font-style> || <font-variant> || <font-weight> || <font-stretch> ]? <font-size> [ / <line-height> ]? <font-family>
+            // Example: italic bold 12px/30px Georgia, serif
+            
+            var parts = SplitCssValues(font);
+            if (parts.Count == 0) return;
+
+            int index = 0;
+            
+            // 1. Parse optional style/weight/variant
+            // We loop until we find a size (digit or known size keyword)
+            while (index < parts.Count)
+            {
+                var p = parts[index].ToLowerInvariant();
+                
+                // Check if it's a size
+                if (char.IsDigit(p[0]) || p.StartsWith(".") || IsFontSizeKeyword(p))
+                {
+                    break;
+                }
+
+                // Check style
+                if (p == "italic" || p == "oblique")
+                {
+                    css.FontStyle = FontStyle.Italic;
+                }
+                else if (p == "normal")
+                {
+                    css.FontStyle = FontStyle.Normal;
+                    css.FontWeight = Avalonia.Media.FontWeight.Normal;
+                }
+                // Check weight
+                else if (p == "bold")
+                {
+                    css.FontWeight = Avalonia.Media.FontWeight.Bold;
+                }
+                else if (p == "bolder" || p == "lighter")
+                {
+                    // simplified
+                    css.FontWeight = p == "bolder" ? Avalonia.Media.FontWeight.Bold : Avalonia.Media.FontWeight.Light;
+                }
+                else if (int.TryParse(p, out int w))
+                {
+                    css.FontWeight = MakeFontWeight(w);
+                }
+                // Ignore variant/stretch for now
+                
+                index++;
+            }
+
+            if (index >= parts.Count) return;
+
+            // 2. Parse font-size and optional line-height
+            var sizePart = parts[index];
+            index++;
+
+            string fontSizeStr = sizePart;
+            string lineHeightStr = null;
+
+            int slash = sizePart.IndexOf('/');
+            if (slash >= 0)
+            {
+                fontSizeStr = sizePart.Substring(0, slash);
+                lineHeightStr = sizePart.Substring(slash + 1);
+            }
+
+            double fs;
+            if (TryPx(fontSizeStr, out fs)) css.FontSize = fs;
+            else if (IsFontSizeKeyword(fontSizeStr)) css.FontSize = ParseFontSizeKeyword(fontSizeStr);
+
+            if (!string.IsNullOrEmpty(lineHeightStr))
+            {
+                double lh;
+                if (TryPx(lineHeightStr, out lh)) css.LineHeight = lh;
+                else if (double.TryParse(lineHeightStr, NumberStyles.Float, CultureInfo.InvariantCulture, out lh)) css.LineHeight = lh;
+            }
+
+            // 3. Parse font-family (rest of the string)
+            if (index < parts.Count)
+            {
+                var sb = new StringBuilder();
+                for (int i = index; i < parts.Count; i++)
+                {
+                    if (sb.Length > 0) sb.Append(" ");
+                    sb.Append(parts[i]);
+                }
+                var family = sb.ToString();
+                
+                // Resolve family
+                var resolved = SelectFontFamily(family);
+                if (!string.IsNullOrEmpty(resolved))
+                    css.FontFamilyName = resolved;
+            }
+        }
+
+        private static bool IsFontSizeKeyword(string s)
+        {
+            return s == "xx-small" || s == "x-small" || s == "small" || s == "medium" || s == "large" || s == "x-large" || s == "xx-large" || s == "smaller" || s == "larger";
+        }
+
+        private static double ParseFontSizeKeyword(string s)
+        {
+            // Base 16px
+            switch (s)
+            {
+                case "xx-small": return 9;
+                case "x-small": return 10;
+                case "small": return 13;
+                case "medium": return 16;
+                case "large": return 18;
+                case "x-large": return 24;
+                case "xx-large": return 32;
+                default: return 16;
+            }
+        }
 
         private static bool IsCustomPropertyName(string name)
         {
