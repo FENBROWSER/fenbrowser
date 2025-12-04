@@ -8,18 +8,18 @@
 
 ## Overall Score: **32/100** compared to Firefox/Chrome
 
-| Category                 | FenBrowser Score | Notes                                      |
-| ------------------------ | ---------------- | ------------------------------------------ |
-| **HTML Rendering**       | 55/100           | Good basic HTML, limited complex layouts   |
-| **CSS Support**          | 50/100           | Most properties, ~~calc()~~ ✓ flexbox/grid |
-| **JavaScript Engine**    | 25/100           | Custom FenEngine, ES6 subset               |
-| **Network/Security**     | 40/100           | HTTPS, cookies, basic headers              |
-| **UI/UX**                | 50/100           | Tabs, settings, DevTools basics            |
-| **Web APIs**             | 20/100           | ~~fetch()~~ implemented ✓                  |
-| **Performance**          | 30/100           | Functional but slow on complex sites       |
-| **Extensions**           | 5/100            | Basic structure only                       |
-| **Media**                | 25/100           | Images, limited video                      |
-| **Standards Compliance** | 20/100           | Partial HTML5/CSS3                         |
+| Category                 | FenBrowser Score | Notes                                    |
+| ------------------------ | ---------------- | ---------------------------------------- |
+| **HTML Rendering**       | 55/100           | Good basic HTML, limited complex layouts |
+| **CSS Support**          | 60/100           | calc(), @keyframes ✓ flexbox/grid        |
+| **JavaScript Engine**    | 25/100           | Custom FenEngine, ES6 subset             |
+| **Network/Security**     | 40/100           | HTTPS, cookies, basic headers            |
+| **UI/UX**                | 50/100           | Tabs, settings, DevTools basics          |
+| **Web APIs**             | 20/100           | ~~fetch()~~ implemented ✓                |
+| **Performance**          | 30/100           | Functional but slow on complex sites     |
+| **Extensions**           | 5/100            | Basic structure only                     |
+| **Media**                | 25/100           | Images, limited video                    |
+| **Standards Compliance** | 20/100           | Partial HTML5/CSS3                       |
 
 ---
 
@@ -694,9 +694,9 @@
 | Feature                  | Priority | Complexity |
 | ------------------------ | -------- | ---------- | ------------------------ |
 | ~~**fetch() API**~~      | ~~HIGH~~ | ~~Medium~~ | ✅ COMPLETED Dec 4, 2024 |
-| **WebSocket**            | HIGH     | Medium     |
-| **IndexedDB**            | HIGH     | High       |
-| **Web Workers**          | HIGH     | High       |
+| ~~**WebSocket**~~        | ~~HIGH~~ | ~~Medium~~ | ✅ COMPLETED Dec 4, 2024 |
+| ~~**IndexedDB**~~        | ~~HIGH~~ | ~~High~~   | ✅ COMPLETED Dec 4, 2024 |
+| ~~**Web Workers**~~      | ~~HIGH~~ | ~~High~~   | ✅ COMPLETED Dec 4, 2024 |
 | **Service Workers**      | HIGH     | Very High  |
 | **WebRTC**               | MEDIUM   | Very High  |
 | **WebGL / Canvas 2D**    | MEDIUM   | High       |
@@ -710,35 +710,35 @@
 
 ## Category 2: JavaScript Engine
 
-| Feature                | Priority | Complexity |
-| ---------------------- | -------- | ---------- |
-| **Promises (full)**    | HIGH     | Medium     |
-| **async/await (full)** | HIGH     | Medium     |
-| **Generators**         | MEDIUM   | High       |
-| **Proxy/Reflect**      | MEDIUM   | High       |
-| **Symbol**             | MEDIUM   | Medium     |
-| **WeakMap/WeakSet**    | MEDIUM   | Medium     |
-| **BigInt**             | LOW      | Medium     |
-| **SharedArrayBuffer**  | LOW      | High       |
-| **Atomics**            | LOW      | High       |
-| **TypedArrays**        | MEDIUM   | Medium     |
+| Feature                 | Priority   | Complexity |
+| ----------------------- | ---------- | ---------- | ------------------------ |
+| ~~**Promises (full)**~~ | ~~HIGH~~   | ~~Medium~~ | ✅ COMPLETED Dec 4, 2024 |
+| **async/await (full)**  | HIGH       | Medium     |
+| **Generators**          | MEDIUM     | High       |
+| **Proxy/Reflect**       | MEDIUM     | High       |
+| **Symbol**              | MEDIUM     | Medium     |
+| **WeakMap/WeakSet**     | MEDIUM     | Medium     |
+| **BigInt**              | LOW        | Medium     |
+| **SharedArrayBuffer**   | LOW        | High       |
+| **Atomics**             | LOW        | High       |
+| ~~**TypedArrays**~~     | ~~MEDIUM~~ | ~~Medium~~ | ✅ COMPLETED Dec 4, 2024 |
 
 ## Category 3: CSS Features
 
-| Feature                         | Priority | Complexity |
-| ------------------------------- | -------- | ---------- | ------------------------ |
-| **CSS Animations (@keyframes)** | HIGH     | High       |
-| **CSS Transitions (full)**      | HIGH     | Medium     |
-| ~~**calc() function**~~         | ~~HIGH~~ | ~~Medium~~ | ✅ COMPLETED Dec 4, 2024 |
-| **CSS Filters**                 | MEDIUM   | Medium     |
-| **CSS Masks**                   | LOW      | High       |
-| **CSS Shapes**                  | LOW      | High       |
-| **Container Queries**           | LOW      | High       |
-| **CSS Scroll Snap**             | MEDIUM   | Medium     |
-| **CSS Counter**                 | LOW      | Medium     |
-| **@supports**                   | MEDIUM   | Low        |
-| **@font-face**                  | HIGH     | Medium     |
-| **@layer**                      | LOW      | Medium     |
+| Feature                             | Priority | Complexity |
+| ----------------------------------- | -------- | ---------- | ------------------------ |
+| ~~**CSS Animations (@keyframes)**~~ | ~~HIGH~~ | ~~High~~   | ✅ COMPLETED Dec 4, 2024 |
+| **CSS Transitions (full)**          | HIGH     | Medium     |
+| ~~**calc() function**~~             | ~~HIGH~~ | ~~Medium~~ | ✅ COMPLETED Dec 4, 2024 |
+| **CSS Filters**                     | MEDIUM   | Medium     |
+| **CSS Masks**                       | LOW      | High       |
+| **CSS Shapes**                      | LOW      | High       |
+| **Container Queries**               | LOW      | High       |
+| **CSS Scroll Snap**                 | MEDIUM   | Medium     |
+| **CSS Counter**                     | LOW      | Medium     |
+| **@supports**                       | MEDIUM   | Low        |
+| **@font-face**                      | HIGH     | Medium     |
+| **@layer**                          | LOW      | Medium     |
 
 ## Category 4: Browser Features
 
