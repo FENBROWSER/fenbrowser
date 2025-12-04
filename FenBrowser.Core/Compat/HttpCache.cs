@@ -15,7 +15,7 @@ namespace FenBrowser.Core.Compat
         {
             return Task.FromResult<string>(null);
         }
-        public Task<byte[]> GetBufferAsync(HttpClient client, HttpRequestMessage req)
+        public Task<byte[]> GetBufferAsync(HttpClient? client, HttpRequestMessage req)
         {
             return Task.FromResult<byte[]>(null);
         }
