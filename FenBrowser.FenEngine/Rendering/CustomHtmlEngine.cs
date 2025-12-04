@@ -1035,46 +1035,12 @@ namespace FenBrowser.FenEngine.Rendering
                     allowJs = forceJavascript.Value;
                 }
 
-                // OPTIMIZATION: Scan DOM for scripts or event handlers.
-                // If none found, disable JS to avoid heavy engine startup cost (10-30s on low-end devices).
-                if (allowJs)
-                {
-                    bool hasScripts = false;
-                    try
-                    {
-                        // Check for <script> tags
-                        if (dom.Descendants().Any(n => string.Equals(n.Tag, "script", StringComparison.OrdinalIgnoreCase)))
-                        {
-                            hasScripts = true;
-                        }
-                        else
-                        {
-                            // Check for inline event handlers (onclick, onload, etc.)
-                            foreach (var node in dom.SelfAndDescendants())
-                            {
-                                if (node.Attr != null)
-                                {
-                                    foreach (var key in node.Attr.Keys)
-                                    {
-                                        if (key.StartsWith("on", StringComparison.OrdinalIgnoreCase))
-                                        {
-                                            hasScripts = true;
-                                            break;
-                                        }
-                                    }
-                                }
-                                if (hasScripts) break;
-                            }
-                        }
-                    }
-                    catch { hasScripts = true; } // Fail safe: assume scripts exist if check fails
-
-                    if (!hasScripts)
-                    {
-                        allowJs = false;
-                        try { System.Diagnostics.Debug.WriteLine("[PERF] No scripts detected. Skipping JS engine initialization."); } catch { }
-                    }
-                }
+                // NOTE: Previously we had an optimization that disabled JS if no <script> tags found.
+                // This was removed because:
+                // 1. Sites may lazy-load scripts
+                // 2. Sites depend on JS class presence (no-js -> js) for CSS styling
+                // 3. It broke JS detection on whatismybrowser.com and similar sites
+                // The trade-off (slightly slower pages without scripts) is acceptable for better compatibility.
 
                 // Performance fast-path: for clearly JS-heavy SPA/app-shell sites that
                 // our engine cannot fully support (e.g., modern google.com), skip
@@ -1207,6 +1173,50 @@ namespace FenBrowser.FenEngine.Rendering
                     try { System.IO.File.AppendAllText("debug_log.txt", "[RenderAsync] Running Scripts\r\n"); } catch { }
                     Console.WriteLine("[RenderAsync] Running Scripts");
                     
+                    // STEP 1: Inject JS detection helper (runs first to ensure sites detect JS is enabled)
+                    // This script flips no-js -> js class and hides noscript fallback elements
+                    try
+                    {
+                        const string detectionHelper = @"
+(function() {
+    try {
+        // Remove no-js class, add js class on html element
+        var html = document.documentElement;
+        if (html && html.className) {
+            html.className = html.className.replace(/\bno-js\b/gi, '').trim();
+            if (html.className.indexOf('js') === -1) {
+                html.className = (html.className + ' js').trim();
+            }
+        } else if (html) {
+            html.className = 'js';
+        }
+        // Also check body element
+        var body = document.body;
+        if (body && body.className) {
+            body.className = body.className.replace(/\bno-js\b/gi, '').trim();
+        }
+        // Hide common noscript fallback indicators by class
+        var nojs = document.querySelectorAll('.no-js, .noscript, [data-nojs], .js-disabled');
+        for (var i = 0; i < nojs.length; i++) {
+            if (nojs[i] && nojs[i].style) nojs[i].style.display = 'none';
+        }
+        // Show elements that should be visible when JS is enabled
+        var jsEnabled = document.querySelectorAll('.js-enabled, .with-js, [data-js]');
+        for (var i = 0; i < jsEnabled.length; i++) {
+            if (jsEnabled[i] && jsEnabled[i].style) jsEnabled[i].style.display = '';
+        }
+    } catch(e) {}
+})();
+";
+                        js.Evaluate(detectionHelper);
+                        try { System.IO.File.AppendAllText("debug_log.txt", "[RenderAsync] Detection helper script executed\r\n"); } catch { }
+                    }
+                    catch (Exception dhEx)
+                    {
+                        try { System.IO.File.AppendAllText("debug_log.txt", $"[RenderAsync] Detection helper error: {dhEx.Message}\r\n"); } catch { }
+                    }
+                    
+                    // STEP 2: Run main page scripts
                     try 
                     {
                         // Add timeout protection for script execution (Wikipedia has many scripts)

@@ -40,18 +40,38 @@ namespace FenBrowser.FenEngine.Rendering
             
             double mainAvailable = isRow ? availableSize.Width : availableSize.Height;
             double crossAvailable = isRow ? availableSize.Height : availableSize.Width;
+            
+            // If we get infinite width, try to get actual window width
+            if (isRow && double.IsInfinity(mainAvailable))
+            {
+                try 
+                { 
+                    if (Avalonia.Application.Current?.ApplicationLifetime is Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime desktop 
+                        && desktop.MainWindow != null) 
+                    {
+                        mainAvailable = desktop.MainWindow.Bounds.Width - 80; // Leave margins
+                        if (mainAvailable < 400) mainAvailable = double.PositiveInfinity; // Fallback if too small
+                    }
+                } 
+                catch { }
+            }
 
             var currentLine = new FlexLine { IsRow = isRow };
             _lines.Add(currentLine);
 
             foreach (var child in Children)
             {
-                // Initial measure to get desired size
-                child.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                // Measure with constrained width to prevent horizontal overflow
+                // For row direction, use available width; for column, allow infinite width
+                double measureWidth = isRow ? (double.IsInfinity(mainAvailable) ? double.PositiveInfinity : mainAvailable) : double.PositiveInfinity;
+                double measureHeight = isRow ? double.PositiveInfinity : (double.IsInfinity(mainAvailable) ? double.PositiveInfinity : mainAvailable);
+                child.Measure(new Size(measureWidth, measureHeight));
                 var desired = child.DesiredSize;
                 
                 double basis = GetFlexBasis(child);
                 if (double.IsNaN(basis)) basis = isRow ? desired.Width : desired.Height;
+                // Clamp basis to available space to prevent overflow
+                if (isRow && !double.IsInfinity(mainAvailable)) basis = Math.Min(basis, mainAvailable);
 
                 // Check if we need to wrap
                 if (isWrap && currentLine.Items.Count > 0 && 
@@ -76,6 +96,10 @@ namespace FenBrowser.FenEngine.Rendering
             }
             // Remove last gap
             if (_lines.Count > 0) totalCrossSize -= (isRow ? RowGap : ColumnGap);
+
+            // Clamp to available size to prevent overflow
+            if (!double.IsInfinity(mainAvailable) && !double.IsNaN(mainAvailable))
+                maxMainSize = Math.Min(maxMainSize, mainAvailable);
 
             return isRow ? new Size(maxMainSize, totalCrossSize) : new Size(totalCrossSize, maxMainSize);
         }

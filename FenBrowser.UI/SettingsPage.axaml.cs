@@ -34,6 +34,9 @@ namespace FenBrowser.UI
                     break;
             }
 
+            // Load JavaScript setting
+            EnableJavaScriptSwitch.IsChecked = settings.EnableJavaScript;
+
             // Load logging settings
             EnableLoggingSwitch.IsChecked = settings.Logging.EnableLogging;
             var categories = (LogCategory)settings.Logging.EnabledCategories;
@@ -61,6 +64,9 @@ namespace FenBrowser.UI
                 settings.SelectedUserAgent = UserAgentType.Firefox;
             else if (FenBrowserRadio.IsChecked == true)
                 settings.SelectedUserAgent = UserAgentType.FenBrowser;
+
+            // Save JavaScript setting
+            settings.EnableJavaScript = EnableJavaScriptSwitch.IsChecked == true;
 
             // Save logging settings
             settings.Logging.EnableLogging = EnableLoggingSwitch.IsChecked == true;

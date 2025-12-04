@@ -109,6 +109,23 @@
 					</StackPanel>
 				</Border>
 
+				<!-- JavaScript Section -->
+				<Border Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="20" Margin="0,0,0,20">
+					<StackPanel>
+						<TextBlock Text="JavaScript" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,8" Foreground="{StaticResource PrimaryTextBrush}"/>
+						<TextBlock Text="Control whether websites can run JavaScript. Disabling may break site functionality but improves security and privacy." 
+								   TextWrapping="Wrap" 
+								   Margin="0,0,0,16"
+								   Foreground="{StaticResource SecondaryTextBrush}"/>
+
+						<ToggleSwitch x:Name="EnableJavaScriptSwitch" Content="Enable JavaScript" IsChecked="True"/>
+						<TextBlock Text="Recommended: Keep enabled for best website compatibility" 
+								   FontSize="12" 
+								   Margin="0,4,0,0"
+								   Foreground="{StaticResource SecondaryTextBrush}"/>
+					</StackPanel>
+				</Border>
+
 				<!-- Logging Section -->
 				<Border Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="20" Margin="0,0,0,20">
 					<StackPanel>
