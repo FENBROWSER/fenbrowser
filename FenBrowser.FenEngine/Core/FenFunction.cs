@@ -10,15 +10,17 @@ namespace FenBrowser.FenEngine.Core
     public class FenFunction
     {
         public string Name { get; }
-        public Func<IValue[], IValue> NativeImplementation { get; }
+        public Func<IValue[], IValue, IValue> NativeImplementation { get; }
         public bool IsNative { get; }
+        public bool IsAsync { get; set; } // New property for async functions
 
         // User-defined function properties
         public List<Identifier> Parameters { get; }
-        public BlockStatement Body { get; }
+        public AstNode Body { get; }  // Can be BlockStatement or Expression (arrow functions)
         public FenEnvironment Env { get; }
+        public FenObject Prototype { get; set; } // For classes/constructors
 
-        public FenFunction(string name, Func<IValue[], IValue> nativeImplementation)
+        public FenFunction(string name, Func<IValue[], IValue, IValue> nativeImplementation)
         {
             Name = name;
             NativeImplementation = nativeImplementation;
@@ -34,13 +36,24 @@ namespace FenBrowser.FenEngine.Core
             Name = "anonymous"; // Could be improved
         }
 
+        // Constructor for arrow functions with expression body
+        public FenFunction(List<Identifier> parameters, AstNode body, FenEnvironment env)
+        {
+            Parameters = parameters;
+            Body = body;
+            Env = env;
+            IsNative = false;
+            Name = "arrow";
+        }
+
         public IValue Invoke(IValue[] args, IExecutionContext context)
         {
             if (IsNative)
             {
                 try
                 {
-                    return NativeImplementation(args);
+                    var thisVal = context?.ThisBinding ?? FenValue.Undefined;
+                    return NativeImplementation(args, thisVal);
                 }
                 catch (Exception ex)
                 {

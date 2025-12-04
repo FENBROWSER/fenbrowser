@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using FenBrowser.FenEngine.Security;
+using FenBrowser.FenEngine.Core.Interfaces;
 
 namespace FenBrowser.FenEngine.Core
 {
@@ -59,7 +60,21 @@ namespace FenBrowser.FenEngine.Core
         /// <summary>
         /// Callback to trigger UI repaint
         /// </summary>
-        Action RequestRender { get; set; }
+        /// <summary>
+        /// Callback to trigger UI repaint
+        /// </summary>
+        Action RequestRender { get; }
+        void SetRequestRender(Action action);
+
+        /// <summary>
+        /// Current 'this' binding for function execution
+        /// </summary>
+        IValue ThisBinding { get; set; }
+
+        /// <summary>
+        /// Module loader for resolving and loading modules
+        /// </summary>
+        IModuleLoader ModuleLoader { get; set; }
     }
 
     /// <summary>
@@ -75,7 +90,10 @@ namespace FenBrowser.FenEngine.Core
         public int CallStackDepth => _callStack.Count;
         public DateTime ExecutionStart { get; private set; }
         public bool ShouldContinue => _executionTimer.Elapsed < Limits.MaxExecutionTime;
-        public Action RequestRender { get; set; }
+        public Action RequestRender { get; private set; }
+        public void SetRequestRender(Action action) => RequestRender = action;
+        public IValue ThisBinding { get; set; }
+        public IModuleLoader ModuleLoader { get; set; }
 
         public ExecutionContext(
             IPermissionManager permissions = null, 

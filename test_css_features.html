@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CSS Features Test</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background-color: #f0f2f5;
+            padding: 20px;
+        }
+        h1 { text-align: center; color: #333; }
+        .container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            justify-content: center;
+        }
+        .card {
+            width: 200px;
+            height: 200px;
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            color: white;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+        }
+
+        /* Gradients */
+        .grad-linear {
+            background: linear-gradient(to right, #4facfe, #00f2fe);
+        }
+        .grad-radial {
+            background: radial-gradient(circle, #ff9a9e 0%, #fecfef 99%, #fecfef 100%);
+        }
+        .grad-complex {
+            background: linear-gradient(45deg, #ff9a9e, #fad0c4, #fad0c4);
+        }
+
+        /* Shadows */
+        .shadow-soft {
+            background: white;
+            color: #333;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .shadow-hard {
+            background: white;
+            color: #333;
+            box-shadow: 10px 10px 0px #333;
+        }
+        .shadow-glow {
+            background: #333;
+            color: white;
+            box-shadow: 0 0 15px #00f2fe;
+        }
+
+        /* Transforms */
+        .trans-rotate {
+            background: #667eea;
+            transform: rotate(15deg);
+        }
+        .trans-scale {
+            background: #764ba2;
+            transform: scale(0.8);
+        }
+        .trans-translate {
+            background: #ff758c;
+            transform: translate(10px, -10px);
+        }
+
+        /* Border Radius */
+        .radius-circle {
+            background: #fa709a;
+            border-radius: 50%;
+        }
+        .radius-pill {
+            width: 300px;
+            height: 100px;
+            background: #fee140;
+            color: #333;
+            border-radius: 50px;
+        }
+    </style>
+</head>
+<body>
+    <h1>CSS Features Test</h1>
+    
+    <h2>Gradients</h2>
+    <div class="container">
+        <div class="card grad-linear">Linear</div>
+        <div class="card grad-radial">Radial</div>
+        <div class="card grad-complex">Complex</div>
+    </div>
+
+    <h2>Box Shadows</h2>
+    <div class="container">
+        <div class="card shadow-soft">Soft Shadow</div>
+        <div class="card shadow-hard">Hard Shadow</div>
+        <div class="card shadow-glow">Glow</div>
+    </div>
+
+    <h2>Transforms</h2>
+    <div class="container">
+        <div class="card trans-rotate">Rotate 15deg</div>
+        <div class="card trans-scale">Scale 0.8</div>
+        <div class="card trans-translate">Translate</div>
+    </div>
+
+    <h2>Border Radius</h2>
+    <div class="container">
+        <div class="card radius-circle">Circle</div>
+        <div class="card radius-pill">Pill Shape</div>
+    </div>
+</body>
+</html>
