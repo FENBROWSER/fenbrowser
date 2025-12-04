@@ -25,8 +25,22 @@ namespace FenBrowser.UI
         public event System.ComponentModel.PropertyChangedEventHandler PropertyChanged;
 
         private bool _isActive;
+        private string _title = "New Tab";
+        
         public int Id { get; set; }
-        public string Title { get; set; }
+        
+        public string Title
+        {
+            get => _title;
+            set
+            {
+                if (_title != value)
+                {
+                    _title = value;
+                    PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(Title)));
+                }
+            }
+        }
 
         public bool IsActive
         {
@@ -386,6 +400,95 @@ namespace FenBrowser.UI
             if (content is Control c)
             {
                 var menu = new ContextMenu();
+                
+                // Clipboard operations
+                var copy = new MenuItem { Header = "Copy", InputGesture = new KeyGesture(Key.C, KeyModifiers.Control) };
+                copy.Click += async (s, e) => 
+                {
+                    try
+                    {
+                        var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+                        if (clipboard != null)
+                        {
+                            // Try to get selected text from focused control
+                            var focused = TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement();
+                            if (focused is TextBox tb && !string.IsNullOrEmpty(tb.SelectedText))
+                            {
+                                await clipboard.SetTextAsync(tb.SelectedText);
+                            }
+                            else if (_activeBrowser?.CurrentUri != null)
+                            {
+                                await clipboard.SetTextAsync(_activeBrowser.CurrentUri.AbsoluteUri);
+                            }
+                        }
+                    }
+                    catch { }
+                };
+                menu.Items.Add(copy);
+                
+                var cut = new MenuItem { Header = "Cut", InputGesture = new KeyGesture(Key.X, KeyModifiers.Control) };
+                cut.Click += async (s, e) => 
+                {
+                    try
+                    {
+                        var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+                        var focused = TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement();
+                        if (clipboard != null && focused is TextBox tb && !string.IsNullOrEmpty(tb.SelectedText))
+                        {
+                            await clipboard.SetTextAsync(tb.SelectedText);
+                            var start = tb.SelectionStart;
+                            tb.Text = tb.Text.Remove(start, tb.SelectedText.Length);
+                            tb.CaretIndex = start;
+                        }
+                    }
+                    catch { }
+                };
+                menu.Items.Add(cut);
+                
+                var paste = new MenuItem { Header = "Paste", InputGesture = new KeyGesture(Key.V, KeyModifiers.Control) };
+                paste.Click += async (s, e) => 
+                {
+                    try
+                    {
+                        var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+                        var focused = TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement();
+                        if (clipboard != null && focused is TextBox tb)
+                        {
+                            var text = await clipboard.GetTextAsync();
+                            if (!string.IsNullOrEmpty(text))
+                            {
+                                var start = tb.SelectionStart;
+                                var newText = tb.Text ?? "";
+                                if (tb.SelectionEnd > tb.SelectionStart)
+                                {
+                                    newText = newText.Remove(start, tb.SelectionEnd - start);
+                                }
+                                tb.Text = newText.Insert(start, text);
+                                tb.CaretIndex = start + text.Length;
+                            }
+                        }
+                    }
+                    catch { }
+                };
+                menu.Items.Add(paste);
+                
+                var selectAll = new MenuItem { Header = "Select All", InputGesture = new KeyGesture(Key.A, KeyModifiers.Control) };
+                selectAll.Click += (s, e) => 
+                {
+                    try
+                    {
+                        var focused = TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement();
+                        if (focused is TextBox tb)
+                        {
+                            tb.SelectAll();
+                        }
+                    }
+                    catch { }
+                };
+                menu.Items.Add(selectAll);
+                
+                menu.Items.Add(new Separator());
+                
                 var refresh = new MenuItem { Header = "Refresh", InputGesture = new KeyGesture(Key.R, KeyModifiers.Control) };
                 refresh.Click += (s, e) => Refresh_Click(s, e);
                 menu.Items.Add(refresh);
@@ -598,19 +701,43 @@ namespace FenBrowser.UI
 
         private void OnSettingsClick(object sender, RoutedEventArgs e)
         {
-            var settingsPage = new SettingsPage();
-            settingsPage.CloseRequested += (s, args) =>
+            try
             {
-                // Restore browser content when settings is closed
-                // If you want last rendered content retained, adjust logic accordingly.
-                if (_browserContainer != null)
-                    SetBrowserContainerContent(new TextBlock { Text = "Ready" });
-            };
+                // Check if settings tab already exists
+                var existingSettingsTab = Tabs.FirstOrDefault(t => t.Title == "Settings");
+                if (existingSettingsTab != null)
+                {
+                    // Switch to existing settings tab
+                    foreach (var t in Tabs) t.IsActive = t.Id == existingSettingsTab.Id;
+                    if (existingSettingsTab.LastRenderedContent is Control c)
+                        SetBrowserContainerContent(c);
+                    if (AddressBox != null) AddressBox.Text = "fen://settings";
+                    return;
+                }
 
-            SetBrowserContainerContent(settingsPage);
+                // Create new settings tab
+                foreach (var t in Tabs) t.IsActive = false;
+                var settingsTab = new TabItemModel { Id = _nextTabId++, Title = "Settings", IsActive = true };
+                Tabs.Add(settingsTab);
+                
+                var settingsPage = new SettingsPage();
+                settingsPage.CloseRequested += (s, args) =>
+                {
+                    // Close the settings tab when close is requested
+                    OnCloseTab(settingsTab);
+                };
 
-            if (AddressBox != null)
-                AddressBox.Text = "fen://settings";
+                // Store settings page as the tab's content
+                settingsTab.LastRenderedContent = settingsPage;
+                SetBrowserContainerContent(settingsPage);
+
+                if (AddressBox != null)
+                    AddressBox.Text = "fen://settings";
+            }
+            catch (Exception ex)
+            {
+                System.IO.File.AppendAllText("crash_log_new.txt", $"[OnSettingsClick] Error: {ex}\r\n");
+            }
         }
 
         private void OnMenuClick(object sender, RoutedEventArgs e)
@@ -731,6 +858,30 @@ namespace FenBrowser.UI
                     }
                 }
             }
+        }
+
+        // Overload for programmatic tab closing (e.g., settings tab close button)
+        private void OnCloseTab(TabItemModel toRemove)
+        {
+            if (toRemove == null) return;
+            
+            var wasActive = toRemove.IsActive;
+            Tabs.Remove(toRemove);
+
+            if (wasActive && Tabs.Any())
+            {
+                var newActive = Tabs[0];
+                newActive.IsActive = true;
+                _activeBrowser = newActive.Browser;
+                if (newActive.LastRenderedContent is Control c)
+                    SetBrowserContainerContent(c);
+                else
+                    SetBrowserContainerContent(new TextBlock { Text = "Ready" });
+                UpdateAddressBar(_activeBrowser);
+            }
+            
+            // Dispose the closed browser if applicable
+            if (toRemove.Browser is IDisposable d) d.Dispose();
         }
 
         private void OnExtensionsOverflow(object sender, RoutedEventArgs e)
