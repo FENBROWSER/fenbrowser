@@ -12,6 +12,7 @@ using Avalonia.Media;
 using FenBrowser.Core;
 using FenBrowser.FenEngine.Scripting;
 using System.Globalization;
+using System.Linq;
 using System.Net;
 using System.Text.RegularExpressions;
 using Avalonia.Media.Imaging;
@@ -62,6 +63,7 @@ namespace FenBrowser.FenEngine.Rendering
             // Lists
             _tagHandlers["ul"] = (n, b, on, j, c) => MakeListAsync(n, false, b, on, j, c);
             _tagHandlers["ol"] = (n, b, on, j, c) => MakeListAsync(n, true, b, on, j, c);
+            _tagHandlers["dl"] = MakeDefinitionListAsync; // Definition lists as grid
 
             // Images & Media
             _tagHandlers["img"] = async (n, b, on, j, c) => await MakeImageAsync(n, b, c);
@@ -440,7 +442,8 @@ private async Task<Control> MakeGridFallbackAsync(LiteElement n, Uri baseUri, Ac
         Orientation = isGrid ? Orientation.Vertical : Orientation.Horizontal,
         ColumnGap = Math.Max(0, columnGap),
         RowGap = Math.Max(0, rowGap),
-        FlexWrap = isGrid ? "wrap" : "nowrap" // Default to wrap for grid to prevent explosion
+        FlexWrap = "wrap", // Default to wrap for all flex/grid to prevent horizontal overflow
+        ClipToBounds = true // Prevent children from rendering outside bounds
     };
     
     // Handle flex-direction
@@ -1070,7 +1073,28 @@ public async Task<Control> BuildAsync(LiteElement root, Uri baseUri, Action<Uri>
         }
     }
     var body = root.Descendants().FirstOrDefault(n => n.Tag == "body") ?? root;
-    var panel = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(8, 8, 8, 24) };
+    
+    // Get actual viewport width from main window
+    double viewportWidth = 1200; // Default fallback
+    try 
+    { 
+        if (Application.Current?.ApplicationLifetime is Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime desktop && desktop.MainWindow != null) 
+        {
+            viewportWidth = desktop.MainWindow.Bounds.Width - 50; // Leave some margin
+            if (viewportWidth < 400) viewportWidth = 400; // Minimum reasonable width
+        }
+    } 
+    catch { }
+    
+    // Content panel - use actual viewport width, not hardcoded
+    var panel = new StackPanel 
+    { 
+        Orientation = Orientation.Vertical, 
+        Margin = new Thickness(16, 16, 16, 24), 
+        HorizontalAlignment = HorizontalAlignment.Stretch, // Stretch to fill available space
+        MaxWidth = viewportWidth,
+        ClipToBounds = true 
+    };
     try { System.Diagnostics.Debug.WriteLine("[BuildAsync] start nodes=" + (body.Children != null ? body.Children.Count : 0)); } catch { }
     if (body.Children != null)
     {
@@ -1179,11 +1203,17 @@ public async Task<Control> BuildAsync(LiteElement root, Uri baseUri, Action<Uri>
         try { System.Diagnostics.Debug.WriteLine("[BuildAsync] done children=" + panel.Children.Count); } catch { }
         
         // Wrap in ScrollViewer for scrolling support
+        // Use a Grid wrapper to properly constrain content width
+        var contentWrapper = new Grid();
+        contentWrapper.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        Grid.SetColumn(grid, 0);
+        contentWrapper.Children.Add(grid);
+        
         var scroller = new ScrollViewer
         {
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            Content = grid
+            Content = contentWrapper
         };
         return scroller;
     }
@@ -1197,6 +1227,67 @@ public async Task<Control> BuildAsync(LiteElement root, Uri baseUri, Action<Uri>
         Content = rootVisual
     };
 }
+
+// Apply TextWrapping.Wrap to all TextBlocks recursively within a control
+private static void ApplyTextWrappingRecursively(Control control)
+{
+    if (control == null) return;
+    try
+    {
+        if (control is TextBlock tb)
+        {
+            tb.TextWrapping = TextWrapping.Wrap;
+            tb.HorizontalAlignment = HorizontalAlignment.Stretch;
+        }
+        else if (control is Panel panel)
+        {
+            foreach (var child in panel.Children)
+            {
+                if (child is Control c) ApplyTextWrappingRecursively(c);
+            }
+        }
+        else if (control is ContentControl cc && cc.Content is Control content)
+        {
+            ApplyTextWrappingRecursively(content);
+        }
+        else if (control is Decorator dec && dec.Child is Control decChild)
+        {
+            ApplyTextWrappingRecursively(decChild);
+        }
+    }
+    catch { }
+}
+
+// Set default text color for all TextBlocks within a panel (used for dark backgrounds)
+private static void SetDefaultTextColor(Panel panel, Color color)
+{
+    if (panel == null) return;
+    try
+    {
+        var brush = new SolidColorBrush(color);
+        foreach (var child in panel.Children)
+        {
+            if (child is TextBlock tb && tb.Foreground == null)
+            {
+                tb.Foreground = brush;
+            }
+            else if (child is Panel p)
+            {
+                SetDefaultTextColor(p, color);
+            }
+            else if (child is ContentControl cc && cc.Content is Panel cp)
+            {
+                SetDefaultTextColor(cp, color);
+            }
+            else if (child is Decorator dec && dec.Child is Panel dp)
+            {
+                SetDefaultTextColor(dp, color);
+            }
+        }
+    }
+    catch { }
+}
+
 private static void ApplyFlexChildAlignment(Control fe, bool isRow, string align)
 {
     try
@@ -1294,7 +1385,15 @@ private async Task<Control> RenderNodeAsync(LiteElement n, Uri baseUri, Action<U
     {
         var txt = CollapseWs(n.Text);
         if (string.IsNullOrWhiteSpace(txt)) return null;
-        return new TextBlock { Text = txt, TextWrapping = TextWrapping.Wrap, FontSize = 15, Foreground = new SolidColorBrush(Colors.Black) };
+        return new TextBlock 
+        { 
+            Text = txt, 
+            TextWrapping = TextWrapping.Wrap, 
+            FontSize = 15, 
+            LineHeight = 22, // Better line spacing for readability
+            Foreground = new SolidColorBrush(Colors.Black), 
+            HorizontalAlignment = HorizontalAlignment.Stretch 
+        };
     }
     if (_tagHandlers != null && _tagHandlers.ContainsKey(n.Tag))
     {
@@ -1339,14 +1438,22 @@ private async Task<Control> RenderGenericContainerAsync(LiteElement n, Uri baseU
         }
     }
 
-    // Special handling for nav element - default to horizontal wrap layout
+    // Special handling for nav element - default to horizontal layout like a navbar
     var tagLower = n.Tag?.ToLowerInvariant() ?? "";
     if (tagLower == "nav")
     {
-        // Nav should default to horizontal layout with flex-wrap
+        // Nav should default to horizontal layout like typical navigation bars
+        // Wrap in Border for background color support
+        var navContainer = new Border 
+        { 
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            ClipToBounds = true,
+            Padding = new Thickness(8, 4, 8, 4)
+        };
         var navPanel = new WrapPanel { Orientation = Orientation.Horizontal };
-        try { ApplyComputedStyles(navPanel, n); } catch { }
-        try { ApplyInlineStyles(navPanel, n); } catch { }
+        
+        try { ApplyComputedStyles(navContainer, n); } catch { }
+        try { ApplyInlineStyles(navContainer, n); } catch { }
 
         if (n.Children != null)
         {
@@ -1356,13 +1463,130 @@ private async Task<Control> RenderGenericContainerAsync(LiteElement n, Uri baseU
                 var elt = await RenderNodeAsync(child, baseUri, onNavigate, js, ct);
                 if (elt != null)
                 {
-                    // Add some spacing between nav items
-                    if (elt.Margin == default) elt.Margin = new Thickness(8, 0, 8, 0);
+                    // Add horizontal spacing between nav items
+                    if (elt.Margin == default) elt.Margin = new Thickness(0, 0, 12, 0);
                     navPanel.Children.Add(elt);
                 }
             }
         }
-        return ApplyBoxesAndText(navPanel, n);
+        navContainer.Child = navPanel;
+        return navContainer;
+    }
+    
+    // Special handling for header element - wrap in Border for background support
+    if (tagLower == "header")
+    {
+        var headerContainer = new Border 
+        { 
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            ClipToBounds = true,
+            Padding = new Thickness(16, 12, 16, 12)
+        };
+        var headerPanel = new StackPanel { Orientation = Orientation.Vertical };
+        
+        try { ApplyComputedStyles(headerContainer, n); } catch { }
+        try { ApplyInlineStyles(headerContainer, n); } catch { }
+
+        if (n.Children != null)
+        {
+            foreach (var child in n.Children)
+            {
+                ct.ThrowIfCancellationRequested();
+                var elt = await RenderNodeAsync(child, baseUri, onNavigate, js, ct);
+                if (elt != null) headerPanel.Children.Add(elt);
+            }
+        }
+        headerContainer.Child = headerPanel;
+        return headerContainer;
+    }
+    
+    // Special handling for footer element - wrap in Border for background support  
+    if (tagLower == "footer")
+    {
+        var footerContainer = new Border 
+        { 
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            ClipToBounds = true,
+            Padding = new Thickness(24, 24, 24, 24)
+        };
+        
+        // First apply CSS styles to get any background
+        try { ApplyComputedStyles(footerContainer, n); } catch { }
+        try { ApplyInlineStyles(footerContainer, n); } catch { }
+        
+        // If no background was set by CSS, use dark default
+        if (footerContainer.Background == null)
+        {
+            footerContainer.Background = new SolidColorBrush(Color.Parse("#333333"));
+        }
+        
+        // Check for div children that could be column containers
+        var divChildren = n.Children?.Where(c => 
+            c.Tag?.ToLowerInvariant() == "div" || 
+            c.Tag?.ToLowerInvariant() == "section" ||
+            c.Tag?.ToLowerInvariant() == "nav").ToList() ?? new List<LiteElement>();
+        
+        Control footerContent;
+        
+        // If we have 2-4 div children at the same level, treat them as columns
+        if (divChildren.Count >= 2 && divChildren.Count <= 6)
+        {
+            var grid = new Grid { HorizontalAlignment = HorizontalAlignment.Stretch };
+            for (int i = 0; i < divChildren.Count; i++)
+                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            
+            for (int i = 0; i < divChildren.Count; i++)
+            {
+                var elt = await RenderNodeAsync(divChildren[i], baseUri, onNavigate, js, ct);
+                if (elt != null)
+                {
+                    elt.Margin = new Thickness(0, 0, 16, 0);
+                    Grid.SetColumn(elt, i);
+                    grid.Children.Add(elt);
+                }
+            }
+            
+            // Also render any non-div children below
+            var otherChildren = n.Children?.Where(c => 
+                c.Tag?.ToLowerInvariant() != "div" && 
+                c.Tag?.ToLowerInvariant() != "section" &&
+                c.Tag?.ToLowerInvariant() != "nav").ToList();
+            
+            if (otherChildren != null && otherChildren.Count > 0)
+            {
+                var wrapper = new StackPanel { Orientation = Orientation.Vertical };
+                wrapper.Children.Add(grid);
+                foreach (var child in otherChildren)
+                {
+                    var elt = await RenderNodeAsync(child, baseUri, onNavigate, js, ct);
+                    if (elt != null) wrapper.Children.Add(elt);
+                }
+                footerContent = wrapper;
+            }
+            else
+            {
+                footerContent = grid;
+            }
+        }
+        else
+        {
+            // Render normally
+            var footerPanel = new WidthConstrainingStackPanel { Orientation = Orientation.Vertical };
+            if (n.Children != null)
+            {
+                foreach (var child in n.Children)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var elt = await RenderNodeAsync(child, baseUri, onNavigate, js, ct);
+                    if (elt != null) footerPanel.Children.Add(elt);
+                }
+            }
+            footerContent = footerPanel;
+        }
+        
+        footerContainer.Child = footerContent;
+        return footerContainer;
     }
 
     // Layout Logic:
@@ -1394,20 +1618,138 @@ private async Task<Control> RenderGenericContainerAsync(LiteElement n, Uri baseU
         // No children, doesn't matter
     }
 
+    // Detect key-value pattern: alternating emphasized elements followed by regular content
+    // Pattern: <th>Label</th><td>Value</td> or <strong>Label</strong>Text
+    if (n.Children != null && n.Children.Count >= 4)
+    {
+        var children = n.Children.ToList();
+        bool hasKeyValuePattern = true;
+        int keyCount = 0;
+        
+        // Check if we have alternating header-like elements (th, strong, b) followed by value elements (td, span, text)
+        for (int i = 0; i < children.Count && hasKeyValuePattern; i++)
+        {
+            var tag = children[i].Tag?.ToLowerInvariant() ?? "";
+            bool isText = children[i].IsText;
+            
+            if (i % 2 == 0) // Even indices should be keys (headers)
+            {
+                if (tag == "th" || tag == "strong" || tag == "b" || tag == "dt")
+                {
+                    keyCount++;
+                }
+                else if (!isText) // Allow skipping text nodes
+                {
+                    // Not a key pattern
+                }
+            }
+        }
+        
+        // If we found at least 3 key-value pairs, render as stacked blocks
+        if (keyCount >= 3)
+        {
+            var wrapPanel = new WrapPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Stretch };
+            
+            for (int i = 0; i < children.Count; i++)
+            {
+                var tag = children[i].Tag?.ToLowerInvariant() ?? "";
+                if (tag == "th" || tag == "strong" || tag == "b" || tag == "dt")
+                {
+                    var block = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(0, 0, 24, 12), MinWidth = 120 };
+                    
+                    // Label
+                    var labelText = GatherText(children[i]);
+                    var labelTb = new TextBlock 
+                    { 
+                        Text = labelText, 
+                        FontWeight = FontWeight.Bold, 
+                        FontSize = 12,
+                        Foreground = new SolidColorBrush(Color.Parse("#666666")),
+                        TextWrapping = TextWrapping.Wrap
+                    };
+                    block.Children.Add(labelTb);
+                    
+                    // Value - look at next child(ren) until we hit another key
+                    var valueBuilder = new System.Text.StringBuilder();
+                    int j = i + 1;
+                    while (j < children.Count)
+                    {
+                        var nextTag = children[j].Tag?.ToLowerInvariant() ?? "";
+                        if (nextTag == "th" || nextTag == "strong" || nextTag == "b" || nextTag == "dt")
+                            break;
+                        
+                        var txt = GatherText(children[j]);
+                        if (!string.IsNullOrWhiteSpace(txt))
+                        {
+                            if (valueBuilder.Length > 0) valueBuilder.Append(' ');
+                            valueBuilder.Append(txt.Trim());
+                        }
+                        j++;
+                    }
+                    
+                    if (valueBuilder.Length > 0)
+                    {
+                        var valueTb = new TextBlock 
+                        { 
+                            Text = valueBuilder.ToString(), 
+                            FontSize = 14,
+                            TextWrapping = TextWrapping.Wrap
+                        };
+                        block.Children.Add(valueTb);
+                    }
+                    
+                    wrapPanel.Children.Add(block);
+                }
+            }
+            
+            if (wrapPanel.Children.Count > 0)
+            {
+                try { ApplyComputedStyles(wrapPanel, n); } catch { }
+                try { ApplyInlineStyles(wrapPanel, n); } catch { }
+                return wrapPanel;
+            }
+        }
+    }
+
     Panel panel;
     if (hasFloat)
     {
-        panel = new DockPanel { LastChildFill = true };
+        panel = new DockPanel { LastChildFill = true, HorizontalAlignment = HorizontalAlignment.Stretch, ClipToBounds = true };
     }
     else if (allInline && n.Children != null && n.Children.Count > 0)
     {
-        // Inline Formatting Context -> Horizontal Wrap
-        panel = new WrapPanel { Orientation = Orientation.Horizontal };
+        // Inline Formatting Context -> Use TextBlock if only text children, otherwise vertical stack
+        // WrapPanel doesn't constrain child width properly, causing overflow
+        bool hasOnlyTextChildren = n.Children.All(c => c.IsText || 
+            (c.Tag?.ToLowerInvariant() == "br") ||
+            (c.Children != null && c.Children.Count == 0 && !string.IsNullOrWhiteSpace(c.Text)));
+        
+        if (hasOnlyTextChildren)
+        {
+            // For pure inline text content, use a single TextBlock with all text
+            var allText = string.Join(" ", n.Children.Where(c => c.IsText || !string.IsNullOrWhiteSpace(c.Text))
+                .Select(c => CollapseWs(c.Text ?? GatherText(c))));
+            if (!string.IsNullOrWhiteSpace(allText))
+            {
+                var tb = new TextBlock 
+                { 
+                    Text = allText, 
+                    TextWrapping = TextWrapping.Wrap,
+                    HorizontalAlignment = HorizontalAlignment.Stretch
+                };
+                try { ApplyComputedStyles(tb, n); } catch { }
+                try { ApplyInlineStyles(tb, n); } catch { }
+                return ApplyBoxesAndText(tb, n);
+            }
+        }
+        
+        // Mixed inline content - use width-constraining panel for proper text wrapping
+        panel = new WidthConstrainingStackPanel { Orientation = Orientation.Vertical, HorizontalAlignment = HorizontalAlignment.Stretch, ClipToBounds = true };
     }
     else
     {
-        // Block Formatting Context -> Vertical Stack
-        panel = new StackPanel { Orientation = Orientation.Vertical };
+        // Block Formatting Context -> Use width-constraining panel for proper text wrapping
+        panel = new WidthConstrainingStackPanel { Orientation = Orientation.Vertical, HorizontalAlignment = HorizontalAlignment.Stretch, ClipToBounds = true };
     }
 
     try { ApplyComputedStyles(panel, n); } catch { }
@@ -1456,7 +1798,14 @@ private async Task<Control> RenderGenericContainerAsync(LiteElement n, Uri baseU
 }
 private async Task<Control> MakeButtonAsync(LiteElement n, Uri baseUri, Action<Uri> onNavigate, JavaScriptEngine js, CancellationToken ct)
 {
-    var btn = new Button();
+    var btn = new Button
+    {
+        Padding = new Thickness(12, 8, 12, 8),
+        Background = new SolidColorBrush(Color.Parse("#4A90A4")),
+        Foreground = Brushes.White,
+        BorderThickness = new Thickness(0),
+        CornerRadius = new CornerRadius(4)
+    };
     var panel = new StackPanel { Orientation = Orientation.Horizontal };
     if (n.Children != null)
     {
@@ -1494,7 +1843,17 @@ private async Task<Control> MakeInputAsync(LiteElement n, Uri baseUri, Action<Ur
 
     if (type == "submit" || type == "reset" || type == "button")
     {
-        var btn = new Button { Content = n.Attr != null && n.Attr.TryGetValue("value", out var val) ? val : type };
+        var btnText = n.Attr != null && n.Attr.TryGetValue("value", out var val) ? val : (type == "submit" ? "Submit" : type);
+        var btn = new Button 
+        { 
+            Content = btnText,
+            Padding = new Thickness(16, 8, 16, 8),
+            Background = new SolidColorBrush(Color.Parse("#4A90A4")),
+            Foreground = Brushes.White,
+            BorderThickness = new Thickness(0),
+            CornerRadius = new CornerRadius(4),
+            Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand)
+        };
         try { ApplyComputedStyles(btn, n); } catch { }
         return btn;
     }
@@ -1516,10 +1875,19 @@ private async Task<Control> MakeInputAsync(LiteElement n, Uri baseUri, Action<Ur
     else
     {
         // text, password, email, etc.
-        var tb = new TextBox();
+        var tb = new TextBox
+        {
+            MinWidth = 180,
+            Padding = new Thickness(8, 6, 8, 6),
+            BorderBrush = new SolidColorBrush(Color.Parse("#CCCCCC")),
+            BorderThickness = new Thickness(1),
+            Background = Brushes.White
+        };
         if (type == "password") tb.PasswordChar = '•';
         if (n.Attr != null && n.Attr.TryGetValue("value", out var val)) tb.Text = val;
         if (n.Attr != null && n.Attr.TryGetValue("placeholder", out var ph)) tb.Watermark = ph;
+        if (n.Attr != null && n.Attr.TryGetValue("size", out var sz) && int.TryParse(sz, out var size))
+            tb.MinWidth = size * 8; // Approximate character width
         try { ApplyComputedStyles(tb, n); } catch { }
         return tb;
     }
@@ -1532,7 +1900,7 @@ private async Task<Control> RenderTableAsync(LiteElement n, Uri baseUri, Action<
     var rows = n.Descendants().Where(x => x.Tag == "tr").ToList();
     if (rows.Count == 0) return await RenderGenericContainerAsync(n, baseUri, onNavigate, js, ct);
 
-    var grid = new Grid();
+    var grid = new Grid { ClipToBounds = false };
     // Add row definitions
     for (int i = 0; i < rows.Count; i++) grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
@@ -1543,7 +1911,142 @@ private async Task<Control> RenderTableAsync(LiteElement n, Uri baseUri, Action<
         int cols = row.Children?.Count(c => c.Tag == "td" || c.Tag == "th") ?? 0;
         if (cols > maxCols) maxCols = cols;
     }
-    for (int i = 0; i < maxCols; i++) grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+    
+    // For tables with many columns, render as a responsive stacked layout instead
+    // Also handle single-row tables with 4+ columns which are likely key-value pairs
+    // Lower threshold to catch more horizontal data tables
+    // Also catch tables with alternating th/td patterns in any row
+    bool hasAlternatingPattern = false;
+    if (rows.Count >= 1 && rows[0].Children != null)
+    {
+        var firstRowCells = rows[0].Children.Where(c => c.Tag == "th" || c.Tag == "td").ToList();
+        // Check if there's an alternating th-td pattern (even indices are th, odd are td)
+        if (firstRowCells.Count >= 4)
+        {
+            hasAlternatingPattern = firstRowCells.Where((c, i) => i % 2 == 0).All(c => c.Tag == "th") &&
+                                    firstRowCells.Where((c, i) => i % 2 == 1).All(c => c.Tag == "td");
+        }
+    }
+    
+    if ((maxCols > 3 && rows.Count <= 2) || (maxCols >= 4 && rows.Count == 1) || hasAlternatingPattern)
+    {
+        // This looks like a horizontal data table
+        var wrapPanel = new WrapPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Stretch };
+        
+        // Case 1: Two rows - first row TH (headers), second row TD (values)
+        if (rows.Count == 2)
+        {
+            var headerRow = rows[0];
+            var valueRow = rows[1];
+            var headerCells = headerRow.Children?.Where(c => c.Tag == "th" || c.Tag == "td").ToList() ?? new List<LiteElement>();
+            var valueCells = valueRow.Children?.Where(c => c.Tag == "th" || c.Tag == "td").ToList() ?? new List<LiteElement>();
+            
+            int count = Math.Min(headerCells.Count, valueCells.Count);
+            for (int i = 0; i < count; i++)
+            {
+                var block = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(0, 0, 20, 8), MinWidth = 100 };
+                
+                // Header (label)
+                var headerText = GatherText(headerCells[i]);
+                var labelTb = new TextBlock 
+                { 
+                    Text = headerText, 
+                    FontWeight = FontWeight.Bold, 
+                    FontSize = 12,
+                    Foreground = new SolidColorBrush(Color.Parse("#555555")),
+                    TextWrapping = TextWrapping.Wrap
+                };
+                block.Children.Add(labelTb);
+                
+                // Value
+                var valueText = GatherText(valueCells[i]);
+                var valueTb = new TextBlock 
+                { 
+                    Text = valueText, 
+                    FontSize = 14,
+                    TextWrapping = TextWrapping.Wrap
+                };
+                block.Children.Add(valueTb);
+                
+                wrapPanel.Children.Add(block);
+            }
+        }
+        // Case 2: Single row with alternating TH/TD (th-td-th-td pattern)
+        else if (rows.Count == 1 && rows[0].Children != null)
+        {
+            var cells = rows[0].Children.Where(c => c.Tag == "th" || c.Tag == "td").ToList();
+            
+            // Check if cells alternate between th and td (label-value pairs)
+            bool isAlternating = cells.Count >= 2 && 
+                cells.Where((c, i) => i % 2 == 0).All(c => c.Tag == "th") &&
+                cells.Where((c, i) => i % 2 == 1).All(c => c.Tag == "td");
+            
+            if (isAlternating)
+            {
+                // Render as label-value pairs with vertical layout
+                for (int i = 0; i < cells.Count - 1; i += 2)
+                {
+                    var block = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(0, 0, 20, 8), MinWidth = 100 };
+                    
+                    // Header (label) - th
+                    var headerText = GatherText(cells[i]);
+                    var labelTb = new TextBlock 
+                    { 
+                        Text = headerText, 
+                        FontWeight = FontWeight.Bold, 
+                        FontSize = 12,
+                        Foreground = new SolidColorBrush(Color.Parse("#555555")),
+                        TextWrapping = TextWrapping.Wrap
+                    };
+                    block.Children.Add(labelTb);
+                    
+                    // Value - td
+                    var valueText = GatherText(cells[i + 1]);
+                    var valueTb = new TextBlock 
+                    { 
+                        Text = valueText, 
+                        FontSize = 14,
+                        TextWrapping = TextWrapping.Wrap
+                    };
+                    block.Children.Add(valueTb);
+                    
+                    wrapPanel.Children.Add(block);
+                }
+            }
+            else
+            {
+                // Just render cells with spacing - each cell in its own block
+                foreach (var cell in cells)
+                {
+                    var isHeader = cell.Tag == "th";
+                    var cellText = GatherText(cell);
+                    var block = new Border
+                    {
+                        Margin = new Thickness(0, 0, 20, 8),
+                        Padding = new Thickness(8, 4, 8, 4),
+                        Background = isHeader ? new SolidColorBrush(Color.Parse("#F5F5F5")) : Brushes.Transparent,
+                        Child = new TextBlock 
+                        { 
+                            Text = cellText, 
+                            FontWeight = isHeader ? FontWeight.Bold : FontWeight.Normal,
+                            TextWrapping = TextWrapping.Wrap
+                        }
+                    };
+                    wrapPanel.Children.Add(block);
+                }
+            }
+        }
+        
+        try { ApplyComputedStyles(wrapPanel, n); } catch { }
+        return wrapPanel;
+    }
+    
+    // Standard table rendering with Star columns
+    for (int i = 0; i < maxCols; i++) 
+    {
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+    }
+    grid.HorizontalAlignment = HorizontalAlignment.Stretch;
 
     int rowIndex = 0;
     foreach (var row in rows)
@@ -1559,7 +2062,26 @@ private async Task<Control> RenderTableAsync(LiteElement n, Uri baseUri, Action<
                 var cellControl = await RenderGenericContainerAsync(cell, baseUri, onNavigate, js, ct);
                 if (cellControl != null)
                 {
-                    var border = new Border { Child = cellControl, BorderBrush = Brushes.Gray, BorderThickness = new Thickness(0.5) };
+                    // Add padding and styling for table cells
+                    var isHeader = cell.Tag == "th";
+                    // Ensure text wrapping in cell content
+                    if (cellControl is TextBlock tb) tb.TextWrapping = TextWrapping.Wrap;
+                    // Force all TextBlocks in the cell to wrap by recursively applying TextWrapping
+                    ApplyTextWrappingRecursively(cellControl);
+                    
+                    // Use DockPanel wrapper to properly constrain content width within cell
+                    var cellWrapper = new DockPanel { LastChildFill = true, HorizontalAlignment = HorizontalAlignment.Stretch };
+                    cellWrapper.Children.Add(cellControl);
+                    
+                    var border = new Border 
+                    { 
+                        Child = cellWrapper, 
+                        BorderBrush = new SolidColorBrush(Color.Parse("#E0E0E0")), 
+                        BorderThickness = new Thickness(0.5),
+                        Padding = new Thickness(8, 6, 8, 6),
+                        Background = isHeader ? new SolidColorBrush(Color.Parse("#F5F5F5")) : Brushes.White,
+                        HorizontalAlignment = HorizontalAlignment.Stretch
+                    };
                     Grid.SetRow(border, rowIndex);
                     Grid.SetColumn(border, colIndex);
                     
@@ -1580,8 +2102,14 @@ private async Task<Control> RenderTableAsync(LiteElement n, Uri baseUri, Action<
         rowIndex++;
     }
     
+    // Ensure table stretches to fill available width
+    grid.HorizontalAlignment = HorizontalAlignment.Stretch;
     try { ApplyComputedStyles(grid, n); } catch { }
-    return grid;
+    
+    // Wrap table in a DockPanel to ensure width constraints propagate properly
+    var tableWrapper = new DockPanel { LastChildFill = true, HorizontalAlignment = HorizontalAlignment.Stretch };
+    tableWrapper.Children.Add(grid);
+    return tableWrapper;
 }
 
 private async Task<Control> MakeMediaAsync(LiteElement n, Uri baseUri, Action<Uri> onNavigate, JavaScriptEngine js, CancellationToken ct)
@@ -1917,6 +2445,82 @@ private async Task<Control> MakeListAsync(LiteElement n, bool ordered, Uri baseU
         return Finish(stack, n);
     }
 }
+
+private async Task<Control> MakeDefinitionListAsync(LiteElement n, Uri baseUri, Action<Uri> onNavigate, JavaScriptEngine js, CancellationToken ct)
+{
+    // Render definition list as a 2-column grid (term | description)
+    var grid = new Grid { Margin = new Thickness(0, 8, 0, 8), HorizontalAlignment = HorizontalAlignment.Stretch };
+    grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Auto), MinWidth = 100 });
+    grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(3, GridUnitType.Star) });
+    
+    int row = 0;
+    LiteElement currentDt = null;
+    
+    if (n.Children != null)
+    {
+        foreach (var child in n.Children)
+        {
+            ct.ThrowIfCancellationRequested();
+            
+            if (child.Tag == "dt")
+            {
+                // Definition term
+                currentDt = child;
+                grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                
+                var termControl = await RenderNodeAsync(child, baseUri, onNavigate, js, ct);
+                if (termControl != null)
+                {
+                    if (termControl is TextBlock tb) 
+                    {
+                        tb.FontWeight = FontWeight.SemiBold;
+                        tb.TextWrapping = TextWrapping.Wrap;
+                    }
+                    var termBorder = new Border 
+                    { 
+                        Child = termControl, 
+                        Padding = new Thickness(0, 6, 16, 6),
+                        VerticalAlignment = VerticalAlignment.Top
+                    };
+                    Grid.SetRow(termBorder, row);
+                    Grid.SetColumn(termBorder, 0);
+                    grid.Children.Add(termBorder);
+                }
+            }
+            else if (child.Tag == "dd")
+            {
+                // Definition description - goes in column 1
+                var descControl = await RenderNodeAsync(child, baseUri, onNavigate, js, ct);
+                if (descControl != null)
+                {
+                    if (descControl is TextBlock tb) tb.TextWrapping = TextWrapping.Wrap;
+                    var descBorder = new Border 
+                    { 
+                        Child = descControl, 
+                        Padding = new Thickness(0, 6, 0, 6),
+                        VerticalAlignment = VerticalAlignment.Top
+                    };
+                    
+                    // If there was no dt before this dd, add a row
+                    if (currentDt == null && grid.RowDefinitions.Count <= row)
+                    {
+                        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                    }
+                    
+                    Grid.SetRow(descBorder, row);
+                    Grid.SetColumn(descBorder, 1);
+                    grid.Children.Add(descBorder);
+                }
+                row++;
+                currentDt = null;
+            }
+        }
+    }
+    
+    try { ApplyComputedStyles(grid, n); } catch { }
+    return grid;
+}
+
 private Control MakeInput(LiteElement n)
 {
     var type = (DictGet(n.Attr, "type") ?? "text").ToLowerInvariant();
@@ -1989,21 +2593,38 @@ private async Task<Control> MakeLink(LiteElement n, Uri baseUri, Action<Uri> onN
     var href = DictGet(n.Attr, "href");
     Uri abs = ResolveUri(baseUri, href);
     
-    // Recursive rendering for link content
-    var contentPanel = new StackPanel { Orientation = Orientation.Horizontal, IsHitTestVisible = false };
-    if (n.Children != null)
+    // Check if link has only text content - use simple TextBlock for better wrapping
+    bool hasOnlyText = n.Children == null || n.Children.Count == 0 || 
+        n.Children.All(c => c.IsText || string.IsNullOrWhiteSpace(c.Tag));
+    
+    Control linkContent;
+    if (hasOnlyText)
     {
-        foreach (var child in n.Children)
-        {
-            var elt = await RenderNodeAsync(child, baseUri, onNavigate, js, ct);
-            if (elt != null) contentPanel.Children.Add(elt);
-        }
+        // Simple text link - use TextBlock directly for proper wrapping
+        text = CollapseWs(GatherText(n));
+        if (string.IsNullOrWhiteSpace(text))
+            text = !string.IsNullOrEmpty(href) ? href : "(link)";
+        linkContent = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap };
     }
-    // Fallback if empty
-    if (contentPanel.Children.Count == 0)
+    else
     {
-        text = !string.IsNullOrWhiteSpace(n.Text) ? n.Text : (!string.IsNullOrEmpty(href) ? href : "(link)");
-        contentPanel.Children.Add(new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap });
+        // Complex link content - render children in a StackPanel
+        var contentPanel = new StackPanel { Orientation = Orientation.Vertical, IsHitTestVisible = false };
+        if (n.Children != null)
+        {
+            foreach (var child in n.Children)
+            {
+                var elt = await RenderNodeAsync(child, baseUri, onNavigate, js, ct);
+                if (elt != null) contentPanel.Children.Add(elt);
+            }
+        }
+        // Fallback if empty
+        if (contentPanel.Children.Count == 0)
+        {
+            text = !string.IsNullOrWhiteSpace(n.Text) ? n.Text : (!string.IsNullOrEmpty(href) ? href : "(link)");
+            contentPanel.Children.Add(new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap });
+        }
+        linkContent = contentPanel;
     }
 
     if (abs == null && !string.IsNullOrWhiteSpace(href))
@@ -2013,12 +2634,12 @@ private async Task<Control> MakeLink(LiteElement n, Uri baseUri, Action<Uri> onN
 
     var hb = new Button
     {
-        Content = contentPanel,
+        Content = linkContent,
         Foreground = LinkBrush,
         Background = Brushes.Transparent, // Fix: Make it look like a link, not a button
         BorderThickness = new Thickness(0), // Fix: Remove button border
         HorizontalAlignment = HorizontalAlignment.Left,
-        Margin = new Thickness(0, 0, 0, 0),
+        Margin = new Thickness(0, 2, 8, 2), // Add small margin between adjacent links
         Padding = new Thickness(0)
     };
     try { Avalonia.Automation.AutomationProperties.SetName(hb, text); } catch { }
@@ -3087,8 +3708,17 @@ private void ApplyComputedLayout(Control fe, CssComputed css)
 private Control Finish(Control content, LiteElement n)
 {
     var css = TryGetCss(n);
-    // Fallback: if we have a background color but the element didn't support it (e.g. TextBlock), wrap it
-    // This runs if WrapWithBoxes didn't wrap it (e.g. css was null or background was missing in css but present in inline style)
+    
+    // Wrap with Border if there's a computed background color and content doesn't already support it
+    if (css != null && css.Background != null && !(content is Border) && !(content is Panel))
+    {
+        var b = new Border { Child = content, Background = css.Background };
+        b.Margin = content.Margin;
+        content.Margin = new Thickness(0);
+        content = b;
+    }
+    
+    // Also check inline style for background
     if (n.Attr != null && n.Attr.ContainsKey("style"))
     {
         var kv = ParseInlineStyle(n.Attr["style"]);
@@ -3887,13 +4517,248 @@ private static Control ApplyInlineOverflow(Control content, LiteElement n)
 }
 private static bool TryPx(string s, out double px)
 {
+    return TryPx(s, out px, 0);
+}
+
+/// <summary>
+/// Parse CSS length value, including calc() expressions.
+/// </summary>
+/// <param name="s">CSS value string</param>
+/// <param name="px">Output pixel value</param>
+/// <param name="containerSize">Container size for percentage calculations (default 0)</param>
+/// <returns>True if successfully parsed</returns>
+private static bool TryPx(string s, out double px, double containerSize)
+{
     px = 0;
     if (string.IsNullOrWhiteSpace(s)) return false;
-    s = s.Trim().ToLowerInvariant();
-    if (s.EndsWith("px")) s = s.Substring(0, s.Length - 2);
-    double v;
-    if (double.TryParse(s, out v)) { px = v; return true; }
+    s = s.Trim();
+    var lower = s.ToLowerInvariant();
+    
+    // Handle calc() expressions
+    if (lower.StartsWith("calc(") && lower.EndsWith(")"))
+    {
+        var calcResult = EvaluateCalc(s.Substring(5, s.Length - 6), containerSize);
+        if (calcResult.HasValue)
+        {
+            px = calcResult.Value;
+            return true;
+        }
+        return false;
+    }
+    
+    // Handle various CSS units
+    if (lower.EndsWith("px"))
+    {
+        double v;
+        if (double.TryParse(lower.Substring(0, lower.Length - 2), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v))
+        {
+            px = v;
+            return true;
+        }
+    }
+    else if (lower.EndsWith("em"))
+    {
+        double v;
+        if (double.TryParse(lower.Substring(0, lower.Length - 2), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v))
+        {
+            px = v * 16; // 1em = 16px (default)
+            return true;
+        }
+    }
+    else if (lower.EndsWith("rem"))
+    {
+        double v;
+        if (double.TryParse(lower.Substring(0, lower.Length - 3), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v))
+        {
+            px = v * 16; // 1rem = 16px (default)
+            return true;
+        }
+    }
+    else if (lower.EndsWith("%") && containerSize > 0)
+    {
+        double v;
+        if (double.TryParse(lower.Substring(0, lower.Length - 1), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v))
+        {
+            px = (v / 100.0) * containerSize;
+            return true;
+        }
+    }
+    else if (lower.EndsWith("vw"))
+    {
+        double v;
+        if (double.TryParse(lower.Substring(0, lower.Length - 2), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v))
+        {
+            px = (v / 100.0) * 1920; // Default viewport width
+            return true;
+        }
+    }
+    else if (lower.EndsWith("vh"))
+    {
+        double v;
+        if (double.TryParse(lower.Substring(0, lower.Length - 2), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v))
+        {
+            px = (v / 100.0) * 1080; // Default viewport height
+            return true;
+        }
+    }
+    else
+    {
+        // Plain number (no unit = pixels)
+        double v;
+        if (double.TryParse(lower, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v))
+        {
+            px = v;
+            return true;
+        }
+    }
     return false;
+}
+
+/// <summary>
+/// Evaluate CSS calc() expression (e.g., "100% - 50px", "50% + 100px - 20px")
+/// </summary>
+private static double? EvaluateCalc(string expression, double containerSize)
+{
+    if (string.IsNullOrWhiteSpace(expression)) return null;
+    
+    try
+    {
+        // Normalize: ensure spaces around + and - operators (except inside numbers like "-50px")
+        // Split by operators while preserving them
+        var tokens = new List<string>();
+        var sb = new System.Text.StringBuilder();
+        bool inNumber = false;
+        
+        for (int i = 0; i < expression.Length; i++)
+        {
+            char c = expression[i];
+            
+            if (c == '+')
+            {
+                if (sb.Length > 0)
+                {
+                    tokens.Add(sb.ToString().Trim());
+                    sb.Clear();
+                }
+                tokens.Add("+");
+            }
+            else if (c == '-')
+            {
+                // Check if this is a minus sign or negative number
+                string prev = sb.ToString().Trim();
+                if (prev.Length > 0 && !prev.EndsWith("(") && prev != "+" && prev != "-" && prev != "*" && prev != "/")
+                {
+                    tokens.Add(prev);
+                    sb.Clear();
+                    tokens.Add("-");
+                }
+                else
+                {
+                    // Negative number, keep it
+                    sb.Append(c);
+                }
+            }
+            else if (c == '*' || c == '/')
+            {
+                if (sb.Length > 0)
+                {
+                    tokens.Add(sb.ToString().Trim());
+                    sb.Clear();
+                }
+                tokens.Add(c.ToString());
+            }
+            else if (!char.IsWhiteSpace(c))
+            {
+                sb.Append(c);
+            }
+        }
+        if (sb.Length > 0)
+            tokens.Add(sb.ToString().Trim());
+        
+        // Evaluate: process tokens with +/- operators
+        double result = 0;
+        char currentOp = '+';
+        
+        foreach (var token in tokens)
+        {
+            if (token == "+") { currentOp = '+'; continue; }
+            if (token == "-") { currentOp = '-'; continue; }
+            if (token == "*") { currentOp = '*'; continue; }
+            if (token == "/") { currentOp = '/'; continue; }
+            
+            double value = ParseCalcValue(token, containerSize);
+            
+            switch (currentOp)
+            {
+                case '+': result += value; break;
+                case '-': result -= value; break;
+                case '*': result *= value; break;
+                case '/': result = value != 0 ? result / value : result; break;
+            }
+        }
+        
+        return result;
+    }
+    catch
+    {
+        return null;
+    }
+}
+
+/// <summary>
+/// Parse a single value within calc() (e.g., "100%", "50px", "2em")
+/// </summary>
+private static double ParseCalcValue(string value, double containerSize)
+{
+    if (string.IsNullOrWhiteSpace(value)) return 0;
+    
+    value = value.Trim().ToLowerInvariant();
+    
+    if (value.EndsWith("%"))
+    {
+        double v;
+        if (double.TryParse(value.Substring(0, value.Length - 1), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v))
+            return (v / 100.0) * (containerSize > 0 ? containerSize : 1920); // Default to viewport width if no container
+    }
+    else if (value.EndsWith("px"))
+    {
+        double v;
+        if (double.TryParse(value.Substring(0, value.Length - 2), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v))
+            return v;
+    }
+    else if (value.EndsWith("em"))
+    {
+        double v;
+        if (double.TryParse(value.Substring(0, value.Length - 2), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v))
+            return v * 16;
+    }
+    else if (value.EndsWith("rem"))
+    {
+        double v;
+        if (double.TryParse(value.Substring(0, value.Length - 3), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v))
+            return v * 16;
+    }
+    else if (value.EndsWith("vw"))
+    {
+        double v;
+        if (double.TryParse(value.Substring(0, value.Length - 2), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v))
+            return (v / 100.0) * 1920;
+    }
+    else if (value.EndsWith("vh"))
+    {
+        double v;
+        if (double.TryParse(value.Substring(0, value.Length - 2), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v))
+            return (v / 100.0) * 1080;
+    }
+    else
+    {
+        // Plain number
+        double v;
+        if (double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v))
+            return v;
+    }
+    
+    return 0;
 }
 private static bool TryThickness(string s, out Thickness th)
 {
@@ -4910,7 +5775,25 @@ private TextBlock RenderPlainTextBlock(string text)
             var sb = new System.Text.StringBuilder();
             if (node.Children != null)
             {
-                foreach (var child in node.Children) sb.Append(GatherText(child));
+                foreach (var child in node.Children)
+                {
+                    var childText = GatherText(child);
+                    if (!string.IsNullOrEmpty(childText))
+                    {
+                        // Add space before if we already have content and child is block-level
+                        if (sb.Length > 0 && !child.IsText)
+                        {
+                            var tag = child.Tag?.ToLowerInvariant() ?? "";
+                            if (tag == "br" || tag == "p" || tag == "div" || tag == "span" || 
+                                tag == "strong" || tag == "em" || tag == "b" || tag == "i")
+                            {
+                                if (sb.Length > 0 && sb[sb.Length - 1] != ' ')
+                                    sb.Append(' ');
+                            }
+                        }
+                        sb.Append(childText);
+                    }
+                }
             }
             return sb.ToString();
         }
