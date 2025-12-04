@@ -11,7 +11,7 @@ namespace FenBrowser.FenEngine.Rendering
         public bool IsTextSelectionEnabled { get; set; }
         public int MaxLines { get; set; }
         public System.Collections.Generic.List<Control> Blocks { get; } = new System.Collections.Generic.List<Control>();
-        public TextBlock CreateParagraph() { var p = new TextBlock(); Blocks.Add(p); return p; }
+        public TextBlock CreateParagraph() { var p = new TextBlock { TextWrapping = TextWrapping.Wrap }; Blocks.Add(p); return p; }
     }
 
     public class HyperlinkButton : Button
