@@ -89,8 +89,11 @@ namespace FenBrowser.FenEngine.Rendering
 
             // Non-visual tags - suppress rendering
             Func<LiteElement, Uri, Action<Uri>, JavaScriptEngine, CancellationToken, Task<Control>> nullHandler = (n, b, on, j, c) => Task.FromResult<Control>(null);
-            string[] hiddenTags = new[] { "head", "meta", "link", "style", "script", "title", "noscript", "template", "base", "slot", "area", "map", "param", "track", "source", "col", "colgroup" };
+            string[] hiddenTags = new[] { "head", "meta", "link", "style", "script", "title", "template", "base", "slot", "area", "map", "param", "track", "source", "col", "colgroup" };
             foreach (var t in hiddenTags) _tagHandlers[t] = nullHandler;
+            
+            // noscript - render its content when JavaScript may not fully execute
+            _tagHandlers["noscript"] = inlineHandler;
         }
         private static readonly HashSet<string> FlexDisplayKeywords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
