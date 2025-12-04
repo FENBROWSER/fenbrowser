@@ -17,6 +17,8 @@ using System.Globalization;
 using Math = System.Math;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Security;
+using Avalonia;
+using Avalonia.VisualTree;
 
 namespace FenBrowser.FenEngine.Scripting
 {
@@ -247,44 +249,48 @@ namespace FenBrowser.FenEngine.Scripting
         private string _docTitle = string.Empty;
         
         // --- DOM visual registry for approximate layout metrics ---
-        /*
-        public static void RegisterDomVisual(LiteElement node, Windows.UI.Xaml.FrameworkElement fe)
+        
+        public static void RegisterDomVisual(LiteElement node, Avalonia.Controls.Control fe)
         {
             try { if (node == null || fe == null) return; lock (_visualMap) _visualMap[node] = new System.WeakReference(fe); }
             catch { }
         }
 
-        private static bool TryGetVisualRect(LiteElement node, out double x, out double y, out double w, out double h)
+        public static bool TryGetVisualRect(LiteElement node, out double x, out double y, out double w, out double h)
         {
             x = y = 0; w = h = 0;
             try
             {
-                System.WeakReference wr; Windows.UI.Xaml.FrameworkElement fe = null;
+                System.WeakReference wr; Avalonia.Controls.Control fe = null;
                 lock (_visualMap)
                 {
                     if (!_visualMap.TryGetValue(node, out wr)) return false;
-                    fe = wr != null ? wr.Target as Windows.UI.Xaml.FrameworkElement : null;
+                    fe = wr != null ? wr.Target as Avalonia.Controls.Control : null;
                 }
                 if (fe == null) return false;
-                w = fe.ActualWidth; h = fe.ActualHeight;
-                Windows.UI.Xaml.UIElement root = null;
-                try { var wrs = _visualRoot; if (wrs != null) root = wrs.Target as Windows.UI.Xaml.UIElement; } catch { }
+                w = fe.Bounds.Width; h = fe.Bounds.Height;
+                Avalonia.Visual root = null;
+                try { var wrs = _visualRoot; if (wrs != null) root = wrs.Target as Avalonia.Visual; } catch { }
                 if (root == null)
-                    root = Windows.UI.Xaml.Window.Current != null ? Windows.UI.Xaml.Window.Current.Content as Windows.UI.Xaml.UIElement : null;
-                if (root != null)
+                    root = (Avalonia.Application.Current?.ApplicationLifetime as Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime)?.MainWindow;
+                
+                if (root != null && fe.IsVisible)
                 {
-                    var p = fe.TransformToVisual(root).TransformPoint(new Windows.Foundation.Point(0, 0));
-                    x = p.X; y = p.Y; return true;
+                    var p = fe.TranslatePoint(new Avalonia.Point(0, 0), root);
+                    if (p.HasValue)
+                    {
+                        x = p.Value.X; y = p.Value.Y; return true;
+                    }
                 }
             }
             catch { }
             return false;
         }
-        public static void RegisterVisualRoot(Windows.UI.Xaml.UIElement root)
+        public static void RegisterVisualRoot(Avalonia.Visual root)
         {
             try { _visualRoot = (root != null ? new System.WeakReference(root) : null); } catch { }
         }
-        */
+        
         // ---- Phase 1/2/3 state ----
         private readonly Dictionary<string, List<string>> _evtDoc = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, List<string>> _evtWin = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
