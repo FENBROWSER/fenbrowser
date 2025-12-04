@@ -151,7 +151,7 @@ namespace FenBrowser.FenEngine.Rendering
                 });
                 extTasks.Add(t);
             }
-            if (extTasks.Count > 0) { try { await Task.WhenAll(extTasks).ConfigureAwait(false); } catch { /* Ignore fetch errors */ } }
+            if (extTasks.Count > 0) { try { await Task.WhenAll(extTasks); } catch { /* Ignore fetch errors */ } }
 
             // 3) Expand @import (depth-bounded)
             var expanded = await ExpandImportsAsync(cssBlobs, fetchExternalCssAsync, viewportWidth, log, gate);
@@ -177,7 +177,7 @@ namespace FenBrowser.FenEngine.Rendering
                     finally { try { parseGate.Release(); } catch { /* Ignore release errors */ } }
                 }));
             }
-            if (parseTasks.Count > 0) { try { await Task.WhenAll(parseTasks).ConfigureAwait(false); } catch { /* Ignore parse errors */ } }
+            if (parseTasks.Count > 0) { try { await Task.WhenAll(parseTasks); } catch { /* Ignore parse errors */ } }
 
             // 4.5) Resolve CSS variables
             ResolveVariables(allRules);
@@ -240,7 +240,7 @@ namespace FenBrowser.FenEngine.Rendering
             public int Specificity; // computed from segments
         }
 
-        private enum Combinator { Descendant, Child }
+        private enum Combinator { Descendant, Child, AdjacentSibling, GeneralSibling }
 
         private sealed class SelectorSegment
         {
@@ -558,6 +558,18 @@ namespace FenBrowser.FenEngine.Rendering
                     chain.Segments.Add(seg);
                     seg = new SelectorSegment { Classes = new List<string>() };
                 }
+                else if (t == "+")
+                {
+                    seg.Next = Combinator.AdjacentSibling;
+                    chain.Segments.Add(seg);
+                    seg = new SelectorSegment { Classes = new List<string>() };
+                }
+                else if (t == "~")
+                {
+                    seg.Next = Combinator.GeneralSibling;
+                    chain.Segments.Add(seg);
+                    seg = new SelectorSegment { Classes = new List<string>() };
+                }
                 else if (t.StartsWith("."))
                 {
                     seg.Classes.Add(t.Substring(1));
@@ -627,9 +639,9 @@ namespace FenBrowser.FenEngine.Rendering
                     // coalesce spaces
                     if (r.Count == 0 || r[r.Count - 1] != " ") r.Add(" ");
                 }
-                else if (c == '>')
+                else if (c == '>' || c == '+' || c == '~')
                 {
-                    flush(); r.Add(">");
+                    flush(); r.Add(c.ToString());
                 }
                 else if (c == '.' || c == '#' || c == ':' || c == '[')
                 {
@@ -879,8 +891,23 @@ namespace FenBrowser.FenEngine.Rendering
                 if (fgColor.HasValue) css.ForegroundColor = fgColor;
 
                 // background-color / background
-                var bgColor = TryColor(ExtractBackgroundColor(css.Map));
-                if (bgColor.HasValue) css.BackgroundColor = bgColor;
+                var bgRaw = ExtractBackgroundColor(css.Map);
+                var bgColor = TryColor(bgRaw);
+                if (bgColor.HasValue) 
+                {
+                    css.BackgroundColor = bgColor;
+                    css.Background = new SolidColorBrush(bgColor.Value);
+                }
+
+                // Gradients (override color if present)
+                string bgImage = DictGet(css.Map, "background-image");
+                if (string.IsNullOrWhiteSpace(bgImage)) bgImage = DictGet(css.Map, "background");
+
+                if (!string.IsNullOrWhiteSpace(bgImage))
+                {
+                    var grad = ParseGradient(bgImage);
+                    if (grad != null) css.Background = grad;
+                }
 
                 // font shorthand
                 var fontShorthand = Safe(DictGet(css.Map, "font"));
@@ -987,6 +1014,7 @@ namespace FenBrowser.FenEngine.Rendering
                 // Display and position
                 css.Display = Safe(DictGet(css.Map, "display"));
                 css.Position = Safe(DictGet(css.Map, "position"));
+                css.Float = Safe(DictGet(css.Map, "float"));
                 css.Overflow = Safe(DictGet(css.Map, "overflow"));
 
                 css.FlexDirection = Safe(DictGet(css.Map, "flex-direction"));
@@ -1024,6 +1052,35 @@ namespace FenBrowser.FenEngine.Rendering
                 css.TextOverflow = Safe(DictGet(css.Map, "text-overflow"));
                 css.BoxSizing = Safe(DictGet(css.Map, "box-sizing"));
                 css.Cursor = Safe(DictGet(css.Map, "cursor"));
+
+                // Z-Index
+                int zIndex;
+                if (int.TryParse(DictGet(css.Map, "z-index"), NumberStyles.Integer, CultureInfo.InvariantCulture, out zIndex))
+                    css.ZIndex = zIndex;
+
+                // Positioning coordinates
+                if (TryPx(DictGet(css.Map, "top"), out posVal)) css.Top = posVal;
+                if (TryPx(DictGet(css.Map, "right"), out posVal)) css.Right = posVal;
+                if (TryPx(DictGet(css.Map, "bottom"), out posVal)) css.Bottom = posVal;
+                if (TryPx(DictGet(css.Map, "left"), out posVal)) css.Left = posVal;
+                css.WhiteSpace = Safe(DictGet(css.Map, "white-space"));
+                css.TextOverflow = Safe(DictGet(css.Map, "text-overflow"));
+                css.BoxSizing = Safe(DictGet(css.Map, "box-sizing"));
+                css.Cursor = Safe(DictGet(css.Map, "cursor"));
+
+                // Gap (shorthand and individual)
+                double gapVal;
+                if (TryPx(DictGet(css.Map, "gap"), out gapVal))
+                {
+                    css.Gap = gapVal;
+                    css.RowGap = gapVal;
+                    css.ColumnGap = gapVal;
+                }
+                if (TryPx(DictGet(css.Map, "row-gap"), out gapVal)) css.RowGap = gapVal;
+                if (TryPx(DictGet(css.Map, "column-gap"), out gapVal)) css.ColumnGap = gapVal;
+
+                // Grid
+                css.GridTemplateColumns = Safe(DictGet(css.Map, "grid-template-columns"));
 
                 result[n] = css;
             }
@@ -1074,36 +1131,62 @@ namespace FenBrowser.FenEngine.Rendering
 
                 segIndex--; // Move to the previous segment (the one we want to find now)
 
-                if (cur == null) return false;
-
                 if (comb == Combinator.Child)
                 {
                     cur = cur.Parent;
-                    if (!MatchesSingle(cur, prevSeg)) return false;
+                    if (cur == null || !MatchesSingle(cur, chain.Segments[segIndex])) return false;
+                }
+                else if (comb == Combinator.AdjacentSibling)
+                {
+                    // Find immediately preceding sibling
+                    var parent = cur.Parent;
+                    if (parent == null) return false;
+                    var idx = parent.Children.IndexOf(cur);
+                    if (idx <= 0) return false;
+                    cur = parent.Children[idx - 1];
+                    if (!MatchesSingle(cur, chain.Segments[segIndex])) return false;
+                }
+                else if (comb == Combinator.GeneralSibling)
+                {
+                    // Find ANY preceding sibling that matches
+                    var parent = cur.Parent;
+                    if (parent == null) return false;
+                    var idx = parent.Children.IndexOf(cur);
+                    if (idx <= 0) return false;
+                    
+                    bool found = false;
+                    for (int k = idx - 1; k >= 0; k--)
+                    {
+                        var sib = parent.Children[k];
+                        if (MatchesSingle(sib, chain.Segments[segIndex]))
+                        {
+                            cur = sib;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) return false;
                 }
                 else // Descendant
                 {
-                    // Find an ancestor that matches prevSeg
-                    cur = FindAncestorMatching(cur.Parent, prevSeg);
+                    cur = FindAncestorMatching(cur, chain.Segments[segIndex]);
                     if (cur == null) return false;
                 }
             }
-
             return true;
         }
 
         private static LiteElement FindAncestorMatching(LiteElement start, SelectorSegment seg)
         {
-            var cur = start;
-            while (cur != null)
+            var p = start.Parent;
+            while (p != null)
             {
-                if (MatchesSingle(cur, seg)) return cur;
-                cur = cur.Parent;
+                if (MatchesSingle(p, seg)) return p;
+                p = p.Parent;
             }
             return null;
         }
 
-        /// <summary>
         /// Parse an+b notation for :nth-child and :nth-of-type.
         /// Supports: "odd", "even", "3", "2n", "2n+1", "2n-1", "-n+3", etc.
         /// </summary>
@@ -1297,12 +1380,22 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     string val;
                     if (!n.Attr.TryGetValue(attr.Item1, out val)) return false;
-
                     if (attr.Item2 == "=")
                     {
                         if (!string.Equals(val ?? "", attr.Item3, StringComparison.OrdinalIgnoreCase)) return false;
                     }
-                    // Add other operators (~=, |=, ^=, $=, *=) if needed
+                    else if (attr.Item2 == "^=")
+                    {
+                        if (!(val ?? "").StartsWith(attr.Item3, StringComparison.OrdinalIgnoreCase)) return false;
+                    }
+                    else if (attr.Item2 == "$=")
+                    {
+                        if (!(val ?? "").EndsWith(attr.Item3, StringComparison.OrdinalIgnoreCase)) return false;
+                    }
+                    else if (attr.Item2 == "*=")
+                    {
+                        if ((val ?? "").IndexOf(attr.Item3, StringComparison.OrdinalIgnoreCase) < 0) return false;
+                    }
                 }
             }
 
@@ -1698,6 +1791,10 @@ namespace FenBrowser.FenEngine.Rendering
             return result;
         }
 
+
+
+
+
         private static bool TryGapShorthand(string raw, out double row, out double column)
         {
             row = column = 0;
@@ -1719,6 +1816,10 @@ namespace FenBrowser.FenEngine.Rendering
 
             return true;
         }
+
+
+
+
 
         private static bool TryFlexShorthand(string raw, out double grow, out double shrink, out double basis)
         {
@@ -2271,6 +2372,136 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }
             }
+        }
+        private static IBrush ParseGradient(string css)
+        {
+            if (string.IsNullOrWhiteSpace(css)) return null;
+            css = css.Trim();
+
+            if (css.StartsWith("linear-gradient(", StringComparison.OrdinalIgnoreCase))
+            {
+                var content = ExtractPseudoArg(css); // re-use this helper as it extracts (...) content
+                var parts = SplitByComma(content);
+                if (parts.Count < 2) return null;
+
+                var brush = new LinearGradientBrush();
+                int startIdx = 0;
+                
+                // Parse direction
+                var first = parts[0].Trim().ToLowerInvariant();
+                bool isDirection = false;
+                
+                // Default to bottom
+                brush.StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative);
+                brush.EndPoint = new RelativePoint(0, 1, RelativeUnit.Relative);
+
+                if (first.StartsWith("to "))
+                {
+                    isDirection = true;
+                    if (first == "to right") { brush.StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative); brush.EndPoint = new RelativePoint(1, 0, RelativeUnit.Relative); }
+                    else if (first == "to left") { brush.StartPoint = new RelativePoint(1, 0, RelativeUnit.Relative); brush.EndPoint = new RelativePoint(0, 0, RelativeUnit.Relative); }
+                    else if (first == "to bottom") { brush.StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative); brush.EndPoint = new RelativePoint(0, 1, RelativeUnit.Relative); }
+                    else if (first == "to top") { brush.StartPoint = new RelativePoint(0, 1, RelativeUnit.Relative); brush.EndPoint = new RelativePoint(0, 0, RelativeUnit.Relative); }
+                    else if (first == "to bottom right") { brush.StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative); brush.EndPoint = new RelativePoint(1, 1, RelativeUnit.Relative); }
+                    // ... other corners
+                }
+                else if (first.EndsWith("deg"))
+                {
+                    isDirection = true;
+                    // Angle parsing is complex for exact mapping to Start/End points without size context.
+                    // For now, approximate 45deg to bottom-right, etc. or ignore.
+                    // TODO: Implement proper angle-to-point math
+                    if (first.Contains("45deg")) { brush.StartPoint = new RelativePoint(0, 1, RelativeUnit.Relative); brush.EndPoint = new RelativePoint(1, 0, RelativeUnit.Relative); } // approx
+                }
+
+                if (isDirection) startIdx = 1;
+
+                var stops = ParseGradientStops(parts, startIdx);
+                brush.GradientStops.AddRange(stops);
+                return brush;
+            }
+            else if (css.StartsWith("radial-gradient(", StringComparison.OrdinalIgnoreCase))
+            {
+                var content = ExtractPseudoArg(css);
+                var parts = SplitByComma(content);
+                if (parts.Count < 2) return null;
+
+                var brush = new RadialGradientBrush();
+                brush.Center = new RelativePoint(0.5, 0.5, RelativeUnit.Relative);
+                brush.GradientOrigin = new RelativePoint(0.5, 0.5, RelativeUnit.Relative);
+                brush.Radius = 0.5; 
+
+                // Check for shape/size/position in first arg (omitted for MVP, assuming simple colors)
+                // If first arg is a color, startIdx = 0. If it contains "circle" or "at", skip it.
+                int startIdx = 0;
+                if (parts[0].Contains("circle") || parts[0].Contains("ellipse") || parts[0].Contains("at "))
+                    startIdx = 1;
+
+                var stops = ParseGradientStops(parts, startIdx);
+                brush.GradientStops.AddRange(stops);
+                return brush;
+            }
+
+            return null;
+        }
+
+        private static List<GradientStop> ParseGradientStops(List<string> parts, int startIdx)
+        {
+            var stops = new List<GradientStop>();
+            int count = parts.Count - startIdx;
+            if (count <= 0) return stops;
+
+            for (int i = 0; i < count; i++)
+            {
+                var raw = parts[startIdx + i].Trim();
+                // "red" or "red 50%" or "#fff 0%"
+                // Split by space, but careful about "rgb(0, 0, 0) 50%"
+                
+                // Hacky parse: find last space
+                int lastSpace = raw.LastIndexOf(' ');
+                string colorStr = raw;
+                double offset = (double)i / (Math.Max(1, count - 1));
+
+                if (lastSpace > 0)
+                {
+                    var tail = raw.Substring(lastSpace + 1);
+                    if (tail.EndsWith("%") && TryDouble(tail.TrimEnd('%'), out double pct))
+                    {
+                        offset = pct / 100.0;
+                        colorStr = raw.Substring(0, lastSpace);
+                    }
+                    else if (tail.EndsWith("px")) 
+                    {
+                        // px not supported in relative brush easily without bounds
+                        colorStr = raw.Substring(0, lastSpace);
+                    }
+                }
+
+                var col = TryColor(colorStr) ?? Avalonia.Media.Colors.Transparent;
+                stops.Add(new GradientStop(col, offset));
+            }
+            return stops;
+        }
+
+        private static List<string> SplitByComma(string content)
+        {
+            var list = new List<string>();
+            if (string.IsNullOrWhiteSpace(content)) return list;
+            
+            int depth = 0;
+            int start = 0;
+            for (int i = 0; i < content.Length; i++)
+            {
+                if (content[i] == '(') depth++;
+                else if (content[i] == ')') depth--;
+                else if (content[i] == ',' && depth == 0)
+                {
+                    list.Add(content.Substring(start, i - start));
+                    start = i + 1;
+                }
+            }
+            if (start < content.Length) list.Add(content.Substring(start));
+            return list;
         }
     }
 }
