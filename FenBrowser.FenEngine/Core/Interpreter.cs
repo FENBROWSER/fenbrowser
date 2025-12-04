@@ -778,21 +778,64 @@ namespace FenBrowser.FenEngine.Core
 
         private IValue EvalTryStatement(TryStatement ts, FenEnvironment env, IExecutionContext context)
         {
-            var result = Eval(ts.Block, env, context);
+            IValue result = FenValue.Undefined;
+            IValue controlFlowValue = null; // Store return/break/continue for later
 
+            try
+            {
+                result = Eval(ts.Block, env, context);
+
+                // Check if result is a control flow value (return/break/continue)
+                if (result is ReturnValue || result is BreakValue || result is ContinueValue)
+                {
+                    controlFlowValue = result;
+                    result = FenValue.Undefined;
+                }
+            }
+            catch (Exception ex)
+            {
+                // Handle .NET exceptions as ErrorValue
+                result = new ErrorValue(ex.Message);
+            }
+
+            // Catch block handling
             if (result is ErrorValue errorVal && ts.CatchBlock != null)
             {
                 var catchEnv = new FenEnvironment(env);
                 if (ts.CatchParameter != null)
                 {
-                    catchEnv.Set(ts.CatchParameter.Value, FenValue.FromString(errorVal.Message));
+                    // Create error object with message and name properties
+                    var errorObj = new FenObject();
+                    errorObj.Set("message", FenValue.FromString(errorVal.Message));
+                    errorObj.Set("name", FenValue.FromString("Error"));
+                    catchEnv.Set(ts.CatchParameter.Value, FenValue.FromObject(errorObj));
                 }
                 result = Eval(ts.CatchBlock, catchEnv, context);
+                
+                // Check for control flow in catch block
+                if (result is ReturnValue || result is BreakValue || result is ContinueValue)
+                {
+                    controlFlowValue = result;
+                    result = FenValue.Undefined;
+                }
             }
 
+            // Finally block ALWAYS runs
             if (ts.FinallyBlock != null)
             {
-                Eval(ts.FinallyBlock, env, context);
+                var finallyResult = Eval(ts.FinallyBlock, env, context);
+                
+                // If finally has its own control flow, it takes precedence
+                if (finallyResult is ReturnValue || finallyResult is BreakValue || finallyResult is ContinueValue)
+                {
+                    return finallyResult;
+                }
+            }
+
+            // Restore any saved control flow value
+            if (controlFlowValue != null)
+            {
+                return controlFlowValue;
             }
 
             return result;

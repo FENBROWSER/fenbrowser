@@ -6,6 +6,8 @@ using FenBrowser.FenEngine.DOM;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Text.Json;
+using System.Net.Http;
+using System.Threading.Tasks;
 using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType;
 
 namespace FenBrowser.FenEngine.Core
@@ -58,12 +60,30 @@ namespace FenBrowser.FenEngine.Core
             SetGlobal("undefined", FenValue.Undefined);
             SetGlobal("null", FenValue.Null);
 
-            // navigator object
+            // navigator object - Privacy-focused (generic values to prevent fingerprinting)
             var navigator = new FenObject();
-            navigator.Set("userAgent", FenValue.FromString("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 FenBrowser/1.0"));
+            navigator.Set("userAgent", FenValue.FromString("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:146.0) Gecko/20100101 Firefox/146.0 FenBrowser/1.0"));
             navigator.Set("platform", FenValue.FromString("Win32"));
             navigator.Set("language", FenValue.FromString("en-US"));
+            navigator.Set("languages", FenValue.FromObject(CreateArray(new[] { "en-US", "en" })));
             navigator.Set("cookieEnabled", FenValue.FromBoolean(true));
+            navigator.Set("onLine", FenValue.FromBoolean(true));
+            navigator.Set("doNotTrack", FenValue.FromString("1")); // Privacy: DNT enabled by default
+            // Privacy: Use generic values to prevent fingerprinting (unlike Chrome/Firefox)
+            navigator.Set("hardwareConcurrency", FenValue.FromNumber(4)); // Generic, not actual CPU cores
+            navigator.Set("deviceMemory", FenValue.FromNumber(8)); // Generic, not actual RAM
+            navigator.Set("maxTouchPoints", FenValue.FromNumber(0));
+            navigator.Set("vendor", FenValue.FromString("FenBrowser")); // Our vendor, not Google
+            navigator.Set("vendorSub", FenValue.FromString(""));
+            navigator.Set("product", FenValue.FromString("Gecko"));
+            navigator.Set("productSub", FenValue.FromString("20100101"));
+            navigator.Set("appCodeName", FenValue.FromString("Mozilla"));
+            navigator.Set("appName", FenValue.FromString("Netscape"));
+            navigator.Set("appVersion", FenValue.FromString("5.0 (Windows)"));
+            navigator.Set("oscpu", FenValue.FromString("Windows NT 10.0; Win64; x64"));
+            // Privacy: Empty plugins array (prevents plugin fingerprinting)
+            navigator.Set("plugins", FenValue.FromObject(CreateArray(new string[0])));
+            navigator.Set("mimeTypes", FenValue.FromObject(CreateArray(new string[0])));
             SetGlobal("navigator", FenValue.FromObject(navigator));
 
             // location object (basic)
@@ -75,12 +95,70 @@ namespace FenBrowser.FenEngine.Core
             location.Set("pathname", FenValue.FromString("/"));
             SetGlobal("location", FenValue.FromObject(location));
 
-            // window object (circular reference to global scope simulation)
+            // screen object - Privacy-focused (use common resolution to prevent fingerprinting)
+            var screen = new FenObject();
+            screen.Set("width", FenValue.FromNumber(1920));      // Common resolution
+            screen.Set("height", FenValue.FromNumber(1080));     // Common resolution
+            screen.Set("availWidth", FenValue.FromNumber(1920));
+            screen.Set("availHeight", FenValue.FromNumber(1040)); // Minus taskbar
+            screen.Set("colorDepth", FenValue.FromNumber(24));   // Standard 24-bit color
+            screen.Set("pixelDepth", FenValue.FromNumber(24));
+            screen.Set("orientation", FenValue.FromObject(CreateScreenOrientation()));
+            SetGlobal("screen", FenValue.FromObject(screen));
+
+            // localStorage - Modular storage implementation
+            var localStorage = CreateStorageObject("localStorage");
+            SetGlobal("localStorage", FenValue.FromObject(localStorage));
+
+            // sessionStorage - Modular storage implementation
+            var sessionStorage = CreateStorageObject("sessionStorage");
+            SetGlobal("sessionStorage", FenValue.FromObject(sessionStorage));
+
+            // window object - Comprehensive with all standard properties
             var window = new FenObject();
             window.Set("console", FenValue.FromObject(console));
             window.Set("navigator", FenValue.FromObject(navigator));
             window.Set("location", FenValue.FromObject(location));
+            window.Set("screen", FenValue.FromObject(screen));
+            window.Set("localStorage", FenValue.FromObject(localStorage));
+            window.Set("sessionStorage", FenValue.FromObject(sessionStorage));
+            // Viewport properties - Privacy: use common resolution
+            window.Set("innerWidth", FenValue.FromNumber(1920));
+            window.Set("innerHeight", FenValue.FromNumber(1080));
+            window.Set("outerWidth", FenValue.FromNumber(1920));
+            window.Set("outerHeight", FenValue.FromNumber(1080));
+            window.Set("devicePixelRatio", FenValue.FromNumber(1)); // Privacy: always 1
+            window.Set("scrollX", FenValue.FromNumber(0));
+            window.Set("scrollY", FenValue.FromNumber(0));
+            window.Set("pageXOffset", FenValue.FromNumber(0));
+            window.Set("pageYOffset", FenValue.FromNumber(0));
+            // Self-references
+            window.Set("self", FenValue.FromObject(window));
+            window.Set("top", FenValue.FromObject(window));
+            window.Set("parent", FenValue.FromObject(window));
+            window.Set("frames", FenValue.FromObject(window));
+            window.Set("length", FenValue.FromNumber(0)); // No frames
+            // Standard properties
+            window.Set("name", FenValue.FromString(""));
+            window.Set("closed", FenValue.FromBoolean(false));
+            window.Set("opener", FenValue.Null);
             SetGlobal("window", FenValue.FromObject(window));
+
+            // IMPORTANT: Also expose window properties at global scope for direct access
+            // In browsers, 'innerWidth' works the same as 'window.innerWidth'
+            SetGlobal("innerWidth", FenValue.FromNumber(1920));
+            SetGlobal("innerHeight", FenValue.FromNumber(1080));
+            SetGlobal("outerWidth", FenValue.FromNumber(1920));
+            SetGlobal("outerHeight", FenValue.FromNumber(1080));
+            SetGlobal("devicePixelRatio", FenValue.FromNumber(1));
+            SetGlobal("scrollX", FenValue.FromNumber(0));
+            SetGlobal("scrollY", FenValue.FromNumber(0));
+            SetGlobal("pageXOffset", FenValue.FromNumber(0));
+            SetGlobal("pageYOffset", FenValue.FromNumber(0));
+            SetGlobal("self", FenValue.FromObject(window));
+            SetGlobal("top", FenValue.FromObject(window));
+            SetGlobal("parent", FenValue.FromObject(window));
+            SetGlobal("frames", FenValue.FromObject(window));
 
             // RegExp constructor
             SetGlobal("RegExp", FenValue.FromFunction(new FenFunction("RegExp", (args, thisVal) =>
@@ -208,7 +286,8 @@ namespace FenBrowser.FenEngine.Core
                 {
                     var arg = args[0];
                     if (arg.IsNumber) dt = new DateTime(1970, 1, 1).AddMilliseconds(arg.ToNumber());
-                    else dt = DateTime.Parse(arg.ToString());
+                    else if (DateTime.TryParse(arg.ToString(), out var parsed)) dt = parsed;
+                    else dt = DateTime.Now;
                 }
                 else dt = DateTime.Now; // Simplified for multiple args
 
@@ -218,17 +297,18 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(obj);
             });
             
-            // Static methods
-            var dateObj = FenValue.FromFunction(dateCtor);
-            dateObj.AsObject().Set("now", FenValue.FromFunction(new FenFunction("now", (args, thisVal) => 
+            // Create Date as a callable object with static methods
+            var dateObj = new FenObject();
+            dateObj.NativeObject = dateCtor; // Store the constructor as callable
+            dateObj.Set("now", FenValue.FromFunction(new FenFunction("now", (args, thisVal) => 
                 FenValue.FromNumber((DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalMilliseconds))));
-            dateObj.AsObject().Set("parse", FenValue.FromFunction(new FenFunction("parse", (args, thisVal) => {
+            dateObj.Set("parse", FenValue.FromFunction(new FenFunction("parse", (args, thisVal) => {
                 if (args.Length > 0 && DateTime.TryParse(args[0].ToString(), out var d))
                     return FenValue.FromNumber((d.ToUniversalTime() - new DateTime(1970, 1, 1)).TotalMilliseconds);
                 return FenValue.FromNumber(double.NaN);
             })));
 
-            SetGlobal("Date", dateObj);
+            SetGlobal("Date", FenValue.FromObject(dateObj));
 
             // JSON object
             var json = new FenObject();
@@ -257,6 +337,51 @@ namespace FenBrowser.FenEngine.Core
                 }
             })));
             SetGlobal("JSON", FenValue.FromObject(json));
+
+            // fetch() - Web API for making HTTP requests
+            // Returns a FetchPromise object with .then()/.catch() support
+            SetGlobal("fetch", FenValue.FromFunction(new FenFunction("fetch", (args, thisVal) =>
+            {
+                var url = args.Length > 0 ? args[0].ToString() : "";
+                if (string.IsNullOrWhiteSpace(url))
+                    return CreateRejectedPromise("fetch: invalid URL");
+
+                // Parse options
+                var method = "GET";
+                string body = null;
+                var headers = new Dictionary<string, string>();
+                
+                if (args.Length > 1 && args[1].IsObject)
+                {
+                    var options = args[1].AsObject() as FenObject;
+                    if (options != null)
+                    {
+                        var m = options.Get("method");
+                        if (m != null && !m.IsNull && !m.IsUndefined)
+                            method = m.ToString().ToUpper();
+                        var b = options.Get("body");
+                        if (b != null && !b.IsNull && !b.IsUndefined)
+                            body = b.ToString();
+                        var h = options.Get("headers");
+                        if (h != null && h.IsObject)
+                        {
+                            var hObj = h.AsObject() as FenObject;
+                            if (hObj != null)
+                            {
+                                foreach (var key in hObj.Keys())
+                                {
+                                    var hv = hObj.Get(key);
+                                    if (hv != null)
+                                        headers[key] = hv.ToString();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Create a FetchPromise - stores callbacks for async resolution
+                return CreateFetchPromise(url, method, body, headers);
+            })));
         }
 
         private IValue ConvertJsonElement(JsonElement element)
@@ -432,5 +557,329 @@ namespace FenBrowser.FenEngine.Core
                 return new ErrorValue($"Runtime error: {ex.Message}");
             }
         }
+
+        #region Helper Methods for Browser APIs
+
+        /// <summary>
+        /// Create an array-like object from string array (Privacy: used for navigator.languages, plugins, etc.)
+        /// </summary>
+        private FenObject CreateArray(string[] items)
+        {
+            var arr = new FenObject();
+            for (int i = 0; i < items.Length; i++)
+            {
+                arr.Set(i.ToString(), FenValue.FromString(items[i]));
+            }
+            arr.Set("length", FenValue.FromNumber(items.Length));
+            return arr;
+        }
+
+        /// <summary>
+        /// Create screen orientation object (Privacy: use standard landscape orientation)
+        /// </summary>
+        private FenObject CreateScreenOrientation()
+        {
+            var orientation = new FenObject();
+            orientation.Set("type", FenValue.FromString("landscape-primary"));
+            orientation.Set("angle", FenValue.FromNumber(0));
+            return orientation;
+        }
+
+        // In-memory storage (Secure: not persisted, Privacy: cleared on restart)
+        private readonly Dictionary<string, Dictionary<string, string>> _storageData = new Dictionary<string, Dictionary<string, string>>()
+        {
+            { "localStorage", new Dictionary<string, string>() },
+            { "sessionStorage", new Dictionary<string, string>() }
+        };
+
+        /// <summary>
+        /// Create Storage object (localStorage/sessionStorage) - Secure: in-memory only
+        /// </summary>
+        private FenObject CreateStorageObject(string storageType)
+        {
+            var storage = new FenObject();
+            
+            // getItem(key) - Returns value or null
+            storage.Set("getItem", FenValue.FromFunction(new FenFunction("getItem", (args, thisVal) =>
+            {
+                if (args.Length == 0) return FenValue.Null;
+                var key = args[0].ToString();
+                if (_storageData[storageType].TryGetValue(key, out var value))
+                    return FenValue.FromString(value);
+                return FenValue.Null;
+            })));
+
+            // setItem(key, value) - Stores value
+            storage.Set("setItem", FenValue.FromFunction(new FenFunction("setItem", (args, thisVal) =>
+            {
+                if (args.Length < 2) return FenValue.Undefined;
+                var key = args[0].ToString();
+                var value = args[1].ToString();
+                _storageData[storageType][key] = value;
+                return FenValue.Undefined;
+            })));
+
+            // removeItem(key) - Removes item
+            storage.Set("removeItem", FenValue.FromFunction(new FenFunction("removeItem", (args, thisVal) =>
+            {
+                if (args.Length == 0) return FenValue.Undefined;
+                var key = args[0].ToString();
+                _storageData[storageType].Remove(key);
+                return FenValue.Undefined;
+            })));
+
+            // clear() - Clears all items
+            storage.Set("clear", FenValue.FromFunction(new FenFunction("clear", (args, thisVal) =>
+            {
+                _storageData[storageType].Clear();
+                return FenValue.Undefined;
+            })));
+
+            // key(index) - Returns key at index
+            storage.Set("key", FenValue.FromFunction(new FenFunction("key", (args, thisVal) =>
+            {
+                if (args.Length == 0) return FenValue.Null;
+                var index = (int)args[0].ToNumber();
+                var keys = _storageData[storageType].Keys.ToList();
+                if (index >= 0 && index < keys.Count)
+                    return FenValue.FromString(keys[index]);
+                return FenValue.Null;
+            })));
+
+            // length property (getter-like behavior through initial value)
+            storage.Set("length", FenValue.FromNumber(_storageData[storageType].Count));
+
+            return storage;
+        }
+
+        #endregion
+
+        #region Fetch API Helpers
+
+        private static readonly HttpClient _httpClient = new HttpClient();
+
+        /// <summary>
+        /// Creates a rejected Promise-like object
+        /// </summary>
+        private IValue CreateRejectedPromise(string errorMessage)
+        {
+            var promise = new FenObject();
+            promise.Set("__rejected", FenValue.FromBoolean(true));
+            promise.Set("__error", FenValue.FromString(errorMessage));
+            
+            promise.Set("then", FenValue.FromFunction(new FenFunction("then", (args, thisVal) =>
+            {
+                // Skip success callback, return this for chaining
+                return thisVal;
+            })));
+            
+            promise.Set("catch", FenValue.FromFunction(new FenFunction("catch", (args, thisVal) =>
+            {
+                // Call the error callback
+                if (args.Length > 0 && args[0].IsFunction)
+                {
+                    var callback = args[0].AsFunction();
+                    if (callback.IsNative && callback.NativeImplementation != null)
+                        callback.NativeImplementation(new IValue[] { FenValue.FromString(errorMessage) }, FenValue.Undefined);
+                }
+                return thisVal;
+            })));
+            
+            return FenValue.FromObject(promise);
+        }
+
+        /// <summary>
+        /// Creates a FetchPromise that executes HTTP request asynchronously
+        /// </summary>
+        private IValue CreateFetchPromise(string url, string method, string body, Dictionary<string, string> headers)
+        {
+            var promise = new FenObject();
+            var thenCallbacks = new List<FenFunction>();
+            var catchCallbacks = new List<FenFunction>();
+            
+            promise.Set("__pending", FenValue.FromBoolean(true));
+            promise.Set("__url", FenValue.FromString(url));
+            
+            promise.Set("then", FenValue.FromFunction(new FenFunction("then", (args, thisVal) =>
+            {
+                if (args.Length > 0 && args[0].IsFunction)
+                {
+                    thenCallbacks.Add(args[0].AsFunction());
+                }
+                return thisVal; // Return same promise for chaining
+            })));
+            
+            promise.Set("catch", FenValue.FromFunction(new FenFunction("catch", (args, thisVal) =>
+            {
+                if (args.Length > 0 && args[0].IsFunction)
+                {
+                    catchCallbacks.Add(args[0].AsFunction());
+                }
+                return thisVal;
+            })));
+
+            // Execute the fetch asynchronously
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    using var request = new HttpRequestMessage(new HttpMethod(method), url);
+                    
+                    // Add headers
+                    foreach (var h in headers)
+                    {
+                        try { request.Headers.TryAddWithoutValidation(h.Key, h.Value); } catch { }
+                    }
+                    
+                    // Add body for POST/PUT
+                    if (!string.IsNullOrEmpty(body) && (method == "POST" || method == "PUT" || method == "PATCH"))
+                    {
+                        request.Content = new StringContent(body, System.Text.Encoding.UTF8, 
+                            headers.ContainsKey("Content-Type") ? headers["Content-Type"] : "application/json");
+                    }
+
+                    var response = await _httpClient.SendAsync(request);
+                    var responseText = await response.Content.ReadAsStringAsync();
+                    
+                    // Create Response object
+                    var responseObj = CreateResponse(url, (int)response.StatusCode, response.ReasonPhrase, responseText);
+                    
+                    // Call all then callbacks
+                    foreach (var callback in thenCallbacks)
+                    {
+                        try
+                        {
+                            if (callback.IsNative && callback.NativeImplementation != null)
+                                callback.NativeImplementation(new IValue[] { responseObj }, FenValue.Undefined);
+                        }
+                        catch { }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Call all catch callbacks
+                    foreach (var callback in catchCallbacks)
+                    {
+                        try
+                        {
+                            if (callback.IsNative && callback.NativeImplementation != null)
+                                callback.NativeImplementation(new IValue[] { FenValue.FromString(ex.Message) }, FenValue.Undefined);
+                        }
+                        catch { }
+                    }
+                }
+            });
+            
+            return FenValue.FromObject(promise);
+        }
+
+        /// <summary>
+        /// Creates a Response object for fetch()
+        /// </summary>
+        private IValue CreateResponse(string url, int status, string statusText, string bodyText)
+        {
+            var response = new FenObject();
+            
+            // Standard Response properties
+            response.Set("ok", FenValue.FromBoolean(status >= 200 && status < 300));
+            response.Set("status", FenValue.FromNumber(status));
+            response.Set("statusText", FenValue.FromString(statusText ?? ""));
+            response.Set("url", FenValue.FromString(url));
+            response.Set("redirected", FenValue.FromBoolean(false));
+            response.Set("type", FenValue.FromString("basic"));
+            
+            // Store body for text()/json() methods
+            response.Set("__bodyText", FenValue.FromString(bodyText ?? ""));
+            
+            // text() method - returns Promise-like object that resolves to body text
+            response.Set("text", FenValue.FromFunction(new FenFunction("text", (args, thisVal) =>
+            {
+                var textPromise = new FenObject();
+                textPromise.Set("then", FenValue.FromFunction(new FenFunction("then", (tArgs, tThis) =>
+                {
+                    if (tArgs.Length > 0 && tArgs[0].IsFunction)
+                    {
+                        var cb = tArgs[0].AsFunction();
+                        if (cb.IsNative && cb.NativeImplementation != null)
+                            cb.NativeImplementation(new IValue[] { FenValue.FromString(bodyText ?? "") }, FenValue.Undefined);
+                    }
+                    return tThis;
+                })));
+                return FenValue.FromObject(textPromise);
+            })));
+            
+            // json() method - returns Promise-like object that resolves to parsed JSON
+            response.Set("json", FenValue.FromFunction(new FenFunction("json", (args, thisVal) =>
+            {
+                var jsonPromise = new FenObject();
+                jsonPromise.Set("then", FenValue.FromFunction(new FenFunction("then", (tArgs, tThis) =>
+                {
+                    if (tArgs.Length > 0 && tArgs[0].IsFunction)
+                    {
+                        var cb = tArgs[0].AsFunction();
+                        try
+                        {
+                            using var doc = JsonDocument.Parse(bodyText ?? "{}");
+                            var parsed = ConvertJsonElementStatic(doc.RootElement);
+                            if (cb.IsNative && cb.NativeImplementation != null)
+                                cb.NativeImplementation(new IValue[] { parsed }, FenValue.Undefined);
+                        }
+                        catch (Exception ex)
+                        {
+                            if (cb.IsNative && cb.NativeImplementation != null)
+                                cb.NativeImplementation(new IValue[] { new ErrorValue($"JSON parse error: {ex.Message}") }, FenValue.Undefined);
+                        }
+                    }
+                    return tThis;
+                })));
+                jsonPromise.Set("catch", FenValue.FromFunction(new FenFunction("catch", (cArgs, cThis) =>
+                {
+                    return cThis;
+                })));
+                return FenValue.FromObject(jsonPromise);
+            })));
+
+            return FenValue.FromObject(response);
+        }
+
+        /// <summary>
+        /// Static version of ConvertJsonElement for use in static methods
+        /// </summary>
+        private static IValue ConvertJsonElementStatic(JsonElement element)
+        {
+            switch (element.ValueKind)
+            {
+                case JsonValueKind.Object:
+                    var obj = new FenObject();
+                    foreach (var prop in element.EnumerateObject())
+                    {
+                        obj.Set(prop.Name, ConvertJsonElementStatic(prop.Value));
+                    }
+                    return FenValue.FromObject(obj);
+                case JsonValueKind.Array:
+                    var arr = new FenObject();
+                    // Arrays are represented as objects with numeric keys and length
+                    int i = 0;
+                    foreach (var item in element.EnumerateArray())
+                    {
+                        arr.Set(i.ToString(), ConvertJsonElementStatic(item));
+                        i++;
+                    }
+                    arr.Set("length", FenValue.FromNumber(i));
+                    return FenValue.FromObject(arr);
+                case JsonValueKind.String:
+                    return FenValue.FromString(element.GetString() ?? "");
+                case JsonValueKind.Number:
+                    return FenValue.FromNumber(element.GetDouble());
+                case JsonValueKind.True:
+                    return FenValue.FromBoolean(true);
+                case JsonValueKind.False:
+                    return FenValue.FromBoolean(false);
+                default:
+                    return FenValue.Null;
+            }
+        }
+
+        #endregion
     }
 }
