@@ -14,6 +14,7 @@ namespace FenBrowser.FenEngine.Rendering
     public interface IBrowser
     {
         Uri CurrentUri { get; }
+        ResourceManager ResourceManager { get; }
         Task<bool> NavigateAsync(string url);
         Task<bool> GoBackAsync();
         Task<bool> GoForwardAsync();
@@ -33,12 +34,27 @@ namespace FenBrowser.FenEngine.Rendering
         Task<string> FindElementAsync(string strategy, string value);
         Task ClickElementAsync(string elementId);
         Task CaptureScreenshotAsync();
+        LiteElement GetDomRoot();
+        event Action<string> ConsoleMessage;
+        void HighlightElement(LiteElement element);
+        void RemoveHighlight();
+        event Action<Avalonia.Rect?> HighlightRectChanged;
+        SecurityState SecurityState { get; }
+    }
+
+    public enum SecurityState
+    {
+        None,
+        Secure,
+        NotSecure,
+        Warning
     }
 
     public sealed class BrowserHost : IBrowser, IDisposable
     {
         private readonly CustomHtmlEngine _engine = new CustomHtmlEngine();
         private readonly ResourceManager _resources = new ResourceManager(new HttpClient());
+        private readonly NavigationManager _navManager;
         private Uri _current;
         private bool _disposed;
         
@@ -54,10 +70,20 @@ namespace FenBrowser.FenEngine.Rendering
         public event EventHandler<bool> LoadingChanged;
         public event EventHandler<string> TitleChanged;
         public event EventHandler<object> RepaintReady;
+        public event Action<string> ConsoleMessage;
+        public event Action<Avalonia.Rect?> HighlightRectChanged;
 
         public Uri CurrentUri => _current;
+        public ResourceManager ResourceManager => _resources;
         public bool CanGoBack => _historyIndex > 0;
         public bool CanGoForward => _historyIndex < _history.Count - 1;
+        public bool EnableJavaScript
+        {
+            get => _engine.EnableJavaScript;
+            set => _engine.EnableJavaScript = value;
+        }
+
+        public SecurityState SecurityState { get; private set; } = SecurityState.None;
 
         public BrowserHost()
         {
@@ -79,11 +105,24 @@ namespace FenBrowser.FenEngine.Rendering
                 catch { }
             };
 
+            _engine.HighlightRectChanged += (rect) =>
+            {
+                try { HighlightRectChanged?.Invoke(rect); }
+                catch { }
+            };
+
             ResourceManager.LogSink = (msg) =>
             {
                 Console.WriteLine(msg);
+                try { ConsoleMessage?.Invoke(msg); } catch { }
             };
             Console.WriteLine($"[BrowserHost] CWD: {Environment.CurrentDirectory}");
+            _navManager = new NavigationManager(_resources);
+        }
+
+        public LiteElement GetDomRoot()
+        {
+            return _engine.GetActiveDom();
         }
 
         public async Task<bool> GoBackAsync()
@@ -109,43 +148,69 @@ namespace FenBrowser.FenEngine.Rendering
             if (_disposed) return false;
             if (string.IsNullOrWhiteSpace(url)) return false;
 
-            if (!url.StartsWith("http://") && !url.StartsWith("https://") && !url.StartsWith("about:"))
-            {
-                url = "https://" + url;
-            }
-
-            Uri uri;
-            if (!Uri.TryCreate(url, UriKind.Absolute, out uri)) return false;
-
             try
             {
-                Console.WriteLine($"[NavigateAsync] Start: {uri}");
-
-                var path = uri.AbsolutePath.ToLowerInvariant();
-                if (path.EndsWith(".png") || path.EndsWith(".jpg") || path.EndsWith(".jpeg") || 
-                    path.EndsWith(".gif") || path.EndsWith(".bmp") || path.EndsWith(".webp") || path.EndsWith(".svg"))
+                bool isViewSource = false;
+                if (url.StartsWith("view-source:", StringComparison.OrdinalIgnoreCase))
                 {
-                    var syntheticHtml = $"<html><body style='margin:0; background-color: #222; display: flex; justify-content: center; align-items: center; height: 100vh;'><img src='{uri.AbsoluteUri}' style='max-width: 100%; max-height: 100%; box-shadow: 0 0 20px rgba(0,0,0,0.5);' /></body></html>";
-                    Console.WriteLine("[NavigateAsync] Synthetic Image Page");
-                    
-                    var element = await _engine.RenderAsync(syntheticHtml, uri, u => _resources.FetchTextAsync(u), u => _resources.FetchImageAsync(u), u => { _ = NavigateAsync(u.AbsoluteUri); });
-                    try { RepaintReady?.Invoke(this, element); } catch { }
-                    _current = uri;
-                    if (!_isNavigatingHistory) { if (_historyIndex < _history.Count - 1) _history.RemoveRange(_historyIndex + 1, _history.Count - (_historyIndex + 1)); _history.Add(uri); _historyIndex = _history.Count - 1; }
-                    try { Navigated?.Invoke(this, uri); } catch { }
-                    return true;
+                    isViewSource = true;
+                    url = url.Substring("view-source:".Length);
                 }
 
-                var html = await _resources.FetchTextAsync(uri);
-                Console.WriteLine($"[NavigateAsync] Fetched {html?.Length ?? 0} chars");
-                if (string.IsNullOrWhiteSpace(html))
+                Console.WriteLine($"[NavigateAsync] Start: {url}");
+
+                _resources.ResetBlockedCount();
+
+                var result = await _navManager.NavigateAsync(url);
+                string htmlToRender = result.Content;
+                Uri uri = result.FinalUri ?? new Uri("about:blank");
+
+                if (isViewSource && result.Status == FetchStatus.Success)
                 {
-                    RaiseNavigationFailed("Empty response");
-                    return false;
+                    var escaped = System.Net.WebUtility.HtmlEncode(htmlToRender);
+                    htmlToRender = $"<html><head><title>Source of {url}</title></head><body style='font-family: Consolas, monospace; white-space: pre; background-color: #f8f8f8; color: #333; padding: 10px; font-size: 13px;'>{escaped}</body></html>";
                 }
 
-                Console.WriteLine("[NavigateAsync] Calling RenderAsync");
-                var elem = await _engine.RenderAsync(html, uri, u => _resources.FetchTextAsync(u), u => _resources.FetchImageAsync(u), u => { _ = NavigateAsync(u.AbsoluteUri); });
+                if (result.Status != FetchStatus.Success)
+                {
+                    // Render error page
+                    switch (result.Status)
+                    {
+                        case FetchStatus.ConnectionFailed:
+                            htmlToRender = ErrorPageRenderer.RenderConnectionFailed(url, result.ErrorDetail);
+                            SecurityState = SecurityState.NotSecure;
+                            break;
+                        case FetchStatus.SslError:
+                            htmlToRender = ErrorPageRenderer.RenderSslError(url, result.ErrorDetail);
+                            SecurityState = SecurityState.Warning;
+                            break;
+                        case FetchStatus.Timeout:
+                            htmlToRender = ErrorPageRenderer.RenderGenericError(url, "Connection Timed Out", "The server took too long to respond.", result.ErrorDetail);
+                            SecurityState = SecurityState.NotSecure;
+                            break;
+                        case FetchStatus.NotFound:
+                            htmlToRender = ErrorPageRenderer.RenderGenericError(url, "404 Not Found", "The page you requested could not be found.", result.ErrorDetail);
+                            SecurityState = SecurityState.NotSecure;
+                            break;
+                        default:
+                             htmlToRender = ErrorPageRenderer.RenderGenericError(url, "Error", "Something went wrong.", result.ErrorDetail);
+                             SecurityState = SecurityState.NotSecure;
+                             break;
+                    }
+                }
+                else
+                {
+                    // Success
+                    if (uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase))
+                        SecurityState = SecurityState.Secure;
+                    else if (uri.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase))
+                        SecurityState = SecurityState.NotSecure;
+                    else
+                        SecurityState = SecurityState.None;
+                }
+
+                Console.WriteLine($"[NavigateAsync] Rendering content for {uri}");
+                var elem = await _engine.RenderAsync(htmlToRender, uri, u => _resources.FetchTextAsync(u), u => _resources.FetchImageAsync(u), u => { _ = NavigateAsync(u.AbsoluteUri); });
                 
                 try { RepaintReady?.Invoke(this, elem); } catch { }
 
@@ -310,6 +375,16 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         private void RaiseNavigationFailed(string msg) => NavigationFailed?.Invoke(this, msg);
+
+        public void HighlightElement(LiteElement element)
+        {
+            _engine.HighlightElement(element);
+        }
+
+        public void RemoveHighlight()
+        {
+            _engine.RemoveHighlight();
+        }
 
         public void Dispose()
         {

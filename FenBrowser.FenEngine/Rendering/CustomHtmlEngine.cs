@@ -36,7 +36,31 @@ namespace FenBrowser.FenEngine.Rendering
         }
         public event EventHandler<bool> LoadingChanged;
         public event EventHandler<string> TitleChanged;
+        public event Action<Rect?> HighlightRectChanged;
         public bool EnableJavaScript { get; set; } = true;
+
+        public void HighlightElement(LiteElement element)
+        {
+            if (element == null)
+            {
+                RemoveHighlight();
+                return;
+            }
+
+            if (JavaScriptEngine.TryGetVisualRect(element, out double x, out double y, out double w, out double h))
+            {
+                HighlightRectChanged?.Invoke(new Rect(x, y, w, h));
+            }
+            else
+            {
+                RemoveHighlight();
+            }
+        }
+
+        public void RemoveHighlight()
+        {
+            HighlightRectChanged?.Invoke(null);
+        }
 
         public object Evaluate(string script)
         {

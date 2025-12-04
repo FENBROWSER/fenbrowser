@@ -390,18 +390,29 @@ private async Task<Control> MakeGridFallbackAsync(LiteElement n, Uri baseUri, Ac
     }
     if (columnGap <= 0 && rowGap > 0) columnGap = rowGap;
     if (rowGap <= 0 && columnGap > 0) rowGap = columnGap;
+    bool isGrid = IsGridContainer(css);
     var wrapPanel = new FlexPanel
     {
-        Orientation = Orientation.Horizontal,
+        Orientation = isGrid ? Orientation.Vertical : Orientation.Horizontal,
         ColumnGap = Math.Max(0, columnGap),
-        RowGap = Math.Max(0, rowGap)
+        RowGap = Math.Max(0, rowGap),
+        FlexWrap = isGrid ? "wrap" : "nowrap" // Default to wrap for grid to prevent explosion
     };
     
     // Handle flex-direction
-    if (css != null && css.Map != null && css.Map.TryGetValue("flex-direction", out var fdir) && !string.IsNullOrWhiteSpace(fdir))
+    if (css != null && css.Map != null)
     {
-        fdir = fdir.Trim().ToLowerInvariant();
-        if (fdir.Contains("column")) wrapPanel.Orientation = Orientation.Vertical;
+        if (css.Map.TryGetValue("flex-direction", out var fdir) && !string.IsNullOrWhiteSpace(fdir))
+        {
+            fdir = fdir.Trim().ToLowerInvariant();
+            if (fdir.Contains("column")) wrapPanel.Orientation = Orientation.Vertical;
+            else if (fdir.Contains("row")) wrapPanel.Orientation = Orientation.Horizontal;
+        }
+
+        if (css.Map.TryGetValue("flex-wrap", out var fwrap) && !string.IsNullOrWhiteSpace(fwrap))
+        {
+            wrapPanel.FlexWrap = fwrap.Trim().ToLowerInvariant();
+        }
     }
 
     wrapPanel.HorizontalAlignment = HorizontalAlignment.Stretch;
@@ -742,6 +753,7 @@ private async Task<Control> MakeImageAsync(LiteElement n, Uri baseUri, Cancellat
     ApplyInlineStyles(img, n);
     return img;
 }
+
 private async Task<Control> MakeVideoAsync(LiteElement n, Uri baseUri, CancellationToken ct)
 {
     Uri src = null;
@@ -757,6 +769,7 @@ private async Task<Control> MakeVideoAsync(LiteElement n, Uri baseUri, Cancellat
         }
     }
     catch { }
+
     if (src == null)
     {
         try
@@ -2271,12 +2284,59 @@ private Control ApplyBoxesAndText(Control inner, LiteElement n)
 private void ApplyComputedLayout(Control fe, CssComputed css)
 {
     if (fe == null || css == null) return;
-    if (css.Width.HasValue) fe.Width = Math.Max(0, css.Width.Value);
-    if (css.Height.HasValue) fe.Height = Math.Max(0, css.Height.Value);
-    if (css.MinWidth.HasValue) fe.MinWidth = Math.Max(0, css.MinWidth.Value);
-    if (css.MinHeight.HasValue) fe.MinHeight = Math.Max(0, css.MinHeight.Value);
-    if (css.MaxWidth.HasValue) fe.MaxWidth = Math.Max(0, css.MaxWidth.Value);
-    if (css.MaxHeight.HasValue) fe.MaxHeight = Math.Max(0, css.MaxHeight.Value);
+
+    // Box-Sizing Logic
+    // Avalonia Width/Height is effectively "border-box" (total size).
+    // CSS default is "content-box" (content only).
+    // If CSS is content-box, we must ADD padding/border to the CSS width to get the Avalonia Width.
+    // If CSS is border-box, we use the CSS width directly.
+    bool isBorderBox = string.Equals(css.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase);
+
+    if (css.Width.HasValue)
+    {
+        double w = css.Width.Value;
+        if (!isBorderBox)
+        {
+            w += css.Padding.Left + css.Padding.Right + css.BorderThickness.Left + css.BorderThickness.Right;
+        }
+        fe.Width = Math.Max(0, w);
+    }
+    if (css.Height.HasValue)
+    {
+        double h = css.Height.Value;
+        if (!isBorderBox)
+        {
+            h += css.Padding.Top + css.Padding.Bottom + css.BorderThickness.Top + css.BorderThickness.Bottom;
+        }
+        fe.Height = Math.Max(0, h);
+    }
+
+    // Min/Max also need adjustment if content-box
+    if (css.MinWidth.HasValue)
+    {
+        double mw = css.MinWidth.Value;
+        if (!isBorderBox) mw += css.Padding.Left + css.Padding.Right + css.BorderThickness.Left + css.BorderThickness.Right;
+        fe.MinWidth = Math.Max(0, mw);
+    }
+    if (css.MinHeight.HasValue)
+    {
+        double mh = css.MinHeight.Value;
+        if (!isBorderBox) mh += css.Padding.Top + css.Padding.Bottom + css.BorderThickness.Top + css.BorderThickness.Bottom;
+        fe.MinHeight = Math.Max(0, mh);
+    }
+    if (css.MaxWidth.HasValue)
+    {
+        double mw = css.MaxWidth.Value;
+        if (!isBorderBox) mw += css.Padding.Left + css.Padding.Right + css.BorderThickness.Left + css.BorderThickness.Right;
+        fe.MaxWidth = Math.Max(0, mw);
+    }
+    if (css.MaxHeight.HasValue)
+    {
+        double mh = css.MaxHeight.Value;
+        if (!isBorderBox) mh += css.Padding.Top + css.Padding.Bottom + css.BorderThickness.Top + css.BorderThickness.Bottom;
+        fe.MaxHeight = Math.Max(0, mh);
+    }
+
     if (css.Margin.Left != 0 || css.Margin.Top != 0 || css.Margin.Right != 0 || css.Margin.Bottom != 0)
     {
         fe.Margin = css.Margin;
@@ -2491,9 +2551,99 @@ private void ApplyComputedStyles(Control fe, LiteElement n)
         if (border != null) border.Background = st.Background;
         else if (fe is Panel) ((Panel)fe).Background = st.Background;
     }
+    else if (st.Map != null && st.Map.TryGetValue("background-image", out var bgImg) && !string.IsNullOrWhiteSpace(bgImg))
+    {
+        // Handle background-image from CSS if not already parsed into st.Background
+        try
+        {
+            var match = System.Text.RegularExpressions.Regex.Match(bgImg, @"url\(['""]?(?<url>[^'"")]+)['""]?\)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (match.Success)
+            {
+                var url = match.Groups["url"].Value;
+                var uri = ResolveUri(url);
+                if (uri != null)
+                {
+                    LoadIImageAsync(uri.AbsoluteUri).ContinueWith((Task<IImage> t) =>
+                    {
+                        if (t.Status == TaskStatus.RanToCompletion && t.Result != null)
+                        {
+                            var img = t.Result;
+                            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+                            {
+                                try
+                                {
+                                    if (img is IImageBrushSource src)
+                                    {
+                                        var brush = new ImageBrush { Source = src, Stretch = Stretch.UniformToFill };
+                                        if (fe is Panel p) p.Background = brush;
+                                        else if (fe is Border b) b.Background = brush;
+                                    }
+                                }
+                                catch { }
+                            });
+                        }
+                    });
+                }
+            }
+        }
+        catch { }
+    }
     if (st.Opacity.HasValue)
     {
         fe.Opacity = st.Opacity.Value;
+    }
+
+    // New properties
+    if (st.LineHeight.HasValue)
+    {
+        var tb = fe as TextBlock;
+        if (tb != null) tb.LineHeight = st.LineHeight.Value;
+    }
+    if (!string.IsNullOrEmpty(st.WhiteSpace))
+    {
+        var tb = fe as TextBlock;
+        if (tb != null)
+        {
+            var ws = st.WhiteSpace.Trim().ToLowerInvariant();
+            if (ws == "nowrap") tb.TextWrapping = TextWrapping.NoWrap;
+            else if (ws == "pre") tb.TextWrapping = TextWrapping.NoWrap; 
+            else tb.TextWrapping = TextWrapping.Wrap;
+        }
+    }
+    if (!string.IsNullOrEmpty(st.TextOverflow))
+    {
+        var tb = fe as TextBlock;
+        if (tb != null)
+        {
+            var to = st.TextOverflow.Trim().ToLowerInvariant();
+            if (to == "ellipsis") tb.TextTrimming = TextTrimming.CharacterEllipsis;
+        }
+    }
+    if (!string.IsNullOrEmpty(st.Cursor))
+    {
+        var c = fe as Control;
+        if (c != null)
+        {
+             var cur = st.Cursor.Trim().ToLowerInvariant();
+             if (cur == "pointer") c.Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand);
+             else if (cur == "text") c.Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Ibeam);
+             else if (cur == "wait") c.Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Wait);
+             else if (cur == "crosshair") c.Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Cross);
+             else if (cur == "help") c.Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Help);
+        }
+    }
+    if (!string.IsNullOrEmpty(st.VerticalAlign))
+    {
+        var va = st.VerticalAlign.Trim().ToLowerInvariant();
+        VerticalAlignment? align = null;
+        if (va == "top") align = VerticalAlignment.Top;
+        else if (va == "bottom") align = VerticalAlignment.Bottom;
+        else if (va == "middle") align = VerticalAlignment.Center;
+        
+        if (align.HasValue)
+        {
+            fe.VerticalAlignment = align.Value;
+        }
     }
 }
 private void ApplyInlineStyles(Control fe, LiteElement n)
@@ -2868,6 +3018,42 @@ private void ApplyInlineStyles(Control fe, LiteElement n)
             {
                 // Placeholder for background image logic
             }
+        }
+        else if (key == "white-space")
+        {
+            var tb = fe as TextBlock;
+            if (tb != null)
+            {
+                var ws = (val ?? "").Trim().ToLowerInvariant();
+                if (ws == "nowrap") tb.TextWrapping = TextWrapping.NoWrap;
+                else if (ws == "pre") tb.TextWrapping = TextWrapping.NoWrap;
+                else tb.TextWrapping = TextWrapping.Wrap;
+            }
+        }
+        else if (key == "text-overflow")
+        {
+            var tb = fe as TextBlock;
+            if (tb != null)
+            {
+                var to = (val ?? "").Trim().ToLowerInvariant();
+                if (to == "ellipsis") tb.TextTrimming = TextTrimming.CharacterEllipsis;
+            }
+        }
+        else if (key == "cursor")
+        {
+             var cur = (val ?? "").Trim().ToLowerInvariant();
+             if (cur == "pointer") fe.Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand);
+             else if (cur == "text") fe.Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Ibeam);
+             else if (cur == "wait") fe.Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Wait);
+             else if (cur == "crosshair") fe.Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Cross);
+             else if (cur == "help") fe.Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Help);
+        }
+        else if (key == "vertical-align")
+        {
+            var va = (val ?? "").Trim().ToLowerInvariant();
+            if (va == "top") fe.VerticalAlignment = VerticalAlignment.Top;
+            else if (va == "bottom") fe.VerticalAlignment = VerticalAlignment.Bottom;
+            else if (va == "middle") fe.VerticalAlignment = VerticalAlignment.Center;
         }
     }
 }
