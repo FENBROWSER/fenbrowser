@@ -93,7 +93,7 @@ namespace FenBrowser.UI
             set => SetValue(CurrentTabWidthProperty, value);
         }
 
-        public MainWindow(int? port = null)
+        public MainWindow(int? port = null, string initialUrl = null)
         {
             InitializeComponent();
             DataContext = this; // Set DataContext for bindings
@@ -136,7 +136,7 @@ namespace FenBrowser.UI
             };
 
 
-            InitializeBrowser(port, initialTab);
+            InitializeBrowser(port, initialTab, initialUrl);
             
             this.KeyDown += OnWindowKeyDown;
         }
@@ -149,7 +149,7 @@ namespace FenBrowser.UI
             }
         }
 
-        private void InitializeBrowser(int? port, TabItemModel initialTab)
+        private void InitializeBrowser(int? port, TabItemModel initialTab, string initialUrl)
         {
             // Create browser for the initial tab
             CreateBrowserForTab(initialTab);
@@ -163,6 +163,11 @@ namespace FenBrowser.UI
                 _webDriver.Start(); 
             } 
             catch { }
+
+            if (!string.IsNullOrEmpty(initialUrl))
+            {
+                _activeBrowser.NavigateAsync(initialUrl);
+            }
         }
 
         private void CreateBrowserForTab(TabItemModel tab)

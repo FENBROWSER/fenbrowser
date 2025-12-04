@@ -911,7 +911,8 @@ namespace FenBrowser.FenEngine.Rendering
 
             try
             {
-                try { System.IO.File.AppendAllText("debug_log.txt", "[RenderAsync] Start\r\n"); } catch { }
+                try { System.IO.File.AppendAllText("debug_log.txt", $"[RenderAsync] Start. HTML Length: {html?.Length ?? 0}\r\n"); } catch { }
+                Console.WriteLine($"[RenderAsync] Start. HTML Length: {html?.Length ?? 0}");
                 
                 // PROTECTION: Validate HTML size to prevent crashes
                 const int MaxHtmlSize = 2 * 1024 * 1024; // 2MB limit
@@ -1246,7 +1247,8 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 catch (Exception vtEx)
                 {
-                    try { System.IO.File.AppendAllText("debug_log.txt", $"[RenderAsync] Visual tree error: {vtEx.Message}\r\n"); } catch { }
+                    try { System.IO.File.AppendAllText("debug_log.txt", $"[RenderAsync] Visual tree error: {vtEx}\r\n"); } catch { }
+                    Console.WriteLine($"[RenderAsync] Visual tree error: {vtEx}");
                     // Return null on error rather than crashing
                     return null;
                 }

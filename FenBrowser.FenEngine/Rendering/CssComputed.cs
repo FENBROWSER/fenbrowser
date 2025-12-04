@@ -52,6 +52,7 @@ namespace FenBrowser.FenEngine.Rendering
         public double? ColumnGap { get; set; }
         public double? RowGap { get; set; }
         public double? Gap { get; set; }
+        public string GridTemplateColumns { get; set; }
 
         // Flexbox
         public string FlexDirection { get; set; }
@@ -97,6 +98,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         // Visual effects
         public string Transform { get; set; }
+        public string Float { get; set; }
         public double? Opacity { get; set; }        // 0.0 to 1.0
         public string TextShadow { get; set; }      // CSS text-shadow value  
         public string BoxShadow { get; set; }       // CSS box-shadow value

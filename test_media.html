@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Media Test</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #333; color: white; }
+        section { margin-bottom: 20px; border: 1px solid #555; padding: 10px; background: #222; }
+        h2 { border-bottom: 1px solid #555; padding-bottom: 5px; }
+    </style>
+</head>
+<body>
+    <h1>Media & Iframe Test</h1>
+
+    <section>
+        <h2>Video (Native Launcher)</h2>
+        <p>Clicking play should open the system media player.</p>
+        <!-- Using a reliable public video URL -->
+        <video src="http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4" width="400" height="225" poster="https://via.placeholder.com/400x225.png?text=Video+Poster"></video>
+    </section>
+
+    <section>
+        <h2>Iframe (Recursive Rendering)</h2>
+        <p>This box should load the example.com website.</p>
+        <iframe src="https://example.com" width="600" height="400"></iframe>
+    </section>
+
+    <section>
+        <h2>Audio</h2>
+        <audio src="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"></audio>
+    </section>
+</body>
+</html>

@@ -35,8 +35,10 @@ wpt/
 
 # Keep important test files
 !loops_test_v5.html
-
-# .NET specific
-project.lock.json
-project.fragment.lock.json
-artifacts/
+!test_media.html
+!test_layout.html
+!test_css_features.html
+!debug_log.txt
+!test_selectors.html
+!build_log.txt
+!test_footer.html

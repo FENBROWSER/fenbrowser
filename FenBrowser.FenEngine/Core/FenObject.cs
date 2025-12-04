@@ -11,6 +11,7 @@ namespace FenBrowser.FenEngine.Core
     {
         private readonly Dictionary<string, IValue> _properties = new Dictionary<string, IValue>();
         private IObject _prototype;
+        public object NativeObject { get; set; } // Holds underlying .NET object (Regex, Date, etc.)
 
         public IValue Get(string key)
         {

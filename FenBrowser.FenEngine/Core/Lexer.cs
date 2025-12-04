@@ -24,6 +24,17 @@ namespace FenBrowser.FenEngine.Core
         Bang,
         Asterisk,
         Slash,
+        Percent,      // %
+        
+        // Increment/Decrement
+        Increment,    // ++
+        Decrement,    // --
+        
+        // Compound assignments
+        PlusAssign,   // +=
+        MinusAssign,  // -=
+        MulAssign,    // *=
+        DivAssign,    // /=
         
         // Comparison
         Lt,
@@ -32,6 +43,8 @@ namespace FenBrowser.FenEngine.Core
         NotEq,
         LtEq,
         GtEq,
+        StrictEq,     // ===
+        StrictNotEq,  // !==
         And,
         Or,
 
@@ -72,7 +85,37 @@ namespace FenBrowser.FenEngine.Core
 
         Throw,
         Async,
-        Await
+        Await,
+        Typeof,       // typeof
+        Instanceof,   // instanceof
+        In,           // in
+        Of,           // of
+        Delete,       // delete
+        Void,         // void
+        Break,        // break
+        Continue,     // continue
+        Switch,       // switch
+        Case,         // case
+        Default,      // default
+        Do,           // do
+
+        Extends,      // extends
+        Super,        // super
+        Static,       // static
+        Import,       // import
+        Export,       // export
+        From,         // from
+        As,           // as
+
+        // JavaScript special operators
+        Question,   // ?
+        Arrow,      // =>
+        Regex,      // /pattern/flags
+        Backtick,   // ` (template literal start)
+        TemplateString, // Template literal content
+        TemplateExprStart, // ${
+        TemplateExprEnd,   // }
+        Ellipsis           // ...
     }
 
     public class Token
@@ -104,6 +147,7 @@ namespace FenBrowser.FenEngine.Core
         private char _ch;           // current char under examination
         private int _line = 1;
         private int _column = 0;
+        private Token _prevToken; // Track previous token for regex vs division context
 
         private static readonly Dictionary<string, TokenType> Keywords = new Dictionary<string, TokenType>
         {
@@ -129,6 +173,26 @@ namespace FenBrowser.FenEngine.Core
             { "throw", TokenType.Throw },
             { "async", TokenType.Async },
             { "await", TokenType.Await },
+            { "typeof", TokenType.Typeof },
+            { "instanceof", TokenType.Instanceof },
+            { "in", TokenType.In },
+            { "of", TokenType.Of },
+            { "delete", TokenType.Delete },
+            { "void", TokenType.Void },
+            { "break", TokenType.Break },
+            { "continue", TokenType.Continue },
+            { "switch", TokenType.Switch },
+            { "class", TokenType.Class },
+            { "extends", TokenType.Extends },
+            { "super", TokenType.Super },
+            { "static", TokenType.Static },
+            { "import", TokenType.Import },
+            { "export", TokenType.Export },
+            { "from", TokenType.From },
+            { "as", TokenType.As },
+            { "case", TokenType.Case },
+            { "default", TokenType.Default },
+            { "do", TokenType.Do },
         };
 
         public Lexer(string input)
@@ -173,27 +237,75 @@ namespace FenBrowser.FenEngine.Core
                 case '=':
                     if (PeekChar() == '=')
                     {
-                        char ch = _ch;
                         ReadChar();
-                        token = new Token(TokenType.Eq, "==", _line, startColumn);
+                        if (PeekChar() == '=')
+                        {
+                            ReadChar();
+                            token = new Token(TokenType.StrictEq, "===", _line, startColumn);
+                        }
+                        else
+                        {
+                            token = new Token(TokenType.Eq, "==", _line, startColumn);
+                        }
+                    }
+                    else if (PeekChar() == '>')
+                    {
+                        ReadChar();
+                        token = new Token(TokenType.Arrow, "=>", _line, startColumn);
                     }
                     else
                     {
                         token = new Token(TokenType.Assign, "=", _line, startColumn);
                     }
                     break;
+                case '?':
+                    token = new Token(TokenType.Question, "?", _line, startColumn);
+                    break;
                 case '+':
-                    token = new Token(TokenType.Plus, "+", _line, startColumn);
+                    if (PeekChar() == '+')
+                    {
+                        ReadChar();
+                        token = new Token(TokenType.Increment, "++", _line, startColumn);
+                    }
+                    else if (PeekChar() == '=')
+                    {
+                        ReadChar();
+                        token = new Token(TokenType.PlusAssign, "+=", _line, startColumn);
+                    }
+                    else
+                    {
+                        token = new Token(TokenType.Plus, "+", _line, startColumn);
+                    }
                     break;
                 case '-':
-                    token = new Token(TokenType.Minus, "-", _line, startColumn);
+                    if (PeekChar() == '-')
+                    {
+                        ReadChar();
+                        token = new Token(TokenType.Decrement, "--", _line, startColumn);
+                    }
+                    else if (PeekChar() == '=')
+                    {
+                        ReadChar();
+                        token = new Token(TokenType.MinusAssign, "-=", _line, startColumn);
+                    }
+                    else
+                    {
+                        token = new Token(TokenType.Minus, "-", _line, startColumn);
+                    }
                     break;
                 case '!':
                     if (PeekChar() == '=')
                     {
-                        char ch = _ch;
                         ReadChar();
-                        token = new Token(TokenType.NotEq, "!=", _line, startColumn);
+                        if (PeekChar() == '=')
+                        {
+                            ReadChar();
+                            token = new Token(TokenType.StrictNotEq, "!==", _line, startColumn);
+                        }
+                        else
+                        {
+                            token = new Token(TokenType.NotEq, "!=", _line, startColumn);
+                        }
                     }
                     else
                     {
@@ -212,13 +324,38 @@ namespace FenBrowser.FenEngine.Core
                         SkipBlockComment();
                         return NextToken();
                     }
+                    else if (PeekChar() == '=')
+                    {
+                        ReadChar();
+                        token = new Token(TokenType.DivAssign, "/=", _line, startColumn);
+                    }
                     else
                     {
-                        token = new Token(TokenType.Slash, "/", _line, startColumn);
+                        // Check for regex literal
+                        if (IsRegexStart(_prevToken))
+                        {
+                            string regex = ReadRegexLiteral();
+                            token = new Token(TokenType.Regex, regex, _line, startColumn);
+                        }
+                        else
+                        {
+                            token = new Token(TokenType.Slash, "/", _line, startColumn);
+                        }
                     }
                     break;
                 case '*':
-                    token = new Token(TokenType.Asterisk, "*", _line, startColumn);
+                    if (PeekChar() == '=')
+                    {
+                        ReadChar();
+                        token = new Token(TokenType.MulAssign, "*=", _line, startColumn);
+                    }
+                    else
+                    {
+                        token = new Token(TokenType.Asterisk, "*", _line, startColumn);
+                    }
+                    break;
+                case '%':
+                    token = new Token(TokenType.Percent, "%", _line, startColumn);
                     break;
                 case '<':
                     if (PeekChar() == '=')
@@ -274,7 +411,16 @@ namespace FenBrowser.FenEngine.Core
                     token = new Token(TokenType.Colon, ":", _line, startColumn);
                     break;
                 case '.':
-                    token = new Token(TokenType.Dot, ".", _line, startColumn);
+                    if (PeekChar() == '.' && _readPosition + 1 < _input.Length && _input[_readPosition + 1] == '.')
+                    {
+                        ReadChar();
+                        ReadChar();
+                        token = new Token(TokenType.Ellipsis, "...", _line, startColumn);
+                    }
+                    else
+                    {
+                        token = new Token(TokenType.Dot, ".", _line, startColumn);
+                    }
                     break;
                 case '(':
                     token = new Token(TokenType.LParen, "(", _line, startColumn);
@@ -298,6 +444,9 @@ namespace FenBrowser.FenEngine.Core
                 case '\'':
                     token = new Token(TokenType.String, ReadString(_ch), _line, startColumn);
                     break;
+                case '`':
+                    token = new Token(TokenType.String, ReadTemplateLiteral(), _line, startColumn);
+                    break;
                 case '\0':
                     token = new Token(TokenType.Eof, "", _line, startColumn);
                     break;
@@ -306,11 +455,15 @@ namespace FenBrowser.FenEngine.Core
                     {
                         string literal = ReadIdentifier();
                         TokenType type = LookupIdent(literal);
-                        return new Token(type, literal, _line, startColumn);
+                        var t = new Token(type, literal, _line, startColumn);
+                        _prevToken = t;
+                        return t;
                     }
                     else if (IsDigit(_ch))
                     {
-                        return new Token(TokenType.Number, ReadNumber(), _line, startColumn);
+                        var t = new Token(TokenType.Number, ReadNumber(), _line, startColumn);
+                        _prevToken = t;
+                        return t;
                     }
                     else
                     {
@@ -320,6 +473,7 @@ namespace FenBrowser.FenEngine.Core
             }
 
             ReadChar();
+            _prevToken = token;
             return token;
         }
 
@@ -438,6 +592,158 @@ namespace FenBrowser.FenEngine.Core
                 return type;
             }
             return TokenType.Identifier;
+        }
+
+        // Read template literal: `Hello ${name}!`
+        // For simplicity, we'll evaluate ${} expressions and return the concatenated string
+        private string ReadTemplateLiteral()
+        {
+            var result = new StringBuilder();
+            ReadChar(); // consume opening `
+            
+            while (_ch != '`' && _ch != '\0')
+            {
+                if (_ch == '$' && PeekChar() == '{')
+                {
+                    // Found ${...} - need to read the expression
+                    ReadChar(); // consume $
+                    ReadChar(); // consume {
+                    
+                    // Read until matching }
+                    int depth = 1;
+                    var expr = new StringBuilder();
+                    while (depth > 0 && _ch != '\0')
+                    {
+                        if (_ch == '{') depth++;
+                        if (_ch == '}') depth--;
+                        if (depth > 0)
+                        {
+                            expr.Append(_ch);
+                            ReadChar();
+                        }
+                    }
+                    
+                    // For now, just include a placeholder - the interpreter will handle this
+                    result.Append("${");
+                    result.Append(expr.ToString());
+                    result.Append("}");
+                    
+                    if (_ch == '}') ReadChar(); // consume closing }
+                }
+                else if (_ch == '\\')
+                {
+                    // Handle escape sequences
+                    ReadChar();
+                    switch (_ch)
+                    {
+                        case 'n': result.Append('\n'); break;
+                        case 't': result.Append('\t'); break;
+                        case 'r': result.Append('\r'); break;
+                        case '\\': result.Append('\\'); break;
+                        case '`': result.Append('`'); break;
+                        case '$': result.Append('$'); break;
+                        default: result.Append(_ch); break;
+                    }
+                    ReadChar();
+                }
+                else
+                {
+                    result.Append(_ch);
+                    ReadChar();
+                }
+            }
+            
+            // Don't consume closing backtick - let it be consumed by ReadChar after
+            return result.ToString();
+        }
+        private bool IsRegexStart(Token prev)
+        {
+            if (prev == null) return true; // Start of file
+            
+            switch (prev.Type)
+            {
+                case TokenType.Assign:
+                case TokenType.PlusAssign:
+                case TokenType.MinusAssign:
+                case TokenType.MulAssign:
+                case TokenType.DivAssign:
+                case TokenType.LParen:
+                case TokenType.LBrace:
+                case TokenType.LBracket:
+                case TokenType.Comma:
+                case TokenType.Colon:
+                case TokenType.Question:
+                case TokenType.Return:
+                case TokenType.Throw:
+                case TokenType.Case:
+                case TokenType.New:
+                case TokenType.Delete:
+                case TokenType.Void:
+                case TokenType.Typeof:
+                case TokenType.Bang:
+                case TokenType.NotEq:
+                case TokenType.StrictNotEq:
+                case TokenType.And:
+                case TokenType.Or:
+                case TokenType.Arrow:
+                case TokenType.Semicolon:
+                case TokenType.Else:
+                case TokenType.Do:
+                case TokenType.While:
+                case TokenType.If:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private string ReadRegexLiteral()
+        {
+            int start = _position;
+            // We are at the first '/'
+            ReadChar(); // Consume '/'
+            
+            bool escape = false;
+            bool inClass = false;
+            
+            while (_ch != '\0')
+            {
+                if (escape)
+                {
+                    escape = false;
+                }
+                else if (_ch == '\\')
+                {
+                    escape = true;
+                }
+                else if (_ch == '[')
+                {
+                    inClass = true;
+                }
+                else if (_ch == ']')
+                {
+                    inClass = false;
+                }
+                else if (_ch == '/' && !inClass)
+                {
+                    break; // End of pattern
+                }
+                
+                ReadChar();
+            }
+            
+            if (_ch == '/')
+            {
+                ReadChar(); // Consume closing '/'
+            }
+            
+            // Parse flags (g, i, m, u, y)
+            while (IsLetter(_ch))
+            {
+                ReadChar();
+            }
+            
+            return _input.Substring(start, _position - start);
         }
     }
 }

@@ -67,7 +67,7 @@ namespace FenBrowser.FenEngine.DOM
         public IObject GetPrototype() => _prototype;
         public void SetPrototype(IObject prototype) => _prototype = prototype;
 
-        private IValue GetElementById(IValue[] args)
+        private IValue GetElementById(IValue[] args, IValue thisVal)
         {
             if (!_context.Permissions.CheckAndLog(JsPermissions.DomRead, "getElementById"))
                 throw new FenSecurityError("DOM read permission required");
@@ -90,7 +90,7 @@ namespace FenBrowser.FenEngine.DOM
             }
         }
 
-        private IValue QuerySelector(IValue[] args)
+        private IValue QuerySelector(IValue[] args, IValue thisVal)
         {
             if (!_context.Permissions.CheckAndLog(JsPermissions.DomRead, "querySelector"))
                 throw new FenSecurityError("DOM read permission required");

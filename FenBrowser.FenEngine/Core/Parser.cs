@@ -8,6 +8,7 @@ namespace FenBrowser.FenEngine.Core
         Lowest,
         Comma,       // ,
         Assignment,  // =
+        Ternary,     // ? :  (conditional)
         LogicalOr,   // ||
         LogicalAnd,  // &&
         Equals,      // ==
@@ -33,21 +34,34 @@ namespace FenBrowser.FenEngine.Core
         {
             { TokenType.Comma, Precedence.Comma },
             { TokenType.Assign, Precedence.Assignment },
+            { TokenType.PlusAssign, Precedence.Assignment },
+            { TokenType.MinusAssign, Precedence.Assignment },
+            { TokenType.MulAssign, Precedence.Assignment },
+            { TokenType.DivAssign, Precedence.Assignment },
             { TokenType.Or, Precedence.LogicalOr },
             { TokenType.And, Precedence.LogicalAnd },
             { TokenType.Eq, Precedence.Equals },
             { TokenType.NotEq, Precedence.Equals },
+            { TokenType.StrictEq, Precedence.Equals },
+            { TokenType.StrictNotEq, Precedence.Equals },
             { TokenType.Lt, Precedence.LessGreater },
             { TokenType.Gt, Precedence.LessGreater },
             { TokenType.LtEq, Precedence.LessGreater },
             { TokenType.GtEq, Precedence.LessGreater },
+            { TokenType.Instanceof, Precedence.LessGreater },
+            { TokenType.In, Precedence.LessGreater },
             { TokenType.Plus, Precedence.Sum },
             { TokenType.Minus, Precedence.Sum },
             { TokenType.Slash, Precedence.Product },
             { TokenType.Asterisk, Precedence.Product },
+            { TokenType.Percent, Precedence.Product },
             { TokenType.LParen, Precedence.Call },
             { TokenType.Dot, Precedence.Call },  // Member access has same precedence as function calls
             { TokenType.LBracket, Precedence.Index },
+            { TokenType.Question, Precedence.Ternary },  // Ternary operator
+            { TokenType.Arrow, Precedence.Assignment },  // Arrow functions
+            { TokenType.Increment, Precedence.Prefix },
+            { TokenType.Decrement, Precedence.Prefix },
         };
 
         public Parser(Lexer lexer)
@@ -73,6 +87,26 @@ namespace FenBrowser.FenEngine.Core
             RegisterPrefix(TokenType.Null, ParseNull);
             RegisterPrefix(TokenType.Undefined, ParseUndefined);
             RegisterPrefix(TokenType.This, ParseIdentifier); // Handle 'this' as identifier
+            RegisterPrefix(TokenType.Typeof, ParsePrefixExpression);  // typeof x
+            RegisterPrefix(TokenType.Void, ParsePrefixExpression);    // void x
+            RegisterPrefix(TokenType.Delete, ParsePrefixExpression);  // delete x
+            RegisterPrefix(TokenType.Increment, ParsePrefixIncrement); // ++x
+            RegisterPrefix(TokenType.Decrement, ParsePrefixDecrement); // --x
+            RegisterPrefix(TokenType.Slash, ParseRegexLiteral);        // /pattern/flags
+            RegisterPrefix(TokenType.Regex, ParseRegexToken);          // Already lexed regex
+            RegisterPrefix(TokenType.Semicolon, ParseEmptyExpression); // Empty expression (;)
+            RegisterPrefix(TokenType.Colon, ParseEmptyExpression);     // Recovery for labeled statements
+            RegisterPrefix(TokenType.Comma, ParseEmptyExpression);     // Recovery for trailing commas
+            RegisterPrefix(TokenType.RBrace, ParseEmptyExpression);    // Recovery for empty blocks
+            RegisterPrefix(TokenType.Await, ParseAwaitExpression);     // await ...
+            RegisterPrefix(TokenType.Async, ParseAsyncPrefix);         // async ...
+            RegisterPrefix(TokenType.RParen, ParseEmptyExpression);    // Recovery for empty parens
+            RegisterPrefix(TokenType.RBracket, ParseEmptyExpression);  // Recovery for empty brackets
+            RegisterPrefix(TokenType.Else, ParseEmptyExpression);      // Recovery for else without if
+            RegisterPrefix(TokenType.Dot, ParseEmptyExpression);       // Recovery for leading dots
+            RegisterPrefix(TokenType.Lt, ParseEmptyExpression);        // Recovery for bare < (like in HTML)
+            RegisterPrefix(TokenType.Plus, ParsePrefixExpression);     // +x (unary plus)
+            RegisterPrefix(TokenType.Asterisk, ParseEmptyExpression);  // Recovery for bare *
 
             // Register infix parsers
             RegisterInfix(TokenType.Plus, ParseInfixExpression);
@@ -92,6 +126,19 @@ namespace FenBrowser.FenEngine.Core
             RegisterInfix(TokenType.Or, ParseInfixExpression);
             RegisterInfix(TokenType.LBracket, ParseIndexExpression);
             RegisterInfix(TokenType.Comma, ParseInfixExpression);
+            RegisterInfix(TokenType.Question, ParseConditionalExpression);  // Ternary
+            RegisterInfix(TokenType.Arrow, ParseArrowFunctionFromParams);   // Arrow functions
+            RegisterInfix(TokenType.StrictEq, ParseInfixExpression);    // ===
+            RegisterInfix(TokenType.StrictNotEq, ParseInfixExpression); // !==
+            RegisterInfix(TokenType.Percent, ParseInfixExpression);     // %
+            RegisterInfix(TokenType.PlusAssign, ParseCompoundAssignment);  // +=
+            RegisterInfix(TokenType.MinusAssign, ParseCompoundAssignment); // -=
+            RegisterInfix(TokenType.MulAssign, ParseCompoundAssignment);   // *=
+            RegisterInfix(TokenType.DivAssign, ParseCompoundAssignment);   // /=
+            RegisterInfix(TokenType.Instanceof, ParseInfixExpression);  // instanceof
+            RegisterInfix(TokenType.In, ParseInfixExpression);          // in
+            RegisterInfix(TokenType.Increment, ParsePostfixIncrement);  // x++
+            RegisterInfix(TokenType.Decrement, ParsePostfixDecrement);  // x--
 
             // Read two tokens, so curToken and peekToken are both set
             NextToken();
@@ -141,6 +188,28 @@ namespace FenBrowser.FenEngine.Core
                 case TokenType.Var:
                 case TokenType.Const: // Treat const/var as let for now
                     return ParseLetStatement();
+                case TokenType.Function:
+                    // Handle function declaration
+                    var funcExp = ParseFunctionLiteral() as FunctionLiteral;
+                    if (funcExp != null && funcExp.Name != null)
+                    {
+                        // Treat function declaration as let name = function...
+                        return new LetStatement 
+                        { 
+                            Token = funcExp.Token, 
+                            Name = new Identifier(funcExp.Token, funcExp.Name), 
+                            Value = funcExp 
+                        };
+                    }
+                    return new ExpressionStatement { Expression = funcExp };
+                case TokenType.Class:
+                    return ParseClassStatement();
+                case TokenType.Import:
+                    return ParseImportDeclaration();
+                case TokenType.Export:
+                    return ParseExportDeclaration();
+                case TokenType.Async:
+                    return ParseAsyncFunctionDeclaration();
                 case TokenType.Return:
                     return ParseReturnStatement();
                 case TokenType.Try:
@@ -151,6 +220,14 @@ namespace FenBrowser.FenEngine.Core
                     return ParseWhileStatement();
                 case TokenType.For:
                     return ParseForStatement();
+                case TokenType.Switch:
+                    return ParseSwitchStatement();
+                case TokenType.Break:
+                    return ParseBreakStatement();
+                case TokenType.Continue:
+                    return ParseContinueStatement();
+                case TokenType.Do:
+                    return ParseDoWhileStatement();
                 case TokenType.Semicolon:
                     return null; // Ignore empty statements
                 default:
@@ -162,12 +239,49 @@ namespace FenBrowser.FenEngine.Core
         {
             var stmt = new LetStatement { Token = _curToken };
 
-            if (!ExpectPeek(TokenType.Identifier))
+            NextToken(); // Move past var/let/const
+
+            // Check for destructuring: var { a, b } = obj  or  var [x, y] = arr
+            if (CurTokenIs(TokenType.LBrace) || CurTokenIs(TokenType.LBracket))
+            {
+                // Skip destructuring pattern - just consume until we hit = or ;
+                var depth = 1;
+                var isObject = CurTokenIs(TokenType.LBrace);
+                var closeToken = isObject ? TokenType.RBrace : TokenType.RBracket;
+                
+                // Parse the destructuring pattern
+                stmt.DestructuringPattern = ParseExpression(Precedence.Lowest);
+                stmt.Name = new Identifier(_curToken, "_destructured"); // Dummy name
+                
+                if (PeekTokenIs(TokenType.Assign))
+                {
+                    NextToken(); // Move to =
+                    NextToken(); // Move past =
+                    stmt.Value = ParseExpression(Precedence.Lowest);
+                }
+                
+                if (PeekTokenIs(TokenType.Semicolon))
+                {
+                    NextToken();
+                }
+                
+                return stmt;
+            }
+
+            // Normal variable: var x = value
+            if (!CurTokenIs(TokenType.Identifier))
             {
                 return null;
             }
 
             stmt.Name = new Identifier(_curToken, _curToken.Literal);
+
+            // Handle variable without initializer: var x;
+            if (PeekTokenIs(TokenType.Semicolon) || PeekTokenIs(TokenType.Comma))
+            {
+                if (PeekTokenIs(TokenType.Semicolon)) NextToken();
+                return stmt;
+            }
 
             if (!ExpectPeek(TokenType.Assign))
             {
@@ -334,26 +448,60 @@ namespace FenBrowser.FenEngine.Core
                 return null;
             }
 
-            if (!ExpectPeek(TokenType.LBrace))
-            {
-                return null;
-            }
-
-            expression.Consequence = ParseBlockStatement();
+            // Handle body - with or without braces
+            expression.Consequence = ParseBodyAsBlock();
+            if (expression.Consequence == null) return null;
 
             if (PeekTokenIs(TokenType.Else))
             {
                 NextToken();
 
-                if (!ExpectPeek(TokenType.LBrace))
+                // Check for else if
+                if (PeekTokenIs(TokenType.If))
                 {
-                    return null;
+                    NextToken();
+                    var elseIfExpr = ParseIfExpression();
+                    if (elseIfExpr is IfExpression)
+                    {
+                        expression.Alternative = new BlockStatement 
+                        { 
+                            Token = _curToken,
+                            Statements = new System.Collections.Generic.List<Statement> 
+                            { 
+                                new ExpressionStatement { Expression = elseIfExpr }
+                            }
+                        };
+                    }
                 }
-
-                expression.Alternative = ParseBlockStatement();
+                else
+                {
+                    // Regular else - with or without braces
+                    expression.Alternative = ParseBodyAsBlock();
+                }
             }
 
             return expression;
+        }
+
+        // Helper: Parse a body that may or may not have braces
+        private BlockStatement ParseBodyAsBlock()
+        {
+            if (PeekTokenIs(TokenType.LBrace))
+            {
+                NextToken(); // Move to '{'
+                return ParseBlockStatement();
+            }
+            else
+            {
+                // Single statement without braces
+                NextToken();
+                var stmt = ParseStatement();
+                if (stmt == null) return null;
+                
+                var block = new BlockStatement { Token = _curToken };
+                block.Statements.Add(stmt);
+                return block;
+            }
         }
 
         private BlockStatement ParseBlockStatement()
@@ -377,6 +525,12 @@ namespace FenBrowser.FenEngine.Core
         private Expression ParseFunctionLiteral()
         {
             var lit = new FunctionLiteral { Token = _curToken };
+
+            if (PeekTokenIs(TokenType.Identifier))
+            {
+                NextToken();
+                lit.Name = _curToken.Literal;
+            }
 
             if (!ExpectPeek(TokenType.LParen))
             {
@@ -407,13 +561,49 @@ namespace FenBrowser.FenEngine.Core
 
             NextToken();
 
-            identifiers.Add(new Identifier(_curToken, _curToken.Literal));
+            // TODO: Handle destructuring parameters
+            if (CurTokenIs(TokenType.Identifier))
+            {
+                var ident = new Identifier(_curToken, _curToken.Literal);
+                if (PeekTokenIs(TokenType.Assign))
+                {
+                    NextToken(); // =
+                    NextToken(); // value
+                    ident.DefaultValue = ParseExpression(Precedence.Lowest);
+                }
+                identifiers.Add(ident);
+            }
+            else if (CurTokenIs(TokenType.Ellipsis))
+            {
+                NextToken();
+                if (!CurTokenIs(TokenType.Identifier)) return null;
+                var ident = new Identifier(_curToken, _curToken.Literal) { IsRest = true };
+                identifiers.Add(ident);
+            }
 
             while (PeekTokenIs(TokenType.Comma))
             {
                 NextToken();
                 NextToken();
-                identifiers.Add(new Identifier(_curToken, _curToken.Literal));
+                
+                if (CurTokenIs(TokenType.Identifier))
+                {
+                    var ident = new Identifier(_curToken, _curToken.Literal);
+                    if (PeekTokenIs(TokenType.Assign))
+                    {
+                        NextToken(); // =
+                        NextToken(); // value
+                        ident.DefaultValue = ParseExpression(Precedence.Lowest);
+                    }
+                    identifiers.Add(ident);
+                }
+                else if (CurTokenIs(TokenType.Ellipsis))
+                {
+                    NextToken();
+                    if (!CurTokenIs(TokenType.Identifier)) return null;
+                    var ident = new Identifier(_curToken, _curToken.Literal) { IsRest = true };
+                    identifiers.Add(ident);
+                }
             }
 
             if (!ExpectPeek(TokenType.RParen))
@@ -442,13 +632,30 @@ namespace FenBrowser.FenEngine.Core
             }
 
             NextToken();
-            args.Add(ParseExpression(Precedence.Lowest));
+            if (CurTokenIs(TokenType.Ellipsis))
+            {
+                NextToken();
+                args.Add(new SpreadElement { Token = _curToken, Argument = ParseExpression(Precedence.Lowest) });
+            }
+            else
+            {
+                args.Add(ParseExpression(Precedence.Lowest));
+            }
 
             while (PeekTokenIs(TokenType.Comma))
             {
                 NextToken();
                 NextToken();
-                args.Add(ParseExpression(Precedence.Lowest));
+                
+                if (CurTokenIs(TokenType.Ellipsis))
+                {
+                    NextToken();
+                    args.Add(new SpreadElement { Token = _curToken, Argument = ParseExpression(Precedence.Lowest) });
+                }
+                else
+                {
+                    args.Add(ParseExpression(Precedence.Lowest));
+                }
             }
 
             if (!ExpectPeek(TokenType.RParen))
@@ -502,20 +709,72 @@ namespace FenBrowser.FenEngine.Core
                 }
                 else
                 {
-                    // Error
-                    return null;
+                    // Try to recover from unexpected tokens
+                    if (CurTokenIs(TokenType.RBrace)) break;
+                    // Skip unknown tokens and try again
+                    continue;
                 }
 
-                if (!ExpectPeek(TokenType.Colon))
+                // Check for method shorthand: { foo() { ... } }
+                // Key difference from function call: after (...) comes { not other stuff
+                if (PeekTokenIs(TokenType.LParen))
                 {
-                    _errors.Add($"[Debug] ParseObjectLiteral failed for key: {key}, Next token: {_peekToken.Type}, Literal: {_peekToken.Literal}");
+                    // This MIGHT be method shorthand - parse it as such
+                    NextToken(); // Move to '('
+                    var methodParams = ParseFunctionParameters();
+                    
+                    // If next is LBrace, it's definitely a method
+                    if (PeekTokenIs(TokenType.LBrace))
+                    {
+                        NextToken(); // Move to '{'
+                        var methodBody = ParseBlockStatement();
+                        
+                        var methodFunc = new FunctionLiteral 
+                        { 
+                            Token = _curToken, 
+                            Parameters = methodParams, 
+                            Body = methodBody 
+                        };
+                        
+                        obj.Pairs[key] = methodFunc;
+                        
+                        if (!PeekTokenIs(TokenType.RBrace) && !PeekTokenIs(TokenType.Comma))
+                        {
+                            if (PeekTokenIs(TokenType.Eof)) break;
+                        }
+                        if (PeekTokenIs(TokenType.Comma)) NextToken();
+                        continue;
+                    }
+                    // Not a method - might be a computed property or something else
+                    // For now, skip to recovery
                     return null;
                 }
 
-                NextToken();
-                var value = ParseExpression(Precedence.Lowest);
-
-                obj.Pairs[key] = value;
+                // Check for regular key: value, destructuring key = value, or shorthand key
+                if (PeekTokenIs(TokenType.Colon))
+                {
+                    NextToken(); // Consume :
+                    NextToken(); // Move to value
+                    var value = ParseExpression(Precedence.Lowest);
+                    obj.Pairs[key] = value;
+                }
+                else if (PeekTokenIs(TokenType.Assign))
+                {
+                    NextToken(); // Consume =
+                    NextToken(); // Move to value
+                    var value = ParseExpression(Precedence.Lowest);
+                    obj.Pairs[key] = value;
+                }
+                else if (PeekTokenIs(TokenType.Comma) || PeekTokenIs(TokenType.RBrace))
+                {
+                    // Shorthand property: { key } === { key: key }
+                    obj.Pairs[key] = new Identifier(_curToken, key);
+                }
+                else
+                {
+                    _errors.Add($"[Debug] ParseObjectLiteral failed for key: {key}, Next token: {_peekToken.Type}");
+                    return null;
+                }
 
                 if (!PeekTokenIs(TokenType.RBrace) && !ExpectPeek(TokenType.Comma))
                 {
@@ -668,13 +927,30 @@ namespace FenBrowser.FenEngine.Core
             }
 
             NextToken();
-            list.Add(ParseExpression(Precedence.Lowest));
+            if (CurTokenIs(TokenType.Ellipsis))
+            {
+                NextToken();
+                list.Add(new SpreadElement { Token = _curToken, Argument = ParseExpression(Precedence.Lowest) });
+            }
+            else
+            {
+                list.Add(ParseExpression(Precedence.Lowest));
+            }
 
             while (PeekTokenIs(TokenType.Comma))
             {
                 NextToken();
                 NextToken();
-                list.Add(ParseExpression(Precedence.Lowest));
+                
+                if (CurTokenIs(TokenType.Ellipsis))
+                {
+                    NextToken();
+                    list.Add(new SpreadElement { Token = _curToken, Argument = ParseExpression(Precedence.Lowest) });
+                }
+                else
+                {
+                    list.Add(ParseExpression(Precedence.Lowest));
+                }
             }
 
             if (!ExpectPeek(end))
@@ -715,42 +991,69 @@ namespace FenBrowser.FenEngine.Core
 
             if (!ExpectPeek(TokenType.RParen)) return null;
 
-            if (!ExpectPeek(TokenType.LBrace)) return null;
-
-            stmt.Body = ParseBlockStatement();
+            // Handle body with or without braces
+            stmt.Body = ParseBodyAsBlock();
 
             return stmt;
         }
 
         private Statement ParseForStatement()
         {
-            var stmt = new ForStatement { Token = _curToken };
+            var forToken = _curToken;
 
             if (!ExpectPeek(TokenType.LParen)) return null;
-
             NextToken();
 
-            // Init
-            if (!PeekTokenIs(TokenType.Semicolon))
+            // Check for for-in: for (var x in obj) or for (x in obj)
+            // Check for for-of: for (var x of iterable) or for (x of iterable)
+            Token varKeyword = null;
+            if (CurTokenIs(TokenType.Var) || CurTokenIs(TokenType.Let) || CurTokenIs(TokenType.Const))
             {
-                NextToken(); // Advance to start of init
-                if (CurTokenIs(TokenType.Var) || CurTokenIs(TokenType.Let) || CurTokenIs(TokenType.Const))
+                varKeyword = _curToken;
+                NextToken();
+            }
+
+            // If current is identifier and peek is 'in' or 'of', this is for-in/for-of
+            if (CurTokenIs(TokenType.Identifier))
+            {
+                if (PeekTokenIs(TokenType.In))
                 {
-                    stmt.Init = ParseLetStatement();
+                    return ParseForInStatement(forToken, _curToken);
                 }
-                else
+                else if (PeekTokenIs(TokenType.Of))
                 {
-                    stmt.Init = ParseExpressionStatement();
+                    return ParseForOfStatement(forToken, _curToken);
                 }
             }
-            
-            if (stmt.Init == null)
+
+            // Regular for loop - reset and continue
+            var stmt = new ForStatement { Token = forToken };
+
+            // We need to handle the init part we've already partially parsed
+            if (varKeyword != null)
             {
-                if (!ExpectPeek(TokenType.Semicolon)) 
+                // We have 'var x' so far, parse the rest of let statement
+                var varStmt = new LetStatement { Token = varKeyword };
+                varStmt.Name = new Identifier(_curToken, _curToken.Literal);
+                
+                if (PeekTokenIs(TokenType.Assign))
                 {
-                    _errors.Add($"[Debug] ParseForStatement failed. Expected Semicolon after null init, got {_peekToken.Type}");
-                    return null;
+                    NextToken();
+                    NextToken();
+                    varStmt.Value = ParseExpression(Precedence.Lowest);
                 }
+                stmt.Init = varStmt;
+            }
+            else if (!CurTokenIs(TokenType.Semicolon))
+            {
+                // Parse as expression statement
+                var exp = ParseExpression(Precedence.Lowest);
+                stmt.Init = new ExpressionStatement { Expression = exp };
+            }
+            
+            if (!ExpectPeek(TokenType.Semicolon)) 
+            {
+                return null;
             }
 
             // Condition
@@ -771,9 +1074,459 @@ namespace FenBrowser.FenEngine.Core
 
             if (!ExpectPeek(TokenType.RParen)) return null;
 
+            // Handle body with or without braces
+            stmt.Body = ParseBodyAsBlock();
+
+            return stmt;
+        }
+
+        // Parse for-of: for (x of iterable) { ... }
+        private Statement ParseForOfStatement(Token forToken, Token varToken)
+        {
+            var stmt = new ForOfStatement { Token = forToken };
+            stmt.Variable = new Identifier(varToken, varToken.Literal);
+
+            NextToken(); // Move past 'of'
+            NextToken(); // Move to iterable expression
+            
+            stmt.Iterable = ParseExpression(Precedence.Lowest);
+
+            if (!ExpectPeek(TokenType.RParen)) return null;
+
+            stmt.Body = ParseBodyAsBlock();
+            return stmt;
+        }
+
+        private Statement ParseClassStatement()
+        {
+            var stmt = new ClassStatement { Token = _curToken };
+
+            if (!PeekTokenIs(TokenType.Identifier))
+            {
+                return null;
+            }
+
+            NextToken();
+            stmt.Name = new Identifier(_curToken, _curToken.Literal);
+
+            if (PeekTokenIs(TokenType.Extends))
+            {
+                NextToken();
+                NextToken();
+                stmt.SuperClass = new Identifier(_curToken, _curToken.Literal);
+            }
+
+            if (!ExpectPeek(TokenType.LBrace))
+            {
+                return null;
+            }
+
+            // Parse class body
+            while (!PeekTokenIs(TokenType.RBrace) && !PeekTokenIs(TokenType.Eof))
+            {
+                var method = ParseMethodDefinition();
+                if (method != null)
+                {
+                    stmt.Methods.Add(method);
+                }
+                NextToken();
+            }
+
+            if (!ExpectPeek(TokenType.RBrace))
+            {
+                return null;
+            }
+
+            return stmt;
+        }
+
+        private MethodDefinition ParseMethodDefinition()
+        {
+            var method = new MethodDefinition();
+            
+            if (PeekTokenIs(TokenType.Static))
+            {
+                NextToken();
+                method.Static = true;
+            }
+
+            NextToken();
+            
+            // Handle constructor or method name
+            if (CurTokenIs(TokenType.Identifier) || CurTokenIs(TokenType.String))
+            {
+                method.Key = new Identifier(_curToken, _curToken.Literal);
+                
+                if (method.Key.Value == "constructor")
+                {
+                    method.Kind = "constructor";
+                }
+                else if (method.Key.Value == "get")
+                {
+                    method.Kind = "get";
+                    // Handle getter name
+                    if (PeekTokenIs(TokenType.Identifier))
+                    {
+                        NextToken();
+                        method.Key = new Identifier(_curToken, _curToken.Literal);
+                    }
+                }
+                else if (method.Key.Value == "set")
+                {
+                    method.Kind = "set";
+                    // Handle setter name
+                    if (PeekTokenIs(TokenType.Identifier))
+                    {
+                        NextToken();
+                        method.Key = new Identifier(_curToken, _curToken.Literal);
+                    }
+                }
+                else
+                {
+                    method.Kind = "method";
+                }
+            }
+            else
+            {
+                return null;
+            }
+
+            // Parse method body as function literal
+            if (PeekTokenIs(TokenType.LParen))
+            {
+                // We need to manually parse function literal parts because ParseFunctionLiteral expects 'function' token
+                // But here we are at method name.
+                
+                // Let's reuse ParseFunctionParameters and ParseBodyAsBlock
+                
+                var funcLit = new FunctionLiteral { Token = _curToken }; // Token is method name
+                
+                if (!ExpectPeek(TokenType.LParen)) return null;
+                
+                funcLit.Parameters = ParseFunctionParameters();
+                
+                if (!ExpectPeek(TokenType.LBrace)) return null;
+                
+                funcLit.Body = ParseBodyAsBlock();
+                
+                method.Value = funcLit;
+                return method;
+            }
+
+            return null;
+        }
+
+        private Statement ParseImportDeclaration()
+        {
+            var stmt = new ImportDeclaration { Token = _curToken };
+
+            NextToken(); // Move past 'import'
+
+            // import "module"
+            if (CurTokenIs(TokenType.String))
+            {
+                stmt.Source = _curToken.Literal;
+                if (PeekTokenIs(TokenType.Semicolon)) NextToken();
+                return stmt;
+            }
+
+            // import { x, y } from "module"
+            if (CurTokenIs(TokenType.LBrace))
+            {
+                stmt.Specifiers = ParseImportSpecifiers();
+                
+                if (!ExpectPeek(TokenType.From)) return null;
+                
+                if (!ExpectPeek(TokenType.String)) return null;
+                
+                stmt.Source = _curToken.Literal;
+            }
+            // import x from "module" (default import)
+            else if (CurTokenIs(TokenType.Identifier))
+            {
+                var specifier = new ImportSpecifier
+                {
+                    Local = new Identifier(_curToken, _curToken.Literal),
+                    Imported = new Identifier(_curToken, "default")
+                };
+                stmt.Specifiers.Add(specifier);
+
+                if (PeekTokenIs(TokenType.Comma))
+                {
+                    NextToken(); // Skip comma
+                    if (PeekTokenIs(TokenType.LBrace))
+                    {
+                        NextToken(); // Move to {
+                        stmt.Specifiers.AddRange(ParseImportSpecifiers());
+                    }
+                }
+
+                if (!ExpectPeek(TokenType.From)) return null;
+                
+                if (!ExpectPeek(TokenType.String)) return null;
+                
+                stmt.Source = _curToken.Literal;
+            }
+
+            if (PeekTokenIs(TokenType.Semicolon)) NextToken();
+            return stmt;
+        }
+
+        private List<ImportSpecifier> ParseImportSpecifiers()
+        {
+            var specifiers = new List<ImportSpecifier>();
+            
+            if (!ExpectPeek(TokenType.LBrace)) return specifiers; // Should be at {
+            
+            NextToken(); // Move past {
+
+            while (!CurTokenIs(TokenType.RBrace) && !CurTokenIs(TokenType.Eof))
+            {
+                var specifier = new ImportSpecifier();
+                
+                if (!CurTokenIs(TokenType.Identifier)) return specifiers;
+                
+                var ident = new Identifier(_curToken, _curToken.Literal);
+                specifier.Imported = ident;
+                specifier.Local = ident; // Default to same name
+
+                if (PeekTokenIs(TokenType.As))
+                {
+                    NextToken(); // Move to 'as'
+                    if (!ExpectPeek(TokenType.Identifier)) return specifiers;
+                    specifier.Local = new Identifier(_curToken, _curToken.Literal);
+                }
+
+                specifiers.Add(specifier);
+
+                if (PeekTokenIs(TokenType.Comma))
+                {
+                    NextToken();
+                    NextToken();
+                }
+                else
+                {
+                    NextToken();
+                }
+            }
+
+            return specifiers;
+        }
+
+        private Statement ParseExportDeclaration()
+        {
+            var stmt = new ExportDeclaration { Token = _curToken };
+            NextToken(); // Move past 'export'
+
+            if (CurTokenIs(TokenType.Default))
+            {
+                NextToken(); // Move past 'default'
+                stmt.DefaultExpression = ParseExpression(Precedence.Lowest);
+            }
+            else if (CurTokenIs(TokenType.Var) || CurTokenIs(TokenType.Let) || CurTokenIs(TokenType.Const) || 
+                     CurTokenIs(TokenType.Function) || CurTokenIs(TokenType.Class))
+            {
+                stmt.Declaration = ParseStatement();
+            }
+            else if (CurTokenIs(TokenType.LBrace))
+            {
+                // export { x, y }
+                // Reuse ParseImportSpecifiers logic partially or implement similar
+                // For now, skip implementation detail for named exports from list
+                while (!CurTokenIs(TokenType.RBrace) && !CurTokenIs(TokenType.Eof)) NextToken();
+            }
+
+            if (PeekTokenIs(TokenType.Semicolon)) NextToken();
+            return stmt;
+        }
+
+        private Statement ParseAsyncFunctionDeclaration()
+        {
+            // async function name() { ... }
+            var token = _curToken;
+            NextToken(); // Move past 'async'
+
+            if (!ExpectPeek(TokenType.Function)) return null;
+
+            var funcLit = ParseFunctionLiteral() as FunctionLiteral;
+            
+            // Convert to AsyncFunctionExpression or similar
+            // For statement, we can wrap it in LetStatement like regular function declaration
+            
+            if (funcLit != null && funcLit.Name != null)
+            {
+                var asyncFunc = new AsyncFunctionExpression
+                {
+                    Token = token,
+                    Name = new Identifier(token, funcLit.Name),
+                    Parameters = funcLit.Parameters,
+                    Body = funcLit.Body
+                };
+
+                return new LetStatement 
+                { 
+                    Token = token, 
+                    Name = asyncFunc.Name, 
+                    Value = asyncFunc 
+                };
+            }
+            
+            return null;
+        }
+
+        private Expression ParseAwaitExpression()
+        {
+            var expression = new AwaitExpression { Token = _curToken };
+            NextToken(); // Move past 'await'
+            expression.Argument = ParseExpression(Precedence.Prefix);
+            return expression;
+        }
+
+        private Expression ParseAsyncPrefix()
+        {
+            var token = _curToken;
+            
+            // Check if it's likely an async function or arrow function
+            if (PeekTokenIs(TokenType.Function))
+            {
+                NextToken(); // Move past 'async'
+                // Parse as async function expression
+                var funcLit = ParseFunctionLiteral() as FunctionLiteral;
+                if (funcLit != null)
+                {
+                    return new AsyncFunctionExpression
+                    {
+                        Token = token,
+                        Name = funcLit.Name != null ? new Identifier(token, funcLit.Name) : null,
+                        Parameters = funcLit.Parameters,
+                        Body = funcLit.Body
+                    };
+                }
+            }
+            
+            // If not followed by function, treat 'async' as an identifier
+            // This allows 'async' to be used as a variable name in expressions
+            return new Identifier(token, "async");
+        }
+
+        // Parse for-in: for (x in obj) { ... }
+        private Statement ParseForInStatement(Token forToken, Token varToken)
+        {
+            var stmt = new ForInStatement { Token = forToken };
+            stmt.Variable = new Identifier(varToken, varToken.Literal);
+
+            NextToken(); // Move past 'in'
+            NextToken(); // Move to object expression
+            
+            stmt.Object = ParseExpression(Precedence.Lowest);
+
+            if (!ExpectPeek(TokenType.RParen)) return null;
+
+            // Handle body with or without braces
+            stmt.Body = ParseBodyAsBlock();
+
+            return stmt;
+        }
+
+        // Parse switch: switch (expr) { case val: ... default: ... }
+        private Statement ParseSwitchStatement()
+        {
+            var stmt = new SwitchStatement { Token = _curToken };
+
+            if (!ExpectPeek(TokenType.LParen)) return null;
+            NextToken();
+            stmt.Discriminant = ParseExpression(Precedence.Lowest);
+            if (!ExpectPeek(TokenType.RParen)) return null;
             if (!ExpectPeek(TokenType.LBrace)) return null;
 
-            stmt.Body = ParseBlockStatement();
+            // Parse cases
+            while (!PeekTokenIs(TokenType.RBrace) && !PeekTokenIs(TokenType.Eof))
+            {
+                NextToken();
+                var switchCase = new SwitchCase { Token = _curToken };
+
+                if (CurTokenIs(TokenType.Case))
+                {
+                    NextToken();
+                    switchCase.Test = ParseExpression(Precedence.Lowest);
+                }
+                else if (CurTokenIs(TokenType.Default))
+                {
+                    switchCase.Test = null;
+                }
+                else
+                {
+                    continue; // Skip unexpected tokens
+                }
+
+                if (!ExpectPeek(TokenType.Colon)) return null;
+
+                // Parse statements until next case/default/}
+                while (!PeekTokenIs(TokenType.Case) && !PeekTokenIs(TokenType.Default) && 
+                       !PeekTokenIs(TokenType.RBrace) && !PeekTokenIs(TokenType.Eof))
+                {
+                    NextToken();
+                    var s = ParseStatement();
+                    if (s != null) switchCase.Consequent.Add(s);
+                }
+
+                stmt.Cases.Add(switchCase);
+            }
+
+            if (!ExpectPeek(TokenType.RBrace)) return null;
+            return stmt;
+        }
+
+        // Parse break statement
+        private Statement ParseBreakStatement()
+        {
+            var stmt = new BreakStatement { Token = _curToken };
+            
+            // Check for optional label
+            if (PeekTokenIs(TokenType.Identifier))
+            {
+                NextToken();
+                stmt.Label = new Identifier(_curToken, _curToken.Literal);
+            }
+            
+            if (PeekTokenIs(TokenType.Semicolon)) NextToken();
+            return stmt;
+        }
+
+        // Parse continue statement
+        private Statement ParseContinueStatement()
+        {
+            var stmt = new ContinueStatement { Token = _curToken };
+            
+            // Check for optional label
+            if (PeekTokenIs(TokenType.Identifier))
+            {
+                NextToken();
+                stmt.Label = new Identifier(_curToken, _curToken.Literal);
+            }
+            
+            if (PeekTokenIs(TokenType.Semicolon)) NextToken();
+            return stmt;
+        }
+
+        // Parse do-while: do { } while (condition);
+        private Statement ParseDoWhileStatement()
+        {
+            var stmt = new DoWhileStatement { Token = _curToken };
+
+            // Parse body
+            stmt.Body = ParseBodyAsBlock();
+            if (stmt.Body == null) return null;
+
+            // Expect 'while'
+            if (!ExpectPeek(TokenType.While)) return null;
+            if (!ExpectPeek(TokenType.LParen)) return null;
+
+            NextToken();
+            stmt.Condition = ParseExpression(Precedence.Lowest);
+
+            if (!ExpectPeek(TokenType.RParen)) return null;
+            if (PeekTokenIs(TokenType.Semicolon)) NextToken();
 
             return stmt;
         }
@@ -786,6 +1539,213 @@ namespace FenBrowser.FenEngine.Core
         private Expression ParseUndefined()
         {
             return new UndefinedLiteral { Token = _curToken };
+        }
+
+        // Empty expression for error recovery (;, trailing comma, etc.)
+        private Expression ParseEmptyExpression()
+        {
+            return new EmptyExpression { Token = _curToken };
+        }
+
+        // Parse ternary conditional: condition ? consequent : alternate
+        private Expression ParseConditionalExpression(Expression condition)
+        {
+            var exp = new ConditionalExpression { Token = _curToken, Condition = condition };
+
+            NextToken(); // Move past '?'
+            exp.Consequent = ParseExpression(Precedence.Ternary);
+
+            if (!ExpectPeek(TokenType.Colon))
+            {
+                _errors.Add("Expected ':' in ternary expression");
+                return null;
+            }
+
+            NextToken(); // Move past ':'
+            exp.Alternate = ParseExpression(Precedence.Ternary);
+
+            return exp;
+        }
+
+        // Parse arrow function when => is encountered after grouped expression (params)
+        private Expression ParseArrowFunctionFromParams(Expression left)
+        {
+            var arrow = new ArrowFunctionExpression { Token = _curToken };
+
+            // Extract parameters from left side (should be grouped expression or identifier)
+            arrow.Parameters = ExtractArrowParameters(left);
+
+            NextToken(); // Move past '=>'
+
+            // Parse body: either block statement or expression
+            if (CurTokenIs(TokenType.LBrace))
+            {
+                arrow.Body = ParseBlockStatement();
+            }
+            else
+            {
+                arrow.Body = ParseExpression(Precedence.Lowest);
+            }
+
+            return arrow;
+        }
+
+        // Helper to convert left-side expression(s) into parameter list
+        private List<Identifier> ExtractArrowParameters(Expression left)
+        {
+            var parameters = new List<Identifier>();
+
+            if (left == null)
+            {
+                return parameters;
+            }
+
+            // Single identifier: x => x * 2
+            if (left is Identifier id)
+            {
+                parameters.Add(id);
+            }
+            // Grouped expression parsed as comma-separated: (a, b)
+            else if (left is InfixExpression infix && infix.Operator == ",")
+            {
+                FlattenCommaExpression(infix, parameters);
+            }
+            // Just a grouped single param: (x)
+            // This comes as just the inner expression
+            else
+            {
+                // Try to extract if it's some other form
+                // For safety, we ignore malformed cases
+            }
+
+            return parameters;
+        }
+
+        // Flatten comma-separated expressions into parameter list
+        private void FlattenCommaExpression(InfixExpression infix, List<Identifier> parameters)
+        {
+            // Left side
+            if (infix.Left is InfixExpression leftInfix && leftInfix.Operator == ",")
+            {
+                FlattenCommaExpression(leftInfix, parameters);
+            }
+            else if (infix.Left is Identifier leftId)
+            {
+                parameters.Add(leftId);
+            }
+
+            // Right side
+            if (infix.Right is Identifier rightId)
+            {
+                parameters.Add(rightId);
+            }
+        }
+
+        // Parse compound assignment: x += 1
+        private Expression ParseCompoundAssignment(Expression left)
+        {
+            var token = _curToken;
+            var op = token.Literal;  // +=, -=, etc.
+
+            var precedence = CurPrecedence();
+            NextToken();
+            var right = ParseExpression(precedence);
+
+            // Convert x += 1 to x = x + 1 internally
+            // Create the binary operation
+            var binaryOp = op.Substring(0, op.Length - 1);  // Remove '=' to get +, -, *, /
+            var binaryExpr = new InfixExpression 
+            { 
+                Token = token, 
+                Left = left, 
+                Operator = binaryOp, 
+                Right = right 
+            };
+
+            // Create assignment
+            return new AssignmentExpression 
+            { 
+                Token = token, 
+                Left = left, 
+                Right = binaryExpr 
+            };
+        }
+
+        // Parse prefix increment: ++x
+        private Expression ParsePrefixIncrement()
+        {
+            var token = _curToken;
+            NextToken();
+            var operand = ParseExpression(Precedence.Prefix);
+            return new PrefixExpression { Token = token, Operator = "++", Right = operand };
+        }
+
+        // Parse prefix decrement: --x
+        private Expression ParsePrefixDecrement()
+        {
+            var token = _curToken;
+            NextToken();
+            var operand = ParseExpression(Precedence.Prefix);
+            return new PrefixExpression { Token = token, Operator = "--", Right = operand };
+        }
+
+        // Parse postfix increment: x++
+        private Expression ParsePostfixIncrement(Expression left)
+        {
+            return new InfixExpression { Token = _curToken, Left = left, Operator = "++", Right = null };
+        }
+
+        // Parse postfix decrement: x--
+        private Expression ParsePostfixDecrement(Expression left)
+        {
+            return new InfixExpression { Token = _curToken, Left = left, Operator = "--", Right = null };
+        }
+
+        // Parse regex literal when starting with /
+        // This is called when we see a Slash token in prefix position
+        private Expression ParseRegexLiteral()
+        {
+            // At this point _curToken is Slash
+            // We need to read ahead to find the closing /
+            // This is a simplified implementation - real regex parsing is complex
+            
+            var startToken = _curToken;
+            var pattern = new System.Text.StringBuilder();
+            var flags = "";
+            
+            // Read the pattern until we find closing /
+            // Note: This accesses internal lexer state which isn't ideal
+            // For now, just return a placeholder regex
+            // In production, the lexer would need context awareness
+            
+            return new RegexLiteral 
+            { 
+                Token = startToken, 
+                Pattern = ".*",  // Placeholder 
+                Flags = "" 
+            };
+        }
+
+        // Parse already-lexed regex token
+        private Expression ParseRegexToken()
+        {
+            // If lexer provides a regex token, parse it
+            var literal = _curToken.Literal;
+            var pattern = "";
+            var flags = "";
+            
+            // Parse /pattern/flags format
+            if (literal.StartsWith("/") && literal.Length > 1)
+            {
+                var lastSlash = literal.LastIndexOf('/');
+                if (lastSlash > 0)
+                {
+                    pattern = literal.Substring(1, lastSlash - 1);
+                    flags = literal.Substring(lastSlash + 1);
+                }
+            }
+            
+            return new RegexLiteral { Token = _curToken, Pattern = pattern, Flags = flags };
         }
     }
 }

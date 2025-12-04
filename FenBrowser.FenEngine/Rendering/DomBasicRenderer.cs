@@ -15,6 +15,7 @@ using System.Globalization;
 using System.Net;
 using System.Text.RegularExpressions;
 using Avalonia.Media.Imaging;
+using System.Diagnostics;
 namespace FenBrowser.FenEngine.Rendering
 {
     public partial class DomBasicRenderer
@@ -30,27 +31,63 @@ namespace FenBrowser.FenEngine.Rendering
             // Block elements
             Func<LiteElement, Uri, Action<Uri>, JavaScriptEngine, CancellationToken, Task<Control>> blockHandler = new Func<LiteElement, Uri, Action<Uri>, JavaScriptEngine, CancellationToken, Task<Control>>(RenderBlockAsync);
             // Map common block level tags to the same handler
-            string[] blockTags = new[] { "div", "p", "section", "article", "header", "footer", "nav", "main", "aside", "address", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "figure", "figcaption" };
+            string[] blockTags = new[] { 
+                "div", "p", "section", "article", "header", "footer", "nav", "main", "aside", "address", "hgroup",
+                "h1", "h2", "h3", "h4", "h5", "h6", 
+                "pre", "figure", "figcaption", "blockquote", "center",
+                "dl", "dt", "dd", "fieldset", "legend" 
+            };
             foreach (var bt in blockTags) _tagHandlers[bt] = blockHandler;
+
+            // Inline/Text-level semantics (handled by generic container which applies CSS)
+            // We map them to RenderGenericContainerAsync so they get processed recursively
+            Func<LiteElement, Uri, Action<Uri>, JavaScriptEngine, CancellationToken, Task<Control>> inlineHandler = new Func<LiteElement, Uri, Action<Uri>, JavaScriptEngine, CancellationToken, Task<Control>>(RenderGenericContainerAsync);
+            string[] inlineTags = new[] {
+                "span", "strong", "em", "b", "i", "u", "s", "small", "code", "var", "samp", "kbd", "sub", "sup", 
+                "mark", "q", "cite", "abbr", "dfn", "time", "data", "ruby", "rt", "rp", "bdi", "bdo", "br",
+                "ins", "del", "label", "output", "meter", "progress"
+            };
+            foreach (var it in inlineTags) _tagHandlers[it] = inlineHandler;
+
             // Tables
-            // _tagHandlers["table"] = RenderTableAsync;
+            _tagHandlers["table"] = RenderTableAsync;
+            // Table parts - usually handled by RenderTableAsync recursively, but map them just in case
+            _tagHandlers["thead"] = inlineHandler;
+            _tagHandlers["tbody"] = inlineHandler;
+            _tagHandlers["tfoot"] = inlineHandler;
+            _tagHandlers["tr"] = inlineHandler;
+            _tagHandlers["td"] = inlineHandler;
+            _tagHandlers["th"] = inlineHandler;
+
             // Lists
             _tagHandlers["ul"] = (n, b, on, j, c) => MakeListAsync(n, false, b, on, j, c);
             _tagHandlers["ol"] = (n, b, on, j, c) => MakeListAsync(n, true, b, on, j, c);
-            // Images
+
+            // Images & Media
             _tagHandlers["img"] = async (n, b, on, j, c) => await MakeImageAsync(n, b, c);
             _tagHandlers["picture"] = async (n, b, on, j, c) => await MakePictureAsync(n, b, c);
+            _tagHandlers["video"] = MakeMediaAsync;
+            _tagHandlers["audio"] = MakeMediaAsync;
+            _tagHandlers["iframe"] = MakeIframeAsync;
+
             // Forms
             _tagHandlers["textarea"] = (n, b, on, j, c) => Task.FromResult(MakeTextarea(n));
             _tagHandlers["select"] = (n, b, on, j, c) => Task.FromResult(MakeSelect(n));
             _tagHandlers["button"] = MakeButtonAsync;
-            _tagHandlers["button"] = MakeButtonAsync;
+            _tagHandlers["input"] = MakeInputAsync;
+            
+            // Interactive
             _tagHandlers["a"] = MakeLink;
+            _tagHandlers["details"] = MakeDetailsAsync;
+            _tagHandlers["summary"] = inlineHandler; // Handled by details, but fallback
+            _tagHandlers["dialog"] = blockHandler; // Basic block for now
+
             _tagHandlers["svg"] = (n, b, on, j, c) => Task.FromResult(RenderInlineSvg(n));
+            _tagHandlers["hr"] = (n, b, on, j, c) => Task.FromResult<Control>(new Border { Height = 1, Background = Brushes.LightGray, Margin = new Thickness(0, 8, 0, 8) });
 
             // Non-visual tags - suppress rendering
             Func<LiteElement, Uri, Action<Uri>, JavaScriptEngine, CancellationToken, Task<Control>> nullHandler = (n, b, on, j, c) => Task.FromResult<Control>(null);
-            string[] hiddenTags = new[] { "head", "meta", "link", "style", "script", "title", "noscript", "iframe", "template", "base" };
+            string[] hiddenTags = new[] { "head", "meta", "link", "style", "script", "title", "noscript", "template", "base", "slot", "area", "map", "param", "track", "source", "col", "colgroup" };
             foreach (var t in hiddenTags) _tagHandlers[t] = nullHandler;
         }
         private static readonly HashSet<string> FlexDisplayKeywords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -391,6 +428,13 @@ private async Task<Control> MakeGridFallbackAsync(LiteElement n, Uri baseUri, Ac
     if (columnGap <= 0 && rowGap > 0) columnGap = rowGap;
     if (rowGap <= 0 && columnGap > 0) rowGap = columnGap;
     bool isGrid = IsGridContainer(css);
+
+    // Check if we should use a proper Grid layout (for grid-template-columns)
+    if (isGrid && css != null && !string.IsNullOrEmpty(css.GridTemplateColumns))
+    {
+        return await MakeGridLayoutAsync(n, css, columnGap, rowGap, baseUri, onNavigate, js, ct);
+    }
+
     var wrapPanel = new FlexPanel
     {
         Orientation = isGrid ? Orientation.Vertical : Orientation.Horizontal,
@@ -407,6 +451,7 @@ private async Task<Control> MakeGridFallbackAsync(LiteElement n, Uri baseUri, Ac
             fdir = fdir.Trim().ToLowerInvariant();
             if (fdir.Contains("column")) wrapPanel.Orientation = Orientation.Vertical;
             else if (fdir.Contains("row")) wrapPanel.Orientation = Orientation.Horizontal;
+            wrapPanel.FlexDirection = fdir;
         }
 
         if (css.Map.TryGetValue("flex-wrap", out var fwrap) && !string.IsNullOrWhiteSpace(fwrap))
@@ -430,16 +475,14 @@ private async Task<Control> MakeGridFallbackAsync(LiteElement n, Uri baseUri, Ac
         string justify;
         if (css != null && css.Map != null && css.Map.TryGetValue("justify-content", out justify) && !string.IsNullOrWhiteSpace(justify))
             wrapPanel.JustifyContent = justify.Trim().ToLowerInvariant();
+        
+        string alignItems;
+        if (css != null && css.Map != null && css.Map.TryGetValue("align-items", out alignItems) && !string.IsNullOrWhiteSpace(alignItems))
+            wrapPanel.AlignItems = alignItems.Trim().ToLowerInvariant();
+
         string alignContent;
         if (css != null && css.Map != null && css.Map.TryGetValue("align-content", out alignContent) && !string.IsNullOrWhiteSpace(alignContent))
-        {
             wrapPanel.AlignContent = alignContent.Trim().ToLowerInvariant();
-            var ac = wrapPanel.AlignContent;
-            if (ac.Contains("center")) wrapPanel.VerticalAlignment = VerticalAlignment.Center;
-            else if (ac.Contains("flex-end") || ac.Contains("end")) wrapPanel.VerticalAlignment = VerticalAlignment.Bottom;
-            else if (ac.Contains("flex-start") || ac.Contains("start")) wrapPanel.VerticalAlignment = VerticalAlignment.Top;
-            else wrapPanel.VerticalAlignment = VerticalAlignment.Stretch;
-        }
     }
     catch { }
     var absoluteItems = new List<Tuple<Control, CssComputed>>();
@@ -494,6 +537,127 @@ private async Task<Control> MakeGridFallbackAsync(LiteElement n, Uri baseUri, Ac
     }
     return container;
 }
+
+// ---------- CSS Grid Layout ----------
+private async Task<Control> MakeGridLayoutAsync(LiteElement n, CssComputed css, double columnGap, double rowGap, Uri baseUri, Action<Uri> onNavigate, JavaScriptEngine js, CancellationToken ct)
+{
+    var grid = new Grid();
+
+    // Parse grid-template-columns (e.g., "1fr 1fr 1fr" or "repeat(3, 1fr)")
+    var colDefs = ParseGridTemplateColumns(css.GridTemplateColumns);
+    foreach (var colDef in colDefs)
+    {
+        grid.ColumnDefinitions.Add(colDef);
+    }
+
+    // Apply styles to the grid container
+    try { ApplyComputedStyles(grid, n); } catch { }
+    try { ApplyInlineStyles(grid, n); } catch { }
+
+    // Render children and place in grid
+    var children = n.Children ?? new List<LiteElement>();
+    int col = 0;
+    int row = 0;
+    int numCols = colDefs.Count > 0 ? colDefs.Count : 1;
+
+    // Create rows dynamically
+    int numRows = (int)Math.Ceiling((double)children.Count / numCols);
+    for (int r = 0; r < numRows; r++)
+    {
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+    }
+
+    foreach (var child in children)
+    {
+        ct.ThrowIfCancellationRequested();
+        var element = await RenderNodeAsync(child, baseUri, onNavigate, js, ct);
+        if (element == null) continue;
+
+        Grid.SetColumn(element, col);
+        Grid.SetRow(element, row);
+
+        // Apply gap using margin (simulating CSS gap)
+        double leftMargin = col > 0 ? columnGap / 2 : 0;
+        double rightMargin = col < numCols - 1 ? columnGap / 2 : 0;
+        double topMargin = row > 0 ? rowGap / 2 : 0;
+        double bottomMargin = row < numRows - 1 ? rowGap / 2 : 0;
+        element.Margin = new Thickness(leftMargin, topMargin, rightMargin, bottomMargin);
+
+        grid.Children.Add(element);
+
+        col++;
+        if (col >= numCols)
+        {
+            col = 0;
+            row++;
+        }
+    }
+
+    return grid;
+}
+
+private List<ColumnDefinition> ParseGridTemplateColumns(string template)
+{
+    var result = new List<ColumnDefinition>();
+    if (string.IsNullOrWhiteSpace(template)) return result;
+
+    // Handle repeat(N, size)
+    var repeatMatch = Regex.Match(template, @"repeat\s*\(\s*(\d+)\s*,\s*([^)]+)\s*\)", RegexOptions.IgnoreCase);
+    if (repeatMatch.Success)
+    {
+        int count = int.Parse(repeatMatch.Groups[1].Value);
+        string size = repeatMatch.Groups[2].Value.Trim();
+        for (int i = 0; i < count; i++)
+        {
+            result.Add(CreateColumnDefinition(size));
+        }
+        return result;
+    }
+
+    // Split by whitespace
+    var parts = template.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+    foreach (var part in parts)
+    {
+        result.Add(CreateColumnDefinition(part.Trim()));
+    }
+
+    return result;
+}
+
+private ColumnDefinition CreateColumnDefinition(string size)
+{
+    size = size.Trim().ToLowerInvariant();
+
+    if (size.EndsWith("fr"))
+    {
+        // Fractional unit (like flex)
+        var num = size.Replace("fr", "");
+        if (double.TryParse(num, NumberStyles.Float, CultureInfo.InvariantCulture, out var fr))
+        {
+            return new ColumnDefinition { Width = new GridLength(fr, GridUnitType.Star) };
+        }
+    }
+    else if (size.EndsWith("px"))
+    {
+        var num = size.Replace("px", "");
+        if (double.TryParse(num, NumberStyles.Float, CultureInfo.InvariantCulture, out var px))
+        {
+            return new ColumnDefinition { Width = new GridLength(px, GridUnitType.Pixel) };
+        }
+    }
+    else if (size == "auto")
+    {
+        return new ColumnDefinition { Width = GridLength.Auto };
+    }
+    else if (double.TryParse(size, NumberStyles.Float, CultureInfo.InvariantCulture, out var val))
+    {
+        return new ColumnDefinition { Width = new GridLength(val, GridUnitType.Pixel) };
+    }
+
+    // Default: star
+    return new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) };
+}
+
 private static void ApplyGridItemSizing(Control element, CssComputed css, double minColumnWidth, double columnGap)
 {
     if (element == null) return;
@@ -1017,7 +1181,7 @@ public async Task<Control> BuildAsync(LiteElement root, Uri baseUri, Action<Uri>
         // Wrap in ScrollViewer for scrolling support
         var scroller = new ScrollViewer
         {
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             Content = grid
         };
@@ -1028,7 +1192,7 @@ public async Task<Control> BuildAsync(LiteElement root, Uri baseUri, Action<Uri>
     // Fallback wrap
     return new ScrollViewer
     {
-        HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+        HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
         VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         Content = rootVisual
     };
@@ -1142,6 +1306,28 @@ private async Task<Control> RenderBlockAsync(LiteElement n, Uri baseUri, Action<
 {
     return await RenderGenericContainerAsync(n, baseUri, onNavigate, js, ct);
 }
+
+private bool IsInlineNode(LiteElement n)
+{
+    if (n.IsText) return true;
+    
+    // Check CSS display first
+    if (ComputedStyles != null && ComputedStyles.TryGetValue(n, out var css))
+    {
+        var d = css.Display?.ToLowerInvariant();
+        if (d == "inline" || d == "inline-block" || d == "inline-flex" || d == "inline-grid") return true;
+        if (d == "block" || d == "flex" || d == "grid") return false;
+    }
+
+    // Default tag behavior
+    var tag = n.Tag.ToLowerInvariant();
+    return tag == "span" || tag == "a" || tag == "img" || tag == "strong" || tag == "em" || 
+           tag == "b" || tag == "i" || tag == "u" || tag == "s" || tag == "small" || 
+           tag == "code" || tag == "label" || tag == "input" || tag == "button" || 
+           tag == "select" || tag == "textarea" || tag == "br" || tag == "q" || 
+           tag == "cite" || tag == "abbr" || tag == "time" || tag == "var" || tag == "kbd";
+}
+
 private async Task<Control> RenderGenericContainerAsync(LiteElement n, Uri baseUri, Action<Uri> onNavigate, JavaScriptEngine js, CancellationToken ct)
 {
     // Check for Flexbox/Grid
@@ -1153,18 +1339,111 @@ private async Task<Control> RenderGenericContainerAsync(LiteElement n, Uri baseU
         }
     }
 
-    var panel = new StackPanel { Orientation = Orientation.Vertical };
+    // Special handling for nav element - default to horizontal wrap layout
+    var tagLower = n.Tag?.ToLowerInvariant() ?? "";
+    if (tagLower == "nav")
+    {
+        // Nav should default to horizontal layout with flex-wrap
+        var navPanel = new WrapPanel { Orientation = Orientation.Horizontal };
+        try { ApplyComputedStyles(navPanel, n); } catch { }
+        try { ApplyInlineStyles(navPanel, n); } catch { }
+
+        if (n.Children != null)
+        {
+            foreach (var child in n.Children)
+            {
+                ct.ThrowIfCancellationRequested();
+                var elt = await RenderNodeAsync(child, baseUri, onNavigate, js, ct);
+                if (elt != null)
+                {
+                    // Add some spacing between nav items
+                    if (elt.Margin == default) elt.Margin = new Thickness(8, 0, 8, 0);
+                    navPanel.Children.Add(elt);
+                }
+            }
+        }
+        return ApplyBoxesAndText(navPanel, n);
+    }
+
+    // Layout Logic:
+    // 1. If any child floats, use DockPanel (legacy float support).
+    // 2. If all children are inline (text, span, a, img, etc.), use WrapPanel (Inline Formatting Context).
+    // 3. Otherwise, use StackPanel (Block Formatting Context).
+
+    bool hasFloat = false;
+    bool allInline = true;
+    
+    if (n.Children != null)
+    {
+        foreach (var c in n.Children)
+        {
+            if (ComputedStyles != null && ComputedStyles.TryGetValue(c, out var cCss) && !string.IsNullOrEmpty(cCss.Float) && cCss.Float != "none")
+            {
+                hasFloat = true;
+                break;
+            }
+            
+            if (!IsInlineNode(c))
+            {
+                allInline = false;
+            }
+        }
+    }
+    else
+    {
+        // No children, doesn't matter
+    }
+
+    Panel panel;
+    if (hasFloat)
+    {
+        panel = new DockPanel { LastChildFill = true };
+    }
+    else if (allInline && n.Children != null && n.Children.Count > 0)
+    {
+        // Inline Formatting Context -> Horizontal Wrap
+        panel = new WrapPanel { Orientation = Orientation.Horizontal };
+    }
+    else
+    {
+        // Block Formatting Context -> Vertical Stack
+        panel = new StackPanel { Orientation = Orientation.Vertical };
+    }
+
     try { ApplyComputedStyles(panel, n); } catch { }
     try { ApplyInlineStyles(panel, n); } catch { }
+
     if (n.Children != null)
     {
         foreach (var child in n.Children)
         {
             ct.ThrowIfCancellationRequested();
             var elt = await RenderNodeAsync(child, baseUri, onNavigate, js, ct);
-            if (elt != null) panel.Children.Add(elt);
+            if (elt != null) 
+            {
+                if (hasFloat && panel is DockPanel dp)
+                {
+                    // Check for float property on the child
+                    if (ComputedStyles != null && ComputedStyles.TryGetValue(child, out var childCss) && !string.IsNullOrEmpty(childCss.Float))
+                    {
+                        if (childCss.Float.Equals("left", StringComparison.OrdinalIgnoreCase))
+                            DockPanel.SetDock(elt, Dock.Left);
+                        else if (childCss.Float.Equals("right", StringComparison.OrdinalIgnoreCase))
+                            DockPanel.SetDock(elt, Dock.Right);
+                        else
+                            DockPanel.SetDock(elt, Dock.Top);
+                    }
+                    else
+                    {
+                        DockPanel.SetDock(elt, Dock.Top);
+                    }
+                }
+                
+                panel.Children.Add(elt);
+            }
         }
     }
+    
     // Sticky support
     if (ComputedStyles != null && ComputedStyles.TryGetValue(n, out var css))
     {
@@ -1200,15 +1479,316 @@ private async Task<Control> MakeButtonAsync(LiteElement n, Uri baseUri, Action<U
         n.Attr.TryGetValue("id", out id);
         btn.Click += (s, e) =>
         {
-            try
-            {
-                js.RunInline(code, null, "click", id);
-            }
-            catch { }
+            if (js != null) js.Evaluate(code);
         };
     }
     return btn;
 }
+
+private async Task<Control> MakeInputAsync(LiteElement n, Uri baseUri, Action<Uri> onNavigate, JavaScriptEngine js, CancellationToken ct)
+{
+    string type = "text";
+    if (n.Attr != null && n.Attr.TryGetValue("type", out var t)) type = t.ToLowerInvariant();
+
+    if (type == "hidden") return null;
+
+    if (type == "submit" || type == "reset" || type == "button")
+    {
+        var btn = new Button { Content = n.Attr != null && n.Attr.TryGetValue("value", out var val) ? val : type };
+        try { ApplyComputedStyles(btn, n); } catch { }
+        return btn;
+    }
+    else if (type == "checkbox")
+    {
+        var cb = new CheckBox();
+        if (n.Attr != null && n.Attr.ContainsKey("checked")) cb.IsChecked = true;
+        try { ApplyComputedStyles(cb, n); } catch { }
+        return cb;
+    }
+    else if (type == "radio")
+    {
+        var rb = new RadioButton();
+        if (n.Attr != null && n.Attr.ContainsKey("checked")) rb.IsChecked = true;
+        if (n.Attr != null && n.Attr.TryGetValue("name", out var grp)) rb.GroupName = grp;
+        try { ApplyComputedStyles(rb, n); } catch { }
+        return rb;
+    }
+    else
+    {
+        // text, password, email, etc.
+        var tb = new TextBox();
+        if (type == "password") tb.PasswordChar = '•';
+        if (n.Attr != null && n.Attr.TryGetValue("value", out var val)) tb.Text = val;
+        if (n.Attr != null && n.Attr.TryGetValue("placeholder", out var ph)) tb.Watermark = ph;
+        try { ApplyComputedStyles(tb, n); } catch { }
+        return tb;
+    }
+
+}
+
+private async Task<Control> RenderTableAsync(LiteElement n, Uri baseUri, Action<Uri> onNavigate, JavaScriptEngine js, CancellationToken ct)
+{
+    // Simplified table rendering using Grid
+    var rows = n.Descendants().Where(x => x.Tag == "tr").ToList();
+    if (rows.Count == 0) return await RenderGenericContainerAsync(n, baseUri, onNavigate, js, ct);
+
+    var grid = new Grid();
+    // Add row definitions
+    for (int i = 0; i < rows.Count; i++) grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+    // Determine max columns
+    int maxCols = 0;
+    foreach (var row in rows)
+    {
+        int cols = row.Children?.Count(c => c.Tag == "td" || c.Tag == "th") ?? 0;
+        if (cols > maxCols) maxCols = cols;
+    }
+    for (int i = 0; i < maxCols; i++) grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+    int rowIndex = 0;
+    foreach (var row in rows)
+    {
+        int colIndex = 0;
+        if (row.Children != null)
+        {
+            foreach (var cell in row.Children)
+            {
+                if (cell.Tag != "td" && cell.Tag != "th") continue;
+                if (colIndex >= maxCols) break;
+
+                var cellControl = await RenderGenericContainerAsync(cell, baseUri, onNavigate, js, ct);
+                if (cellControl != null)
+                {
+                    var border = new Border { Child = cellControl, BorderBrush = Brushes.Gray, BorderThickness = new Thickness(0.5) };
+                    Grid.SetRow(border, rowIndex);
+                    Grid.SetColumn(border, colIndex);
+                    
+                    // Handle colspan/rowspan if present
+                    if (cell.Attr != null)
+                    {
+                        if (cell.Attr.TryGetValue("colspan", out var cs) && int.TryParse(cs, out int colspan) && colspan > 1)
+                            Grid.SetColumnSpan(border, colspan);
+                        if (cell.Attr.TryGetValue("rowspan", out var rs) && int.TryParse(rs, out int rowspan) && rowspan > 1)
+                            Grid.SetRowSpan(border, rowspan);
+                    }
+                    
+                    grid.Children.Add(border);
+                }
+                colIndex++;
+            }
+        }
+        rowIndex++;
+    }
+    
+    try { ApplyComputedStyles(grid, n); } catch { }
+    return grid;
+}
+
+private async Task<Control> MakeMediaAsync(LiteElement n, Uri baseUri, Action<Uri> onNavigate, JavaScriptEngine js, CancellationToken ct)
+{
+    var grid = new Grid { Background = Brushes.Black, Height = 300, Width = 500 };
+    
+    // Handle width/height attributes
+    if (n.Attr != null)
+    {
+        if (n.Attr.TryGetValue("width", out var wStr) && double.TryParse(wStr, out var w)) grid.Width = w;
+        if (n.Attr.TryGetValue("height", out var hStr) && double.TryParse(hStr, out var h)) grid.Height = h;
+    }
+
+    // Poster
+    if (n.Attr != null && n.Attr.TryGetValue("poster", out var poster) && !string.IsNullOrWhiteSpace(poster))
+    {
+        try
+        {
+            var posterUri = new Uri(baseUri, poster);
+            if (ImageLoader != null)
+            {
+                var stream = await ImageLoader(posterUri);
+                if (stream != null)
+                {
+                    var bmp = new Bitmap(stream);
+                    var img = new Image { Source = bmp, Stretch = Stretch.UniformToFill };
+                    grid.Children.Add(img);
+                }
+            }
+        }
+        catch { }
+    }
+
+    // Play Button Overlay
+    var playBtn = new Button 
+    { 
+        HorizontalAlignment = HorizontalAlignment.Center, 
+        VerticalAlignment = VerticalAlignment.Center,
+        Background = new SolidColorBrush(Color.FromArgb(180, 0, 0, 0)),
+        Padding = new Thickness(20),
+        CornerRadius = new CornerRadius(50),
+        Content = new Avalonia.Controls.Shapes.Path 
+        { 
+            Data = Geometry.Parse("M8 5v14l11-7z"), 
+            Fill = Brushes.White, 
+            Width = 24, 
+            Height = 24, 
+            Stretch = Stretch.Uniform 
+        }
+    };
+
+    if (n.Attr != null && n.Attr.TryGetValue("src", out var src) && !string.IsNullOrWhiteSpace(src))
+    {
+        var mediaUri = new Uri(baseUri, src);
+        playBtn.Click += (s, e) => 
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo { FileName = mediaUri.ToString(), UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                // Show error if launch fails
+                // MessageBox.Show("Failed to open media: " + ex.Message); 
+            }
+        };
+    }
+    else
+    {
+        playBtn.IsEnabled = false;
+    }
+
+    grid.Children.Add(playBtn);
+
+    // Label
+    var label = new TextBlock 
+    { 
+        Text = $"Play {n.Tag.ToUpper()} (System Player)", 
+        Foreground = Brushes.White, 
+        VerticalAlignment = VerticalAlignment.Bottom, 
+        HorizontalAlignment = HorizontalAlignment.Center,
+        Margin = new Thickness(0,0,0,10)
+    };
+    grid.Children.Add(label);
+
+    try { ApplyComputedStyles(grid, n); } catch { }
+    return grid;
+}
+
+private async Task<Control> MakeIframeAsync(LiteElement n, Uri baseUri, Action<Uri> onNavigate, JavaScriptEngine js, CancellationToken ct)
+{
+    var border = new Border 
+    { 
+        BorderBrush = Brushes.Gray, 
+        BorderThickness = new Thickness(1),
+        Height = 300,
+        Width = 500
+    };
+    
+    // Handle width/height attributes
+    if (n.Attr != null)
+    {
+        if (n.Attr.TryGetValue("width", out var wStr) && double.TryParse(wStr, out var w)) border.Width = w;
+        if (n.Attr.TryGetValue("height", out var hStr) && double.TryParse(hStr, out var h)) border.Height = h;
+    }
+
+    if (n.Attr != null && n.Attr.TryGetValue("src", out var src) && !string.IsNullOrWhiteSpace(src))
+    {
+        // Recursive rendering
+        var frameUri = new Uri(baseUri, src);
+        var scroller = new ScrollViewer { HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        border.Child = scroller;
+
+        // Run in background to avoid blocking UI
+        _ = Task.Run(async () => 
+        {
+            try
+            {
+                string html = null;
+                if (HtmlLoader != null)
+                {
+                    html = await HtmlLoader(frameUri);
+                }
+                else
+                {
+                    // Fallback fetch if HtmlLoader not provided (should be rare)
+                    using (var client = new HttpClient()) html = await client.GetStringAsync(frameUri);
+                }
+
+                if (!string.IsNullOrEmpty(html))
+                {
+                    var parser = new HtmlLiteParser(html);
+                    var root = parser.Parse();
+                    
+                    // Create a new renderer instance for the iframe to isolate context (mostly)
+                    // Note: We reuse the same JS engine for now or null to avoid cross-frame scripting issues in this basic impl
+                    var subRenderer = new DomBasicRenderer();
+                    subRenderer.HtmlLoader = HtmlLoader;
+                    subRenderer.ImageLoader = ImageLoader;
+                    
+                    // Render the body of the iframe
+                    var body = root.Descendants().FirstOrDefault(x => x.Tag == "body") ?? root;
+                    
+                    await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(async () => 
+                    {
+                        var content = await subRenderer.RenderNodeAsync(body, frameUri, onNavigate, null, CancellationToken.None);
+                        scroller.Content = content;
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() => 
+                {
+                    scroller.Content = new TextBlock { Text = "Failed to load iframe: " + ex.Message, Foreground = Brushes.Red };
+                });
+            }
+        });
+    }
+    else
+    {
+        border.Child = new TextBlock 
+        { 
+            Text = "Empty IFrame", 
+            HorizontalAlignment = HorizontalAlignment.Center, 
+            VerticalAlignment = VerticalAlignment.Center 
+        };
+    }
+
+    try { ApplyComputedStyles(border, n); } catch { }
+    return border;
+}
+
+private async Task<Control> MakeDetailsAsync(LiteElement n, Uri baseUri, Action<Uri> onNavigate, JavaScriptEngine js, CancellationToken ct)
+{
+    var expander = new Expander();
+    
+    // Find summary
+    var summaryNode = n.Children?.FirstOrDefault(c => c.Tag == "summary");
+    if (summaryNode != null)
+    {
+        expander.Header = await RenderGenericContainerAsync(summaryNode, baseUri, onNavigate, js, ct);
+    }
+    else
+    {
+        expander.Header = "Details";
+    }
+
+    // Content
+    var contentPanel = new StackPanel();
+    if (n.Children != null)
+    {
+        foreach (var child in n.Children)
+        {
+            if (child.Tag == "summary") continue;
+            var elt = await RenderNodeAsync(child, baseUri, onNavigate, js, ct);
+            if (elt != null) contentPanel.Children.Add(elt);
+        }
+    }
+    expander.Content = contentPanel;
+    
+    if (n.Attr != null && n.Attr.ContainsKey("open")) expander.IsExpanded = true;
+
+    try { ApplyComputedStyles(expander, n); } catch { }
+    return expander;
+}
+
 private Control MakePre(LiteElement n)
 {
     var raw = n.IsText ? (n.Text ?? "") : GatherText(n);
@@ -2279,8 +2859,131 @@ private CssComputed TryGetCss(LiteElement n)
 // It delegates to the newer Finish(...) pipeline so you keep all styling behavior.
 private Control ApplyBoxesAndText(Control inner, LiteElement n)
 {
+    // Apply default block margins if CSS doesn't specify them
+    ApplyDefaultBlockMargins(inner, n);
     return Finish(inner, n);
 }
+
+// Apply default UA-style margins for block elements
+private void ApplyDefaultBlockMargins(Control fe, LiteElement n)
+{
+    if (fe == null || n == null) return;
+
+    // Check if margin was explicitly set via CSS
+    var css = TryGetCss(n);
+    bool hasExplicitMargin = css != null && (css.Margin.Left != 0 || css.Margin.Top != 0 || css.Margin.Right != 0 || css.Margin.Bottom != 0);
+    if (hasExplicitMargin) return;
+
+    // Also check inline style for margin
+    if (n.Attr != null && n.Attr.TryGetValue("style", out var style) && !string.IsNullOrEmpty(style))
+    {
+        if (style.Contains("margin")) return; // Has inline margin
+    }
+
+    var tag = n.Tag?.ToLowerInvariant() ?? "";
+    double defaultFontSize = 16;
+    double em = defaultFontSize;
+
+    // Get font size if available
+    if (css != null && css.FontSize.HasValue) em = css.FontSize.Value;
+
+    Thickness margin = fe.Margin;
+    bool changed = false;
+
+    switch (tag)
+    {
+        case "p":
+            margin = new Thickness(0, em, 0, em);
+            changed = true;
+            break;
+        case "h1":
+            margin = new Thickness(0, 0.67 * 32, 0, 0.67 * 32);
+            changed = true;
+            break;
+        case "h2":
+            margin = new Thickness(0, 0.83 * 24, 0, 0.83 * 24);
+            changed = true;
+            break;
+        case "h3":
+            margin = new Thickness(0, 1.0 * 18, 0, 1.0 * 18);
+            changed = true;
+            break;
+        case "h4":
+        case "h5":
+        case "h6":
+            margin = new Thickness(0, 1.33 * em, 0, 1.33 * em);
+            changed = true;
+            break;
+        case "ul":
+        case "ol":
+            margin = new Thickness(0, em, 0, em);
+            changed = true;
+            break;
+        case "li":
+            margin = new Thickness(0, 4, 0, 4);
+            changed = true;
+            break;
+        case "blockquote":
+            margin = new Thickness(40, em, 40, em);
+            changed = true;
+            break;
+        case "hr":
+            margin = new Thickness(0, 8, 0, 8);
+            changed = true;
+            break;
+        case "section":
+        case "article":
+        case "aside":
+        case "header":
+        case "footer":
+        case "main":
+            margin = new Thickness(0, 0, 0, 16);
+            changed = true;
+            break;
+        case "figure":
+            margin = new Thickness(40, em, 40, em);
+            changed = true;
+            break;
+        case "pre":
+            margin = new Thickness(0, em, 0, em);
+            changed = true;
+            break;
+    }
+
+    if (changed)
+    {
+        fe.Margin = margin;
+    }
+
+    // Ensure block elements stretch to container width (prevents horizontal overflow)
+    // Note: 'tag' is already declared above
+    bool isBlockElement = tag == "p" || tag == "div" || tag == "section" || tag == "article" || 
+                          tag == "header" || tag == "footer" || tag == "main" || tag == "aside" ||
+                          tag == "h1" || tag == "h2" || tag == "h3" || tag == "h4" || tag == "h5" || tag == "h6" ||
+                          tag == "ul" || tag == "ol" || tag == "li" || tag == "blockquote" || tag == "pre" ||
+                          tag == "figure" || tag == "figcaption" || tag == "address" || tag == "nav";
+
+    if (isBlockElement)
+    {
+        fe.HorizontalAlignment = HorizontalAlignment.Stretch;
+
+        // Ensure TextBlocks wrap text
+        if (fe is TextBlock tb)
+        {
+            tb.TextWrapping = TextWrapping.Wrap;
+        }
+        else if (fe is Panel panel)
+        {
+            // For panels, set max width if not already set
+            if (double.IsNaN(fe.MaxWidth) || fe.MaxWidth == double.PositiveInfinity)
+            {
+                // Don't set explicit MaxWidth as it may cause issues
+                // Just ensure horizontal alignment is stretch
+            }
+        }
+    }
+}
+
 private void ApplyComputedLayout(Control fe, CssComputed css)
 {
     if (fe == null || css == null) return;
@@ -2340,6 +3043,45 @@ private void ApplyComputedLayout(Control fe, CssComputed css)
     if (css.Margin.Left != 0 || css.Margin.Top != 0 || css.Margin.Right != 0 || css.Margin.Bottom != 0)
     {
         fe.Margin = css.Margin;
+    }
+
+    // Z-Index
+    if (css.ZIndex.HasValue)
+    {
+        fe.ZIndex = css.ZIndex.Value;
+    }
+
+    // Positioning
+    if (!string.IsNullOrEmpty(css.Position))
+    {
+        var pos = css.Position.ToLowerInvariant();
+        if (pos == "relative")
+        {
+            // Use RenderTransform for relative positioning to avoid affecting layout flow
+            double dx = css.Left ?? 0;
+            double dy = css.Top ?? 0;
+            if (css.Right.HasValue) dx = -css.Right.Value;
+            if (css.Bottom.HasValue) dy = -css.Bottom.Value;
+
+            if (dx != 0 || dy != 0)
+            {
+                var group = new TransformGroup();
+                if (fe.RenderTransform is Transform existingTr) group.Children.Add(existingTr);
+                group.Children.Add(new TranslateTransform(dx, dy));
+                fe.RenderTransform = group;
+            }
+        }
+        else if (pos == "absolute" || pos == "fixed")
+        {
+            // For absolute/fixed, we try to set Canvas coordinates. 
+            // Note: This only works if the parent is a Canvas or a Grid (with some caveats).
+            // Since we mostly use StackPanel/DockPanel, this might not visually detach from flow correctly 
+            // without a layout engine rewrite, but it's a start.
+            if (css.Left.HasValue) Canvas.SetLeft(fe, css.Left.Value);
+            if (css.Top.HasValue) Canvas.SetTop(fe, css.Top.Value);
+            if (css.Right.HasValue) Canvas.SetRight(fe, css.Right.Value);
+            if (css.Bottom.HasValue) Canvas.SetBottom(fe, css.Bottom.Value);
+        }
     }
 }
 private Control Finish(Control content, LiteElement n)
@@ -2551,6 +3293,21 @@ private void ApplyComputedStyles(Control fe, LiteElement n)
         if (border != null) border.Background = st.Background;
         else if (fe is Panel) ((Panel)fe).Background = st.Background;
     }
+    
+    // Box Shadow
+    if (!string.IsNullOrEmpty(st.BoxShadow) && st.BoxShadow != "none")
+    {
+        if (fe is Border border)
+        {
+            try { border.BoxShadow = ParseBoxShadow(st.BoxShadow); } catch { }
+        }
+    }
+
+    // Transform
+    if (!string.IsNullOrEmpty(st.Transform) && st.Transform != "none")
+    {
+        try { fe.RenderTransform = ParseTransform(st.Transform); } catch { }
+    }
     else if (st.Map != null && st.Map.TryGetValue("background-image", out var bgImg) && !string.IsNullOrWhiteSpace(bgImg))
     {
         // Handle background-image from CSS if not already parsed into st.Background
@@ -2598,6 +3355,16 @@ private void ApplyComputedStyles(Control fe, LiteElement n)
     {
         var tb = fe as TextBlock;
         if (tb != null) tb.LineHeight = st.LineHeight.Value;
+    }
+    else
+    {
+        // Apply default line-height of 1.5 for better readability
+        var tb = fe as TextBlock;
+        if (tb != null && tb.LineHeight <= 0)
+        {
+            double fontSize = tb.FontSize > 0 ? tb.FontSize : 14;
+            tb.LineHeight = fontSize * 1.5;
+        }
     }
     if (!string.IsNullOrEmpty(st.WhiteSpace))
     {
@@ -4068,6 +4835,69 @@ private TextBlock RenderPlainTextBlock(string text)
             if (node == null || node.Attr == null) return false;
             return node.Attr.TryGetValue(attr, out value);
         }
+        private BoxShadows ParseBoxShadow(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value) || value == "none") return new BoxShadows();
+            
+            var parts = value.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 2) return new BoxShadows();
+
+            double x = 0, y = 0, blur = 0, spread = 0;
+            Color color = Colors.Black;
+            
+            int index = 0;
+            if (parts[index] == "inset") index++; 
+
+            if (index < parts.Length && TryPx(parts[index], out x)) index++;
+            if (index < parts.Length && TryPx(parts[index], out y)) index++;
+            if (index < parts.Length && TryPx(parts[index], out blur)) index++;
+            if (index < parts.Length && TryPx(parts[index], out spread)) index++;
+
+            if (index < parts.Length)
+            {
+                try { color = Color.Parse(parts[index]); } catch { }
+            }
+
+            return new BoxShadows(new BoxShadow { OffsetX = x, OffsetY = y, Blur = blur, Spread = spread, Color = color });
+        }
+
+        private ITransform ParseTransform(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value) || value == "none") return null;
+
+            var group = new TransformGroup();
+            var matches = Regex.Matches(value, @"(?<name>[a-z]+)\((?<args>[^)]+)\)", RegexOptions.IgnoreCase);
+            
+            foreach (Match m in matches)
+            {
+                var name = m.Groups["name"].Value.ToLowerInvariant();
+                var args = m.Groups["args"].Value;
+                var argParts = args.Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+
+                if (name == "rotate" && argParts.Length > 0)
+                {
+                    if (double.TryParse(argParts[0].Replace("deg", ""), NumberStyles.Any, CultureInfo.InvariantCulture, out double deg))
+                        group.Children.Add(new RotateTransform(deg));
+                }
+                else if (name == "scale")
+                {
+                    double sx = 1, sy = 1;
+                    if (argParts.Length > 0) double.TryParse(argParts[0], NumberStyles.Any, CultureInfo.InvariantCulture, out sx);
+                    sy = sx;
+                    if (argParts.Length > 1) double.TryParse(argParts[1], NumberStyles.Any, CultureInfo.InvariantCulture, out sy);
+                    group.Children.Add(new ScaleTransform(sx, sy));
+                }
+                else if (name == "translate")
+                {
+                    double tx = 0, ty = 0;
+                    if (argParts.Length > 0) TryPx(argParts[0], out tx);
+                    if (argParts.Length > 1) TryPx(argParts[1], out ty);
+                    group.Children.Add(new TranslateTransform(tx, ty));
+                }
+            }
+            return group.Children.Count > 0 ? group : null;
+        }
+
         private string CollapseWs(string text)
         {
             if (string.IsNullOrEmpty(text)) return "";
@@ -4179,7 +5009,8 @@ private TextBlock RenderPlainTextBlock(string text)
             else if (control is TemplatedControl tc) tc.CornerRadius = radius;
         }
     }
-    }
+}
+
 
 
 
