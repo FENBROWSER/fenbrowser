@@ -1,0 +1,147 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:c="using:Avalonia.Data.Converters"
+             mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="300"
+             x:Class="FenBrowser.UI.DevToolsView"
+             Background="#FFFFFF"
+             Foreground="#333333">
+  
+  <UserControl.Styles>
+    <Style Selector="Button.icon:pointerover /template/ ContentPresenter">
+        <Setter Property="Background" Value="#E5E5E5"/>
+    </Style>
+    
+    <!-- Custom TreeViewItem Template to show closing tags -->
+    <Style Selector="TreeViewItem">
+      <Setter Property="IsExpanded" Value="True"/>
+      <Setter Property="Foreground" Value="#333333"/>
+      <Setter Property="FontSize" Value="12"/>
+      <Setter Property="Template">
+        <ControlTemplate>
+            <StackPanel>
+                <Grid ColumnDefinitions="Auto, *">
+                    <ToggleButton Name="PART_ExpandCollapseChevron" Classes="expander" Focusable="False" IsChecked="{TemplateBinding IsExpanded, Mode=TwoWay}" Margin="0" Padding="0" Width="16" Height="16" Background="Transparent" BorderThickness="0" IsVisible="{Binding HasChildren}">
+                        <ToggleButton.Template>
+                            <ControlTemplate>
+                                <Border Background="Transparent" Width="16" Height="16">
+                                    <Grid>
+                                        <Path Fill="#5F6368" Data="M6,8 L10,8 L8,10 Z" HorizontalAlignment="Center" VerticalAlignment="Center" IsVisible="{Binding IsChecked, RelativeSource={RelativeSource TemplatedParent}, Converter={x:Static ObjectConverters.IsNull}}"/>
+                                        <TextBlock Text="▼" FontSize="8" VerticalAlignment="Center" HorizontalAlignment="Center" IsVisible="{Binding IsChecked, RelativeSource={RelativeSource TemplatedParent}}"/>
+                                        <TextBlock Text="▶" FontSize="8" VerticalAlignment="Center" HorizontalAlignment="Center" IsVisible="{Binding IsChecked, RelativeSource={RelativeSource TemplatedParent}, Converter={x:Static c:BoolConverters.Not}}"/>
+                                    </Grid>
+                                </Border>
+                            </ControlTemplate>
+                        </ToggleButton.Template>
+                    </ToggleButton>
+                    <ContentPresenter Name="PART_HeaderPresenter" Grid.Column="1" Content="{TemplateBinding Header}" HorizontalAlignment="Left"/>
+                </Grid>
+                <ItemsPresenter Name="PART_ItemsPresenter" IsVisible="{TemplateBinding IsExpanded}" ItemsPanel="{TemplateBinding ItemsPanel}" Margin="16,0,0,0"/>
+                
+                <!-- Closing Tag for Expanded Items with Children -->
+                <StackPanel Orientation="Horizontal" Margin="16,0,0,0" IsVisible="{TemplateBinding IsExpanded}">
+                    <StackPanel Orientation="Horizontal" IsVisible="{Binding HasChildren}">
+                        <TextBlock Text="&lt;/" Foreground="#808080"/>
+                        <TextBlock Text="{Binding Tag}" Foreground="#800080"/>
+                        <TextBlock Text="&gt;" Foreground="#808080"/>
+                    </StackPanel>
+                </StackPanel>
+            </StackPanel>
+        </ControlTemplate>
+      </Setter>
+    </Style>
+    <Style Selector="TextBlock.tag">
+      <Setter Property="Foreground" Value="#800080"/> <!-- Purple -->
+    </Style>
+    <Style Selector="TextBlock.attr">
+      <Setter Property="Foreground" Value="#0000FF"/> <!-- Blue -->
+    </Style>
+    <Style Selector="TextBlock.val">
+      <Setter Property="Foreground" Value="#A31515"/> <!-- Red/Orange -->
+    </Style>
+    <Style Selector="TabItem">
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="Padding" Value="12,8"/>
+        <Setter Property="Foreground" Value="#666666"/>
+    </Style>
+    <Style Selector="TabItem:selected">
+        <Setter Property="Foreground" Value="#0078D7"/>
+        <Setter Property="BorderBrush" Value="#0078D7"/>
+        <Setter Property="BorderThickness" Value="0,0,0,2"/>
+    </Style>
+    <Style Selector="Button.icon">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Padding" Value="4"/>
+        <Setter Property="Cursor" Value="Hand"/>
+    </Style>
+    <Style Selector="Button.icon:pointerover /template/ ContentPresenter">
+        <Setter Property="Background" Value="#E5E5E5"/>
+    </Style>
+  </UserControl.Styles>
+
+  <Grid RowDefinitions="Auto,*">
+    <!-- Toolbar -->
+    <Grid Grid.Row="0" Background="#F3F3F3" ColumnDefinitions="Auto,*,Auto" Height="32">
+        <StackPanel Orientation="Horizontal" Spacing="0">
+             <!-- Tabs are hosted here effectively by the TabControl below, but we can add extra tools -->
+        </StackPanel>
+        
+        <StackPanel Grid.Column="2" Orientation="Horizontal">
+             <Button Name="BtnRefresh" Classes="icon" ToolTip.Tip="Refresh DOM">
+                <Path Data="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" 
+                      Fill="#5F6368" Width="14" Height="14" Stretch="Uniform"/>
+             </Button>
+             <Button Name="BtnClose" Classes="icon" ToolTip.Tip="Close DevTools">
+                <Path Data="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" 
+                      Fill="#5F6368" Width="14" Height="14" Stretch="Uniform"/>
+             </Button>
+        </StackPanel>
+    </Grid>
+
+    <TabControl Grid.Row="1" Background="#FFFFFF" Margin="0,-32,0,0" Padding="0,32,0,0">
+      <TabItem Header="Elements">
+        <Grid RowDefinitions="Auto,*">
+             <!-- Breadcrumbs or filter could go here -->
+             <TreeView Name="DomTree" Grid.Row="1" Background="#FFFFFF" Foreground="#333333" BorderThickness="0">
+              <TreeView.ItemTemplate>
+                <TreeDataTemplate ItemsSource="{Binding Children}">
+                  <StackPanel Orientation="Horizontal" Spacing="4">
+                    <TextBlock Text="&lt;" Foreground="#808080"/>
+                    <TextBlock Text="{Binding Tag}" Classes="tag"/>
+                    <TextBlock Text="{Binding AttrString}" Classes="attr" Margin="4,0,0,0"/>
+                    <TextBlock Text="&gt;" Foreground="#808080"/>
+                    <TextBlock Text="{Binding TextPreview}" Foreground="#333333" Margin="4,0,0,0" TextTrimming="CharacterEllipsis" MaxWidth="400"/>
+                    
+                    <!-- Closing tag for leaf nodes -->
+                    <StackPanel Orientation="Horizontal" IsVisible="{Binding HasChildren, Converter={x:Static BoolConverters.Not}}">
+                        <TextBlock Text="&lt;/" Foreground="#808080"/>
+                        <TextBlock Text="{Binding Tag}" Classes="tag"/>
+                        <TextBlock Text="&gt;" Foreground="#808080"/>
+                    </StackPanel>
+                  </StackPanel>
+                </TreeDataTemplate>
+              </TreeView.ItemTemplate>
+            </TreeView>
+        </Grid>
+      </TabItem>
+      
+      <TabItem Header="Console">
+        <Grid RowDefinitions="*,Auto">
+          <ListBox Name="ConsoleOutput" Background="#FFFFFF" Foreground="#333333" BorderThickness="0">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding}" TextWrapping="Wrap" FontFamily="Consolas, Monospace" FontSize="12"/>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+          <Grid Grid.Row="1" ColumnDefinitions="Auto,*" Background="#F3F3F3">
+              <TextBlock Text=">" Foreground="#0078D7" VerticalAlignment="Center" Margin="4,0"/>
+              <TextBox Name="ConsoleInput" Grid.Column="1" Background="Transparent" Foreground="#333333" BorderThickness="0" FontFamily="Consolas, Monospace" CaretBrush="Black"/>
+          </Grid>
+        </Grid>
+      </TabItem>
+    </TabControl>
+  </Grid>
+</UserControl>

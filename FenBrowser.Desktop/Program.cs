@@ -14,7 +14,9 @@ class Program
     {
         AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
         {
-            Console.WriteLine($"[CRASH] Unhandled Exception: {e.ExceptionObject}");
+            var msg = $"[CRASH] Unhandled Exception: {e.ExceptionObject}";
+            Console.WriteLine(msg);
+            try { System.IO.File.AppendAllText("crash_log_new.txt", msg + Environment.NewLine); } catch { }
         };
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }

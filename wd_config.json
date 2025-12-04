@@ -1,0 +1,42 @@
+{
+  "host": "localhost",
+  "port": 4444,
+  "capabilities": {},
+  "timeout_multiplier": 1,
+  "webdriver": {
+    "binary": "c:\\Users\\udayk\\Videos\\FENBROWSER\\FenBrowser.Desktop\\bin\\Debug\\net8.0\\FenBrowser.Desktop.exe",
+    "args": ["--port=4444"]
+  },
+  "wptserve": {
+    "browser_host": "web-platform.test",
+    "alternate_hosts": {
+      "alt": "not-web-platform.test"
+    },
+    "doc_root": "c:\\Users\\udayk\\Videos\\wpt",
+    "ws_doc_root": "c:\\Users\\udayk\\Videos\\wpt\\websockets",
+    "ports": {
+      "http": [8000, 8001],
+      "https": [8443, 8444],
+      "ws": [8000, 8001],
+      "wss": [8443, 8444]
+    },
+    "domains": {
+      "": {
+        "": "web-platform.test",
+        "www": "www.web-platform.test",
+        "www1": "www1.web-platform.test",
+        "www2": "www2.web-platform.test",
+        "xn--n8j6ds53lwwkrqhv28a": "xn--n8j6ds53lwwkrqhv28a.web-platform.test",
+        "xn--lve-6lad": "xn--lve-6lad.web-platform.test"
+      },
+      "alt": {
+        "": "not-web-platform.test",
+        "www": "www.not-web-platform.test",
+        "www1": "www1.not-web-platform.test",
+        "www2": "www2.not-web-platform.test",
+        "xn--n8j6ds53lwwkrqhv28a": "xn--n8j6ds53lwwkrqhv28a.not-web-platform.test",
+        "xn--lve-6lad": "xn--lve-6lad.not-web-platform.test"
+      }
+    }
+  }
+}

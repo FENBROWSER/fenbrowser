@@ -3,12 +3,14 @@ using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
+using FenBrowser.Core;
 using FenBrowser.FenEngine.Rendering;
 using FenBrowser.WebDriver;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
+using Avalonia.Input;
 
 namespace FenBrowser.UI
 {
@@ -38,12 +40,32 @@ namespace FenBrowser.UI
                 }
             }
         }
+        public IBrowser Browser { get; set; }
+        public object LastRenderedContent { get; set; }
+        
+        private bool _isDevToolsOpen;
+        public bool IsDevToolsOpen
+        {
+            get => _isDevToolsOpen;
+            set
+            {
+                if (_isDevToolsOpen != value)
+                {
+                    _isDevToolsOpen = value;
+                    PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(IsDevToolsOpen)));
+                }
+            }
+        }
+        
+        public DevToolsView DevToolsInstance { get; set; }
     } // end TabItemModel
 
     public partial class MainWindow : Window
     {
         private int _nextTabId = 1;
-        private BrowserHost _browser;
+
+        // private BrowserHost _browser; // Removed single instance
+        private IBrowser _activeBrowser;
         private WebDriverServer _webDriver;
 
         // Note: leave these null if your XAML has x:Name and source-gen will produce them.
@@ -53,6 +75,10 @@ namespace FenBrowser.UI
         private Control _browserContainer; // keep generic because your XAML may use Border, ContentControl, Panel, etc.
         private TextBox _addressBox;
         private ProgressBar _loadingBar;
+        private Border _devToolsContainer;
+        private Canvas _highlightOverlay;
+        private Avalonia.Controls.Shapes.Path _securityIconPath;
+        private Button _siteInfoButton;
 
         public ObservableCollection<TabItemModel> Tabs { get; } = new ObservableCollection<TabItemModel>();
         public ObservableCollection<ExtensionModel> Extensions { get; } = new ObservableCollection<ExtensionModel>();
@@ -67,7 +93,7 @@ namespace FenBrowser.UI
             set => SetValue(CurrentTabWidthProperty, value);
         }
 
-        public MainWindow()
+        public MainWindow(int? port = null)
         {
             InitializeComponent();
             DataContext = this; // Set DataContext for bindings
@@ -76,11 +102,17 @@ namespace FenBrowser.UI
             _extensionsArea = this.FindControl<ItemsControl>("ExtensionsArea");
             _tabsStrip = this.FindControl<ItemsControl>("TabsStrip");
             _browserContainer = this.FindControl<Border>("BrowserContainer");
+            _devToolsContainer = this.FindControl<Border>("DevToolsContainer");
+            _addressBox = this.FindControl<TextBox>("AddressBox");
             _addressBox = this.FindControl<TextBox>("AddressBox");
             _loadingBar = this.FindControl<ProgressBar>("LoadingBar");
+            _highlightOverlay = this.FindControl<Canvas>("HighlightOverlay");
+            _securityIconPath = this.FindControl<Avalonia.Controls.Shapes.Path>("SecurityIconPath");
+            _siteInfoButton = this.FindControl<Button>("SiteInfoButton");
 
             // initial data
-            Tabs.Add(new TabItemModel { Id = _nextTabId++, Title = "New tab", IsActive = true });
+            var initialTab = new TabItemModel { Id = _nextTabId++, Title = "New tab", IsActive = true };
+            Tabs.Add(initialTab);
 
             // ensure ExtensionsArea isn't empty during testing
             Extensions.Add(new ExtensionModel { Name = "Adblock", Icon = "AB" });
@@ -103,88 +135,188 @@ namespace FenBrowser.UI
                 }
             };
 
-            InitializeBrowser();
+
+            InitializeBrowser(port, initialTab);
+            
+            this.KeyDown += OnWindowKeyDown;
         }
 
-        private void InitializeBrowser()
+        private void OnWindowKeyDown(object sender, Avalonia.Input.KeyEventArgs e)
         {
-            _browser = new BrowserHost();
-            try { _webDriver = new WebDriverServer(_browser); _webDriver.Start(); } catch { }
-
-            _browser.RepaintReady += (s, element) =>
+            if (e.Key == Key.F12)
             {
+                ToggleDevTools();
+            }
+        }
+
+        private void InitializeBrowser(int? port, TabItemModel initialTab)
+        {
+            // Create browser for the initial tab
+            CreateBrowserForTab(initialTab);
+            _activeBrowser = initialTab.Browser;
+            UpdateAddressBar(_activeBrowser);
+
+            // Initialize WebDriver with the first tab's browser (for now)
+            try 
+            { 
+                _webDriver = new WebDriverServer(_activeBrowser, port ?? 4444); 
+                _webDriver.Start(); 
+            } 
+            catch { }
+        }
+
+        private void CreateBrowserForTab(TabItemModel tab)
+        {
+            var browser = new BrowserHost();
+            browser.EnableJavaScript = BrowserSettings.Instance.EnableJavaScript;
+            tab.Browser = browser;
+
+            browser.RepaintReady += (s, element) =>
+            {
+                tab.LastRenderedContent = element;
                 Dispatcher.UIThread.Post(() =>
                 {
-                    if (_browserContainer != null)
+                    if (tab.IsActive)
                     {
-                        // element is typed as 'object' by the engine; try casting to Avalonia Control
                         if (element is Avalonia.Controls.Control ctrl)
-                        {
                             SetBrowserContainerContent(ctrl);
-                        }
                         else
-                        {
                             SetBrowserContainerContent(new TextBlock { Text = "Unsupported visual element" });
-                        }
-                        // Fix: Get the current URI from the browser
-                        var uri = _browser?.CurrentUri;
-                        if (_addressBox != null && uri != null)
-                        {
-                            _addressBox.Text = uri.AbsoluteUri;
-
-                            // Update active tab title
-                            var activeTab = Tabs.FirstOrDefault(t => t.IsActive);
-                            if (activeTab != null)
-                            {
-                                // Try to get document title, fallback to hostname
-                                var title = uri.Host;
-                                if (string.IsNullOrEmpty(title))
-                                    title = "New tab";
-                                activeTab.Title = title;
-                            }
-                        }
+                        
+                        UpdateAddressBar(browser);
                     }
                 });
             };
 
-            _browser.NavigationFailed += (s, msg) =>
+            browser.Navigated += (s, uri) =>
             {
                 Dispatcher.UIThread.Post(() =>
                 {
-                    SetBrowserContainerContent(new TextBlock
-                    {
-                        Text = $"Navigation Failed: {msg}",
-                        HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
-                        VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
-                        Foreground = Avalonia.Media.Brushes.Red
-                    });
-
-                    if (_loadingBar != null) _loadingBar.IsVisible = false;
+                    if (tab.IsActive) UpdateAddressBar(browser);
                 });
             };
 
-            _browser.LoadingChanged += (s, isLoading) =>
+            browser.NavigationFailed += (s, msg) =>
             {
                 Dispatcher.UIThread.Post(() =>
                 {
-                    if (_loadingBar != null)
+                    if (tab.IsActive)
+                    {
+                        SetBrowserContainerContent(new TextBlock
+                        {
+                            Text = $"Navigation Failed: {msg}",
+                            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
+                            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+                            Foreground = Avalonia.Media.Brushes.Red
+                        });
+                        if (_loadingBar != null) _loadingBar.IsVisible = false;
+                    }
+                });
+            };
+
+            browser.LoadingChanged += (s, isLoading) =>
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (tab.IsActive && _loadingBar != null)
                     {
                         _loadingBar.IsVisible = isLoading;
                     }
                 });
             };
 
-            _browser.TitleChanged += (s, title) =>
+            browser.TitleChanged += (s, title) =>
             {
                 Dispatcher.UIThread.Post(() =>
                 {
-                    var activeTab = Tabs.FirstOrDefault(t => t.IsActive);
-                    if (activeTab != null && !string.IsNullOrWhiteSpace(title))
+                    if (!string.IsNullOrWhiteSpace(title))
                     {
-                        activeTab.Title = title;
+                        tab.Title = title;
                     }
                 });
             };
+
+            browser.HighlightRectChanged += (rect) =>
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (tab.IsActive)
+                    {
+                        UpdateHighlight(rect);
+                    }
+                });
+            };
+        }
+
+        private void UpdateHighlight(Rect? rect)
+        {
+            if (_highlightOverlay == null) return;
+            _highlightOverlay.Children.Clear();
+
+            if (rect.HasValue)
+            {
+                var r = rect.Value;
+                var border = new Border
+                {
+                    Width = r.Width,
+                    Height = r.Height,
+                    BorderBrush = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Colors.Blue, 0.5),
+                    BorderThickness = new Thickness(2),
+                    Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Colors.Blue, 0.2)
+                };
+                Canvas.SetLeft(border, r.X);
+                Canvas.SetTop(border, r.Y);
+                _highlightOverlay.Children.Add(border);
+            }
+        }
+
+        private void UpdateAddressBar(IBrowser browser)
+        {
+            var uri = browser?.CurrentUri;
+            if (_addressBox != null && uri != null)
+            {
+                _addressBox.Text = uri.AbsoluteUri;
+            }
+
+            if (_securityIconPath != null && browser != null)
+            {
+                var state = browser.SecurityState;
+                if (uri == null || uri.Scheme == "about" || uri.Scheme == "fen")
+                {
+                    // Neutral / No icon for internal pages
+                    _securityIconPath.Data = null; 
+                    _securityIconPath.IsVisible = false;
+                    if (_siteInfoButton != null) _siteInfoButton.IsVisible = false;
+                }
+                else
+                {
+                    _securityIconPath.IsVisible = true;
+                    if (_siteInfoButton != null) _siteInfoButton.IsVisible = true;
+                    switch (state)
+                    {
+                        case SecurityState.Secure:
+                            // Lock icon
+                            _securityIconPath.Data = Avalonia.Media.Geometry.Parse("M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z");
+                            _securityIconPath.Fill = Avalonia.Media.Brushes.Gray; // Or Green/Black depending on theme
+                            break;
+                        case SecurityState.Warning:
+                            // Warning triangle
+                            _securityIconPath.Data = Avalonia.Media.Geometry.Parse("M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z");
+                            _securityIconPath.Fill = Avalonia.Media.Brushes.Red;
+                            break;
+                        case SecurityState.NotSecure:
+                            // Info icon
+                            _securityIconPath.Data = Avalonia.Media.Geometry.Parse("M11 7h2v2h-2zm0 4h2v6h-2zm1-9C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z");
+                            _securityIconPath.Fill = Avalonia.Media.Brushes.Gray;
+                            break;
+                        default:
+                            _securityIconPath.Data = null;
+                            _securityIconPath.IsVisible = false;
+                            if (_siteInfoButton != null) _siteInfoButton.IsVisible = false;
+                            break;
+                    }
+                }
+            }
         }
 
 
@@ -194,6 +326,20 @@ namespace FenBrowser.UI
         private void SetBrowserContainerContent(Control content)
         {
             if (_browserContainer == null) return;
+
+            // Fix: Detach content from its previous parent to avoid "Visual already has a parent" error
+            if (content.Parent is Avalonia.Controls.ContentControl oldCc)
+            {
+                oldCc.Content = null;
+            }
+            else if (content.Parent is Avalonia.Controls.Decorator oldDec)
+            {
+                oldDec.Child = null;
+            }
+            else if (content.Parent is Avalonia.Controls.Panel oldPanel)
+            {
+                oldPanel.Children.Remove(content);
+            }
 
             switch (_browserContainer)
             {
@@ -230,6 +376,45 @@ namespace FenBrowser.UI
                     _browserContainer.DataContext = content;
                     break;
             }
+            
+            // Attach Context Menu to the content control if possible
+            if (content is Control c)
+            {
+                var menu = new ContextMenu();
+                var refresh = new MenuItem { Header = "Refresh", InputGesture = new KeyGesture(Key.R, KeyModifiers.Control) };
+                refresh.Click += (s, e) => Refresh_Click(s, e);
+                menu.Items.Add(refresh);
+                
+                menu.Items.Add(new Separator());
+                
+                var viewSource = new MenuItem { Header = "View page source", InputGesture = new KeyGesture(Key.U, KeyModifiers.Control) };
+                viewSource.Click += (s, e) => 
+                {
+                    if (_activeBrowser?.CurrentUri != null)
+                    {
+                        var url = "view-source:" + _activeBrowser.CurrentUri.AbsoluteUri;
+                        OnNewTabClick(this, null);
+                        if (_activeBrowser != null) _activeBrowser.NavigateAsync(url);
+                    }
+                };
+                menu.Items.Add(viewSource);
+                
+                var inspect = new MenuItem { Header = "Inspect" };
+                inspect.Click += (s, e) => 
+                {
+                    if (_activeBrowser != null)
+                    {
+                        var activeTab = Tabs.FirstOrDefault(t => t.IsActive);
+                        if (activeTab != null && !activeTab.IsDevToolsOpen)
+                        {
+                            ToggleDevTools();
+                        }
+                    }
+                };
+                menu.Items.Add(inspect);
+                
+                c.ContextMenu = menu;
+            }
         }
 
         private void RecalculateTabWidth()
@@ -249,24 +434,24 @@ namespace FenBrowser.UI
         // Navigation handlers (wire to your engine)
         private async void Back_Click(object sender, RoutedEventArgs e)
         {
-            if (_browser != null && _browser.CanGoBack)
+            if (_activeBrowser != null && _activeBrowser.CanGoBack)
             {
-                await _browser.GoBackAsync();
+                await _activeBrowser.GoBackAsync();
             }
         }
 
         private async void Forward_Click(object sender, RoutedEventArgs e)
         {
-            if (_browser != null && _browser.CanGoForward)
+            if (_activeBrowser != null && _activeBrowser.CanGoForward)
             {
-                await _browser.GoForwardAsync();
+                await _activeBrowser.GoForwardAsync();
             }
         }
         private void Refresh_Click(object sender, RoutedEventArgs e)
         {
-            if (_browser != null && _browser.CurrentUri != null)
+            if (_activeBrowser != null && _activeBrowser.CurrentUri != null)
             {
-                _ = _browser.NavigateAsync(_browser.CurrentUri.AbsoluteUri);
+                _ = _activeBrowser.NavigateAsync(_activeBrowser.CurrentUri.AbsoluteUri);
             }
         }
 
@@ -289,7 +474,8 @@ namespace FenBrowser.UI
                     VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
                 });
 
-                await _browser.NavigateAsync(url);
+                if (_activeBrowser != null)
+                    await _activeBrowser.NavigateAsync(url);
             }
         }
 
@@ -298,6 +484,110 @@ namespace FenBrowser.UI
             if (e.Key == Avalonia.Input.Key.Enter)
             {
                 OnGoClick(sender, e);
+            }
+        }
+
+        private void OnSiteInfoClick(object sender, RoutedEventArgs e)
+        {
+            var popup = this.FindControl<Popup>("SiteInfoFlyout");
+            var content = this.FindControl<SiteInfoPopup>("SiteInfoContent");
+            
+            if (popup != null && content != null)
+            {
+                if (popup.IsOpen)
+                {
+                    popup.IsOpen = false;
+                    content.Detach();
+                }
+                else
+                {
+                    // Configure with current site info
+                    if (_activeBrowser != null && _activeBrowser.CurrentUri != null)
+                    {
+                        var scheme = _activeBrowser.CurrentUri.Scheme.ToLowerInvariant();
+                        if (scheme != "http" && scheme != "https")
+                        {
+                            // Only show for web pages
+                            return;
+                        }
+
+                        content.Configure(_activeBrowser.CurrentUri.Host, _activeBrowser.ResourceManager);
+                        
+                        // Handle close request from the popup itself
+                        EventHandler closeHandler = null;
+                        closeHandler = (s, args) =>
+                        {
+                            popup.IsOpen = false;
+                            content.Detach();
+                            content.CloseRequested -= closeHandler;
+                        };
+                        content.CloseRequested += closeHandler;
+                        
+                        // Also detach when popup closes via light dismiss
+                        EventHandler<EventArgs> popupClosedHandler = null;
+                        popupClosedHandler = (s, args) =>
+                        {
+                            content.Detach();
+                            if (closeHandler != null) content.CloseRequested -= closeHandler;
+                            popup.Closed -= popupClosedHandler;
+                        };
+                        popup.Closed += popupClosedHandler;
+
+                        popup.IsOpen = true;
+                    }
+                }
+            }
+        }
+
+        private void OnDevToolsClick(object sender, RoutedEventArgs e)
+        {
+            ToggleDevTools();
+        }
+
+        private void ToggleDevTools()
+        {
+            var activeTab = Tabs.FirstOrDefault(t => t.IsActive);
+            if (activeTab != null)
+            {
+                activeTab.IsDevToolsOpen = !activeTab.IsDevToolsOpen;
+                UpdateDevToolsVisibility(activeTab);
+            }
+        }
+
+        private void UpdateDevToolsVisibility(TabItemModel tab)
+        {
+            if (_devToolsContainer == null) return;
+
+            if (tab.IsDevToolsOpen)
+            {
+                if (tab.DevToolsInstance == null)
+                {
+                    tab.DevToolsInstance = new DevToolsView();
+                    tab.DevToolsInstance.CloseRequested += (s, e) => 
+                    {
+                        tab.IsDevToolsOpen = false;
+                        UpdateDevToolsVisibility(tab);
+                    };
+                }
+                
+                if (tab.Browser != null)
+                {
+                    tab.DevToolsInstance.Attach(tab.Browser);
+                }
+
+                _devToolsContainer.Child = tab.DevToolsInstance;
+                _devToolsContainer.IsVisible = true;
+                _devToolsContainer.Height = 300; // Default height
+            }
+            else
+            {
+                if (tab.DevToolsInstance != null)
+                {
+                    tab.DevToolsInstance.Detach();
+                }
+                _devToolsContainer.Child = null;
+                _devToolsContainer.IsVisible = false;
+                _devToolsContainer.Height = 0;
             }
         }
 
@@ -365,8 +655,24 @@ namespace FenBrowser.UI
 
         private void OnNewTabClick(object sender, RoutedEventArgs e)
         {
-            foreach (var t in Tabs) t.IsActive = false;
-            Tabs.Add(new TabItemModel { Id = _nextTabId++, Title = "New Tab", IsActive = true });
+            try
+            {
+                foreach (var t in Tabs) t.IsActive = false;
+                var newTab = new TabItemModel { Id = _nextTabId++, Title = "New Tab", IsActive = true };
+                Tabs.Add(newTab);
+                CreateBrowserForTab(newTab);
+                _activeBrowser = newTab.Browser;
+                
+                // Clear UI for new tab or show start page
+                SetBrowserContainerContent(new TextBlock { Text = "New Tab", HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center });
+                if (_addressBox != null) _addressBox.Text = "";
+                
+                UpdateAddressBar(_activeBrowser);
+            }
+            catch (Exception ex)
+            {
+                System.IO.File.AppendAllText("crash_log_new.txt", $"[OnNewTabClick] Error: {ex}\r\n");
+            }
         }
 
         private void OnTabClicked(object sender, RoutedEventArgs e)
@@ -374,6 +680,20 @@ namespace FenBrowser.UI
             if (sender is ToggleButton tb && tb.DataContext is TabItemModel model)
             {
                 foreach (var t in Tabs) t.IsActive = t.Id == model.Id;
+                
+                if (model.IsActive)
+                {
+                    _activeBrowser = model.Browser;
+                    if (model.LastRenderedContent is Control c)
+                        SetBrowserContainerContent(c);
+                    else
+                        SetBrowserContainerContent(new TextBlock { Text = "Ready" });
+                        
+
+                        
+                    UpdateAddressBar(_activeBrowser);
+                    UpdateDevToolsVisibility(model);
+                }
             }
         }
 
@@ -391,8 +711,18 @@ namespace FenBrowser.UI
 
                         if (wasActive && Tabs.Any())
                         {
-                            Tabs[0].IsActive = true;
+                            var newActive = Tabs[0];
+                            newActive.IsActive = true;
+                            _activeBrowser = newActive.Browser;
+                            if (newActive.LastRenderedContent is Control c)
+                                SetBrowserContainerContent(c);
+                            else
+                                SetBrowserContainerContent(new TextBlock { Text = "Ready" });
+                            UpdateAddressBar(_activeBrowser);
                         }
+                        
+                        // Dispose the closed browser
+                        if (toRemove.Browser is IDisposable d) d.Dispose();
                     }
                 }
             }
@@ -451,7 +781,10 @@ namespace FenBrowser.UI
         {
             base.OnClosed(e);
             _webDriver?.Stop();
-            _browser?.Dispose();
+            foreach(var t in Tabs)
+            {
+                if (t.Browser is IDisposable d) d.Dispose();
+            }
         }
     } // end MainWindow
 }

@@ -7,9 +7,31 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Reflection;
 using FenBrowser.Core.Compat;
+using FenBrowser.Core.Network;
+using FenBrowser.Core.Network.Handlers;
 
 namespace FenBrowser.Core
 {
+    public enum FetchStatus
+    {
+        Success,
+        ConnectionFailed,
+        SslError,
+        Timeout,
+        NotFound,
+        UnknownError
+    }
+
+    public class FetchResult
+    {
+        public FetchStatus Status;
+        public string Content;
+        public string ErrorDetail;
+        public int StatusCode;
+        public Uri FinalUri;
+        public string ContentType;
+    }
+
     public sealed class ResourceManager
     {
         // Optional diagnostic sink; host can assign to surface timings in UI.
@@ -28,56 +50,36 @@ namespace FenBrowser.Core
 
         public Uri LastTextResponseUri { get; private set; }
 
-        private sealed class HstsEntry { public DateTimeOffset Expiry; public bool IncludeSub; }
-        private readonly Dictionary<string, HstsEntry> _hsts = new Dictionary<string, HstsEntry>(StringComparer.OrdinalIgnoreCase);
-        private const string HstsFileName = "hsts_store_v1.txt";
+
+
         private readonly string _cacheRoot;
+        private readonly INetworkClient _client;
+
+        public int BlockedRequestCount { get; private set; }
+        public event EventHandler<int> BlockedCountChanged;
+
+        public void ResetBlockedCount()
+        {
+            BlockedRequestCount = 0;
+            BlockedCountChanged?.Invoke(this, 0);
+        }
 
         public ResourceManager(HttpClient http)
         {
-            _http = http ?? new HttpClient();
             _cacheRoot = Path.Combine(AppContext.BaseDirectory, "Cache");
             Directory.CreateDirectory(_cacheRoot);
-            LoadHsts();
+
+            var handlers = new List<INetworkHandler>
+            {
+                new AdBlockHandler(() => BrowserSettings.Instance.EnableTrackingPrevention),
+                new PrivacyHandler(),
+                new HstsHandler(_cacheRoot),
+                new HttpHandler(http)
+            };
+            _client = new NetworkClient(handlers);
         }
 
-        private void LoadHsts()
-        {
-            try
-            {
-                var path = Path.Combine(_cacheRoot, HstsFileName);
-                if (File.Exists(path))
-                {
-                    var lines = File.ReadAllLines(path);
-                    for (int i = 0; i < lines.Length; i++)
-                    {
-                        var parts = lines[i].Split('|');
-                        if (parts.Length >= 3)
-                        {
-                            DateTimeOffset exp; bool inc;
-                            if (DateTimeOffset.TryParse(parts[1], out exp) && bool.TryParse(parts[2], out inc))
-                                _hsts[parts[0]] = new HstsEntry { Expiry = exp, IncludeSub = inc };
-                        }
-                    }
-                }
-            }
-            catch { }
-        }
 
-        private void SaveHsts()
-        {
-            try
-            {
-                var sb = new StringBuilder();
-                foreach (var kv in _hsts)
-                    if (kv.Value != null)
-                        sb.Append(kv.Key).Append('|').Append(kv.Value.Expiry.ToString("o")).Append('|').Append(kv.Value.IncludeSub ? "true" : "false").Append('\n');
-                
-                var path = Path.Combine(_cacheRoot, HstsFileName);
-                File.WriteAllText(path, sb.ToString());
-            }
-            catch { }
-        }
 
         private static bool LooksTextual(string contentType)
         {
@@ -136,45 +138,7 @@ namespace FenBrowser.Core
             catch { return "0"; }
         }
 
-        private static bool IsHttps(Uri u) => u != null && string.Equals(u.Scheme, "https", StringComparison.OrdinalIgnoreCase);
 
-        private Uri UpgradeIfHsts(Uri u)
-        {
-            try
-            {
-                if (u == null || IsHttps(u)) return u;
-                var host = u.Host ?? string.Empty;
-                foreach (var kv in _hsts)
-                {
-                    var d = kv.Value; if (d == null || d.Expiry <= DateTimeOffset.UtcNow) continue;
-                    if (string.Equals(host, kv.Key, StringComparison.OrdinalIgnoreCase) || (d.IncludeSub && host.EndsWith("." + kv.Key, StringComparison.OrdinalIgnoreCase)))
-                    {
-                        var b = new UriBuilder(u) { Scheme = "https", Port = -1 };
-                        return b.Uri;
-                    }
-                }
-            }
-            catch { }
-            return u;
-        }
-
-        private void NoteHsts(HttpResponseMessage resp, Uri finalUri)
-        {
-            try
-            {
-                if (!IsHttps(finalUri) || resp == null) return;
-                if (resp.Headers.TryGetValues("Strict-Transport-Security", out var values))
-                {
-                    var v = string.Join(",", values);
-                    var max = Regex.Match(v, @"max-age\s*=\s*(?<s>\d+)", RegexOptions.IgnoreCase);
-                    long sec = 0; if (!max.Success || !long.TryParse(max.Groups["s"].Value, out sec) || sec <= 0) return;
-                    bool include = v.IndexOf("includesubdomains", StringComparison.OrdinalIgnoreCase) >= 0;
-                    _hsts[finalUri.Host ?? ""] = new HstsEntry { Expiry = DateTimeOffset.UtcNow.AddSeconds(sec), IncludeSub = include };
-                    SaveHsts();
-                }
-            }
-            catch { }
-        }
 
         // Text with redirect + small disk cache (5m TTL)
         public async Task<string> FetchTextAsync(Uri url, Uri referer = null, string accept = null, string secFetchDest = null)
@@ -195,8 +159,9 @@ namespace FenBrowser.Core
                 }
             }
 
-            url = UpgradeIfHsts(url);
+            // url = UpgradeIfHsts(url); // Handled by HstsHandler
             LastTextResponseUri = null;
+
             string partition = SafePartition(referer != null ? (referer.Host ?? "") : "");
             var folderPath = Path.Combine(_cacheRoot, "cache_" + partition);
             Directory.CreateDirectory(folderPath);
@@ -274,13 +239,19 @@ namespace FenBrowser.Core
                         cts.CancelAfter(System.TimeSpan.FromSeconds(sec));
                     }
                     catch { }
-                    try { resp = await _http.SendAsync(req, cts.Token); }
+                    try { resp = await _client.SendAsync(req, cts.Token); }
                     catch (Exception sendEx)
                     {
                         Console.WriteLine($"[FetchTextError] send failed {current} ex={sendEx.Message}");
                         resp = null;
                     }
                     
+                    if (resp != null && resp.StatusCode == System.Net.HttpStatusCode.Forbidden && resp.ReasonPhrase == "Blocked by AdBlock")
+                    {
+                        BlockedRequestCount++;
+                        BlockedCountChanged?.Invoke(this, BlockedRequestCount);
+                    }
+
                     if (resp != null)
                     {
                         var code = (int)resp.StatusCode;
@@ -288,7 +259,8 @@ namespace FenBrowser.Core
                         {
                             var loc = resp.Headers.Location; if (!loc.IsAbsoluteUri) loc = new Uri(current, loc);
                             previousRequest = current;
-                            current = UpgradeIfHsts(loc);
+                            // current = UpgradeIfHsts(loc); // Handled by HstsHandler on next pass
+                            current = loc;
                             hops++;
                             continue;
                         }
@@ -302,7 +274,7 @@ namespace FenBrowser.Core
                 }
                 var finalUri = resp?.RequestMessage?.RequestUri ?? current ?? url;
                 LastTextResponseUri = finalUri;
-                NoteHsts(resp, finalUri ?? url);
+                // NoteHsts(resp, finalUri ?? url); // Handled by HstsHandler
 
                 var ct = resp.Content != null && resp.Content.Headers != null && resp.Content.Headers.ContentType != null ? resp.Content.Headers.ContentType.MediaType : null;
                 string text = null;
@@ -355,6 +327,159 @@ namespace FenBrowser.Core
             }
         }
 
+        public async Task<FetchResult> FetchTextDetailedAsync(Uri url, Uri referer = null, string accept = null, string secFetchDest = null)
+        {
+            if (url == null) return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = "URL is null" };
+
+            // Handle file scheme locally
+            if (string.Equals(url.Scheme, "file", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    var text = await File.ReadAllTextAsync(url.LocalPath);
+                    return new FetchResult { Status = FetchStatus.Success, Content = text, FinalUri = url, ContentType = "text/html" };
+                }
+                catch (FileNotFoundException)
+                {
+                    return new FetchResult { Status = FetchStatus.NotFound, ErrorDetail = "File not found", FinalUri = url };
+                }
+                catch (Exception ex)
+                {
+                    return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = ex.Message, FinalUri = url };
+                }
+            }
+
+            // url = UpgradeIfHsts(url); // Handled by HstsHandler
+            LastTextResponseUri = null;
+            
+            // ... (Cache logic omitted for brevity in detailed fetch for now, or we can duplicate/refactor. 
+            // For this task, let's focus on the network part to get errors right. 
+            // Ideally we refactor FetchTextAsync to use this, but to minimize risk I'll implement the network logic here.)
+
+            var refererOriginal = referer;
+            Uri previousRequest = null;
+
+            try
+            {
+                var _startFetch = DateTimeOffset.UtcNow;
+                Uri current = url; HttpResponseMessage resp = null; int hops = 0; HttpRequestMessage req = null;
+                while (hops < 5)
+                {
+                    req = new HttpRequestMessage(HttpMethod.Get, current);
+                    AddHeaderSafe(req, "Accept", string.IsNullOrWhiteSpace(accept) ? "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7" : accept);
+                    
+                    var destLower = (secFetchDest ?? "").ToLowerInvariant();
+                    var useMobile = (destLower == "document" || destLower == "iframe");
+                    var selectedUserAgent = BrowserSettings.Instance.SelectedUserAgent;
+                    var ua = BrowserSettings.GetUserAgentString(selectedUserAgent, useMobile);
+                    
+                    AddHeaderSafe(req, "User-Agent", ua);
+                    AddHeaderSafe(req, "Accept-Language", "en-US,en;q=0.9");
+                    
+                    var effectiveReferer = refererOriginal ?? previousRequest;
+                    if (effectiveReferer != null) AddHeaderSafe(req, "Referer", effectiveReferer.AbsoluteUri);
+                    
+                    var cts = new System.Threading.CancellationTokenSource();
+                    try
+                    {
+                        int sec = 8;
+                        var d = (secFetchDest ?? "").ToLowerInvariant();
+                        if (d == "document" || d == "iframe") sec = 12;
+                        cts.CancelAfter(System.TimeSpan.FromSeconds(sec));
+                    }
+                    catch { }
+
+                    try 
+                    { 
+                        resp = await _client.SendAsync(req, cts.Token); 
+                    }
+                    catch (TaskCanceledException)
+                    {
+                        return new FetchResult { Status = FetchStatus.Timeout, ErrorDetail = "Connection timed out", FinalUri = current };
+                    }
+                    catch (HttpRequestException httpEx)
+                    {
+                        // Try to detect SSL/DNS errors from the message or inner exception
+                        var msg = httpEx.Message;
+                        if (httpEx.InnerException != null) msg += " " + httpEx.InnerException.Message;
+                        
+                        if (msg.Contains("SSL") || msg.Contains("cert") || msg.Contains("security"))
+                            return new FetchResult { Status = FetchStatus.SslError, ErrorDetail = msg, FinalUri = current };
+                        
+                        return new FetchResult { Status = FetchStatus.ConnectionFailed, ErrorDetail = msg, FinalUri = current };
+                    }
+                    catch (Exception sendEx)
+                    {
+                         return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = sendEx.Message, FinalUri = current };
+                    }
+                    
+                    if (resp != null)
+                    {
+                        var code = (int)resp.StatusCode;
+                        if (code >= 300 && code < 400 && resp.Headers.Location != null)
+                        {
+                            var loc = resp.Headers.Location; if (!loc.IsAbsoluteUri) loc = new Uri(current, loc);
+                            previousRequest = current;
+                            // current = UpgradeIfHsts(loc); // Handled by HstsHandler
+                            current = loc;
+                            hops++;
+                            continue;
+                        }
+                    }
+                    break;
+                }
+
+                if (resp == null)
+                {
+                     return new FetchResult { Status = FetchStatus.ConnectionFailed, ErrorDetail = "No response received", FinalUri = current };
+                }
+
+                var finalUri = resp?.RequestMessage?.RequestUri ?? current ?? url;
+                LastTextResponseUri = finalUri;
+                // NoteHsts(resp, finalUri ?? url); // Handled by HstsHandler
+
+                var ct = resp.Content != null && resp.Content.Headers != null && resp.Content.Headers.ContentType != null ? resp.Content.Headers.ContentType.MediaType : null;
+                
+                if (!resp.IsSuccessStatusCode)
+                {
+                    // 404, 500, etc.
+                    string errBody = null;
+                    try { errBody = await resp.Content.ReadAsStringAsync(); } catch {}
+                    
+                    FetchStatus status = FetchStatus.UnknownError;
+                    if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) status = FetchStatus.NotFound;
+                    else if ((int)resp.StatusCode >= 500) status = FetchStatus.ConnectionFailed; // Server error
+
+                    return new FetchResult { 
+                        Status = status, 
+                        StatusCode = (int)resp.StatusCode, 
+                        ErrorDetail = $"HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}", 
+                        Content = errBody,
+                        FinalUri = finalUri,
+                        ContentType = ct
+                    };
+                }
+
+                string text = null;
+                try { text = await resp.Content.ReadAsStringAsync(); }
+                catch (Exception bodyEx)
+                {
+                    return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = "Failed to read body: " + bodyEx.Message, FinalUri = finalUri };
+                }
+
+                return new FetchResult { 
+                    Status = FetchStatus.Success, 
+                    Content = text, 
+                    StatusCode = (int)resp.StatusCode, 
+                    FinalUri = finalUri,
+                    ContentType = ct
+                };
+            }
+            catch (Exception ex) {
+                return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = ex.Message, FinalUri = url };
+            }
+        }
+
         // Extended variant with explicit UA and Accept-Encoding overrides for multi-strategy fallback
         public async Task<string> FetchTextWithOptionsAsync(Uri url, Uri referer, string accept, string secFetchDest, string userAgentOverride, string acceptEncodingOverride)
         {
@@ -378,7 +503,7 @@ namespace FenBrowser.Core
                 var cts = new System.Threading.CancellationTokenSource();
                 try { cts.CancelAfter(TimeSpan.FromSeconds(12)); } catch { }
                 HttpResponseMessage resp = null;
-                try { resp = await _http.SendAsync(req, cts.Token); } catch (Exception sendEx) { try { System.Diagnostics.Debug.WriteLine("[FetchTextOptError] send " + url + " ex=" + sendEx.Message); } catch { } }
+                try { resp = await _client.SendAsync(req, cts.Token); } catch (Exception sendEx) { try { System.Diagnostics.Debug.WriteLine("[FetchTextOptError] send " + url + " ex=" + sendEx.Message); } catch { } }
                 if (resp == null || !resp.IsSuccessStatusCode)
                 { try { System.Diagnostics.Debug.WriteLine("[FetchTextOptFail] url=" + url + " status=" + (resp!=null?(int)resp.StatusCode:0)); } catch { } return null; }
                 LastTextResponseUri = resp.RequestMessage != null ? resp.RequestMessage.RequestUri : url;
@@ -441,7 +566,7 @@ namespace FenBrowser.Core
                 catch { return null; }
             }
 
-            url = UpgradeIfHsts(url);
+            // url = UpgradeIfHsts(url); // Handled by HstsHandler
             var key = url.AbsoluteUri;
 
             LinkedListNode<Tuple<string, ImgEntry>> node;
@@ -470,7 +595,7 @@ namespace FenBrowser.Core
                     if (effectiveReferer != null) AddHeaderSafe(req, "Referer", effectiveReferer.AbsoluteUri);
                     var cts = new System.Threading.CancellationTokenSource();
                     try { cts.CancelAfter(System.TimeSpan.FromSeconds(8)); } catch { }
-                    resp = await _http.SendAsync(req, cts.Token);
+                    resp = await _client.SendAsync(req, cts.Token);
                     
                     if (resp != null)
                     {
@@ -479,7 +604,8 @@ namespace FenBrowser.Core
                         {
                             var loc = resp.Headers.Location; if (!loc.IsAbsoluteUri) loc = new Uri(current, loc);
                             previousRequest = current;
-                            current = UpgradeIfHsts(loc);
+                            // current = UpgradeIfHsts(loc); // Handled by HstsHandler
+                            current = loc;
                             hops++;
                             continue;
                         }
@@ -490,9 +616,9 @@ namespace FenBrowser.Core
                 {
                     return null;
                 }
-                NoteHsts(resp, url);
+                // NoteHsts(resp, url); // Handled by HstsHandler
 
-                var buf = await HttpCache.Instance.GetBufferAsync(_http, req) ?? await resp.Content.ReadAsByteArrayAsync();
+                var buf = await HttpCache.Instance.GetBufferAsync(null, req) ?? await resp.Content.ReadAsByteArrayAsync();
 
                 var entry = new ImgEntry { Buffer = buf, ContentType = resp.Content != null && resp.Content.Headers != null && resp.Content.Headers.ContentType != null ? resp.Content.Headers.ContentType.MediaType : null };
                 var pair = Tuple.Create(key, entry);
@@ -516,7 +642,7 @@ namespace FenBrowser.Core
         public async Task<byte[]> FetchBytesAsync(Uri url, Uri referer = null, string accept = null, string secFetchDest = null)
         {
             if (url == null) return null;
-            url = UpgradeIfHsts(url);
+            // url = UpgradeIfHsts(url); // Handled by HstsHandler
             try
             {
                 Uri current = url; HttpResponseMessage resp = null; int hops = 0; HttpRequestMessage req = null;
@@ -536,7 +662,7 @@ namespace FenBrowser.Core
                         cts.CancelAfter(System.TimeSpan.FromSeconds(sec));
                     }
                     catch { }
-                    resp = await _http.SendAsync(req, cts.Token);
+                    resp = await _client.SendAsync(req, cts.Token);
                     if (resp != null)
                     {
                         var code = (int)resp.StatusCode;
@@ -544,7 +670,8 @@ namespace FenBrowser.Core
                         {
                             var loc = resp.Headers.Location; if (!loc.IsAbsoluteUri) loc = new Uri(current, loc);
                             var prev = current;
-                            current = UpgradeIfHsts(loc);
+                            // current = UpgradeIfHsts(loc); // Handled by HstsHandler
+                            current = loc;
                             referer = prev;
                             hops++;
                             continue;
@@ -553,9 +680,9 @@ namespace FenBrowser.Core
                     break;
                 }
                 if (resp == null || !resp.IsSuccessStatusCode) return null;
-                NoteHsts(resp, url);
+                // NoteHsts(resp, url); // Handled by HstsHandler
 
-                var buf = await HttpCache.Instance.GetBufferAsync(_http, req) ?? await resp.Content.ReadAsByteArrayAsync();
+                var buf = await HttpCache.Instance.GetBufferAsync(null, req) ?? await resp.Content.ReadAsByteArrayAsync();
                 return buf;
             }
             catch { return null; }

@@ -100,5 +100,13 @@ namespace FenBrowser.FenEngine.Rendering
         public double? Opacity { get; set; }        // 0.0 to 1.0
         public string TextShadow { get; set; }      // CSS text-shadow value  
         public string BoxShadow { get; set; }       // CSS box-shadow value
+
+        // New properties for better fidelity
+        public double? LineHeight { get; set; }     // Multiplier (e.g. 1.5) or px value
+        public string VerticalAlign { get; set; }
+        public string WhiteSpace { get; set; }
+        public string TextOverflow { get; set; }
+        public string BoxSizing { get; set; }
+        public string Cursor { get; set; }
     }
 }

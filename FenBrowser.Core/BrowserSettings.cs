@@ -57,7 +57,8 @@ namespace FenBrowser.Core
         public UserAgentType SelectedUserAgent { get; set; } = UserAgentType.FenBrowser;
 
         public LogSettings Logging { get; set; } = new LogSettings();
-
+        public bool EnableJavaScript { get; set; } = true;
+        public bool EnableTrackingPrevention { get; set; } = true;
         public static string GetUserAgentString(UserAgentType type, bool useMobile = false)
         {
             switch (type)
