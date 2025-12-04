@@ -178,7 +178,7 @@ namespace FenBrowser.FenEngine.DOM
             _context.RequestRender?.Invoke();
         }
 
-        private IValue GetAttribute(IValue[] args)
+        private IValue GetAttribute(IValue[] args, IValue thisVal)
         {
             if (args.Length == 0) return FenValue.Null;
             var attrName = args[0].ToString();
@@ -187,7 +187,7 @@ namespace FenBrowser.FenEngine.DOM
                 : FenValue.Null;
         }
 
-        private IValue SetAttribute(IValue[] args)
+        private IValue SetAttribute(IValue[] args, IValue thisVal)
         {
             if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "setAttribute"))
                 throw new FenSecurityError("DOM write permission required");
