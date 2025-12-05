@@ -14,7 +14,7 @@ namespace FenBrowser.FenEngine.Rendering
                         body {
                             font-family: 'Segoe UI', system-ui, sans-serif;
                             background-color: #f3f3f3; /* Light gray background */
-                            color: #333;
+                            color: #0F172A;
                             display: flex;
                             flex-direction: column;
                             align-items: center;
@@ -23,8 +23,8 @@ namespace FenBrowser.FenEngine.Rendering
                         }
                         @media (prefers-color-scheme: dark) {
                             body {
-                                background-color: #202020;
-                                color: #ffffff;
+                                background-color: #0F172A; /* Slate-900 (matches Window Background) */
+                                color: #F8FAFC; /* Slate-50 */
                             }
                         }
                         .search-container {

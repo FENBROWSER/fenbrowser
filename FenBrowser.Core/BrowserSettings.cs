@@ -11,6 +11,13 @@ namespace FenBrowser.Core
         Chrome
     }
 
+    public enum ThemePreference
+    {
+        System,
+        Light,
+        Dark
+    }
+
     public class LogSettings
     {
         public bool EnableLogging { get; set; } = false;
@@ -55,6 +62,7 @@ namespace FenBrowser.Core
         }
 
         public UserAgentType SelectedUserAgent { get; set; } = UserAgentType.FenBrowser;
+        public ThemePreference Theme { get; set; } = ThemePreference.System;
 
         public LogSettings Logging { get; set; } = new LogSettings();
         public bool EnableJavaScript { get; set; } = true;

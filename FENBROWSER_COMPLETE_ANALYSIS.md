@@ -800,10 +800,10 @@
 | Project              | Files  | Lines of Code |
 | -------------------- | ------ | ------------- |
 | FenBrowser.Core      | 14     | ~5,000        |
-| FenBrowser.FenEngine | 45     | ~25,000       |
+| FenBrowser.FenEngine | 46     | ~25,500       |
 | FenBrowser.UI        | 18     | ~8,000        |
 | FenBrowser.Desktop   | 4      | ~500          |
-| **TOTAL**            | **81** | **~38,500**   |
+| **TOTAL**            | **82** | **~39,000**   |
 
 ---
 

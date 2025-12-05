@@ -51,6 +51,21 @@ namespace FenBrowser.UI
             LogStorageCheck.IsChecked = categories.HasFlag(LogCategory.Storage);
             LogPerformanceCheck.IsChecked = categories.HasFlag(LogCategory.Performance);
             LogErrorsCheck.IsChecked = categories.HasFlag(LogCategory.Errors);
+
+            // Load Theme settings
+            switch (settings.Theme)
+            {
+                case ThemePreference.Light:
+                    ThemeLightRadio.IsChecked = true;
+                    break;
+                case ThemePreference.Dark:
+                    ThemeDarkRadio.IsChecked = true;
+                    break;
+                case ThemePreference.System:
+                default:
+                    ThemeSystemRadio.IsChecked = true;
+                    break;
+            }
         }
 
         private async void OnSaveClick(object sender, RoutedEventArgs e)
@@ -64,6 +79,17 @@ namespace FenBrowser.UI
                 settings.SelectedUserAgent = UserAgentType.Firefox;
             else if (FenBrowserRadio.IsChecked == true)
                 settings.SelectedUserAgent = UserAgentType.FenBrowser;
+
+            else if (FenBrowserRadio.IsChecked == true)
+                settings.SelectedUserAgent = UserAgentType.FenBrowser;
+
+            // Save Theme setting
+            if (ThemeLightRadio.IsChecked == true)
+                ThemeManager.SetTheme(ThemePreference.Light);
+            else if (ThemeDarkRadio.IsChecked == true)
+                ThemeManager.SetTheme(ThemePreference.Dark);
+            else
+                ThemeManager.SetTheme(ThemePreference.System);
 
             // Save JavaScript setting
             settings.EnableJavaScript = EnableJavaScriptSwitch.IsChecked == true;
