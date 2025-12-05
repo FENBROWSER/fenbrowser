@@ -4,34 +4,20 @@
              x:Name="SettingsRoot">
 
 	<UserControl.Resources>
-		<!-- Color Palette -->
-		<Color x:Key="BgColor">#F3F3F3</Color>
-		<Color x:Key="SurfaceColor">#FFFFFF</Color>
-		<Color x:Key="BorderColor">#E1E1E1</Color>
-		<Color x:Key="PrimaryText">#1F1F1F</Color>
-		<Color x:Key="SecondaryText">#605E5C</Color>
-		<Color x:Key="AccentColor">#0078D4</Color>
-		<Color x:Key="HoverColor">#F5F5F5</Color>
-
-		<SolidColorBrush x:Key="WindowBackgroundBrush" Color="{StaticResource BgColor}"/>
-		<SolidColorBrush x:Key="SurfaceBrush" Color="{StaticResource SurfaceColor}"/>
-		<SolidColorBrush x:Key="BorderBrush" Color="{StaticResource BorderColor}"/>
-		<SolidColorBrush x:Key="PrimaryTextBrush" Color="{StaticResource PrimaryText}"/>
-		<SolidColorBrush x:Key="SecondaryTextBrush" Color="{StaticResource SecondaryText}"/>
-		<SolidColorBrush x:Key="AccentBrush" Color="{StaticResource AccentColor}"/>
+		<!-- Local overrides removed to use global ThemeDictionaries -->
 	</UserControl.Resources>
 
 	<UserControl.Styles>
 		<!-- Radio Button Style -->
 		<Style Selector="RadioButton">
 			<Setter Property="Margin" Value="0,8,0,0"/>
-			<Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}"/>
+			<Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}"/>
 		</Style>
 
 		<!-- Primary Button -->
 		<Style Selector="Button.primary">
-			<Setter Property="Background" Value="{StaticResource AccentColor}"/>
-			<Setter Property="Foreground" Value="White"/>
+			<Setter Property="Background" Value="{DynamicResource AccentBrush}"/>
+			<Setter Property="Foreground" Value="#FFFFFF"/> 
 			<Setter Property="Padding" Value="16,8"/>
 			<Setter Property="CornerRadius" Value="4"/>
 			<Setter Property="BorderThickness" Value="0"/>
@@ -40,34 +26,34 @@
 		</Style>
 
 		<Style Selector="Button.primary:pointerover">
-			<Setter Property="Background" Value="#106EBE"/>
+			<Setter Property="Background" Value="#106EBE"/> 
 		</Style>
 
 		<!-- Secondary Button -->
 		<Style Selector="Button.secondary">
 			<Setter Property="Background" Value="Transparent"/>
-			<Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}"/>
+			<Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}"/>
 			<Setter Property="Padding" Value="16,8"/>
 			<Setter Property="CornerRadius" Value="4"/>
-			<Setter Property="BorderBrush" Value="{StaticResource BorderColor}"/>
+			<Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
 			<Setter Property="BorderThickness" Value="1"/>
 			<Setter Property="MinWidth" Value="80"/>
 		</Style>
 
 		<Style Selector="Button.secondary:pointerover">
-			<Setter Property="Background" Value="{StaticResource HoverColor}"/>
+			<Setter Property="Background" Value="{DynamicResource HoverColor}"/>
 		</Style>
 	</UserControl.Styles>
 
-	<Grid ColumnDefinitions="Auto,*" Background="{StaticResource BgColor}" HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
+	<Grid ColumnDefinitions="Auto,*" Background="{DynamicResource WindowBackgroundBrush}" HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
 		<!-- Left Navigation Panel -->
-		<Border Grid.Column="0" Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,1,0" MinWidth="150" MaxWidth="200">
+		<Border Grid.Column="0" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,1,0" MinWidth="150" MaxWidth="200">
 			<StackPanel Margin="0,20,0,0">
-				<TextBlock Text="Settings" FontSize="20" FontWeight="Bold" Margin="20,0,0,20" Foreground="{StaticResource PrimaryTextBrush}"/>
+				<TextBlock Text="Settings" FontSize="20" FontWeight="Bold" Margin="20,0,0,20" Foreground="{DynamicResource PrimaryTextBrush}"/>
 				
 				<!-- Navigation Items -->
-				<Border Background="#E6F4FF" Padding="12,10" Margin="0,0,0,2">
-					<TextBlock Text="General" FontWeight="SemiBold" Foreground="{StaticResource AccentColor}"/>
+				<Border Background="{DynamicResource HoverColor}" Padding="12,10" Margin="0,0,0,2">
+					<TextBlock Text="General" FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}"/>
 				</Border>
 			</StackPanel>
 		</Border>
@@ -76,72 +62,89 @@
 		<ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
 			<StackPanel Margin="20,20,20,20" MaxWidth="600" HorizontalAlignment="Stretch">
 				<!-- Header -->
-				<TextBlock Text="General Settings" FontSize="24" FontWeight="Bold" Margin="0,0,0,30" Foreground="{StaticResource PrimaryTextBrush}"/>
+				<TextBlock Text="General Settings" FontSize="24" FontWeight="Bold" Margin="0,0,0,30" Foreground="{DynamicResource PrimaryTextBrush}"/>
+
+				<!-- Appearance Section -->
+				<Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="8" Padding="20" Margin="0,0,0,20">
+					<StackPanel>
+						<TextBlock Text="Appearance" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,8" Foreground="{DynamicResource PrimaryTextBrush}"/>
+						<TextBlock Text="Choose your preferred theme." 
+								   TextWrapping="Wrap" 
+								   Margin="0,0,0,16"
+								   Foreground="{DynamicResource MutedTextBrush}"/>
+
+						<StackPanel x:Name="ThemePanel" Orientation="Horizontal" Spacing="20">
+							<RadioButton x:Name="ThemeSystemRadio" Content="System Default" GroupName="Theme"/>
+							<RadioButton x:Name="ThemeLightRadio" Content="Light" GroupName="Theme"/>
+							<RadioButton x:Name="ThemeDarkRadio" Content="Dark" GroupName="Theme"/>
+						</StackPanel>
+					</StackPanel>
+				</Border>
 
 				<!-- User-Agent Section -->
-				<Border Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="20" Margin="0,0,0,20">
+				<Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="8" Padding="20" Margin="0,0,0,20">
 					<StackPanel>
-						<TextBlock Text="Browser Identity (User-Agent)" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,8" Foreground="{StaticResource PrimaryTextBrush}"/>
+						<TextBlock Text="Browser Identity (User-Agent)" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,8" Foreground="{DynamicResource PrimaryTextBrush}"/>
 						<TextBlock Text="Choose how websites identify your browser. Chrome is recommended for best compatibility." 
 								   TextWrapping="Wrap" 
 								   Margin="0,0,0,16"
-								   Foreground="{StaticResource SecondaryTextBrush}"/>
+								   Foreground="{DynamicResource MutedTextBrush}"/>
 
 						<StackPanel x:Name="UserAgentPanel">
 							<RadioButton x:Name="ChromeRadio" Content="Chrome (Recommended)" GroupName="UserAgent"/>
 							<TextBlock Text="Best compatibility with modern websites" 
 									   Margin="28,0,0,0" 
 									   FontSize="12" 
-									   Foreground="{StaticResource SecondaryTextBrush}"/>
+									   Foreground="{DynamicResource MutedTextBrush}"/>
 
 							<RadioButton x:Name="FirefoxRadio" Content="Firefox" GroupName="UserAgent" Margin="0,12,0,0"/>
 							<TextBlock Text="Alternative browser identity for privacy-focused sites" 
 									   Margin="28,0,0,0" 
 									   FontSize="12" 
-									   Foreground="{StaticResource SecondaryTextBrush}"/>
+									   Foreground="{DynamicResource MutedTextBrush}"/>
 
 							<RadioButton x:Name="FenBrowserRadio" Content="FenBrowser" GroupName="UserAgent" Margin="0,12,0,0"/>
 							<TextBlock Text="Custom FenBrowser identity - may not be recognized by all sites" 
 									   Margin="28,0,0,0" 
 									   FontSize="12" 
-									   Foreground="{StaticResource SecondaryTextBrush}"/>
+									   Foreground="{DynamicResource MutedTextBrush}"/>
 						</StackPanel>
 					</StackPanel>
 				</Border>
 
 				<!-- JavaScript Section -->
-				<Border Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="20" Margin="0,0,0,20">
+				<Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="8" Padding="20" Margin="0,0,0,20">
 					<StackPanel>
-						<TextBlock Text="JavaScript" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,8" Foreground="{StaticResource PrimaryTextBrush}"/>
+						<TextBlock Text="JavaScript" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,8" Foreground="{DynamicResource PrimaryTextBrush}"/>
 						<TextBlock Text="Control whether websites can run JavaScript. Disabling may break site functionality but improves security and privacy." 
 								   TextWrapping="Wrap" 
 								   Margin="0,0,0,16"
-								   Foreground="{StaticResource SecondaryTextBrush}"/>
+								   Foreground="{DynamicResource MutedTextBrush}"/>
 
 						<ToggleSwitch x:Name="EnableJavaScriptSwitch" Content="Enable JavaScript" IsChecked="True"/>
 						<TextBlock Text="Recommended: Keep enabled for best website compatibility" 
 								   FontSize="12" 
 								   Margin="0,4,0,0"
-								   Foreground="{StaticResource SecondaryTextBrush}"/>
+								   Foreground="{DynamicResource MutedTextBrush}"/>
 					</StackPanel>
 				</Border>
 
 				<!-- Logging Section -->
-				<Border Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="20" Margin="0,0,0,20">
+				<Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="8" Padding="20" Margin="0,0,0,20">
 					<StackPanel>
-						<TextBlock Text="Debug Logging" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,8" Foreground="{StaticResource PrimaryTextBrush}"/>
+						<TextBlock Text="Debug Logging" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,8" Foreground="{DynamicResource PrimaryTextBrush}"/>
 						<TextBlock Text="Enable detailed logging for debugging issues. Logs are saved to your AppData folder." 
 								   TextWrapping="Wrap" 
 								   Margin="0,0,0,16"
-								   Foreground="{StaticResource SecondaryTextBrush}"/>
+								   Foreground="{DynamicResource MutedTextBrush}"/>
 
 						<ToggleSwitch x:Name="EnableLoggingSwitch" Content="Enable Logging" Margin="0,0,0,16"/>
 
-						<TextBlock Text="Log Categories" FontWeight="SemiBold" Margin="0,0,0,8" Foreground="{StaticResource PrimaryTextBrush}"/>
+						<TextBlock Text="Log Categories" FontWeight="SemiBold" Margin="0,0,0,8" Foreground="{DynamicResource PrimaryTextBrush}"/>
 						<TextBlock Text="Choose which components to log:" 
 								   FontSize="12" 
 								   Margin="0,0,0,8"
-								   Foreground="{StaticResource SecondaryTextBrush}"/>
+								   Foreground="{DynamicResource MutedTextBrush}"/>
 
 						<StackPanel x:Name="LogCategoriesPanel" Spacing="4">
 							<CheckBox x:Name="LogNavigationCheck" Content="Navigation" IsEnabled="{Binding #EnableLoggingSwitch.IsChecked}"/>
@@ -177,15 +180,15 @@
 				HorizontalAlignment="Right" 
 				VerticalAlignment="Bottom" 
 				Margin="0,0,30,80" 
-				Background="#2B2B2B" 
-				BorderBrush="#454545"
+				Background="{DynamicResource SurfaceBrush}" 
+				BorderBrush="{DynamicResource BorderBrush}"
 				BorderThickness="1"
 				CornerRadius="6" 
 				Padding="16,12" 
 				IsVisible="False">
 			<StackPanel Orientation="Horizontal" Spacing="10">
 				<TextBlock Text="✓" Foreground="#6CCB5F" FontWeight="Bold" FontSize="16"/>
-				<TextBlock Text="Settings Saved" Foreground="White" FontWeight="SemiBold" FontSize="14"/>
+				<TextBlock Text="Settings Saved" Foreground="{DynamicResource PrimaryTextBrush}" FontWeight="SemiBold" FontSize="14"/>
 			</StackPanel>
 		</Border>
 	</Grid>

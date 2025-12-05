@@ -8,6 +8,13 @@ public partial class App : Application
 {
     public override void Initialize()
     {
+        // Initialize logging
+        var settings = FenBrowser.Core.BrowserSettings.Instance;
+        FenBrowser.Core.Logging.LogManager.Initialize(
+            settings.Logging.EnableLogging, 
+            (FenBrowser.Core.Logging.LogCategory)settings.Logging.EnabledCategories, 
+            (FenBrowser.Core.Logging.LogLevel)settings.Logging.MinimumLevel);
+            
         AvaloniaXamlLoader.Load(this);
     }
 
@@ -42,6 +49,14 @@ public partial class App : Application
                 }
             }
             desktop.MainWindow = new MainWindow(port, initialUrl);
+            try
+            {
+                ThemeManager.Initialize(); // Initialize theme preference
+            }
+            catch (Exception ex)
+            {
+               System.Diagnostics.Debug.WriteLine($"[App] Theme Init Failed: {ex}");
+            }
         }
 
         base.OnFrameworkInitializationCompleted();
