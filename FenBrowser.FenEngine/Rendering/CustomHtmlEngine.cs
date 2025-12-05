@@ -600,6 +600,7 @@ namespace FenBrowser.FenEngine.Rendering
                         }
                         catch (Exception ex)
                         {
+                            try { System.IO.File.AppendAllText("debug_log.txt", $"[RenderAsync] Error: {ex.ToString()}\r\n"); } catch { }
                             tcs.TrySetException(ex);
                         }
                     });
