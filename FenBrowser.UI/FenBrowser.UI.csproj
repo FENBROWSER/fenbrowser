@@ -13,12 +13,14 @@
   </ItemGroup>
 
   <PropertyGroup>
-    <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>disable</Nullable>
     <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
-    <StartupObject>FenBrowser.UI.Program</StartupObject>
   </PropertyGroup>
+
+  <ItemGroup>
+    <AvaloniaResource Include="Themes\**\*.axaml" />
+  </ItemGroup>
 
 </Project>
