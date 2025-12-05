@@ -29,6 +29,8 @@ namespace FenBrowser.FenEngine.DOM
         public IValue Get(string key)
         {
             _context?.CheckExecutionTimeLimit();
+            
+
 
             switch (key.ToLowerInvariant())
             {
@@ -49,8 +51,25 @@ namespace FenBrowser.FenEngine.DOM
                 
                 case "setattribute":
                     return FenValue.FromFunction(new FenFunction("setAttribute", SetAttribute));
+
+                case "width":
+                    return FenValue.FromNumber(GetDimension("width"));
+                
+                case "height":
+                    return FenValue.FromNumber(GetDimension("height"));
+
+                case "getcontext":
+
+                    return FenValue.FromFunction(new FenFunction("getContext", GetContext));
+                
+                case "appendchild":
+                    return FenValue.FromFunction(new FenFunction("appendChild", AppendChild));
+
+                case "style":
+                    return FenValue.FromObject(new CSSStyleDeclaration(_element, _context));
                 
                 default:
+
                     return FenValue.Undefined;
             }
         }
@@ -79,9 +98,31 @@ namespace FenBrowser.FenEngine.DOM
         public bool Has(string key) => !Get(key).IsUndefined;
         public bool Delete(string key) => false;
         public IEnumerable<string> Keys() 
-            => new[] { "innerHTML", "textContent", "tagName", "id", "getAttribute", "setAttribute" };
+            => new[] { "innerHTML", "textContent", "tagName", "id", "getAttribute", "setAttribute", "getContext" };
         public IObject GetPrototype() => _prototype;
         public void SetPrototype(IObject prototype) => _prototype = prototype;
+
+        private IValue GetContext(IValue[] args, IValue thisVal)
+        {
+            if (args.Length == 0) return FenValue.Null;
+            var type = args[0].ToString();
+            
+            // Check if element is canvas
+            if (string.Equals(_element.Tag, "canvas", StringComparison.OrdinalIgnoreCase) && 
+                string.Equals(type, "2d", StringComparison.OrdinalIgnoreCase))
+            {
+                // We need access to JavaScriptEngine to create context
+                // But ElementWrapper only has IExecutionContext.
+                // We might need to store the engine or access it via context?
+                // Actually, CanvasRenderingContext2D needs JavaScriptEngine for GetVisual.
+                // Let's assume we can get it or pass null if not strictly needed for basic drawing?
+                // Wait, GetVisual is static in JavaScriptEngine!
+                // So we just need to pass null as engine if it's not used for other things.
+                
+                return FenValue.FromObject(new FenBrowser.FenEngine.Scripting.CanvasRenderingContext2D(_element, null));
+            }
+            return FenValue.Null;
+        }
 
         private IValue GetInnerHTML()
         {
@@ -124,7 +165,7 @@ namespace FenBrowser.FenEngine.DOM
 
         private void SetInnerHTML(IValue value)
         {
-            try { System.IO.File.AppendAllText("debug_log.txt", $"[ElementWrapper] SetInnerHTML: {value.ToString()}\r\n"); } catch { }
+
             _element.Children?.Clear();
             var htmlString = value.ToString();
             if (string.IsNullOrEmpty(htmlString)) return;
@@ -169,7 +210,7 @@ namespace FenBrowser.FenEngine.DOM
 
         private void SetTextContent(IValue value)
         {
-            try { System.IO.File.AppendAllText("debug_log.txt", $"[ElementWrapper] SetTextContent: {value.ToString()}\r\n"); } catch { }
+
             _element.Children?.Clear();
             var text = value.ToString();
             if (!string.IsNullOrEmpty(text))
@@ -202,6 +243,113 @@ namespace FenBrowser.FenEngine.DOM
             _element.Attr[args[0].ToString()] = args[1].ToString();
             _context.RequestRender?.Invoke();
             return FenValue.Undefined;
+        }
+        private double GetDimension(string attrName)
+        {
+            if (_element.Attr != null && _element.Attr.TryGetValue(attrName, out var val))
+            {
+                if (double.TryParse(val, out var d)) return d;
+            }
+            return 0;
+        }
+
+        private IValue AppendChild(IValue[] args, IValue thisVal)
+        {
+            if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "appendChild"))
+                throw new FenSecurityError("DOM write permission required");
+
+            if (args.Length == 0 || !args[0].IsObject) return FenValue.Null;
+
+            var childWrapper = args[0].AsObject() as ElementWrapper;
+            // Accessing private field via reflection or assumption? 
+            // Better to add internal property or just act on the wrapper itself if possible.
+            // But ElementWrapper _element is private. 
+            // We can add an internal property for LiteElement access.
+            
+            if (childWrapper != null)
+            {
+                // We need to access the underlying element. 
+                // Since this is same assembly, we can make _element internal or use a property.
+                // Let's modify the class to expose LiteElement internally.
+                _element.Append(childWrapper.Element);
+                _context.RequestRender?.Invoke();
+                return args[0];
+            }
+            
+            return FenValue.Null;
+        }
+
+        // Expose underlying element to other wrappers
+        internal LiteElement Element => _element;
+    }
+
+    public class CSSStyleDeclaration : IObject
+    {
+        private readonly LiteElement _element;
+        private readonly IExecutionContext _context;
+        private IObject _prototype;
+
+        public CSSStyleDeclaration(LiteElement element, IExecutionContext context)
+        {
+            _element = element;
+            _context = context;
+        }
+
+        public IValue Get(string key)
+        {
+            // Get style property from element attributes (style="key:value")
+            // Simplified: parsing style attribute every time is slow but works for now
+            var styleStr = _element.Attr?.ContainsKey("style") == true ? _element.Attr["style"] : "";
+            var styles = ParseStyle(styleStr);
+            return styles.ContainsKey(key) ? FenValue.FromString(styles[key]) : FenValue.Undefined;
+        }
+
+        public void Set(string key, IValue value)
+        {
+             if (_context != null)
+            {
+                _context.CheckExecutionTimeLimit();
+                // Permission check should be here ideally
+            }
+
+            var styleStr = _element.Attr?.ContainsKey("style") == true ? _element.Attr["style"] : "";
+            var styles = ParseStyle(styleStr);
+            styles[key] = value.ToString();
+            
+            // Rebuild style string
+            var sb = new StringBuilder();
+            foreach (var kvp in styles)
+            {
+                sb.Append($"{kvp.Key}:{kvp.Value};");
+            }
+            
+            if (_element.Attr != null)
+            {
+                _element.Attr["style"] = sb.ToString();
+            }
+            _context.RequestRender?.Invoke();
+        }
+
+        public bool Has(string key) => !Get(key).IsUndefined;
+        public bool Delete(string key) => false;
+        public IEnumerable<string> Keys() => new string[0]; // TODO: Implement enumeration
+        public IObject GetPrototype() => _prototype;
+        public void SetPrototype(IObject prototype) => _prototype = prototype;
+
+        private Dictionary<string, string> ParseStyle(string style)
+        {
+            var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrEmpty(style)) return dict;
+
+            foreach (var part in style.Split(';', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var kv = part.Split(':');
+                if (kv.Length == 2)
+                {
+                    dict[kv[0].Trim()] = kv[1].Trim();
+                }
+            }
+            return dict;
         }
     }
 }

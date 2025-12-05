@@ -37,6 +37,9 @@ namespace FenBrowser.FenEngine.DOM
                 case "queryselector":
                     return FenValue.FromFunction(new FenFunction("querySelector", QuerySelector));
 
+                case "createelement":
+                    return FenValue.FromFunction(new FenFunction("createElement", CreateElement));
+
                 case "body":
                     var body = FindElementByTag(_root, "body");
                     return body != null ? FenValue.FromObject(new ElementWrapper(body, _context)) : FenValue.Null;
@@ -63,9 +66,18 @@ namespace FenBrowser.FenEngine.DOM
         public bool Has(string key) => !Get(key).IsUndefined;
         public bool Delete(string key) => false;
         public IEnumerable<string> Keys() 
-            => new[] { "getElementById", "querySelector", "body", "head", "title" };
+            => new[] { "getElementById", "querySelector", "createElement", "body", "head", "title" };
         public IObject GetPrototype() => _prototype;
         public void SetPrototype(IObject prototype) => _prototype = prototype;
+
+        private IValue CreateElement(IValue[] args, IValue thisVal)
+        {
+            if (args.Length == 0) return FenValue.Null;
+            var tagName = args[0].ToString();
+            
+            var element = new LiteElement(tagName);
+            return FenValue.FromObject(new ElementWrapper(element, _context));
+        }
 
         private IValue GetElementById(IValue[] args, IValue thisVal)
         {
