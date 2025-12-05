@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Text.RegularExpressions;
 using System.Reflection;
 using Avalonia;
 using Avalonia.Controls;
@@ -146,6 +148,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
             bool hasPadding = !IsZero(css.Padding);
+            bool hasMargin = !IsZero(css.Margin);  // Added margin detection
             bool hasBorder = !IsZero(css.BorderThickness) && css.BorderBrush != null;
             bool hasBackground = css.Background != null;
             bool hasBgImage = false;
@@ -171,17 +174,22 @@ namespace FenBrowser.FenEngine.Rendering
             catch { }
 
             // If properties were not present in the declaration map, avoid forcing them
-            bool mapHasBorder = css.Map != null && (css.Map.ContainsKey("border") || css.Map.ContainsKey("border-width") || css.Map.ContainsKey("border-color") || css.Map.ContainsKey("border-radius"));
+            bool mapHasBorder = css.Map != null && (css.Map.ContainsKey("border") || css.Map.ContainsKey("border-width") || css.Map.ContainsKey("border-color") || css.Map.ContainsKey("border-radius") || css.Map.ContainsKey("border-bottom") || css.Map.ContainsKey("border-top") || css.Map.ContainsKey("border-left") || css.Map.ContainsKey("border-right"));
             bool mapHasBackground = css.Map != null && (css.Map.ContainsKey("background") || css.Map.ContainsKey("background-color") || css.Map.ContainsKey("background-image"));
+            bool mapHasMargin = css.Map != null && (css.Map.ContainsKey("margin") || css.Map.ContainsKey("margin-top") || css.Map.ContainsKey("margin-bottom") || css.Map.ContainsKey("margin-left") || css.Map.ContainsKey("margin-right"));
 
             FrameworkElement returned = content;
 
-            if (hasPadding || (hasBorder && mapHasBorder) || (hasBackground && mapHasBackground))
+            if (hasPadding || hasMargin || (hasBorder && mapHasBorder) || (hasBackground && mapHasBackground))
             {
                 var border = new Border { Child = content };
 
                 if (hasPadding)
                     border.Padding = css.Padding;
+                
+                // Apply margin for proper spacing between elements
+                if (hasMargin && mapHasMargin)
+                    border.Margin = css.Margin;
 
                 if (mapHasBorder && !IsZero(css.BorderThickness))
                     border.BorderThickness = css.BorderThickness;
@@ -447,16 +455,376 @@ namespace FenBrowser.FenEngine.Rendering
             ApplyTransformOrigin(returned, css);
             ApplyTransform(returned, css);
 
-            // basic transitions for position/transform changes (theme transition)
+            // CSS Transitions
+            ApplyTransitions(returned, css);
+
+            // CSS Filters
+            ApplyFilters(returned, css);
+
+            // CSS Clip-Path (circle, ellipse, polygon)
+            ApplyClipPath(returned, css);
+
+            // CSS Scroll Snap
+            ApplyScrollSnap(returned, css);
+
+            // CSS Masks
+            ApplyMask(returned, css);
+
+            return returned;
+        }
+
+        /// <summary>
+        /// Apply CSS transitions using Avalonia's animation system
+        /// </summary>
+        public static void ApplyTransitions(FrameworkElement element, CssComputed css)
+        {
+            if (element == null || css == null) return;
+            
             try
             {
-                string tr;
-                // UWP-like transitions are ignored; keep rendering consistent.
-                // For now, we ignore CSS transition hints (transition property) to keep rendering consistent.
+                // Parse transition shorthand or individual properties
+                var transitionStr = css.Transition ?? "";
+                var duration = css.TransitionDuration ?? "";
+                var property = css.TransitionProperty ?? "";
+                
+                if (string.IsNullOrWhiteSpace(transitionStr) && string.IsNullOrWhiteSpace(duration))
+                    return;
+
+                // Parse duration (e.g., "0.3s", "300ms")
+                double durationMs = 300; // default
+                if (!string.IsNullOrWhiteSpace(duration))
+                {
+                    durationMs = ParseDuration(duration);
+                }
+                else if (!string.IsNullOrWhiteSpace(transitionStr))
+                {
+                    // Try to extract duration from shorthand
+                    var dMatch = Regex.Match(transitionStr, @"(\d+\.?\d*)(ms|s)");
+                    if (dMatch.Success)
+                    {
+                        durationMs = ParseDuration(dMatch.Value);
+                    }
+                }
+
+                if (durationMs <= 0) return;
+
+                // Apply transitions via Avalonia's Transitions collection
+                var transitions = new Avalonia.Animation.Transitions();
+                
+                // Check which properties to transition
+                bool transitionAll = string.IsNullOrWhiteSpace(property) || 
+                                     property.Equals("all", StringComparison.OrdinalIgnoreCase) ||
+                                     transitionStr.Contains("all");
+
+                var timeSpan = TimeSpan.FromMilliseconds(durationMs);
+
+                if (transitionAll || property.Contains("opacity"))
+                {
+                    transitions.Add(new Avalonia.Animation.DoubleTransition
+                    {
+                        Property = Avalonia.Visual.OpacityProperty,
+                        Duration = timeSpan
+                    });
+                }
+
+                if (transitionAll || property.Contains("transform"))
+                {
+                    transitions.Add(new Avalonia.Animation.TransformOperationsTransition
+                    {
+                        Property = Avalonia.Visual.RenderTransformProperty,
+                        Duration = timeSpan
+                    });
+                }
+
+                if (transitions.Count > 0)
+                {
+                    element.Transitions = transitions;
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Parse CSS duration string to milliseconds
+        /// </summary>
+        private static double ParseDuration(string duration)
+        {
+            if (string.IsNullOrWhiteSpace(duration)) return 0;
+            duration = duration.Trim().ToLowerInvariant();
+            
+            try
+            {
+                if (duration.EndsWith("ms"))
+                {
+                    var numStr = duration.Substring(0, duration.Length - 2);
+                    if (double.TryParse(numStr, out double ms)) return ms;
+                }
+                else if (duration.EndsWith("s"))
+                {
+                    var numStr = duration.Substring(0, duration.Length - 1);
+                    if (double.TryParse(numStr, out double s)) return s * 1000;
+                }
+                else
+                {
+                    if (double.TryParse(duration, out double val))
+                        return val < 10 ? val * 1000 : val; // Assume seconds if < 10
+                }
+            }
+            catch { }
+            return 0;
+        }
+
+        /// <summary>
+        /// Apply CSS filter effects
+        /// </summary>
+        public static void ApplyFilters(FrameworkElement element, CssComputed css)
+        {
+            if (element == null || css == null) return;
+            
+            var filter = css.Filter;
+            if (string.IsNullOrWhiteSpace(filter)) return;
+            if (filter.Equals("none", StringComparison.OrdinalIgnoreCase)) return;
+
+            try
+            {
+                filter = filter.ToLowerInvariant();
+
+                // Parse blur filter
+                var blurMatch = Regex.Match(filter, @"blur\((\d+\.?\d*)(px)?\)");
+                if (blurMatch.Success)
+                {
+                    if (double.TryParse(blurMatch.Groups[1].Value, out double blurRadius))
+                    {
+                        // Apply blur effect using Avalonia's BlurEffect
+                        try
+                        {
+                            element.Effect = new Avalonia.Media.BlurEffect { Radius = blurRadius };
+                        }
+                        catch { }
+                    }
+                }
+
+                // Parse opacity filter
+                var opacityMatch = Regex.Match(filter, @"opacity\((\d+\.?\d*)%?\)");
+                if (opacityMatch.Success)
+                {
+                    if (double.TryParse(opacityMatch.Groups[1].Value, out double opacity))
+                    {
+                        // If percentage, convert to 0-1 range
+                        if (filter.Contains("%")) opacity = opacity / 100.0;
+                        element.Opacity *= Math.Max(0, Math.Min(1, opacity));
+                    }
+                }
+                {
+                    // Brightness adjustment requires color manipulation
+                    // Placeholder for future implementation
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Apply CSS clip-path property for shapes like circle(), ellipse(), polygon()
+        /// </summary>
+        public static void ApplyClipPath(FrameworkElement element, CssComputed css)
+        {
+            if (element == null || css == null) return;
+            
+            var clipPath = css.ClipPath;
+            if (string.IsNullOrWhiteSpace(clipPath)) return;
+            if (clipPath.Equals("none", StringComparison.OrdinalIgnoreCase)) return;
+
+            try
+            {
+                var lower = clipPath.ToLowerInvariant().Trim();
+                
+                // Parse circle(50%) or circle(50% at center)
+                if (lower.StartsWith("circle("))
+                {
+                    var content = clipPath.Substring(7, clipPath.Length - 8).Trim(); // Remove "circle(" and ")"
+                    double radiusPercent = 50; // Default 50%
+                    
+                    // Parse radius - e.g., "50%" or "50% at center"
+                    var radiusPart = content.Split(new[] { " at " }, StringSplitOptions.None)[0].Trim();
+                    if (radiusPart.EndsWith("%"))
+                    {
+                        var numStr = radiusPart.TrimEnd('%').Trim();
+                        if (double.TryParse(numStr, out double r))
+                            radiusPercent = r;
+                    }
+                    
+                    // Use LayoutUpdated to apply clip after element has proper bounds
+                    // Need a flag to prevent multiple applications
+                    bool clipApplied = false;
+                    EventHandler layoutHandler = null;
+                    layoutHandler = (sender, args) =>
+                    {
+                        try
+                        {
+                            if (clipApplied) return;
+                            var ctrl = sender as Control;
+                            if (ctrl?.Bounds.Width > 0 && ctrl?.Bounds.Height > 0)
+                            {
+                                clipApplied = true;
+                                var width = ctrl.Bounds.Width;
+                                var height = ctrl.Bounds.Height;
+                                var radius = Math.Min(width, height) * (radiusPercent / 100.0);
+                                var centerX = width / 2;
+                                var centerY = height / 2;
+                                
+                                ctrl.Clip = new EllipseGeometry
+                                {
+                                    Center = new Avalonia.Point(centerX, centerY),
+                                    RadiusX = radius,
+                                    RadiusY = radius
+                                };
+                                
+                                // Unsubscribe after applying
+                                ctrl.LayoutUpdated -= layoutHandler;
+                            }
+                        }
+                        catch { }
+                    };
+                    element.LayoutUpdated += layoutHandler;
+                }
+                // Parse ellipse()
+                else if (lower.StartsWith("ellipse("))
+                {
+                    // For ellipse, use element dimensions directly
+                    element.AttachedToVisualTree += (sender, args) =>
+                    {
+                        try
+                        {
+                            var ctrl = sender as Control;
+                            if (ctrl?.Bounds.Width > 0 && ctrl?.Bounds.Height > 0)
+                            {
+                                ctrl.Clip = new EllipseGeometry
+                                {
+                                    Center = new Avalonia.Point(ctrl.Bounds.Width / 2, ctrl.Bounds.Height / 2),
+                                    RadiusX = ctrl.Bounds.Width / 2,
+                                    RadiusY = ctrl.Bounds.Height / 2
+                                };
+                            }
+                        }
+                        catch { }
+                    };
+                }
+                // Parse inset() for rounded rectangles handled via border-radius
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Apply CSS scroll-snap properties
+        /// </summary>
+        public static void ApplyScrollSnap(FrameworkElement element, CssComputed css)
+        {
+            if (element == null || css == null) return;
+            
+            // Scroll snap is applied to ScrollViewer parent, not individual elements
+            // We store the values for when a ScrollViewer wraps this content
+            try
+            {
+                var snapType = css.ScrollSnapType;
+                var snapAlign = css.ScrollSnapAlign;
+
+                if (string.IsNullOrWhiteSpace(snapType) && string.IsNullOrWhiteSpace(snapAlign))
+                    return;
+
+                // Store as attached data for potential ScrollViewer parent
+                if (!string.IsNullOrWhiteSpace(snapAlign))
+                {
+                    // Avalonia doesn't have built-in scroll snap, but we can add it to the element's tag
+                    // for custom scroll handling
+                    try
+                    {
+                        var existing = element.Tag as Dictionary<string, object>;
+                        if (existing == null)
+                        {
+                            existing = new Dictionary<string, object>();
+                            element.Tag = existing;
+                        }
+                        existing["scroll-snap-align"] = snapAlign;
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Apply CSS mask properties
+        /// </summary>
+        public static void ApplyMask(FrameworkElement element, CssComputed css)
+        {
+            if (element == null || css == null) return;
+            
+            var maskImage = css.MaskImage;
+            if (string.IsNullOrWhiteSpace(maskImage)) return;
+            if (maskImage.Equals("none", StringComparison.OrdinalIgnoreCase)) return;
+
+            try
+            {
+                // Check for gradient mask
+                if (maskImage.Contains("linear-gradient") || maskImage.Contains("radial-gradient"))
+                {
+                    // Create an opacity mask from gradient
+                    var gradientBrush = TryParseGradientForMask(maskImage);
+                    if (gradientBrush != null)
+                    {
+                        element.OpacityMask = gradientBrush;
+                    }
+                }
+                else if (maskImage.Contains("url("))
+                {
+                    // Image-based mask (would need to load image)
+                    // This is complex as we need to convert image to alpha mask
+                    // Placeholder for future implementation
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Try to parse a gradient string for use as a mask
+        /// </summary>
+        private static IBrush TryParseGradientForMask(string gradient)
+        {
+            if (string.IsNullOrWhiteSpace(gradient)) return null;
+
+            try
+            {
+                gradient = gradient.Trim().ToLowerInvariant();
+
+                if (gradient.StartsWith("linear-gradient("))
+                {
+                    // Simple linear gradient parsing for masks
+                    var brush = new LinearGradientBrush();
+                    brush.StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative);
+                    brush.EndPoint = new RelativePoint(0, 1, RelativeUnit.Relative);
+                    
+                    // Default black to white gradient (for alpha masking)
+                    brush.GradientStops.Add(new GradientStop(Colors.Black, 0));
+                    brush.GradientStops.Add(new GradientStop(Colors.Transparent, 1));
+                    
+                    return brush;
+                }
+                else if (gradient.StartsWith("radial-gradient("))
+                {
+                    var brush = new RadialGradientBrush();
+                    brush.Center = new RelativePoint(0.5, 0.5, RelativeUnit.Relative);
+                    brush.GradientOrigin = new RelativePoint(0.5, 0.5, RelativeUnit.Relative);
+                    brush.Radius = 0.5;
+                    
+                    brush.GradientStops.Add(new GradientStop(Colors.Black, 0));
+                    brush.GradientStops.Add(new GradientStop(Colors.Transparent, 1));
+                    
+                    return brush;
+                }
             }
             catch { }
 
-            return returned;
+            return null;
         }
 
         public static void ApplyTextStyle(FrameworkElement fe, CssComputed css)

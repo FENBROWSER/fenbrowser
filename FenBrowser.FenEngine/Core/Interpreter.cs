@@ -1,4 +1,5 @@
 using System;
+using System.Text;
 using System.Collections.Generic;
 using FenBrowser.FenEngine.Core.Interfaces;
 using System.Text.RegularExpressions;
@@ -139,17 +140,10 @@ namespace FenBrowser.FenEngine.Core
                         var obj = Eval(me.Object, env, context);
                         if (IsError(obj)) return obj;
                         
-                        if (obj.IsObject)
                         {
-                            var targetObj = obj.AsObject();
-                            if (targetObj != null)
-                            {
-                                function = targetObj.Get(me.Property);
-                                thisContext = obj; // Bind 'this' to the object
-                            }
+
+                            function = FenValue.Undefined;
                         }
-                        
-                        if (function == null) function = FenValue.Undefined;
                     }
                     else
                     {
@@ -247,15 +241,67 @@ namespace FenBrowser.FenEngine.Core
             var elements = EvalExpressionsWithSpread(node.Elements, env, context);
             if (elements.Count == 1 && IsError(elements[0])) return elements[0];
             
-            // For now, represent array as a FenObject with numeric keys and length
             var arrayObj = new FenObject();
             for (int i = 0; i < elements.Count; i++)
             {
                 arrayObj.Set(i.ToString(), elements[i]);
             }
             arrayObj.Set("length", FenValue.FromNumber(elements.Count));
+            arrayObj.SetPrototype(GetArrayPrototype());
             
             return FenValue.FromObject(arrayObj);
+        }
+
+        private FenObject _arrayPrototype;
+        private FenObject GetArrayPrototype()
+        {
+            if (_arrayPrototype != null) return _arrayPrototype;
+            _arrayPrototype = new FenObject();
+
+            // Array.prototype.push
+            _arrayPrototype.Set("push", FenValue.FromFunction(new FenFunction("push", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj == null) return FenValue.FromNumber(0);
+                
+                var lenVal = obj.Get("length");
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                
+                foreach (var arg in args)
+                {
+                    obj.Set(len.ToString(), arg);
+                    len++;
+                }
+                
+                obj.Set("length", FenValue.FromNumber(len));
+                return FenValue.FromNumber(len);
+            })));
+
+            // Array.prototype.join
+            _arrayPrototype.Set("join", FenValue.FromFunction(new FenFunction("join", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj == null) return FenValue.FromString("");
+                
+                var separator = args.Length > 0 ? args[0].ToString() : ",";
+                var lenVal = obj.Get("length");
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                
+                var sb = new StringBuilder();
+                for (int i = 0; i < len; i++)
+                {
+                    if (i > 0) sb.Append(separator);
+                    var val = obj.Get(i.ToString());
+                    if (val != null && !val.IsUndefined && !val.IsNull)
+                    {
+                        sb.Append(val.ToString());
+                    }
+                }
+                
+                return FenValue.FromString(sb.ToString());
+            })));
+
+            return _arrayPrototype;
         }
 
         private IValue EvalObjectLiteral(ObjectLiteral node, FenEnvironment env, IExecutionContext context)

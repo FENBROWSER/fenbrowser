@@ -5,15 +5,15 @@ namespace FenBrowser.FenEngine.Rendering
 {
     public static class ErrorPageRenderer
     {
-        // Common styles
-        private const string BodyStyle = "background-color: #2b2b2b; color: #ffffff; font-family: 'Segoe UI', sans-serif; margin: 0; padding: 0; height: 100vh; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;";
-        private const string ContainerStyle = "max-width: 600px; padding: 40px; display: flex; flex-direction: column; align-items: center;";
-        private const string IconStyle = "font-size: 72px; margin-bottom: 24px;";
-        private const string HeadingStyle = "font-size: 24px; font-weight: 600; margin-bottom: 16px; color: #ffffff;";
-        private const string MessageStyle = "font-size: 16px; color: #cccccc; margin-bottom: 24px; line-height: 1.5;";
-        private const string CodeStyle = "font-family: monospace; color: #888888; font-size: 14px; margin-bottom: 32px; background-color: #202020; padding: 8px 16px; border-radius: 4px;";
+        // Common styles - using block layout instead of flex to avoid renderer bugs
+        private const string BodyStyle = "background-color: #2b2b2b; color: #ffffff; font-family: 'Segoe UI', sans-serif; margin: 0; padding: 60px 20px; min-height: 100vh; text-align: center;";
+        private const string ContainerStyle = "max-width: 600px; margin: 0 auto; padding: 40px; background-color: transparent;";
+        private const string IconStyle = "font-size: 72px; margin-bottom: 24px; display: block;";
+        private const string HeadingStyle = "font-size: 24px; font-weight: 600; margin-bottom: 16px; color: #ffffff; display: block;";
+        private const string MessageStyle = "font-size: 16px; color: #cccccc; margin-bottom: 24px; line-height: 1.5; display: block;";
+        private const string CodeStyle = "font-family: monospace; color: #888888; font-size: 14px; margin-bottom: 32px; background-color: #202020; padding: 8px 16px; border-radius: 4px; display: inline-block;";
         private const string ButtonStyle = "background-color: #0078d4; color: #ffffff; padding: 10px 24px; border-radius: 4px; border: none; font-weight: 600; font-size: 14px; cursor: pointer; text-decoration: none; display: inline-block;";
-        private const string LinkStyle = "color: #0078d4; text-decoration: none; margin-top: 20px; font-size: 14px;";
+        private const string LinkStyle = "color: #0078d4; text-decoration: none; margin-top: 20px; font-size: 14px; display: block;";
 
         public static string RenderConnectionFailed(string url, string details)
         {
