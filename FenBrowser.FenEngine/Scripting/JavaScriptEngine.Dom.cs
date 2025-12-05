@@ -479,6 +479,16 @@ namespace FenBrowser.FenEngine.Scripting
             public object querySelector(string sel) { return new JsDocument(_e, _node).querySelector(sel); }
             public object[] querySelectorAll(string sel) { return new JsDocument(_e, _node).querySelectorAll(sel); }
 
+            public object getContext(string contextType)
+            {
+                if (string.Equals(tagName, "CANVAS", StringComparison.OrdinalIgnoreCase) && 
+                    string.Equals(contextType, "2d", StringComparison.OrdinalIgnoreCase))
+                {
+                    return new CanvasRenderingContext2D(_node, _e);
+                }
+                return null;
+            }
+
             private static string CollectText(LiteElement n)
             {
                 if (n == null) return "";

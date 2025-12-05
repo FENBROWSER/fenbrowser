@@ -98,6 +98,25 @@ namespace FenBrowser.FenEngine.Scripting
         
         // Subresource validation delegate (optional)
         public Func<Uri, string, bool> SubresourceAllowed { get; set; }
+
+        // Canvas persistence
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<LiteElement, Avalonia.Media.Imaging.WriteableBitmap> _canvasBitmaps 
+            = new System.Runtime.CompilerServices.ConditionalWeakTable<LiteElement, Avalonia.Media.Imaging.WriteableBitmap>();
+
+        public static void RegisterCanvasBitmap(LiteElement element, Avalonia.Media.Imaging.WriteableBitmap bitmap)
+        {
+            if (element == null || bitmap == null) return;
+            // ConditionalWeakTable doesn't have indexer setter, use Remove/Add or GetValue to set
+            _canvasBitmaps.Remove(element);
+            _canvasBitmaps.Add(element, bitmap);
+        }
+
+        public static Avalonia.Media.Imaging.WriteableBitmap GetCanvasBitmap(LiteElement element)
+        {
+            if (element == null) return null;
+            _canvasBitmaps.TryGetValue(element, out var bitmap);
+            return bitmap;
+        }
         public int CallStackDepth; // Recursion limit counter
 
         internal bool SandboxAllows(SandboxFeature feature, string detail = null)
@@ -285,6 +304,21 @@ namespace FenBrowser.FenEngine.Scripting
             }
             catch { }
             return false;
+        }
+
+        internal static Avalonia.Controls.Control GetVisual(LiteElement node)
+        {
+            try
+            {
+                System.WeakReference wr;
+                lock (_visualMap)
+                {
+                    if (_visualMap.TryGetValue(node, out wr))
+                        return wr?.Target as Avalonia.Controls.Control;
+                }
+            }
+            catch { }
+            return null;
         }
         public static void RegisterVisualRoot(Avalonia.Visual root)
         {
