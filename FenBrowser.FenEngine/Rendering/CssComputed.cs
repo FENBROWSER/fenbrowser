@@ -72,11 +72,11 @@ namespace FenBrowser.FenEngine.Rendering
         public double? FontSize { get; set; }
         public FontWeight? FontWeight { get; set; }
         public FontStyle? FontStyle { get; set; }
-        
+
         public string FontFamilyName { get; set; }
         private FontFamily _fontFamily;
-        public FontFamily FontFamily 
-        { 
+        public FontFamily FontFamily
+        {
             get
             {
                 if (_fontFamily == null && !string.IsNullOrEmpty(FontFamilyName))
@@ -92,7 +92,7 @@ namespace FenBrowser.FenEngine.Rendering
         public string Hyphens { get; set; }
         public string TextDecoration { get; set; }
         public string ListStyleType { get; set; }
-        
+
         // Extra color for border
         public Color? BorderBrushColor { get; set; }
 
@@ -100,7 +100,7 @@ namespace FenBrowser.FenEngine.Rendering
         public string Transform { get; set; }
         public string Float { get; set; }
         public double? Opacity { get; set; }        // 0.0 to 1.0
-        public string TextShadow { get; set; }      // CSS text-shadow value  
+        public string TextShadow { get; set; }      // CSS text-shadow value
         public string BoxShadow { get; set; }       // CSS box-shadow value
 
         // New properties for better fidelity
@@ -110,5 +110,41 @@ namespace FenBrowser.FenEngine.Rendering
         public string TextOverflow { get; set; }
         public string BoxSizing { get; set; }
         public string Cursor { get; set; }
+
+        // CSS Transitions
+        public string Transition { get; set; }              // transition shorthand
+        public string TransitionProperty { get; set; }      // which properties to animate
+        public string TransitionDuration { get; set; }      // duration (e.g., "0.3s", "300ms")
+        public string TransitionTimingFunction { get; set; } // easing function
+        public string TransitionDelay { get; set; }         // delay before start
+
+        // CSS Filters
+        public string Filter { get; set; }                  // filter effects (blur, grayscale, etc.)
+        public string BackdropFilter { get; set; }          // backdrop filter effects
+        public string ClipPath { get; set; }                // clip-path (circle, polygon, etc.)
+
+        // CSS Scroll Snap
+        public string ScrollSnapType { get; set; }          // x, y, both, mandatory/proximity
+        public string ScrollSnapAlign { get; set; }         // start, center, end
+
+        // CSS Counters
+        public string CounterReset { get; set; }            // reset counter(s)
+        public string CounterIncrement { get; set; }        // increment counter(s)
+        public string Content { get; set; }                 // content property for ::before/::after
+
+        // CSS Masks
+        public string MaskImage { get; set; }               // mask-image
+        public string MaskMode { get; set; }                // alpha, luminance
+        public string MaskRepeat { get; set; }              // repeat, no-repeat, etc.
+        public string MaskPosition { get; set; }            // position
+        public string MaskSize { get; set; }                // size
+
+        // CSS Shapes
+        public string ShapeOutside { get; set; }            // shape-outside
+        public string ShapeMargin { get; set; }             // shape-margin
+        public string ShapeImageThreshold { get; set; }     // shape-image-threshold
+
+        // @layer tracking
+        public string CascadeLayer { get; set; }            // which @layer this rule belongs to
     }
 }

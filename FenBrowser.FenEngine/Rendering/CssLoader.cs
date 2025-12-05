@@ -86,8 +86,11 @@ namespace FenBrowser.FenEngine.Rendering
                 var text = SafeGatherText(n);
                 if (!string.IsNullOrWhiteSpace(text))
                 {
-                    // System.Diagnostics.Debug.WriteLine($"[CssLoader] Found style block: {text.Length} chars");
-                    // System.Diagnostics.Debug.WriteLine($"[CssLoader] Style content: {text.Substring(0, Math.Min(text.Length, 100))}...");
+                    try {
+                        var msg = $"[{DateTime.Now:HH:mm:ss}] [CssLoader] Found style block: {text.Length} chars. Content start: {text.Substring(0, Math.Min(text.Length, 50))}\r\n";
+                        System.IO.File.AppendAllText("debug_log.txt", msg);
+                    } catch {}
+                    
                     cssBlobs.Add(new CssSource
                     {
                         CssText = text,
@@ -576,6 +579,228 @@ namespace FenBrowser.FenEngine.Rendering
             return null;
         }
 
+        /// <summary>
+        /// Extract and register @font-face rules from CSS text
+        /// </summary>
+        private static string ExtractFontFace(string text, Action<string> log)
+        {
+            if (string.IsNullOrEmpty(text)) return text;
+            if (text.IndexOf("@font-face", StringComparison.OrdinalIgnoreCase) < 0) return text;
+
+            var result = new StringBuilder();
+            int i = 0;
+
+            while (i < text.Length)
+            {
+                int ffPos = text.IndexOf("@font-face", i, StringComparison.OrdinalIgnoreCase);
+                if (ffPos < 0)
+                {
+                    result.Append(text.Substring(i));
+                    break;
+                }
+
+                // Append text before @font-face
+                result.Append(text.Substring(i, ffPos - i));
+
+                // Find the opening brace
+                int braceOpen = text.IndexOf('{', ffPos);
+                if (braceOpen < 0)
+                {
+                    i = ffPos + 10;
+                    continue;
+                }
+
+                // Find matching closing brace
+                int braceClose = FindMatchingBrace(text, braceOpen);
+                if (braceClose < 0)
+                {
+                    i = braceOpen + 1;
+                    continue;
+                }
+
+                // Extract and parse the @font-face block
+                string fontFaceBody = text.Substring(braceOpen + 1, braceClose - braceOpen - 1);
+                try
+                {
+                    FontRegistry.ParseAndRegister(fontFaceBody);
+                    log?.Invoke($"[CSS] Registered @font-face");
+                }
+                catch (Exception ex)
+                {
+                    log?.Invoke($"[CSS] Error parsing @font-face: {ex.Message}");
+                }
+
+                i = braceClose + 1;
+            }
+
+            return result.ToString();
+        }
+
+        /// <summary>
+        /// Handle @supports feature queries - include content if feature is supported
+        /// </summary>
+        private static string FlattenSupports(string text, Action<string> log)
+        {
+            if (string.IsNullOrEmpty(text)) return text;
+            if (text.IndexOf("@supports", StringComparison.OrdinalIgnoreCase) < 0) return text;
+
+            var result = new StringBuilder();
+            int i = 0;
+
+            while (i < text.Length)
+            {
+                int supPos = text.IndexOf("@supports", i, StringComparison.OrdinalIgnoreCase);
+                if (supPos < 0)
+                {
+                    result.Append(text.Substring(i));
+                    break;
+                }
+
+                result.Append(text.Substring(i, supPos - i));
+
+                int braceOpen = text.IndexOf('{', supPos);
+                if (braceOpen < 0) { i = supPos + 9; continue; }
+
+                int braceClose = FindMatchingBrace(text, braceOpen);
+                if (braceClose < 0) { i = braceOpen + 1; continue; }
+
+                // Parse the condition (between @supports and {)
+                string condition = text.Substring(supPos + 9, braceOpen - supPos - 9).Trim();
+                string body = text.Substring(braceOpen + 1, braceClose - braceOpen - 1);
+
+                // Check if condition is supported
+                if (IsSupportsConditionMet(condition))
+                {
+                    result.Append(body);
+                    log?.Invoke($"[CSS] @supports condition met: {condition}");
+                }
+                else
+                {
+                    log?.Invoke($"[CSS] @supports condition NOT met: {condition}");
+                }
+
+                i = braceClose + 1;
+            }
+
+            return result.ToString();
+        }
+
+        /// <summary>
+        /// Check if a @supports condition is met by this browser
+        /// </summary>
+        private static bool IsSupportsConditionMet(string condition)
+        {
+            if (string.IsNullOrWhiteSpace(condition)) return false;
+            condition = condition.Trim().ToLowerInvariant();
+
+            // Handle not()
+            if (condition.StartsWith("not"))
+            {
+                var inner = ExtractPseudoArg(condition.Substring(3));
+                return !IsSupportsConditionMet(inner);
+            }
+
+            // Handle or/and
+            if (condition.Contains(" or "))
+            {
+                var parts = condition.Split(new[] { " or " }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (var part in parts)
+                    if (IsSupportsConditionMet(part.Trim())) return true;
+                return false;
+            }
+
+            if (condition.Contains(" and "))
+            {
+                var parts = condition.Split(new[] { " and " }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (var part in parts)
+                    if (!IsSupportsConditionMet(part.Trim())) return false;
+                return true;
+            }
+
+            // Check for property:value pair in parentheses
+            var match = Regex.Match(condition, @"\(\s*([a-z-]+)\s*:\s*([^)]+)\s*\)");
+            if (match.Success)
+            {
+                var prop = match.Groups[1].Value.Trim();
+                // We support most standard CSS properties
+                return IsSupportedProperty(prop);
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Check if a CSS property is supported
+        /// </summary>
+        private static bool IsSupportedProperty(string property)
+        {
+            // List of supported CSS properties
+            var supported = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "display", "position", "width", "height", "margin", "padding", "border",
+                "background", "background-color", "background-image", "color", "font",
+                "font-family", "font-size", "font-weight", "font-style", "text-align",
+                "text-decoration", "flex", "flex-direction", "flex-wrap", "justify-content",
+                "align-items", "grid", "grid-template-columns", "gap", "transform",
+                "opacity", "overflow", "z-index", "box-shadow", "border-radius",
+                "transition", "filter", "animation", "min-width", "max-width",
+                "min-height", "max-height", "aspect-ratio", "object-fit", "cursor"
+            };
+            return supported.Contains(property);
+        }
+
+        /// <summary>
+        /// Handle @layer cascade layers - flatten for now with layer tracking
+        /// </summary>
+        private static string ExtractLayers(string text, Action<string> log)
+        {
+            if (string.IsNullOrEmpty(text)) return text;
+            if (text.IndexOf("@layer", StringComparison.OrdinalIgnoreCase) < 0) return text;
+
+            var result = new StringBuilder();
+            int i = 0;
+
+            while (i < text.Length)
+            {
+                int layerPos = text.IndexOf("@layer", i, StringComparison.OrdinalIgnoreCase);
+                if (layerPos < 0)
+                {
+                    result.Append(text.Substring(i));
+                    break;
+                }
+
+                result.Append(text.Substring(i, layerPos - i));
+
+                // Check if it's a layer declaration (e.g., @layer theme, base;) or layer block
+                int braceOpen = text.IndexOf('{', layerPos);
+                int semicolon = text.IndexOf(';', layerPos);
+
+                if (semicolon >= 0 && (braceOpen < 0 || semicolon < braceOpen))
+                {
+                    // Layer declaration only (no block), skip it
+                    i = semicolon + 1;
+                    continue;
+                }
+
+                if (braceOpen < 0) { i = layerPos + 6; continue; }
+
+                int braceClose = FindMatchingBrace(text, braceOpen);
+                if (braceClose < 0) { i = braceOpen + 1; continue; }
+
+                // Extract layer name (if any)
+                string header = text.Substring(layerPos + 6, braceOpen - layerPos - 6).Trim();
+                string body = text.Substring(braceOpen + 1, braceClose - braceOpen - 1);
+
+                // Include the layer content (flatten it)
+                result.Append(body);
+                log?.Invoke($"[CSS] Flattened @layer: {(string.IsNullOrEmpty(header) ? "(anonymous)" : header)}");
+
+                i = braceClose + 1;
+            }
+
+            return result.ToString();
+        }
+
         // ===========================
         // Stage 2: Parsing rules
         // ===========================
@@ -593,6 +818,15 @@ namespace FenBrowser.FenEngine.Rendering
             
             // Extract and parse @keyframes rules
             text = ExtractKeyframes(text, log);
+
+            // Extract and register @font-face rules
+            text = ExtractFontFace(text, log);
+
+            // Handle @supports feature queries
+            text = FlattenSupports(text, log);
+
+            // Handle @layer cascade layers
+            text = ExtractLayers(text, log);
 
             // Split by braces into selector/declarations pairs.
             // This is a naive parser but resistant to most content without nested braces in values.
@@ -1152,6 +1386,8 @@ namespace FenBrowser.FenEngine.Rendering
 
                 css.TextShadow = Safe(DictGet(css.Map, "text-shadow"));
                 css.BoxShadow = Safe(DictGet(css.Map, "box-shadow"));
+                css.MaskImage = Safe(DictGet(css.Map, "mask-image"));
+                if (string.IsNullOrEmpty(css.MaskImage)) css.MaskImage = Safe(DictGet(css.Map, "-webkit-mask-image"));
 
                 // margins/padding/border (kept in Map for RendererStyles, but also set typed if your CssComputed supports them)
                 Thickness th;
@@ -1187,6 +1423,55 @@ namespace FenBrowser.FenEngine.Rendering
                 if (TryThickness(ExtractBorderThickness(css.Map), out th)) css.BorderThickness = th;
                 CornerRadius cr;
                 if (TryCornerRadius(DictGet(css.Map, "border-radius"), out cr)) css.BorderRadius = cr;
+                
+                // Individual border sides (border-bottom, border-top, border-left, border-right)
+                var bt = css.BorderThickness;
+                double bLeft = bt.Left, bTop = bt.Top, bRight = bt.Right, bBottom = bt.Bottom;
+                Avalonia.Media.Color? borderSideColor = null;
+                
+                // border-bottom
+                var borderBottomRaw = Safe(DictGet(css.Map, "border-bottom"));
+                if (!string.IsNullOrEmpty(borderBottomRaw))
+                {
+                    var sideWidth = ExtractBorderSideWidth(borderBottomRaw);
+                    if (sideWidth > 0) bBottom = sideWidth;
+                    var sideCol = ExtractBorderSideColor(borderBottomRaw);
+                    if (sideCol.HasValue) borderSideColor = sideCol;
+                }
+                
+                // border-top
+                var borderTopRaw = Safe(DictGet(css.Map, "border-top"));
+                if (!string.IsNullOrEmpty(borderTopRaw))
+                {
+                    var sideWidth = ExtractBorderSideWidth(borderTopRaw);
+                    if (sideWidth > 0) bTop = sideWidth;
+                    var sideCol = ExtractBorderSideColor(borderTopRaw);
+                    if (sideCol.HasValue) borderSideColor = sideCol;
+                }
+                
+                // border-left
+                var borderLeftRaw = Safe(DictGet(css.Map, "border-left"));
+                if (!string.IsNullOrEmpty(borderLeftRaw))
+                {
+                    var sideWidth = ExtractBorderSideWidth(borderLeftRaw);
+                    if (sideWidth > 0) bLeft = sideWidth;
+                    var sideCol = ExtractBorderSideColor(borderLeftRaw);
+                    if (sideCol.HasValue) borderSideColor = sideCol;
+                }
+                
+                // border-right
+                var borderRightRaw = Safe(DictGet(css.Map, "border-right"));
+                if (!string.IsNullOrEmpty(borderRightRaw))
+                {
+                    var sideWidth = ExtractBorderSideWidth(borderRightRaw);
+                    if (sideWidth > 0) bRight = sideWidth;
+                    var sideCol = ExtractBorderSideColor(borderRightRaw);
+                    if (sideCol.HasValue) borderSideColor = sideCol;
+                }
+                
+                css.BorderThickness = new Thickness(bLeft, bTop, bRight, bBottom);
+                if (borderSideColor.HasValue && (!css.BorderBrushColor.HasValue || css.BorderBrushColor.Value == default))
+                    css.BorderBrushColor = borderSideColor;
 
                 // Flexbox
                 // Display and position
@@ -1259,6 +1544,116 @@ namespace FenBrowser.FenEngine.Rendering
 
                 // Grid
                 css.GridTemplateColumns = Safe(DictGet(css.Map, "grid-template-columns"));
+
+                // CSS Transitions
+                css.Transition = Safe(DictGet(css.Map, "transition"));
+                css.TransitionProperty = Safe(DictGet(css.Map, "transition-property"));
+                css.TransitionDuration = Safe(DictGet(css.Map, "transition-duration"));
+                css.TransitionTimingFunction = Safe(DictGet(css.Map, "transition-timing-function"));
+                css.TransitionDelay = Safe(DictGet(css.Map, "transition-delay"));
+
+                // CSS Filters
+                css.Filter = Safe(DictGet(css.Map, "filter"));
+                css.BackdropFilter = Safe(DictGet(css.Map, "backdrop-filter"));
+
+                // CSS Scroll Snap
+                css.ScrollSnapType = Safe(DictGet(css.Map, "scroll-snap-type"));
+                css.ScrollSnapAlign = Safe(DictGet(css.Map, "scroll-snap-align"));
+
+                // CSS Counters
+                css.CounterReset = Safe(DictGet(css.Map, "counter-reset"));
+                css.CounterIncrement = Safe(DictGet(css.Map, "counter-increment"));
+                css.Content = Safe(DictGet(css.Map, "content"));
+
+                // CSS Masks
+                css.MaskImage = Safe(DictGet(css.Map, "mask-image"));
+                if (string.IsNullOrEmpty(css.MaskImage))
+                    css.MaskImage = Safe(DictGet(css.Map, "-webkit-mask-image"));
+                css.MaskMode = Safe(DictGet(css.Map, "mask-mode"));
+                css.MaskRepeat = Safe(DictGet(css.Map, "mask-repeat"));
+                css.MaskPosition = Safe(DictGet(css.Map, "mask-position"));
+                css.MaskSize = Safe(DictGet(css.Map, "mask-size"));
+
+                // CSS Shapes
+                css.ShapeOutside = Safe(DictGet(css.Map, "shape-outside"));
+                css.ShapeMargin = Safe(DictGet(css.Map, "shape-margin"));
+                css.ShapeImageThreshold = Safe(DictGet(css.Map, "shape-image-threshold"));
+
+                // Background (gradients and colors)
+                var backgroundBrushRaw = Safe(DictGet(css.Map, "background"));
+                var backgroundColorRawVal = Safe(DictGet(css.Map, "background-color"));
+                var backgroundImageRawVal = Safe(DictGet(css.Map, "background-image"));
+                
+                // Try to parse gradient backgrounds first
+                if (!string.IsNullOrEmpty(backgroundBrushRaw) || !string.IsNullOrEmpty(backgroundImageRawVal))
+                {
+                    var bgValue = !string.IsNullOrEmpty(backgroundImageRawVal) ? backgroundImageRawVal : backgroundBrushRaw;
+                    if (bgValue.Contains("gradient"))
+                    {
+                        try
+                        {
+                            var brush = ParseGradient(bgValue);
+                            if (brush != null) css.Background = brush;
+                        }
+                        catch { }
+                    }
+                    else if (!string.IsNullOrEmpty(bgValue) && !bgValue.Contains("url("))
+                    {
+                        // Try as color
+                        var col = CssParser.ParseColor(bgValue);
+                        if (col.HasValue)
+                        {
+                            css.BackgroundColor = col.Value;
+                            css.Background = new SolidColorBrush(col.Value);
+                        }
+                    }
+                }
+                
+                // Also try background-color if background wasn't set
+                if (css.Background == null && !string.IsNullOrEmpty(backgroundColorRawVal))
+                {
+                    var col = CssParser.ParseColor(backgroundColorRawVal);
+                    if (col.HasValue)
+                    {
+                        css.BackgroundColor = col.Value;
+                        css.Background = new SolidColorBrush(col.Value);
+                    }
+                }
+
+                // Foreground (text color)
+                var colorRaw = Safe(DictGet(css.Map, "color"));
+                if (!string.IsNullOrEmpty(colorRaw))
+                {
+                    var col = CssParser.ParseColor(colorRaw);
+                    if (col.HasValue)
+                    {
+                        css.ForegroundColor = col.Value;
+                        css.Foreground = new SolidColorBrush(col.Value);
+                    }
+                }
+
+                // CSS Filters (blur, grayscale, brightness, etc.)
+                var filterRaw = Safe(DictGet(css.Map, "filter"));
+                if (!string.IsNullOrEmpty(filterRaw))
+                {
+                    css.Filter = filterRaw;
+                }
+                
+                // Backdrop filter
+                var backdropFilterRaw = Safe(DictGet(css.Map, "backdrop-filter"));
+                if (string.IsNullOrEmpty(backdropFilterRaw))
+                    backdropFilterRaw = Safe(DictGet(css.Map, "-webkit-backdrop-filter"));
+                if (!string.IsNullOrEmpty(backdropFilterRaw))
+                {
+                    css.BackdropFilter = backdropFilterRaw;
+                }
+                
+                // Clip-path (for circular/polygon shapes)
+                var clipPathRaw = Safe(DictGet(css.Map, "clip-path"));
+                if (!string.IsNullOrEmpty(clipPathRaw))
+                {
+                    css.ClipPath = clipPathRaw;
+                }
 
                 result[n] = css;
             }
@@ -2484,6 +2879,46 @@ namespace FenBrowser.FenEngine.Rendering
                 // naive: pick first length
                 var m = Regex.Match(v, @"([0-9]+)px");
                 if (m.Success) return m.Groups[0].Value;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Extract width from a border-side shorthand (e.g., "2px solid #eee")
+        /// </summary>
+        private static double ExtractBorderSideWidth(string borderSide)
+        {
+            if (string.IsNullOrWhiteSpace(borderSide)) return 0;
+            var parts = borderSide.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (var part in parts)
+            {
+                double px;
+                if (TryPx(part, out px) && px > 0)
+                    return px;
+            }
+            return 0;
+        }
+
+        /// <summary>
+        /// Extract color from a border-side shorthand (e.g., "2px solid #eee")
+        /// </summary>
+        private static Avalonia.Media.Color? ExtractBorderSideColor(string borderSide)
+        {
+            if (string.IsNullOrWhiteSpace(borderSide)) return null;
+            var parts = borderSide.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (var part in parts)
+            {
+                // Skip width values
+                double px;
+                if (TryPx(part, out px)) continue;
+                // Skip style keywords
+                var lower = part.ToLowerInvariant();
+                if (lower == "none" || lower == "hidden" || lower == "dotted" || lower == "dashed" ||
+                    lower == "solid" || lower == "double" || lower == "groove" || lower == "ridge" ||
+                    lower == "inset" || lower == "outset") continue;
+                // Try as color
+                var col = TryColor(part);
+                if (col.HasValue) return col;
             }
             return null;
         }
