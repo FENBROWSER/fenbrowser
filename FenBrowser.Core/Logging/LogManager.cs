@@ -26,8 +26,7 @@ namespace FenBrowser.Core.Logging
 
         private LogManager()
         {
-            var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            var fenBrowserPath = Path.Combine(appDataPath, "FenBrowser", "Logs");
+            var fenBrowserPath = Path.Combine("C:\\Users\\udayk\\Videos\\FENBROWSER", "logs");
             Directory.CreateDirectory(fenBrowserPath);
             _logFilePath = Path.Combine(fenBrowserPath, $"fenbrowser_{DateTime.Now:yyyyMMdd}.log");
         }

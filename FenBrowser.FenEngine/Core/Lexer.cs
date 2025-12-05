@@ -149,50 +149,64 @@ namespace FenBrowser.FenEngine.Core
         private int _column = 0;
         private Token _prevToken; // Track previous token for regex vs division context
 
-        private static readonly Dictionary<string, TokenType> Keywords = new Dictionary<string, TokenType>
+        private static readonly Dictionary<string, TokenType> Keywords;
+
+        static Lexer()
         {
-            { "function", TokenType.Function },
-            { "var", TokenType.Var },
-            { "let", TokenType.Let },
-            { "const", TokenType.Const },
-            { "true", TokenType.True },
-            { "false", TokenType.False },
-            { "if", TokenType.If },
-            { "else", TokenType.Else },
-            { "return", TokenType.Return },
-            { "while", TokenType.While },
-            { "for", TokenType.For },
-            { "null", TokenType.Null },
-            { "undefined", TokenType.Undefined },
-            { "class", TokenType.Class },
-            { "new", TokenType.New },
-            { "this", TokenType.This },
-            { "try", TokenType.Try },
-            { "catch", TokenType.Catch },
-            { "finally", TokenType.Finally },
-            { "throw", TokenType.Throw },
-            { "async", TokenType.Async },
-            { "await", TokenType.Await },
-            { "typeof", TokenType.Typeof },
-            { "instanceof", TokenType.Instanceof },
-            { "in", TokenType.In },
-            { "of", TokenType.Of },
-            { "delete", TokenType.Delete },
-            { "void", TokenType.Void },
-            { "break", TokenType.Break },
-            { "continue", TokenType.Continue },
-            { "switch", TokenType.Switch },
-            { "extends", TokenType.Extends },
-            { "super", TokenType.Super },
-            { "static", TokenType.Static },
-            { "import", TokenType.Import },
-            { "export", TokenType.Export },
-            { "from", TokenType.From },
-            { "as", TokenType.As },
-            { "case", TokenType.Case },
-            { "default", TokenType.Default },
-            { "do", TokenType.Do },
-        };
+            try
+            {
+                Keywords = new Dictionary<string, TokenType>
+                {
+                    { "function", TokenType.Function },
+                    { "var", TokenType.Var },
+                    { "let", TokenType.Let },
+                    { "const", TokenType.Const },
+                    { "true", TokenType.True },
+                    { "false", TokenType.False },
+                    { "if", TokenType.If },
+                    { "else", TokenType.Else },
+                    { "return", TokenType.Return },
+                    { "while", TokenType.While },
+                    { "for", TokenType.For },
+                    { "null", TokenType.Null },
+                    { "undefined", TokenType.Undefined },
+                    { "class", TokenType.Class },
+                    { "new", TokenType.New },
+                    { "this", TokenType.This },
+                    { "try", TokenType.Try },
+                    { "catch", TokenType.Catch },
+                    { "finally", TokenType.Finally },
+                    { "throw", TokenType.Throw },
+                    { "async", TokenType.Async },
+                    { "await", TokenType.Await },
+                    { "typeof", TokenType.Typeof },
+                    { "instanceof", TokenType.Instanceof },
+                    { "in", TokenType.In },
+                    { "of", TokenType.Of },
+                    { "delete", TokenType.Delete },
+                    { "void", TokenType.Void },
+                    { "break", TokenType.Break },
+                    { "continue", TokenType.Continue },
+                    { "switch", TokenType.Switch },
+                    { "extends", TokenType.Extends },
+                    { "super", TokenType.Super },
+                    { "static", TokenType.Static },
+                    { "import", TokenType.Import },
+                    { "export", TokenType.Export },
+                    { "from", TokenType.From },
+                    { "as", TokenType.As },
+                    { "case", TokenType.Case },
+                    { "default", TokenType.Default },
+                    { "do", TokenType.Do },
+                };
+            }
+            catch (Exception ex)
+            {
+                 // Ensure we don't crash, but parsing will be broken for keywords
+                System.Diagnostics.Debug.WriteLine($"Error initializing Lexer keywords: {ex}");
+                Keywords = new Dictionary<string, TokenType>();
+            }
+        }
 
         public Lexer(string input)
         {

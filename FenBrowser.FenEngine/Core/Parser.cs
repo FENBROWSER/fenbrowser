@@ -702,8 +702,9 @@ namespace FenBrowser.FenEngine.Core
                 NextToken();
                 var key = "";
                 
-                // Key can be Identifier or String
-                if (CurTokenIs(TokenType.Identifier) || CurTokenIs(TokenType.String))
+                // Key can be Identifier or String or Keyword
+                if (CurTokenIs(TokenType.Identifier) || CurTokenIs(TokenType.String) || 
+                   (_curToken.Type >= TokenType.Function && _curToken.Type <= TokenType.As))
                 {
                     key = _curToken.Literal;
                 }
@@ -712,11 +713,11 @@ namespace FenBrowser.FenEngine.Core
                     // Try to recover from unexpected tokens
                     if (CurTokenIs(TokenType.RBrace)) break;
                     // Skip unknown tokens and try again
+                     _errors.Add($"[Debug] ParseObjectLiteral skipped unexpected token as key: {_curToken.Type}");
                     continue;
                 }
 
                 // Check for method shorthand: { foo() { ... } }
-                // Key difference from function call: after (...) comes { not other stuff
                 if (PeekTokenIs(TokenType.LParen))
                 {
                     // This MIGHT be method shorthand - parse it as such
