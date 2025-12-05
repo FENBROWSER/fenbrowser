@@ -42,3 +42,6 @@ wpt/
 !test_selectors.html
 !build_log.txt
 !test_footer.html
+!test_css_all_features.html
+!test_canvas.html
+!canvas_debug.txt

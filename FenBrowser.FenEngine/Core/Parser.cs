@@ -639,7 +639,7 @@ namespace FenBrowser.FenEngine.Core
             }
             else
             {
-                args.Add(ParseExpression(Precedence.Lowest));
+                args.Add(ParseExpression(Precedence.Comma));
             }
 
             while (PeekTokenIs(TokenType.Comma))
@@ -654,7 +654,7 @@ namespace FenBrowser.FenEngine.Core
                 }
                 else
                 {
-                    args.Add(ParseExpression(Precedence.Lowest));
+                    args.Add(ParseExpression(Precedence.Comma));
                 }
             }
 
@@ -755,14 +755,14 @@ namespace FenBrowser.FenEngine.Core
                 {
                     NextToken(); // Consume :
                     NextToken(); // Move to value
-                    var value = ParseExpression(Precedence.Lowest);
+                    var value = ParseExpression(Precedence.Comma);
                     obj.Pairs[key] = value;
                 }
                 else if (PeekTokenIs(TokenType.Assign))
                 {
                     NextToken(); // Consume =
                     NextToken(); // Move to value
-                    var value = ParseExpression(Precedence.Lowest);
+                    var value = ParseExpression(Precedence.Comma);
                     obj.Pairs[key] = value;
                 }
                 else if (PeekTokenIs(TokenType.Comma) || PeekTokenIs(TokenType.RBrace))

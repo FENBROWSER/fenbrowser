@@ -182,7 +182,6 @@ namespace FenBrowser.FenEngine.Core
             { "break", TokenType.Break },
             { "continue", TokenType.Continue },
             { "switch", TokenType.Switch },
-            { "class", TokenType.Class },
             { "extends", TokenType.Extends },
             { "super", TokenType.Super },
             { "static", TokenType.Static },

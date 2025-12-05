@@ -1,56 +1,25 @@
 <!DOCTYPE html>
-<html>
-<head>
-    <style>
-        body { font-family: sans-serif; padding: 20px; }
-        .box { width: 100px; height: 100px; border: 1px solid black; display: inline-block; margin: 10px; }
-        
-        /* Box Sizing Test */
-        .content-box { box-sizing: content-box; padding: 20px; border: 5px solid red; background: #eee; }
-        .border-box { box-sizing: border-box; padding: 20px; border: 5px solid green; background: #eee; }
+<html style="background-color: #f0f0f0; border: 5px solid red;">
+<body style="background-color: #ffffff; margin: 20px; border: 2px solid blue; padding: 20px;">
+    <h1>HTML Tag Verification</h1>
+    <p>This page tests the rendering of <code>html</code>, <code>body</code>, and <code>li</code> tags.</p>
+    
+    <h2>List Item Test</h2>
+    <ul>
+        <li style="background-color: #e0ffe0; border: 1px solid green; margin: 5px; padding: 5px;">
+            Styled List Item 1 (Should have green border and light green background)
+        </li>
+        <li>Normal List Item 2</li>
+        <li style="display: block; background-color: #ffe0e0; border: 1px solid red; padding: 10px;">
+            Block Display List Item 3 (Should look like a box)
+        </li>
+    </ul>
 
-        /* Positioning Test */
-        .rel-container { position: relative; border: 1px solid blue; height: 150px; width: 300px; }
-        .abs-box { position: absolute; top: 20px; right: 20px; width: 50px; height: 50px; background: red; }
-        .rel-box { position: relative; top: 20px; left: 20px; background: orange; }
-        
-        /* Z-Index Test */
-        .stack-container { position: relative; height: 150px; }
-        .z1 { position: absolute; top: 10px; left: 10px; background: red; z-index: 1; }
-        .z2 { position: absolute; top: 30px; left: 30px; background: blue; z-index: 2; }
-        .z3 { position: absolute; top: 50px; left: 50px; background: green; z-index: 0; } /* Should be behind z1/z2 if they overlap? No, 0 < 1 < 2 */
-        
-        /* Float Test (Legacy) */
-        .float-left { float: left; width: 50px; height: 50px; background: cyan; margin-right: 10px; }
-        .float-right { float: right; width: 50px; height: 50px; background: magenta; margin-left: 10px; }
-        .clearfix::after { content: ""; display: table; clear: both; }
-    </style>
-</head>
-<body>
-    <h1>Layout & Positioning Test</h1>
+    <h2>Standalone List Item Test</h2>
+    <li style="font-weight: bold; color: red;">I am a standalone li tag (should render as block)</li>
 
-    <h2>Box Sizing</h2>
-    <div class="box content-box">Content Box (150x150 total)</div>
-    <div class="box border-box">Border Box (100x100 total)</div>
-
-    <h2>Positioning</h2>
-    <div class="rel-container">
-        <div class="box rel-box">Relative (Offset 20,20)</div>
-        <div class="abs-box">Absolute (Top/Right 20)</div>
-    </div>
-
-    <h2>Z-Index</h2>
-    <div class="stack-container">
-        <div class="box z1">Z=1 (Red)</div>
-        <div class="box z2">Z=2 (Blue)</div>
-        <div class="box z3">Z=0 (Green)</div>
-    </div>
-
-    <h2>Floats</h2>
-    <div style="border: 1px solid gray; padding: 10px;">
-        <div class="float-left">Left</div>
-        <div class="float-right">Right</div>
-        <p>This text should wrap around the floated elements. It should flow nicely between them if there is enough space.</p>
-    </div>
+    <h2>Body/HTML Test</h2>
+    <p>The <code>html</code> tag should have a gray background and a thick red border.</p>
+    <p>The <code>body</code> tag should have a white background, blue border, and margin.</p>
 </body>
 </html>
