@@ -31,6 +31,37 @@ namespace FenBrowser.Core.Network.Handlers
                 }
             }
 
+            // 3. Third-Party Cookie Blocking
+            if (BrowserSettings.Instance.BlockThirdPartyCookies)
+            {
+                // Check if Sec-Fetch-Site suggests cross-site/cross-origin
+                // Note: The ResourceManager sets up Sec-Fetch-Site headers *after* this handler usually, in FetchTextWithOptionsAsync, 
+                // but this handler runs in the pipeline. We might need to rely on host comparison.
+                
+                // We'll trust Sec-Fetch-Site if present, otherwise compare manually.
+                bool isThirdParty = false;
+                if (req.Headers.TryGetValues("Sec-Fetch-Site", out var values))
+                {
+                    foreach(var v in values) { if (v == "cross-site") isThirdParty = true; }
+                }
+                else if (req.Headers.Referrer != null)
+                {
+                    var refHost = req.Headers.Referrer.Host;
+                    var reqHost = req.RequestUri.Host;
+                    // Simple domain check (not effective TLD compliant but sufficient for now)
+                    if (!refHost.EndsWith(reqHost, StringComparison.OrdinalIgnoreCase) && 
+                        !reqHost.EndsWith(refHost, StringComparison.OrdinalIgnoreCase))
+                    {
+                        isThirdParty = true;
+                    }
+                }
+
+                if (isThirdParty)
+                {
+                    req.Headers.Remove("Cookie");
+                }
+            }
+
             await next();
         }
     }

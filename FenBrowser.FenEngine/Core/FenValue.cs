@@ -128,6 +128,64 @@ namespace FenBrowser.FenEngine.Core
             return null;
         }
 
+        /// <summary>
+        /// Converts FenValue to a native .NET object for JSON serialization (WebDriver execute_script).
+        /// Arrays become List&lt;object&gt;, objects become Dictionary&lt;string, object&gt;.
+        /// </summary>
+        public object ToNativeObject()
+        {
+            switch (Type)
+            {
+                case Interfaces.ValueType.Undefined:
+                case Interfaces.ValueType.Null:
+                    return null;
+                case Interfaces.ValueType.Boolean:
+                    return (bool)_value;
+                case Interfaces.ValueType.Number:
+                    return (double)_value;
+                case Interfaces.ValueType.String:
+                    return (string)_value;
+                case Interfaces.ValueType.Object:
+                    var obj = (IObject)_value;
+                    if (obj is FenObject fenObj)
+                    {
+                        // Check if it's an array (has 'length' property that's a number)
+                        var lengthVal = fenObj.Get("length");
+                        if (lengthVal is FenValue lv && lv.IsNumber)
+                        {
+                            var len = (int)lv.AsNumber();
+                            var list = new List<object>();
+                            for (int i = 0; i < len; i++)
+                            {
+                                var val = fenObj.Get(i.ToString());
+                                if (val is FenValue fv)
+                                    list.Add(fv.ToNativeObject());
+                                else
+                                    list.Add(val);
+                            }
+                            return list;
+                        }
+                        
+                        // Regular object - convert to dictionary
+                        var dict = new Dictionary<string, object>();
+                        foreach (var key in fenObj.Keys())
+                        {
+                            var val = fenObj.Get(key);
+                            if (val is FenValue fv)
+                                dict[key] = fv.ToNativeObject();
+                            else
+                                dict[key] = val;
+                        }
+                        return dict;
+                    }
+                    return "[object Object]";
+                case Interfaces.ValueType.Function:
+                    return "[function]";
+                default:
+                    return null;
+            }
+        }
+
         // Operators
         public static FenValue operator +(FenValue a, FenValue b)
         {

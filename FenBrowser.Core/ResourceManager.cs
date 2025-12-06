@@ -9,6 +9,8 @@ using System.Reflection;
 using FenBrowser.Core.Compat;
 using FenBrowser.Core.Network;
 using FenBrowser.Core.Network.Handlers;
+using FenBrowser.Core.Security;
+using System.Net.Http.Headers;
 
 namespace FenBrowser.Core
 {
@@ -32,6 +34,7 @@ namespace FenBrowser.Core
         public string ContentType;
         public CertificateInfo Certificate;
         public System.Net.Security.SslPolicyErrors SslErrors;
+        public HttpResponseHeaders Headers;
     }
 
     public sealed class ResourceManager
@@ -66,19 +69,56 @@ namespace FenBrowser.Core
             BlockedCountChanged?.Invoke(this, 0);
         }
 
-        public ResourceManager(HttpClient http)
+        private readonly bool _isPrivate;
+
+        public CspPolicy ActivePolicy { get; set; }
+
+        public ResourceManager(HttpClient http, bool isPrivate = false)
         {
-            _cacheRoot = Path.Combine(AppContext.BaseDirectory, "Cache");
-            Directory.CreateDirectory(_cacheRoot);
+            _isPrivate = isPrivate;
+            if (!_isPrivate)
+            {
+                _cacheRoot = Path.Combine(AppContext.BaseDirectory, "Cache");
+                Directory.CreateDirectory(_cacheRoot);
+            }
+            else
+            {
+                // In private mode, use a temp path or just don't use disk at all. 
+                // We'll set it to null and check before access.
+                _cacheRoot = null; 
+            }
 
             var handlers = new List<INetworkHandler>
             {
+                new TrackingPreventionHandler(), // Enhanced Tracking Prevention (Phase 5)
                 new AdBlockHandler(() => BrowserSettings.Instance.EnableTrackingPrevention),
                 new PrivacyHandler(),
-                new HstsHandler(_cacheRoot),
+                // Only enable HSTS disk persistence if not private
+                new HstsHandler(_isPrivate ? null : Path.Combine(AppContext.BaseDirectory, "Cache")), 
                 new HttpHandler(http)
             };
             _client = new NetworkClient(handlers);
+        }
+
+        public void ClearCache()
+        {
+            // Clear memory
+            lock (_textMap) { _textMap.Clear(); _textLru.Clear(); }
+            lock (_imgMap) { _imgMap.Clear(); _imgLru.Clear(); }
+
+            // Clear disk (skip if private or path null)
+            try
+            {
+                if (!_isPrivate && !string.IsNullOrEmpty(_cacheRoot) && Directory.Exists(_cacheRoot))
+                {
+                    Directory.Delete(_cacheRoot, true);
+                    Directory.CreateDirectory(_cacheRoot);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[ClearCache] Failed to delete disk cache: {ex.Message}");
+            }
         }
 
 
@@ -146,6 +186,30 @@ namespace FenBrowser.Core
         public async Task<string> FetchTextAsync(Uri url, Uri referer = null, string accept = null, string secFetchDest = null)
         {
             if (url == null) return null;
+
+            // CSP Check
+            if (ActivePolicy != null)
+            {
+                var dest = secFetchDest ?? ""; 
+                var directive = "default-src";
+                if (dest == "script") directive = "script-src";
+                else if (dest == "style") directive = "style-src";
+                else if (dest == "worker") directive = "child-src"; // or worker-src
+                else if (dest == "iframe") directive = "frame-src";
+                
+                if (directive != "default-src" || !string.IsNullOrEmpty(dest))
+                {
+                    // For fetch/xhr
+                    if (string.IsNullOrEmpty(dest)) directive = "connect-src";
+                }
+                
+                // If checking subresources
+                if (!ActivePolicy.IsAllowed(directive, url))
+                {
+                    System.Diagnostics.Debug.WriteLine($"[CSP] Blocked {url} ({directive})");
+                    return null;
+                }
+            }
             
             // Handle file scheme locally
             if (string.Equals(url.Scheme, "file", StringComparison.OrdinalIgnoreCase))
@@ -174,7 +238,8 @@ namespace FenBrowser.Core
 
             try
             {
-                if (File.Exists(filePath) && File.Exists(metaPath))
+                // Skip disk cache read if private
+                if (!_isPrivate && File.Exists(filePath) && File.Exists(metaPath))
                 {
                     try
                     {
@@ -303,14 +368,18 @@ namespace FenBrowser.Core
                     _textLru.AddFirst(node); _textMap[key] = node;
                     if (_textLru.Count > _textCap) { var last = _textLru.Last; if (last != null) { _textMap.Remove(last.Value.Item1); _textLru.RemoveLast(); } }
 
-                    // disk cache
-                    try
+                    // disk cache (skip if private)
+                    if (!_isPrivate)
                     {
-                        await File.WriteAllTextAsync(filePath, entry.Body);
-                        var metaPayload = DateTimeOffset.UtcNow.ToString("o") + "|" + (finalUri != null ? finalUri.AbsoluteUri : string.Empty);
-                        await File.WriteAllTextAsync(metaPath, metaPayload);
+                        try
+                        {
+                            Directory.CreateDirectory(folderPath); // Ensure dir exists
+                            await File.WriteAllTextAsync(filePath, entry.Body);
+                            var metaPayload = DateTimeOffset.UtcNow.ToString("o") + "|" + (finalUri != null ? finalUri.AbsoluteUri : string.Empty);
+                            await File.WriteAllTextAsync(metaPath, metaPayload);
+                        }
+                        catch { }
                     }
-                    catch { }
                 }
                 if (string.IsNullOrEmpty(text))
                 {
@@ -474,7 +543,8 @@ namespace FenBrowser.Core
                     Content = text, 
                     StatusCode = (int)resp.StatusCode, 
                     FinalUri = finalUri,
-                    ContentType = ct
+                    ContentType = ct,
+                    Headers = resp.Headers
                 };
             }
             catch (Exception ex) {
@@ -520,6 +590,13 @@ namespace FenBrowser.Core
         public async Task<Stream> FetchImageAsync(Uri url, Uri referer = null)
         {
             if (url == null) return null;
+
+            // CSP Check
+            if (ActivePolicy != null && !ActivePolicy.IsAllowed("img-src", url))
+            {
+                 System.Diagnostics.Debug.WriteLine($"[CSP] Blocked image {url}");
+                 return null;
+            }
 
             // Handle file scheme locally
             if (string.Equals(url.Scheme, "file", StringComparison.OrdinalIgnoreCase))
@@ -644,6 +721,18 @@ namespace FenBrowser.Core
         public async Task<byte[]> FetchBytesAsync(Uri url, Uri referer = null, string accept = null, string secFetchDest = null)
         {
             if (url == null) return null;
+            
+            // CSP Check (fonts, media, etc)
+            if (ActivePolicy != null)
+            {
+                var directive = "default-src";
+                if (secFetchDest == "font") directive = "font-src";
+                else if (secFetchDest == "audio" || secFetchDest == "video") directive = "media-src";
+                else if (secFetchDest == "object") directive = "object-src";
+                
+                if (!ActivePolicy.IsAllowed(directive, url)) return null;
+            }
+
             // url = UpgradeIfHsts(url); // Handled by HstsHandler
             try
             {
