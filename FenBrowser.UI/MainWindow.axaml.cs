@@ -107,8 +107,11 @@ namespace FenBrowser.UI
             set => SetValue(CurrentTabWidthProperty, value);
         }
 
-        public MainWindow(int? port = null, string initialUrl = null)
+        public bool IsPrivate { get; }
+
+        public MainWindow(int? port = null, string initialUrl = null, bool isPrivate = false)
         {
+            IsPrivate = isPrivate;
             InitializeComponent();
             DataContext = this; // Set DataContext for bindings
 
@@ -221,7 +224,7 @@ namespace FenBrowser.UI
 
         private void CreateBrowserForTab(TabItemModel tab)
         {
-            var browser = new BrowserHost();
+            var browser = new BrowserHost(IsPrivate);
             browser.EnableJavaScript = BrowserSettings.Instance.EnableJavaScript;
             tab.Browser = browser;
 
@@ -294,7 +297,10 @@ namespace FenBrowser.UI
                 {
                     if (!string.IsNullOrWhiteSpace(title))
                     {
-                        tab.Title = title;
+                    if (!string.IsNullOrWhiteSpace(title))
+                    {
+                        tab.Title = title + (IsPrivate ? " (Private)" : "");
+                    }
                     }
                 });
             };
@@ -770,6 +776,9 @@ namespace FenBrowser.UI
                     // Close the settings tab when close is requested
                     OnCloseTab(settingsTab);
                 };
+                
+                // Attach the active browser to allow cookie management
+                settingsPage.AttachBrowser(_activeBrowser);
 
                 // Store settings page as the tab's content
                 settingsTab.LastRenderedContent = settingsPage;
@@ -795,12 +804,20 @@ namespace FenBrowser.UI
             menu.Items.Add(newTab);
 
             var newWindow = new MenuItem { Header = "New window" };
-            newWindow.Click += (s, args) => { /* TODO: Implement new window */ };
+            newWindow.Click += (s, args) => 
+            {
+                 var win = new MainWindow();
+                 win.Show();
+            };
             menu.Items.Add(newWindow);
 
-            var newPrivate = new MenuItem { Header = "New InPrivate window" };
-            newPrivate.Click += (s, args) => { /* TODO: Implement private browsing */ };
-            menu.Items.Add(newPrivate);
+            var newPrivateWindow = new MenuItem { Header = "New private window" };
+            newPrivateWindow.Click += (s, args) => 
+            {
+                 var win = new MainWindow(null, null, true);
+                 win.Show();
+            };
+            menu.Items.Add(newPrivateWindow);
 
             menu.Items.Add(new Separator());
 

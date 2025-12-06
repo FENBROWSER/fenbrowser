@@ -126,6 +126,10 @@ namespace FenBrowser.WebDriver
             }
 
             var json = JsonSerializer.Serialize(payload);
+            
+            // Debug: log the response for troubleshooting
+            try { System.IO.File.AppendAllText("debug_log.txt", $"[WebDriver Response] {json}\r\n"); } catch { }
+            
             var buffer = Encoding.UTF8.GetBytes(json);
             res.ContentType = "application/json; charset=utf-8";
             res.AddHeader("Cache-Control", "no-cache");
