@@ -30,6 +30,8 @@ namespace FenBrowser.Core
         public int StatusCode;
         public Uri FinalUri;
         public string ContentType;
+        public CertificateInfo Certificate;
+        public System.Net.Security.SslPolicyErrors SslErrors;
     }
 
     public sealed class ResourceManager
