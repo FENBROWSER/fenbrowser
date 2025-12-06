@@ -23,7 +23,7 @@ namespace FenBrowser.UI
             }
         }
 
-        public void Configure(string host, ResourceManager resourceManager)
+        public void Configure(string host, ResourceManager resourceManager, CertificateInfo certInfo)
         {
             var header = this.FindControl<TextBlock>("HeaderHost");
             if (header != null) header.Text = $"About {host}";
@@ -33,6 +33,32 @@ namespace FenBrowser.UI
             {
                 UpdateBlockedCount(_resourceManager.BlockedRequestCount);
                 _resourceManager.BlockedCountChanged += OnBlockedCountChanged;
+            }
+
+            // Bind Certificate Info
+            var txtIssuer = this.FindControl<TextBlock>("CertIssuer");
+            var txtSubject = this.FindControl<TextBlock>("CertSubject");
+            var txtDates = this.FindControl<TextBlock>("CertDates");
+            var txtThumb = this.FindControl<TextBlock>("CertThumb");
+            var statusText = this.FindControl<TextBlock>("SecurityStatusText");
+
+            if (certInfo != null && certInfo.IsValid)
+            {
+                if (txtIssuer != null) txtIssuer.Text = $"Issuer: {certInfo.Issuer}";
+                if (txtSubject != null) txtSubject.Text = $"Subject: {certInfo.Subject}";
+                if (txtDates != null) txtDates.Text = $"Valid: {certInfo.NotBefore.ToShortDateString()} - {certInfo.NotAfter.ToShortDateString()}";
+                if (txtThumb != null) txtThumb.Text = $"Thumbprint: {certInfo.Thumbprint}";
+                if (statusText != null) statusText.Text = "Connection is secure";
+                if (statusText != null) statusText.Foreground = Avalonia.Media.Brushes.Green;
+            }
+            else
+            {
+                if (txtIssuer != null) txtIssuer.Text = "No certificate information available";
+                if (txtSubject != null) txtSubject.Text = "";
+                if (txtDates != null) txtDates.Text = "";
+                if (txtThumb != null) txtThumb.Text = "";
+                if (statusText != null) statusText.Text = "Connection is NOT secure";
+                if (statusText != null) statusText.Foreground = Avalonia.Media.Brushes.Gray;
             }
         }
 

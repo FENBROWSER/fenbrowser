@@ -49,6 +49,15 @@
             </Grid>
         </Button>
 
+        <Expander Header="Certificate Information" Margin="16,0,16,8" IsExpanded="False">
+            <StackPanel Spacing="4">
+                <TextBlock x:Name="CertIssuer" Text="Issuer: " FontSize="11" TextWrapping="Wrap" Foreground="#CCCCCC"/>
+                <TextBlock x:Name="CertSubject" Text="Subject: " FontSize="11" TextWrapping="Wrap" Foreground="#CCCCCC"/>
+                <TextBlock x:Name="CertDates" Text="Valid: " FontSize="11" TextWrapping="Wrap" Foreground="#CCCCCC"/>
+                <TextBlock x:Name="CertThumb" Text="Thumbprint: " FontSize="10" TextWrapping="Wrap" Foreground="#777777" Margin="0,4,0,0"/>
+            </StackPanel>
+        </Expander>
+
         <Separator Background="#333333" Height="1" Margin="16,0"/>
 
         <!-- Permissions (Placeholder) -->

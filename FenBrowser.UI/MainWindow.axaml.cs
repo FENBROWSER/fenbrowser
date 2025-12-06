@@ -663,7 +663,7 @@ namespace FenBrowser.UI
                             return;
                         }
 
-                        content.Configure(_activeBrowser.CurrentUri.Host, _activeBrowser.ResourceManager);
+                        content.Configure(_activeBrowser.CurrentUri.Host, _activeBrowser.ResourceManager, _activeBrowser.CurrentCertificate);
                         
                         // Handle close request from the popup itself
                         EventHandler closeHandler = null;

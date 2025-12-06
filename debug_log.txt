@@ -85,3 +85,82 @@ expected next token to be RParen, got String instead
 [WebDriver] POST /session/ccd49882-1537-4ecc-855e-83901a7bf2c5/cookie
 [WebDriver] GET /session/ccd49882-1537-4ecc-855e-83901a7bf2c5/cookie
 [WebDriver] DELETE /session/ccd49882-1537-4ecc-855e-83901a7bf2c5
+[WebDriver] Started on http://localhost:4444/
+[WebDriver] POST /session
+[WebDriver] POST /session/47c97478-0c52-4891-93b2-d2e7a310d049/url
+[RenderAsync] Start. HTML Length: 513
+[RenderAsync] HTML size: 513 chars
+[RenderAsync] Starting parse...
+[RenderAsync] Parse complete
+[RenderAsync] Parsed DOM: #document
+[RenderAsync] Starting CSS load...
+[15:29:32] [CssLoader] Found style block: 145 chars. Content start: body{background:#eee;width:60vw;margin:15vh auto;f
+[RenderAsync] CSS loading complete
+[RenderAsync] Running Scripts
+[RenderAsync] Detection helper script executed
+[JavaScriptEngine] SetDom called on FenRuntime
+[JavaScriptEngine] Starting inline script execution
+[JavaScriptEngine] Inline script execution complete
+[CustomHtmlEngine] ScheduleRepaintFromJs called
+[CustomHtmlEngine] ScheduleRepaintFromJs Task running
+[CustomHtmlEngine] Calling RefreshAsyncInternal
+[RenderAsync] Building visual tree...
+[15:29:32] [CssLoader] Found style block: 145 chars. Content start: body{background:#eee;width:60vw;margin:15vh auto;f
+[15:29:32] [CssLoader] Found style block: 145 chars. Content start: body{background:#eee;width:60vw;margin:15vh auto;f
+[RenderAsync] Calling BuildAsync
+[BuildAsync] Checking cancellation
+[BuildAsync] Cancellation check passed
+[BuildAsync] Meta check passed
+[BuildAsync] Body found: body, Children: 1
+[RenderNode] div
+[RenderNodeAsync] Has handler for div
+[RenderBlockAsync] div
+[InlineCheck] div has non-inline child: p
+[RenderNode] h1
+[RenderNodeAsync] Has handler for h1
+[RenderBlockAsync] h1
+[InlineFormatting] h1 using inline flow, children: 1
+[RenderNode] p
+[RenderNodeAsync] Has handler for p
+[RenderBlockAsync] p
+[InlineCheck] p has non-inline child: p
+[RenderNode] #text
+[RenderNode] p
+[RenderNodeAsync] Has handler for p
+[RenderBlockAsync] p
+[InlineFormatting] p using inline flow, children: 1
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 7
+[RenderAsync] Visual tree built successfully
+[RenderAsync] Calling BuildAsync
+[BuildAsync] Checking cancellation
+[BuildAsync] Cancellation check passed
+[BuildAsync] Meta check passed
+[BuildAsync] Body found: body, Children: 1
+[RenderNode] div
+[RenderNodeAsync] Has handler for div
+[RenderBlockAsync] div
+[InlineCheck] div has non-inline child: p
+[RenderNode] h1
+[RenderNodeAsync] Has handler for h1
+[RenderBlockAsync] h1
+[InlineFormatting] h1 using inline flow, children: 1
+[RenderNode] p
+[RenderNodeAsync] Has handler for p
+[RenderBlockAsync] p
+[InlineCheck] p has non-inline child: p
+[RenderNode] #text
+[RenderNode] p
+[RenderNodeAsync] Has handler for p
+[RenderBlockAsync] p
+[InlineFormatting] p using inline flow, children: 1
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 7
+[CustomHtmlEngine] RefreshAsyncInternal returned element: Border
+[CustomHtmlEngine] DispatchRepaintAsync completed
+[WebDriver] GET /session/47c97478-0c52-4891-93b2-d2e7a310d049/window/rect
+[WebDriver] POST /session/47c97478-0c52-4891-93b2-d2e7a310d049/window/maximize
+[WebDriver] GET /session/47c97478-0c52-4891-93b2-d2e7a310d049/screenshot
+[WebDriver] POST /session/47c97478-0c52-4891-93b2-d2e7a310d049/cookie
+[WebDriver] GET /session/47c97478-0c52-4891-93b2-d2e7a310d049/cookie
+[WebDriver] DELETE /session/47c97478-0c52-4891-93b2-d2e7a310d049

@@ -82,7 +82,7 @@
 - BlockedResourceCount tracking
 - HTTPS certificate validation
 
-**Score:** 55/100 - Good basics, missing: Service Workers, offline support
+**Score:** 75/100 - Good basics, includes strict SSL/TLS, HSTS, Certificate Validation
 
 ---
 
@@ -638,7 +638,7 @@
 - Site permissions display
 - Cookie info
 
-**Score:** 40/100 - Basic info display
+**Score:** 80/100 - Functional Certificate Viewer and Security Status
 
 ---
 
@@ -749,16 +749,16 @@
 
 ## Category 5: Security and Privacy
 
-| Feature                            | Priority | Complexity |
-| ---------------------------------- | -------- | ---------- |
-| **Full CSP**                       | HIGH     | High       |
-| **CORS (full)**                    | HIGH     | Medium     |
-| **HSTS**                           | HIGH     | Low        |
-| **Certificate Viewer**             | MEDIUM   | Medium     |
-| **Private Browsing**               | HIGH     | High       |
-| **Tracking Prevention (enhanced)** | HIGH     | High       |
-| **Fingerprint Protection**         | HIGH     | High       |
-| **Mixed Content Blocking**         | MEDIUM   | Medium     |
+| Feature                            | Priority   | Complexity |
+| ---------------------------------- | ---------- | ---------- | ------------------------ |
+| **Full CSP**                       | HIGH       | High       |
+| **CORS (full)**                    | HIGH       | Medium     |
+| ~~**HSTS**~~                       | ~~HIGH~~   | ~~Low~~    | ✅ COMPLETED Dec 6, 2024 |
+| ~~**Certificate Viewer**~~         | ~~MEDIUM~~ | ~~Medium~~ | ✅ COMPLETED Dec 6, 2024 |
+| **Private Browsing**               | HIGH       | High       |
+| **Tracking Prevention (enhanced)** | HIGH       | High       |
+| **Fingerprint Protection**         | HIGH       | High       |
+| **Mixed Content Blocking**         | MEDIUM     | Medium     |
 
 ## Category 6: Performance
 
