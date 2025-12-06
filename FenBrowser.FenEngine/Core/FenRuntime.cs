@@ -564,6 +564,23 @@ namespace FenBrowser.FenEngine.Core
             return _globalEnv.Get(name) != null;
         }
 
+        public void SetAlert(Action<string> alertAction)
+        {
+            var alertFunc = FenValue.FromFunction(new FenFunction("alert", (args, thisVal) =>
+            {
+                var msg = args.Length > 0 ? args[0].ToString() : "";
+                alertAction?.Invoke(msg);
+                return FenValue.Undefined;
+            }));
+            
+            SetGlobal("alert", alertFunc);
+            var win = GetGlobal("window");
+            if (win.IsObject)
+            {
+                win.AsObject().Set("alert", alertFunc);
+            }
+        }
+
         /// <summary>
         /// Execute JavaScript code using the FenEngine Parser and Interpreter
         /// </summary>
@@ -571,43 +588,22 @@ namespace FenBrowser.FenEngine.Core
         {
             try
             {
-                try { System.IO.File.AppendAllText("debug_log.txt", $"[FenRuntime] ExecuteSimple called with {code?.Length ?? 0} chars\r\n"); } catch { }
-                Console.WriteLine($"[FenRuntime] ExecuteSimple called with {code?.Length ?? 0} chars");
-                
                 var lexer = new Lexer(code);
                 var parser = new Parser(lexer);
                 var program = parser.ParseProgram();
 
                 if (parser.Errors.Count > 0)
                 {
-                    var errorMsg = string.Join("\n", parser.Errors);
-                    try { System.IO.File.AppendAllText("debug_log.txt", $"[FenRuntime] Parse Errors:\r\n{errorMsg}\r\n"); } catch { }
-                    Console.WriteLine($"[FenRuntime] Parse Errors:\n{errorMsg}");
-                    return new ErrorValue(errorMsg);
+                    return new ErrorValue(string.Join("\n", parser.Errors));
                 }
-
-                try { System.IO.File.AppendAllText("debug_log.txt", $"[FenRuntime] Parse succeeded. Statements: {program.Statements.Count}\r\n"); } catch { }
-                Console.WriteLine($"[FenRuntime] Parse succeeded. Statements: {program.Statements.Count}");
                 
                 var interpreter = new Interpreter();
                 var result = interpreter.Eval(program, _globalEnv, _context);
 
-                if (result != null && result.Type == JsValueType.Error)
-                {
-                    try { System.IO.File.AppendAllText("debug_log.txt", $"[FenRuntime] Execution Error: {result}\r\n"); } catch { }
-                    Console.WriteLine($"[FenRuntime] Execution Error: {result}");
-                    return result;
-                }
-
-                try { System.IO.File.AppendAllText("debug_log.txt", $"[FenRuntime] Execution completed. Result type: {result?.Type}\r\n"); } catch { }
-                Console.WriteLine($"[FenRuntime] Execution completed. Result type: {result?.Type}");
                 return result ?? FenValue.Undefined;
             }
             catch (Exception ex)
             {
-                try { System.IO.File.AppendAllText("debug_log.txt", $"[FenRuntime] Exception: {ex.Message}\r\n[FenRuntime] Stack trace: {ex.StackTrace}\r\n"); } catch { }
-                Console.WriteLine($"[FenRuntime] Exception: {ex.Message}");
-                Console.WriteLine($"[FenRuntime] Stack trace: {ex.StackTrace}");
                 return new ErrorValue($"Runtime error: {ex.Message}");
             }
         }

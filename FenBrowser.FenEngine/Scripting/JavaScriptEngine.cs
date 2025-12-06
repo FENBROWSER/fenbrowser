@@ -48,6 +48,11 @@ namespace FenBrowser.FenEngine.Scripting
             var permissions = new PermissionManager(JsPermissions.StandardWeb);
             var context = new FenBrowser.FenEngine.Core.ExecutionContext(permissions);
             _fenRuntime = new FenRuntime(context);
+            
+            if (_host != null)
+            {
+                _fenRuntime.SetAlert(msg => _host.Alert(msg));
+            }
             // _mini = new MiniJs.Engine();
         }
 
@@ -1574,7 +1579,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         {
             private JavaScriptEngine _engine;
             public HostWindow(JavaScriptEngine engine) { _engine = engine; }
-            public void alert(string msg) { _engine._host.SetStatus("[Alert] " + msg); }
+            public void alert(string msg) { _engine._host.SetStatus("[Alert] " + msg); _engine._host.Alert(msg); }
             
             public object document => new HostDocument(_engine);
             public object location => new HostLocation(_engine);
@@ -2147,7 +2152,9 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         void Navigate(Uri target);
         void PostForm(Uri target, string body);
         void SetStatus(string s);
+
         void SetTitle(string tval);
+        void Alert(string msg);
     }
 
     // Optional host interface: if implemented, JavaScriptEngine will call RequestRender() when DOM changes
@@ -2175,8 +2182,9 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
     private readonly Action _requestRender;
     private readonly Action<Action> _invokeOnUiThread;
     private readonly Action<string> _setTitle;
+    private readonly Action<string> _alert;
 
-        public JsHostAdapter(Action<Uri> navigate, Action<Uri, string> post, Action<string> status, Action requestRender = null, Action<Action> invokeOnUiThread = null, Action<string> setTitle = null)
+        public JsHostAdapter(Action<Uri> navigate, Action<Uri, string> post, Action<string> status, Action requestRender = null, Action<Action> invokeOnUiThread = null, Action<string> setTitle = null, Action<string> alert = null)
         {
             _navigate = navigate ?? (_ => { });
             _post = post ?? ((_, __) => { });
@@ -2184,6 +2192,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             _requestRender = requestRender ?? (() => { try { _status("[DOM mutated]"); } catch { } });
             _invokeOnUiThread = invokeOnUiThread ?? (a => { try { a(); } catch { } });
             _setTitle = setTitle ?? (_ => { });
+            _alert = alert ?? (_ => { });
         }
 
         public void Navigate(Uri target) => _navigate(target);
@@ -2199,5 +2208,9 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             try { _setTitle(tval ?? string.Empty); }
             catch { }
         }
+
+
+        
+        public void Alert(string msg) => _alert(msg);
     }
 }

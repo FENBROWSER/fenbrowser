@@ -142,7 +142,22 @@ namespace FenBrowser.FenEngine.Core
                         
                         {
 
-                            function = FenValue.Undefined;
+                            thisContext = obj;
+                            
+                            // Resolve property on the object
+                            if (obj.IsObject)
+                            {
+                                var o = obj.AsObject();
+                                if (o != null) function = o.Get(me.Property);
+                            }
+                            else if (obj.IsString)
+                            {
+                                // String methods lookup (not length, as it is a property, but methods like substring if we had them)
+                                var proto = GetStringPrototype();
+                                function = proto?.Get(me.Property);
+                            }
+
+                            if (function == null) function = FenValue.Undefined;
                         }
                     }
                     else

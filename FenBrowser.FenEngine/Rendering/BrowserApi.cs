@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
+using System.Text.Json;
 using FenBrowser.Core;
 
 namespace FenBrowser.FenEngine.Rendering
@@ -13,33 +14,144 @@ namespace FenBrowser.FenEngine.Rendering
     /// </summary>
     public interface IBrowser
     {
+        // Core properties
         Uri CurrentUri { get; }
         ResourceManager ResourceManager { get; }
-        Task<bool> NavigateAsync(string url);
-        Task<bool> GoBackAsync();
-        Task<bool> GoForwardAsync();
         bool CanGoBack { get; }
         bool CanGoForward { get; }
+        SecurityState SecurityState { get; }
+
+        // Events
         event EventHandler<Uri> Navigated;
         event EventHandler<string> NavigationFailed;
         event EventHandler<bool> LoadingChanged;
         event EventHandler<string> TitleChanged;
-        event EventHandler<object> RepaintReady; // UI element delivered as object to avoid framework coupling
+        event EventHandler<object> RepaintReady;
+        event Action<string> ConsoleMessage;
+        event Action<Avalonia.Rect?> HighlightRectChanged;
+
+        // Navigation
+        Task<bool> NavigateAsync(string url);
+        Task<bool> GoBackAsync();
+        Task<bool> GoForwardAsync();
+        Task<bool> RefreshAsync();
+        Task<string> GetCurrentUrlAsync();
+        Task<string> GetTitleAsync();
+
+        // Window/Frame management
+        WindowRect GetWindowRect();
+        WindowRect SetWindowRect(int? x, int? y, int? width, int? height);
+        WindowRect MaximizeWindow();
+        WindowRect MinimizeWindow();
+        WindowRect FullscreenWindow();
+        Task CreateNewTabAsync();
+        Task SwitchToFrameAsync(object frameId);
+        Task SwitchToParentFrameAsync();
+
+        // Element operations
+        Task<string> FindElementAsync(string strategy, string value, string parentId = null);
+        Task<string[]> FindElementsAsync(string strategy, string value, string parentId = null);
+        Task<string> GetActiveElementAsync();
+        Task<string> GetShadowRootAsync(string elementId);
+        Task<bool> IsElementSelectedAsync(string elementId);
+        Task<string> GetElementAttributeAsync(string elementId, string name);
+        Task<object> GetElementPropertyAsync(string elementId, string name);
+        Task<string> GetElementCssValueAsync(string elementId, string property);
+        Task<string> GetElementTextAsync(string elementId);
+        Task<string> GetElementTagNameAsync(string elementId);
+        Task<ElementRect> GetElementRectAsync(string elementId);
+        Task<bool> IsElementEnabledAsync(string elementId);
+        Task<string> GetElementComputedRoleAsync(string elementId);
+        Task<string> GetElementComputedLabelAsync(string elementId);
+        Task ClickElementAsync(string elementId);
+        Task ClearElementAsync(string elementId);
+        Task SendKeysToElementAsync(string elementId, string text);
+
+        // Document
+        Task<string> GetPageSourceAsync();
+        Task<object> ExecuteScriptAsync(string script, object[] args = null);
+        Task<object> ExecuteAsyncScriptAsync(string script, object[] args, int timeoutMs);
+        Task<string> CaptureScreenshotAsync();
+        Task<string> CaptureElementScreenshotAsync(string elementId);
+        Task<string> PrintToPdfAsync(double pageWidth, double pageHeight, bool landscape, double scale);
+
+        // Cookies
+        Task<List<WebDriverCookie>> GetAllCookiesAsync();
+        Task<WebDriverCookie> GetCookieAsync(string name);
+        Task AddCookieAsync(WebDriverCookie cookie);
+        Task DeleteCookieAsync(string name);
+        Task DeleteAllCookiesAsync();
         void SetCookie(string name, string value);
         void DeleteCookie(string name);
+
+        // Actions
+        Task PerformActionsAsync(List<ActionChain> actions);
+        Task ReleaseActionsAsync();
+
+        // Alerts
+        Task<bool> HasAlertAsync();
+        Task DismissAlertAsync();
+        Task AcceptAlertAsync();
+        Task<string> GetAlertTextAsync();
+        Task SendAlertTextAsync(string text);
+
+        // Legacy/Utility
         IList<string> GetAllLinks();
         string GetTextContent();
-        Task<string> GetTitleAsync();
-        Task<object> ExecuteScriptAsync(string script);
-        Task<string> FindElementAsync(string strategy, string value);
-        Task ClickElementAsync(string elementId);
-        Task CaptureScreenshotAsync();
         LiteElement GetDomRoot();
-        event Action<string> ConsoleMessage;
         void HighlightElement(LiteElement element);
         void RemoveHighlight();
-        event Action<Avalonia.Rect?> HighlightRectChanged;
-        SecurityState SecurityState { get; }
+    }
+
+    /// <summary>Represents a window rectangle (position and size)</summary>
+    public class WindowRect
+    {
+        public int X { get; set; }
+        public int Y { get; set; }
+        public int Width { get; set; }
+        public int Height { get; set; }
+    }
+
+    /// <summary>Represents an element's bounding rectangle</summary>
+    public class ElementRect
+    {
+        public double X { get; set; }
+        public double Y { get; set; }
+        public double Width { get; set; }
+        public double Height { get; set; }
+    }
+
+    /// <summary>Represents a browser cookie for WebDriver</summary>
+    public class WebDriverCookie
+    {
+        public string Name { get; set; }
+        public string Value { get; set; }
+        public string Path { get; set; } = "/";
+        public string Domain { get; set; }
+        public bool Secure { get; set; }
+        public bool HttpOnly { get; set; }
+        public long? Expiry { get; set; }
+        public string SameSite { get; set; } = "Lax";
+    }
+
+    /// <summary>Represents an action chain for complex input</summary>
+    public class ActionChain
+    {
+        public string Type { get; set; }
+        public string Id { get; set; }
+        public List<InputAction> Actions { get; } = new List<InputAction>();
+    }
+
+    /// <summary>Represents a single input action</summary>
+    public class InputAction
+    {
+        public string Type { get; set; }
+        public int Duration { get; set; }
+        public int X { get; set; }
+        public int Y { get; set; }
+        public int Button { get; set; }
+        public string Value { get; set; }
+        public string Origin { get; set; }
     }
 
     public enum SecurityState
@@ -85,6 +197,17 @@ namespace FenBrowser.FenEngine.Rendering
 
         public SecurityState SecurityState { get; private set; } = SecurityState.None;
 
+        // ========== INJECTABLE DELEGATES FOR WEBDRIVER ==========
+        // These are set by MainWindow/WebDriverIntegration to provide real implementations
+        public Func<WindowRect> GetWindowRectDelegate { get; set; }
+        public Func<int?, int?, int?, int?, WindowRect> SetWindowRectDelegate { get; set; }
+        public Func<WindowRect> MaximizeWindowDelegate { get; set; }
+        public Func<WindowRect> MinimizeWindowDelegate { get; set; }
+        public Func<WindowRect> FullscreenWindowDelegate { get; set; }
+        public Func<Task<string>> CreateNewTabDelegate { get; set; }
+        public Func<Task<string>> CaptureScreenshotDelegate { get; set; }
+        public Func<string, Task<string>> CaptureElementScreenshotDelegate { get; set; }
+
         public BrowserHost()
         {
             _engine.RepaintReady += (elem) =>
@@ -109,6 +232,12 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 try { HighlightRectChanged?.Invoke(rect); }
                 catch { }
+            };
+
+            _engine.AlertTriggered += (msg) =>
+            {
+                TriggerAlert(msg);
+                try { ConsoleMessage?.Invoke($"[Alert] {msg}"); } catch { }
             };
 
             ResourceManager.LogSink = (msg) =>
@@ -367,12 +496,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        public async Task CaptureScreenshotAsync()
-        {
-            // If your engine supports screenshots, implement here.
-            // For now, just return a completed task (no-op).
-            await Task.CompletedTask;
-        }
+        // OLD CaptureScreenshotAsync removed - new one with string return is in NEW WEBDRIVER METHODS section
 
         private void RaiseNavigationFailed(string msg) => NavigationFailed?.Invoke(this, msg);
 
@@ -384,6 +508,620 @@ namespace FenBrowser.FenEngine.Rendering
         public void RemoveHighlight()
         {
             _engine.RemoveHighlight();
+        }
+
+        // ========== NEW WEBDRIVER METHODS ==========
+
+        public async Task<bool> RefreshAsync()
+        {
+            if (_current != null)
+                return await NavigateAsync(_current.AbsoluteUri);
+            return false;
+        }
+
+        public Task<string> GetCurrentUrlAsync()
+        {
+            return Task.FromResult(_current?.AbsoluteUri ?? "about:blank");
+        }
+
+        public WindowRect GetWindowRect()
+        {
+            // Use delegate if available, otherwise return defaults
+            if (GetWindowRectDelegate != null)
+                return GetWindowRectDelegate();
+            return new WindowRect { X = 0, Y = 0, Width = 1100, Height = 700 };
+        }
+
+        public WindowRect SetWindowRect(int? x, int? y, int? width, int? height)
+        {
+            if (SetWindowRectDelegate != null)
+                return SetWindowRectDelegate(x, y, width, height);
+            return GetWindowRect();
+        }
+
+        public WindowRect MaximizeWindow()
+        {
+            if (MaximizeWindowDelegate != null)
+                return MaximizeWindowDelegate();
+            return GetWindowRect();
+        }
+
+        public WindowRect MinimizeWindow()
+        {
+            if (MinimizeWindowDelegate != null)
+                return MinimizeWindowDelegate();
+            return GetWindowRect();
+        }
+
+        public WindowRect FullscreenWindow()
+        {
+            if (FullscreenWindowDelegate != null)
+                return FullscreenWindowDelegate();
+            return GetWindowRect();
+        }
+
+        public async Task CreateNewTabAsync()
+        {
+            if (CreateNewTabDelegate != null)
+                await CreateNewTabDelegate();
+        }
+
+        public Task SwitchToFrameAsync(object frameId)
+        {
+            // Frame support is limited in FenEngine
+            return Task.CompletedTask;
+        }
+
+        public Task SwitchToParentFrameAsync()
+        {
+            return Task.CompletedTask;
+        }
+
+        public async Task<string> FindElementAsync(string strategy, string value, string parentId = null)
+        {
+            var dom = _engine.GetActiveDom();
+            if (dom == null) return null;
+
+            LiteElement searchRoot = dom;
+            if (!string.IsNullOrEmpty(parentId) && _elementMap.TryGetValue(parentId, out var parent))
+                searchRoot = parent;
+
+            LiteElement found = FindElementByStrategy(searchRoot, strategy, value);
+            if (found != null)
+            {
+                var id = Guid.NewGuid().ToString();
+                _elementMap[id] = found;
+                return id;
+            }
+            return null;
+        }
+
+        public async Task<string[]> FindElementsAsync(string strategy, string value, string parentId = null)
+        {
+            var dom = _engine.GetActiveDom();
+            if (dom == null) return Array.Empty<string>();
+
+            LiteElement searchRoot = dom;
+            if (!string.IsNullOrEmpty(parentId) && _elementMap.TryGetValue(parentId, out var parent))
+                searchRoot = parent;
+
+            var elements = FindElementsByStrategy(searchRoot, strategy, value);
+            var ids = new List<string>();
+            foreach (var el in elements)
+            {
+                var id = Guid.NewGuid().ToString();
+                _elementMap[id] = el;
+                ids.Add(id);
+            }
+            return ids.ToArray();
+        }
+
+        private LiteElement FindElementByStrategy(LiteElement root, string strategy, string value)
+        {
+            if (strategy == "css selector")
+            {
+                if (value.StartsWith("#"))
+                {
+                    var id = value.Substring(1);
+                    return root.Descendants().FirstOrDefault(n => n.Attr != null && n.Attr.ContainsKey("id") && n.Attr["id"] == id);
+                }
+                else if (value.StartsWith("."))
+                {
+                    var cls = value.Substring(1);
+                    return root.Descendants().FirstOrDefault(n => n.Attr != null && n.Attr.ContainsKey("class") && n.Attr["class"].Contains(cls));
+                }
+                else
+                {
+                    return root.Descendants().FirstOrDefault(n => n.Tag == value);
+                }
+            }
+            else if (strategy == "xpath" && value.StartsWith("//"))
+            {
+                var tag = value.Substring(2);
+                return root.Descendants().FirstOrDefault(n => n.Tag == tag);
+            }
+            else if (strategy == "tag name")
+            {
+                return root.Descendants().FirstOrDefault(n => n.Tag == value);
+            }
+            else if (strategy == "link text")
+            {
+                return root.Descendants().FirstOrDefault(n => n.Tag == "a" && n.Text?.Trim() == value);
+            }
+            else if (strategy == "partial link text")
+            {
+                return root.Descendants().FirstOrDefault(n => n.Tag == "a" && n.Text?.Contains(value) == true);
+            }
+            return null;
+        }
+
+        private IEnumerable<LiteElement> FindElementsByStrategy(LiteElement root, string strategy, string value)
+        {
+            if (strategy == "css selector")
+            {
+                if (value.StartsWith("#"))
+                {
+                    var id = value.Substring(1);
+                    return root.Descendants().Where(n => n.Attr != null && n.Attr.ContainsKey("id") && n.Attr["id"] == id);
+                }
+                else if (value.StartsWith("."))
+                {
+                    var cls = value.Substring(1);
+                    return root.Descendants().Where(n => n.Attr != null && n.Attr.ContainsKey("class") && n.Attr["class"].Contains(cls));
+                }
+                else
+                {
+                    return root.Descendants().Where(n => n.Tag == value);
+                }
+            }
+            else if (strategy == "tag name")
+            {
+                return root.Descendants().Where(n => n.Tag == value);
+            }
+            return Enumerable.Empty<LiteElement>();
+        }
+
+        public Task<string> GetActiveElementAsync()
+        {
+            // No focus tracking in FenEngine - return first focusable or null
+            return Task.FromResult<string>(null);
+        }
+
+        public Task<string> GetShadowRootAsync(string elementId)
+        {
+            // Shadow DOM not supported
+            return Task.FromResult<string>(null);
+        }
+
+        public Task<bool> IsElementSelectedAsync(string elementId)
+        {
+            if (_elementMap.TryGetValue(elementId, out var el))
+            {
+                if (el.Attr != null)
+                {
+                    if (el.Attr.ContainsKey("checked") || el.Attr.ContainsKey("selected"))
+                        return Task.FromResult(true);
+                }
+            }
+            return Task.FromResult(false);
+        }
+
+        public Task<string> GetElementAttributeAsync(string elementId, string name)
+        {
+            if (_elementMap.TryGetValue(elementId, out var el) && el.Attr != null)
+            {
+                if (el.Attr.TryGetValue(name, out var val))
+                    return Task.FromResult(val);
+            }
+            return Task.FromResult<string>(null);
+        }
+
+        public Task<object> GetElementPropertyAsync(string elementId, string name)
+        {
+            return GetElementAttributeAsync(elementId, name).ContinueWith(t => (object)t.Result);
+        }
+
+        public Task<string> GetElementCssValueAsync(string elementId, string property)
+        {
+            // CSS computation would require CssComputed lookup
+            return Task.FromResult<string>(null);
+        }
+
+        public Task<string> GetElementTextAsync(string elementId)
+        {
+            if (_elementMap.TryGetValue(elementId, out var el))
+            {
+                var sb = new System.Text.StringBuilder();
+                foreach (var n in el.SelfAndDescendants())
+                {
+                    if (n.IsText && !string.IsNullOrWhiteSpace(n.Text))
+                        sb.Append(n.Text.Trim()).Append(" ");
+                }
+                return Task.FromResult(sb.ToString().Trim());
+            }
+            return Task.FromResult("");
+        }
+
+        public Task<string> GetElementTagNameAsync(string elementId)
+        {
+            if (_elementMap.TryGetValue(elementId, out var el))
+                return Task.FromResult(el.Tag?.ToLowerInvariant() ?? "");
+            return Task.FromResult("");
+        }
+
+        public Task<ElementRect> GetElementRectAsync(string elementId)
+        {
+            // Would need layout information from renderer
+            return Task.FromResult(new ElementRect { X = 0, Y = 0, Width = 0, Height = 0 });
+        }
+
+        public Task<bool> IsElementEnabledAsync(string elementId)
+        {
+            if (_elementMap.TryGetValue(elementId, out var el))
+            {
+                if (el.Attr != null && el.Attr.ContainsKey("disabled"))
+                    return Task.FromResult(false);
+            }
+            return Task.FromResult(true);
+        }
+
+        public Task<string> GetElementComputedRoleAsync(string elementId)
+        {
+            if (_elementMap.TryGetValue(elementId, out var el))
+            {
+                if (el.Attr != null && el.Attr.TryGetValue("role", out var role))
+                    return Task.FromResult(role);
+                // Default roles based on tag
+                return Task.FromResult(el.Tag switch
+                {
+                    "button" => "button",
+                    "a" => "link",
+                    "input" => "textbox",
+                    "img" => "img",
+                    _ => ""
+                });
+            }
+            return Task.FromResult("");
+        }
+
+        public Task<string> GetElementComputedLabelAsync(string elementId)
+        {
+            if (_elementMap.TryGetValue(elementId, out var el))
+            {
+                if (el.Attr != null)
+                {
+                    if (el.Attr.TryGetValue("aria-label", out var label)) return Task.FromResult(label);
+                    if (el.Attr.TryGetValue("alt", out var alt)) return Task.FromResult(alt);
+                    if (el.Attr.TryGetValue("title", out var title)) return Task.FromResult(title);
+                }
+            }
+            return Task.FromResult("");
+        }
+
+        public Task ClearElementAsync(string elementId)
+        {
+            // Clear input/textarea value
+            if (_elementMap.TryGetValue(elementId, out var el))
+            {
+                var tag = el.Tag?.ToLowerInvariant();
+                if (tag == "input" || tag == "textarea")
+                {
+                    el.SetAttribute("value", "");
+                }
+            }
+            return Task.CompletedTask;
+        }
+
+        public Task SendKeysToElementAsync(string elementId, string text)
+        {
+            // Set value on input/textarea elements
+            if (_elementMap.TryGetValue(elementId, out var el))
+            {
+                var tag = el.Tag?.ToLowerInvariant();
+                if (tag == "input" || tag == "textarea")
+                {
+                    var currentValue = el.GetAttribute("value") ?? "";
+                    el.SetAttribute("value", currentValue + text);
+                }
+            }
+            return Task.CompletedTask;
+        }
+
+        public Task<string> GetPageSourceAsync()
+        {
+            // Serialize DOM back to HTML using LiteElement.ToHtml()
+            var dom = _engine.GetActiveDom();
+            if (dom != null)
+            {
+                return Task.FromResult(dom.ToHtml());
+            }
+            return Task.FromResult("<html></html>");
+        }
+
+        public async Task<object> ExecuteScriptAsync(string script, object[] args = null)
+        {
+            if (args != null && args.Length > 0)
+            {
+                var jsonArgs = JsonSerializer.Serialize(args);
+                script = $"var arguments = {jsonArgs}; {script}";
+            }
+            else
+            {
+                script = "var arguments = []; " + script;
+            }
+            return _engine.Evaluate(script);
+        }
+
+        public async Task<object> ExecuteAsyncScriptAsync(string script, object[] args, int timeoutMs)
+        {
+            // For async script, we inject arguments and a dummy callback
+            // This is a partial implementation to prevent crashes
+            var jsonArgs = JsonSerializer.Serialize(args ?? Array.Empty<object>());
+            script = $"var arguments = {jsonArgs}; arguments.push(function(r) {{ }}); {script}";
+            return _engine.Evaluate(script);
+        }
+
+        public new async Task<string> CaptureScreenshotAsync()
+        {
+            // Use delegate if available (injected from MainWindow/WebDriverIntegration)
+            if (CaptureScreenshotDelegate != null)
+                return await CaptureScreenshotDelegate();
+            return "";
+        }
+
+        public async Task<string> CaptureElementScreenshotAsync(string elementId)
+        {
+            // Use delegate if available
+            if (CaptureElementScreenshotDelegate != null)
+                return await CaptureElementScreenshotDelegate(elementId);
+            return "";
+        }
+
+        public Task<string> PrintToPdfAsync(double pageWidth, double pageHeight, bool landscape, double scale)
+        {
+            // PDF printing not yet implemented
+            return Task.FromResult("");
+        }
+
+        // Cookie management
+        private readonly Dictionary<string, WebDriverCookie> _cookies = new Dictionary<string, WebDriverCookie>();
+
+        public Task<List<WebDriverCookie>> GetAllCookiesAsync()
+        {
+            return Task.FromResult(_cookies.Values.ToList());
+        }
+
+        public Task<WebDriverCookie> GetCookieAsync(string name)
+        {
+            _cookies.TryGetValue(name, out var cookie);
+            return Task.FromResult(cookie);
+        }
+
+        public Task AddCookieAsync(WebDriverCookie cookie)
+        {
+            _cookies[cookie.Name] = cookie;
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteCookieAsync(string name)
+        {
+            _cookies.Remove(name);
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteAllCookiesAsync()
+        {
+            _cookies.Clear();
+            return Task.CompletedTask;
+        }
+
+        // Actions - Pointer/Keyboard state
+        private double _pointerX = 0;
+        private double _pointerY = 0;
+        private bool _pointerDown = false;
+        private HashSet<string> _pressedKeys = new HashSet<string>();
+
+        public async Task PerformActionsAsync(List<ActionChain> actions)
+        {
+            foreach (var chain in actions)
+            {
+                switch (chain.Type?.ToLowerInvariant())
+                {
+                    case "pointer":
+                        await PerformPointerActionsAsync(chain);
+                        break;
+                    case "key":
+                        await PerformKeyActionsAsync(chain);
+                        break;
+                    case "wheel":
+                        // Scroll actions - limited support
+                        break;
+                    case "none":
+                        // Pause actions
+                        foreach (var action in chain.Actions)
+                        {
+                            if (action.Duration > 0)
+                                await Task.Delay(action.Duration);
+                        }
+                        break;
+                }
+            }
+        }
+
+        private async Task PerformPointerActionsAsync(ActionChain chain)
+        {
+            foreach (var action in chain.Actions)
+            {
+                switch (action.Type?.ToLowerInvariant())
+                {
+                    case "pointermove":
+                        // Move pointer to position
+                        if (action.Origin == "viewport")
+                        {
+                            _pointerX = action.X;
+                            _pointerY = action.Y;
+                        }
+                        else if (action.Origin == "pointer")
+                        {
+                            _pointerX += action.X;
+                            _pointerY += action.Y;
+                        }
+                        else if (!string.IsNullOrEmpty(action.Origin))
+                        {
+                            // Move relative to element
+                            if (_elementMap.TryGetValue(action.Origin, out var el))
+                            {
+                                var rect = await GetElementRectAsync(action.Origin);
+                                _pointerX = rect.X + rect.Width / 2 + action.X;
+                                _pointerY = rect.Y + rect.Height / 2 + action.Y;
+                            }
+                        }
+                        if (action.Duration > 0)
+                            await Task.Delay(action.Duration);
+                        break;
+
+                    case "pointerdown":
+                        _pointerDown = true;
+                        // Simulate click on element at current position
+                        var elementAtPoint = FindElementAtPoint(_pointerX, _pointerY);
+                        if (elementAtPoint != null)
+                        {
+                            // Trigger click behavior
+                            await SimulateClickOnElementAsync(elementAtPoint);
+                        }
+                        break;
+
+                    case "pointerup":
+                        _pointerDown = false;
+                        break;
+
+                    case "pause":
+                        if (action.Duration > 0)
+                            await Task.Delay(action.Duration);
+                        break;
+                }
+            }
+        }
+
+        private async Task PerformKeyActionsAsync(ActionChain chain)
+        {
+            foreach (var action in chain.Actions)
+            {
+                switch (action.Type?.ToLowerInvariant())
+                {
+                    case "keydown":
+                        if (!string.IsNullOrEmpty(action.Value))
+                        {
+                            _pressedKeys.Add(action.Value);
+                            // Type key into focused element (simplified)
+                            await TypeKeyAsync(action.Value);
+                        }
+                        break;
+
+                    case "keyup":
+                        if (!string.IsNullOrEmpty(action.Value))
+                            _pressedKeys.Remove(action.Value);
+                        break;
+
+                    case "pause":
+                        if (action.Duration > 0)
+                            await Task.Delay(action.Duration);
+                        break;
+                }
+            }
+        }
+
+        private LiteElement FindElementAtPoint(double x, double y)
+        {
+            // Find element at given coordinates (simplified - would need layout info)
+            // For now, return null as hit testing requires layout information
+            return null;
+        }
+
+        private async Task SimulateClickOnElementAsync(LiteElement element)
+        {
+            if (element == null) return;
+            
+            var tag = element.Tag?.ToLowerInvariant();
+            
+            // Handle anchor clicks
+            if (tag == "a")
+            {
+                var href = element.GetAttribute("href");
+                if (!string.IsNullOrEmpty(href))
+                {
+                    await NavigateAsync(href);
+                }
+            }
+            // Handle button clicks
+            else if (tag == "button" || (tag == "input" && 
+                (element.GetAttribute("type")?.ToLowerInvariant() == "submit" ||
+                 element.GetAttribute("type")?.ToLowerInvariant() == "button")))
+            {
+                // Would trigger form submission or click handler
+            }
+            // Handle input focus
+            else if (tag == "input" || tag == "textarea")
+            {
+                // Focus element for typing
+            }
+        }
+
+        private Task TypeKeyAsync(string key)
+        {
+            // Type into currently focused element (simplified)
+            // In a real implementation, would track focused element and append key
+            return Task.CompletedTask;
+        }
+
+        public Task ReleaseActionsAsync()
+        {
+            // Release all pressed keys and pointer buttons
+            _pointerDown = false;
+            _pressedKeys.Clear();
+            return Task.CompletedTask;
+        }
+
+        // Alerts - connected to JavaScript engine
+        private string _pendingAlertText = null;
+        private string _pendingPromptResponse = null;
+
+        /// <summary>
+        /// Called by JavaScript engine when alert/confirm/prompt is triggered
+        /// </summary>
+        public void TriggerAlert(string text)
+        {
+            _pendingAlertText = text;
+        }
+
+        public Task<bool> HasAlertAsync()
+        {
+            return Task.FromResult(!string.IsNullOrEmpty(_pendingAlertText));
+        }
+
+        public Task DismissAlertAsync()
+        {
+            _pendingAlertText = null;
+            _pendingPromptResponse = null;
+            return Task.CompletedTask;
+        }
+
+        public Task AcceptAlertAsync()
+        {
+            _pendingAlertText = null;
+            return Task.CompletedTask;
+        }
+
+        public Task<string> GetAlertTextAsync()
+        {
+            return Task.FromResult(_pendingAlertText ?? "");
+        }
+
+        public Task SendAlertTextAsync(string text)
+        {
+            // For prompt() dialogs
+            _pendingPromptResponse = text;
+            return Task.CompletedTask;
         }
 
         public void Dispose()

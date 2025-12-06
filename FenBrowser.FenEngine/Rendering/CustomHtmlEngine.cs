@@ -36,6 +36,7 @@ namespace FenBrowser.FenEngine.Rendering
         }
         public event EventHandler<bool> LoadingChanged;
         public event EventHandler<string> TitleChanged;
+        public event Action<string> AlertTriggered;
         public event Action<Rect?> HighlightRectChanged;
         public bool EnableJavaScript { get; set; } = true;
 
@@ -1102,7 +1103,9 @@ namespace FenBrowser.FenEngine.Rendering
                                 else action();
                             }
                             catch { action(); }
-                        }))
+                        },
+                        setTitle: null,
+                        alert: (msg) => { AlertTriggered?.Invoke(msg); }))
                     {
                         Sandbox = allowJs ? SandboxPolicy.AllowAll : SandboxPolicy.NoScripts,
                         AllowExternalScripts = allowJs,
