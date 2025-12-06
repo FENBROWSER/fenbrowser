@@ -11,18 +11,22 @@ using FenBrowser.FenEngine.Rendering;
 
 namespace FenBrowser.WebDriver
 {
+    /// <summary>
+    /// WebDriver HTTP server implementing W3C WebDriver protocol.
+    /// Uses modular command handlers via WebDriverRouter for all operations.
+    /// </summary>
     public class WebDriverServer : IDisposable
     {
         private readonly HttpListener _listener;
-        private readonly IBrowser _browser;
+        private readonly WebDriverRouter _router;
         private bool _running;
-        private string _sessionId;
 
         public WebDriverServer(IBrowser browser, int port = 4444)
         {
-            _browser = browser;
+            _router = new WebDriverRouter(browser);
             _listener = new HttpListener();
             _listener.Prefixes.Add($"http://localhost:{port}/");
+            _listener.Prefixes.Add($"http://127.0.0.1:{port}/");
         }
 
         public void Start()
@@ -73,89 +77,35 @@ namespace FenBrowser.WebDriver
             var path = req.Url.AbsolutePath.TrimEnd('/');
             
             Console.WriteLine($"[WebDriver] {method} {path}");
+            try { System.IO.File.AppendAllText("debug_log.txt", $"[WebDriver] {method} {path}\r\n"); } catch { }
 
             try
             {
-                object responseData = null;
-
-                if (method == "POST" && path.EndsWith("/session"))
+                // Read JSON body if present
+                var body = default(JsonElement);
+                if (req.HasEntityBody)
                 {
-                    _sessionId = Guid.NewGuid().ToString();
-                    responseData = new { sessionId = _sessionId, capabilities = new { browserName = "FenBrowser" } };
-                }
-                else if (method == "DELETE" && path.Contains("/session/"))
-                {
-                    _sessionId = null;
-                    responseData = null;
-                }
-                else if (method == "POST" && path.EndsWith("/url"))
-                {
-                    var body = await ReadJsonBody(req);
-                    if (body.TryGetProperty("url", out var urlProp))
+                    using (var reader = new StreamReader(req.InputStream, req.ContentEncoding))
                     {
-                        var url = urlProp.GetString();
-                        await Dispatcher.UIThread.InvokeAsync(async () => await _browser.NavigateAsync(url));
+                        var text = await reader.ReadToEndAsync();
+                        if (!string.IsNullOrWhiteSpace(text))
+                        {
+                            body = JsonDocument.Parse(text).RootElement;
+                        }
                     }
-                    responseData = null;
-                }
-                else if (method == "GET" && path.EndsWith("/title"))
-                {
-                    var title = await Dispatcher.UIThread.InvokeAsync(async () => await _browser.GetTitleAsync());
-                    responseData = title; 
-                }
-                else if (method == "GET" && path.EndsWith("/screenshot"))
-                {
-                    var base64 = await Dispatcher.UIThread.InvokeAsync(async () =>
-                    {
-                        await _browser.CaptureScreenshotAsync();
-                        return ""; // or return the actual base64 string if CaptureScreenshotAsync returns it
-                    });
-                    responseData = base64;
-                }
-                else if (method == "POST" && path.EndsWith("/element"))
-                {
-                    var body = await ReadJsonBody(req);
-                    var strategy = body.GetProperty("using").GetString();
-                    var value = body.GetProperty("value").GetString();
-                    var id = await Dispatcher.UIThread.InvokeAsync(async () => await _browser.FindElementAsync(strategy, value));
-                    responseData = new Dictionary<string, string> { { "element-6066-11e4-a52e-4f735466cecf", id } };
-                }
-                else if (method == "POST" && path.Contains("/click"))
-                {
-                    var parts = path.Split('/');
-                    // /session/{id}/element/{elementId}/click
-                    // parts: "", "session", "{id}", "element", "{elementId}", "click"
-                    if (parts.Length >= 6 && parts[3] == "element" && parts[5] == "click")
-                    {
-                        var elementId = parts[4];
-                        await Dispatcher.UIThread.InvokeAsync(async () => await _browser.ClickElementAsync(elementId));
-                        responseData = null;
-                    }
-                    else
-                    {
-                        throw new Exception("Invalid click path");
-                    }
-                }
-                else if (method == "POST" && path.EndsWith("/execute/sync"))
-                {
-                    var body = await ReadJsonBody(req);
-                    var script = body.GetProperty("script").GetString();
-                    // var args = body.GetProperty("args"); // Ignore args for now
-                    var result = await Dispatcher.UIThread.InvokeAsync(async () => await _browser.ExecuteScriptAsync(script));
-                    responseData = result;
-                }
-                else
-                {
-                    res.StatusCode = 404;
-                    responseData = new { error = "unknown command", message = $"Command {method} {path} not found" };
                 }
 
-                SendResponse(res, responseData);
+                // Route to appropriate handler
+                var response = await _router.RouteAsync(method, path, body);
+
+                // Send response
+                res.StatusCode = response.StatusCode;
+                SendResponse(res, response);
             }
             catch (Exception ex)
             {
                 res.StatusCode = 500;
-                SendResponse(res, new { error = "unknown error", message = ex.Message });
+                SendResponse(res, WebDriverResponse.Error500(ex.Message));
             }
             finally
             {
@@ -163,21 +113,22 @@ namespace FenBrowser.WebDriver
             }
         }
 
-        private async Task<JsonElement> ReadJsonBody(HttpListenerRequest req)
+        private void SendResponse(HttpListenerResponse res, WebDriverResponse response)
         {
-            using (var reader = new StreamReader(req.InputStream, req.ContentEncoding))
+            object payload;
+            if (response.Error != null)
             {
-                var text = await reader.ReadToEndAsync();
-                if (string.IsNullOrWhiteSpace(text)) return default;
-                return JsonDocument.Parse(text).RootElement;
+                payload = new { value = new { error = response.Error, message = response.Message, stacktrace = "" } };
             }
-        }
+            else
+            {
+                payload = new { value = response.Value };
+            }
 
-        private void SendResponse(HttpListenerResponse res, object data)
-        {
-            var json = JsonSerializer.Serialize(new { value = data });
+            var json = JsonSerializer.Serialize(payload);
             var buffer = Encoding.UTF8.GetBytes(json);
             res.ContentType = "application/json; charset=utf-8";
+            res.AddHeader("Cache-Control", "no-cache");
             res.ContentLength64 = buffer.Length;
             res.OutputStream.Write(buffer, 0, buffer.Length);
         }

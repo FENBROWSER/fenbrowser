@@ -124,6 +124,41 @@ namespace FenBrowser.UI
             _securityIconPath = this.FindControl<Avalonia.Controls.Shapes.Path>("SecurityIconPath");
             _siteInfoButton = this.FindControl<Button>("SiteInfoButton");
 
+            // Register with WebDriverIntegration for real window/tab/screenshot operations
+            WebDriverIntegration.RegisterMainWindow(
+                this,
+                _browserContainer,
+                createTab: async () => {
+                    var tab = new TabItemModel { Id = _nextTabId++, Title = "New Tab", IsActive = false };
+                    Tabs.Add(tab);
+                    CreateBrowserForTab(tab);
+                    return tab.Id.ToString();
+                },
+                closeTab: (handle) => {
+                    var tab = Tabs.FirstOrDefault(t => t.Id.ToString() == handle);
+                    if (tab != null && Tabs.Count > 1) {
+                        Tabs.Remove(tab);
+                        return true;
+                    }
+                    return false;
+                },
+                switchTab: (handle) => {
+                    var tab = Tabs.FirstOrDefault(t => t.Id.ToString() == handle);
+                    if (tab != null) {
+                        // Inline tab switching logic (from OnTabClicked)
+                        foreach (var t in Tabs) t.IsActive = t.Id == tab.Id;
+                        _activeBrowser = tab.Browser;
+                        if (tab.LastRenderedContent is Control c)
+                            SetBrowserContainerContent(c);
+                        UpdateAddressBar(_activeBrowser);
+                        return true;
+                    }
+                    return false;
+                },
+                getTabHandles: () => Tabs.Select(t => t.Id.ToString()),
+                getCurrentTab: () => Tabs.FirstOrDefault(t => t.IsActive)?.Id.ToString() ?? "1"
+            );
+
             // initial data
             var initialTab = new TabItemModel { Id = _nextTabId++, Title = "New tab", IsActive = true };
             Tabs.Add(initialTab);
@@ -189,6 +224,15 @@ namespace FenBrowser.UI
             var browser = new BrowserHost();
             browser.EnableJavaScript = BrowserSettings.Instance.EnableJavaScript;
             tab.Browser = browser;
+
+            // Inject WebDriver delegates for real window/screenshot operations
+            browser.GetWindowRectDelegate = () => WebDriverIntegration.GetWindowRect();
+            browser.SetWindowRectDelegate = (x, y, w, h) => WebDriverIntegration.SetWindowRect(x, y, w, h);
+            browser.MaximizeWindowDelegate = () => WebDriverIntegration.MaximizeWindow();
+            browser.MinimizeWindowDelegate = () => WebDriverIntegration.MinimizeWindow();
+            browser.FullscreenWindowDelegate = () => WebDriverIntegration.FullscreenWindow();
+            browser.CreateNewTabDelegate = () => WebDriverIntegration.CreateNewTabAsync();
+            browser.CaptureScreenshotDelegate = () => WebDriverIntegration.CaptureScreenshotAsync();
 
             browser.RepaintReady += (s, element) =>
             {
