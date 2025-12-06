@@ -5,6 +5,7 @@ using System.Net.Http;
 using System.Threading.Tasks;
 using System.Text.Json;
 using FenBrowser.Core;
+using FenBrowser.Core.Security;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -84,6 +85,7 @@ namespace FenBrowser.FenEngine.Rendering
         Task DeleteAllCookiesAsync();
         void SetCookie(string name, string value);
         void DeleteCookie(string name);
+        void ClearBrowsingData();
 
         // Actions
         Task PerformActionsAsync(List<ActionChain> actions);
@@ -197,6 +199,7 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         public SecurityState SecurityState { get; private set; } = SecurityState.None;
+        public CspPolicy CurrentPolicy { get; private set; }
 
         // ========== INJECTABLE DELEGATES FOR WEBDRIVER ==========
         // These are set by MainWindow/WebDriverIntegration to provide real implementations
@@ -209,8 +212,11 @@ namespace FenBrowser.FenEngine.Rendering
         public Func<Task<string>> CaptureScreenshotDelegate { get; set; }
         public Func<string, Task<string>> CaptureElementScreenshotDelegate { get; set; }
 
-        public BrowserHost()
+        public bool IsPrivate { get; }
+
+        public BrowserHost(bool isPrivate = false)
         {
+            IsPrivate = isPrivate;
             var handler = new HttpClientHandler
             {
                 SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13,
@@ -252,7 +258,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             };
             
-            _resources = new ResourceManager(new HttpClient(handler));
+            _resources = new ResourceManager(new HttpClient(handler), isPrivate);
 
             _engine.RepaintReady += (elem) =>
             {
@@ -338,8 +344,30 @@ namespace FenBrowser.FenEngine.Rendering
                 Console.WriteLine($"[NavigateAsync] Start: {url}");
 
                 _resources.ResetBlockedCount();
+                _resources.ActivePolicy = null; // Reset CSP for new page
+                _engine.ActivePolicy = null;
+                CurrentPolicy = null;
 
                 var result = await _navManager.NavigateAsync(url);
+                
+                // Parse CSP
+                if (result.Headers != null && result.Headers.TryGetValues("Content-Security-Policy", out var cspValues))
+                {
+                    var cspHeader = string.Join(";", cspValues); // Multiple headers are concatenated with comma usually, but CSP allows multiple policies. 
+                    // For simplicity, we parse the first or combined? 
+                    // Standard says multiple policies are enforced intersection. 
+                    // Our parser handles one string. Let's take the first one dependent or join with semicolon? 
+                    // CspPolicy.Parse expects semicolon separated directives. 
+                    // Use comma if multiple headers? 
+                    // Let's just use the first one for now or join.
+                    // Actually, if multiple headers, they restrict further. 
+                    // CspPolicy doesn't support multiple separate policies yet.
+                    // We will parse the combined string.
+                    CurrentPolicy = CspPolicy.Parse(string.Join(";", cspValues));
+                    _resources.ActivePolicy = CurrentPolicy;
+                    _engine.ActivePolicy = CurrentPolicy; // Set on engine for inline script/style CSP checks
+                    Console.WriteLine($"[CSP] Policy Applied: {string.Join(";", cspValues)}");
+                }
                 string htmlToRender = result.Content;
                 Uri uri = result.FinalUri ?? new Uri("about:blank");
 
@@ -437,6 +465,19 @@ namespace FenBrowser.FenEngine.Rendering
             catch { }
         }
 
+        public void ClearBrowsingData()
+        {
+            try
+            {
+                _engine.ClearAllCookies();
+                _resources.ClearCache();
+                Console.WriteLine("[BrowserHost] Browsing data cleared (Cookies + Cache)");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[BrowserHost] Error clearing data: {ex.Message}");
+            }
+        }
         public IList<string> GetAllLinks()
         {
             var list = new List<string>();
@@ -898,7 +939,16 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 script = "var arguments = []; " + script;
             }
-            return _engine.Evaluate(script);
+            
+            var rawResult = _engine.Evaluate(script);
+            
+            // Convert FenValue to native .NET type for proper JSON serialization
+            if (rawResult is FenBrowser.FenEngine.Core.FenValue fenValue)
+            {
+                return fenValue.ToNativeObject();
+            }
+            
+            return rawResult;
         }
 
         public async Task<object> ExecuteAsyncScriptAsync(string script, object[] args, int timeoutMs)

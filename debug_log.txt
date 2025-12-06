@@ -164,3 +164,533 @@ expected next token to be RParen, got String instead
 [WebDriver] POST /session/47c97478-0c52-4891-93b2-d2e7a310d049/cookie
 [WebDriver] GET /session/47c97478-0c52-4891-93b2-d2e7a310d049/cookie
 [WebDriver] DELETE /session/47c97478-0c52-4891-93b2-d2e7a310d049
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 211
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 211
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 779
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 779
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 557
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 557
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 557
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 557
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 8
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 8
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 8
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 8
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[WebDriver] Started on http://127.0.0.1:4444/
+[RenderAsync] Start. HTML Length: 513
+[RenderAsync] HTML size: 513 chars
+[RenderAsync] Starting parse...
+[RenderAsync] Parse complete
+[RenderAsync] Parsed DOM: #document
+[RenderAsync] Starting CSS load...
+[17:11:11] [CssLoader] Found style block: 145 chars. Content start: body{background:#eee;width:60vw;margin:15vh auto;f
+[RenderAsync] CSS loading complete
+[RenderAsync] Running Scripts
+[RenderAsync] Detection helper script executed
+[JavaScriptEngine] SetDom called on FenRuntime
+[JavaScriptEngine] Starting inline script execution
+[JavaScriptEngine] Inline script execution complete
+[CustomHtmlEngine] ScheduleRepaintFromJs called
+[CustomHtmlEngine] ScheduleRepaintFromJs Task running
+[CustomHtmlEngine] Calling RefreshAsyncInternal
+[RenderAsync] Scripts Finished
+[RenderAsync] Building visual tree...
+[17:11:11] [CssLoader] Found style block: 145 chars. Content start: body{background:#eee;width:60vw;margin:15vh auto;f
+[17:11:11] [CssLoader] Found style block: 145 chars. Content start: body{background:#eee;width:60vw;margin:15vh auto;f
+[RenderAsync] Calling BuildAsync
+[BuildAsync] Checking cancellation
+[BuildAsync] Cancellation check passed
+[BuildAsync] Meta check passed
+[BuildAsync] Body found: body, Children: 1
+[RenderNode] div
+[RenderNodeAsync] Has handler for div
+[RenderBlockAsync] div
+[InlineCheck] div has non-inline child: p
+[RenderNode] h1
+[RenderNodeAsync] Has handler for h1
+[RenderBlockAsync] h1
+[InlineFormatting] h1 using inline flow, children: 1
+[RenderNode] p
+[RenderNodeAsync] Has handler for p
+[RenderBlockAsync] p
+[InlineCheck] p has non-inline child: p
+[RenderNode] #text
+[RenderNode] p
+[RenderNodeAsync] Has handler for p
+[RenderBlockAsync] p
+[InlineFormatting] p using inline flow, children: 1
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 7
+[RenderAsync] Visual tree built successfully
+[RenderAsync] Calling BuildAsync
+[BuildAsync] Checking cancellation
+[BuildAsync] Cancellation check passed
+[BuildAsync] Meta check passed
+[BuildAsync] Body found: body, Children: 1
+[RenderNode] div
+[RenderNodeAsync] Has handler for div
+[RenderBlockAsync] div
+[InlineCheck] div has non-inline child: p
+[RenderNode] h1
+[RenderNodeAsync] Has handler for h1
+[RenderBlockAsync] h1
+[InlineFormatting] h1 using inline flow, children: 1
+[RenderNode] p
+[RenderNodeAsync] Has handler for p
+[RenderBlockAsync] p
+[InlineCheck] p has non-inline child: p
+[RenderNode] #text
+[RenderNode] p
+[RenderNodeAsync] Has handler for p
+[RenderBlockAsync] p
+[InlineFormatting] p using inline flow, children: 1
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 7
+[CustomHtmlEngine] RefreshAsyncInternal returned element: Border
+[CustomHtmlEngine] DispatchRepaintAsync completed
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 211
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 1175
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 1175
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 1175
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 1175
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 9
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 3
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 3
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 1
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 1
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 0
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 2
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 2
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 2
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 2
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 3
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 3
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 2
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 2
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 8
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 8
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 43
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 43

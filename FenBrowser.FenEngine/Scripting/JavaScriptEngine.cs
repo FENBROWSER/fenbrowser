@@ -1118,18 +1118,50 @@ namespace FenBrowser.FenEngine.Scripting
                 var uri = Resolve(_ctx?.BaseUri, url);
                 if (uri != null)
                 {
+                    var pageOrigin = _ctx?.BaseUri;
                     Task.Run(async () =>
                     {
                         try
                         {
-                            var text = await FetchAsync(uri);
-                            if (text != null)
+                            using (var client = new System.Net.Http.HttpClient(CreateManagedHandler()))
                             {
-                                var token = RegisterResponseBody(text);
-                                EnqueueMicrotask(() =>
+                                client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 FenBrowser");
+                                
+                                // Add Origin header for CORS
+                                if (pageOrigin != null)
                                 {
-                                    try { RunInline(fn + "({ ok:true, status:200, text:function(){ return '" + JsEscape(text) + "'; }, json:function(){ return JSON.parse('" + JsEscape(text) + "'); } })", _ctx); } catch { }
-                                });
+                                    var originStr = $"{pageOrigin.Scheme}://{pageOrigin.Host}";
+                                    if (!pageOrigin.IsDefaultPort && pageOrigin.Port != -1)
+                                        originStr += $":{pageOrigin.Port}";
+                                    client.DefaultRequestHeaders.TryAddWithoutValidation("Origin", originStr);
+                                }
+                                
+                                var response = await client.GetAsync(uri);
+                                var text = await response.Content.ReadAsStringAsync();
+                                
+                                // CORS check for cross-origin requests
+                                bool corsOk = true;
+                                if (pageOrigin != null && !FenBrowser.Core.Network.Handlers.CorsHandler.IsSameOrigin(uri, pageOrigin))
+                                {
+                                    corsOk = FenBrowser.Core.Network.Handlers.CorsHandler.IsCorsAllowed(response, uri, pageOrigin);
+                                }
+                                
+                                if (corsOk && text != null)
+                                {
+                                    var token = RegisterResponseBody(text);
+                                    EnqueueMicrotask(() =>
+                                    {
+                                        try { RunInline(fn + "({ ok:true, status:200, text:function(){ return '" + JsEscape(text) + "'; }, json:function(){ return JSON.parse('" + JsEscape(text) + "'); } })", _ctx); } catch { }
+                                    });
+                                }
+                                else if (!corsOk)
+                                {
+                                    // CORS blocked
+                                    EnqueueMicrotask(() =>
+                                    {
+                                        try { RunInline(fn + "({ ok:false, status:0, statusText:'CORS error' })", _ctx); } catch { }
+                                    });
+                                }
                             }
                         }
                         catch { }
@@ -1265,13 +1297,34 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             {
                 try
                 {
-                    var result = _fenRuntime.ExecuteSimple(script);
+                    var rawResult = _fenRuntime.ExecuteSimple(script);
+                    
+                    // Unwrap ReturnValue wrapper (from return statements)
+                    FenBrowser.FenEngine.Core.Interfaces.IValue result = rawResult;
+                    while (result is FenBrowser.FenEngine.Core.ReturnValue retVal)
+                    {
+                        result = retVal.Value;
+                    }
+                    
+                    // Now result is the actual value (FenValue)
+                    if (result is FenBrowser.FenEngine.Core.FenValue fv)
+                    {
+                        if (fv.IsNumber) return fv.ToNumber();
+                        if (fv.IsString) return fv.ToString();
+                        if (fv.IsBoolean) return fv.ToBoolean();
+                        if (fv.IsNull) return null;
+                        if (fv.IsUndefined) return null;
+                        // Return FenValue for objects/arrays so ToNativeObject can convert them
+                        return fv;
+                    }
+                    
+                    // Fallback for non-FenValue IValue types
                     if (result.IsNumber) return result.ToNumber();
                     if (result.IsString) return result.ToString();
                     if (result.IsBoolean) return result.ToBoolean();
                     if (result.IsNull) return null;
                     if (result.IsUndefined) return null;
-                    return result.ToString();
+                    return result;
                 }
                 catch (Exception ex)
                 {
@@ -1966,20 +2019,37 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                             // External script
                             if (s.Attr != null && s.Attr.ContainsKey("src")) 
                             {
+                                if (!SandboxAllows(SandboxFeature.ExternalScripts, "script src")) continue;
+
                                 var src = s.Attr["src"];
                                 if (!string.IsNullOrEmpty(src) && baseUri != null)
                                 {
                                     try 
                                     {
                                         var scriptUri = new Uri(baseUri, src);
+                                        
+                                        // Check SubresourceAllowed delegate
+                                        if (SubresourceAllowed != null && !SubresourceAllowed(scriptUri, "script"))
+                                        {
+                                             try { System.IO.File.AppendAllText("debug_log.txt", $"[JavaScriptEngine] Blocked script {scriptUri}\r\n"); } catch { }
+                                             continue;
+                                        }
+
                                         try { System.IO.File.AppendAllText("debug_log.txt", $"[JavaScriptEngine] Fetching external script: {scriptUri}\r\n"); } catch { }
                                         
-                                        // Synchronous fetch for simplicity in this phase
-                                        using (var client = new System.Net.Http.HttpClient())
+                                        // Use ExternalScriptFetcher if available (uses ResourceManager/Cache)
+                                        if (ExternalScriptFetcher != null)
                                         {
-                                            // Set a reasonable timeout
-                                            client.Timeout = TimeSpan.FromSeconds(5);
-                                            code = client.GetStringAsync(scriptUri).Result;
+                                             code = ExternalScriptFetcher(scriptUri, baseUri).Result;
+                                        }
+                                        else
+                                        {
+                                            // Fallback synchronous fetch
+                                            using (var client = new System.Net.Http.HttpClient())
+                                            {
+                                                client.Timeout = TimeSpan.FromSeconds(5);
+                                                code = client.GetStringAsync(scriptUri).Result;
+                                            }
                                         }
                                     }
                                     catch (Exception ex)
@@ -1991,6 +2061,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                             else
                             {
                                 // Inline script
+                                if (!SandboxAllows(SandboxFeature.InlineScripts, "inline script")) continue;
                                 code = CollectScriptText(s);
                             }
                             

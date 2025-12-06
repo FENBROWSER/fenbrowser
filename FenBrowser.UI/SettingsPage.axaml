@@ -1,6 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="FenBrowser.UI.SettingsPage"
+             xmlns:local="clr-namespace:FenBrowser.UI"
              x:Name="SettingsRoot">
 
 	<UserControl.Resources>
@@ -52,16 +53,24 @@
 				<TextBlock Text="Settings" FontSize="20" FontWeight="Bold" Margin="20,0,0,20" Foreground="{DynamicResource PrimaryTextBrush}"/>
 				
 				<!-- Navigation Items -->
-				<Border Background="{DynamicResource HoverColor}" Padding="12,10" Margin="0,0,0,2">
+				<Border x:Name="NavGeneral" Background="{DynamicResource HoverColor}" Padding="12,10" Margin="0,0,0,2" PointerPressed="OnNavGeneralClick">
 					<TextBlock Text="General" FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}"/>
+				</Border>
+				<Border x:Name="NavPrivacy" Background="Transparent" Padding="12,10" Margin="0,0,0,2" PointerPressed="OnNavPrivacyClick">
+					<StackPanel Orientation="Horizontal" Spacing="8">
+						<TextBlock Text="🔒"/>
+						<TextBlock Text="Privacy" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryTextBrush}"/>
+					</StackPanel>
 				</Border>
 			</StackPanel>
 		</Border>
 
 		<!-- Right Content Panel -->
 		<ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-			<StackPanel Margin="20,20,20,20" MaxWidth="600" HorizontalAlignment="Stretch">
-				<!-- Header -->
+			<Panel Margin="20,20,20,20" MaxWidth="600" HorizontalAlignment="Stretch">
+				<!-- General Settings -->
+				<StackPanel x:Name="GeneralPanel">
+
 				<TextBlock Text="General Settings" FontSize="24" FontWeight="Bold" Margin="0,0,0,30" Foreground="{DynamicResource PrimaryTextBrush}"/>
 
 				<!-- Appearance Section -->
@@ -172,7 +181,14 @@
 					<Button Classes="secondary" Content="Close" Click="OnCloseClick" MinWidth="100"/>
 					<Button Classes="primary" Content="Save" Click="OnSaveClick" MinWidth="100"/>
 				</StackPanel>
-			</StackPanel>
+				</StackPanel>
+				
+				<!-- Privacy Settings -->
+				<StackPanel x:Name="PrivacyPanel" IsVisible="False">
+					<local:CookiesPage x:Name="CookiesView"/>
+				</StackPanel>
+
+			</Panel>
 		</ScrollViewer>
 		<!-- Notification Popup -->
 		<Border x:Name="NotificationPopup" 

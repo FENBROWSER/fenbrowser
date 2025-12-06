@@ -24,6 +24,7 @@ public partial class App : Application
         {
             int? port = null;
             string initialUrl = null;
+            bool isPrivate = false;
             var args = desktop.Args;
             if (args != null)
             {
@@ -41,6 +42,10 @@ public partial class App : Application
                             port = p2;
                         }
                     }
+                    else if (args[i] == "--private" || args[i] == "-private" || args[i] == "-p")
+                    {
+                        isPrivate = true;
+                    }
                     else if (!args[i].StartsWith("--"))
                     {
                         // Assume it's a URL if it doesn't start with --
@@ -48,7 +53,7 @@ public partial class App : Application
                     }
                 }
             }
-            desktop.MainWindow = new MainWindow(port, initialUrl);
+            desktop.MainWindow = new MainWindow(port, initialUrl, isPrivate);
             try
             {
                 ThemeManager.Initialize(); // Initialize theme preference

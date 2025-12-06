@@ -86,6 +86,19 @@ namespace FenBrowser.FenEngine.Core
             // Privacy: Empty plugins array (prevents plugin fingerprinting)
             navigator.Set("plugins", FenValue.FromObject(CreateArray(new string[0])));
             navigator.Set("mimeTypes", FenValue.FromObject(CreateArray(new string[0])));
+            
+            // Anti-Bot / Anti-Fingerprinting extras
+            navigator.Set("webdriver", FenValue.FromBoolean(false)); // Explicitly deny automation
+            navigator.Set("pdfViewerEnabled", FenValue.FromBoolean(false));
+            
+            // Network Information Spoofing
+            var connection = new FenObject();
+            connection.Set("effectiveType", FenValue.FromString("4g"));
+            connection.Set("rtt", FenValue.FromNumber(50));
+            connection.Set("downlink", FenValue.FromNumber(10));
+            connection.Set("saveData", FenValue.FromBoolean(false));
+            navigator.Set("connection", FenValue.FromObject(connection));
+
             SetGlobal("navigator", FenValue.FromObject(navigator));
 
             // location object (basic)

@@ -67,6 +67,7 @@ namespace FenBrowser.Core
         public LogSettings Logging { get; set; } = new LogSettings();
         public bool EnableJavaScript { get; set; } = true;
         public bool EnableTrackingPrevention { get; set; } = true;
+        public bool BlockThirdPartyCookies { get; set; } = false;
         public static string GetUserAgentString(UserAgentType type, bool useMobile = false)
         {
             switch (type)

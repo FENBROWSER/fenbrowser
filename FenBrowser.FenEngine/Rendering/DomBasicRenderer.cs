@@ -2870,11 +2870,26 @@ private async Task<Control> MakeIframeAsync(LiteElement n, Uri baseUri, Action<U
                     var parser = new HtmlLiteParser(html);
                     var root = parser.Parse();
                     
-                    // Create a new renderer instance for the iframe to isolate context (mostly)
-                    // Note: We reuse the same JS engine for now or null to avoid cross-frame scripting issues in this basic impl
+                    // Compute CSS styles for the iframe content
+                    Func<Uri, Task<string>> cssFetcher = async (cssUri) => 
+                    {
+                        try
+                        {
+                            using (var client = new HttpClient())
+                            {
+                                client.Timeout = TimeSpan.FromSeconds(10);
+                                return await client.GetStringAsync(cssUri);
+                            }
+                        }
+                        catch { return string.Empty; }
+                    };
+                    var computedStyles = await CssLoader.ComputeAsync(root, frameUri, cssFetcher, null, null);
+                    
+                    // Create a new renderer instance for the iframe with ComputedStyles
                     var subRenderer = new DomBasicRenderer();
                     subRenderer.HtmlLoader = HtmlLoader;
                     subRenderer.ImageLoader = ImageLoader;
+                    subRenderer.ComputedStyles = computedStyles;
                     
                     // Render the body of the iframe
                     var body = root.Descendants().FirstOrDefault(x => x.Tag == "body") ?? root;

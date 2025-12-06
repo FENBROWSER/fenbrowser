@@ -17,8 +17,11 @@ namespace FenBrowser.Core.Network.Handlers
 
         public HstsHandler(string cacheRoot)
         {
-            _storePath = Path.Combine(cacheRoot, "hsts_store_v1.txt");
-            LoadHsts();
+            if (!string.IsNullOrEmpty(cacheRoot))
+            {
+                _storePath = Path.Combine(cacheRoot, "hsts_store_v1.txt");
+                LoadHsts();
+            }
         }
 
         private void LoadHsts()
@@ -46,6 +49,7 @@ namespace FenBrowser.Core.Network.Handlers
         {
             try
             {
+                if (_storePath == null) return;
                 var sb = new StringBuilder();
                 foreach (var kv in _hsts)
                 {

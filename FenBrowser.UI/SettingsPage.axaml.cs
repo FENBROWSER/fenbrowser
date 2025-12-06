@@ -1,7 +1,11 @@
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+using Avalonia.Input;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.FenEngine.Rendering;
+using Avalonia.Media;
 using System;
 
 namespace FenBrowser.UI
@@ -14,6 +18,27 @@ namespace FenBrowser.UI
         {
             InitializeComponent();
             LoadSettings();
+        }
+
+        public void AttachBrowser(IBrowser browser)
+        {
+            if (CookiesView != null) CookiesView.Configure(browser);
+        }
+
+        private void OnNavGeneralClick(object sender, PointerPressedEventArgs e)
+        {
+            GeneralPanel.IsVisible = true;
+            PrivacyPanel.IsVisible = false;
+            NavGeneral.Background = Application.Current.FindResource("HoverColor") as IBrush;
+            NavPrivacy.Background = Brushes.Transparent;
+        }
+
+        private void OnNavPrivacyClick(object sender, PointerPressedEventArgs e)
+        {
+            GeneralPanel.IsVisible = false;
+            PrivacyPanel.IsVisible = true;
+            NavPrivacy.Background = Application.Current.FindResource("HoverColor") as IBrush;
+            NavGeneral.Background = Brushes.Transparent;
         }
 
         private void LoadSettings()
