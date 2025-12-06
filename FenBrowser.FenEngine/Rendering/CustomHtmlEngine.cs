@@ -13,10 +13,11 @@ using System.Net;
 using System.Threading.Tasks;
 using System.IO;
 using FenBrowser.Core;
-using FenBrowser.Core;
+using FenBrowser.Core.Security;
 using FenBrowser.FenEngine.Scripting;
 using static FenBrowser.FenEngine.Rendering.CssLoader;
 using FenBrowser.FenEngine.Rendering;
+
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -27,6 +28,9 @@ namespace FenBrowser.FenEngine.Rendering
     {
 
         public Func<Uri, Task<string>> ScriptFetcher { get; set; }
+
+        /// <summary>Active Content Security Policy for this page. When set, subresource loads are checked against it.</summary>
+        public CspPolicy ActivePolicy { get; set; }
 
         public event Action<Control> RepaintReady;
         private void OnRepaintReady(Control control)
@@ -63,6 +67,11 @@ namespace FenBrowser.FenEngine.Rendering
             HighlightRectChanged?.Invoke(null);
         }
 
+        public void ClearAllCookies()
+        {
+            _jsCookieJar = new CookieContainer();
+        }
+
         public object Evaluate(string script)
         {
             if (_activeJs != null) return _activeJs.Evaluate(script);
@@ -78,7 +87,7 @@ namespace FenBrowser.FenEngine.Rendering
         private double? _activeViewportWidth;
         private Action<IBrush> _activeFixedBackground;
         private JavaScriptEngine _activeJs;
-        private readonly CookieContainer _jsCookieJar = new CookieContainer();
+        private CookieContainer _jsCookieJar = new CookieContainer();
         private readonly System.Threading.SemaphoreSlim _repaintGate = new System.Threading.SemaphoreSlim(1, 1);
         private int _repaintScheduled;
         private readonly object _uiDispatcher;
@@ -1109,7 +1118,29 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         Sandbox = allowJs ? SandboxPolicy.AllowAll : SandboxPolicy.NoScripts,
                         AllowExternalScripts = allowJs,
-                        SubresourceAllowed = (u, kind) => allowJs,
+                        SubresourceAllowed = (u, kind) =>
+                        {
+                            if (!allowJs) return false;
+                            // Check CSP if a policy is active
+                            if (ActivePolicy != null)
+                            {
+                                // Map kind to CSP directive
+                                string directive = kind switch
+                                {
+                                    "script" => "script-src",
+                                    "style" => "style-src",
+                                    "img" => "img-src",
+                                    "font" => "font-src",
+                                    "media" => "media-src",
+                                    "connect" => "connect-src",
+                                    "frame" => "frame-src",
+                                    "object" => "object-src",
+                                    _ => "default-src"
+                                };
+                                return ActivePolicy.IsAllowed(directive, u); // External resource, not inline
+                            }
+                            return true;
+                        },
                         ExecuteInlineScriptsOnInnerHTML = allowJs
                     };
                 }
