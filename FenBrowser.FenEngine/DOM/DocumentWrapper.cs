@@ -52,6 +52,18 @@ namespace FenBrowser.FenEngine.DOM
                     var titleEl = FindElementByTag(_root, "title");
                     return FenValue.FromString(titleEl?.Text ?? "");
 
+                case "documentelement":
+                    // Return the <html> element (root of DOM)
+                    var htmlEl = FindElementByTag(_root, "html");
+                    // If no <html> tag, return the root itself
+                    return htmlEl != null 
+                        ? FenValue.FromObject(new ElementWrapper(htmlEl, _context))
+                        : FenValue.FromObject(new ElementWrapper(_root, _context));
+
+                case "readystate":
+                    // Always return "complete" so WPT scripts don't wait for load event
+                    return FenValue.FromString("complete");
+
                 default:
                     return FenValue.Undefined;
             }
@@ -66,7 +78,7 @@ namespace FenBrowser.FenEngine.DOM
         public bool Has(string key) => !Get(key).IsUndefined;
         public bool Delete(string key) => false;
         public IEnumerable<string> Keys() 
-            => new[] { "getElementById", "querySelector", "createElement", "body", "head", "title" };
+            => new[] { "getElementById", "querySelector", "createElement", "body", "head", "title", "documentElement", "readyState" };
         public IObject GetPrototype() => _prototype;
         public void SetPrototype(IObject prototype) => _prototype = prototype;
 

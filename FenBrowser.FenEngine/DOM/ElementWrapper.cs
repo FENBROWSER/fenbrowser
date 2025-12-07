@@ -3,6 +3,7 @@ using System.Linq;
 using System.Collections.Generic;
 using System.Text;
 using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Security;
@@ -58,6 +59,16 @@ namespace FenBrowser.FenEngine.DOM
                 case "height":
                     return FenValue.FromNumber(GetDimension("height"));
 
+                case "clientwidth":
+                    // clientWidth - inner width without scrollbar (for viewport calculations)
+                    // For documentElement, return viewport width
+                    return FenValue.FromNumber(GetClientWidth());
+                
+                case "clientheight":
+                    // clientHeight - inner height without scrollbar (for viewport calculations)
+                    // For documentElement, return viewport height
+                    return FenValue.FromNumber(GetClientHeight());
+
                 case "getcontext":
 
                     return FenValue.FromFunction(new FenFunction("getContext", GetContext));
@@ -98,7 +109,7 @@ namespace FenBrowser.FenEngine.DOM
         public bool Has(string key) => !Get(key).IsUndefined;
         public bool Delete(string key) => false;
         public IEnumerable<string> Keys() 
-            => new[] { "innerHTML", "textContent", "tagName", "id", "getAttribute", "setAttribute", "getContext" };
+            => new[] { "innerHTML", "textContent", "tagName", "id", "getAttribute", "setAttribute", "getContext", "width", "height", "clientWidth", "clientHeight" };
         public IObject GetPrototype() => _prototype;
         public void SetPrototype(IObject prototype) => _prototype = prototype;
 
@@ -253,6 +264,30 @@ namespace FenBrowser.FenEngine.DOM
             return 0;
         }
 
+        private double GetClientWidth()
+        {
+            // For <html> element (documentElement), return viewport width
+            if (string.Equals(_element.Tag, "html", StringComparison.OrdinalIgnoreCase))
+            {
+                // Return viewport width (typical desktop width)
+                return 1920;
+            }
+            // For other elements, use width attribute or return 0
+            return GetDimension("width");
+        }
+
+        private double GetClientHeight()
+        {
+            // For <html> element (documentElement), return viewport height
+            if (string.Equals(_element.Tag, "html", StringComparison.OrdinalIgnoreCase))
+            {
+                // Return viewport height (typical desktop height)
+                return 1080;
+            }
+            // For other elements, use height attribute or return 0
+            return GetDimension("height");
+        }
+
         private IValue AppendChild(IValue[] args, IValue thisVal)
         {
             if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "appendChild"))
@@ -327,6 +362,7 @@ namespace FenBrowser.FenEngine.DOM
             {
                 _element.Attr["style"] = sb.ToString();
             }
+            FenLogger.Debug($"[CSS] Set style {key}={value}", LogCategory.CSS);
             _context.RequestRender?.Invoke();
         }
 
