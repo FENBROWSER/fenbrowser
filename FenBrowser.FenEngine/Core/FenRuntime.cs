@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.DOM;
 using System.Linq;
@@ -21,6 +22,9 @@ namespace FenBrowser.FenEngine.Core
     {
         private readonly FenEnvironment _globalEnv;
         private readonly IExecutionContext _context;
+        private readonly Dictionary<int, CancellationTokenSource> _activeTimers = new Dictionary<int, CancellationTokenSource>();
+        private int _timerIdCounter = 1;
+        private readonly object _timerLock = new object();
 
         public FenRuntime(IExecutionContext context = null)
         {
@@ -52,11 +56,78 @@ namespace FenBrowser.FenEngine.Core
                 }
                 var msg = string.Join(" ", messages);
                 Console.WriteLine(msg);
-                try { System.IO.File.AppendAllText("debug_log.txt", $"[Console] {msg}\r\n"); } catch { }
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Console] {msg}\r\n"); } catch { }
+                return FenValue.Undefined;
+            })));
+            console.Set("error", FenValue.FromFunction(new FenFunction("error", (args, thisVal) =>
+            {
+                var msg = string.Join(" ", args.Select(a => a.ToString()));
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"ERROR: {msg}");
+                Console.ResetColor();
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Console Error] {msg}\r\n"); } catch { }
+                return FenValue.Undefined;
+            })));
+            console.Set("warn", FenValue.FromFunction(new FenFunction("warn", (args, thisVal) =>
+            {
+                var msg = string.Join(" ", args.Select(a => a.ToString()));
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"WARN: {msg}");
+                Console.ResetColor();
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Console Warn] {msg}\r\n"); } catch { }
+                return FenValue.Undefined;
+            })));
+            console.Set("info", FenValue.FromFunction(new FenFunction("info", (args, thisVal) =>
+            {
+                var msg = string.Join(" ", args.Select(a => a.ToString()));
+                Console.WriteLine($"INFO: {msg}");
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Console Info] {msg}\r\n"); } catch { }
+                return FenValue.Undefined;
+            })));
+            console.Set("clear", FenValue.FromFunction(new FenFunction("clear", (args, thisVal) =>
+            {
+                Console.Clear();
                 return FenValue.Undefined;
             })));
 
             SetGlobal("console", FenValue.FromObject(console));
+
+            // Timers
+            var setTimeout = FenValue.FromFunction(new FenFunction("setTimeout", (args, thisVal) =>
+            {
+                if (args.Length == 0 || !args[0].IsFunction) return FenValue.FromNumber(0);
+                var callback = args[0].AsFunction();
+                int delay = args.Length > 1 ? (int)args[1].ToNumber() : 0;
+                var callbackArgs = args.Skip(2).ToArray();
+
+                return CreateTimer(callback, delay, false, callbackArgs);
+            }));
+            SetGlobal("setTimeout", setTimeout);
+            
+            var clearTimeout = FenValue.FromFunction(new FenFunction("clearTimeout", (args, thisVal) =>
+            {
+                if (args.Length > 0) CancelTimer((int)args[0].ToNumber());
+                return FenValue.Undefined;
+            }));
+            SetGlobal("clearTimeout", clearTimeout);
+
+            var setInterval = FenValue.FromFunction(new FenFunction("setInterval", (args, thisVal) =>
+            {
+                if (args.Length == 0 || !args[0].IsFunction) return FenValue.FromNumber(0);
+                var callback = args[0].AsFunction();
+                int delay = args.Length > 1 ? (int)args[1].ToNumber() : 0;
+                var callbackArgs = args.Skip(2).ToArray();
+
+                return CreateTimer(callback, delay, true, callbackArgs);
+            }));
+            SetGlobal("setInterval", setInterval);
+
+            var clearInterval = FenValue.FromFunction(new FenFunction("clearInterval", (args, thisVal) =>
+            {
+                if (args.Length > 0) CancelTimer((int)args[0].ToNumber());
+                return FenValue.Undefined;
+            }));
+            SetGlobal("clearInterval", clearInterval);
 
             // undefined and null
             SetGlobal("undefined", FenValue.Undefined);
@@ -157,6 +228,54 @@ namespace FenBrowser.FenEngine.Core
             window.Set("name", FenValue.FromString(""));
             window.Set("closed", FenValue.FromBoolean(false));
             window.Set("opener", FenValue.Null);
+            
+            // Event listeners storage for window - Use class field
+            // var windowEventListeners = new Dictionary<string, List<IValue>>(); // Field used instead
+            
+            // addEventListener
+            var addEventListenerFunc = FenValue.FromFunction(new FenFunction("addEventListener", (args, thisVal) =>
+            {
+                if (args.Length >= 2)
+                {
+                    var eventType = args[0].ToString();
+                    var callback = args[1];
+                    FenLogger.Info($"[FenRuntime] addEventListener called for '{eventType}'", LogCategory.Events);
+                    
+                    if (!_windowEventListeners.ContainsKey(eventType))
+                    {
+                        _windowEventListeners[eventType] = new List<IValue>();
+                    }
+                    _windowEventListeners[eventType].Add(callback);
+                }
+                return FenValue.Undefined;
+            }));
+            window.Set("addEventListener", addEventListenerFunc);
+            
+            // removeEventListener
+            var removeEventListenerFunc = FenValue.FromFunction(new FenFunction("removeEventListener", (args, thisVal) =>
+            {
+                if (args.Length >= 2)
+                {
+                    var eventType = args[0].ToString();
+                    var callback = args[1];
+                    
+                    if (_windowEventListeners.ContainsKey(eventType))
+                    {
+                        _windowEventListeners[eventType].RemoveAll(l => l.Equals(callback));
+                    }
+                }
+                return FenValue.Undefined;
+            }));
+            window.Set("removeEventListener", removeEventListenerFunc);
+            
+            // dispatchEvent (basic implementation)
+            var dispatchEventFunc = FenValue.FromFunction(new FenFunction("dispatchEvent", (args, thisVal) =>
+            {
+                // Basic stub - returns true to indicate event was dispatched
+                return FenValue.FromBoolean(true);
+            }));
+            window.Set("dispatchEvent", dispatchEventFunc);
+            
             SetGlobal("window", FenValue.FromObject(window));
 
             // IMPORTANT: Also expose window properties at global scope for direct access
@@ -174,6 +293,25 @@ namespace FenBrowser.FenEngine.Core
             SetGlobal("top", FenValue.FromObject(window));
             SetGlobal("parent", FenValue.FromObject(window));
             SetGlobal("frames", FenValue.FromObject(window));
+            
+            // Expose event methods at global scope (in browsers, addEventListener === window.addEventListener)
+            SetGlobal("addEventListener", addEventListenerFunc);
+            SetGlobal("removeEventListener", removeEventListenerFunc);
+            SetGlobal("dispatchEvent", dispatchEventFunc);
+
+            // requestAnimationFrame / cancelAnimationFrame
+            // Use a simple counter and store callbacks in window.__raf_queue
+            var requestAnimationFrameFunc = FenValue.FromFunction(new FenFunction("requestAnimationFrame", (args, thisVal) =>
+            {
+                if (args.Length > 0 && args[0].IsFunction)
+                {
+                    // The callback will be stored in window.__raf_queue by the JavaScript side
+                    // Return a unique ID based on a counter stored in window.__raf_id
+                    return FenValue.Undefined; // The actual implementation will be in JS
+                }
+                return FenValue.FromNumber(0);
+            }));
+            // Note: We'll inject a proper requestAnimationFrame in the async script wrapper instead
 
             // RegExp constructor
             SetGlobal("RegExp", FenValue.FromFunction(new FenFunction("RegExp", (args, thisVal) =>
@@ -352,6 +490,67 @@ namespace FenBrowser.FenEngine.Core
                 }
             })));
             SetGlobal("JSON", FenValue.FromObject(json));
+
+            // Object global - provides static methods like Object.keys(), Object.values(), etc.
+            var objectConstructor = new FenObject();
+            objectConstructor.Set("keys", FenValue.FromFunction(new FenFunction("keys", (args, thisVal) => {
+                if (args.Length == 0 || !args[0].IsObject) return FenValue.FromObject(CreateArray(new string[0]));
+                var obj = args[0].AsObject();
+                var keys = obj.Keys().ToArray();
+                return FenValue.FromObject(CreateArray(keys));
+            })));
+            objectConstructor.Set("values", FenValue.FromFunction(new FenFunction("values", (args, thisVal) => {
+                if (args.Length == 0 || !args[0].IsObject) return FenValue.FromObject(CreateArray(new string[0]));
+                var obj = args[0].AsObject();
+                var arr = new FenObject();
+                arr.Set("length", FenValue.FromNumber(obj.Keys().Count()));
+                int i = 0;
+                foreach (var key in obj.Keys())
+                {
+                    arr.Set(i.ToString(), (FenValue)obj.Get(key));
+                    i++;
+                }
+                return FenValue.FromObject(arr);
+            })));
+            objectConstructor.Set("entries", FenValue.FromFunction(new FenFunction("entries", (args, thisVal) => {
+                if (args.Length == 0 || !args[0].IsObject) return FenValue.FromObject(CreateArray(new string[0]));
+                var obj = args[0].AsObject();
+                var arr = new FenObject();
+                arr.Set("length", FenValue.FromNumber(obj.Keys().Count()));
+                int i = 0;
+                foreach (var key in obj.Keys())
+                {
+                    var entry = new FenObject();
+                    entry.Set("0", FenValue.FromString(key));
+                    entry.Set("1", (FenValue)obj.Get(key));
+                    entry.Set("length", FenValue.FromNumber(2));
+                    arr.Set(i.ToString(), FenValue.FromObject(entry));
+                    i++;
+                }
+                return FenValue.FromObject(arr);
+            })));
+            objectConstructor.Set("assign", FenValue.FromFunction(new FenFunction("assign", (args, thisVal) => {
+                if (args.Length == 0) return FenValue.Undefined;
+                if (!args[0].IsObject) return args[0];
+                var target = args[0].AsObject();
+                for (int i = 1; i < args.Length; i++)
+                {
+                    if (args[i].IsObject)
+                    {
+                        var source = args[i].AsObject();
+                        foreach (var key in source.Keys())
+                        {
+                            target.Set(key, (FenValue)source.Get(key));
+                        }
+                    }
+                }
+                return args[0];
+            })));
+            objectConstructor.Set("hasOwnProperty", FenValue.FromFunction(new FenFunction("hasOwnProperty", (args, thisVal) => {
+                // This is typically called on instances, but Object.hasOwnProperty.call(obj, key) exists
+                return FenValue.FromBoolean(false);
+            })));
+            SetGlobal("Object", FenValue.FromObject(objectConstructor));
 
             // fetch() - Web API for making HTTP requests
             // Returns a FetchPromise object with .then()/.catch() support
@@ -548,6 +747,144 @@ namespace FenBrowser.FenEngine.Core
             if (window.IsObject)
             {
                 window.AsObject().Set("document", docValue);
+            }
+            
+            // Create Document constructor/prototype for scripts that check Document.prototype
+            var documentPrototype = new FenObject();
+            // fonts is not supported, so hasOwnProperty("fonts") should return false
+            documentPrototype.Set("hasOwnProperty", FenValue.FromFunction(new FenFunction("hasOwnProperty", (args, thisVal) =>
+            {
+                if (args.Length > 0)
+                {
+                    var propName = args[0].ToString();
+                    // We don't have fonts, so return false for "fonts"
+                    return FenValue.FromBoolean(propName != "fonts");
+                }
+                return FenValue.FromBoolean(false);
+            })));
+            
+            var documentConstructor = new FenObject();
+            documentConstructor.Set("prototype", FenValue.FromObject(documentPrototype));
+            SetGlobal("Document", FenValue.FromObject(documentConstructor));
+        }
+
+        public void DispatchEvent(string type, IObject eventData = null)
+        {
+            try
+            {
+                FenLogger.Debug($"[DispatchEvent] Dispatching '{type}'", LogCategory.Events);
+
+                // Simple implementation: look for window["on" + type]
+                // and iterate windowEventListeners[type]
+                
+                // 1. Check on{type} property
+                var handlerName = "on" + type;
+                var windowObj = _globalEnv.Get("window");
+                if (windowObj is FenValue fvWindow && fvWindow.IsObject)
+                {
+                    var handler = fvWindow.AsObject().Get(handlerName);
+                    if (handler.IsFunction)
+                    {
+                        var evt = eventData != null ? FenValue.FromObject(eventData) : FenValue.Null;
+                        _context.ThisBinding = fvWindow;
+                        handler.AsFunction().Invoke(new[] { evt }, _context);
+                    }
+                    
+                    // 2. Check listeners (we need access to the private dictionary, or expose it via property?)
+                    // Since the dictionary is local to InitializeBuiltins, we can't access it here easily.
+                    // Ideally, we should move InitializeBuiltins logic or store the listener map in a field.
+                    // For now, we will use a global hidden property on window to store listeners for access here.
+                    
+                    var listeners = fvWindow.AsObject().Get("_listeners");
+                    if (listeners.IsObject)
+                    {
+                        var typeListeners = listeners.AsObject().Get(type);
+                        if (typeListeners is FenValue fvList && fvList.IsObject) // Array
+                        {
+                            // Iterate and call
+                            // This is complex without Array interop. 
+                            // Let's rely on the C# dictionary approach if we refactor.
+                            // Refactoring InitializeBuiltins is better.
+                        }
+                    }
+                }
+                
+                // REFACTOR: We need access to windowEventListeners. I will move it to a class field.
+                if (_windowEventListeners.ContainsKey(type))
+                {
+                    var listeners = _windowEventListeners[type].ToList(); // Copy to avoid modification during iteration
+                    foreach (var listener in listeners)
+                    {
+                        if (listener.IsFunction)
+                        {
+                            var evt = eventData != null ? FenValue.FromObject(eventData) : FenValue.Null;
+                            _context.ThisBinding = FenValue.Undefined;
+                            try { listener.AsFunction().Invoke(new[] { evt }, _context); } catch { }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[DispatchEvent Error] {ex.Message}\r\n"); } catch { }
+            }
+        }
+        
+        private Dictionary<string, List<IValue>> _windowEventListeners = new Dictionary<string, List<IValue>>();
+
+        private FenValue CreateTimer(FenFunction callback, int delay, bool repeat, IValue[] args)
+        {
+            int id;
+            lock (_timerLock) { id = _timerIdCounter++; }
+            
+            try { FenLogger.Debug($"[FenRuntime] CreateTimer called. ID: {id}, Delay: {delay}", LogCategory.JavaScript); } catch { }
+
+            var cts = new CancellationTokenSource();
+            lock (_timerLock) { _activeTimers[id] = cts; }
+
+            // Use ScheduleCallback to run on host thread (e.g. UI thread)
+            // But ScheduleCallback is Action<Action, int>. It handles invocation.
+            // However, _context.ScheduleCallback assumes one-shot.
+            // We need to implement repeat logic ourselves if ScheduleCallback doesn't support it.
+            
+            Action timerAction = null;
+            timerAction = () => 
+            {
+                if (cts.IsCancellationRequested) return;
+
+                try
+                {
+                    _context.ThisBinding = FenValue.Undefined;
+                    callback.Invoke(args, _context);
+                }
+                catch (Exception ex)
+                {
+                   try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Timer Error] {ex.Message}\r\n"); } catch { }
+                }
+
+                if (repeat && !cts.IsCancellationRequested)
+                {
+                    _context.ScheduleCallback(timerAction, delay);
+                }
+                else
+                {
+                    lock (_timerLock) { _activeTimers.Remove(id); }
+                }
+            };
+            
+            _context.ScheduleCallback(timerAction, delay);
+            return FenValue.FromNumber(id);
+        }
+
+        private void CancelTimer(int id)
+        {
+            lock (_timerLock)
+            {
+                if (_activeTimers.TryGetValue(id, out var cts))
+                {
+                    cts.Cancel();
+                    _activeTimers.Remove(id);
+                }
             }
         }
 

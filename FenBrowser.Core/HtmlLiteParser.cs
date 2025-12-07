@@ -22,6 +22,15 @@ namespace FenBrowser.Core
         {
             "p", "li", "dt", "dd", "rt", "rp", "optgroup", "option", "thead", "tbody", "tfoot", "tr", "td", "th"
         };
+        
+        // Tags that close <p> when opened inside a <p> (block-level elements)
+        private static readonly HashSet<string> TagsThatCloseP = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "address", "article", "aside", "blockquote", "center", "details", "dialog", "dir", 
+            "div", "dl", "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", 
+            "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "listing", "main", "menu", 
+            "nav", "ol", "p", "plaintext", "pre", "section", "summary", "table", "ul", "xmp"
+        };
 
         // Tags that contain non-HTML content that should be parsed as raw text until the closing tag.
         private static readonly HashSet<string> ForeignContentTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -98,6 +107,64 @@ namespace FenBrowser.Core
                         _i++;
                     }
                     if (Peek() == '>') _i++;
+
+                    // HTML5 implicit tag closing: close <p> when certain block elements are encountered
+                    if (TagsThatCloseP.Contains(tag))
+                    {
+                        while (stack.Count > 1 && string.Equals(stack.Peek().Tag, "p", StringComparison.OrdinalIgnoreCase))
+                        {
+                            stack.Pop();
+                        }
+                    }
+                    
+                    // Additional implicit closing rules for list items
+                    if (tag == "li")
+                    {
+                        // Close any open <li> in the current list
+                        while (stack.Count > 1 && string.Equals(stack.Peek().Tag, "li", StringComparison.OrdinalIgnoreCase))
+                        {
+                            stack.Pop();
+                        }
+                    }
+                    
+                    // Close <dt> or <dd> when opening another <dt> or <dd>
+                    if (tag == "dt" || tag == "dd")
+                    {
+                        while (stack.Count > 1)
+                        {
+                            var current = stack.Peek().Tag?.ToLowerInvariant();
+                            if (current == "dt" || current == "dd")
+                                stack.Pop();
+                            else
+                                break;
+                        }
+                    }
+                    
+                    // Table elements auto-close rules
+                    if (tag == "tr")
+                    {
+                        // Close any open <td>, <th>, or <tr>
+                        while (stack.Count > 1)
+                        {
+                            var current = stack.Peek().Tag?.ToLowerInvariant();
+                            if (current == "td" || current == "th" || current == "tr")
+                                stack.Pop();
+                            else
+                                break;
+                        }
+                    }
+                    if (tag == "td" || tag == "th")
+                    {
+                        // Close any open <td> or <th>
+                        while (stack.Count > 1)
+                        {
+                            var current = stack.Peek().Tag?.ToLowerInvariant();
+                            if (current == "td" || current == "th")
+                                stack.Pop();
+                            else
+                                break;
+                        }
+                    }
 
                     // Add to parent
                     if (stack.Count > 0)

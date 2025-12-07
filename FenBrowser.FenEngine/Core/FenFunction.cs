@@ -63,6 +63,12 @@ namespace FenBrowser.FenEngine.Core
             }
             
             // User-defined functions are executed by the Interpreter directly
+            // But if invoked from host (e.g. Timer), we need to delegate back to interpreter
+            if (context != null && context.ExecuteFunction != null)
+            {
+                return context.ExecuteFunction(FenValue.FromFunction(this), args);
+            }
+
             return FenValue.Undefined;
         }
     }

@@ -21,6 +21,8 @@ namespace FenBrowser.Core.Logging
         Storage      = 1 << 8,   // Cookies, local storage, cache
         Performance  = 1 << 9,   // Timing, memory, profiling
         Errors       = 1 << 10,  // Exceptions, failures, warnings
+        DOM          = 1 << 11,  // DOM mutations, elements
+        General      = 1 << 12,  // Application lifecycle, generic info
         All          = int.MaxValue
     }
 

@@ -12,11 +12,14 @@ class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        FenBrowser.Core.FenLogger.Initialize(@"C:\Users\udayk\Videos\FENBROWSER\fenbrowser.log");
+        FenBrowser.Core.FenLogger.Info("FenBrowser Started", FenBrowser.Core.Logging.LogCategory.General);
+
         AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
         {
             var msg = $"[CRASH] Unhandled Exception: {e.ExceptionObject}";
             Console.WriteLine(msg);
-            try { System.IO.File.AppendAllText("crash_log_new.txt", msg + Environment.NewLine); } catch { }
+            FenBrowser.Core.FenLogger.Error(msg, FenBrowser.Core.Logging.LogCategory.General, e.ExceptionObject as Exception);
         };
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
