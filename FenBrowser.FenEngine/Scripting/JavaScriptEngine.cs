@@ -7,6 +7,7 @@ using System.Net;
 using System.Net.Http;
 using System.Text.Json;
 using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 // using FenBrowser.Engine;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -47,6 +48,43 @@ namespace FenBrowser.FenEngine.Scripting
             _ctx = new JsContext();
             var permissions = new PermissionManager(JsPermissions.StandardWeb);
             var context = new FenBrowser.FenEngine.Core.ExecutionContext(permissions);
+
+            // Configure function execution delegate
+            context.ExecuteFunction = (fn, args) => 
+            {
+                var interpreter = new FenBrowser.FenEngine.Core.Interpreter();
+                return interpreter.ApplyFunction(fn, new System.Collections.Generic.List<FenBrowser.FenEngine.Core.Interfaces.IValue>(args), context);
+            };
+            
+            // Configure callbacks to run on UI thread
+            context.ScheduleCallback = (action, delay) => 
+            {
+                FenLogger.Debug($"[ScheduleCallback] Scheduled for {delay}ms", LogCategory.JavaScript);
+                Task.Run(async () => 
+                {
+                    try
+                    {
+                        await Task.Delay(delay);
+                        FenLogger.Debug("[ScheduleCallback] Woke up. Dispatching to UI thread...", LogCategory.JavaScript);
+                        
+                        // Ensure the callback runs on the UI thread as JS expects single-threaded access to DOM
+                        await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() => 
+                        {
+                            FenLogger.Debug("[ScheduleCallback] Executing action on UI thread.", LogCategory.JavaScript);
+                            try { action(); }
+                            catch (Exception ex) 
+                            { 
+                                FenLogger.Error($"[Timer Action Error] {ex.Message}", LogCategory.JavaScript, ex);
+                            }
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ScheduleCallback Error] {ex.Message}\r\n"); } catch { }
+                    }
+                });
+            };
+
             _fenRuntime = new FenRuntime(context);
             
             if (_host != null)
@@ -533,12 +571,12 @@ namespace FenBrowser.FenEngine.Scripting
         /// </summary>
         public void RaiseElementEvent(string id, string evt, string value = null, bool? isChecked = null)
         {
-            if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(evt)) return;
+            if (string.IsNullOrWhiteSpace(evt)) return; // Allow empty ID for bubbling
             try
             {
                 // For JS-0 style inline handlers (avoid C# 7 'out var' for WP8.1 toolchain)
                 List<string> list = null; Dictionary<string, List<string>> byEvt = null;
-                if (_evtEl.TryGetValue(id, out byEvt) && byEvt != null && byEvt.TryGetValue(evt, out list) && list != null)
+                if (!string.IsNullOrWhiteSpace(id) && _evtEl.TryGetValue(id, out byEvt) && byEvt != null && byEvt.TryGetValue(evt, out list) && list != null)
                 {
                     foreach (var fn in list.ToArray())
                     {
@@ -551,6 +589,31 @@ namespace FenBrowser.FenEngine.Scripting
                 }
             }
             catch { }
+            
+            // Dispatch to FenRuntime (simulating bubbling to window)
+            FenLogger.Debug($"[RaiseElementEvent] Check _fenRuntime: {(_fenRuntime == null ? "NULL" : "OK")}", LogCategory.Events);
+            if (_fenRuntime != null)
+            {
+                try
+                {
+                    var eventObj = new FenBrowser.FenEngine.Core.FenObject();
+                    eventObj.Set("type", FenValue.FromString(evt));
+                    eventObj.Set("timeStamp", FenValue.FromNumber((DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalMilliseconds));
+                    
+                    var targetObj = new FenBrowser.FenEngine.Core.FenObject();
+                    targetObj.Set("id", FenValue.FromString(id ?? ""));
+                    if (value != null) targetObj.Set("value", FenValue.FromString(value));
+                    if (isChecked.HasValue) targetObj.Set("checked", FenValue.FromBoolean(isChecked.Value));
+                    
+                    eventObj.Set("target", FenValue.FromObject(targetObj));
+                    
+                    _fenRuntime.DispatchEvent(evt, eventObj);
+                }
+                catch (Exception ex)
+                {
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Event Propagation Error] {ex.Message}\r\n"); } catch { }
+                }
+            }
 
             // MiniJs event support - DISABLED
             /*
@@ -2035,7 +2098,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                              continue;
                                         }
 
-                                        try { System.IO.File.AppendAllText("debug_log.txt", $"[JavaScriptEngine] Fetching external script: {scriptUri}\r\n"); } catch { }
+                                        FenLogger.Debug($"[JavaScriptEngine] Fetching external script: {scriptUri}", LogCategory.JavaScript);
                                         
                                         // Use ExternalScriptFetcher if available (uses ResourceManager/Cache)
                                         if (ExternalScriptFetcher != null)
@@ -2067,17 +2130,17 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                             
                             if (!string.IsNullOrWhiteSpace(code))
                             {
-                                try { System.IO.File.AppendAllText("debug_log.txt", $"[JavaScriptEngine] Executing script ({code.Length} chars)\r\n"); } catch { }
+                                FenLogger.Debug($"[JavaScriptEngine] Executing script ({code.Length} chars)", LogCategory.JavaScript);
                                 _fenRuntime.ExecuteSimple(code);
                             }
                         }
                     }
                     
-                    try { System.IO.File.AppendAllText("debug_log.txt", "[JavaScriptEngine] Inline script execution complete\r\n"); } catch { }
+                    FenLogger.Debug("[JavaScriptEngine] Inline script execution complete", LogCategory.JavaScript);
                 }
                 catch (Exception ex)
                 {
-                    try { System.IO.File.AppendAllText("debug_log.txt", $"[JavaScriptEngine] Script execution error: {ex.Message}\r\n"); } catch { }
+                    FenLogger.Error($"[JavaScriptEngine] Script execution error: {ex.Message}", LogCategory.JavaScript, ex);
                 }
             }
             

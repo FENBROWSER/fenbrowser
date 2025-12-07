@@ -510,7 +510,28 @@ namespace FenBrowser.FenEngine.Core
             }
             if (left.Type == JsValueType.String && right.Type == JsValueType.String)
             {
-                return EvalStringInfixExpression(op, left, right);
+                // Handle string comparison operators
+                switch (op)
+                {
+                    case "+":
+                        return FenValue.FromString(left.ToString() + right.ToString());
+                    case "==":
+                    case "===":
+                        return FenValue.FromBoolean(left.ToString() == right.ToString());
+                    case "!=":
+                    case "!==":
+                        return FenValue.FromBoolean(left.ToString() != right.ToString());
+                    case "<":
+                        return FenValue.FromBoolean(string.Compare(left.ToString(), right.ToString(), StringComparison.Ordinal) < 0);
+                    case ">":
+                        return FenValue.FromBoolean(string.Compare(left.ToString(), right.ToString(), StringComparison.Ordinal) > 0);
+                    case "<=":
+                        return FenValue.FromBoolean(string.Compare(left.ToString(), right.ToString(), StringComparison.Ordinal) <= 0);
+                    case ">=":
+                        return FenValue.FromBoolean(string.Compare(left.ToString(), right.ToString(), StringComparison.Ordinal) >= 0);
+                    default:
+                        return new ErrorValue($"unknown operator: {left.Type} {op} {right.Type}");
+                }
             }
             if (op == "==")
             {
@@ -620,7 +641,7 @@ namespace FenBrowser.FenEngine.Core
             return result;
         }
 
-        private IValue ApplyFunction(IValue fn, List<IValue> args, IExecutionContext context, IValue thisContext = null)
+        public IValue ApplyFunction(IValue fn, List<IValue> args, IExecutionContext context, IValue thisContext = null)
         {
             var function = fn.AsFunction();
             if (function != null)

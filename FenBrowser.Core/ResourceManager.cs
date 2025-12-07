@@ -187,6 +187,42 @@ namespace FenBrowser.Core
         {
             if (url == null) return null;
 
+            // Handle data: URI scheme (e.g., data:text/css,.picture%20%7B%20background%3A%20none%3B%20%7D)
+            if (string.Equals(url.Scheme, "data", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    var dataUri = url.AbsoluteUri;
+                    var commaIndex = dataUri.IndexOf(',');
+                    if (commaIndex > 0)
+                    {
+                        var dataMeta = dataUri.Substring(5, commaIndex - 5); // Skip "data:" prefix
+                        var content = dataUri.Substring(commaIndex + 1);
+                        
+                        // Check if base64 encoded
+                        bool isBase64 = dataMeta.Contains("base64", StringComparison.OrdinalIgnoreCase);
+                        
+                        if (isBase64)
+                        {
+                            // Remove base64 marker and decode
+                            var cleanMeta = dataMeta.Replace(";base64", "").Replace("base64", "");
+                            var bytes = Convert.FromBase64String(content);
+                            return System.Text.Encoding.UTF8.GetString(bytes);
+                        }
+                        else
+                        {
+                            // URL-decode the content
+                            return Uri.UnescapeDataString(content);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[FetchText] data URI failed: {ex.Message}");
+                }
+                return null;
+            }
+
             // CSP Check
             if (ActivePolicy != null)
             {

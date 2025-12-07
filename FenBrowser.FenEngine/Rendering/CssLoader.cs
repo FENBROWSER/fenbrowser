@@ -88,7 +88,7 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     try {
                         var msg = $"[{DateTime.Now:HH:mm:ss}] [CssLoader] Found style block: {text.Length} chars. Content start: {text.Substring(0, Math.Min(text.Length, 50))}\r\n";
-                        System.IO.File.AppendAllText("debug_log.txt", msg);
+                        System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", msg);
                     } catch {}
                     
                     cssBlobs.Add(new CssSource
@@ -108,13 +108,17 @@ namespace FenBrowser.FenEngine.Rendering
             // 2) External <link rel="stylesheet"> (DOM order)
             // Fetch in parallel with a small concurrency limit to avoid blocking UI
             var linkNodes = root.Descendants().Where(n => !n.IsText && n.Tag == "link").ToList();
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[LINK] Found {linkNodes.Count} link elements\r\n"); } catch {}
             var extTasks = new List<Task>();
             var gate = new System.Threading.SemaphoreSlim(8); // Shared gate for all CSS fetches (links + imports)
             foreach (var link in linkNodes)
             {
                 if (link.Attr == null) continue;
-                string rel; if (!link.Attr.TryGetValue("rel", out rel)) continue; if (!ContainsToken(rel, "stylesheet")) continue;
+                string rel; if (!link.Attr.TryGetValue("rel", out rel)) continue;
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[LINK] Found link with rel='{rel}'\r\n"); } catch {}
+                if (!ContainsToken(rel, "stylesheet")) continue;
                 string href; if (!link.Attr.TryGetValue("href", out href) || string.IsNullOrWhiteSpace(href)) continue;
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[LINK] Loading stylesheet: {href}\r\n"); } catch {}
                 // Respect media attribute (screen/all)
                 string media;
                 if (link.Attr.TryGetValue("media", out media) && !string.IsNullOrWhiteSpace(media))
@@ -181,6 +185,9 @@ namespace FenBrowser.FenEngine.Rendering
                 }));
             }
             if (parseTasks.Count > 0) { try { await Task.WhenAll(parseTasks); } catch { /* Ignore parse errors */ } }
+
+            // Debug: Log parsed rules count
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CssLoader] Total CSS rules parsed: {allRules.Count}\r\n"); } catch {}
 
             // 4.5) Resolve CSS variables
             ResolveVariables(allRules);
@@ -811,6 +818,9 @@ namespace FenBrowser.FenEngine.Rendering
             if (string.IsNullOrWhiteSpace(css)) return rules;
 
             var text = StripComments(css);
+            
+            // DEBUG: Log CSS after comment stripping
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[CSS] After comment strip, length: {text.Length}\r\n"); } catch {}
 
             // (Very) basic @media handling: keep simple "screen" blocks; ignore others.
             // We flatten recognized @media blocks by inlining their contents.
@@ -848,6 +858,16 @@ namespace FenBrowser.FenEngine.Rendering
 
                 var chains = ParseSelectors(selectorText);
                 if (chains.Count == 0) continue;
+                
+                // DEBUG: Log parsed selectors with attribute selectors
+                if (selectorText.Contains("["))
+                {
+                    try { 
+                        var chainStr = string.Join(", ", chains.Select(c => string.Join(" ", c.Segments.Select(seg => 
+                            $"{seg.Tag ?? "*"}{(seg.Id != null ? "#"+seg.Id : "")}{(seg.Classes != null && seg.Classes.Count > 0 ? "."+string.Join(".", seg.Classes) : "")}{(seg.Attributes != null && seg.Attributes.Count > 0 ? "["+string.Join("][", seg.Attributes.Select(a => $"{a.Item1}{a.Item2}{a.Item3}"))+"]" : "")}"))));
+                        System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[SELECTOR] {selectorText} => Chains: {chainStr}\r\n"); 
+                    } catch {}
+                }
 
                 var decls = ParseDeclarations(declText);
 
@@ -997,22 +1017,39 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 else if (t.StartsWith("["))
                 {
-                    // Basic attribute parsing: [attr] or [attr=val]
-                    // Tokenizer likely returns "[attr=val]" or "[attr" ...
-                    // We assume simple "[content]" format from tokenizer for now
+                    // Attribute selector parsing: [attr], [attr=val], [attr~=val], [attr|=val], [attr^=val], [attr$=val], [attr*=val]
                     var content = t.TrimStart('[').TrimEnd(']');
-                    var eq = content.IndexOf('=');
                     if (seg.Attributes == null) seg.Attributes = new List<Tuple<string, string, string>>();
 
-                    if (eq < 0)
+                    // Check for operator (in order of length to match longest first)
+                    string[] operators = { "~=", "|=", "^=", "$=", "*=", "=" };
+                    string foundOp = null;
+                    int opIndex = -1;
+                    
+                    foreach (var op in operators)
                     {
+                        int idx = content.IndexOf(op);
+                        if (idx >= 0)
+                        {
+                            foundOp = op;
+                            opIndex = idx;
+                            break;
+                        }
+                    }
+
+                    if (foundOp == null || opIndex < 0)
+                    {
+                        // Just [attr] - presence check
                         seg.Attributes.Add(Tuple.Create(content.Trim(), "", ""));
                     }
                     else
                     {
-                        var name = content.Substring(0, eq).Trim();
-                        var val = content.Substring(eq + 1).Trim().Trim('"', '\'');
-                        seg.Attributes.Add(Tuple.Create(name, "=", val));
+                        var name = content.Substring(0, opIndex).Trim();
+                        var val = content.Substring(opIndex + foundOp.Length).Trim().Trim('"', '\'');
+                        // Handle CSS escape sequences: backslash followed by a character means the character itself
+                        // e.g., "second\ two" becomes "second two"
+                        val = System.Text.RegularExpressions.Regex.Replace(val, @"\\(.)", "$1");
+                        seg.Attributes.Add(Tuple.Create(name, foundOp, val));
                     }
                 }
                 else
@@ -1037,7 +1074,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static List<string> TokenizeSelector(string s)
         {
-            // turns "div#main .x > span.y" into ["div","#main"," ",".x",">","span",".y"]
+            // turns "div#main .x > span.y [attr=val]" into ["div","#main"," ",".x",">","span",".y"," ","[attr=val]"]
             var r = new List<string>();
             var sb = new StringBuilder();
             Action flush = () => { if (sb.Length > 0) { r.Add(sb.ToString()); sb.Clear(); } };
@@ -1053,9 +1090,36 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 else if (c == '>' || c == '+' || c == '~')
                 {
-                    flush(); r.Add(c.ToString());
+                    // Check if ~ is part of ~= attribute selector (peek ahead)
+                    if (c == '~' && i + 1 < s.Length && s[i + 1] == '=')
+                    {
+                        // This is part of an attribute selector inside [], should be handled there
+                        sb.Append(c);
+                    }
+                    else
+                    {
+                        flush(); r.Add(c.ToString());
+                    }
                 }
-                else if (c == '.' || c == '#' || c == ':' || c == '[')
+                else if (c == '[')
+                {
+                    // Read entire attribute selector until closing ]
+                    flush();
+                    sb.Append(c);
+                    i++;
+                    int bracketDepth = 1;
+                    while (i < s.Length && bracketDepth > 0)
+                    {
+                        char ac = s[i];
+                        sb.Append(ac);
+                        if (ac == '[') bracketDepth++;
+                        else if (ac == ']') bracketDepth--;
+                        i++;
+                    }
+                    i--; // Back up since outer loop will increment
+                    flush();
+                }
+                else if (c == '.' || c == '#' || c == ':')
                 {
                     flush(); sb.Append(c);
                 }
@@ -1122,16 +1186,19 @@ namespace FenBrowser.FenEngine.Rendering
 
             // Prepare per-element candidate declarations+weights
             var perNode = new Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>>();
+            int matchedNodes = 0;
             foreach (var n in nodes)
             {
                 if (n.IsText) continue;
 
+                bool nodeHasMatches = false;
                 foreach (var rule in rules)
                 {
                     foreach (var chain in rule.Selectors)
                     {
                         if (Matches(n, chain))
                         {
+                            nodeHasMatches = true;
                             // weight tuple: important (1/0), specificity, sourceOrder
                             foreach (var decl in rule.Declarations.Values)
                             {
@@ -1155,7 +1222,29 @@ namespace FenBrowser.FenEngine.Rendering
                         }
                     }
                 }
+                if (nodeHasMatches) matchedNodes++;
             }
+            
+            // Debug: Log how many nodes had CSS rule matches
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CssLoader] Nodes with CSS matches: {matchedNodes} out of {nodes.Count}\r\n"); } catch {}
+            
+            // Debug: Log CSS properties for key Acid2 elements
+            try {
+                foreach (var n in nodes)
+                {
+                    if (n.IsText) continue;
+                    string cls = "";
+                    if (n.Attr != null) n.Attr.TryGetValue("class", out cls);
+                    if (cls != null && (cls.Contains("picture") || cls.Contains("intro") || cls.Contains("eyes") || cls.Contains("nose") || cls.Contains("forehead")))
+                    {
+                        List<Tuple<CssDecl, SelectorChain, int>> items;
+                        perNode.TryGetValue(n, out items);
+                        int propCount = items != null ? items.Count : 0;
+                        var propList = items != null ? string.Join(", ", items.Select(i => i.Item1.Name + ":" + i.Item1.Value).Take(10)) : "none";
+                        System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[CASCADE] <{n.Tag} class='{cls}'> matched {propCount} props: [{propList}]\r\n");
+                    }
+                }
+            } catch {}
 
             // Inline style beats author rules; include as highest priority �rule�
             foreach (var n in nodes)
@@ -1201,6 +1290,20 @@ namespace FenBrowser.FenEngine.Rendering
                                      .ToList();
 
                     chosen[grp.Key] = ordered[0].Item1;
+                    
+                    // Debug: Log background property resolution for .picture
+                    if (grp.Key.ToLowerInvariant() == "background" && ordered.Count > 1)
+                    {
+                        string cls = "";
+                        if (n.Attr != null) n.Attr.TryGetValue("class", out cls);
+                        if (cls != null && cls.Contains("picture"))
+                        {
+                            try {
+                                var orderedInfo = string.Join("; ", ordered.Select(o => $"[val={o.Item1.Value}, spec={o.Item1.Specificity}, srcOrder={o.Item3}]"));
+                                System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[CASCADE_RESOLVE] .picture background: {orderedInfo} => Winner: {ordered[0].Item1.Value}\r\n");
+                            } catch {}
+                        }
+                    }
                 }
 
                 CssComputed parentCss = null;
@@ -1349,6 +1452,8 @@ namespace FenBrowser.FenEngine.Rendering
                     var fw = fwRaw.Trim().ToLowerInvariant();
                     if (fw == "normal") css.FontWeight = MakeFontWeight(400);
                     else if (fw == "bold") css.FontWeight = MakeFontWeight(700);
+                    else if (fw == "bolder") css.FontWeight = MakeFontWeight(700); // Treat bolder as bold
+                    else if (fw == "lighter") css.FontWeight = MakeFontWeight(300);
                     else
                     {
                         int numeric;
@@ -1952,10 +2057,29 @@ namespace FenBrowser.FenEngine.Rendering
                 foreach (var attr in seg.Attributes)
                 {
                     string val;
-                    if (!n.Attr.TryGetValue(attr.Item1, out val)) return false;
-                    if (attr.Item2 == "=")
+                    if (n.Attr == null || !n.Attr.TryGetValue(attr.Item1, out val)) return false;
+                    
+                    // Empty operator means just presence check
+                    if (string.IsNullOrEmpty(attr.Item2))
+                    {
+                        continue; // Attribute exists, that's enough
+                    }
+                    else if (attr.Item2 == "=")
                     {
                         if (!string.Equals(val ?? "", attr.Item3, StringComparison.OrdinalIgnoreCase)) return false;
+                    }
+                    else if (attr.Item2 == "~=")
+                    {
+                        // [attr~=val] - val is one of space-separated words in attribute value
+                        var tokens = SplitTokens(val ?? "");
+                        if (!tokens.Contains(attr.Item3, StringComparer.OrdinalIgnoreCase)) return false;
+                    }
+                    else if (attr.Item2 == "|=")
+                    {
+                        // [attr|=val] - value is exactly val or starts with val followed by hyphen
+                        var v = val ?? "";
+                        if (!string.Equals(v, attr.Item3, StringComparison.OrdinalIgnoreCase) &&
+                            !v.StartsWith(attr.Item3 + "-", StringComparison.OrdinalIgnoreCase)) return false;
                     }
                     else if (attr.Item2 == "^=")
                     {

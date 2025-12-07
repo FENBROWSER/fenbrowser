@@ -1,12 +1,6 @@
-namespace FenBrowser.Core;
+using FenBrowser.Core.Logging;
 
-public enum LogLevel
-{
-    Debug,
-    Info,
-    Warning,
-    Error
-}
+namespace FenBrowser.Core;
 
 /// <summary>
 /// Simple logging abstraction.

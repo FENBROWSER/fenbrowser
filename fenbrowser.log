@@ -1,0 +1,111 @@
+[FenLogger] Initialized at 12/7/2025 11:30:21 AM
+[11:30:21.760] [INFO] [General] FenBrowser Started
+[11:30:23.978] [DEBUG] [JavaScript] [JavaScriptEngine] Executing script (1011 chars)
+[11:30:23.984] [DEBUG] [JavaScript] [FenRuntime] CreateTimer called. ID: 1, Delay: 1000
+[11:30:23.984] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 1000ms
+[11:30:23.985] [DEBUG] [JavaScript] [FenRuntime] CreateTimer called. ID: 2, Delay: 500
+[11:30:23.985] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:23.985] [INFO] [Events] [FenRuntime] addEventListener called for 'click'
+[11:30:23.987] [DEBUG] [JavaScript] [JavaScriptEngine] Inline script execution complete
+[11:30:23.989] [DEBUG] [Rendering] [CustomHtmlEngine] ScheduleRepaintFromJs called
+[11:30:23.991] [DEBUG] [Rendering] [CustomHtmlEngine] Calling RefreshAsyncInternal
+[11:30:24.037] [INFO] [Rendering] [DomBasicRenderer] InitializeTagHandlers Called
+[11:30:24.077] [INFO] [Rendering] [DomBasicRenderer] InitializeTagHandlers Called
+[11:30:24.114] [DEBUG] [Rendering] [CustomHtmlEngine] DispatchRepaintAsync completed
+[11:30:24.490] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:24.491] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:24.494] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:24.990] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:24.991] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:24.995] [DEBUG] [CSS] [CSS] Set style backgroundColor=lightgreen
+[11:30:24.996] [DEBUG] [Rendering] [CustomHtmlEngine] ScheduleRepaintFromJs called
+[11:30:24.996] [DEBUG] [Rendering] [CustomHtmlEngine] Calling RefreshAsyncInternal
+[11:30:24.998] [INFO] [Rendering] [DomBasicRenderer] InitializeTagHandlers Called
+[11:30:25.006] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:25.007] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:25.007] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:25.008] [DEBUG] [Rendering] [CustomHtmlEngine] DispatchRepaintAsync completed
+[11:30:25.522] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:25.523] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:25.523] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:26.037] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:26.038] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:26.038] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:26.553] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:26.553] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:26.554] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:27.068] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:27.068] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:27.069] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:27.570] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:27.570] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:27.571] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:28.086] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:28.087] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:28.087] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:28.596] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:28.597] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:28.597] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:29.100] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:29.101] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:29.101] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:29.614] [DEBUG] [DOM] [MakeButtonAsync] Clicked! ID: btn
+[11:30:29.615] [DEBUG] [Events] [RaiseElementEvent] Check _fenRuntime: OK
+[11:30:29.616] [DEBUG] [Events] [DispatchEvent] Dispatching 'click'
+[11:30:29.616] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:29.619] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:29.619] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:30.133] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:30.133] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:30.134] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:30.642] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:30.642] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:30.643] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:31.133] [DEBUG] [DOM] [MakeButtonAsync] Clicked! ID: btn
+[11:30:31.134] [DEBUG] [Events] [RaiseElementEvent] Check _fenRuntime: OK
+[11:30:31.134] [DEBUG] [Events] [DispatchEvent] Dispatching 'click'
+[11:30:31.156] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:31.157] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:31.157] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:31.658] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:31.658] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:31.659] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:32.170] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:32.170] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:32.171] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:32.686] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:32.686] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:32.687] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:33.202] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:33.202] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:33.203] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:33.703] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:33.703] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:33.704] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:34.207] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:34.208] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:34.208] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:34.721] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:34.721] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:34.722] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:35.236] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:35.236] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:35.237] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:35.744] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:35.745] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:35.745] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:36.257] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:36.258] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:36.258] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:36.762] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:36.762] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:36.763] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:37.272] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:37.273] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:37.273] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:37.786] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:37.786] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:37.787] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms
+[11:30:38.288] [DEBUG] [JavaScript] [ScheduleCallback] Woke up. Dispatching to UI thread...
+[11:30:38.288] [DEBUG] [JavaScript] [ScheduleCallback] Executing action on UI thread.
+[11:30:38.289] [DEBUG] [JavaScript] [ScheduleCallback] Scheduled for 500ms

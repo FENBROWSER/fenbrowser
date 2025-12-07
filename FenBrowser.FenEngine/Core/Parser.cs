@@ -924,6 +924,7 @@ namespace FenBrowser.FenEngine.Core
             if (PeekTokenIs(end))
             {
                 NextToken();
+                try { System.IO.File.AppendAllText("parse_debug.txt", $"[ParseExpressionList] Empty list, end token found\r\n"); } catch { }
                 return list;
             }
 
@@ -931,31 +932,40 @@ namespace FenBrowser.FenEngine.Core
             if (CurTokenIs(TokenType.Ellipsis))
             {
                 NextToken();
-                list.Add(new SpreadElement { Token = _curToken, Argument = ParseExpression(Precedence.Lowest) });
+                list.Add(new SpreadElement { Token = _curToken, Argument = ParseExpression(Precedence.Assignment) });
             }
             else
             {
-                list.Add(ParseExpression(Precedence.Lowest));
+                // Use Assignment precedence to avoid consuming commas as operators
+                var expr = ParseExpression(Precedence.Assignment);
+                list.Add(expr);
+                try { System.IO.File.AppendAllText("parse_debug.txt", $"[ParseExpressionList] First element: {expr?.GetType().Name}, Peek: {_peekToken.Type}\r\n"); } catch { }
             }
 
             while (PeekTokenIs(TokenType.Comma))
             {
                 NextToken();
                 NextToken();
+                try { System.IO.File.AppendAllText("parse_debug.txt", $"[ParseExpressionList] Next element after comma, Cur: {_curToken.Type} '{_curToken.Literal}'\r\n"); } catch { }
                 
                 if (CurTokenIs(TokenType.Ellipsis))
                 {
                     NextToken();
-                    list.Add(new SpreadElement { Token = _curToken, Argument = ParseExpression(Precedence.Lowest) });
+                    list.Add(new SpreadElement { Token = _curToken, Argument = ParseExpression(Precedence.Assignment) });
                 }
                 else
                 {
-                    list.Add(ParseExpression(Precedence.Lowest));
+                    // Use Assignment precedence to avoid consuming commas as operators
+                    var expr = ParseExpression(Precedence.Assignment);
+                    list.Add(expr);
+                    try { System.IO.File.AppendAllText("parse_debug.txt", $"[ParseExpressionList] Element added: {expr?.GetType().Name}\r\n"); } catch { }
                 }
             }
 
+            try { System.IO.File.AppendAllText("parse_debug.txt", $"[ParseExpressionList] Total elements: {list.Count}, Peek: {_peekToken.Type}\r\n"); } catch { }
             if (!ExpectPeek(end))
             {
+                try { System.IO.File.AppendAllText("parse_debug.txt", $"[ParseExpressionList] ERROR: Expected {end}, got {_peekToken.Type}\r\n"); } catch { }
                 return null;
             }
 

@@ -67,9 +67,21 @@ namespace FenBrowser.FenEngine.Core
         void SetRequestRender(Action action);
 
         /// <summary>
+        /// Schedule a callback to be executed after a delay
+        /// Action: The callback to execute
+        /// int: Delay in milliseconds
+        /// </summary>
+        Action<Action, int> ScheduleCallback { get; set; }
+
+        /// <summary>
         /// Current 'this' binding for function execution
         /// </summary>
         IValue ThisBinding { get; set; }
+
+        /// <summary>
+        /// Delegate to execute a function (used by FenFunction.Invoke for user functions)
+        /// </summary>
+        Func<IValue, IValue[], IValue> ExecuteFunction { get; set; }
 
         /// <summary>
         /// Module loader for resolving and loading modules
@@ -92,7 +104,19 @@ namespace FenBrowser.FenEngine.Core
         public bool ShouldContinue => _executionTimer.Elapsed < Limits.MaxExecutionTime;
         public Action RequestRender { get; private set; }
         public void SetRequestRender(Action action) => RequestRender = action;
+        
+        public Action<Action, int> ScheduleCallback { get; set; } = (action, delay) => 
+        {
+            // Default implementation: Task.Delay then Run
+            // Note: This does NOT run on UI thread by default, host must override for UI safety
+            Task.Run(async () => 
+            {
+                await Task.Delay(delay);
+                action();
+            });
+        };
         public IValue ThisBinding { get; set; }
+        public Func<IValue, IValue[], IValue> ExecuteFunction { get; set; }
         public IModuleLoader ModuleLoader { get; set; }
 
         public ExecutionContext(

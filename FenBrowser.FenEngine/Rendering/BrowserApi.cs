@@ -930,17 +930,22 @@ namespace FenBrowser.FenEngine.Rendering
 
         public async Task<object> ExecuteScriptAsync(string script, object[] args = null)
         {
+            // WebDriver spec: scripts are executed as an anonymous function
+            // So we wrap the script: (function() { <script> }).apply(null, arguments)
+            string wrappedScript;
             if (args != null && args.Length > 0)
             {
                 var jsonArgs = JsonSerializer.Serialize(args);
-                script = $"var arguments = {jsonArgs}; {script}";
+                wrappedScript = $"var arguments = {jsonArgs}; (function() {{ {script} }}).apply(null, arguments)";
             }
             else
             {
-                script = "var arguments = []; " + script;
+                wrappedScript = $"var arguments = []; (function() {{ {script} }})()";
             }
             
-            var rawResult = _engine.Evaluate(script);
+            try { System.IO.File.AppendAllText("js_debug.txt", $"[ExecuteScript] Wrapped: {wrappedScript.Substring(0, Math.Min(500, wrappedScript.Length))}...\r\n"); } catch { }
+            var rawResult = _engine.Evaluate(wrappedScript);
+            try { System.IO.File.AppendAllText("js_debug.txt", $"[ExecuteScript] Raw result type: {rawResult?.GetType().Name}\r\n"); } catch { }
             
             // Convert FenValue to native .NET type for proper JSON serialization
             if (rawResult is FenBrowser.FenEngine.Core.FenValue fenValue)
@@ -951,13 +956,240 @@ namespace FenBrowser.FenEngine.Rendering
             return rawResult;
         }
 
+        // Storage for async script callback result
+        private object _asyncScriptResult = null;
+        private bool _asyncScriptDone = false;
+        private readonly object _asyncScriptLock = new object();
+
         public async Task<object> ExecuteAsyncScriptAsync(string script, object[] args, int timeoutMs)
         {
-            // For async script, we inject arguments and a dummy callback
-            // This is a partial implementation to prevent crashes
-            var jsonArgs = JsonSerializer.Serialize(args ?? Array.Empty<object>());
-            script = $"var arguments = {jsonArgs}; arguments.push(function(r) {{ }}); {script}";
-            return _engine.Evaluate(script);
+            // Reset state
+            lock (_asyncScriptLock)
+            {
+                _asyncScriptResult = null;
+                _asyncScriptDone = false;
+            }
+
+            // Create a unique callback ID for this execution
+            var callbackId = Guid.NewGuid().ToString("N");
+            
+            // Prepare arguments array with the callback as the last argument
+            var argsList = args?.ToList() ?? new List<object>();
+            
+            // We need to create the callback function in JavaScript context
+            // The callback should store the result in a global variable we can poll
+            // Also set up requestAnimationFrame polyfill that works with our polling
+            var setupScript = $@"
+                window.__wptrunner_async_result_{callbackId} = null;
+                window.__wptrunner_async_done_{callbackId} = false;
+                
+                // Set up rAF queue if not present
+                if (!window.__raf_id) window.__raf_id = 0;
+                if (!window.__raf_callbacks) window.__raf_callbacks = [];
+                
+                // Override requestAnimationFrame to use our queue (both window and global)
+                var __rafFunc = function(callback) {{
+                    console.log('[rAF-setup] requestAnimationFrame called, id=' + (window.__raf_id + 1));
+                    var id = ++window.__raf_id;
+                    // Store directly in the callbacks array
+                    window.__raf_callbacks.push({{id: id, fn: callback}});
+                    console.log('[rAF-setup] Queue length after push: ' + window.__raf_callbacks.length);
+                    return id;
+                }};
+                window.requestAnimationFrame = __rafFunc;
+                // Global assignment might fail in strict mode, try-catch it
+                try {{ requestAnimationFrame = __rafFunc; }} catch(e) {{ console.log('[rAF-setup] Global assign failed: ' + e); }}
+                
+                var __cafFunc = function(id) {{
+                    // Remove callback with matching id from array
+                    window.__raf_callbacks = window.__raf_callbacks.filter(function(item) {{ return item.id !== id; }});
+                }};
+                window.cancelAnimationFrame = __cafFunc;
+                try {{ cancelAnimationFrame = __cafFunc; }} catch(e) {{}}
+                
+                console.log('[rAF-setup] Setup complete. typeof requestAnimationFrame: ' + typeof requestAnimationFrame);
+                console.log('[rAF-setup] typeof window.requestAnimationFrame: ' + typeof window.requestAnimationFrame);
+            ";
+            _engine.Evaluate(setupScript);
+            
+            // Build arguments JSON - add a callback function at the end
+            var jsonArgs = JsonSerializer.Serialize(argsList);
+            
+            // Preprocess script to transform ES6+ syntax to ES5 equivalents
+            var processedScript = script;
+            
+            // 1. Transform destructuring: const [a, b] = expr; -> var __temp = expr; var a = __temp[0]; var b = __temp[1];
+            var destructuringPattern = new System.Text.RegularExpressions.Regex(
+                @"(const|let|var)\s*\[([^\]]+)\]\s*=\s*([^;]+);",
+                System.Text.RegularExpressions.RegexOptions.Singleline);
+            processedScript = destructuringPattern.Replace(processedScript, match => {
+                var vars = match.Groups[2].Value.Split(',');
+                var expr = match.Groups[3].Value;
+                var tempId = Guid.NewGuid().ToString("N").Substring(0, 8);
+                var result = new System.Text.StringBuilder();
+                result.Append($"var __destruct_{tempId} = {expr}; ");
+                for (int i = 0; i < vars.Length; i++)
+                {
+                    var v = vars[i].Trim();
+                    if (!string.IsNullOrEmpty(v))
+                    {
+                        result.Append($"var {v} = __destruct_{tempId}[{i}]; ");
+                    }
+                }
+                return result.ToString();
+            });
+            
+            // 2. Transform const/let to var
+            processedScript = System.Text.RegularExpressions.Regex.Replace(processedScript, @"\bconst\s+", "var ");
+            processedScript = System.Text.RegularExpressions.Regex.Replace(processedScript, @"\blet\s+", "var ");
+            
+            // 3. Transform arrow functions: () => { ... } -> function() { ... }
+            // Use a more careful approach - only match arrow functions in valid contexts
+            // Arrow function with parens and block body: (args) => { ... }
+            // Only match when preceded by: comma, =, (, [, {, :, or start of line
+            processedScript = System.Text.RegularExpressions.Regex.Replace(
+                processedScript,
+                @"(,\s*|=\s*|\(\s*|\[\s*|\{\s*|:\s*|^\s*)\(([^)]*)\)\s*=>\s*\{",
+                "$1function($2) {",
+                System.Text.RegularExpressions.RegexOptions.Multiline);
+            
+            // Single arg without parens with block body: arg => { ... }
+            processedScript = System.Text.RegularExpressions.Regex.Replace(
+                processedScript,
+                @"(,\s*|=\s*|\(\s*|\[\s*|\{\s*|:\s*|^\s*)(\w+)\s*=>\s*\{",
+                "$1function($2) {",
+                System.Text.RegularExpressions.RegexOptions.Multiline);
+            
+            // Arrow function with parens and expression body: (args) => expr
+            processedScript = System.Text.RegularExpressions.Regex.Replace(
+                processedScript,
+                @"(,\s*|=\s*|\(\s*|\[\s*|\{\s*|:\s*|^\s*)\(([^)]*)\)\s*=>\s*([^{;,\r\n\)]+)",
+                "$1function($2) { return $3; }",
+                System.Text.RegularExpressions.RegexOptions.Multiline);
+            
+            // Single arg with expression body: arg => expr  
+            processedScript = System.Text.RegularExpressions.Regex.Replace(
+                processedScript,
+                @"(,\s*|=\s*|\(\s*|\[\s*|\{\s*|:\s*|^\s*)(\w+)\s*=>\s*([^{;,\r\n\)]+)",
+                "$1function($2) { return $3; }",
+                System.Text.RegularExpressions.RegexOptions.Multiline);
+            
+            // 4. Replace 'arguments' keyword with '__args' so it works with our wrapper
+            processedScript = System.Text.RegularExpressions.Regex.Replace(processedScript, @"\barguments\b", "__args");
+            
+            // The script wrapper that provides the callback function
+            // Add debug logging to trace WPT script execution
+            var wrappedScript = $@"
+                var __args = {jsonArgs};
+                console.log('[WPT] __args before push: ' + __args.length);
+                var __callback = function(result) {{
+                    console.log('[WPT] Callback called with: ' + JSON.stringify(result));
+                    window.__wptrunner_async_result_{callbackId} = result;
+                    window.__wptrunner_async_done_{callbackId} = true;
+                }};
+                var pushResult = __args.push(__callback);
+                console.log('[WPT] push result: ' + pushResult);
+                console.log('[WPT] __args after push: ' + __args.length);
+                console.log('[WPT] __args[' + (__args.length - 1) + '] type: ' + typeof __args[__args.length - 1]);
+                
+                // Debug: Log key values before script runs
+                console.log('[WPT] document.readyState: ' + document.readyState);
+                console.log('[WPT] typeof requestAnimationFrame: ' + typeof requestAnimationFrame);
+                console.log('[WPT] typeof Document: ' + typeof Document);
+                console.log('[WPT] __args length: ' + __args.length);
+                console.log('[WPT] __args[0] type: ' + typeof __args[0]);
+                
+                (function() {{
+                    {processedScript}
+                }})();
+                
+                // Debug: Log rAF queue after script
+                console.log('[WPT] rAF callbacks length: ' + (window.__raf_callbacks ? window.__raf_callbacks.length : 'no array'));
+            ";
+            
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.txt", $"[AsyncScript] Executing wrapped script (timeout {timeoutMs}ms)\r\n"); } catch { }
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.txt", $"[AsyncScript] Input script (first 500 chars): {(script.Length > 500 ? script.Substring(0, 500) : script)}\r\n"); } catch { }
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.txt", $"[AsyncScript] Processed script (first 500 chars): {(processedScript.Length > 500 ? processedScript.Substring(0, 500) : processedScript)}\r\n"); } catch { }
+            
+            // Execute the script (it should call the callback eventually)
+            try 
+            {
+                var execResult = _engine.Evaluate(wrappedScript);
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.txt", $"[AsyncScript] Script executed, result type: {execResult?.GetType().Name ?? "null"}\r\n"); } catch { }
+                if (execResult is FenBrowser.FenEngine.Core.ErrorValue ev)
+                {
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.txt", $"[AsyncScript] Script error: {ev.Message}\r\n"); } catch { }
+                }
+            }
+            catch (Exception ex)
+            {
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.txt", $"[AsyncScript] Script exception: {ex.Message}\r\n"); } catch { }
+            }
+            
+            // Process rAF queue helper script
+            var processRafScript = @"
+                (function() {
+                    var count = 0;
+                    if (window.__raf_callbacks && window.__raf_callbacks.length > 0) {
+                        var callbacks = window.__raf_callbacks;
+                        window.__raf_callbacks = [];  // Clear the queue
+                        for (var i = 0; i < callbacks.length; i++) {
+                            count++;
+                            var item = callbacks[i];
+                            if (item && typeof item.fn === 'function') {
+                                console.log('[rAF] Calling callback id=' + item.id);
+                                item.fn(Date.now());
+                            }
+                        }
+                    }
+                    return count;
+                })();
+            ";
+            
+            // Poll for the result
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            int loopCount = 0;
+            while (sw.ElapsedMilliseconds < timeoutMs)
+            {
+                loopCount++;
+                // Process any pending requestAnimationFrame callbacks
+                try 
+                { 
+                    var rafResult = _engine.Evaluate(processRafScript);
+                    if (loopCount % 100 == 1) // Log every 100th iteration
+                    {
+                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.txt", $"[AsyncScript] Poll loop {loopCount}, rafCount: {rafResult}\r\n"); } catch { }
+                    }
+                } 
+                catch (Exception ex)
+                {
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.txt", $"[AsyncScript] rAF error: {ex.Message}\r\n"); } catch { }
+                }
+                
+                // Check if the callback was called
+                var doneCheck = _engine.Evaluate($"window.__wptrunner_async_done_{callbackId}");
+                if (doneCheck is FenBrowser.FenEngine.Core.FenValue dv && dv.IsBoolean && dv.ToBoolean())
+                {
+                    // Get the result
+                    var result = _engine.Evaluate($"window.__wptrunner_async_result_{callbackId}");
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.txt", $"[AsyncScript] Callback received result after {sw.ElapsedMilliseconds}ms\r\n"); } catch { }
+                    
+                    // Convert FenValue to native object
+                    if (result is FenBrowser.FenEngine.Core.FenValue fenValue)
+                    {
+                        return fenValue.ToNativeObject();
+                    }
+                    return result;
+                }
+                
+                // Small delay to not spin too fast
+                await Task.Delay(10);
+            }
+            
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.txt", $"[AsyncScript] Timeout after {timeoutMs}ms\r\n"); } catch { }
+            
+            // Timeout - return error
+            return new FenBrowser.FenEngine.Core.ErrorValue($"Script execution timeout ({timeoutMs/1000}s)");
         }
 
         public new async Task<string> CaptureScreenshotAsync()

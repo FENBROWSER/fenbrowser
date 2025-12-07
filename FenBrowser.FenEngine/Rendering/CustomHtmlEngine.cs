@@ -13,6 +13,7 @@ using System.Net;
 using System.Threading.Tasks;
 using System.IO;
 using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 using FenBrowser.Core.Security;
 using FenBrowser.FenEngine.Scripting;
 using static FenBrowser.FenEngine.Rendering.CssLoader;
@@ -826,13 +827,13 @@ namespace FenBrowser.FenEngine.Rendering
 
         private void ScheduleRepaintFromJs()
         {
-            try { System.IO.File.AppendAllText("debug_log.txt", "[CustomHtmlEngine] ScheduleRepaintFromJs called\r\n"); } catch { }
+            FenLogger.Debug("[CustomHtmlEngine] ScheduleRepaintFromJs called", LogCategory.Rendering);
             if (!EnableJavaScript) return;
             if (_activeDom == null) return;
             var disp = UiThreadHelper.TryGetDispatcher();
             if (System.Threading.Interlocked.Exchange(ref _repaintScheduled, 1) == 1)
             {
-                try { System.IO.File.AppendAllText("debug_log.txt", "[CustomHtmlEngine] Repaint already scheduled\r\n"); } catch { }
+                // FenLogger.Debug("[CustomHtmlEngine] Repaint already scheduled", LogCategory.Rendering);
                 return;
             }
 
@@ -849,12 +850,11 @@ namespace FenBrowser.FenEngine.Rendering
                     await _repaintGate.WaitAsync().ConfigureAwait(false);
                     try
                     {
-                        try { System.IO.File.AppendAllText("debug_log.txt", "[CustomHtmlEngine] Calling RefreshAsyncInternal\r\n"); } catch { }
+                        FenLogger.Debug("[CustomHtmlEngine] Calling RefreshAsyncInternal", LogCategory.Rendering);
                         var element = await RefreshAsyncInternal(includeDiagnosticsBanner: false).ConfigureAwait(false);
-                        try { System.IO.File.AppendAllText("debug_log.txt", $"[CustomHtmlEngine] RefreshAsyncInternal returned element: {element?.GetType().Name ?? "null"}\r\n"); } catch { }
                         
                         await DispatchRepaintAsync(element).ConfigureAwait(false);
-                        try { System.IO.File.AppendAllText("debug_log.txt", "[CustomHtmlEngine] DispatchRepaintAsync completed\r\n"); } catch { }
+                        FenLogger.Debug("[CustomHtmlEngine] DispatchRepaintAsync completed", LogCategory.Rendering);
                     }
                     finally
                     {

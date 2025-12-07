@@ -1,696 +1,493 @@
-[WebDriver] Started on http://127.0.0.1:4444/
-[WebDriver] POST /session
-[WebDriver] POST /session/ccd49882-1537-4ecc-855e-83901a7bf2c5/url
-[RenderAsync] Start. HTML Length: 513
-[RenderAsync] HTML size: 513 chars
-[RenderAsync] Starting parse...
-[RenderAsync] Parse complete
-[RenderAsync] Parsed DOM: #document
-[RenderAsync] Starting CSS load...
-[15:01:30] [CssLoader] Found style block: 145 chars. Content start: body{background:#eee;width:60vw;margin:15vh auto;f
-[RenderAsync] CSS loading complete
-[JavaScriptEngine] Ctor. Host null? False
-[FenRuntime] SetAlert called
-[FenRuntime] SetAlert: window.alert set
-[RenderAsync] Running Scripts
-[Evaluate] Pre-exec: global.alert=[function], window.alert=[function]
-[FenRuntime] ExecuteSimple called with 1293 chars
-[FenRuntime] Parse Errors:
-expected next token to be RParen, got String instead
-expected next token to be RParen, got String instead
-[RenderAsync] Detection helper script executed
-[JavaScriptEngine] SetDom called on FenRuntime
-[JavaScriptEngine] Starting inline script execution
-[JavaScriptEngine] Inline script execution complete
-[CustomHtmlEngine] ScheduleRepaintFromJs called
-[CustomHtmlEngine] ScheduleRepaintFromJs Task running
-[CustomHtmlEngine] Calling RefreshAsyncInternal
-[RenderAsync] Building visual tree...
-[15:01:30] [CssLoader] Found style block: 145 chars. Content start: body{background:#eee;width:60vw;margin:15vh auto;f
-[15:01:30] [CssLoader] Found style block: 145 chars. Content start: body{background:#eee;width:60vw;margin:15vh auto;f
-[RenderAsync] Calling BuildAsync
-[BuildAsync] Checking cancellation
-[BuildAsync] Cancellation check passed
-[BuildAsync] Meta check passed
-[BuildAsync] Body found: body, Children: 1
-[RenderNode] div
-[RenderNodeAsync] Has handler for div
-[RenderBlockAsync] div
-[InlineCheck] div has non-inline child: p
-[RenderNode] h1
-[RenderNodeAsync] Has handler for h1
-[RenderBlockAsync] h1
-[InlineFormatting] h1 using inline flow, children: 1
-[RenderNode] p
-[RenderNodeAsync] Has handler for p
-[RenderBlockAsync] p
-[InlineCheck] p has non-inline child: p
-[RenderNode] #text
-[RenderNode] p
-[RenderNodeAsync] Has handler for p
-[RenderBlockAsync] p
-[InlineFormatting] p using inline flow, children: 1
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 7
-[RenderAsync] Visual tree built successfully
-[RenderAsync] Calling BuildAsync
-[BuildAsync] Checking cancellation
-[BuildAsync] Cancellation check passed
-[BuildAsync] Meta check passed
-[BuildAsync] Body found: body, Children: 1
-[RenderNode] div
-[RenderNodeAsync] Has handler for div
-[RenderBlockAsync] div
-[InlineCheck] div has non-inline child: p
-[RenderNode] h1
-[RenderNodeAsync] Has handler for h1
-[RenderBlockAsync] h1
-[InlineFormatting] h1 using inline flow, children: 1
-[RenderNode] p
-[RenderNodeAsync] Has handler for p
-[RenderBlockAsync] p
-[InlineCheck] p has non-inline child: p
-[RenderNode] #text
-[RenderNode] p
-[RenderNodeAsync] Has handler for p
-[RenderBlockAsync] p
-[InlineFormatting] p using inline flow, children: 1
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 7
-[CustomHtmlEngine] RefreshAsyncInternal returned element: Border
-[CustomHtmlEngine] DispatchRepaintAsync completed
-[WebDriver] GET /session/ccd49882-1537-4ecc-855e-83901a7bf2c5/window/rect
-[WebDriver] POST /session/ccd49882-1537-4ecc-855e-83901a7bf2c5/window/maximize
-[WebDriver] GET /session/ccd49882-1537-4ecc-855e-83901a7bf2c5/screenshot
-[WebDriver] POST /session/ccd49882-1537-4ecc-855e-83901a7bf2c5/cookie
-[WebDriver] GET /session/ccd49882-1537-4ecc-855e-83901a7bf2c5/cookie
-[WebDriver] DELETE /session/ccd49882-1537-4ecc-855e-83901a7bf2c5
+[App] Args: file:///C:/Users/udayk/.gemini/antigravity/brain/009efb1c-5b3a-4ad5-a6c3-c4139f8396c6/js_test.html
 [WebDriver] Started on http://localhost:4444/
-[WebDriver] POST /session
-[WebDriver] POST /session/47c97478-0c52-4891-93b2-d2e7a310d049/url
-[RenderAsync] Start. HTML Length: 513
-[RenderAsync] HTML size: 513 chars
+[WebDriver] Started on port 4444
+[RenderAsync] Start. HTML Length: 1345
+[RenderAsync] HTML size: 1345 chars
 [RenderAsync] Starting parse...
 [RenderAsync] Parse complete
 [RenderAsync] Parsed DOM: #document
 [RenderAsync] Starting CSS load...
-[15:29:32] [CssLoader] Found style block: 145 chars. Content start: body{background:#eee;width:60vw;margin:15vh auto;f
+[CssLoader] Total CSS rules parsed: 27
+[CssLoader] Nodes with CSS matches: 4 out of 26
 [RenderAsync] CSS loading complete
 [RenderAsync] Running Scripts
 [RenderAsync] Detection helper script executed
 [JavaScriptEngine] SetDom called on FenRuntime
 [JavaScriptEngine] Starting inline script execution
-[JavaScriptEngine] Inline script execution complete
-[CustomHtmlEngine] ScheduleRepaintFromJs called
-[CustomHtmlEngine] ScheduleRepaintFromJs Task running
-[CustomHtmlEngine] Calling RefreshAsyncInternal
-[RenderAsync] Building visual tree...
-[15:29:32] [CssLoader] Found style block: 145 chars. Content start: body{background:#eee;width:60vw;margin:15vh auto;f
-[15:29:32] [CssLoader] Found style block: 145 chars. Content start: body{background:#eee;width:60vw;margin:15vh auto;f
-[RenderAsync] Calling BuildAsync
-[BuildAsync] Checking cancellation
-[BuildAsync] Cancellation check passed
-[BuildAsync] Meta check passed
-[BuildAsync] Body found: body, Children: 1
-[RenderNode] div
-[RenderNodeAsync] Has handler for div
-[RenderBlockAsync] div
-[InlineCheck] div has non-inline child: p
-[RenderNode] h1
-[RenderNodeAsync] Has handler for h1
-[RenderBlockAsync] h1
-[InlineFormatting] h1 using inline flow, children: 1
-[RenderNode] p
-[RenderNodeAsync] Has handler for p
-[RenderBlockAsync] p
-[InlineCheck] p has non-inline child: p
-[RenderNode] #text
-[RenderNode] p
-[RenderNodeAsync] Has handler for p
-[RenderBlockAsync] p
-[InlineFormatting] p using inline flow, children: 1
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 7
-[RenderAsync] Visual tree built successfully
-[RenderAsync] Calling BuildAsync
-[BuildAsync] Checking cancellation
-[BuildAsync] Cancellation check passed
-[BuildAsync] Meta check passed
-[BuildAsync] Body found: body, Children: 1
-[RenderNode] div
-[RenderNodeAsync] Has handler for div
-[RenderBlockAsync] div
-[InlineCheck] div has non-inline child: p
-[RenderNode] h1
-[RenderNodeAsync] Has handler for h1
-[RenderBlockAsync] h1
-[InlineFormatting] h1 using inline flow, children: 1
-[RenderNode] p
-[RenderNodeAsync] Has handler for p
-[RenderBlockAsync] p
-[InlineCheck] p has non-inline child: p
-[RenderNode] #text
-[RenderNode] p
-[RenderNodeAsync] Has handler for p
-[RenderBlockAsync] p
-[InlineFormatting] p using inline flow, children: 1
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 7
-[CustomHtmlEngine] RefreshAsyncInternal returned element: Border
-[CustomHtmlEngine] DispatchRepaintAsync completed
-[WebDriver] GET /session/47c97478-0c52-4891-93b2-d2e7a310d049/window/rect
-[WebDriver] POST /session/47c97478-0c52-4891-93b2-d2e7a310d049/window/maximize
-[WebDriver] GET /session/47c97478-0c52-4891-93b2-d2e7a310d049/screenshot
-[WebDriver] POST /session/47c97478-0c52-4891-93b2-d2e7a310d049/cookie
-[WebDriver] GET /session/47c97478-0c52-4891-93b2-d2e7a310d049/cookie
-[WebDriver] DELETE /session/47c97478-0c52-4891-93b2-d2e7a310d049
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 211
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 211
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 779
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 779
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 557
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 557
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 557
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 557
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 8
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 8
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 8
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 8
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[WebDriver] Started on http://127.0.0.1:4444/
-[RenderAsync] Start. HTML Length: 513
-[RenderAsync] HTML size: 513 chars
-[RenderAsync] Starting parse...
-[RenderAsync] Parse complete
-[RenderAsync] Parsed DOM: #document
-[RenderAsync] Starting CSS load...
-[17:11:11] [CssLoader] Found style block: 145 chars. Content start: body{background:#eee;width:60vw;margin:15vh auto;f
-[RenderAsync] CSS loading complete
-[RenderAsync] Running Scripts
-[RenderAsync] Detection helper script executed
-[JavaScriptEngine] SetDom called on FenRuntime
-[JavaScriptEngine] Starting inline script execution
+[JavaScriptEngine] Executing script (1011 chars)
+[Console] Test Started
+[FenRuntime] CreateTimer called. ID: 1, Delay: 1000
+[ScheduleCallback] Scheduled for 1000ms
+[FenRuntime] CreateTimer called. ID: 2, Delay: 500
+[ScheduleCallback] Scheduled for 500ms
+[FenRuntime] addEventListener called for 'click'
+[Console Warn] This is a warning
+[Console Error] This is an error
 [JavaScriptEngine] Inline script execution complete
 [CustomHtmlEngine] ScheduleRepaintFromJs called
 [CustomHtmlEngine] ScheduleRepaintFromJs Task running
 [CustomHtmlEngine] Calling RefreshAsyncInternal
 [RenderAsync] Scripts Finished
 [RenderAsync] Building visual tree...
-[17:11:11] [CssLoader] Found style block: 145 chars. Content start: body{background:#eee;width:60vw;margin:15vh auto;f
-[17:11:11] [CssLoader] Found style block: 145 chars. Content start: body{background:#eee;width:60vw;margin:15vh auto;f
+[CssLoader] Total CSS rules parsed: 27
+[CssLoader] Nodes with CSS matches: 4 out of 26
 [RenderAsync] Calling BuildAsync
 [BuildAsync] Checking cancellation
 [BuildAsync] Cancellation check passed
 [BuildAsync] Meta check passed
-[BuildAsync] Body found: body, Children: 1
-[RenderNode] div
-[RenderNodeAsync] Has handler for div
-[RenderBlockAsync] div
-[InlineCheck] div has non-inline child: p
+[BuildAsync] Body found: body, Children: 9
+[RenderNode] #text
 [RenderNode] h1
 [RenderNodeAsync] Has handler for h1
 [RenderBlockAsync] h1
 [InlineFormatting] h1 using inline flow, children: 1
-[RenderNode] p
-[RenderNodeAsync] Has handler for p
-[RenderBlockAsync] p
-[InlineCheck] p has non-inline child: p
 [RenderNode] #text
-[RenderNode] p
-[RenderNodeAsync] Has handler for p
-[RenderBlockAsync] p
-[InlineFormatting] p using inline flow, children: 1
+[RenderNode] button
+[RenderNodeAsync] Has handler for button
+[RenderNode] #text
+[RenderNode] #text
+[RenderNode] div
+[RenderNodeAsync] Has handler for div
+[RenderBlockAsync] div
+[InlineFormatting] div using inline flow, children: 1
+[RenderNode] #text
+[RenderNode] script
+[RenderNodeAsync] Has handler for script
+[RenderNode] #text
 [BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 7
+[BuildAsync] ComputedStyles count: 4
 [RenderAsync] Visual tree built successfully
+[CssLoader] Total CSS rules parsed: 27
+[CssLoader] Nodes with CSS matches: 4 out of 26
 [RenderAsync] Calling BuildAsync
 [BuildAsync] Checking cancellation
 [BuildAsync] Cancellation check passed
 [BuildAsync] Meta check passed
-[BuildAsync] Body found: body, Children: 1
-[RenderNode] div
-[RenderNodeAsync] Has handler for div
-[RenderBlockAsync] div
-[InlineCheck] div has non-inline child: p
+[BuildAsync] Body found: body, Children: 9
+[RenderNode] #text
 [RenderNode] h1
 [RenderNodeAsync] Has handler for h1
 [RenderBlockAsync] h1
 [InlineFormatting] h1 using inline flow, children: 1
-[RenderNode] p
-[RenderNodeAsync] Has handler for p
-[RenderBlockAsync] p
-[InlineCheck] p has non-inline child: p
 [RenderNode] #text
-[RenderNode] p
-[RenderNodeAsync] Has handler for p
-[RenderBlockAsync] p
-[InlineFormatting] p using inline flow, children: 1
+[RenderNode] button
+[RenderNodeAsync] Has handler for button
+[RenderNode] #text
+[RenderNode] #text
+[RenderNode] div
+[RenderNodeAsync] Has handler for div
+[RenderBlockAsync] div
+[InlineFormatting] div using inline flow, children: 1
+[RenderNode] #text
+[RenderNode] script
+[RenderNodeAsync] Has handler for script
+[RenderNode] #text
 [BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 7
+[BuildAsync] ComputedStyles count: 4
 [CustomHtmlEngine] RefreshAsyncInternal returned element: Border
 [CustomHtmlEngine] DispatchRepaintAsync completed
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 211
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 1175
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 1175
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 1175
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 1175
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 9
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 3
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 3
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 1
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 1
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 0
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 2
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 2
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 2
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 2
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 3
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 3
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 2
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 2
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 8
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 8
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 43
-[BuildAsync] Start. ComputedStyles null? False. Body null? False
-[BuildAsync] ComputedStyles count: 43
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[Console] Timeout fired (1000ms)
+[DocumentWrapper] getElementById searching for: status
+[DocumentWrapper] Found element: div (id=status)
+[Interpreter] Assigning to member: innerText. Object type: Object
+[Interpreter] Assigning to member: backgroundColor. Object type: Object
+[CustomHtmlEngine] ScheduleRepaintFromJs called
+[CustomHtmlEngine] ScheduleRepaintFromJs Task running
+[CustomHtmlEngine] Calling RefreshAsyncInternal
+[CssLoader] Total CSS rules parsed: 27
+[CssLoader] Nodes with CSS matches: 4 out of 26
+[RenderAsync] Calling BuildAsync
+[BuildAsync] Checking cancellation
+[BuildAsync] Cancellation check passed
+[BuildAsync] Meta check passed
+[BuildAsync] Body found: body, Children: 9
+[RenderNode] #text
+[RenderNode] h1
+[RenderNodeAsync] Has handler for h1
+[RenderBlockAsync] h1
+[InlineFormatting] h1 using inline flow, children: 1
+[RenderNode] #text
+[RenderNode] button
+[RenderNodeAsync] Has handler for button
+[RenderNode] #text
+[RenderNode] #text
+[RenderNode] div
+[RenderNodeAsync] Has handler for div
+[RenderBlockAsync] div
+[InlineFormatting] div using inline flow, children: 1
+[RenderNode] #text
+[RenderNode] script
+[RenderNodeAsync] Has handler for script
+[RenderNode] #text
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 4
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[CustomHtmlEngine] RefreshAsyncInternal returned element: Border
+[CustomHtmlEngine] DispatchRepaintAsync completed
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[Console] Inline click works
+[RaiseElementEvent] Check _fenRuntime: OK
+[DispatchEvent] Dispatching 'click'
+[Console] Window Clicked! Type: click, Target: btn
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[ScheduleCallback] Woke up. Dispatching to UI thread...
+[ScheduleCallback] Executing action on UI thread.
+[ScheduleCallback] Scheduled for 500ms
+[App] Args: file:///C:/Users/udayk/.gemini/antigravity/brain/009efb1c-5b3a-4ad5-a6c3-c4139f8396c6/js_test.html
+[WebDriver] Started on http://127.0.0.1:4444/
+[WebDriver] Started on port 4444
+[RenderAsync] Start. HTML Length: 1345
+[RenderAsync] HTML size: 1345 chars
+[RenderAsync] Starting parse...
+[RenderAsync] Parse complete
+[RenderAsync] Parsed DOM: #document
+[RenderAsync] Starting CSS load...
+[CssLoader] Total CSS rules parsed: 27
+[CssLoader] Nodes with CSS matches: 4 out of 26
+[RenderAsync] CSS loading complete
+[RenderAsync] Running Scripts
+[RenderAsync] Detection helper script executed
+[JavaScriptEngine] SetDom called on FenRuntime
+[JavaScriptEngine] Starting inline script execution
+[Console] Test Started
+[Console Warn] This is a warning
+[Console Error] This is an error
+[CustomHtmlEngine] ScheduleRepaintFromJs called
+[CustomHtmlEngine] ScheduleRepaintFromJs Task running
+[CustomHtmlEngine] Calling RefreshAsyncInternal
+[RenderAsync] Scripts Finished
+[RenderAsync] Building visual tree...
+[CssLoader] Total CSS rules parsed: 27
+[CssLoader] Nodes with CSS matches: 4 out of 26
+[RenderAsync] Calling BuildAsync
+[BuildAsync] Checking cancellation
+[BuildAsync] Cancellation check passed
+[BuildAsync] Meta check passed
+[BuildAsync] Body found: body, Children: 9
+[RenderNode] #text
+[RenderNode] h1
+[RenderNodeAsync] Has handler for h1
+[RenderBlockAsync] h1
+[InlineFormatting] h1 using inline flow, children: 1
+[RenderNode] #text
+[RenderNode] button
+[RenderNodeAsync] Has handler for button
+[RenderNode] #text
+[RenderNode] #text
+[RenderNode] div
+[RenderNodeAsync] Has handler for div
+[RenderBlockAsync] div
+[InlineFormatting] div using inline flow, children: 1
+[RenderNode] #text
+[RenderNode] script
+[RenderNodeAsync] Has handler for script
+[RenderNode] #text
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 4
+[RenderAsync] Visual tree built successfully
+[CssLoader] Nodes with CSS matches: 4 out of 26
+[RenderAsync] Calling BuildAsync
+[BuildAsync] Checking cancellation
+[BuildAsync] Cancellation check passed
+[BuildAsync] Meta check passed
+[BuildAsync] Body found: body, Children: 9
+[RenderNode] #text
+[RenderNode] h1
+[RenderNodeAsync] Has handler for h1
+[RenderBlockAsync] h1
+[InlineFormatting] h1 using inline flow, children: 1
+[RenderNode] #text
+[RenderNode] button
+[RenderNodeAsync] Has handler for button
+[RenderNode] #text
+[RenderNode] #text
+[RenderNode] div
+[RenderNodeAsync] Has handler for div
+[RenderBlockAsync] div
+[InlineFormatting] div using inline flow, children: 1
+[RenderNode] #text
+[RenderNode] script
+[RenderNodeAsync] Has handler for script
+[RenderNode] #text
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 4
+[CustomHtmlEngine] RefreshAsyncInternal returned element: Border
+[CustomHtmlEngine] DispatchRepaintAsync completed
+[Console] Timeout fired (1000ms)
+[DocumentWrapper] getElementById searching for: status
+[DocumentWrapper] Found element: div (id=status)
+[Interpreter] Assigning to member: innerText. Object type: Object
+[Interpreter] Assigning to member: backgroundColor. Object type: Object
+[CustomHtmlEngine] ScheduleRepaintFromJs called
+[CustomHtmlEngine] ScheduleRepaintFromJs Task running
+[CustomHtmlEngine] Calling RefreshAsyncInternal
+[CssLoader] Total CSS rules parsed: 27
+[CssLoader] Nodes with CSS matches: 4 out of 26
+[RenderAsync] Calling BuildAsync
+[BuildAsync] Checking cancellation
+[BuildAsync] Cancellation check passed
+[BuildAsync] Meta check passed
+[BuildAsync] Body found: body, Children: 9
+[RenderNode] #text
+[RenderNode] h1
+[RenderNodeAsync] Has handler for h1
+[RenderBlockAsync] h1
+[InlineFormatting] h1 using inline flow, children: 1
+[RenderNode] #text
+[RenderNode] button
+[RenderNodeAsync] Has handler for button
+[RenderNode] #text
+[RenderNode] #text
+[RenderNode] div
+[RenderNodeAsync] Has handler for div
+[RenderBlockAsync] div
+[InlineFormatting] div using inline flow, children: 1
+[RenderNode] #text
+[RenderNode] script
+[RenderNodeAsync] Has handler for script
+[RenderNode] #text
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 4
+[CustomHtmlEngine] RefreshAsyncInternal returned element: Border
+[CustomHtmlEngine] DispatchRepaintAsync completed
+[Console] Inline click works
+[Console] Window Clicked! Type: click, Target: btn
+[Console] Inline click works
+[Console] Window Clicked! Type: click, Target: btn
+[Console] Inline click works
+[Console] Window Clicked! Type: click, Target: btn
+[Console] Inline click works
+[Console] Window Clicked! Type: click, Target: btn
+[Console] Inline click works
+[Console] Window Clicked! Type: click, Target: btn
+[App] Args: file:///C:/Users/udayk/.gemini/antigravity/brain/009efb1c-5b3a-4ad5-a6c3-c4139f8396c6/js_test.html
+[WebDriver] Started on http://127.0.0.1:4444/
+[WebDriver] Started on port 4444
+[RenderAsync] Start. HTML Length: 1345
+[RenderAsync] HTML size: 1345 chars
+[RenderAsync] Starting parse...
+[RenderAsync] Parse complete
+[RenderAsync] Parsed DOM: #document
+[RenderAsync] Starting CSS load...
+[CssLoader] Total CSS rules parsed: 27
+[CssLoader] Nodes with CSS matches: 4 out of 26
+[RenderAsync] CSS loading complete
+[RenderAsync] Running Scripts
+[RenderAsync] Detection helper script executed
+[JavaScriptEngine] SetDom called on FenRuntime
+[JavaScriptEngine] Starting inline script execution
+[Console] Test Started
+[Console Warn] This is a warning
+[Console Error] This is an error
+[CustomHtmlEngine] ScheduleRepaintFromJs Task running
+[RenderAsync] Scripts Finished
+[RenderAsync] Building visual tree...
+[CssLoader] Total CSS rules parsed: 27
+[CssLoader] Nodes with CSS matches: 4 out of 26
+[RenderAsync] Calling BuildAsync
+[BuildAsync] Checking cancellation
+[BuildAsync] Cancellation check passed
+[BuildAsync] Meta check passed
+[BuildAsync] Body found: body, Children: 9
+[RenderNode] #text
+[RenderNode] h1
+[RenderNodeAsync] Has handler for h1
+[RenderBlockAsync] h1
+[InlineFormatting] h1 using inline flow, children: 1
+[RenderNode] #text
+[RenderNode] button
+[RenderNodeAsync] Has handler for button
+[RenderNode] #text
+[RenderNode] #text
+[RenderNode] div
+[RenderNodeAsync] Has handler for div
+[RenderBlockAsync] div
+[InlineFormatting] div using inline flow, children: 1
+[RenderNode] #text
+[RenderNode] script
+[RenderNodeAsync] Has handler for script
+[RenderNode] #text
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 4
+[CssLoader] Total CSS rules parsed: 27
+[CssLoader] Nodes with CSS matches: 4 out of 26
+[RenderAsync] Calling BuildAsync
+[BuildAsync] Checking cancellation
+[BuildAsync] Cancellation check passed
+[BuildAsync] Meta check passed
+[BuildAsync] Body found: body, Children: 9
+[RenderNode] #text
+[RenderNode] h1
+[RenderNodeAsync] Has handler for h1
+[RenderBlockAsync] h1
+[InlineFormatting] h1 using inline flow, children: 1
+[RenderNode] #text
+[RenderNode] button
+[RenderNodeAsync] Has handler for button
+[RenderNode] #text
+[RenderNode] #text
+[RenderNode] div
+[RenderNodeAsync] Has handler for div
+[RenderBlockAsync] div
+[InlineFormatting] div using inline flow, children: 1
+[RenderNode] #text
+[RenderNode] script
+[RenderNodeAsync] Has handler for script
+[RenderNode] #text
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 4
+[Console] Timeout fired (1000ms)
+[DocumentWrapper] getElementById searching for: status
+[DocumentWrapper] Found element: div (id=status)
+[Interpreter] Assigning to member: innerText. Object type: Object
+[Interpreter] Assigning to member: backgroundColor. Object type: Object
+[CustomHtmlEngine] ScheduleRepaintFromJs Task running
+[CssLoader] Total CSS rules parsed: 27
+[CssLoader] Nodes with CSS matches: 4 out of 26
+[RenderAsync] Calling BuildAsync
+[BuildAsync] Checking cancellation
+[BuildAsync] Cancellation check passed
+[BuildAsync] Meta check passed
+[BuildAsync] Body found: body, Children: 9
+[RenderNode] #text
+[RenderNode] h1
+[RenderNodeAsync] Has handler for h1
+[RenderBlockAsync] h1
+[InlineFormatting] h1 using inline flow, children: 1
+[RenderNode] #text
+[RenderNode] button
+[RenderNodeAsync] Has handler for button
+[RenderNode] #text
+[RenderNode] #text
+[RenderNode] div
+[RenderNodeAsync] Has handler for div
+[RenderBlockAsync] div
+[InlineFormatting] div using inline flow, children: 1
+[RenderNode] #text
+[RenderNode] script
+[RenderNodeAsync] Has handler for script
+[RenderNode] #text
+[BuildAsync] Start. ComputedStyles null? False. Body null? False
+[BuildAsync] ComputedStyles count: 4
+[Console] Inline click works
+[Console] Window Clicked! Type: click, Target: btn
+[Console] Inline click works
+[Console] Window Clicked! Type: click, Target: btn

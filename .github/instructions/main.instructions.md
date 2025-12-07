@@ -17,3 +17,5 @@ update lines of code as well once you complete a feature.
 you need to start pushing code to github repository once you complete a feature.
 
 First you need to check feature working or not by building it and ask me to run it ask for input if i say working/ok then you can push code to github repository. without that dont push code to github repository.
+
+powershell commands must be used for all operations related to the Fen Browser development. use proper powershell syntax and commands for file handling, process management, and other development tasks.

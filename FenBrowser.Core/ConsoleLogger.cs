@@ -1,4 +1,5 @@
 using System;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core;
 
@@ -11,7 +12,7 @@ public class ConsoleLogger : ILogger
         {
             case LogLevel.Debug: Console.ForegroundColor = ConsoleColor.Gray; break;
             case LogLevel.Info: Console.ForegroundColor = ConsoleColor.White; break;
-            case LogLevel.Warning: Console.ForegroundColor = ConsoleColor.Yellow; break;
+            case LogLevel.Warn: Console.ForegroundColor = ConsoleColor.Yellow; break;
             case LogLevel.Error: Console.ForegroundColor = ConsoleColor.Red; break;
         }
         Console.WriteLine($"[{level}] {message}");

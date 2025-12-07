@@ -212,9 +212,13 @@ namespace FenBrowser.UI
             try 
             { 
                 _webDriver = new WebDriverServer(_activeBrowser, port ?? 4444); 
-                _webDriver.Start(); 
+                _webDriver.Start();
+                try { System.IO.File.AppendAllText("debug_log.txt", $"[WebDriver] Started on port {port ?? 4444}\r\n"); } catch { }
             } 
-            catch { }
+            catch (Exception ex) 
+            { 
+                try { System.IO.File.AppendAllText("debug_log.txt", $"[WebDriver] Failed to start: {ex.Message}\r\n"); } catch { }
+            }
 
             if (!string.IsNullOrEmpty(initialUrl))
             {
