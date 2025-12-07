@@ -1,6 +1,7 @@
 using System;
 using System.Threading.Tasks;
 using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.FenEngine.Rendering;
 

@@ -10,6 +10,7 @@ using Avalonia.Controls.Primitives;
 using Avalonia.Layout;
 using Avalonia.Media;
 using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Scripting;
 using System.Globalization;
 using System.Linq;
@@ -18,6 +19,8 @@ using System.Text.RegularExpressions;
 using Avalonia.Media.Imaging;
 using System.Diagnostics;
 using Avalonia.Controls.Documents;
+using Avalonia.Data;
+using Avalonia.Data.Converters;
 namespace FenBrowser.FenEngine.Rendering
 {
     public partial class DomBasicRenderer
@@ -29,7 +32,7 @@ namespace FenBrowser.FenEngine.Rendering
         }
         private void InitializeTagHandlers()
         {
-            try { System.IO.File.AppendAllText("build_debug.txt", "[InitializeTagHandlers] Called\r\n"); } catch {}
+            FenLogger.Info("[DomBasicRenderer] InitializeTagHandlers Called", LogCategory.Rendering);
             _tagHandlers = new Dictionary<string, Func<LiteElement, Uri, Action<Uri>, JavaScriptEngine, CancellationToken, Task<Control>>>(StringComparer.OrdinalIgnoreCase);
             // Block elements
             Func<LiteElement, Uri, Action<Uri>, JavaScriptEngine, CancellationToken, Task<Control>> blockHandler = new Func<LiteElement, Uri, Action<Uri>, JavaScriptEngine, CancellationToken, Task<Control>>(RenderBlockAsync);
@@ -1586,12 +1589,12 @@ private async Task<Control> RenderNodeAsync(LiteElement n, Uri baseUri, Action<U
         try { System.IO.File.AppendAllText("debug_log.txt", $"[RenderNodeAsync] Has handler for {n.Tag}\r\n"); } catch {}
         return await _tagHandlers[n.Tag](n, baseUri, onNavigate, js, ct);
     }
-    try { System.IO.File.AppendAllText("debug_log.txt", $"[RenderNodeAsync] No handler for {n.Tag}, using Generic\r\n"); } catch {}
+    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[RenderNodeAsync] No handler for {n.Tag}, using Generic\r\n"); } catch {}
     return await RenderGenericContainerAsync(n, baseUri, onNavigate, js, ct);
 }
 private async Task<Control> RenderBlockAsync(LiteElement n, Uri baseUri, Action<Uri> onNavigate, JavaScriptEngine js, CancellationToken ct)
 {
-    try { System.IO.File.AppendAllText("debug_log.txt", $"[RenderBlockAsync] {n.Tag}\r\n"); } catch {}
+    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[RenderBlockAsync] {n.Tag}\r\n"); } catch {}
     return await RenderGenericContainerAsync(n, baseUri, onNavigate, js, ct);
 }
 
@@ -2106,16 +2109,58 @@ private async Task<Control> RenderGenericContainerAsync(LiteElement n, Uri baseU
 
     bool hasFloat = false;
     bool allInline = true;
+    bool hasAbsoluteChildren = false; // NEW: Track if any children have position: absolute/fixed
     string failingTag = null;
+    
+    // DEBUG: Log element being processed
+    try { System.IO.File.AppendAllText("acid2_debug.txt", $"[RenderGeneric] Processing <{n.Tag}> children={n.Children?.Count ?? 0}\r\n"); } catch { }
     
     if (n.Children != null)
     {
         foreach (var c in n.Children)
         {
-            if (ComputedStyles != null && ComputedStyles.TryGetValue(c, out var cCss) && !string.IsNullOrEmpty(cCss.Float) && cCss.Float != "none")
+            if (ComputedStyles != null && ComputedStyles.TryGetValue(c, out var cCss))
             {
-                hasFloat = true;
-                break;
+                // DEBUG: Log child CSS properties
+                string elemId = "";
+                if (c.Attr != null) c.Attr.TryGetValue("id", out elemId);
+                string elemClass = "";
+                if (c.Attr != null) c.Attr.TryGetValue("class", out elemClass);
+                string parentInfo = "null";
+                if (n.Attr != null) {
+                   string pId = ""; n.Attr.TryGetValue("id", out pId);
+                   string pClass = ""; n.Attr.TryGetValue("class", out pClass);
+                   parentInfo = $"<{n.Tag} id='{pId}' class='{pClass}'>";
+                }
+                
+                try { 
+                    var mapInfo = cCss.Map != null ? string.Join(", ", cCss.Map.Select(kv => $"{kv.Key}:{kv.Value}").Take(15)) : "null";
+                    System.IO.File.AppendAllText("acid2_debug.txt", $"  Child <{c.Tag}> id='{elemId}' class='{elemClass}' Parent={parentInfo} Position='{cCss.Position}' Left={cCss.Left} Top={cCss.Top} Width={cCss.Width} Height={cCss.Height} BgColor={cCss.BackgroundColor} Map=[{mapInfo}]\r\n"); 
+                } catch { }
+                
+                // Check for float
+                if (!string.IsNullOrEmpty(cCss.Float) && cCss.Float != "none")
+                {
+                    hasFloat = true;
+                }
+                
+                // Check for position: absolute/fixed
+                if (!string.IsNullOrEmpty(cCss.Position))
+                {
+                    var pos = cCss.Position.ToLowerInvariant();
+                    if (pos == "absolute" || pos == "fixed")
+                    {
+                        hasAbsoluteChildren = true;
+                        // DEBUG: Log when detecting absolute child
+                        try {
+                            string childClass = "";
+                            if (c.Attr != null) c.Attr.TryGetValue("class", out childClass);
+                            string parentClass = "";
+                            if (n.Attr != null) n.Attr.TryGetValue("class", out parentClass);
+                            System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[ABS_DETECT] Detected position:{pos} child <{c.Tag} class='{childClass}'> in parent <{n.Tag} class='{parentClass}'>\r\n");
+                        } catch {}
+                    }
+                }
             }
             
             if (!IsInlineNode(c))
@@ -2347,6 +2392,13 @@ private async Task<Control> RenderGenericContainerAsync(LiteElement n, Uri baseU
         }
     }
 
+    // Canvas for absolutely positioned children (if any exist)
+    Canvas absoluteCanvas = null;
+    if (hasAbsoluteChildren)
+    {
+        absoluteCanvas = new Canvas();
+    }
+
     if (n.Children != null)
     {
         foreach (var child in n.Children)
@@ -2389,25 +2441,122 @@ private async Task<Control> RenderGenericContainerAsync(LiteElement n, Uri baseU
                     elt = counterStack;
                 }
                 
-                if (hasFloat && panel is DockPanel dp)
+                // Check if this child is absolutely positioned
+                bool isAbsolutePositioned = false;
+                CssComputed positionCss = null;
+                if (ComputedStyles != null && ComputedStyles.TryGetValue(child, out positionCss))
                 {
-                    // Check for float property on the child
-                    if (ComputedStyles != null && ComputedStyles.TryGetValue(child, out var floatCss) && !string.IsNullOrEmpty(floatCss.Float))
+                    var pos = positionCss.Position?.ToLowerInvariant() ?? "";
+                    if (pos == "absolute" || pos == "fixed")
                     {
-                        if (floatCss.Float.Equals("left", StringComparison.OrdinalIgnoreCase))
-                            DockPanel.SetDock(elt, Dock.Left);
-                        else if (floatCss.Float.Equals("right", StringComparison.OrdinalIgnoreCase))
-                            DockPanel.SetDock(elt, Dock.Right);
-                        else
-                            DockPanel.SetDock(elt, Dock.Top);
-                    }
-                    else
-                    {
-                        DockPanel.SetDock(elt, Dock.Top);
+                        isAbsolutePositioned = true;
                     }
                 }
                 
-                panel.Children.Add(elt);
+                if (isAbsolutePositioned && absoluteCanvas != null && elt is Avalonia.Controls.Control fe)
+                {
+                    // Add to Canvas and apply positioning
+                    if (positionCss.Left.HasValue) Canvas.SetLeft(fe, positionCss.Left.Value);
+                    if (positionCss.Top.HasValue) Canvas.SetTop(fe, positionCss.Top.Value);
+                    if (positionCss.Right.HasValue) Canvas.SetRight(fe, positionCss.Right.Value);
+                    if (positionCss.Bottom.HasValue) Canvas.SetBottom(fe, positionCss.Bottom.Value);
+                    
+                    // CRITICAL: Apply explicit dimensions from CSS for visibility
+                    // 1. Fixed Pixel sizing
+                    if (positionCss.Width.HasValue && positionCss.Width.Value > 0) fe.Width = positionCss.Width.Value;
+                    if (positionCss.Height.HasValue && positionCss.Height.Value > 0) fe.Height = positionCss.Height.Value;
+
+                    // 2. Percentage sizing (Bind to parent canvas size)
+                    if (positionCss.WidthPercent.HasValue && positionCss.WidthPercent.Value > 0)
+                    {
+                        var pct = positionCss.WidthPercent.Value / 100.0;
+                        var bind = new Avalonia.Data.Binding("Bounds.Width")
+                        {
+                            Source = absoluteCanvas,
+                            Converter = new FuncValueConverter<double, double>(w => w * pct)
+                        };
+                        fe.Bind(Avalonia.Controls.Control.WidthProperty, bind);
+                    }
+                    if (positionCss.HeightPercent.HasValue && positionCss.HeightPercent.Value > 0)
+                    {
+                        var pct = positionCss.HeightPercent.Value / 100.0;
+                        var bind = new Avalonia.Data.Binding("Bounds.Height")
+                        {
+                            Source = absoluteCanvas,
+                            Converter = new FuncValueConverter<double, double>(h => h * pct)
+                        };
+                        fe.Bind(Avalonia.Controls.Control.HeightProperty, bind);
+                    }
+
+                    // 3. Constraint-based sizing (Left + Right -> Width, Top + Bottom -> Height)
+                    // If Width is NOT set but Left and Right ARE set, calculate Width
+                    if (!positionCss.Width.HasValue && !positionCss.WidthPercent.HasValue && 
+                         positionCss.Left.HasValue && positionCss.Right.HasValue)
+                    {
+                        var diff = positionCss.Left.Value + positionCss.Right.Value;
+                        var bind = new Avalonia.Data.Binding("Bounds.Width")
+                        {
+                            Source = absoluteCanvas,
+                            Converter = new FuncValueConverter<double, double>(w => Math.Max(0, w - diff))
+                        };
+                        fe.Bind(Avalonia.Controls.Control.WidthProperty, bind);
+                    }
+                    // If Height is NOT set but Top and Bottom ARE set, calculate Height
+                    if (!positionCss.Height.HasValue && !positionCss.HeightPercent.HasValue && 
+                         positionCss.Top.HasValue && positionCss.Bottom.HasValue)
+                    {
+                        var diff = positionCss.Top.Value + positionCss.Bottom.Value;
+                        var bind = new Avalonia.Data.Binding("Bounds.Height")
+                        {
+                            Source = absoluteCanvas,
+                            Converter = new FuncValueConverter<double, double>(h => Math.Max(0, h - diff))
+                        };
+                        fe.Bind(Avalonia.Controls.Control.HeightProperty, bind);
+                    }
+                    
+                    // Apply background color if not already set (make empty divs visible)
+                    if (fe is Border bdr && positionCss.Background != null && bdr.Background == null)
+                    {
+                        bdr.Background = positionCss.Background;
+                    }
+                    else if (fe is Panel pnl && positionCss.Background != null && pnl.Background == null)
+                    {
+                        pnl.Background = positionCss.Background;
+                    }
+                    
+                    // Also apply from BackgroundColor if Background brush was null
+                    if (positionCss.BackgroundColor.HasValue)
+                    {
+                        var bgBrush = new SolidColorBrush(positionCss.BackgroundColor.Value);
+                        if (fe is Border bdr2 && bdr2.Background == null) bdr2.Background = bgBrush;
+                        else if (fe is Panel pnl2 && pnl2.Background == null) pnl2.Background = bgBrush;
+                    }
+                    
+                    absoluteCanvas.Children.Add(fe);
+                }
+                else
+                {
+                    // Normal flow element
+                    if (hasFloat && panel is DockPanel dp)
+                    {
+                        // Check for float property on the child
+                        if (ComputedStyles != null && ComputedStyles.TryGetValue(child, out var floatCss) && !string.IsNullOrEmpty(floatCss.Float))
+                        {
+                            if (floatCss.Float.Equals("left", StringComparison.OrdinalIgnoreCase))
+                                DockPanel.SetDock(elt, Dock.Left);
+                            else if (floatCss.Float.Equals("right", StringComparison.OrdinalIgnoreCase))
+                                DockPanel.SetDock(elt, Dock.Right);
+                            else
+                                DockPanel.SetDock(elt, Dock.Top);
+                        }
+                        else
+                        {
+                            DockPanel.SetDock(elt, Dock.Top);
+                        }
+                    }
+                    
+                    panel.Children.Add(elt);
+                }
             }
         }
     }
@@ -2420,6 +2569,28 @@ private async Task<Control> RenderGenericContainerAsync(LiteElement n, Uri baseU
             // AttachStickyBehavior(panel, css); // TODO: Fix arguments
         }
     }
+    
+    // If we have absolutely positioned children, wrap in a Grid with Canvas overlay
+    if (absoluteCanvas != null && absoluteCanvas.Children.Count > 0)
+    {
+        // DEBUG: Log when creating absolute canvas wrapper
+        try {
+            string wrapperCls = "";
+            if (n.Attr != null) n.Attr.TryGetValue("class", out wrapperCls);
+            FenLogger.Debug($"[ABS_CANVAS] Creating canvas wrapper for <{n.Tag} class='{wrapperCls}'> with {absoluteCanvas.Children.Count} absolute children", LogCategory.Rendering);
+        } catch {}
+        
+        var wrapper = new Grid { ClipToBounds = true };
+        // Layer 0: Normal flow content
+        panel.SetValue(Avalonia.Controls.Panel.ZIndexProperty, 0);
+        wrapper.Children.Add(panel);
+        // Layer 1: Absolutely positioned content (in Canvas)
+        absoluteCanvas.SetValue(Avalonia.Controls.Panel.ZIndexProperty, 1);
+        wrapper.Children.Add(absoluteCanvas);
+        
+        return ApplyBoxesAndText(wrapper, n);
+    }
+    
     return ApplyBoxesAndText(panel, n);
 }
 private async Task<Control> MakeButtonAsync(LiteElement n, Uri baseUri, Action<Uri> onNavigate, JavaScriptEngine js, CancellationToken ct)
@@ -2454,7 +2625,12 @@ private async Task<Control> MakeButtonAsync(LiteElement n, Uri baseUri, Action<U
         n.Attr.TryGetValue("id", out id);
         btn.Click += (s, e) =>
         {
-            if (js != null) js.Evaluate(code);
+            FenLogger.Debug($"[MakeButtonAsync] Clicked! ID: {id}", LogCategory.DOM);
+            if (js != null) 
+            {
+                try { js.Evaluate(code); } catch { }
+                try { js.RaiseElementEvent(id, "click"); } catch { }
+            }
         };
     }
     return btn;
@@ -4687,9 +4863,9 @@ private Control Finish(Control content, LiteElement n)
             var btn = content as Button;
             var hbtn = content as Button;
             var code = PreprocessInlineHandler(on, id);
-            if (btn != null) btn.Click += (s, e) => { try { Js.RunInline(code, new JsContext { BaseUri = _baseUriForResources }, "click", id); } catch { } };
-            else if (hbtn != null) hbtn.Click += (s, e) => { try { Js.RunInline(code, new JsContext { BaseUri = _baseUriForResources }, "click", id); } catch { } };
-            else content.Tapped += (s, e) => { try { Js.RunInline(code, new JsContext { BaseUri = _baseUriForResources }, "click", id); } catch { } };
+            if (btn != null) btn.Click += (s, e) => { try { Js.RunInline(code, new JsContext { BaseUri = _baseUriForResources }, "click", id); } catch { } try { Js.RaiseElementEvent(id, "click"); } catch { } };
+            else if (hbtn != null) hbtn.Click += (s, e) => { try { Js.RunInline(code, new JsContext { BaseUri = _baseUriForResources }, "click", id); } catch { } try { Js.RaiseElementEvent(id, "click"); } catch { } };
+            else content.Tapped += (s, e) => { try { Js.RunInline(code, new JsContext { BaseUri = _baseUriForResources }, "click", id); } catch { } try { Js.RaiseElementEvent(id, "click"); } catch { } };
         }
         // oninput -> TextChanged for TextBox
         if (n.Attr.TryGetValue("oninput", out on) && !string.IsNullOrWhiteSpace(on))
@@ -6158,28 +6334,28 @@ private async Task<IImage> LoadIImageUiThreadAsync(Uri abs, int decodeWidthHint)
                 try 
                 {
                     System.Net.ServicePointManager.SecurityProtocol = System.Net.SecurityProtocolType.Tls12 | System.Net.SecurityProtocolType.Tls13;
-                    try { System.IO.File.AppendAllText("debug_log.txt", $"[ImageLoadStart] {abs}\r\n"); } catch { }
+                    try { FenLogger.Debug($"[ImageLoadStart] {abs}", LogCategory.Rendering); } catch { }
                     
                     var bytes = await client.GetByteArrayAsync(abs);
                     
-                    try { System.IO.File.AppendAllText("debug_log.txt", $"[ImageLoadDownloaded] {abs} ({bytes.Length} bytes)\r\n"); } catch { }
+                    try { FenLogger.Debug($"[ImageLoadDownloaded] {abs} ({bytes.Length} bytes)", LogCategory.Rendering); } catch { }
 
                     using (var ms = new System.IO.MemoryStream(bytes))
                     {
                         if (decodeWidthHint > 0)
                         {
                             var b = Bitmap.DecodeToWidth(ms, decodeWidthHint);
-                            try { System.IO.File.AppendAllText("debug_log.txt", $"[ImageLoadSuccess] {abs}\r\n"); } catch { }
+                            try { FenLogger.Debug($"[ImageLoadSuccess] {abs}", LogCategory.Rendering); } catch { }
                             return b;
                         }
                         var bmp = new Bitmap(ms);
-                        try { System.IO.File.AppendAllText("debug_log.txt", $"[ImageLoadSuccess] {abs}\r\n"); } catch { }
+                        try { FenLogger.Debug($"[ImageLoadSuccess] {abs}", LogCategory.Rendering); } catch { }
                         return bmp;
                     }
                 }
                 catch (Exception ex)
                 {
-                    try { System.IO.File.AppendAllText("debug_log.txt", $"[ImageLoadError] {abs}: {ex.Message}\r\n"); } catch { }
+                    try { FenLogger.Error($"[ImageLoadError] {abs}: {ex.Message}", LogCategory.Rendering, ex); } catch { }
                     return null;
                 }
             }
@@ -6188,7 +6364,7 @@ private async Task<IImage> LoadIImageUiThreadAsync(Uri abs, int decodeWidthHint)
     }
     catch (Exception ex)
     {
-        try { System.IO.File.AppendAllText("debug_log.txt", $"[ImageLoadCritical] {abs}: {ex.Message}\r\n"); } catch { }
+        try { FenLogger.Error($"[ImageLoadCritical] {abs}: {ex.Message}", LogCategory.Rendering, ex); } catch { }
         return null;
     }
 }
