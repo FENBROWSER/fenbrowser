@@ -243,11 +243,29 @@ namespace FenBrowser.UI
 
             browser.RepaintReady += (s, element) =>
             {
+                try { System.IO.File.AppendAllText("ui_debug.txt", $"[MainWindow] RepaintReady fired. Element: {element}\n"); } catch {}
                 tab.LastRenderedContent = element;
                 Dispatcher.UIThread.Post(() =>
                 {
                     if (tab.IsActive)
                     {
+                        // TEMPORARY SKIA VERIFICATION WITH BOX MODEL
+                        var root = browser.GetDomRoot();
+                        var skiaView = this.FindControl<SkiaBrowserView>("SkiaView");
+                        
+                        try { System.IO.File.AppendAllText("ui_debug.txt", $"[MainWindow] UI Thread. Root: {root?.Tag}, SkiaView: {skiaView}\n"); } catch {}
+
+                        if (root != null)
+                        {
+                           if (skiaView != null) 
+                           {
+                               // Pass ComputedStyles to renderer
+                               try { System.IO.File.AppendAllText("ui_debug.txt", "[MainWindow] Calling SkiaView.Render\n"); } catch {}
+                               skiaView.Render(root, browser.ComputedStyles);
+                               return; // Skip old renderer logic
+                           }
+                        }
+
                         if (element is Avalonia.Controls.Control ctrl)
                             SetBrowserContainerContent(ctrl);
                         else
@@ -429,12 +447,39 @@ namespace FenBrowser.UI
                     else
                     {
                         // Wrap web content in ScrollViewer to enable scrolling
-                        decorator.Child = new ScrollViewer
+                        var sv = new ScrollViewer
                         {
                             Content = content,
                             HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
                             VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto
                         };
+                        // Ensure content fills the viewport (fixes 100vh, centering, and background issues)
+                        if (content is Control contentControl)
+                        {
+                            // Function to update content minimum size to match viewport
+                            void UpdateContentSize()
+                            {
+                                // Post to UI thread to ensure Viewport is updated after layout
+                                Dispatcher.UIThread.Post(() => {
+                                    var viewport = sv.Viewport;
+                                    // Fallback to Bounds if Viewport is not yet valid
+                                    if (viewport.Width == 0 || viewport.Height == 0) viewport = sv.Bounds.Size;
+
+                                    if (viewport.Height > 0) contentControl.MinHeight = viewport.Height;
+                                    if (viewport.Width > 0) contentControl.MinWidth = viewport.Width;
+                                });
+                            }
+
+                            // Initial update
+                            UpdateContentSize();
+
+                            // Update on ScrollViewer resize (window resize/maximize)
+                            sv.SizeChanged += (s, e) => UpdateContentSize();
+                            
+                            // Update when Viewport changes (e.g. scrollbars appear/disappear)
+                            sv.GetObservable(ScrollViewer.ViewportProperty).Subscribe(new Avalonia.Reactive.AnonymousObserver<Size>(_ => UpdateContentSize()));
+                        }
+                        decorator.Child = sv;
                     }
                     break;
 

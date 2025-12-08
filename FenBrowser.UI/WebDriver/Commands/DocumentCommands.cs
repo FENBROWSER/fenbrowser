@@ -68,10 +68,17 @@ namespace FenBrowser.WebDriver.Commands
                 }
 
                 try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\webdriver_debug.txt", $"[execute/sync] Script: {script?.Substring(0, Math.Min(2000, script?.Length ?? 0))}...\r\n"); } catch { }
-                var result = await Dispatcher.UIThread.InvokeAsync(async () =>
-                    await context.Browser.ExecuteScriptAsync(script, args));
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\webdriver_debug.txt", $"[execute/sync] Result type: {result?.GetType().Name ?? "null"}, Value: {System.Text.Json.JsonSerializer.Serialize(result)}\r\n"); } catch { }
-                return WebDriverResponse.Success(result);
+                try
+                {
+                    var result = await Dispatcher.UIThread.InvokeAsync(async () =>
+                        await context.Browser.ExecuteScriptAsync(script, args));
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\webdriver_debug.txt", $"[execute/sync] Result type: {result?.GetType().Name ?? "null"}, Value: {System.Text.Json.JsonSerializer.Serialize(result)}\r\n"); } catch { }
+                    return WebDriverResponse.Success(result);
+                }
+                catch (Exception ex)
+                {
+                    return WebDriverResponse.Error500(ex.Message);
+                }
             }
 
             // POST /session/{id}/execute/async
@@ -94,10 +101,22 @@ namespace FenBrowser.WebDriver.Commands
                 }
 
                 try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\webdriver_debug.txt", $"[execute/async] Script: {script?.Substring(0, Math.Min(2000, script?.Length ?? 0))}...\r\n"); } catch { }
-                var result = await Dispatcher.UIThread.InvokeAsync(async () =>
-                    await context.Browser.ExecuteAsyncScriptAsync(script, args, context.Session.ScriptTimeout));
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\webdriver_debug.txt", $"[execute/async] Result type: {result?.GetType().Name ?? "null"}, Value: {System.Text.Json.JsonSerializer.Serialize(result)}\r\n"); } catch { }
-                return WebDriverResponse.Success(result);
+                
+                try
+                {
+                    var result = await Dispatcher.UIThread.InvokeAsync(async () =>
+                        await context.Browser.ExecuteAsyncScriptAsync(script, args, context.Session.ScriptTimeout));
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\webdriver_debug.txt", $"[execute/async] Result type: {result?.GetType().Name ?? "null"}, Value: {System.Text.Json.JsonSerializer.Serialize(result)}\r\n"); } catch { }
+                    return WebDriverResponse.Success(result);
+                }
+                catch (TimeoutException ex)
+                {
+                    return new WebDriverResponse { StatusCode = 500, Error = "script timeout", Message = ex.Message };
+                }
+                catch (Exception ex)
+                {
+                    return WebDriverResponse.Error500(ex.Message);
+                }
             }
 
             // GET /session/{id}/screenshot
