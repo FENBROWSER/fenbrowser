@@ -7,6 +7,8 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
+using System.IO;
 using FenBrowser.Core;
 using System.Globalization;
 namespace FenBrowser.FenEngine.Rendering
@@ -58,6 +60,7 @@ namespace FenBrowser.FenEngine.Rendering
                     input,button,select,textarea{font:inherit;}
                     /* Block semantics */
                     article,aside,nav,section,header,footer,main,figure{display:block;}
+                    center{display:flex;flex-direction:column;align-items:center;text-align:center;}
                     h1{font-size:2em;margin:0.67em 0;font-weight:600;}
                     h2{font-size:1.5em;margin:0.83em 0;font-weight:600;}
                     h3{font-size:1.17em;margin:1em 0;font-weight:600;}
@@ -87,8 +90,10 @@ namespace FenBrowser.FenEngine.Rendering
                 if (!string.IsNullOrWhiteSpace(text))
                 {
                     try {
+                    try {
                         var msg = $"[{DateTime.Now:HH:mm:ss}] [CssLoader] Found style block: {text.Length} chars. Content start: {text.Substring(0, Math.Min(text.Length, 50))}\r\n";
-                        System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", msg);
+                        DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", msg);
+                    } catch {}
                     } catch {}
                     
                     cssBlobs.Add(new CssSource
@@ -108,7 +113,7 @@ namespace FenBrowser.FenEngine.Rendering
             // 2) External <link rel="stylesheet"> (DOM order)
             // Fetch in parallel with a small concurrency limit to avoid blocking UI
             var linkNodes = root.Descendants().Where(n => !n.IsText && n.Tag == "link").ToList();
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[LINK] Found {linkNodes.Count} link elements\r\n"); } catch {}
+            DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[LINK] Found {linkNodes.Count} link elements\r\n");
             var extTasks = new List<Task>();
             var gate = new System.Threading.SemaphoreSlim(8); // Shared gate for all CSS fetches (links + imports)
             foreach (var link in linkNodes)
@@ -294,6 +299,7 @@ namespace FenBrowser.FenEngine.Rendering
             public string Id;                     // e.g. "main"
             public List<string> Classes;          // e.g. ["foo","bar"]
             public List<string> PseudoClasses;    // e.g. [":first-child"]
+            public string PseudoElement;          // e.g. "before", "after"
             public List<Tuple<string, string, string>> Attributes; // e.g. [("type", "=", "text")]
             public Combinator? Next;              // relation to the NEXT segment (left-to-right)
         }
@@ -427,7 +433,6 @@ namespace FenBrowser.FenEngine.Rendering
                 BaseUri = source.BaseUri
             });
         }
-
 
         private static bool StartsWithAt(string s, int idx, string token)
         {
@@ -817,10 +822,12 @@ namespace FenBrowser.FenEngine.Rendering
             var rules = new List<CssRule>();
             if (string.IsNullOrWhiteSpace(css)) return rules;
 
+            try { DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_raw_css.txt", "\n--- RAW CSS BLOCK ---\n" + css + "\n-------------------\n"); } catch {}
             var text = StripComments(css);
             
             // DEBUG: Log CSS after comment stripping
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[CSS] After comment strip, length: {text.Length}\r\n"); } catch {}
+            // DEBUG: Log CSS after comment stripping
+             try { DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_full_css.txt", "\n--- NEW CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch {}
 
             // (Very) basic @media handling: keep simple "screen" blocks; ignore others.
             // We flatten recognized @media blocks by inlining their contents.
@@ -865,8 +872,14 @@ namespace FenBrowser.FenEngine.Rendering
                     try { 
                         var chainStr = string.Join(", ", chains.Select(c => string.Join(" ", c.Segments.Select(seg => 
                             $"{seg.Tag ?? "*"}{(seg.Id != null ? "#"+seg.Id : "")}{(seg.Classes != null && seg.Classes.Count > 0 ? "."+string.Join(".", seg.Classes) : "")}{(seg.Attributes != null && seg.Attributes.Count > 0 ? "["+string.Join("][", seg.Attributes.Select(a => $"{a.Item1}{a.Item2}{a.Item3}"))+"]" : "")}"))));
-                        System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[SELECTOR] {selectorText} => Chains: {chainStr}\r\n"); 
+                        DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[SELECTOR] {selectorText} => Chains: {chainStr}\r\n"); 
                     } catch {}
+                }
+
+                // DEBUG: Log raw declarations for .picture
+                if (selectorText.Contains("picture"))
+                {
+                    try { DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[PARSER_RAW] Selectors: {selectorText} | Decls: {declText}\r\n"); } catch {}
                 }
 
                 var decls = ParseDeclarations(declText);
@@ -1012,8 +1025,33 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 else if (t.StartsWith(":"))
                 {
-                    if (seg.PseudoClasses == null) seg.PseudoClasses = new List<string>();
-                    seg.PseudoClasses.Add(t.Substring(1));
+                    string lower = t.ToLowerInvariant();
+                    if (lower.StartsWith("::"))
+                    {
+                        string pe = lower.Substring(2);
+                        if (pe == "before" || pe == "after")
+                        {
+                            seg.PseudoElement = pe;
+                        }
+                        else
+                        {
+                            if (seg.PseudoClasses == null) seg.PseudoClasses = new List<string>();
+                            seg.PseudoClasses.Add(t.Substring(2));
+                        }
+                    }
+                    else
+                    {
+                        string val = lower.Substring(1);
+                        if (val == "before" || val == "after")
+                        {
+                            seg.PseudoElement = val;
+                        }
+                        else
+                        {
+                            if (seg.PseudoClasses == null) seg.PseudoClasses = new List<string>();
+                            seg.PseudoClasses.Add(t.Substring(1));
+                        }
+                    }
                 }
                 else if (t.StartsWith("["))
                 {
@@ -1119,9 +1157,20 @@ namespace FenBrowser.FenEngine.Rendering
                     i--; // Back up since outer loop will increment
                     flush();
                 }
-                else if (c == '.' || c == '#' || c == ':')
+                else if (c == '.' || c == '#')
                 {
                     flush(); sb.Append(c);
+                }
+                else if (c == ':')
+                {
+                    flush(); 
+                    sb.Append(c);
+                    // Handle double colon ::
+                    if (i + 1 < s.Length && s[i + 1] == ':')
+                    {
+                        i++;
+                        sb.Append(s[i]);
+                    }
                 }
                 else
                 {
@@ -1186,6 +1235,8 @@ namespace FenBrowser.FenEngine.Rendering
 
             // Prepare per-element candidate declarations+weights
             var perNode = new Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>>();
+            var perNodeBefore = new Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>>();
+            var perNodeAfter = new Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>>();
             int matchedNodes = 0;
             foreach (var n in nodes)
             {
@@ -1198,6 +1249,14 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         if (Matches(n, chain))
                         {
+                            var lastSeg = chain.Segments[chain.Segments.Count - 1];
+                            string pe = lastSeg.PseudoElement;
+                            
+                            Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>> targetDict = perNode;
+                            if (pe == "before") targetDict = perNodeBefore;
+                            else if (pe == "after") targetDict = perNodeAfter;
+                            else if (!string.IsNullOrEmpty(pe)) continue; // Unknown pseudo-element
+
                             nodeHasMatches = true;
                             // weight tuple: important (1/0), specificity, sourceOrder
                             foreach (var decl in rule.Declarations.Values)
@@ -1212,10 +1271,10 @@ namespace FenBrowser.FenEngine.Rendering
                                 };
 
                                 List<Tuple<CssDecl, SelectorChain, int>> list;
-                                if (!perNode.TryGetValue(n, out list))
+                                if (!targetDict.TryGetValue(n, out list))
                                 {
                                     list = new List<Tuple<CssDecl, SelectorChain, int>>();
-                                    perNode[n] = list;
+                                    targetDict[n] = list;
                                 }
                                 list.Add(Tuple.Create(d, chain, rule.SourceOrder));
                             }
@@ -1274,496 +1333,516 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 if (n == null || n.IsText) continue;
 
-                List<Tuple<CssDecl, SelectorChain, int>> items;
-                if (!perNode.TryGetValue(n, out items) || items == null || items.Count == 0)
-                    continue;
-
-                // group by property name
-                var byProp = items.GroupBy(t => t.Item1.Name, StringComparer.OrdinalIgnoreCase);
-                var chosen = new Dictionary<string, CssDecl>(StringComparer.OrdinalIgnoreCase);
-
-                foreach (var grp in byProp)
-                {
-                    var ordered = grp.OrderByDescending(c => c.Item1.Important)
-                                     .ThenByDescending(c => c.Item1.Specificity)
-                                     .ThenByDescending(c => c.Item3) // higher sourceOrder = later in document = wins
-                                     .ToList();
-
-                    chosen[grp.Key] = ordered[0].Item1;
-                    
-                    // Debug: Log background property resolution for .picture
-                    if (grp.Key.ToLowerInvariant() == "background" && ordered.Count > 1)
-                    {
-                        string cls = "";
-                        if (n.Attr != null) n.Attr.TryGetValue("class", out cls);
-                        if (cls != null && cls.Contains("picture"))
-                        {
-                            try {
-                                var orderedInfo = string.Join("; ", ordered.Select(o => $"[val={o.Item1.Value}, spec={o.Item1.Specificity}, srcOrder={o.Item3}]"));
-                                System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[CASCADE_RESOLVE] .picture background: {orderedInfo} => Winner: {ordered[0].Item1.Value}\r\n");
-                            } catch {}
-                        }
-                    }
-                }
-
                 CssComputed parentCss = null;
                 if (n.Parent != null)
                     result.TryGetValue(n.Parent, out parentCss);
 
-                var css = new CssComputed();
-                if (parentCss != null && parentCss.CustomProperties != null)
+                List<Tuple<CssDecl, SelectorChain, int>> items;
+                perNode.TryGetValue(n, out items);
+
+                bool hasMain = items != null && items.Count > 0;
+                bool hasBefore = perNodeBefore.ContainsKey(n) && perNodeBefore[n].Count > 0;
+                bool hasAfter = perNodeAfter.ContainsKey(n) && perNodeAfter[n].Count > 0;
+
+                if (!hasMain && !hasBefore && !hasAfter) continue;
+
+                var css = ResolveStyle(n, parentCss, items ?? new List<Tuple<CssDecl, SelectorChain, int>>());
+
+                if (hasBefore)
                 {
-                    foreach (var kv in parentCss.CustomProperties)
-                    {
-                        css.CustomProperties[kv.Key] = kv.Value;
-                        css.Map[kv.Key] = kv.Value;
-                    }
+                    css.Before = ResolveStyle(n, css, perNodeBefore[n]);
                 }
 
-                var rawCustom = new Dictionary<string, string>(StringComparer.Ordinal);
-                foreach (var d in chosen.Values)
+                if (hasAfter)
                 {
-                    if (IsCustomPropertyName(d.Name))
-                        rawCustom[d.Name] = d.Value ?? string.Empty;
-                }
-
-                foreach (var key in rawCustom.Keys.ToList())
-                {
-                    var resolvedCustom = ResolveCustomPropertyReferences(rawCustom[key], css, rawCustom, new HashSet<string>(StringComparer.Ordinal) { key });
-                    rawCustom[key] = resolvedCustom;
-                    css.CustomProperties[key] = resolvedCustom;
-                    css.Map[key] = resolvedCustom;
-                }
-
-                foreach (var d in chosen.Values)
-                {
-                    if (IsCustomPropertyName(d.Name)) continue;
-                    var val = ResolveCustomPropertyReferences(d.Value, css, rawCustom, new HashSet<string>());
-                    css.Map[d.Name] = val;
-                }
-
-                double posVal;
-                if (TryPx(DictGet(css.Map, "left"), out posVal)) css.Left = posVal;
-                if (TryPx(DictGet(css.Map, "top"), out posVal)) css.Top = posVal;
-                if (TryPx(DictGet(css.Map, "right"), out posVal)) css.Right = posVal;
-                if (TryPx(DictGet(css.Map, "bottom"), out posVal)) css.Bottom = posVal;
-
-                // dimensions
-                double sizeVal;
-                if (TryPx(DictGet(css.Map, "width"), out sizeVal)) css.Width = sizeVal;
-                else if (TryPercent(DictGet(css.Map, "width"), out sizeVal)) css.WidthPercent = sizeVal;
-
-                if (TryPx(DictGet(css.Map, "height"), out sizeVal)) css.Height = sizeVal;
-                else if (TryPercent(DictGet(css.Map, "height"), out sizeVal)) css.HeightPercent = sizeVal;
-                if (TryPx(DictGet(css.Map, "min-width"), out sizeVal)) css.MinWidth = sizeVal;
-                if (TryPx(DictGet(css.Map, "min-height"), out sizeVal)) css.MinHeight = sizeVal;
-                if (TryPx(DictGet(css.Map, "max-width"), out sizeVal)) css.MaxWidth = sizeVal;
-                if (TryPx(DictGet(css.Map, "max-height"), out sizeVal)) css.MaxHeight = sizeVal;
-
-                // aspect-ratio
-                var aspectRatioRaw = Safe(DictGet(css.Map, "aspect-ratio"));
-                if (!string.IsNullOrEmpty(aspectRatioRaw) && !aspectRatioRaw.Contains("auto"))
-                {
-                    // Parse "16/9" or "1.777"
-                    if (aspectRatioRaw.Contains("/"))
-                    {
-                        var parts = aspectRatioRaw.Split('/');
-                        if (parts.Length == 2)
-                        {
-                            double w, h;
-                            if (TryDouble(parts[0].Trim(), out w) && TryDouble(parts[1].Trim(), out h) && h > 0)
-                                css.AspectRatio = w / h;
-                        }
-                    }
-                    else
-                    {
-                        double ratio;
-                        if (TryDouble(aspectRatioRaw, out ratio) && ratio > 0)
-                            css.AspectRatio = ratio;
-                    }
-                }
-
-                // gaps (gap shorthand + explicit row/column overrides)
-                double gapRow, gapCol;
-                if (TryGapShorthand(DictGet(css.Map, "gap"), out gapRow, out gapCol))
-                {
-                    css.Gap = gapRow;
-                    css.RowGap = gapRow;
-                    css.ColumnGap = gapCol;
-                }
-                double gapExplicit;
-                if (TryPx(DictGet(css.Map, "row-gap"), out gapExplicit)) css.RowGap = gapExplicit;
-                if (TryPx(DictGet(css.Map, "column-gap"), out gapExplicit)) css.ColumnGap = gapExplicit;
-                if (!css.RowGap.HasValue && css.Gap.HasValue) css.RowGap = css.Gap;
-                if (!css.ColumnGap.HasValue)
-                {
-                    if (css.Gap.HasValue) css.ColumnGap = css.Gap;
-                    else if (css.RowGap.HasValue) css.ColumnGap = css.RowGap;
-                }
-
-                // color
-                var fgColor = TryColor(DictGet(css.Map, "color"));
-                if (fgColor.HasValue) css.ForegroundColor = fgColor;
-
-                // background-color / background
-                var bgRaw = ExtractBackgroundColor(css.Map);
-                var bgColor = TryColor(bgRaw);
-                if (bgColor.HasValue) 
-                {
-                    css.BackgroundColor = bgColor;
-                    css.Background = new SolidColorBrush(bgColor.Value);
-                }
-
-                // Gradients (override color if present)
-                string bgImage = DictGet(css.Map, "background-image");
-                if (string.IsNullOrWhiteSpace(bgImage)) bgImage = DictGet(css.Map, "background");
-
-                if (!string.IsNullOrWhiteSpace(bgImage))
-                {
-                    var grad = ParseGradient(bgImage);
-                    if (grad != null) css.Background = grad;
-                }
-
-                // font shorthand
-                var fontShorthand = Safe(DictGet(css.Map, "font"));
-                if (!string.IsNullOrEmpty(fontShorthand))
-                {
-                    ParseFontShorthand(fontShorthand, css);
-                }
-
-                // font-family (first concrete family)
-                try
-                {
-                    var ffRaw = DictGet(css.Map, "font-family");
-                    var resolved = SelectFontFamily(ffRaw);
-                    if (!string.IsNullOrEmpty(resolved))
-                        css.FontFamilyName = resolved;
-                }
-                catch { }
-
-                // font-size
-                double px;
-                if (TryPx(DictGet(css.Map, "font-size"), out px)) css.FontSize = px;
-
-                // font-weight (keywords and numeric 100..900)
-                var fwRaw = Safe(DictGet(css.Map, "font-weight"));
-                if (!string.IsNullOrEmpty(fwRaw))
-                {
-                    var fw = fwRaw.Trim().ToLowerInvariant();
-                    if (fw == "normal") css.FontWeight = MakeFontWeight(400);
-                    else if (fw == "bold") css.FontWeight = MakeFontWeight(700);
-                    else if (fw == "bolder") css.FontWeight = MakeFontWeight(700); // Treat bolder as bold
-                    else if (fw == "lighter") css.FontWeight = MakeFontWeight(300);
-                    else
-                    {
-                        int numeric;
-                        if (int.TryParse(fw, NumberStyles.Integer, CultureInfo.InvariantCulture, out numeric))
-                        {
-                            css.FontWeight = MakeFontWeight(numeric);
-                        }
-                    }
-                }
-
-                // font-style
-                var fsRaw = Safe(DictGet(css.Map, "font-style"));
-                if (!string.IsNullOrEmpty(fsRaw))
-                {
-                    if (string.Equals(fsRaw, "italic", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(fsRaw, "oblique", StringComparison.OrdinalIgnoreCase))
-                        css.FontStyle = FontStyle.Italic;
-                    else if (string.Equals(fsRaw, "normal", StringComparison.OrdinalIgnoreCase))
-                        css.FontStyle = FontStyle.Normal;
-                }
-
-                // text-align
-                var ta = Safe(DictGet(css.Map, "text-align"));
-                if (ta == "center") css.TextAlign = TextAlignment.Center;
-                else if (ta == "right") css.TextAlign = TextAlignment.Right;
-                else if (ta == "justify") css.TextAlign = TextAlignment.Justify;
-
-                // text-decoration
-                css.TextDecoration = Safe(DictGet(css.Map, "text-decoration"));
-
-                // Visual effects - opacity, text-shadow, box-shadow
-                double opacityVal;
-                if (TryDouble(DictGet(css.Map, "opacity"), out opacityVal))
-                    css.Opacity = Math.Max(0.0, Math.Min(1.0, opacityVal));
-
-                css.TextShadow = Safe(DictGet(css.Map, "text-shadow"));
-                css.BoxShadow = Safe(DictGet(css.Map, "box-shadow"));
-                css.MaskImage = Safe(DictGet(css.Map, "mask-image"));
-                if (string.IsNullOrEmpty(css.MaskImage)) css.MaskImage = Safe(DictGet(css.Map, "-webkit-mask-image"));
-
-                // margins/padding/border (kept in Map for RendererStyles, but also set typed if your CssComputed supports them)
-                Thickness th;
-                if (TryThickness(DictGet(css.Map, "margin"), out th)) css.Margin = th;
-
-                // Override individual margins
-                double mVal;
-                var m = css.Margin;
-                // --- Margin overrides ---
-                double mLeft = m.Left, mTop = m.Top, mRight = m.Right, mBottom = m.Bottom;
-                if (TryPx(DictGet(css.Map, "margin-left"), out mVal)) mLeft = mVal;
-                if (TryPx(DictGet(css.Map, "margin-top"), out mVal)) mTop = mVal;
-                if (TryPx(DictGet(css.Map, "margin-right"), out mVal)) mRight = mVal;
-                if (TryPx(DictGet(css.Map, "margin-bottom"), out mVal)) mBottom = mVal;
-                css.Margin = new Thickness(mLeft, mTop, mRight, mBottom);
-
-                if (TryThickness(DictGet(css.Map, "padding"), out th)) css.Padding = th;
-
-                // Override individual paddings
-                var p = css.Padding;
-                // --- Padding overrides ---
-                double pLeft = p.Left, pTop = p.Top, pRight = p.Right, pBottom = p.Bottom;
-                if (TryPx(DictGet(css.Map, "padding-left"), out mVal)) pLeft = mVal;
-                if (TryPx(DictGet(css.Map, "padding-top"), out mVal)) pTop = mVal;
-                if (TryPx(DictGet(css.Map, "padding-right"), out mVal)) pRight = mVal;
-                if (TryPx(DictGet(css.Map, "padding-bottom"), out mVal)) pBottom = mVal;
-                // Invalid code removed: css is CssComputed, not a Control
-                // if (css is Decorator dec) dec.Padding = new Thickness(pLeft, pTop, pRight, pBottom); else if (css is Border bor) bor.Padding = new Thickness(pLeft, pTop, pRight, pBottom);
-
-                // border shorthand
-                var borderColor = TryColor(ExtractBorderColor(css.Map));
-                if (borderColor.HasValue) css.BorderBrushColor = borderColor;
-                if (TryThickness(ExtractBorderThickness(css.Map), out th)) css.BorderThickness = th;
-                CornerRadius cr;
-                if (TryCornerRadius(DictGet(css.Map, "border-radius"), out cr)) css.BorderRadius = cr;
-                
-                // Individual border sides (border-bottom, border-top, border-left, border-right)
-                var bt = css.BorderThickness;
-                double bLeft = bt.Left, bTop = bt.Top, bRight = bt.Right, bBottom = bt.Bottom;
-                Avalonia.Media.Color? borderSideColor = null;
-                
-                // border-bottom
-                var borderBottomRaw = Safe(DictGet(css.Map, "border-bottom"));
-                if (!string.IsNullOrEmpty(borderBottomRaw))
-                {
-                    var sideWidth = ExtractBorderSideWidth(borderBottomRaw);
-                    if (sideWidth > 0) bBottom = sideWidth;
-                    var sideCol = ExtractBorderSideColor(borderBottomRaw);
-                    if (sideCol.HasValue) borderSideColor = sideCol;
-                }
-                
-                // border-top
-                var borderTopRaw = Safe(DictGet(css.Map, "border-top"));
-                if (!string.IsNullOrEmpty(borderTopRaw))
-                {
-                    var sideWidth = ExtractBorderSideWidth(borderTopRaw);
-                    if (sideWidth > 0) bTop = sideWidth;
-                    var sideCol = ExtractBorderSideColor(borderTopRaw);
-                    if (sideCol.HasValue) borderSideColor = sideCol;
-                }
-                
-                // border-left
-                var borderLeftRaw = Safe(DictGet(css.Map, "border-left"));
-                if (!string.IsNullOrEmpty(borderLeftRaw))
-                {
-                    var sideWidth = ExtractBorderSideWidth(borderLeftRaw);
-                    if (sideWidth > 0) bLeft = sideWidth;
-                    var sideCol = ExtractBorderSideColor(borderLeftRaw);
-                    if (sideCol.HasValue) borderSideColor = sideCol;
-                }
-                
-                // border-right
-                var borderRightRaw = Safe(DictGet(css.Map, "border-right"));
-                if (!string.IsNullOrEmpty(borderRightRaw))
-                {
-                    var sideWidth = ExtractBorderSideWidth(borderRightRaw);
-                    if (sideWidth > 0) bRight = sideWidth;
-                    var sideCol = ExtractBorderSideColor(borderRightRaw);
-                    if (sideCol.HasValue) borderSideColor = sideCol;
-                }
-                
-                css.BorderThickness = new Thickness(bLeft, bTop, bRight, bBottom);
-                if (borderSideColor.HasValue && (!css.BorderBrushColor.HasValue || css.BorderBrushColor.Value == default))
-                    css.BorderBrushColor = borderSideColor;
-
-                // Flexbox
-                // Display and position
-                css.Display = Safe(DictGet(css.Map, "display"));
-                css.Position = Safe(DictGet(css.Map, "position"));
-                css.Float = Safe(DictGet(css.Map, "float"));
-                css.Overflow = Safe(DictGet(css.Map, "overflow"));
-
-                css.FlexDirection = Safe(DictGet(css.Map, "flex-direction"));
-                css.FlexWrap = Safe(DictGet(css.Map, "flex-wrap"));
-                css.JustifyContent = Safe(DictGet(css.Map, "justify-content"));
-                css.AlignItems = Safe(DictGet(css.Map, "align-items"));
-                css.AlignContent = Safe(DictGet(css.Map, "align-content"));
-                css.ListStyleType = Safe(DictGet(css.Map, "list-style-type"));
-
-                double fG, fS, fB;
-                if (TryFlexShorthand(DictGet(css.Map, "flex"), out fG, out fS, out fB))
-                {
-                    css.FlexGrow = fG;
-                    css.FlexShrink = fS;
-                    css.FlexBasis = fB;
-                }
-
-                double flexVal;
-                if (TryDouble(DictGet(css.Map, "flex-grow"), out flexVal)) css.FlexGrow = flexVal;
-                if (TryDouble(DictGet(css.Map, "flex-shrink"), out flexVal)) css.FlexShrink = flexVal;
-                if (TryPx(DictGet(css.Map, "flex-basis"), out flexVal)) css.FlexBasis = flexVal;
-
-                // New properties
-                // line-height
-                var lhRaw = Safe(DictGet(css.Map, "line-height"));
-                if (!string.IsNullOrEmpty(lhRaw))
-                {
-                    double lh;
-                    if (TryPx(lhRaw, out lh)) css.LineHeight = lh; // px value
-                    else if (double.TryParse(lhRaw, NumberStyles.Float, CultureInfo.InvariantCulture, out lh)) css.LineHeight = lh; // multiplier
-                }
-
-                css.VerticalAlign = Safe(DictGet(css.Map, "vertical-align"));
-                css.WhiteSpace = Safe(DictGet(css.Map, "white-space"));
-                css.TextOverflow = Safe(DictGet(css.Map, "text-overflow"));
-                css.BoxSizing = Safe(DictGet(css.Map, "box-sizing"));
-                css.Cursor = Safe(DictGet(css.Map, "cursor"));
-
-                // Z-Index
-                int zIndex;
-                if (int.TryParse(DictGet(css.Map, "z-index"), NumberStyles.Integer, CultureInfo.InvariantCulture, out zIndex))
-                    css.ZIndex = zIndex;
-
-                // Positioning coordinates
-                if (TryPx(DictGet(css.Map, "top"), out posVal)) css.Top = posVal;
-                if (TryPx(DictGet(css.Map, "right"), out posVal)) css.Right = posVal;
-                if (TryPx(DictGet(css.Map, "bottom"), out posVal)) css.Bottom = posVal;
-                if (TryPx(DictGet(css.Map, "left"), out posVal)) css.Left = posVal;
-                css.WhiteSpace = Safe(DictGet(css.Map, "white-space"));
-                css.TextOverflow = Safe(DictGet(css.Map, "text-overflow"));
-                css.BoxSizing = Safe(DictGet(css.Map, "box-sizing"));
-                css.Cursor = Safe(DictGet(css.Map, "cursor"));
-
-                // Gap (shorthand and individual)
-                double gapVal;
-                if (TryPx(DictGet(css.Map, "gap"), out gapVal))
-                {
-                    css.Gap = gapVal;
-                    css.RowGap = gapVal;
-                    css.ColumnGap = gapVal;
-                }
-                if (TryPx(DictGet(css.Map, "row-gap"), out gapVal)) css.RowGap = gapVal;
-                if (TryPx(DictGet(css.Map, "column-gap"), out gapVal)) css.ColumnGap = gapVal;
-
-                // Grid
-                css.GridTemplateColumns = Safe(DictGet(css.Map, "grid-template-columns"));
-
-                // CSS Transitions
-                css.Transition = Safe(DictGet(css.Map, "transition"));
-                css.TransitionProperty = Safe(DictGet(css.Map, "transition-property"));
-                css.TransitionDuration = Safe(DictGet(css.Map, "transition-duration"));
-                css.TransitionTimingFunction = Safe(DictGet(css.Map, "transition-timing-function"));
-                css.TransitionDelay = Safe(DictGet(css.Map, "transition-delay"));
-
-                // CSS Filters
-                css.Filter = Safe(DictGet(css.Map, "filter"));
-                css.BackdropFilter = Safe(DictGet(css.Map, "backdrop-filter"));
-
-                // CSS Scroll Snap
-                css.ScrollSnapType = Safe(DictGet(css.Map, "scroll-snap-type"));
-                css.ScrollSnapAlign = Safe(DictGet(css.Map, "scroll-snap-align"));
-
-                // CSS Counters
-                css.CounterReset = Safe(DictGet(css.Map, "counter-reset"));
-                css.CounterIncrement = Safe(DictGet(css.Map, "counter-increment"));
-                css.Content = Safe(DictGet(css.Map, "content"));
-
-                // CSS Masks
-                css.MaskImage = Safe(DictGet(css.Map, "mask-image"));
-                if (string.IsNullOrEmpty(css.MaskImage))
-                    css.MaskImage = Safe(DictGet(css.Map, "-webkit-mask-image"));
-                css.MaskMode = Safe(DictGet(css.Map, "mask-mode"));
-                css.MaskRepeat = Safe(DictGet(css.Map, "mask-repeat"));
-                css.MaskPosition = Safe(DictGet(css.Map, "mask-position"));
-                css.MaskSize = Safe(DictGet(css.Map, "mask-size"));
-
-                // CSS Shapes
-                css.ShapeOutside = Safe(DictGet(css.Map, "shape-outside"));
-                css.ShapeMargin = Safe(DictGet(css.Map, "shape-margin"));
-                css.ShapeImageThreshold = Safe(DictGet(css.Map, "shape-image-threshold"));
-
-                // Background (gradients and colors)
-                var backgroundBrushRaw = Safe(DictGet(css.Map, "background"));
-                var backgroundColorRawVal = Safe(DictGet(css.Map, "background-color"));
-                var backgroundImageRawVal = Safe(DictGet(css.Map, "background-image"));
-                
-                // Try to parse gradient backgrounds first
-                if (!string.IsNullOrEmpty(backgroundBrushRaw) || !string.IsNullOrEmpty(backgroundImageRawVal))
-                {
-                    var bgValue = !string.IsNullOrEmpty(backgroundImageRawVal) ? backgroundImageRawVal : backgroundBrushRaw;
-                    if (bgValue.Contains("gradient"))
-                    {
-                        try
-                        {
-                            var brush = ParseGradient(bgValue);
-                            if (brush != null) css.Background = brush;
-                        }
-                        catch { }
-                    }
-                    else if (!string.IsNullOrEmpty(bgValue) && !bgValue.Contains("url("))
-                    {
-                        // Try as color
-                        var col = CssParser.ParseColor(bgValue);
-                        if (col.HasValue)
-                        {
-                            css.BackgroundColor = col.Value;
-                            css.Background = new SolidColorBrush(col.Value);
-                        }
-                    }
-                }
-                
-                // Also try background-color if background wasn't set
-                if (css.Background == null && !string.IsNullOrEmpty(backgroundColorRawVal))
-                {
-                    var col = CssParser.ParseColor(backgroundColorRawVal);
-                    if (col.HasValue)
-                    {
-                        css.BackgroundColor = col.Value;
-                        css.Background = new SolidColorBrush(col.Value);
-                    }
-                }
-
-                // Foreground (text color)
-                var colorRaw = Safe(DictGet(css.Map, "color"));
-                if (!string.IsNullOrEmpty(colorRaw))
-                {
-                    var col = CssParser.ParseColor(colorRaw);
-                    if (col.HasValue)
-                    {
-                        css.ForegroundColor = col.Value;
-                        css.Foreground = new SolidColorBrush(col.Value);
-                    }
-                }
-
-                // CSS Filters (blur, grayscale, brightness, etc.)
-                var filterRaw = Safe(DictGet(css.Map, "filter"));
-                if (!string.IsNullOrEmpty(filterRaw))
-                {
-                    css.Filter = filterRaw;
-                }
-                
-                // Backdrop filter
-                var backdropFilterRaw = Safe(DictGet(css.Map, "backdrop-filter"));
-                if (string.IsNullOrEmpty(backdropFilterRaw))
-                    backdropFilterRaw = Safe(DictGet(css.Map, "-webkit-backdrop-filter"));
-                if (!string.IsNullOrEmpty(backdropFilterRaw))
-                {
-                    css.BackdropFilter = backdropFilterRaw;
-                }
-                
-                // Clip-path (for circular/polygon shapes)
-                var clipPathRaw = Safe(DictGet(css.Map, "clip-path"));
-                if (!string.IsNullOrEmpty(clipPathRaw))
-                {
-                    css.ClipPath = clipPathRaw;
+                    css.After = ResolveStyle(n, css, perNodeAfter[n]);
                 }
 
                 result[n] = css;
             }
 
             return result;
+        }
+
+        private static CssComputed ResolveStyle(LiteElement n, CssComputed parentCss, List<Tuple<CssDecl, SelectorChain, int>> items)
+        {
+            var css = new CssComputed();
+
+            if (parentCss != null && parentCss.CustomProperties != null)
+            {
+                foreach (var kv in parentCss.CustomProperties)
+                {
+                    css.CustomProperties[kv.Key] = kv.Value;
+                    css.Map[kv.Key] = kv.Value;
+                }
+            }
+
+            if (items == null || items.Count == 0)
+                return css;
+
+            var byProp = items.GroupBy(t => t.Item1.Name, StringComparer.OrdinalIgnoreCase);
+            var chosen = new Dictionary<string, CssDecl>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var grp in byProp)
+            {
+                var ordered = grp.OrderByDescending(c => c.Item1.Important)
+                                 .ThenByDescending(c => c.Item1.Specificity)
+                                 .ThenByDescending(c => c.Item3)
+                                 .ToList();
+
+                chosen[grp.Key] = ordered[0].Item1;
+                
+                if (grp.Key.ToLowerInvariant() == "background" && ordered.Count > 1)
+                {
+                    string cls = "";
+                    if (n != null && n.Attr != null) n.Attr.TryGetValue("class", out cls);
+                    if (cls != null && cls.Contains("picture"))
+                    {
+                        try {
+                            var orderedInfo = string.Join("; ", ordered.Select(o => $"[val={o.Item1.Value}, spec={o.Item1.Specificity}, srcOrder={o.Item3}]"));
+                            System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[CASCADE_RESOLVE] .picture background: {orderedInfo} => Winner: {ordered[0].Item1.Value}\r\n");
+                        } catch {}
+                    }
+                }
+            }
+
+            var rawCustom = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var d in chosen.Values)
+            {
+                if (IsCustomPropertyName(d.Name))
+                    rawCustom[d.Name] = d.Value ?? string.Empty;
+            }
+
+            foreach (var key in rawCustom.Keys.ToList())
+            {
+                var resolvedCustom = ResolveCustomPropertyReferences(rawCustom[key], css, rawCustom, new HashSet<string>(StringComparer.Ordinal) { key });
+                rawCustom[key] = resolvedCustom;
+                css.CustomProperties[key] = resolvedCustom;
+                css.Map[key] = resolvedCustom;
+            }
+
+            foreach (var d in chosen.Values)
+            {
+                if (IsCustomPropertyName(d.Name)) continue;
+                var val = ResolveCustomPropertyReferences(d.Value, css, rawCustom, new HashSet<string>());
+                css.Map[d.Name] = val;
+            }
+
+            double emBase = 16.0;
+            if (parentCss != null && parentCss.FontSize.HasValue) emBase = parentCss.FontSize.Value;
+            
+            double currentEmBase = emBase;
+            double fsPx;
+            if (TryPx(DictGet(css.Map, "font-size"), out fsPx, emBase)) 
+            {
+                css.FontSize = fsPx;
+                currentEmBase = fsPx;
+            }
+            else if (parentCss != null && parentCss.FontSize.HasValue)
+            {
+                css.FontSize = parentCss.FontSize.Value;
+                currentEmBase = parentCss.FontSize.Value;
+            }
+
+            double posVal;
+            if (TryPx(DictGet(css.Map, "left"), out posVal, currentEmBase)) css.Left = posVal;
+            else if (TryPercent(DictGet(css.Map, "left"), out posVal)) css.LeftPercent = posVal;
+
+            if (TryPx(DictGet(css.Map, "top"), out posVal, currentEmBase)) css.Top = posVal;
+            else if (TryPercent(DictGet(css.Map, "top"), out posVal)) css.TopPercent = posVal;
+
+            if (TryPx(DictGet(css.Map, "right"), out posVal, currentEmBase)) css.Right = posVal;
+            else if (TryPercent(DictGet(css.Map, "right"), out posVal)) css.RightPercent = posVal;
+
+            if (TryPx(DictGet(css.Map, "bottom"), out posVal, currentEmBase)) css.Bottom = posVal;
+            else if (TryPercent(DictGet(css.Map, "bottom"), out posVal)) css.BottomPercent = posVal;
+
+            double sizeVal;
+            
+            string dbgCls = "";
+            if (n != null && n.Attr != null) n.Attr.TryGetValue("class", out dbgCls);
+            if (dbgCls != null && dbgCls.Contains("picture"))
+            {
+                 string rawW = DictGet(css.Map, "width");
+                 try { 
+                    bool success = TryPx(rawW, out sizeVal);
+                    System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[WIDTH_TRACE] .picture raw width: '{rawW}' -> TryPx success: {success}, val: {sizeVal}\r\n");
+                 } catch {}
+            }
+
+            if (TryPx(DictGet(css.Map, "width"), out sizeVal, currentEmBase)) css.Width = sizeVal;
+            else if (TryPercent(DictGet(css.Map, "width"), out sizeVal)) css.WidthPercent = sizeVal;
+
+            if (TryPx(DictGet(css.Map, "height"), out sizeVal, currentEmBase)) css.Height = sizeVal;
+            else if (TryPercent(DictGet(css.Map, "height"), out sizeVal)) css.HeightPercent = sizeVal;
+            if (TryPx(DictGet(css.Map, "min-width"), out sizeVal, currentEmBase)) css.MinWidth = sizeVal;
+            if (TryPx(DictGet(css.Map, "min-height"), out sizeVal, currentEmBase)) css.MinHeight = sizeVal;
+            if (TryPx(DictGet(css.Map, "max-width"), out sizeVal, currentEmBase)) css.MaxWidth = sizeVal;
+            if (TryPx(DictGet(css.Map, "max-height"), out sizeVal, currentEmBase)) css.MaxHeight = sizeVal;
+
+            var aspectRatioRaw = Safe(DictGet(css.Map, "aspect-ratio"));
+            if (!string.IsNullOrEmpty(aspectRatioRaw) && !aspectRatioRaw.Contains("auto"))
+            {
+                if (aspectRatioRaw.Contains("/"))
+                {
+                    var parts = aspectRatioRaw.Split('/');
+                    if (parts.Length == 2)
+                    {
+                        double w, h;
+                        if (TryDouble(parts[0].Trim(), out w) && TryDouble(parts[1].Trim(), out h) && h > 0)
+                            css.AspectRatio = w / h;
+                    }
+                }
+                else
+                {
+                    double ratio;
+                    if (TryDouble(aspectRatioRaw, out ratio) && ratio > 0)
+                        css.AspectRatio = ratio;
+                }
+            }
+
+            double gapRow, gapCol;
+            if (TryGapShorthand(DictGet(css.Map, "gap"), out gapRow, out gapCol))
+            {
+                css.Gap = gapRow;
+                css.RowGap = gapRow;
+                css.ColumnGap = gapCol;
+            }
+            double gapExplicit;
+            if (TryPx(DictGet(css.Map, "row-gap"), out gapExplicit, currentEmBase)) css.RowGap = gapExplicit;
+            if (TryPx(DictGet(css.Map, "column-gap"), out gapExplicit, currentEmBase)) css.ColumnGap = gapExplicit;
+            if (!css.RowGap.HasValue && css.Gap.HasValue) css.RowGap = css.Gap;
+            if (!css.ColumnGap.HasValue)
+            {
+                if (css.Gap.HasValue) css.ColumnGap = css.Gap;
+                else if (css.RowGap.HasValue) css.ColumnGap = css.RowGap;
+            }
+
+            var fgColor = TryColor(DictGet(css.Map, "color"));
+            if (fgColor.HasValue) css.ForegroundColor = fgColor;
+
+            var bgRaw = ExtractBackgroundColor(css.Map);
+            var bgColor = TryColor(bgRaw);
+            if (bgColor.HasValue) 
+            {
+                css.BackgroundColor = bgColor;
+                css.Background = new SolidColorBrush(bgColor.Value);
+            }
+
+            string bgImage = DictGet(css.Map, "background-image");
+            if (string.IsNullOrWhiteSpace(bgImage)) bgImage = DictGet(css.Map, "background");
+
+            if (!string.IsNullOrWhiteSpace(bgImage))
+            {
+                var grad = ParseGradient(bgImage);
+                if (grad != null) css.Background = grad;
+            }
+
+            var fontShorthand = Safe(DictGet(css.Map, "font"));
+            if (!string.IsNullOrEmpty(fontShorthand))
+            {
+                ParseFontShorthand(fontShorthand, css);
+            }
+
+            try
+            {
+                var ffRaw = DictGet(css.Map, "font-family");
+                var resolved = SelectFontFamily(ffRaw);
+                if (!string.IsNullOrEmpty(resolved))
+                    css.FontFamilyName = resolved;
+            }
+            catch { }
+
+            var fwRaw = Safe(DictGet(css.Map, "font-weight"));
+            if (!string.IsNullOrEmpty(fwRaw))
+            {
+                var fw = fwRaw.Trim().ToLowerInvariant();
+                if (fw == "normal") css.FontWeight = MakeFontWeight(400);
+                else if (fw == "bold") css.FontWeight = MakeFontWeight(700);
+                else if (fw == "bolder") css.FontWeight = MakeFontWeight(700);
+                else if (fw == "lighter") css.FontWeight = MakeFontWeight(300);
+                else
+                {
+                    int numeric;
+                    if (int.TryParse(fw, NumberStyles.Integer, CultureInfo.InvariantCulture, out numeric))
+                    {
+                        css.FontWeight = MakeFontWeight(numeric);
+                    }
+                }
+            }
+
+            var fsRaw = Safe(DictGet(css.Map, "font-style"));
+            if (!string.IsNullOrEmpty(fsRaw))
+            {
+                if (string.Equals(fsRaw, "italic", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(fsRaw, "oblique", StringComparison.OrdinalIgnoreCase))
+                    css.FontStyle = FontStyle.Italic;
+                else if (string.Equals(fsRaw, "normal", StringComparison.OrdinalIgnoreCase))
+                    css.FontStyle = FontStyle.Normal;
+            }
+
+            var ta = Safe(DictGet(css.Map, "text-align"));
+            if (ta == "center") css.TextAlign = TextAlignment.Center;
+            else if (ta == "right") css.TextAlign = TextAlignment.Right;
+            else if (ta == "justify") css.TextAlign = TextAlignment.Justify;
+
+            css.TextDecoration = Safe(DictGet(css.Map, "text-decoration"));
+
+            double opacityVal;
+            if (TryDouble(DictGet(css.Map, "opacity"), out opacityVal))
+                css.Opacity = Math.Max(0.0, Math.Min(1.0, opacityVal));
+
+            css.TextShadow = Safe(DictGet(css.Map, "text-shadow"));
+            css.BoxShadow = Safe(DictGet(css.Map, "box-shadow"));
+            css.MaskImage = Safe(DictGet(css.Map, "mask-image"));
+            if (string.IsNullOrEmpty(css.MaskImage)) css.MaskImage = Safe(DictGet(css.Map, "-webkit-mask-image"));
+
+            Thickness th;
+            if (TryThickness(DictGet(css.Map, "margin"), out th, currentEmBase)) css.Margin = th;
+
+            double mVal;
+            var m = css.Margin;
+            double mLeft = m.Left, mTop = m.Top, mRight = m.Right, mBottom = m.Bottom;
+            if (TryPx(DictGet(css.Map, "margin-left"), out mVal, currentEmBase)) mLeft = mVal;
+            if (TryPx(DictGet(css.Map, "margin-top"), out mVal, currentEmBase)) mTop = mVal;
+            if (TryPx(DictGet(css.Map, "margin-right"), out mVal, currentEmBase)) mRight = mVal;
+            if (TryPx(DictGet(css.Map, "margin-bottom"), out mVal, currentEmBase)) mBottom = mVal;
+            css.Margin = new Thickness(mLeft, mTop, mRight, mBottom);
+
+            if (TryThickness(DictGet(css.Map, "padding"), out th, currentEmBase)) css.Padding = th;
+
+            var p = css.Padding;
+            double pLeft = p.Left, pTop = p.Top, pRight = p.Right, pBottom = p.Bottom;
+            if (TryPx(DictGet(css.Map, "padding-left"), out mVal, currentEmBase)) pLeft = mVal;
+            if (TryPx(DictGet(css.Map, "padding-top"), out mVal, currentEmBase)) pTop = mVal;
+            if (TryPx(DictGet(css.Map, "padding-right"), out mVal, currentEmBase)) pRight = mVal;
+            if (TryPx(DictGet(css.Map, "padding-bottom"), out mVal, currentEmBase)) pBottom = mVal;
+            
+            var borderColor = TryColor(ExtractBorderColor(css.Map));
+            if (borderColor.HasValue) css.BorderBrushColor = borderColor;
+            if (TryThickness(ExtractBorderThickness(css.Map), out th, currentEmBase)) css.BorderThickness = th;
+            CornerRadius cr;
+            if (TryCornerRadius(DictGet(css.Map, "border-radius"), out cr)) css.BorderRadius = cr;
+            
+            var bt = css.BorderThickness;
+            double bLeft = bt.Left, bTop = bt.Top, bRight = bt.Right, bBottom = bt.Bottom;
+            Avalonia.Media.Color? borderSideColor = null;
+            
+            var borderBottomRaw = Safe(DictGet(css.Map, "border-bottom"));
+            if (!string.IsNullOrEmpty(borderBottomRaw))
+            {
+                var sideWidth = ExtractBorderSideWidth(borderBottomRaw, currentEmBase);
+                if (sideWidth > 0) bBottom = sideWidth;
+                var sideCol = ExtractBorderSideColor(borderBottomRaw);
+                if (sideCol.HasValue) borderSideColor = sideCol;
+            }
+            
+            var borderTopRaw = Safe(DictGet(css.Map, "border-top"));
+            if (!string.IsNullOrEmpty(borderTopRaw))
+            {
+                var sideWidth = ExtractBorderSideWidth(borderTopRaw, currentEmBase);
+                if (sideWidth > 0) bTop = sideWidth;
+                var sideCol = ExtractBorderSideColor(borderTopRaw);
+                if (sideCol.HasValue) borderSideColor = sideCol;
+            }
+            
+            var borderLeftRaw = Safe(DictGet(css.Map, "border-left"));
+            if (!string.IsNullOrEmpty(borderLeftRaw))
+            {
+                var sideWidth = ExtractBorderSideWidth(borderLeftRaw, currentEmBase);
+                if (sideWidth > 0) bLeft = sideWidth;
+                var sideCol = ExtractBorderSideColor(borderLeftRaw);
+                if (sideCol.HasValue) borderSideColor = sideCol;
+            }
+            
+            var borderRightRaw = Safe(DictGet(css.Map, "border-right"));
+            if (!string.IsNullOrEmpty(borderRightRaw))
+            {
+                var sideWidth = ExtractBorderSideWidth(borderRightRaw, currentEmBase);
+                if (sideWidth > 0) bRight = sideWidth;
+                var sideCol = ExtractBorderSideColor(borderRightRaw);
+                if (sideCol.HasValue) borderSideColor = sideCol;
+            }
+            
+            css.BorderThickness = new Thickness(bLeft, bTop, bRight, bBottom);
+            if (borderSideColor.HasValue && (!css.BorderBrushColor.HasValue || css.BorderBrushColor.Value == default))
+                css.BorderBrushColor = borderSideColor;
+
+            css.Display = Safe(DictGet(css.Map, "display"));
+            css.Position = Safe(DictGet(css.Map, "position"));
+            css.Float = Safe(DictGet(css.Map, "float"));
+            css.Overflow = Safe(DictGet(css.Map, "overflow"));
+
+            css.FlexDirection = Safe(DictGet(css.Map, "flex-direction"));
+            css.FlexWrap = Safe(DictGet(css.Map, "flex-wrap"));
+            css.JustifyContent = Safe(DictGet(css.Map, "justify-content"));
+            css.AlignItems = Safe(DictGet(css.Map, "align-items"));
+            css.AlignContent = Safe(DictGet(css.Map, "align-content"));
+            css.ListStyleType = Safe(DictGet(css.Map, "list-style-type"));
+
+            double fG, fS, fB;
+            if (TryFlexShorthand(DictGet(css.Map, "flex"), out fG, out fS, out fB))
+            {
+                css.FlexGrow = fG;
+                css.FlexShrink = fS;
+                css.FlexBasis = fB;
+            }
+
+            double flexVal;
+            if (TryDouble(DictGet(css.Map, "flex-grow"), out flexVal)) css.FlexGrow = flexVal;
+            if (TryDouble(DictGet(css.Map, "flex-shrink"), out flexVal)) css.FlexShrink = flexVal;
+            if (TryPx(DictGet(css.Map, "flex-basis"), out flexVal)) css.FlexBasis = flexVal;
+
+            var lhRaw = Safe(DictGet(css.Map, "line-height"));
+            if (!string.IsNullOrEmpty(lhRaw))
+            {
+                double lh;
+                if (TryPx(lhRaw, out lh)) css.LineHeight = lh;
+                else if (double.TryParse(lhRaw, NumberStyles.Float, CultureInfo.InvariantCulture, out lh)) css.LineHeight = lh;
+            }
+
+            css.VerticalAlign = Safe(DictGet(css.Map, "vertical-align"));
+            css.WhiteSpace = Safe(DictGet(css.Map, "white-space"));
+            css.TextOverflow = Safe(DictGet(css.Map, "text-overflow"));
+            css.BoxSizing = Safe(DictGet(css.Map, "box-sizing"));
+            css.Cursor = Safe(DictGet(css.Map, "cursor"));
+
+            int zIndex;
+            if (int.TryParse(DictGet(css.Map, "z-index"), NumberStyles.Integer, CultureInfo.InvariantCulture, out zIndex))
+                css.ZIndex = zIndex;
+
+            if (TryPx(DictGet(css.Map, "top"), out posVal)) css.Top = posVal;
+            if (TryPx(DictGet(css.Map, "right"), out posVal)) css.Right = posVal;
+            if (TryPx(DictGet(css.Map, "bottom"), out posVal)) css.Bottom = posVal;
+            if (TryPx(DictGet(css.Map, "left"), out posVal)) css.Left = posVal;
+            css.WhiteSpace = Safe(DictGet(css.Map, "white-space"));
+            css.TextOverflow = Safe(DictGet(css.Map, "text-overflow"));
+            css.BoxSizing = Safe(DictGet(css.Map, "box-sizing"));
+            css.Cursor = Safe(DictGet(css.Map, "cursor"));
+
+            double gapVal2;
+            if (TryPx(DictGet(css.Map, "gap"), out gapVal2))
+            {
+                css.Gap = gapVal2;
+                css.RowGap = gapVal2;
+                css.ColumnGap = gapVal2;
+            }
+            if (TryPx(DictGet(css.Map, "row-gap"), out gapVal2)) css.RowGap = gapVal2;
+            if (TryPx(DictGet(css.Map, "column-gap"), out gapVal2)) css.ColumnGap = gapVal2;
+
+            css.GridTemplateColumns = Safe(DictGet(css.Map, "grid-template-columns"));
+
+            css.Transition = Safe(DictGet(css.Map, "transition"));
+            css.TransitionProperty = Safe(DictGet(css.Map, "transition-property"));
+            css.TransitionDuration = Safe(DictGet(css.Map, "transition-duration"));
+            css.TransitionTimingFunction = Safe(DictGet(css.Map, "transition-timing-function"));
+            css.TransitionDelay = Safe(DictGet(css.Map, "transition-delay"));
+
+            css.Filter = Safe(DictGet(css.Map, "filter"));
+            css.BackdropFilter = Safe(DictGet(css.Map, "backdrop-filter"));
+
+            css.ScrollSnapType = Safe(DictGet(css.Map, "scroll-snap-type"));
+            css.ScrollSnapAlign = Safe(DictGet(css.Map, "scroll-snap-align"));
+
+            css.CounterReset = Safe(DictGet(css.Map, "counter-reset"));
+            css.CounterIncrement = Safe(DictGet(css.Map, "counter-increment"));
+            css.Content = Safe(DictGet(css.Map, "content"));
+
+            css.MaskImage = Safe(DictGet(css.Map, "mask-image"));
+            if (string.IsNullOrEmpty(css.MaskImage))
+                css.MaskImage = Safe(DictGet(css.Map, "-webkit-mask-image"));
+            css.MaskMode = Safe(DictGet(css.Map, "mask-mode"));
+            css.MaskRepeat = Safe(DictGet(css.Map, "mask-repeat"));
+            css.MaskPosition = Safe(DictGet(css.Map, "mask-position"));
+            css.MaskSize = Safe(DictGet(css.Map, "mask-size"));
+
+            css.ShapeOutside = Safe(DictGet(css.Map, "shape-outside"));
+            css.ShapeMargin = Safe(DictGet(css.Map, "shape-margin"));
+            css.ShapeImageThreshold = Safe(DictGet(css.Map, "shape-image-threshold"));
+
+            var backgroundBrushRaw2 = Safe(DictGet(css.Map, "background"));
+            var backgroundColorRawVal2 = Safe(DictGet(css.Map, "background-color"));
+            var backgroundImageRawVal2 = Safe(DictGet(css.Map, "background-image"));
+            
+            if (!string.IsNullOrEmpty(backgroundBrushRaw2) || !string.IsNullOrEmpty(backgroundImageRawVal2))
+            {
+                var bgValue = !string.IsNullOrEmpty(backgroundImageRawVal2) ? backgroundImageRawVal2 : backgroundBrushRaw2;
+                if (bgValue.Contains("gradient"))
+                {
+                    try
+                    {
+                        var brush = ParseGradient(bgValue);
+                        if (brush != null) css.Background = brush;
+                    }
+                    catch { }
+                }
+                else if (bgValue.IndexOf("url(", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    try
+                    {
+                        var brush = ParseBackgroundImage(bgValue);
+                        if (brush != null) css.Background = brush;
+                    }
+                    catch { }
+                }
+                else if (string.Equals(bgValue, "none", StringComparison.OrdinalIgnoreCase))
+                {
+                    css.Background = null;
+                    css.BackgroundColor = Avalonia.Media.Colors.Transparent;
+                }
+                else if (!string.IsNullOrEmpty(bgValue))
+                {
+                    var col = CssParser.ParseColor(bgValue);
+                    if (col.HasValue)
+                    {
+                        css.BackgroundColor = col.Value;
+                        css.Background = new SolidColorBrush(col.Value);
+                    }
+                }
+            }
+            
+            if (css.Background == null && !string.IsNullOrEmpty(backgroundColorRawVal2))
+            {
+                var col = CssParser.ParseColor(backgroundColorRawVal2);
+                if (col.HasValue)
+                {
+                    css.BackgroundColor = col.Value;
+                    css.Background = new SolidColorBrush(col.Value);
+                }
+            }
+
+            var colorRaw2 = Safe(DictGet(css.Map, "color"));
+            if (!string.IsNullOrEmpty(colorRaw2))
+            {
+                var col = CssParser.ParseColor(colorRaw2);
+                if (col.HasValue)
+                {
+                    css.ForegroundColor = col.Value;
+                    css.Foreground = new SolidColorBrush(col.Value);
+                }
+            }
+
+            var filterRaw2 = Safe(DictGet(css.Map, "filter"));
+            if (!string.IsNullOrEmpty(filterRaw2))
+            {
+                css.Filter = filterRaw2;
+            }
+            
+            var backdropFilterRaw2 = Safe(DictGet(css.Map, "backdrop-filter"));
+            if (string.IsNullOrEmpty(backdropFilterRaw2))
+                backdropFilterRaw2 = Safe(DictGet(css.Map, "-webkit-backdrop-filter"));
+            if (!string.IsNullOrEmpty(backdropFilterRaw2))
+            {
+                css.BackdropFilter = backdropFilterRaw2;
+            }
+            
+            var clipPathRaw2 = Safe(DictGet(css.Map, "clip-path"));
+            if (!string.IsNullOrEmpty(clipPathRaw2))
+            {
+                css.ClipPath = clipPathRaw2;
+            }
+
+            return css;
         }
 
         private static Avalonia.Media.FontWeight MakeFontWeight(int openTypeWeight)
@@ -2745,8 +2824,12 @@ namespace FenBrowser.FenEngine.Rendering
         private static string SafeGatherText(LiteElement n)
         {
             if (n == null) return null;
-            if (n.IsText) return n.Text ?? "";
             var sb = new StringBuilder();
+            
+            // Gather text from this node itself (e.g. #text, #cdata, or comments)
+            if (!string.IsNullOrEmpty(n.Text)) sb.Append(n.Text);
+            
+            // Recurse children (if any)
             foreach (var ch in n.Children)
             {
                 sb.Append(SafeGatherText(ch));
@@ -2798,7 +2881,7 @@ namespace FenBrowser.FenEngine.Rendering
             return double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v);
         }
 
-        private static bool TryPx(string s, out double px)
+        private static bool TryPx(string s, out double px, double emBase = 16.0)
         {
             px = 0;
             if (string.IsNullOrWhiteSpace(s)) return false;
@@ -2823,12 +2906,12 @@ namespace FenBrowser.FenEngine.Rendering
                 return false;
             }
 
-            // em (approximate 16px without parent context)
+            // em (uses provided base, usually 16px if root or inherited)
             if (sl.EndsWith("em"))
             {
                 var num = s.Substring(0, s.Length - 2).Trim();
                 double v;
-                if (TryDouble(num, out v)) { px = v * 16.0; return true; }
+                if (TryDouble(num, out v)) { px = v * emBase; return true; }
                 return false;
             }
 
@@ -2841,7 +2924,7 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
 
-        private static bool TryThickness(string s, out Thickness th)
+        private static bool TryThickness(string s, out Thickness th, double emBase = 16.0)
         {
             th = new Thickness(0);
             if (string.IsNullOrWhiteSpace(s)) return false;
@@ -2849,25 +2932,25 @@ namespace FenBrowser.FenEngine.Rendering
             var parts = s.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
             double a, b, c, d;
 
-            if (parts.Length == 1) { if (!TryPx(parts[0], out a)) a = 0; th = new Thickness(a); return true; }
+            if (parts.Length == 1) { if (!TryPx(parts[0], out a, emBase)) a = 0; th = new Thickness(a); return true; }
             if (parts.Length == 2)
             {
-                if (!TryPx(parts[0], out a)) a = 0;
-                if (!TryPx(parts[1], out b)) b = 0;
+                if (!TryPx(parts[0], out a, emBase)) a = 0;
+                if (!TryPx(parts[1], out b, emBase)) b = 0;
                 th = new Thickness(b, a, b, a); return true;
             }
             if (parts.Length == 3)
             {
-                if (!TryPx(parts[0], out a)) a = 0;
-                if (!TryPx(parts[1], out b)) b = 0;
-                if (!TryPx(parts[2], out c)) c = 0;
+                if (!TryPx(parts[0], out a, emBase)) a = 0;
+                if (!TryPx(parts[1], out b, emBase)) b = 0;
+                if (!TryPx(parts[2], out c, emBase)) c = 0;
                 th = new Thickness(b, a, b, c); return true;
             }
             // 4+
-            if (!TryPx(parts[0], out a)) a = 0;
-            if (!TryPx(parts[1], out b)) b = 0;
-            if (!TryPx(parts[2], out c)) c = 0;
-            if (!TryPx(parts[3], out d)) d = 0;
+            if (!TryPx(parts[0], out a, emBase)) a = 0;
+            if (!TryPx(parts[1], out b, emBase)) b = 0;
+            if (!TryPx(parts[2], out c, emBase)) c = 0;
+            if (!TryPx(parts[3], out d, emBase)) d = 0;
             th = new Thickness(d, a, b, c); return true;
         }
 
@@ -2964,11 +3047,16 @@ namespace FenBrowser.FenEngine.Rendering
                     if (val.Equals("thin", StringComparison.OrdinalIgnoreCase) ||
                         val.Equals("medium", StringComparison.OrdinalIgnoreCase) ||
                         val.Equals("thick", StringComparison.OrdinalIgnoreCase) ||
-                        val.EndsWith("px", StringComparison.OrdinalIgnoreCase))
+                        val.EndsWith("px", StringComparison.OrdinalIgnoreCase) ||
+                        val.EndsWith("em", StringComparison.OrdinalIgnoreCase) ||
+                        val.EndsWith("rem", StringComparison.OrdinalIgnoreCase))
                         continue;
 
                     return val;
                 }
+                // If no color found but border is present, default to current color (black usually)
+                // But we return null here and let the renderer decide or default to black if border width > 0
+                return null; 
             }
             return null;
         }
@@ -3000,8 +3088,13 @@ namespace FenBrowser.FenEngine.Rendering
             if (map.TryGetValue("border-width", out v) && !string.IsNullOrWhiteSpace(v)) return v;
             if (map.TryGetValue("border", out v) && !string.IsNullOrWhiteSpace(v))
             {
+                // Check for keywords first
+                if (v.IndexOf("thin", StringComparison.OrdinalIgnoreCase) >= 0) return "1px";
+                if (v.IndexOf("medium", StringComparison.OrdinalIgnoreCase) >= 0) return "3px";
+                if (v.IndexOf("thick", StringComparison.OrdinalIgnoreCase) >= 0) return "5px";
+
                 // naive: pick first length
-                var m = Regex.Match(v, @"([0-9]+)px");
+                var m = Regex.Match(v, @"([0-9.]+)(px|em|rem)");
                 if (m.Success) return m.Groups[0].Value;
             }
             return null;
@@ -3010,14 +3103,14 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Extract width from a border-side shorthand (e.g., "2px solid #eee")
         /// </summary>
-        private static double ExtractBorderSideWidth(string borderSide)
+        private static double ExtractBorderSideWidth(string borderSide, double emBase = 16.0)
         {
             if (string.IsNullOrWhiteSpace(borderSide)) return 0;
             var parts = borderSide.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
             foreach (var part in parts)
             {
                 double px;
-                if (TryPx(part, out px) && px > 0)
+                if (TryPx(part, out px, emBase) && px > 0)
                     return px;
             }
             return 0;
@@ -3110,6 +3203,59 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
         }
+
+        private static IBrush ParseBackgroundImage(string value)
+        {
+            // Extract url(...)
+            var match = Regex.Match(value, @"url\(['""]?(.*?)['""]?\)", RegexOptions.IgnoreCase);
+            if (match.Success)
+            {
+                var url = match.Groups[1].Value;
+                if (url.StartsWith("data:image"))
+                {
+                    try
+                    {
+                        // Parse data URI
+                        var base64Data = url.Substring(url.IndexOf(",") + 1);
+                        // Fix: URL-decode before base64 decode
+                        var decodedData = Uri.UnescapeDataString(base64Data);
+                        var bytes = Convert.FromBase64String(decodedData);
+                        using (var stream = new MemoryStream(bytes))
+                        {
+                            var bitmap = new Avalonia.Media.Imaging.Bitmap(stream);
+                            var brush = new ImageBrush(bitmap);
+                            
+                            // Check for repeat/no-repeat
+                            if (value.Contains("no-repeat"))
+                            {
+                                brush.TileMode = TileMode.None;
+                                brush.Stretch = Stretch.None;
+                            }
+                            else if (value.Contains("repeat-x"))
+                            {
+                                brush.TileMode = TileMode.Tile; 
+                            }
+                            else if (value.Contains("repeat-y"))
+                            {
+                                brush.TileMode = TileMode.Tile;
+                            }
+                            else
+                            {
+                                brush.TileMode = TileMode.Tile; // Default repeat
+                            }
+                            
+                            return brush;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"Failed to load data URI: {ex.Message}");
+                    }
+                }
+            }
+            return null;
+        }
+
         private static IBrush ParseGradient(string css)
         {
             if (string.IsNullOrWhiteSpace(css)) return null;
@@ -3240,5 +3386,13 @@ namespace FenBrowser.FenEngine.Rendering
             if (start < content.Length) list.Add(content.Substring(start));
             return list;
         }
+
+
+
+    private static readonly object _logLock = new object();
+    private static void DebugLog(string filename, string message)
+    {
+        try { lock (_logLock) { System.IO.File.AppendAllText(filename, message); } } catch { }
     }
+}
 }
