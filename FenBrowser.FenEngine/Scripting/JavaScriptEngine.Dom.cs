@@ -39,6 +39,34 @@ namespace FenBrowser.FenEngine.Scripting
                 return list.ToArray();
             }
 
+            public object[] getElementsByClassName(string className)
+            {
+                if (string.IsNullOrWhiteSpace(className) || _root == null) return new object[0];
+                var targetClasses = className.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                if (targetClasses.Length == 0) return new object[0];
+
+                var list = new List<object>();
+                foreach (var n in _root.Descendants())
+                {
+                    if (n.Attr != null && n.Attr.TryGetValue("class", out var cls) && !string.IsNullOrWhiteSpace(cls))
+                    {
+                        var elementClasses = cls.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                        // Check if all target classes are present in element classes
+                        bool match = true;
+                        foreach (var target in targetClasses)
+                        {
+                            if (!elementClasses.Contains(target, StringComparer.Ordinal))
+                            {
+                                match = false;
+                                break;
+                            }
+                        }
+                        if (match) list.Add(new JsDomElement(_e, n));
+                    }
+                }
+                return list.ToArray();
+            }
+
             public object querySelector(string sel)
             {
                 var all = querySelectorAll(sel);
@@ -199,7 +227,7 @@ namespace FenBrowser.FenEngine.Scripting
                     var name = j._node.Tag == "#text" ? (j._node.Text ?? "") : (j._node.Attr != null && j._node.Attr.TryGetValue("id", out __tmpId) ? "#" + __tmpId : j._node.Tag);
                     lock (_e._mutationLock)
                     {
-                        _e._pendingMutations.Add(new MutationRecord { Type = "childList", Added = new List<string> { name }, Removed = new List<string>() });
+                        _e._pendingMutations.Add(new MutationRecord { Type = "childList", AddedNodes = new System.Collections.Generic.List<LiteElement> { j._node }, RemovedNodes = new System.Collections.Generic.List<LiteElement>() });
                     }
                 }
                 catch { }
@@ -221,7 +249,7 @@ namespace FenBrowser.FenEngine.Scripting
                         {
                             string __tmpId3 = null;
                             var name = j._node.Tag == "#text" ? (j._node.Text ?? "") : (j._node.Attr != null && j._node.Attr.TryGetValue("id", out __tmpId3) ? "#" + __tmpId3 : j._node.Tag);
-                            _e._pendingMutations.Add(new MutationRecord { Type = "childList", Added = new List<string>(), Removed = new List<string> { name } });
+                            _e._pendingMutations.Add(new MutationRecord { Type = "childList", AddedNodes = new System.Collections.Generic.List<LiteElement>(), RemovedNodes = new System.Collections.Generic.List<LiteElement> { j._node } });
                         }
                         _e.RequestRepaint();
                     }
@@ -280,8 +308,8 @@ namespace FenBrowser.FenEngine.Scripting
                             _e._pendingMutations.Add(new MutationRecord
                             {
                                 Type = "childList",
-                                Added = new List<string> { value ?? "" },
-                                Removed = new List<string>()
+                                AddedNodes = new System.Collections.Generic.List<LiteElement> { textNode },
+                                RemovedNodes = new System.Collections.Generic.List<LiteElement>()
                             });
                         }
                     }
@@ -409,11 +437,7 @@ namespace FenBrowser.FenEngine.Scripting
                 {
                     lock (_e._mutationLock)
                     {
-                        var changed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-                        {
-                            [name] = value ?? ""
-                        };
-                        _e._pendingMutations.Add(new MutationRecord { Type = "attributes", Attrs = changed });
+                        _e._pendingMutations.Add(new MutationRecord { Type = "attributes", AttributeName = name, Target = _node });
                     }
                 }
                 catch { }
@@ -435,7 +459,7 @@ namespace FenBrowser.FenEngine.Scripting
                 {
                     string __tmpId2 = null;
                     var name = j._node.Tag == "#text" ? (j._node.Text ?? "") : (j._node.Attr != null && j._node.Attr.TryGetValue("id", out __tmpId2) ? "#" + __tmpId2 : j._node.Tag);
-                    lock (_e._mutationLock) { _e._pendingMutations.Add(new MutationRecord { Type = "childList", Added = new List<string> { name }, Removed = new List<string>() }); }
+                    lock (_e._mutationLock) { _e._pendingMutations.Add(new MutationRecord { Type = "childList", AddedNodes = new System.Collections.Generic.List<LiteElement> { j._node }, RemovedNodes = new System.Collections.Generic.List<LiteElement>() }); }
                 }
                 catch { }
                 _e.RequestRepaint();
@@ -470,7 +494,7 @@ namespace FenBrowser.FenEngine.Scripting
                     _node.Children.Remove(j._node);
                     string __tmpId4 = null;
                     var name = j._node.Tag == "#text" ? (j._node.Text ?? "") : (j._node.Attr != null && j._node.Attr.TryGetValue("id", out __tmpId4) ? "#" + __tmpId4 : j._node.Tag);
-                    lock (_e._mutationLock) { _e._pendingMutations.Add(new MutationRecord { Type = "childList", Added = new List<string>(), Removed = new List<string> { name } }); }
+                    lock (_e._mutationLock) { _e._pendingMutations.Add(new MutationRecord { Type = "childList", AddedNodes = new System.Collections.Generic.List<LiteElement>(), RemovedNodes = new System.Collections.Generic.List<LiteElement> { j._node } }); }
                 }
                 catch { }
                 _e.RequestRepaint();
@@ -478,6 +502,15 @@ namespace FenBrowser.FenEngine.Scripting
 
             public object querySelector(string sel) { return new JsDocument(_e, _node).querySelector(sel); }
             public object[] querySelectorAll(string sel) { return new JsDocument(_e, _node).querySelectorAll(sel); }
+            public object[] getElementsByClassName(string className) { return new JsDocument(_e, _node).getElementsByClassName(className); }
+
+            public void scrollIntoView()
+            {
+                if (_e._host != null)
+                {
+                    _e._host.ScrollToElement(_node);
+                }
+            }
 
             public object getContext(string contextType)
             {
