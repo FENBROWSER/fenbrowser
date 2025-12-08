@@ -278,9 +278,10 @@
 - String methods (charAt, indexOf, split, trim, replace, etc.)
 - Number methods (toFixed, toString, parseInt, parseFloat)
 - setTimeout, setInterval, clearTimeout, clearInterval (✅ FIXED & VERIFIED Dec 7, 2024)
+- requestAnimationFrame, cancelAnimationFrame (✅ IMPLEMENTED Dec 7, 2024)
 - ExecuteFunction delegate for callback execution
 
-**Score:** 70/100 - Privacy-first implementations, Timers/Events fully functional
+**Score:** 75/100 - Privacy-first implementations, Timers/Events/RAF fully functional
 
 ---
 
@@ -357,6 +358,7 @@
 - document.getElementById()
 - document.getElementsByClassName()
 - document.getElementsByTagName()
+- document.getElementsByClassName() (✅ IMPLEMENTED Dec 7, 2024)
 - document.querySelector()
 - document.querySelectorAll()
 - document.createElement()
@@ -372,7 +374,7 @@
 - element.parentNode, element.children
 - element.getBoundingClientRect()
 
-**Score:** 30/100 - Basic DOM, missing: MutationObserver, ShadowDOM API
+**Score:** 40/100 - Basic DOM, missing: MutationObserver, ShadowDOM API
 
 ---
 
@@ -520,6 +522,35 @@
 - Default browser styles
 
 **Score:** 50/100 - Solid basics
+
+---
+
+### 2️⃣1️⃣a Rendering/SkiaDomRenderer.cs
+
+**Purpose:** Experimental SkiaSharp-based renderer for pixel-perfect control
+**Features Implemented:**
+
+- Direct Skia drawing (Canvas)
+- Custom Box Model calculation (Margin, Border, Padding, Content)
+- Flex-like layout (basic block/flow)
+- UA Styles injection (inputs, inputs borders)
+- Viewport clipping and background management
+
+**Score:** 40/100 - Early stage, high potential for accuracy
+
+---
+
+### 2️⃣1️⃣b Rendering/SkiaBrowserView.cs
+
+**Purpose:** Avalonia Control hosting Skia rendering
+**Features Implemented:**
+
+- SkiaSharpApiLease integration
+- Custom drawing operation (ICustomDrawOperation)
+- Render loop integration
+- Viewport bounds management
+
+**Score:** 80/100 - Solid integration
 
 ---
 
