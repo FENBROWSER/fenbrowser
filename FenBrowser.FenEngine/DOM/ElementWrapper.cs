@@ -176,26 +176,44 @@ namespace FenBrowser.FenEngine.DOM
 
         private void SetInnerHTML(IValue value)
         {
+            var removed = _element.Children != null ? new System.Collections.Generic.List<LiteElement>(_element.Children) : new System.Collections.Generic.List<LiteElement>();
 
             _element.Children?.Clear();
             var htmlString = value.ToString();
-            if (string.IsNullOrEmpty(htmlString)) return;
+            
+            var added = new System.Collections.Generic.List<LiteElement>();
 
-            try
+            if (!string.IsNullOrEmpty(htmlString))
             {
-                var parser = new HtmlLiteParser(htmlString);
-                var parsed = parser.Parse();
-                if (parsed?.Children != null)
+                try
                 {
-                    foreach (var child in parsed.Children)
-                        _element.Append(child);
+                    var parser = new HtmlLiteParser(htmlString);
+                    var parsed = parser.Parse();
+                    if (parsed?.Children != null)
+                    {
+                        foreach (var child in parsed.Children)
+                        {
+                            _element.Append(child);
+                            added.Add(child);
+                        }
+                    }
+                }
+                catch
+                {
+                    var textNode = new LiteElement("#text") { Text = htmlString };
+                    _element.Append(textNode);
+                    added.Add(textNode);
                 }
             }
-            catch
-            {
-                _element.Append(new LiteElement("#text") { Text = htmlString });
-            }
             _context.RequestRender?.Invoke();
+
+            _context.OnMutation?.Invoke(new FenBrowser.FenEngine.Core.MutationRecord
+            {
+                Type = "childList",
+                Target = _element,
+                AddedNodes = added,
+                RemovedNodes = removed
+            });
         }
 
         private IValue GetTextContent()
@@ -246,13 +264,21 @@ namespace FenBrowser.FenEngine.DOM
 
             if (args.Length < 2) return FenValue.Undefined;
 
-            // Attr is read-only property but mutable dictionary
-            // We can add/update keys, but not assign a new dictionary
-            // LiteElement constructor ensures Attr is not null
+            var name = args[0].ToString();
+            var value = args[1].ToString();
+            var oldValue = _element.Attr.ContainsKey(name) ? _element.Attr[name] : null;
             
-            
-            _element.Attr[args[0].ToString()] = args[1].ToString();
+            _element.Attr[name] = value;
             _context.RequestRender?.Invoke();
+            
+            _context.OnMutation?.Invoke(new FenBrowser.FenEngine.Core.MutationRecord
+            {
+                Type = "attributes",
+                Target = _element,
+                AttributeName = name,
+                OldValue = oldValue
+            });
+            
             return FenValue.Undefined;
         }
         private double GetDimension(string attrName)
@@ -296,18 +322,19 @@ namespace FenBrowser.FenEngine.DOM
             if (args.Length == 0 || !args[0].IsObject) return FenValue.Null;
 
             var childWrapper = args[0].AsObject() as ElementWrapper;
-            // Accessing private field via reflection or assumption? 
-            // Better to add internal property or just act on the wrapper itself if possible.
-            // But ElementWrapper _element is private. 
-            // We can add an internal property for LiteElement access.
             
             if (childWrapper != null)
             {
-                // We need to access the underlying element. 
-                // Since this is same assembly, we can make _element internal or use a property.
-                // Let's modify the class to expose LiteElement internally.
                 _element.Append(childWrapper.Element);
                 _context.RequestRender?.Invoke();
+                
+                _context.OnMutation?.Invoke(new FenBrowser.FenEngine.Core.MutationRecord
+                {
+                    Type = "childList",
+                    Target = _element,
+                    AddedNodes = new System.Collections.Generic.List<LiteElement> { childWrapper.Element }
+                });
+                
                 return args[0];
             }
             

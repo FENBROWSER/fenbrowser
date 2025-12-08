@@ -1,8 +1,10 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:FenBrowser.UI"
+        xmlns:rendering="using:FenBrowser.FenEngine.Rendering"
         x:Class="FenBrowser.UI.MainWindow"
         Title="FenBrowser"
+        WindowState="Maximized"
         Width="1100" Height="700"
         ExtendClientAreaToDecorationsHint="True"
         ExtendClientAreaChromeHints="NoChrome"
@@ -305,18 +307,13 @@
 
 					<!-- Forward -->
 					<Button Classes="icon" Click="Forward_Click" ToolTip.Tip="Forward" Width="32" Height="32">
-						<Path Data="M12 4l1.41 1.41L7.83 11H20v2H7.83l5.58 5.59L12 20l-8-8 8-8z"
-							  Width="14" Height="14" Fill="{DynamicResource PrimaryTextBrush}" Stretch="Uniform"
-							  >
-							<Path.RenderTransform>
-								<ScaleTransform ScaleX="-1"/>
-							</Path.RenderTransform>
-						</Path>
+						<Path Data="M12 4l-1.41 1.41 5.58 5.59H4v2h12.17l-5.58 5.59L12 20l8-8z"
+							  Width="14" Height="14" Fill="{DynamicResource PrimaryTextBrush}" Stretch="Uniform"/>
 					</Button>
 
 					<!-- Refresh -->
 					<Button Classes="icon" Click="Refresh_Click" ToolTip.Tip="Refresh" Width="32" Height="32">
-						<Path Data="M17.65 6.35A8 8 0 1 0 19.93 12h2.02A10 10 0 1 1 15 2v2l4-4l-4-4"
+						<Path Data="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"
 							  Width="14" Height="14" Fill="{DynamicResource PrimaryTextBrush}" Stretch="Uniform"/>
 					</Button>
 				</StackPanel>
@@ -409,9 +406,11 @@
 				</Grid.RowDefinitions>
 				
 				<Grid Grid.Row="0">
-					<Border x:Name="BrowserContainer" Background="{DynamicResource WindowBackgroundBrush}">
+					<!-- TEMPORARY SKIA VERIFICATION -->
+					<rendering:SkiaBrowserView x:Name="SkiaView" ClipToBounds="True" />
+                    <!-- <Border x:Name="BrowserContainer" Background="{DynamicResource WindowBackgroundBrush}">
 						<TextBlock Text="Ready" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}"/>
-					</Border>
+					</Border> -->
 					<Canvas x:Name="HighlightOverlay" IsHitTestVisible="False"/>
 				</Grid>
 				

@@ -30,6 +30,12 @@ namespace FenBrowser.FenEngine.Rendering
                  return new FetchResult { Status = FetchStatus.Success, Content = NewTabRenderer.Render(), FinalUri = new Uri("fen://newtab"), ContentType = "text/html" };
             }
 
+            // Handle local file paths
+            if (System.IO.Path.IsPathRooted(url) && !url.StartsWith("http") && !url.StartsWith("file://"))
+            {
+                url = "file:///" + url.Replace("\\", "/");
+            }
+
             // Default to HTTPS if no scheme
             if (!url.StartsWith("http://") && !url.StartsWith("https://") && !url.StartsWith("file://") && !url.StartsWith("fen://") && !url.StartsWith("about:") && !url.StartsWith("data:"))
             {
@@ -46,7 +52,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (path.EndsWith(".png") || path.EndsWith(".jpg") || path.EndsWith(".jpeg") || 
                 path.EndsWith(".gif") || path.EndsWith(".bmp") || path.EndsWith(".webp") || path.EndsWith(".svg"))
             {
-                var syntheticHtml = $"<html><body style='margin:0; background-color: #222; display: flex; justify-content: center; align-items: center; height: 100vh;'><img src='{uri.AbsoluteUri}' style='max-width: 100%; max-height: 100%; box-shadow: 0 0 20px rgba(0,0,0,0.5);' /></body></html>";
+                var syntheticHtml = $"<html style='height: 100%;'><head><meta name='viewport' content='width=device-width, minimum-scale=0.1'><title>{System.IO.Path.GetFileName(uri.LocalPath)}</title></head><body style='margin: 0px; height: 100vh; background-color: rgb(14, 14, 14); display: flex; justify-content: center; align-items: center;'><img class='fen-image-view' style='display: block; margin: auto; background-color: hsl(0, 0%, 90%); transition: background-color 300ms; max-width: 100%; max-height: 100%;' src='{uri.AbsoluteUri}'></body></html>";
                 return new FetchResult { Status = FetchStatus.Success, Content = syntheticHtml, FinalUri = uri, ContentType = "text/html" };
             }
 
@@ -55,3 +61,5 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
+
+

@@ -87,6 +87,11 @@ namespace FenBrowser.FenEngine.Core
         /// Module loader for resolving and loading modules
         /// </summary>
         IModuleLoader ModuleLoader { get; set; }
+
+        /// <summary>
+        /// Callback for DOM mutations
+        /// </summary>
+        Action<MutationRecord> OnMutation { get; set; }
     }
 
     /// <summary>
@@ -118,6 +123,7 @@ namespace FenBrowser.FenEngine.Core
         public IValue ThisBinding { get; set; }
         public Func<IValue, IValue[], IValue> ExecuteFunction { get; set; }
         public IModuleLoader ModuleLoader { get; set; }
+        public Action<MutationRecord> OnMutation { get; set; }
 
         public ExecutionContext(
             IPermissionManager permissions = null, 

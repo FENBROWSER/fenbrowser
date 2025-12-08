@@ -49,7 +49,7 @@ namespace FenBrowser.FenEngine.Rendering
                     if (Avalonia.Application.Current?.ApplicationLifetime is Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime desktop 
                         && desktop.MainWindow != null) 
                     {
-                        mainAvailable = desktop.MainWindow.Bounds.Width - 80; // Leave margins
+                        mainAvailable = desktop.MainWindow.Bounds.Width - 25; // Leave space for scrollbar
                         if (mainAvailable < 400) mainAvailable = double.PositiveInfinity; // Fallback if too small
                     }
                 } 

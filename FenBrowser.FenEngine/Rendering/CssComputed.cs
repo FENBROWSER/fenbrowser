@@ -14,6 +14,9 @@ namespace FenBrowser.FenEngine.Rendering
         public Dictionary<string, string> Map { get; private set; }
         public Dictionary<string, string> CustomProperties { get; private set; }
 
+        public CssComputed Before { get; set; }
+        public CssComputed After { get; set; }
+
         public CssComputed()
         {
             Map = new Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase);
@@ -25,9 +28,13 @@ namespace FenBrowser.FenEngine.Rendering
         public string Position { get; set; }
         public int? ZIndex { get; set; }
         public double? Left { get; set; }
+        public double? LeftPercent { get; set; }
         public double? Top { get; set; }
+        public double? TopPercent { get; set; }
         public double? Right { get; set; }
+        public double? RightPercent { get; set; }
         public double? Bottom { get; set; }
+        public double? BottomPercent { get; set; }
         public string Overflow { get; set; }
 
         // Box model

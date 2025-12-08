@@ -1,4 +1,4 @@
-﻿using Avalonia;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Layout;
@@ -76,6 +76,7 @@ namespace FenBrowser.FenEngine.Rendering
             _tagHandlers["video"] = MakeMediaAsync;
             _tagHandlers["audio"] = MakeMediaAsync;
             _tagHandlers["iframe"] = MakeIframeAsync;
+            _tagHandlers["object"] = MakeObjectAsync;
 
             // Forms
             _tagHandlers["textarea"] = (n, b, on, j, c) => Task.FromResult(MakeTextarea(n));
@@ -104,13 +105,10 @@ namespace FenBrowser.FenEngine.Rendering
         private static readonly HashSet<string> FlexDisplayKeywords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "flex", "inline-flex",
-            "inline-flex",
-            "flexbox",
-            "inline-flexbox",
-            "-ms-flexbox",
-            "-ms-inline-flexbox",
-            "-webkit-flex",
-            "-webkit-inline-flex"
+            "flexbox", "inline-flexbox",
+            "-ms-flexbox", "-ms-inline-flexbox",
+            "-webkit-flex", "-webkit-inline-flex",
+            "-webkit-box", "-moz-box" // Legacy support
         };
         private IBrush LinkBrush = new SolidColorBrush(Colors.Blue);
         private static string GetDisplayValue(CssComputed css)
@@ -568,6 +566,9 @@ private async Task<Control> MakeGridFallbackAsync(LiteElement n, Uri baseUri, Ac
         foreach (var tuple in absoluteItems)
         {
             var fe = tuple.Item1;
+            // Ensure absolute items start from top-left so translation works as expected
+            fe.HorizontalAlignment = HorizontalAlignment.Left;
+            fe.VerticalAlignment = VerticalAlignment.Top;
             grid.Children.Add(fe);
             try { ApplyRelativeOffset(fe, tuple.Item2, wrapPanel); } catch { }
         }
@@ -871,6 +872,64 @@ private static string PickSrcFromSrcset(string srcset, double deviceWidth, doubl
 }
 private Task<Control> MakeImageAsync(LiteElement n, Uri baseUri)
     => MakeImageAsync(n, baseUri, System.Threading.CancellationToken.None);
+private async Task<Control> MakeObjectAsync(LiteElement n, Uri baseUri, Action<Uri> onNavigate, JavaScriptEngine js, CancellationToken ct)
+{
+    // Try to load data attribute as image
+    string data = null;
+    if (n.Attr != null) n.Attr.TryGetValue("data", out data);
+    
+    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[MakeObjectAsync] Tag={n.Tag} Data={data?.Substring(0, Math.Min(data?.Length ?? 0, 50))}...\r\n"); } catch {}
+    
+    string type = null;
+    if (n.Attr != null) n.Attr.TryGetValue("type", out type);
+    
+    if (!string.IsNullOrEmpty(data))
+    {
+        // Check if it looks like an image
+        bool isImage = false;
+        if (type != null && type.StartsWith("image/", StringComparison.OrdinalIgnoreCase)) isImage = true;
+        else if (LooksSvg(data)) isImage = true; // Treat SVG as image for now or use RenderInlineSvg if we parse it?
+        else 
+        {
+            var ext = data.ToLowerInvariant();
+            if (ext.EndsWith(".png") || ext.EndsWith(".jpg") || ext.EndsWith(".jpeg") || ext.EndsWith(".gif") || ext.StartsWith("data:image"))
+                isImage = true;
+        }
+
+        if (isImage)
+        {
+            var uri = ResolveUri(baseUri, data);
+            if (uri != null)
+            {
+                try
+                {
+                    // Reuse image loading logic
+                    var source = await LoadIImageAsync(uri.AbsoluteUri, 0);
+                    if (source != null)
+                    {
+                        var img = new Image { Source = source, Stretch = Stretch.Uniform, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
+                        
+                        // Apply dimensions if present
+                        if (n.Attr != null)
+                        {
+                            string w; if (n.Attr.TryGetValue("width", out w)) { double d; if (double.TryParse(w, out d)) img.Width = d; }
+                            string h; if (n.Attr.TryGetValue("height", out h)) { double d; if (double.TryParse(h, out d)) img.Height = d; }
+                        }
+
+                        ApplyComputedStyles(img, n);
+                        ApplyInlineStyles(img, n);
+                        return ApplyBoxesAndText(img, n); // Wrap in border if needed
+                    }
+                }
+                catch { }
+            }
+        }
+    }
+    
+    // Fallback: Render children
+    return await RenderGenericContainerAsync(n, baseUri, onNavigate, js, ct);
+}
+
 private async Task<Control> MakePictureAsync(LiteElement n, Uri baseUri, CancellationToken ct)
 {
     if (n == null || n.Children == null) return null;
@@ -897,17 +956,25 @@ private async Task<Control> MakeImageAsync(LiteElement n, Uri baseUri, Cancellat
         }
         return null;
     }
-    var img = new Image { Stretch = Stretch.Uniform };
+    var img = new Image { Stretch = Stretch.Uniform, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
+    
+    // Special handling for direct image view to prevent upscaling
+    var cls = DictGet(n.Attr, "class");
+    if (!string.IsNullOrEmpty(cls) && cls.Contains("fen-image-view"))
+    {
+        img.StretchDirection = StretchDirection.DownOnly;
+        img.HorizontalAlignment = HorizontalAlignment.Center;
+        img.VerticalAlignment = VerticalAlignment.Center;
+    }
+
     var alt = DictGet(n.Attr, "alt");
     int reqW = GetIntAttr(n, "width", 0);
     int current = 0;
     bool switching = false;
     Action<string, Uri> log = (msg, u) =>
     {
+        FenLogger.Debug($"[MakeImageAsync] {msg} {u}", LogCategory.Rendering);
         try { System.IO.File.AppendAllText("debug_log.txt", $"[MakeImageAsync] {msg} {u}\r\n"); } catch { }
-#if DEBUG
-        System.Diagnostics.Debug.WriteLine($"{msg} {u}");
-#endif
     };
     Func<int, Task<bool>> applyCandidateAsync = null;
     applyCandidateAsync = async (index) =>
@@ -1030,7 +1097,7 @@ private async Task<Control> RenderPictureAsync(LiteElement picture, Uri baseUri,
             var abs = ResolveUri(baseUri, candidate);
             if (abs != null)
             {
-                var img = new Image { Stretch = Stretch.Uniform };
+                var img = new Image { Stretch = Stretch.Uniform, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
                 var src = await LoadIImageAsync(abs.AbsoluteUri.ToString());
                 if (src != null) { img.Source = src; return ApplyBoxesAndText(img, picture); }
             }
@@ -1147,18 +1214,6 @@ public async Task<Control> BuildAsync(LiteElement root, Uri baseUri, Action<Uri>
         }
     }
     
-    // Get actual viewport width from main window as fallback
-    double viewportWidth = 1200; // Default fallback
-    try 
-    { 
-        if (Application.Current?.ApplicationLifetime is Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime desktop && desktop.MainWindow != null) 
-        {
-            viewportWidth = desktop.MainWindow.Bounds.Width - 50; // Leave some margin
-            if (viewportWidth < 400) viewportWidth = 400; // Minimum reasonable width
-        }
-    } 
-    catch { }
-    
     // Check if body has CSS max-width defined
     double? cssMaxWidth = bodyCss?.MaxWidth;
     if (!cssMaxWidth.HasValue && bodyCss?.Map != null)
@@ -1206,23 +1261,47 @@ public async Task<Control> BuildAsync(LiteElement root, Uri baseUri, Action<Uri>
         centerContent = leftAuto && rightAuto && cssMaxWidth.HasValue;
     }
     
-    // Content panel - respect CSS max-width if specified, otherwise use viewport width
-    var panel = new StackPanel 
-    { 
-        Orientation = Orientation.Vertical, 
-        HorizontalAlignment = centerContent ? HorizontalAlignment.Center : HorizontalAlignment.Stretch,
-        MaxWidth = cssMaxWidth.HasValue ? cssMaxWidth.Value : viewportWidth,
-        ClipToBounds = true 
-    };
+    // Determine container type
+    bool isFlex = bodyCss != null && string.Equals(bodyCss.Display, "flex", StringComparison.OrdinalIgnoreCase);
     
-    // Apply body padding as panel margin (if no CSS padding, use default)
+    Panel panel;
+    if (isFlex)
+    {
+        var fp = new FlexPanel();
+        if (bodyCss.Map != null)
+        {
+             if (bodyCss.Map.TryGetValue("flex-direction", out var fd)) fp.FlexDirection = fd;
+             if (bodyCss.Map.TryGetValue("flex-wrap", out var fw)) fp.FlexWrap = fw;
+             if (bodyCss.Map.TryGetValue("justify-content", out var jc)) fp.JustifyContent = jc;
+             if (bodyCss.Map.TryGetValue("align-items", out var ai)) fp.AlignItems = ai;
+             if (bodyCss.Map.TryGetValue("align-content", out var ac)) fp.AlignContent = ac;
+             
+             if (bodyCss.Gap.HasValue) { fp.ColumnGap = bodyCss.Gap.Value; fp.RowGap = bodyCss.Gap.Value; }
+             if (bodyCss.ColumnGap.HasValue) fp.ColumnGap = bodyCss.ColumnGap.Value;
+             if (bodyCss.RowGap.HasValue) fp.RowGap = bodyCss.RowGap.Value;
+        }
+        panel = fp;
+    }
+    else
+    {
+        panel = new StackPanel { Orientation = Orientation.Vertical };
+    }
+
+    panel.HorizontalAlignment = centerContent ? HorizontalAlignment.Center : HorizontalAlignment.Stretch;
+    if (cssMaxWidth.HasValue) panel.MaxWidth = cssMaxWidth.Value;
+    // Removed fallback to viewportWidth to allow dynamic resizing
+    panel.ClipToBounds = true;
+    
+    // Apply body padding as panel margin
     if (bodyCss != null && (bodyCss.Padding.Left > 0 || bodyCss.Padding.Top > 0 || bodyCss.Padding.Right > 0 || bodyCss.Padding.Bottom > 0))
     {
         panel.Margin = bodyCss.Padding;
     }
     else
     {
-        panel.Margin = new Thickness(16, 16, 16, 24);
+        // Do not force a default margin if none is specified. 
+        // This fixes the issue where full-screen backgrounds (like image view) have unwanted white borders.
+        panel.Margin = new Thickness(0);
     }
     
     if (body.Children != null)
@@ -1245,7 +1324,7 @@ public async Task<Control> BuildAsync(LiteElement root, Uri baseUri, Action<Uri>
         ApplyInlineStyles(panel, body);
         // NOTE: Do NOT call ApplyComputedLayout on the body panel - we've already handled
         // max-width and centering above, and ApplyComputedLayout would override the margin
-        // with CSS margin values (e.g., margin: 0 auto → margin: 0) breaking the layout
+        // with CSS margin values (e.g., margin: 0 auto ? margin: 0) breaking the layout
     }
     catch { }
     // Wrap body/html background/border if present
@@ -1316,8 +1395,25 @@ public async Task<Control> BuildAsync(LiteElement root, Uri baseUri, Action<Uri>
         CssComputed cssHtml = null;
         if (ComputedStyles != null)
         {
-            var htmlNode = root.Descendants().FirstOrDefault(n => n.Tag == "html") ?? root;
-            if (htmlNode != null) ComputedStyles.TryGetValue(htmlNode, out cssHtml);
+            var htmlNode = root.Descendants().FirstOrDefault(n => n.Tag == "html");
+            if (htmlNode == null && string.Equals(root.Tag, "html", StringComparison.OrdinalIgnoreCase))
+            {
+                htmlNode = root;
+            }
+            
+            if (htmlNode != null)
+            {
+                 bool hasStyle = ComputedStyles.TryGetValue(htmlNode, out cssHtml);
+                 FenLogger.Debug($"[RenderHtml] Root: {root.Tag}, HTML Node: {htmlNode.Tag}, HasStyle: {hasStyle}", LogCategory.Rendering);
+                 if (cssHtml != null)
+                 {
+                     FenLogger.Debug($"[RenderHtml] HTML Bg: {cssHtml.Background}, BgColor: {cssHtml.BackgroundColor}", LogCategory.Rendering);
+                 }
+            }
+            else
+            {
+                 FenLogger.Debug($"[RenderHtml] HTML Node NOT FOUND. Root is {root.Tag}", LogCategory.Rendering);
+            }
             
             if (cssHtml == null)
             {
@@ -1377,14 +1473,47 @@ public async Task<Control> BuildAsync(LiteElement root, Uri baseUri, Action<Uri>
         grid.Children.Add(rootVisual);
         grid.Children.Add(_fixedFront);
         // add pending fixed items to appropriate overlay based on z-index
+        FenLogger.Debug($"[RenderHtml] Processing {_pendingFixed.Count} fixed elements", LogCategory.Rendering);
         foreach (var kv in _pendingFixed)
         {
             try
             {
                 var fe = kv.Item1; var css = kv.Item2;
                 var target = (css != null && css.ZIndex.HasValue && css.ZIndex.Value < 0) ? _fixedBehind : _fixedFront;
+                
+                // Apply positioning for fixed elements
+                if (css != null)
+                {
+                    if (css.Left.HasValue) Canvas.SetLeft(fe, css.Left.Value);
+                    else if (css.LeftPercent.HasValue) 
+                    {
+                         var bind = new Avalonia.Data.Binding("Bounds.Width") { Source = target, Converter = new FuncValueConverter<double, double>(w => w * (css.LeftPercent.Value / 100.0)) };
+                         fe.Bind(Canvas.LeftProperty, bind);
+                    }
+                    
+                    if (css.Top.HasValue) Canvas.SetTop(fe, css.Top.Value);
+                    else if (css.TopPercent.HasValue)
+                    {
+                         var bind = new Avalonia.Data.Binding("Bounds.Height") { Source = target, Converter = new FuncValueConverter<double, double>(h => h * (css.TopPercent.Value / 100.0)) };
+                         fe.Bind(Canvas.TopProperty, bind);
+                    }
+                    
+                    if (css.Right.HasValue) Canvas.SetRight(fe, css.Right.Value);
+                    else if (css.RightPercent.HasValue)
+                    {
+                         var bind = new Avalonia.Data.Binding("Bounds.Width") { Source = target, Converter = new FuncValueConverter<double, double>(w => w * (css.RightPercent.Value / 100.0)) };
+                         fe.Bind(Canvas.RightProperty, bind);
+                    }
+                    
+                    if (css.Bottom.HasValue) Canvas.SetBottom(fe, css.Bottom.Value);
+                    else if (css.BottomPercent.HasValue)
+                    {
+                         var bind = new Avalonia.Data.Binding("Bounds.Height") { Source = target, Converter = new FuncValueConverter<double, double>(h => h * (css.BottomPercent.Value / 100.0)) };
+                         fe.Bind(Canvas.BottomProperty, bind);
+                    }
+                }
+
                 target.Children.Add(fe);
-                // PositionOnCanvas(fe, css, grid); // TODO: Fix arguments
             }
             catch { }
         }
@@ -1568,7 +1697,7 @@ private static Control BuildJustifiedLine(List<Control> elems, bool isRow, strin
 private async Task<Control> RenderNodeAsync(LiteElement n, Uri baseUri, Action<Uri> onNavigate, JavaScriptEngine js, CancellationToken ct)
 {
     if (n == null) return null;
-    try { System.IO.File.AppendAllText("debug_log.txt", $"[RenderNode] {n.Tag}\r\n"); } catch { }
+    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[RenderNode] {n.Tag}\r\n"); } catch { }
     ct.ThrowIfCancellationRequested();
     if (n.IsText)
     {
@@ -1594,7 +1723,12 @@ private async Task<Control> RenderNodeAsync(LiteElement n, Uri baseUri, Action<U
 }
 private async Task<Control> RenderBlockAsync(LiteElement n, Uri baseUri, Action<Uri> onNavigate, JavaScriptEngine js, CancellationToken ct)
 {
-    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[RenderBlockAsync] {n.Tag}\r\n"); } catch {}
+    try 
+    { 
+        var childrenTags = n.Children == null ? "None" : string.Join(", ", n.Children.Select(c => c.Tag));
+        System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_trace.txt", $"[RenderBlockAsync] {n.Tag} Children: [{childrenTags}]\r\n");
+        FenLogger.Debug($"[RenderBlockAsync] {n.Tag} Children: [{childrenTags}]", LogCategory.Rendering);
+    } catch {}
     return await RenderGenericContainerAsync(n, baseUri, onNavigate, js, ct);
 }
 
@@ -1605,6 +1739,13 @@ private bool IsInlineNode(LiteElement n)
     // Check CSS display first
     if (ComputedStyles != null && ComputedStyles.TryGetValue(n, out var css))
     {
+        // Absolute/Fixed position elements are never inline in the flow
+        if (!string.IsNullOrEmpty(css.Position))
+        {
+             var p = css.Position.ToLowerInvariant();
+             if (p == "absolute" || p == "fixed") return false;
+        }
+
         var d = css.Display?.ToLowerInvariant();
         if (d == "inline" || d == "inline-block" || d == "inline-flex" || d == "inline-grid") return true;
         if (d == "block" || d == "flex" || d == "grid") return false;
@@ -1629,6 +1770,7 @@ private async Task AddInlinesRecursiveAsync(InlineCollection inlines, IList<Lite
     
     foreach (var child in children)
     {
+        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[AddInlines] [TRACE_NEW_CODE] Processing {child.Tag}\r\n"); } catch {}
         ct.ThrowIfCancellationRequested();
         
         if (child.IsText)
@@ -1663,6 +1805,30 @@ private async Task AddInlinesRecursiveAsync(InlineCollection inlines, IList<Lite
                 }
                 continue;
             }
+
+            // Handle SVG inline
+            if (tag == "svg")
+            {
+                var svgControl = RenderInlineSvg(child);
+                if (svgControl != null)
+                {
+                    inlines.Add(new InlineUIContainer { Child = svgControl, BaselineAlignment = BaselineAlignment.Bottom });
+                }
+                continue;
+            }
+
+            // Handle Object (often used for images/fallback)
+            if (tag == "object")
+            {
+                 try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[AddInlines] Entering object block for {child.Tag}\r\n"); } catch {}
+                 // Render via RenderNodeAsync to allow specific handlers or fallback to generic
+                 var objControl = await RenderNodeAsync(child, baseUri, onNavigate, js, ct);
+                 if (objControl != null)
+                 {
+                     inlines.Add(new InlineUIContainer { Child = objControl, BaselineAlignment = BaselineAlignment.Bottom });
+                 }
+                 continue;
+            }
             
             // Get CSS styling
             CssComputed childCss = null;
@@ -1695,6 +1861,16 @@ private async Task AddInlinesRecursiveAsync(InlineCollection inlines, IList<Lite
             }
             
             // Inline element - apply appropriate styling
+            if (tag == "a")
+            {
+                var linkControl = await MakeLink(child, baseUri, onNavigate, js, ct);
+                if (linkControl != null)
+                {
+                    inlines.Add(new InlineUIContainer { Child = linkControl, BaselineAlignment = BaselineAlignment.Bottom });
+                }
+                continue;
+            }
+
             if (child.Children != null && child.Children.Count > 0)
             {
                 // Has children - wrap in a Span for styling
@@ -1792,6 +1968,8 @@ private async Task AddInlinesRecursiveAsync(InlineCollection inlines, IList<Lite
 
 private async Task<Control> RenderGenericContainerAsync(LiteElement n, Uri baseUri, Action<Uri> onNavigate, JavaScriptEngine js, CancellationToken ct)
 {
+    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_trace.txt", $"[RenderGenericContainerAsync] Called for {n.Tag}\r\n"); } catch {}
+
     // SPECIAL CASE: Empty elements with CSS dimensions should render as visible boxes
     // This handles cases like transition-box, snap-item, mask-demo, shape-demo
     bool isEmptyElement = n.Children == null || n.Children.Count == 0 || 
@@ -1949,157 +2127,6 @@ private async Task<Control> RenderGenericContainerAsync(LiteElement n, Uri baseU
         {
             return await MakeGridFallbackAsync(n, baseUri, onNavigate, js, ct);
         }
-    }
-
-    // Special handling for nav element - default to horizontal layout like a navbar
-    var tagLower = n.Tag?.ToLowerInvariant() ?? "";
-    if (tagLower == "nav")
-    {
-        // Nav should default to horizontal layout like typical navigation bars
-        // Wrap in Border for background color support
-        var navContainer = new Border 
-        { 
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            ClipToBounds = true,
-            Padding = new Thickness(8, 4, 8, 4)
-        };
-        var navPanel = new WrapPanel { Orientation = Orientation.Horizontal };
-        
-        try { ApplyComputedStyles(navContainer, n); } catch { }
-        try { ApplyInlineStyles(navContainer, n); } catch { }
-
-        if (n.Children != null)
-        {
-            foreach (var child in n.Children)
-            {
-                ct.ThrowIfCancellationRequested();
-                var elt = await RenderNodeAsync(child, baseUri, onNavigate, js, ct);
-                if (elt != null)
-                {
-                    // Add horizontal spacing between nav items
-                    if (elt.Margin == default) elt.Margin = new Thickness(0, 0, 12, 0);
-                    navPanel.Children.Add(elt);
-                }
-            }
-        }
-        navContainer.Child = navPanel;
-        return navContainer;
-    }
-    
-    // Special handling for header element - wrap in Border for background support
-    if (tagLower == "header")
-    {
-        var headerContainer = new Border 
-        { 
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            ClipToBounds = true,
-            Padding = new Thickness(16, 12, 16, 12)
-        };
-        var headerPanel = new StackPanel { Orientation = Orientation.Vertical };
-        
-        try { ApplyComputedStyles(headerContainer, n); } catch { }
-        try { ApplyInlineStyles(headerContainer, n); } catch { }
-
-        if (n.Children != null)
-        {
-            foreach (var child in n.Children)
-            {
-                ct.ThrowIfCancellationRequested();
-                var elt = await RenderNodeAsync(child, baseUri, onNavigate, js, ct);
-                if (elt != null) headerPanel.Children.Add(elt);
-            }
-        }
-        headerContainer.Child = headerPanel;
-        return headerContainer;
-    }
-    
-    // Special handling for footer element - wrap in Border for background support  
-    if (tagLower == "footer")
-    {
-        var footerContainer = new Border 
-        { 
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            ClipToBounds = true,
-            Padding = new Thickness(24, 24, 24, 24)
-        };
-        
-        // First apply CSS styles to get any background
-        try { ApplyComputedStyles(footerContainer, n); } catch { }
-        try { ApplyInlineStyles(footerContainer, n); } catch { }
-        
-        // If no background was set by CSS, use dark default
-        if (footerContainer.Background == null)
-        {
-            footerContainer.Background = new SolidColorBrush(Color.Parse("#333333"));
-        }
-        
-        // Check for div children that could be column containers
-        var divChildren = n.Children?.Where(c => 
-            c.Tag?.ToLowerInvariant() == "div" || 
-            c.Tag?.ToLowerInvariant() == "section" ||
-            c.Tag?.ToLowerInvariant() == "nav").ToList() ?? new List<LiteElement>();
-        
-        Control footerContent;
-        
-        // If we have 2-4 div children at the same level, treat them as columns
-        if (divChildren.Count >= 2 && divChildren.Count <= 6)
-        {
-            var grid = new Grid { HorizontalAlignment = HorizontalAlignment.Stretch };
-            for (int i = 0; i < divChildren.Count; i++)
-                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            
-            for (int i = 0; i < divChildren.Count; i++)
-            {
-                var elt = await RenderNodeAsync(divChildren[i], baseUri, onNavigate, js, ct);
-                if (elt != null)
-                {
-                    elt.Margin = new Thickness(0, 0, 16, 0);
-                    Grid.SetColumn(elt, i);
-                    grid.Children.Add(elt);
-                }
-            }
-            
-            // Also render any non-div children below
-            var otherChildren = n.Children?.Where(c => 
-                c.Tag?.ToLowerInvariant() != "div" && 
-                c.Tag?.ToLowerInvariant() != "section" &&
-                c.Tag?.ToLowerInvariant() != "nav").ToList();
-            
-            if (otherChildren != null && otherChildren.Count > 0)
-            {
-                var wrapper = new StackPanel { Orientation = Orientation.Vertical };
-                wrapper.Children.Add(grid);
-                foreach (var child in otherChildren)
-                {
-                    var elt = await RenderNodeAsync(child, baseUri, onNavigate, js, ct);
-                    if (elt != null) wrapper.Children.Add(elt);
-                }
-                footerContent = wrapper;
-            }
-            else
-            {
-                footerContent = grid;
-            }
-        }
-        else
-        {
-            // Render normally
-            var footerPanel = new StackPanel { Orientation = Orientation.Vertical };
-            if (n.Children != null)
-            {
-                foreach (var child in n.Children)
-                {
-                    ct.ThrowIfCancellationRequested();
-                    var elt = await RenderNodeAsync(child, baseUri, onNavigate, js, ct);
-                    if (elt != null) footerPanel.Children.Add(elt);
-                }
-            }
-            footerContent = footerPanel;
-        }
-        
-        footerContainer.Child = footerContent;
-        return footerContainer;
     }
 
     // Layout Logic:
@@ -2327,7 +2354,7 @@ private async Task<Control> RenderGenericContainerAsync(LiteElement n, Uri baseU
         // Inline Formatting Context -> Use TextBlock if only text children, otherwise vertical stack
         // WrapPanel doesn't constrain child width properly, causing overflow
         bool hasOnlyTextChildren = n.Children.All(c => c.IsText || 
-            (c.Tag?.ToLowerInvariant() == "br") ||
+            (c.Tag != null && c.Tag.ToLowerInvariant() == "br") ||
             (c.Children != null && c.Children.Count == 0 && !string.IsNullOrWhiteSpace(c.Text)));
         
         if (hasOnlyTextChildren)
@@ -2349,25 +2376,14 @@ private async Task<Control> RenderGenericContainerAsync(LiteElement n, Uri baseU
             }
         }
         
-        // Mixed inline content - for Wikipedia and similar sites, simply flatten all text
-        // This provides proper text flow at the expense of losing some inline styling
-        var flattenedText = GatherText(n);
-        if (!string.IsNullOrWhiteSpace(flattenedText))
-        {
-            var flatTb = new TextBlock 
-            { 
-                Text = CollapseWs(flattenedText),
-                TextWrapping = TextWrapping.Wrap, 
-                HorizontalAlignment = HorizontalAlignment.Stretch 
-            };
-            
-            try { ApplyComputedStyles(flatTb, n); } catch { }
-            try { ApplyInlineStyles(flatTb, n); } catch { }
-            return ApplyBoxesAndText(flatTb, n);
-        }
+        // Mixed inline content (text + images + spans)
+        // Use TextBlock with Inlines for proper flow
+        var mixedTb = new TextBlock { TextWrapping = TextWrapping.Wrap, HorizontalAlignment = HorizontalAlignment.Stretch };
+        await AddInlinesRecursiveAsync(mixedTb.Inlines, n.Children, baseUri, onNavigate, js, ct);
         
-        // Fallback to empty panel if no text
-        return new Border();
+        try { ApplyComputedStyles(mixedTb, n); } catch { }
+        try { ApplyInlineStyles(mixedTb, n); } catch { }
+        return ApplyBoxesAndText(mixedTb, n);
     }
     else
     {
@@ -2443,23 +2459,75 @@ private async Task<Control> RenderGenericContainerAsync(LiteElement n, Uri baseU
                 
                 // Check if this child is absolutely positioned
                 bool isAbsolutePositioned = false;
+                bool isFixed = false;
                 CssComputed positionCss = null;
                 if (ComputedStyles != null && ComputedStyles.TryGetValue(child, out positionCss))
                 {
                     var pos = positionCss.Position?.ToLowerInvariant() ?? "";
-                    if (pos == "absolute" || pos == "fixed")
-                    {
-                        isAbsolutePositioned = true;
-                    }
+                    if (pos == "absolute") isAbsolutePositioned = true;
+                    if (pos == "fixed") isFixed = true;
+                }
+                
+                if (isFixed && elt is Avalonia.Controls.Control feFixed)
+                {
+                     _pendingFixed.Add(new Tuple<Control, CssComputed>(feFixed, positionCss));
+                     continue;
                 }
                 
                 if (isAbsolutePositioned && absoluteCanvas != null && elt is Avalonia.Controls.Control fe)
                 {
                     // Add to Canvas and apply positioning
-                    if (positionCss.Left.HasValue) Canvas.SetLeft(fe, positionCss.Left.Value);
-                    if (positionCss.Top.HasValue) Canvas.SetTop(fe, positionCss.Top.Value);
-                    if (positionCss.Right.HasValue) Canvas.SetRight(fe, positionCss.Right.Value);
-                    if (positionCss.Bottom.HasValue) Canvas.SetBottom(fe, positionCss.Bottom.Value);
+                    if (positionCss.Left.HasValue) 
+                        Canvas.SetLeft(fe, positionCss.Left.Value);
+                    else if (positionCss.LeftPercent.HasValue)
+                    {
+                        var pct = positionCss.LeftPercent.Value / 100.0;
+                        var bind = new Avalonia.Data.Binding("Bounds.Width")
+                        {
+                            Source = absoluteCanvas,
+                            Converter = new FuncValueConverter<double, double>(w => w * pct)
+                        };
+                        fe.Bind(Canvas.LeftProperty, bind);
+                    }
+
+                    if (positionCss.Top.HasValue) 
+                        Canvas.SetTop(fe, positionCss.Top.Value);
+                    else if (positionCss.TopPercent.HasValue)
+                    {
+                        var pct = positionCss.TopPercent.Value / 100.0;
+                        var bind = new Avalonia.Data.Binding("Bounds.Height")
+                        {
+                            Source = absoluteCanvas,
+                            Converter = new FuncValueConverter<double, double>(h => h * pct)
+                        };
+                        fe.Bind(Canvas.TopProperty, bind);
+                    }
+
+                    if (positionCss.Right.HasValue) 
+                        Canvas.SetRight(fe, positionCss.Right.Value);
+                    else if (positionCss.RightPercent.HasValue)
+                    {
+                        var pct = positionCss.RightPercent.Value / 100.0;
+                        var bind = new Avalonia.Data.Binding("Bounds.Width")
+                        {
+                            Source = absoluteCanvas,
+                            Converter = new FuncValueConverter<double, double>(w => w * pct)
+                        };
+                        fe.Bind(Canvas.RightProperty, bind);
+                    }
+
+                    if (positionCss.Bottom.HasValue) 
+                        Canvas.SetBottom(fe, positionCss.Bottom.Value);
+                    else if (positionCss.BottomPercent.HasValue)
+                    {
+                        var pct = positionCss.BottomPercent.Value / 100.0;
+                        var bind = new Avalonia.Data.Binding("Bounds.Height")
+                        {
+                            Source = absoluteCanvas,
+                            Converter = new FuncValueConverter<double, double>(h => h * pct)
+                        };
+                        fe.Bind(Canvas.BottomProperty, bind);
+                    }
                     
                     // CRITICAL: Apply explicit dimensions from CSS for visibility
                     // 1. Fixed Pixel sizing
@@ -2501,6 +2569,15 @@ private async Task<Control> RenderGenericContainerAsync(LiteElement n, Uri baseU
                         };
                         fe.Bind(Avalonia.Controls.Control.WidthProperty, bind);
                     }
+                    else if (positionCss.WidthPercent.HasValue)
+                    {
+                        var bind = new Avalonia.Data.Binding("Bounds.Width")
+                        {
+                            Source = absoluteCanvas,
+                            Converter = new FuncValueConverter<double, double>(w => w * (positionCss.WidthPercent.Value / 100.0))
+                        };
+                        fe.Bind(Avalonia.Controls.Control.WidthProperty, bind);
+                    }
                     // If Height is NOT set but Top and Bottom ARE set, calculate Height
                     if (!positionCss.Height.HasValue && !positionCss.HeightPercent.HasValue && 
                          positionCss.Top.HasValue && positionCss.Bottom.HasValue)
@@ -2510,6 +2587,15 @@ private async Task<Control> RenderGenericContainerAsync(LiteElement n, Uri baseU
                         {
                             Source = absoluteCanvas,
                             Converter = new FuncValueConverter<double, double>(h => Math.Max(0, h - diff))
+                        };
+                        fe.Bind(Avalonia.Controls.Control.HeightProperty, bind);
+                    }
+                    else if (positionCss.HeightPercent.HasValue)
+                    {
+                        var bind = new Avalonia.Data.Binding("Bounds.Height")
+                        {
+                            Source = absoluteCanvas,
+                            Converter = new FuncValueConverter<double, double>(h => h * (positionCss.HeightPercent.Value / 100.0))
                         };
                         fe.Bind(Avalonia.Controls.Control.HeightProperty, bind);
                     }
@@ -2525,6 +2611,7 @@ private async Task<Control> RenderGenericContainerAsync(LiteElement n, Uri baseU
                     }
                     
                     // Also apply from BackgroundColor if Background brush was null
+                    // Also apply from BackgroundColor if Background brush was null
                     if (positionCss.BackgroundColor.HasValue)
                     {
                         var bgBrush = new SolidColorBrush(positionCss.BackgroundColor.Value);
@@ -2532,6 +2619,18 @@ private async Task<Control> RenderGenericContainerAsync(LiteElement n, Uri baseU
                         else if (fe is Panel pnl2 && pnl2.Background == null) pnl2.Background = bgBrush;
                     }
                     
+                    // CRITICAL: Apply Z-Index from CSS
+                    if (positionCss.ZIndex.HasValue)
+                    {
+                        fe.SetValue(Avalonia.Controls.Panel.ZIndexProperty, positionCss.ZIndex.Value);
+                    }
+                    
+                    // DEBUG: Log Absolute Child Styles
+                    if (child.Attr.GetValueOrDefault("class")?.Contains("first") == true || child.Tag == "p")
+                    {
+                        FenLogger.Debug($"[ABS_TRACE] Child <{child.Tag} class='{child.Attr.GetValueOrDefault("class")}'>: Pos={positionCss.Position}, Top={positionCss.Top}, Left={positionCss.Left}, Width={positionCss.Width}, Height={positionCss.Height}, Bg={positionCss.Background}, Z={positionCss.ZIndex}", LogCategory.Rendering);
+                    }
+
                     absoluteCanvas.Children.Add(fe);
                 }
                 else
@@ -2570,8 +2669,7 @@ private async Task<Control> RenderGenericContainerAsync(LiteElement n, Uri baseU
         }
     }
     
-    // If we have absolutely positioned children, wrap in a Grid with Canvas overlay
-    if (absoluteCanvas != null && absoluteCanvas.Children.Count > 0)
+        if (absoluteCanvas != null && absoluteCanvas.Children.Count > 0)
     {
         // DEBUG: Log when creating absolute canvas wrapper
         try {
@@ -2580,13 +2678,57 @@ private async Task<Control> RenderGenericContainerAsync(LiteElement n, Uri baseU
             FenLogger.Debug($"[ABS_CANVAS] Creating canvas wrapper for <{n.Tag} class='{wrapperCls}'> with {absoluteCanvas.Children.Count} absolute children", LogCategory.Rendering);
         } catch {}
         
-        var wrapper = new Grid { ClipToBounds = true };
+        var wrapper = new Grid();
+        
+        // Critical Fix: Apply container dimensions from CSS so the Grid doesn't collapse to 0x0
+        // when the normal flow content (panel) is empty.
+        if (ComputedStyles != null && ComputedStyles.TryGetValue(n, out var cssWrapper))
+        {
+            if (cssWrapper.Width.HasValue) 
+            {
+                wrapper.Width = cssWrapper.Width.Value;
+                FenLogger.Debug($"[LayoutFix] Set width {wrapper.Width} on <{n.Tag}>", LogCategory.Rendering);
+            }
+            else
+            {
+                FenLogger.Debug($"[LayoutFix] NO WIDTH in CSS for <{n.Tag}>. Class: {n.Attr.GetValueOrDefault("class")}", LogCategory.Rendering);
+            }
+
+            if (cssWrapper.Height.HasValue) wrapper.Height = cssWrapper.Height.Value;
+            
+            // Respect overflow
+            if (string.Equals(cssWrapper.Overflow, "hidden", StringComparison.OrdinalIgnoreCase))
+                wrapper.ClipToBounds = true;
+            else
+                wrapper.ClipToBounds = false; 
+        }
+        else
+        {
+             FenLogger.Debug($"[LayoutFix] No ComputedStyles found for <{n.Tag}>", LogCategory.Rendering);
+        }
+
         // Layer 0: Normal flow content
         panel.SetValue(Avalonia.Controls.Panel.ZIndexProperty, 0);
         wrapper.Children.Add(panel);
+        
         // Layer 1: Absolutely positioned content (in Canvas)
+        absoluteCanvas.HorizontalAlignment = HorizontalAlignment.Stretch;
+        absoluteCanvas.VerticalAlignment = VerticalAlignment.Stretch;
+        // Default z-index for the canvas itself is 1 (above normal flow), but children can override
         absoluteCanvas.SetValue(Avalonia.Controls.Panel.ZIndexProperty, 1);
         wrapper.Children.Add(absoluteCanvas);
+        
+        // Fix for Z-Index: We need to ensure children within the canvas respect their z-index relative to each other
+        foreach (var child in absoluteCanvas.Children)
+        {
+            if (child is Control c)
+            {
+                // We stored the original LiteElement in the Tag or similar? No, traverse back isn't easy here.
+                // Re-parsing logic: We have the child control, but we need its styles.
+                // The loop above created these controls. We should have applied ZIndex there.
+                // LET'S MODIFIY THE LOOP ABOVE INSTEAD.
+            }
+        }
         
         return ApplyBoxesAndText(wrapper, n);
     }
@@ -2685,7 +2827,7 @@ private async Task<Control> MakeInputAsync(LiteElement n, Uri baseUri, Action<Ur
             BorderThickness = new Thickness(1),
             Background = Brushes.White
         };
-        if (type == "password") tb.PasswordChar = '•';
+        if (type == "password") tb.PasswordChar = '�';
         if (n.Attr != null && n.Attr.TryGetValue("value", out var val)) tb.Text = val;
         if (n.Attr != null && n.Attr.TryGetValue("placeholder", out var ph)) tb.Watermark = ph;
         if (n.Attr != null && n.Attr.TryGetValue("size", out var sz) && int.TryParse(sz, out var size))
@@ -3008,21 +3150,58 @@ private async Task<Control> MakeIframeAsync(LiteElement n, Uri baseUri, Action<U
         BorderBrush = Brushes.Gray, 
         BorderThickness = new Thickness(1),
         Height = 300,
-        Width = 500
+        Width = 500,
+        Background = Brushes.White // Ensure iframe is opaque
     };
     
-    // Handle width/height attributes
-    if (n.Attr != null)
+    // Apply CSS styles from parent document (e.g. width/height from reftest.html)
+    try { ApplyComputedStyles(border, n); } catch { }
+
+    // Ensure background is white if CSS didn't set it (or set it to transparent)
+    if (border.Background == null || border.Background == Brushes.Transparent)
     {
-        if (n.Attr.TryGetValue("width", out var wStr) && double.TryParse(wStr, out var w)) border.Width = w;
-        if (n.Attr.TryGetValue("height", out var hStr) && double.TryParse(hStr, out var h)) border.Height = h;
+        border.Background = Brushes.White;
+    }
+
+    // Handle width/height attributes (override CSS if present? No, CSS usually wins, but let's keep attribute logic as fallback or override depending on specificity)
+    // In HTML, attributes are presentation hints, usually overridden by CSS. 
+    // But ApplyComputedStyles already handles CSS width/height.
+    // If CSS width/height are not set, we use attributes.
+    
+    if (double.IsNaN(border.Width) || border.Width == 0)
+    {
+        if (n.Attr != null)
+        {
+            if (n.Attr.TryGetValue("width", out var wStr))
+            {
+                 if (double.TryParse(wStr, out var w)) border.Width = w;
+                 else if (wStr.EndsWith("%")) border.Width = 900;
+                 else if (wStr.EndsWith("px") && double.TryParse(wStr.Replace("px",""), out var wPx)) border.Width = wPx;
+            }
+        }
+    }
+    if (double.IsNaN(border.Height) || border.Height == 0)
+    {
+        if (n.Attr != null)
+        {
+            if (n.Attr.TryGetValue("height", out var hStr))
+            {
+                 if (double.TryParse(hStr, out var h)) border.Height = h;
+                 else if (hStr.EndsWith("%")) border.Height = 700;
+                 else if (hStr.EndsWith("px") && double.TryParse(hStr.Replace("px",""), out var hPx)) border.Height = hPx;
+            }
+        }
     }
 
     if (n.Attr != null && n.Attr.TryGetValue("src", out var src) && !string.IsNullOrWhiteSpace(src))
     {
         // Recursive rendering
         var frameUri = new Uri(baseUri, src);
+        FenLogger.Debug($"[MakeIframeAsync] Loading iframe from {frameUri}", LogCategory.Rendering);
+        
         var scroller = new ScrollViewer { HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        // Add loading text
+        scroller.Content = new TextBlock { Text = "Loading Iframe...", Foreground = Brushes.Black, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
         border.Child = scroller;
 
         // Run in background to avoid blocking UI
@@ -3040,6 +3219,8 @@ private async Task<Control> MakeIframeAsync(LiteElement n, Uri baseUri, Action<U
                     // Fallback fetch if HtmlLoader not provided (should be rare)
                     using (var client = new HttpClient()) html = await client.GetStringAsync(frameUri);
                 }
+                
+                FenLogger.Debug($"[MakeIframeAsync] Fetched {html?.Length ?? 0} chars from {frameUri}", LogCategory.Rendering);
 
                 if (!string.IsNullOrEmpty(html))
                 {
@@ -3059,26 +3240,38 @@ private async Task<Control> MakeIframeAsync(LiteElement n, Uri baseUri, Action<U
                         }
                         catch { return string.Empty; }
                     };
-                    var computedStyles = await CssLoader.ComputeAsync(root, frameUri, cssFetcher, null, null);
-                    
-                    // Create a new renderer instance for the iframe with ComputedStyles
-                    var subRenderer = new DomBasicRenderer();
-                    subRenderer.HtmlLoader = HtmlLoader;
-                    subRenderer.ImageLoader = ImageLoader;
-                    subRenderer.ComputedStyles = computedStyles;
-                    
-                    // Render the body of the iframe
-                    var body = root.Descendants().FirstOrDefault(x => x.Tag == "body") ?? root;
-                    
+
+                    // Move ComputeAsync and Rendering to UI Thread to avoid InvalidOperationException (Brush creation)
                     await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(async () => 
                     {
-                        var content = await subRenderer.RenderNodeAsync(body, frameUri, onNavigate, null, CancellationToken.None);
-                        scroller.Content = content;
+                        try 
+                        {
+                            var computedStyles = await CssLoader.ComputeAsync(root, frameUri, cssFetcher, null, null);
+                            
+                            // Create a new renderer instance for the iframe with ComputedStyles
+                            var subRenderer = new DomBasicRenderer();
+                            subRenderer.HtmlLoader = HtmlLoader;
+                            subRenderer.ImageLoader = ImageLoader;
+                            subRenderer.ComputedStyles = computedStyles;
+                            
+                            // Render the iframe using BuildAsync to ensure proper document-level handling (html/body styles, fixed positioning)
+                            var content = await subRenderer.BuildAsync(root, frameUri, onNavigate, null, CancellationToken.None);
+                            if (content != null)
+                            {
+                                 scroller.Content = content;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                             FenLogger.Debug($"[MakeIframeAsync] Error inside UI thread: {ex}", LogCategory.Rendering);
+                             scroller.Content = new TextBlock { Text = "Render Error: " + ex.Message, Foreground = Brushes.Red };
+                        }
                     });
                 }
             }
             catch (Exception ex)
             {
+                FenLogger.Debug($"[MakeIframeAsync] Error loading iframe: {ex}", LogCategory.Rendering);
                 await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() => 
                 {
                     scroller.Content = new TextBlock { Text = "Failed to load iframe: " + ex.Message, Foreground = Brushes.Red };
@@ -4368,23 +4561,44 @@ private CssComputed TryGetCss(LiteElement n)
     catch { }
     return null;
 }
-// Back-compat shim for older call sites that still call ApplyBoxesAndText.
-// It delegates to the newer Finish(...) pipeline so you keep all styling behavior.
-private Control ApplyBoxesAndText(Control inner, LiteElement n)
-{
-    // Apply default block margins if CSS doesn't specify them
-    ApplyDefaultBlockMargins(inner, n);
-    return Finish(inner, n);
-}
+    // Back-compat shim for older call sites that still call ApplyBoxesAndText.
+    // It delegates to the newer Finish(...) pipeline so you keep all styling behavior.
+    private Control ApplyBoxesAndText(Control inner, LiteElement n)
+    {
+        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_margins.txt", $"[ApplyBoxesAndText] Called for {n.Tag}\r\n"); } catch {}
 
-// Apply default UA-style margins for block elements
-private void ApplyDefaultBlockMargins(Control fe, LiteElement n)
-{
-    if (fe == null || n == null) return;
+        // DEBUG: Trace call
+        if (n.Tag.Equals("h2", StringComparison.OrdinalIgnoreCase) || n.Tag.Equals("p", StringComparison.OrdinalIgnoreCase))
+        {
+            FenLogger.Debug($"[TRACE] ApplyBoxesAndText called for {n.Tag}", LogCategory.Rendering);
+        }
 
-    // Check if margin was explicitly set via CSS
+        // Apply default block margins if CSS doesn't specify them
+        ApplyDefaultBlockMargins(inner, n);
+        return Finish(inner, n);
+    }
+
+    // Apply default UA-style margins for block elements
+    private void ApplyDefaultBlockMargins(Control fe, LiteElement n)
+    {
+        if (fe == null || n == null) return;
+
+        // DEBUG: Trace call
+        if (n.Tag.Equals("h2", StringComparison.OrdinalIgnoreCase) || n.Tag.Equals("p", StringComparison.OrdinalIgnoreCase))
+        {
+            FenLogger.Debug($"[TRACE] ApplyDefaultBlockMargins called for {n.Tag}", LogCategory.Rendering);
+        }    // Check if margin was explicitly set via CSS
     var css = TryGetCss(n);
-    bool hasExplicitMargin = css != null && (css.Margin.Left != 0 || css.Margin.Top != 0 || css.Margin.Right != 0 || css.Margin.Bottom != 0);
+    bool hasExplicitMargin = css != null && (
+        (css.Margin.Left != 0 || css.Margin.Top != 0 || css.Margin.Right != 0 || css.Margin.Bottom != 0) ||
+        (css.Map != null && (
+            css.Map.ContainsKey("margin") || 
+            css.Map.ContainsKey("margin-top") || 
+            css.Map.ContainsKey("margin-bottom") || 
+            css.Map.ContainsKey("margin-left") || 
+            css.Map.ContainsKey("margin-right")
+        ))
+    );
     if (hasExplicitMargin) return;
 
     // Also check inline style for margin
@@ -4601,12 +4815,42 @@ private Control Finish(Control content, LiteElement n)
 {
     var css = TryGetCss(n);
     
+    // DEBUG: Log .picture computed styles
+    if (n.Attr.GetValueOrDefault("class")?.Contains("picture") == true)
+    {
+        FenLogger.Debug($"[RENDER_TRACE] .picture Computed: Width={css?.Width}, Height={css?.Height}, Border={css?.BorderThickness}, Padding={css?.Padding}, Background={css?.Background}, ZIndex={css?.ZIndex}, Pos={css?.Position}", LogCategory.Rendering);
+    }
+
+    // DEBUG: Log h2 and p computed styles for Acid2 reference
+    string cls = n.Attr.GetValueOrDefault("class") ?? "";
+    string elemId = n.Attr.GetValueOrDefault("id") ?? "";
+    
+    if (n.Tag.Equals("h2", StringComparison.OrdinalIgnoreCase) || 
+        n.Tag.Equals("p", StringComparison.OrdinalIgnoreCase) ||
+        cls.Contains("picture") || 
+        cls.Contains("eyes"))
+    {
+        string msg = $"[RENDER_TRACE_V2] {n.Tag}#{elemId}.{cls} Computed: Margin={css?.Margin}, Padding={css?.Padding}, Border={css?.BorderThickness}, Width={css?.Width}, Height={css?.Height}, Pos={css?.Position}, Top={css?.Top}, Left={css?.Left}, ZIndex={css?.ZIndex}";
+        FenLogger.Debug(msg, LogCategory.Rendering);
+        System.Console.WriteLine(msg);
+        try { System.IO.File.AppendAllText("debug_log.txt", msg + "\r\n"); } catch {}
+    }
+    
     // Check if we need a Border wrapper for box model properties
     bool hasBackground = css?.Background != null || css?.BackgroundColor.HasValue == true;
     bool hasBorder = css != null && ((css.BorderThickness.Left > 0 || css.BorderThickness.Top > 0 || css.BorderThickness.Right > 0 || css.BorderThickness.Bottom > 0) || css.BorderBrush != null || (css.Map != null && (css.Map.ContainsKey("border-bottom") || css.Map.ContainsKey("border-top") || css.Map.ContainsKey("border-left") || css.Map.ContainsKey("border-right"))));
     bool hasBorderRadius = css != null && (css.BorderRadius.TopLeft > 0 || css.BorderRadius.TopRight > 0 || css.BorderRadius.BottomLeft > 0 || css.BorderRadius.BottomRight > 0);
     bool hasPadding = css != null && (css.Padding.Left > 0 || css.Padding.Top > 0 || css.Padding.Right > 0 || css.Padding.Bottom > 0);
-    bool hasMargin = css != null && (css.Margin.Left != 0 || css.Margin.Top != 0 || css.Margin.Right != 0 || css.Margin.Bottom != 0);
+    bool hasMargin = css != null && (
+        (css.Margin.Left != 0 || css.Margin.Top != 0 || css.Margin.Right != 0 || css.Margin.Bottom != 0) ||
+        (css.Map != null && (
+            css.Map.ContainsKey("margin") || 
+            css.Map.ContainsKey("margin-top") || 
+            css.Map.ContainsKey("margin-bottom") || 
+            css.Map.ContainsKey("margin-left") || 
+            css.Map.ContainsKey("margin-right")
+        ))
+    );
     bool hasBoxShadow = css != null && !string.IsNullOrEmpty(css.BoxShadow);
     
     // Need Border wrapper if we have border-radius, box-shadow, or (background + padding for proper box model)
@@ -4953,6 +5197,64 @@ private void ApplyComputedStyles(Control fe, LiteElement n)
         if (border != null) border.Background = st.Background;
         else if (fe is Panel) ((Panel)fe).Background = st.Background;
     }
+
+    // Dimensions
+    // Special handling for 100% / 100vw width to allow dynamic resizing
+    bool widthHandled = false;
+    if (st.Map != null && st.Map.TryGetValue("width", out var wRaw) && !string.IsNullOrEmpty(wRaw))
+    {
+        var wTrim = wRaw.Trim();
+        if (wTrim == "100%" || wTrim == "100vw")
+        {
+            fe.HorizontalAlignment = HorizontalAlignment.Stretch;
+            fe.Width = double.NaN;
+            widthHandled = true;
+        }
+    }
+    if (!widthHandled && st.Width.HasValue) fe.Width = st.Width.Value;
+
+    // Special handling for 100% / 100vh height to allow dynamic resizing
+    bool heightHandled = false;
+    if (st.Map != null && st.Map.TryGetValue("height", out var hRaw) && !string.IsNullOrEmpty(hRaw))
+    {
+        var hTrim = hRaw.Trim();
+        if (hTrim == "100%" || hTrim == "100vh")
+        {
+            fe.VerticalAlignment = VerticalAlignment.Stretch;
+            fe.Height = double.NaN;
+            heightHandled = true;
+        }
+    }
+    if (!heightHandled && st.Height.HasValue) fe.Height = st.Height.Value;
+
+    if (st.MinWidth.HasValue) fe.MinWidth = st.MinWidth.Value;
+    if (st.MinHeight.HasValue) fe.MinHeight = st.MinHeight.Value;
+    
+    // Special handling for max-width: 100%
+    bool maxWidthHandled = false;
+    if (st.Map != null && st.Map.TryGetValue("max-width", out var mwRaw) && !string.IsNullOrEmpty(mwRaw))
+    {
+        var mwTrim = mwRaw.Trim();
+        if (mwTrim == "100%" || mwTrim == "100vw")
+        {
+            fe.MaxWidth = double.PositiveInfinity;
+            maxWidthHandled = true;
+        }
+    }
+    if (!maxWidthHandled && st.MaxWidth.HasValue) fe.MaxWidth = st.MaxWidth.Value;
+
+    // Special handling for max-height: 100%
+    bool maxHeightHandled = false;
+    if (st.Map != null && st.Map.TryGetValue("max-height", out var mhRaw) && !string.IsNullOrEmpty(mhRaw))
+    {
+        var mhTrim = mhRaw.Trim();
+        if (mhTrim == "100%" || mhTrim == "100vh")
+        {
+            fe.MaxHeight = double.PositiveInfinity;
+            maxHeightHandled = true;
+        }
+    }
+    if (!maxHeightHandled && st.MaxHeight.HasValue) fe.MaxHeight = st.MaxHeight.Value;
     
     // Box Shadow
     if (!string.IsNullOrEmpty(st.BoxShadow) && st.BoxShadow != "none")
@@ -5475,6 +5777,36 @@ private void ApplyInlineStyles(Control fe, LiteElement n)
              else if (cur == "crosshair") fe.Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Cross);
              else if (cur == "help") fe.Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Help);
         }
+        else if (key == "width")
+        {
+            double px;
+            if (TryPx(val, out px)) fe.Width = px;
+        }
+        else if (key == "height")
+        {
+            double px;
+            if (TryPx(val, out px)) fe.Height = px;
+        }
+        else if (key == "min-width")
+        {
+            double px;
+            if (TryPx(val, out px)) fe.MinWidth = px;
+        }
+        else if (key == "min-height")
+        {
+            double px;
+            if (TryPx(val, out px)) fe.MinHeight = px;
+        }
+        else if (key == "max-width")
+        {
+            double px;
+            if (TryPx(val, out px)) fe.MaxWidth = px;
+        }
+        else if (key == "max-height")
+        {
+            double px;
+            if (TryPx(val, out px)) fe.MaxHeight = px;
+        }
         else if (key == "vertical-align")
         {
             var va = (val ?? "").Trim().ToLowerInvariant();
@@ -5627,7 +5959,15 @@ private static bool TryPx(string s, out double px, double containerSize)
         double v;
         if (double.TryParse(lower.Substring(0, lower.Length - 2), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v))
         {
-            px = (v / 100.0) * 1080; // Default viewport height
+            double vh = 1080;
+            try {
+                if (Avalonia.Application.Current?.ApplicationLifetime is Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime desktop && desktop.MainWindow != null)
+                {
+                    var h = desktop.MainWindow.Bounds.Height;
+                    if (h > 50) vh = h;
+                }
+            } catch {}
+            px = (v / 100.0) * vh;
             return true;
         }
     }
@@ -5951,6 +6291,7 @@ private static void ApplyBorderShorthand(Control fe, string value)
     if (border == null && ctrl == null) return;
     double width = double.NaN;
     IBrush brush = null;
+    bool hasStyle = false;
     var tokens = value.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
     foreach (var raw in tokens)
     {
@@ -5970,11 +6311,15 @@ private static void ApplyBorderShorthand(Control fe, string value)
         if (lower == "solid" || lower == "dashed" || lower == "dotted" || lower == "double" ||
             lower == "groove" || lower == "ridge" || lower == "inset" || lower == "outset")
         {
+            hasStyle = true;
             continue;
         }
         var candidate = TryBrush(token);
         if (candidate != null) brush = candidate;
     }
+    if (double.IsNaN(width) && (brush != null || hasStyle)) width = 3;
+    if (brush == null && !double.IsNaN(width) && width > 0) brush = new SolidColorBrush(Colors.Black);
+
     if (!double.IsNaN(width))
     {
         var thickness = new Thickness(width);
@@ -6482,7 +6827,16 @@ private void ApplyRelativeOffset(Control fe, CssComputed css, Control container)
             try
             {
                 double cw = 0, ch = 0;
-                try { if (container != null) { cw = container.Width /* .Bounds not available */; ch = (container.Height); } } catch { }
+                try 
+                { 
+                    if (container != null) 
+                    { 
+                        // Prefer Bounds if available (layout pass done), otherwise fallback to Width/Height
+                        cw = container.Bounds.Width > 0 ? container.Bounds.Width : (double.IsNaN(container.Width) ? 0 : container.Width);
+                        ch = container.Bounds.Height > 0 ? container.Bounds.Height : (double.IsNaN(container.Height) ? 0 : container.Height);
+                    } 
+                } 
+                catch { }
                 Func<string, double?, double> pxOrPercent = (name, containerSize) =>
                 {
                     try
@@ -6626,7 +6980,7 @@ private static bool ShouldSuppressTextNode(string raw)
     string reason = null;
     if (string.IsNullOrWhiteSpace(raw)) { reason = "empty"; return true; }
     var trimmed = raw.Trim();
-    if (trimmed.Length <= 1) return false; // allow single char labels like � or �
+    if (trimmed.Length <= 1) return false; // allow single char labels like ? or ?
     int braceCount = 0, semicolonCount = 0, angleCount = 0;
     int letterDigitCount = 0, whitespaceCount = 0, otherCount = 0;
     int symbolRun = 0, maxSymbolRun = 0;
@@ -6835,7 +7189,12 @@ private TextBlock RenderPlainTextBlock(string text)
         {
             if (string.IsNullOrWhiteSpace(href)) return null;
             href = href.Trim();
-            if (href.StartsWith("data:", StringComparison.OrdinalIgnoreCase)) return null; 
+            // Allow data URIs
+            if (href.StartsWith("data:", StringComparison.OrdinalIgnoreCase)) 
+            {
+                 if (Uri.TryCreate(href, UriKind.Absolute, out var dUri)) return dUri;
+                 return null;
+            }
             if (href.StartsWith("ms-appx:", StringComparison.OrdinalIgnoreCase)) return new Uri(href);
             if (href.StartsWith("//")) return new Uri((baseUri?.Scheme ?? "https") + ":" + href);
             if (Uri.TryCreate(href, UriKind.Absolute, out var abs)) return abs;
@@ -6862,7 +7221,7 @@ private TextBlock RenderPlainTextBlock(string text)
         }
         private string GetUnorderedBulletChar(LiteElement ul, LiteElement li)
         {
-            return "•";
+            return "�";
         }
 
         private string GetOrderedBulletString(LiteElement ol, LiteElement li, int index)
@@ -6923,6 +7282,13 @@ private TextBlock RenderPlainTextBlock(string text)
         }
     }
 }
+
+
+
+
+
+
+
 
 
 

@@ -86,17 +86,71 @@ namespace FenBrowser.FenEngine.Scripting
             };
 
             _fenRuntime = new FenRuntime(context);
+            context.OnMutation = RecordMutation;
             
             if (_host != null)
             {
                 _fenRuntime.SetAlert(msg => _host.Alert(msg));
             }
+            
+            SetupMutationObserver();
             // _mini = new MiniJs.Engine();
         }
 
         // timers
         private readonly Dictionary<int, System.Threading.Timer> _timers = new Dictionary<int, System.Threading.Timer>();
         private int _nextTimerId = 0;
+
+        private void SetupMutationObserver()
+        {
+            var moConstructor = new FenFunction("MutationObserver", (args, thisVal) =>
+            {
+                if (args.Length < 1 || !args[0].IsFunction)
+                    return new ErrorValue("MutationObserver constructor requires a callback function");
+
+                var callback = args[0].AsFunction();
+                var instance = new FenObject();
+                
+                // Store callback in the instance (hidden property)
+                instance.Set("__callback", FenValue.FromFunction(callback));
+                
+                // observe(target, options)
+                instance.Set("observe", FenValue.FromFunction(new FenFunction("observe", (obsArgs, obsThis) =>
+                {
+                    // Register this observer
+                    lock (_mutationLock)
+                    {
+                        if (!_fenMutationObservers.Contains(callback))
+                            _fenMutationObservers.Add(callback);
+                    }
+                    return FenValue.Undefined;
+                })));
+                
+                // disconnect()
+                instance.Set("disconnect", FenValue.FromFunction(new FenFunction("disconnect", (obsArgs, obsThis) =>
+                {
+                    lock (_mutationLock)
+                    {
+                        _fenMutationObservers.Remove(callback);
+                    }
+                    return FenValue.Undefined;
+                })));
+                
+                // takeRecords()
+                instance.Set("takeRecords", FenValue.FromFunction(new FenFunction("takeRecords", (obsArgs, obsThis) =>
+                {
+                    // Return empty array for now as we process mutations immediately
+                    var arr = new FenObject();
+                    arr.Set("length", FenValue.FromNumber(0));
+                    return FenValue.FromObject(arr);
+                })));
+
+                return FenValue.FromObject(instance);
+            });
+
+            _fenRuntime.SetGlobal("MutationObserver", FenValue.FromFunction(moConstructor));
+        }
+
 
         // XHR state
         // (XhrState is defined later)
@@ -244,7 +298,6 @@ namespace FenBrowser.FenEngine.Scripting
     private readonly System.Collections.Generic.Queue<System.Action> _macroTasks = new System.Collections.Generic.Queue<System.Action>();
     private readonly object _macroTaskLock = new object();
     private bool _macroPumpScheduled = false;
-    private int _macroExecuting = 0;
 
     // Feature gap tracing throttling
     private readonly object _featureTraceLock = new object();
@@ -258,7 +311,6 @@ namespace FenBrowser.FenEngine.Scripting
         private readonly object _responseLock = new object();
         private System.TimeSpan _responseTtl = System.TimeSpan.FromMinutes(5);
         private int _responseCapacity = 64;
-        private int _responseCounter = 0;
         private volatile bool _responseCleanupRunning = false;
 
         // Inline thresholds / repaint flags
@@ -306,6 +358,7 @@ namespace FenBrowser.FenEngine.Scripting
 
         // Mutation observers / pending mutations
         private readonly System.Collections.Generic.List<string> _mutationObservers = new System.Collections.Generic.List<string>();
+        private readonly System.Collections.Generic.List<FenFunction> _fenMutationObservers = new System.Collections.Generic.List<FenFunction>();
         private readonly object _mutationLock = new object();
         private readonly System.Collections.Generic.List<MutationRecord> _pendingMutations = new System.Collections.Generic.List<MutationRecord>();
         private string _docTitle = string.Empty;
@@ -316,6 +369,20 @@ namespace FenBrowser.FenEngine.Scripting
         {
             try { if (node == null || fe == null) return; lock (_visualMap) _visualMap[node] = new System.WeakReference(fe); }
             catch { }
+        }
+
+        public static Avalonia.Controls.Control GetControlForElement(LiteElement node)
+        {
+            try
+            {
+                System.WeakReference wr;
+                lock (_visualMap)
+                {
+                    if (!_visualMap.TryGetValue(node, out wr)) return null;
+                    return wr != null ? wr.Target as Avalonia.Controls.Control : null;
+                }
+            }
+            catch { return null; }
         }
 
         public static bool TryGetVisualRect(LiteElement node, out double x, out double y, out double w, out double h)
@@ -1544,104 +1611,140 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         // When the DOM changes, invoke any registered MutationObserver callbacks as microtasks
         private void InvokeMutationObservers()
         {
+            List<MutationRecord> mutations = null;
+            lock (_mutationLock)
+            {
+                if (_pendingMutations.Count > 0)
+                {
+                    mutations = new List<MutationRecord>(_pendingMutations);
+                    _pendingMutations.Clear();
+                }
+            }
+
+            if (mutations == null || mutations.Count == 0) return;
+
+            // 1. Legacy string-based observers
             try
             {
-                lock (_mutationObservers)
+                string[] legacyObservers;
+                lock (_mutationObservers) legacyObservers = _mutationObservers.ToArray();
+
+                if (legacyObservers.Length > 0)
                 {
-                    foreach (var fn in _mutationObservers.ToArray())
+                    var sb = new StringBuilder();
+                    sb.Append("[");
+                    bool first = true;
+                    foreach (var mr in mutations)
                     {
-                        var f = fn;
-                        // Build a minimal mutation record: choose a simple target selector if available
-                        string target = "document";
-                        try
-                        {
-                            if (_domRoot != null)
-                            {
-                                var body = _domRoot.FindById("body");
-                                if (body != null)
-                                {
-                                    string id = null;
-                                    if (body.Attr != null && body.Attr.TryGetValue("id", out id) && !string.IsNullOrWhiteSpace(id)) target = "#" + id;
-                                    else target = "body";
-                                }
-                            }
-                        }
-                        catch { }
-                        // build added/removed arrays and attributes snapshot from recorded pending mutations
-                        string added = "[]";
-                        string removed = "[]";
-                        string attrs = "{}";
-                        try
-                        {
-                            List<MutationRecord> copy = null;
-                            lock (_mutationLock) { if (_pendingMutations.Count > 0) { copy = new List<MutationRecord>(_pendingMutations); _pendingMutations.Clear(); } }
-                            if (copy != null && copy.Count > 0)
-                            {
-                                var sbA = new StringBuilder(); sbA.Append("["); bool firstA = true;
-                                var sbR = new StringBuilder(); sbR.Append("["); bool firstR = true;
-                                foreach (var mr in copy)
-                                {
-                                    if (mr.Type == "childList" && mr.Added != null)
-                                    {
-                                        foreach (var s in mr.Added)
-                                        {
-                                            if (!firstA) sbA.Append(","); sbA.Append('"'); sbA.Append(JsEscape(s, '\'')); sbA.Append('"'); firstA = false;
-                                        }
-                                    }
-                                    if (mr.Type == "childList" && mr.Removed != null)
-                                    {
-                                        foreach (var s in mr.Removed)
-                                        {
-                                            if (!firstR) sbR.Append(","); sbR.Append('"'); sbR.Append(JsEscape(s, '\'')); sbR.Append('"'); firstR = false;
-                                        }
-                                    }
-                                    if (mr.Type == "attributes" && mr.Attrs != null)
-                                    {
-                                        var sbAttr = new StringBuilder(); sbAttr.Append("{"); bool first = true;
-                                        foreach (var kv in mr.Attrs)
-                                        {
-                                            if (!first) sbAttr.Append(","); sbAttr.Append("\""); sbAttr.Append(kv.Key); sbAttr.Append("\":\""); sbAttr.Append(JsEscape(kv.Value ?? "", '\'')); sbAttr.Append("\""); first = false;
-                                        }
-                                        sbAttr.Append("}"); attrs = sbAttr.ToString();
-                                    }
-                                }
-                                sbA.Append("]"); sbR.Append("]"); added = sbA.ToString(); removed = sbR.ToString();
-                            }
-                        }
-                        catch { }
-                        try
-                        {
-                            if (_domRoot != null)
-                            {
-                                var bodyEl = _domRoot.FindById("body");
-                                if (bodyEl == null)
-                                {
-                                    var list = _domRoot.QueryByTag("body");
-                                    bodyEl = list != null ? list.FirstOrDefault() : null;
-                                }
-                                if (bodyEl != null && bodyEl.Attr != null && bodyEl.Attr.Count > 0)
-                                {
-                                    var sbAttr = new StringBuilder();
-                                    sbAttr.Append("{");
-                                    bool first = true;
-                                    foreach (var kv in bodyEl.Attr)
-                                    {
-                                        if (!first) sbAttr.Append(",");
-                                        sbAttr.Append("\""); sbAttr.Append(kv.Key); sbAttr.Append("\":\""); sbAttr.Append(JsEscape(kv.Value ?? "", '\'')); sbAttr.Append("\"");
-                                        first = false;
-                                    }
-                                    sbAttr.Append("}");
-                                    attrs = sbAttr.ToString();
-                                }
-                            }
-                        }
-                        catch { }
-                        var rec = "[{ type: 'childList', target: '" + target + "', addedNodes: " + added + ", removedNodes: " + removed + ", attributes: " + attrs + " }]";
-                        EnqueueMicrotask(() => { try { RunInline(f + "(" + rec + ")", _ctx); } catch { } });
+                        if (!first) sb.Append(",");
+                        sb.Append("{");
+                        sb.Append($"'type':'{mr.Type}'");
+                        sb.Append("}");
+                        first = false;
+                    }
+                    sb.Append("]");
+                    var json = sb.ToString();
+                    
+                    foreach (var fn in legacyObservers)
+                    {
+                        EnqueueMicrotask(() => { try { RunInline(fn + "(" + json + ")", _ctx); } catch { } });
                     }
                 }
             }
             catch { }
+
+            // 2. New FenFunction observers
+            try
+            {
+                FenFunction[] fenObservers;
+                lock (_mutationLock) fenObservers = _fenMutationObservers.ToArray();
+
+                if (fenObservers.Length > 0)
+                {
+                    var fenArray = new FenObject();
+                    int idx = 0;
+                    foreach (var mr in mutations)
+                    {
+                        if (mr.Type == "attributes")
+                        {
+                             var rec = new FenObject();
+                             rec.Set("type", FenValue.FromString("attributes"));
+                             if (mr.AttributeName != null)
+                                rec.Set("attributeName", FenValue.FromString(mr.AttributeName));
+                             
+                             fenArray.Set(idx.ToString(), FenValue.FromObject(rec));
+                             idx++;
+                        }
+                        else
+                        {
+                            var rec = new FenObject();
+                            rec.Set("type", FenValue.FromString(mr.Type));
+                            
+                            // Added nodes
+                            if (mr.AddedNodes != null && mr.AddedNodes.Count > 0)
+                            {
+                                var added = new FenObject();
+                                for(int i=0; i<mr.AddedNodes.Count; i++) 
+                                {
+                                    var nodeObj = new FenObject();
+                                    nodeObj.Set("nodeName", FenValue.FromString(mr.AddedNodes[i].Tag));
+                                    added.Set(i.ToString(), FenValue.FromObject(nodeObj));
+                                }
+                                added.Set("length", FenValue.FromNumber(mr.AddedNodes.Count));
+                                rec.Set("addedNodes", FenValue.FromObject(added));
+                            }
+                            else
+                            {
+                                 var empty = new FenObject(); empty.Set("length", FenValue.FromNumber(0));
+                                 rec.Set("addedNodes", FenValue.FromObject(empty));
+                            }
+
+                            // Removed nodes
+                            if (mr.RemovedNodes != null && mr.RemovedNodes.Count > 0)
+                            {
+                                var removed = new FenObject();
+                                for(int i=0; i<mr.RemovedNodes.Count; i++) 
+                                {
+                                    var nodeObj = new FenObject();
+                                    nodeObj.Set("nodeName", FenValue.FromString(mr.RemovedNodes[i].Tag));
+                                    removed.Set(i.ToString(), FenValue.FromObject(nodeObj));
+                                }
+                                removed.Set("length", FenValue.FromNumber(mr.RemovedNodes.Count));
+                                rec.Set("removedNodes", FenValue.FromObject(removed));
+                            }
+                            else
+                            {
+                                 var empty = new FenObject(); empty.Set("length", FenValue.FromNumber(0));
+                                 rec.Set("removedNodes", FenValue.FromObject(empty));
+                            }
+                            
+                            fenArray.Set(idx.ToString(), FenValue.FromObject(rec));
+                            idx++;
+                        }
+                    }
+                    fenArray.Set("length", FenValue.FromNumber(idx));
+                    var args = new[] { FenValue.FromObject(fenArray), FenValue.Undefined };
+
+                    foreach (var obs in fenObservers)
+                    {
+                        EnqueueMicrotask(() => 
+                        {
+                            try { _fenRuntime.ExecuteFunction(obs, args); } catch { }
+                        });
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private void RecordMutation(MutationRecord record)
+        {
+            lock (_mutationLock)
+            {
+                _pendingMutations.Add(record);
+            }
+            // Schedule microtask to deliver mutations
+            EnqueueMicrotask(InvokeMutationObservers);
         }
 
         // ---- XHR shim state ----
@@ -1654,14 +1757,6 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             public string Body;
             public string OnLoadFn;
             public string OnErrorFn;
-        }
-
-        private class MutationRecord
-        {
-            public string Type { get; set; }
-            public List<string> Added { get; set; }
-            public List<string> Removed { get; set; }
-            public Dictionary<string, string> Attrs { get; set; }
         }
 
         private System.Net.Http.HttpMessageHandler CreateManagedHandler(Uri uri = null, System.Net.CookieContainer cookies = null)
@@ -2289,6 +2384,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
 
         void SetTitle(string tval);
         void Alert(string msg);
+        void ScrollToElement(LiteElement element);
     }
 
     // Optional host interface: if implemented, JavaScriptEngine will call RequestRender() when DOM changes
@@ -2317,8 +2413,9 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
     private readonly Action<Action> _invokeOnUiThread;
     private readonly Action<string> _setTitle;
     private readonly Action<string> _alert;
+    private readonly Action<LiteElement> _scrollToElement;
 
-        public JsHostAdapter(Action<Uri> navigate, Action<Uri, string> post, Action<string> status, Action requestRender = null, Action<Action> invokeOnUiThread = null, Action<string> setTitle = null, Action<string> alert = null)
+        public JsHostAdapter(Action<Uri> navigate, Action<Uri, string> post, Action<string> status, Action requestRender = null, Action<Action> invokeOnUiThread = null, Action<string> setTitle = null, Action<string> alert = null, Action<LiteElement> scrollToElement = null)
         {
             _navigate = navigate ?? (_ => { });
             _post = post ?? ((_, __) => { });
@@ -2327,6 +2424,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             _invokeOnUiThread = invokeOnUiThread ?? (a => { try { a(); } catch { } });
             _setTitle = setTitle ?? (_ => { });
             _alert = alert ?? (_ => { });
+            _scrollToElement = scrollToElement ?? (_ => { });
         }
 
         public void Navigate(Uri target) => _navigate(target);
@@ -2346,5 +2444,6 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
 
         
         public void Alert(string msg) => _alert(msg);
+        public void ScrollToElement(LiteElement element) => _scrollToElement(element);
     }
 }

@@ -43,6 +43,15 @@ namespace FenBrowser.FenEngine.Core
             set => _context.SetRequestRender(value);
         }
 
+        public IValue ExecuteFunction(FenFunction func, IValue[] args)
+        {
+            if (_context.ExecuteFunction != null)
+            {
+                return _context.ExecuteFunction(FenValue.FromFunction(func), args);
+            }
+            return func.Invoke(args, _context);
+        }
+
         private void InitializeBuiltins()
         {
             // console object
@@ -128,6 +137,22 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.Undefined;
             }));
             SetGlobal("clearInterval", clearInterval);
+
+            // requestAnimationFrame
+            var requestAnimationFrame = FenValue.FromFunction(new FenFunction("requestAnimationFrame", (args, thisVal) =>
+            {
+                if (args.Length == 0 || !args[0].IsFunction) return FenValue.FromNumber(0);
+                return CreateAnimationFrame(args[0].AsFunction());
+            }));
+            SetGlobal("requestAnimationFrame", requestAnimationFrame);
+
+            // cancelAnimationFrame
+            var cancelAnimationFrame = FenValue.FromFunction(new FenFunction("cancelAnimationFrame", (args, thisVal) =>
+            {
+                if (args.Length > 0) CancelTimer((int)args[0].ToNumber());
+                return FenValue.Undefined;
+            }));
+            SetGlobal("cancelAnimationFrame", cancelAnimationFrame);
 
             // undefined and null
             SetGlobal("undefined", FenValue.Undefined);
@@ -873,6 +898,39 @@ namespace FenBrowser.FenEngine.Core
             };
             
             _context.ScheduleCallback(timerAction, delay);
+            return FenValue.FromNumber(id);
+        }
+
+        private FenValue CreateAnimationFrame(FenFunction callback)
+        {
+            int id;
+            lock (_timerLock) { id = _timerIdCounter++; }
+
+            var cts = new CancellationTokenSource();
+            lock (_timerLock) { _activeTimers[id] = cts; }
+
+            try { FenLogger.Debug($"[FenRuntime] RequestAnimationFrame. ID: {id}", LogCategory.JavaScript); } catch { }
+
+            Action timerAction = () =>
+            {
+                if (cts.IsCancellationRequested) return;
+
+                lock (_timerLock) { _activeTimers.Remove(id); } // Autoremove before execution, unlike Interval
+
+                try
+                {
+                    double now = Convert.ToDouble(DateTime.Now.Ticks) / 10000.0; // Simulated high-res time (ms)
+                    _context.ThisBinding = FenValue.Undefined;
+                    callback.Invoke(new IValue[] { FenValue.FromNumber(now) }, _context);
+                }
+                catch (Exception ex)
+                {
+                    try { FenLogger.Error($"[RAF Error] {ex.Message}", LogCategory.JavaScript, ex); } catch { }
+                }
+            };
+
+            // Schedule for approx 16ms (60fps)
+            _context.ScheduleCallback(timerAction, 16);
             return FenValue.FromNumber(id);
         }
 

@@ -22,6 +22,7 @@ namespace FenBrowser.FenEngine.Rendering
         bool CanGoForward { get; }
         SecurityState SecurityState { get; }
         CertificateInfo CurrentCertificate { get; }
+        Dictionary<LiteElement, CssComputed> ComputedStyles { get; }
 
         // Events
         event EventHandler<Uri> Navigated;
@@ -200,6 +201,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         public SecurityState SecurityState { get; private set; } = SecurityState.None;
         public CspPolicy CurrentPolicy { get; private set; }
+        public Dictionary<LiteElement, CssComputed> ComputedStyles => _engine.LastComputedStyles;
 
         // ========== INJECTABLE DELEGATES FOR WEBDRIVER ==========
         // These are set by MainWindow/WebDriverIntegration to provide real implementations
@@ -947,6 +949,11 @@ namespace FenBrowser.FenEngine.Rendering
             var rawResult = _engine.Evaluate(wrappedScript);
             try { System.IO.File.AppendAllText("js_debug.txt", $"[ExecuteScript] Raw result type: {rawResult?.GetType().Name}\r\n"); } catch { }
             
+            if (rawResult is FenBrowser.FenEngine.Core.ErrorValue ev)
+            {
+                throw new Exception(ev.Message);
+            }
+
             // Convert FenValue to native .NET type for proper JSON serialization
             if (rawResult is FenBrowser.FenEngine.Core.FenValue fenValue)
             {
@@ -1188,8 +1195,8 @@ namespace FenBrowser.FenEngine.Rendering
             
             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.txt", $"[AsyncScript] Timeout after {timeoutMs}ms\r\n"); } catch { }
             
-            // Timeout - return error
-            return new FenBrowser.FenEngine.Core.ErrorValue($"Script execution timeout ({timeoutMs/1000}s)");
+            // Timeout - throw exception
+            throw new TimeoutException($"Script execution timeout ({timeoutMs/1000}s)");
         }
 
         public new async Task<string> CaptureScreenshotAsync()
