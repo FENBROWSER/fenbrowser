@@ -277,11 +277,17 @@ namespace FenBrowser.FenEngine.Core
             _arrayPrototype.Set("push", FenValue.FromFunction(new FenFunction("push", (args, thisVal) =>
             {
                 var obj = thisVal.AsObject();
-                if (obj == null) return FenValue.FromNumber(0);
+                if (obj == null) 
+                {
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[Array.push] thisVal is not an object\r\n"); } catch { }
+                    return FenValue.FromNumber(0);
+                }
                 
                 var lenVal = obj.Get("length");
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Array.push] Initial length: {len}, Args count: {args.Length}\r\n"); } catch { }
+
                 foreach (var arg in args)
                 {
                     obj.Set(len.ToString(), arg);
@@ -649,8 +655,16 @@ namespace FenBrowser.FenEngine.Core
                 // Handle native functions
                 if (function.IsNative)
                 {
-                    // Native functions might need 'this' too, but let's skip for now or pass it if signature allows
-                    return function.Invoke(args.ToArray(), context);
+                    var prevThis = context.ThisBinding;
+                    context.ThisBinding = thisContext ?? FenValue.Undefined;
+                    try
+                    {
+                        return function.Invoke(args.ToArray(), context);
+                    }
+                    finally
+                    {
+                        context.ThisBinding = prevThis;
+                    }
                 }
                 
                 // Handle user-defined functions

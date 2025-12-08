@@ -1,0 +1,14 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build and Run FenBrowser",
+			"type": "shell",
+			"command": "dotnet build c:\\Users\\udayk\\Videos\\FENBROWSER\\FenBrowser.sln && c:\\Users\\udayk\\Videos\\FENBROWSER\\run_fenbrowser.bat",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		}
+	]
+}

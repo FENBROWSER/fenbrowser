@@ -206,7 +206,9 @@ namespace FenBrowser.Core
                         {
                             // Remove base64 marker and decode
                             var cleanMeta = dataMeta.Replace(";base64", "").Replace("base64", "");
-                            var bytes = Convert.FromBase64String(content);
+                            // Fix: URL-decode before base64 decode because data URIs can be URL-encoded
+                            var decodedContent = Uri.UnescapeDataString(content);
+                            var bytes = Convert.FromBase64String(decodedContent);
                             return System.Text.Encoding.UTF8.GetString(bytes);
                         }
                         else
@@ -489,9 +491,9 @@ namespace FenBrowser.Core
                     var cts = new System.Threading.CancellationTokenSource();
                     try
                     {
-                        int sec = 8;
+                        int sec = 30;
                         var d = (secFetchDest ?? "").ToLowerInvariant();
-                        if (d == "document" || d == "iframe") sec = 12;
+                        if (d == "document" || d == "iframe") sec = 60;
                         cts.CancelAfter(System.TimeSpan.FromSeconds(sec));
                     }
                     catch { }
@@ -609,7 +611,7 @@ namespace FenBrowser.Core
                 if (referer != null) AddHeaderSafe(req, "Referer", referer.AbsoluteUri);
                 AddHeaderSafe(req, "Sec-Fetch-Site", DetermineSecFetchSite(referer, url));
                 var cts = new System.Threading.CancellationTokenSource();
-                try { cts.CancelAfter(TimeSpan.FromSeconds(12)); } catch { }
+                try { cts.CancelAfter(TimeSpan.FromSeconds(30)); } catch { }
                 HttpResponseMessage resp = null;
                 try { resp = await _client.SendAsync(req, cts.Token); } catch (Exception sendEx) { try { System.Diagnostics.Debug.WriteLine("[FetchTextOptError] send " + url + " ex=" + sendEx.Message); } catch { } }
                 if (resp == null || !resp.IsSuccessStatusCode)
@@ -665,7 +667,12 @@ namespace FenBrowser.Core
                         
                         if (isBase64)
                         {
-                            try { bytes = Convert.FromBase64String(data); }
+                            try 
+                            { 
+                                // Fix: URL-decode before base64 decode
+                                var decodedData = Uri.UnescapeDataString(data);
+                                bytes = Convert.FromBase64String(decodedData); 
+                            }
                             catch { return null; }
                         }
                         else
@@ -709,7 +716,7 @@ namespace FenBrowser.Core
                     var effectiveReferer = refererOriginal ?? previousRequest;
                     if (effectiveReferer != null) AddHeaderSafe(req, "Referer", effectiveReferer.AbsoluteUri);
                     var cts = new System.Threading.CancellationTokenSource();
-                    try { cts.CancelAfter(System.TimeSpan.FromSeconds(8)); } catch { }
+                    try { cts.CancelAfter(System.TimeSpan.FromSeconds(30)); } catch { }
                     resp = await _client.SendAsync(req, cts.Token);
                     
                     if (resp != null)
@@ -729,6 +736,7 @@ namespace FenBrowser.Core
                 }
                 if (resp == null || !resp.IsSuccessStatusCode)
                 {
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[FetchImageFailed] {url} Status: {resp?.StatusCode}\r\n"); } catch { }
                     return null;
                 }
                 // NoteHsts(resp, url); // Handled by HstsHandler
@@ -748,6 +756,7 @@ namespace FenBrowser.Core
                     var msg = $"[FetchImageException] url={url} ex={ex.Message}";
                     System.Diagnostics.Debug.WriteLine(msg);
                     LogSink?.Invoke(msg);
+                    System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", msg + "\r\n");
                 } catch { }
                 return null;
             }
@@ -783,9 +792,9 @@ namespace FenBrowser.Core
                     var cts = new System.Threading.CancellationTokenSource();
                     try
                     {
-                        int sec = 8;
+                        int sec = 30;
                         var d = (secFetchDest ?? "").ToLowerInvariant();
-                        if (d == "font") sec = 12; // fonts can be larger
+                        if (d == "font") sec = 60; // fonts can be larger
                         cts.CancelAfter(System.TimeSpan.FromSeconds(sec));
                     }
                     catch { }
@@ -816,3 +825,4 @@ namespace FenBrowser.Core
         }
     }
 }
+

@@ -12,6 +12,12 @@ class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        if (Array.IndexOf(args, "--version") >= 0)
+        {
+            Console.WriteLine("FenBrowser 1.0");
+            return;
+        }
+
         FenBrowser.Core.FenLogger.Initialize(@"C:\Users\udayk\Videos\FENBROWSER\fenbrowser.log");
         FenBrowser.Core.FenLogger.Info("FenBrowser Started", FenBrowser.Core.Logging.LogCategory.General);
 
