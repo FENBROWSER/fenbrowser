@@ -9,6 +9,7 @@ using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Layout;
 using Avalonia.Threading;
+using System.Net.Http;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -17,6 +18,7 @@ namespace FenBrowser.FenEngine.Rendering
     /// </summary>
     public class VirtualizingRenderer
     {
+        private static readonly HttpClient _httpClient = new HttpClient();
         private readonly RenderObject _root;
         private readonly ScrollViewer _scrollViewer;
         private readonly Canvas _canvas;
@@ -489,12 +491,31 @@ namespace FenBrowser.FenEngine.Rendering
 
         private async void LoadImageFromUrlAsync(Image img, Uri uri)
         {
-            // Placeholder for real image loading
-            // In a real implementation, we would use HttpClient to get the stream
-            // and then create a Bitmap.
-            // For now, we'll just leave it empty or log.
-            // We could use FenBrowser.Core.ResourceManager if we had access to it here.
-            // But this is Engine.
+            if (uri == null) return;
+            try
+            {
+                // Use HttpClient to fetch the image data
+                var data = await _httpClient.GetByteArrayAsync(uri);
+                
+                // Create Bitmap on a background thread if possible, but Bitmap constructor might need UI thread or be thread safe?
+                // Avalonia Bitmap constructor reads from stream.
+                using (var stream = new MemoryStream(data))
+                {
+                    var bitmap = new Bitmap(stream);
+                    
+                    // Update the Image control on the UI thread
+                    Dispatcher.UIThread.Post(() => 
+                    {
+                        img.Source = bitmap;
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[IMG LOAD FAIL] {uri}: {ex.Message}");
+                // Optionally set a broken image placeholder or hide
+                // img.IsVisible = false; 
+            }
         }
     }
 }

@@ -96,6 +96,17 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }
 
+                // Pseudo-element Injection (::before)
+                if (box.Style != null && box.Style.Before != null)
+                {
+                    var beforeStyle = box.Style.Before;
+                    if (beforeStyle.Content != "none")
+                    {
+                        var beforeNode = CreatePseudoElement(beforeStyle, box);
+                        if (beforeNode != null) box.AddChild(beforeNode);
+                    }
+                }
+
                 // Recurse
                 if (root.Children != null)
                 {
@@ -108,9 +119,55 @@ namespace FenBrowser.FenEngine.Rendering
                         }
                     }
                 }
+
+                // Pseudo-element Injection (::after)
+                if (box.Style != null && box.Style.After != null)
+                {
+                    var afterStyle = box.Style.After;
+                    if (afterStyle.Content != "none")
+                    {
+                        var afterNode = CreatePseudoElement(afterStyle, box);
+                        if (afterNode != null) box.AddChild(afterNode);
+                    }
+                }
             }
 
             return renderNode;
+        }
+
+        private static RenderObject CreatePseudoElement(CssComputed style, RenderBox parent)
+        {
+            var pseudoBox = new RenderBox { Node = parent.Node }; // Share node for context
+            pseudoBox.Style = style;
+            
+            // Ensure colors are brushes
+            if (style.BackgroundColor.HasValue && style.Background == null)
+                style.Background = new SolidColorBrush(style.BackgroundColor.Value);
+            if (style.ForegroundColor.HasValue && style.Foreground == null)
+                style.Foreground = new SolidColorBrush(style.ForegroundColor.Value);
+            if (style.BorderBrushColor.HasValue && style.BorderBrush == null)
+                style.BorderBrush = new SolidColorBrush(style.BorderBrushColor.Value);
+
+            // Handle Content
+            string content = style.Content;
+            if (!string.IsNullOrEmpty(content) && content != "none")
+            {
+                // Strip quotes
+                if ((content.StartsWith("\"") && content.EndsWith("\"")) || 
+                    (content.StartsWith("'") && content.EndsWith("'")))
+                {
+                    content = content.Substring(1, content.Length - 2);
+                }
+                
+                if (!string.IsNullOrEmpty(content))
+                {
+                    var textNode = new RenderText { Text = content, Style = style, Parent = pseudoBox };
+                    pseudoBox.AddChild(textNode);
+                }
+            }
+            
+            pseudoBox.Parent = parent;
+            return pseudoBox;
         }
 
 

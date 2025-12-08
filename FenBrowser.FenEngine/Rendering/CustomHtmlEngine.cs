@@ -33,6 +33,9 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>Active Content Security Policy for this page. When set, subresource loads are checked against it.</summary>
         public CspPolicy ActivePolicy { get; set; }
 
+        // EXPOSED STYLES FOR SKIA RENDERER
+        public Dictionary<LiteElement, CssComputed> LastComputedStyles { get; private set; }
+
         public event Action<Control> RepaintReady;
         private void OnRepaintReady(Control control)
         {
@@ -141,7 +144,7 @@ namespace FenBrowser.FenEngine.Rendering
                 var host = baseUri.Host.ToLowerInvariant();
 
                 // Start conservatively: only google.com and www.google.com.
-                if (host == "google.com" || host == "www.google.com") return true;
+                // if (host == "google.com" || host == "www.google.com") return true;
 
                 return false;
             }
@@ -508,6 +511,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             var cssFetcher = fetchExternalCssAsync ?? (async _ => string.Empty);
             var computed = await CssLoader.ComputeAsync(dom, baseUri, cssFetcher, viewportWidth, null);
+            LastComputedStyles = computed;
 
             try
             {
@@ -1114,7 +1118,30 @@ namespace FenBrowser.FenEngine.Rendering
                             catch { action(); }
                         },
                         setTitle: null,
-                        alert: (msg) => { AlertTriggered?.Invoke(msg); }))
+                        alert: (msg) => { AlertTriggered?.Invoke(msg); },
+                        scrollToElement: (el) =>
+                        {
+                            try
+                            {
+                                var disp = UiThreadHelper.TryGetDispatcher();
+                                if (disp != null)
+                                {
+                                    var _ = disp.InvokeAsync(() =>
+                                    {
+                                        try
+                                        {
+                                            var ctrl = JavaScriptEngine.GetControlForElement(el);
+                                            if (ctrl != null)
+                                            {
+                                                ctrl.BringIntoView();
+                                            }
+                                        }
+                                        catch { }
+                                    });
+                                }
+                            }
+                            catch { }
+                        }))
                     {
                         Sandbox = allowJs ? SandboxPolicy.AllowAll : SandboxPolicy.NoScripts,
                         AllowExternalScripts = allowJs,
