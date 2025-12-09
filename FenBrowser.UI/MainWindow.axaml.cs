@@ -125,7 +125,45 @@ namespace FenBrowser.UI
             _loadingBar = this.FindControl<ProgressBar>("LoadingBar");
             _highlightOverlay = this.FindControl<Canvas>("HighlightOverlay");
             _securityIconPath = this.FindControl<Avalonia.Controls.Shapes.Path>("SecurityIconPath");
+            _securityIconPath = this.FindControl<Avalonia.Controls.Shapes.Path>("SecurityIconPath");
             _siteInfoButton = this.FindControl<Button>("SiteInfoButton");
+            
+            // Wire up SkiaView interaction
+            var skiaView = this.FindControl<SkiaBrowserView>("SkiaView");
+            if (skiaView != null)
+            {
+                skiaView.LinkInternalClicked += (s, url) =>
+                {
+                    Dispatcher.UIThread.Post(async () =>
+                    {
+                        if (_activeBrowser != null)
+                        {
+                             // Determine if absolute or relative?
+                             // SkiaDomRenderer resolved it? No, checks href.
+                             // ImageLoader handles relative URLs for images.
+                             // We should probably help resolve it here if needed, 
+                             // OR ensure CheckLink in SkiaBrowserView resolves it.
+                             // But let's assume raw href and resolving happens in BrowserApi or BrowserHost.
+                             // Usually NavigateAsync(url) handles absolute.
+                             // If it is "/wiki/Foo", NavigateAsync might fail if it expects absolute.
+                             // Let's resolve against current URI if relative.
+                             
+                             var current = _activeBrowser.CurrentUri;
+                             if (current != null && !url.StartsWith("http") && !url.StartsWith("data:"))
+                             {
+                                 try
+                                 {
+                                     var resolved = new Uri(current, url);
+                                     url = resolved.AbsoluteUri;
+                                 }
+                                 catch {}
+                             }
+                             
+                             await _activeBrowser.NavigateAsync(url);
+                        }
+                    });
+                };
+            }
 
             // Register with WebDriverIntegration for real window/tab/screenshot operations
             WebDriverIntegration.RegisterMainWindow(
@@ -261,6 +299,19 @@ namespace FenBrowser.UI
                            {
                                // Pass ComputedStyles to renderer
                                try { System.IO.File.AppendAllText("ui_debug.txt", "[MainWindow] Calling SkiaView.Render\n"); } catch {}
+                               
+                               // 1. Set BaseUrl for relative image resolution
+                               var newBaseUrl = browser.CurrentUri?.AbsoluteUri ?? "";
+                               
+                               // Debug: Log BaseUrl being set (skip if empty to reduce log spam)
+                               if (!string.IsNullOrEmpty(newBaseUrl)) {
+                                   try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
+                                       $"[MainWindow] Setting SkiaView.BaseUrl = '{newBaseUrl}'\r\n"); } catch {}
+                               }
+                               
+                               skiaView.BaseUrl = newBaseUrl;
+                               
+                               // 2. Render
                                skiaView.Render(root, browser.ComputedStyles);
                                return; // Skip old renderer logic
                            }
