@@ -16,6 +16,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         public CssComputed Before { get; set; }
         public CssComputed After { get; set; }
+        public CssComputed Marker { get; set; }  // ::marker pseudo-element styles
 
         public CssComputed()
         {
@@ -43,6 +44,12 @@ namespace FenBrowser.FenEngine.Rendering
         public Thickness BorderThickness { get; set; }
         public IBrush BorderBrush { get; set; }
         public CornerRadius BorderRadius { get; set; }
+        
+        // Border styles - solid, dashed, dotted, double, groove, ridge, inset, outset, none, hidden
+        public string BorderStyleTop { get; set; } = "none";
+        public string BorderStyleRight { get; set; } = "none";
+        public string BorderStyleBottom { get; set; } = "none";
+        public string BorderStyleLeft { get; set; } = "none";
 
         // Sizing
         public double? Width { get; set; }
@@ -67,9 +74,11 @@ namespace FenBrowser.FenEngine.Rendering
         public string JustifyContent { get; set; }
         public string AlignItems { get; set; }
         public string AlignContent { get; set; }
+        public string AlignSelf { get; set; }  // Individual flex item alignment override
         public double? FlexGrow { get; set; }
         public double? FlexShrink { get; set; }
         public double? FlexBasis { get; set; }
+        public int? Order { get; set; }  // Flex item ordering
 
         // Typography & Visuals
         public IBrush Background { get; set; }
@@ -99,6 +108,10 @@ namespace FenBrowser.FenEngine.Rendering
         public string Hyphens { get; set; }
         public string TextDecoration { get; set; }
         public string ListStyleType { get; set; }
+        
+        // Text spacing properties
+        public double? WordSpacing { get; set; }      // px offset for spaces between words
+        public double? LetterSpacing { get; set; }    // px offset for spaces between letters
 
         // Extra color for border
         public Color? BorderBrushColor { get; set; }
