@@ -388,6 +388,13 @@ namespace FenBrowser.FenEngine.DOM
             if (_element.Attr != null)
             {
                 _element.Attr["style"] = sb.ToString();
+                // Debug: Log element tag and final style value
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSSStyleDeclaration] Set on <{_element.Tag}> style='{sb}'\r\n"); } catch {}
+            }
+            else
+            {
+                // Debug: Attr is null!
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSSStyleDeclaration] FAILED: Attr is null for <{_element.Tag}>\r\n"); } catch {}
             }
             FenLogger.Debug($"[CSS] Set style {key}={value}", LogCategory.CSS);
             _context.RequestRender?.Invoke();
