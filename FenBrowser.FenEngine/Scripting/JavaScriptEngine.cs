@@ -199,6 +199,9 @@ namespace FenBrowser.FenEngine.Scripting
             set { if (_fenRuntime != null) _fenRuntime.RequestRender = value; }
         }
         
+        /// <summary>Get the DOM root that JS is using (for repaint sync)</summary>
+        public LiteElement DomRoot => _domRoot;
+        
         // Document ready state (for document.readyState property)
         private string _readyState = "loading";
         public JsVal OnPopState { get; set; }

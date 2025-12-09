@@ -1331,6 +1331,9 @@ namespace FenBrowser.FenEngine.Rendering
         {
             var result = new Dictionary<LiteElement, CssComputed>();
             if (root == null) return result;
+            
+            // Debug: Log root hash to compare with DocumentWrapper._root
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CssLoader] CascadeIntoComputedStyles: root_hash={root.GetHashCode()}\r\n"); } catch {}
 
             // Pre-flatten the DOM into a list to avoid repeated Descendants() enumerations
             var nodes = new List<LiteElement>();
@@ -1426,6 +1429,12 @@ namespace FenBrowser.FenEngine.Rendering
                 string style;
                 if (n.Attr != null && n.Attr.TryGetValue("style", out style) && !string.IsNullOrWhiteSpace(style))
                 {
+                    // Debug: Log inline style for body element
+                    if (string.Equals(n.Tag, "body", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CssLoader] BODY inline style found: '{style}'\r\n"); } catch {}
+                    }
+                    
                     var decls = ParseDeclarations(style);
                     List<Tuple<CssDecl, SelectorChain, int>> list;
                     if (!perNode.TryGetValue(n, out list))

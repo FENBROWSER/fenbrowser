@@ -42,6 +42,8 @@ namespace FenBrowser.FenEngine.DOM
 
                 case "body":
                     var body = FindElementByTag(_root, "body");
+                    // Debug: Log body element hash to verify object identity
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[DocumentWrapper] Get body: hash={body?.GetHashCode()} root_hash={_root?.GetHashCode()}\r\n"); } catch {}
                     return body != null ? FenValue.FromObject(new ElementWrapper(body, _context)) : FenValue.Null;
 
                 case "head":
