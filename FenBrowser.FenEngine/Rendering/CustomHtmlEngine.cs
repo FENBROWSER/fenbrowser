@@ -1034,11 +1034,7 @@ namespace FenBrowser.FenEngine.Rendering
                 if (js != null)
                 {
                     js.CookieBridge = scope => _jsCookieJar;
-    #if USE_NILJS
-                    js.UseMiniPrattEngine = false;
-    #else
                     js.UseMiniPrattEngine = true;
-    #endif
                     js.RequestRender = ScheduleRepaintFromJs;
 
                     // When a ResourceManager-backed fetcher is available, reuse it for
