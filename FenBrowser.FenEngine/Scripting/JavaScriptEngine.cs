@@ -45,7 +45,14 @@ namespace FenBrowser.FenEngine.Scripting
         public JavaScriptEngine(IJsHost host)
         {
             _host = host;
-            _ctx = new JsContext();
+            InitRuntime();
+            SetupMutationObserver();
+            // _mini = new MiniJs.Engine();
+        }
+
+        private void InitRuntime()
+        {
+            _ctx = _ctx ?? new JsContext();
             var permissions = new PermissionManager(JsPermissions.StandardWeb);
             var context = new FenBrowser.FenEngine.Core.ExecutionContext(permissions);
 
@@ -86,15 +93,19 @@ namespace FenBrowser.FenEngine.Scripting
             };
 
             _fenRuntime = new FenRuntime(context);
+            // Connect console messages to BrowserHost
+            _fenRuntime.OnConsoleMessage = msg => 
+            {
+                FenLogger.Debug($"[JavaScriptEngine] Received console message from runtime: {msg}", LogCategory.JavaScript);
+                try { _host?.Log(msg); } catch (Exception ex) { FenLogger.Error($"[JavaScriptEngine] Host log error: {ex}", LogCategory.JavaScript); }
+            };
+
             context.OnMutation = RecordMutation;
             
             if (_host != null)
             {
                 _fenRuntime.SetAlert(msg => _host.Alert(msg));
             }
-            
-            SetupMutationObserver();
-            // _mini = new MiniJs.Engine();
         }
 
         // timers
@@ -1403,6 +1414,8 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
 
         public object Evaluate(string script)
         {
+            try { FenLogger.Debug($"[JavaScriptEngine] Evaluate called with script length: {script?.Length ?? 0}", LogCategory.JavaScript); } catch { }
+
 #if USE_NILJS
             if (_nil != null)
             {
@@ -1495,6 +1508,8 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         {
             _ctx = ctx ?? new JsContext();
             ClearSandboxBlockLog();
+            
+            InitRuntime();
 
             // Recreate MiniJS and (re)bootstrap the environment - DISABLED
             /*
@@ -2384,6 +2399,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
 
         void SetTitle(string tval);
         void Alert(string msg);
+        void Log(string msg);
         void ScrollToElement(LiteElement element);
     }
 
@@ -2413,9 +2429,10 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
     private readonly Action<Action> _invokeOnUiThread;
     private readonly Action<string> _setTitle;
     private readonly Action<string> _alert;
+    private readonly Action<string> _log;
     private readonly Action<LiteElement> _scrollToElement;
 
-        public JsHostAdapter(Action<Uri> navigate, Action<Uri, string> post, Action<string> status, Action requestRender = null, Action<Action> invokeOnUiThread = null, Action<string> setTitle = null, Action<string> alert = null, Action<LiteElement> scrollToElement = null)
+        public JsHostAdapter(Action<Uri> navigate, Action<Uri, string> post, Action<string> status, Action requestRender = null, Action<Action> invokeOnUiThread = null, Action<string> setTitle = null, Action<string> alert = null, Action<string> log = null, Action<LiteElement> scrollToElement = null)
         {
             _navigate = navigate ?? (_ => { });
             _post = post ?? ((_, __) => { });
@@ -2424,6 +2441,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             _invokeOnUiThread = invokeOnUiThread ?? (a => { try { a(); } catch { } });
             _setTitle = setTitle ?? (_ => { });
             _alert = alert ?? (_ => { });
+            _log = log ?? (_ => { });
             _scrollToElement = scrollToElement ?? (_ => { });
         }
 
@@ -2435,15 +2453,9 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         public void RequestRender() { try { _requestRender(); } catch { } }
         public void InvokeOnUiThread(Action action) { if (action == null) return; try { _invokeOnUiThread(action); } catch { } }
 
-        public void SetTitle(string tval)
-        {
-            try { _setTitle(tval ?? string.Empty); }
-            catch { }
-        }
-
-
-        
+        public void SetTitle(string tval) => _setTitle(tval);
         public void Alert(string msg) => _alert(msg);
+        public void Log(string msg) => _log(msg);
         public void ScrollToElement(LiteElement element) => _scrollToElement(element);
     }
 }
