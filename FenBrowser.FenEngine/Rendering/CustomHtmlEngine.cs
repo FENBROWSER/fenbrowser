@@ -467,6 +467,18 @@ namespace FenBrowser.FenEngine.Rendering
             _activeFixedBackground = onFixedBackground;
             // Only update _activeJs if a new engine is provided; preserve existing during repaints
             if (js != null) _activeJs = js;
+            
+            // Keep JS engine's DOM in sync with _activeDom so JS style changes appear on render
+            if (_activeJs != null && dom != null)
+            {
+                try 
+                { 
+                    _activeJs.SetDom(dom, baseUri);
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CaptureActiveContext] Synced JS DOM to _activeDom hash={dom.GetHashCode()}\r\n"); } catch {}
+                }
+                catch { }
+            }
+            
             if (_activeJs != null)
             {
                 try { _activeJs.FetchOverride = ScriptFetcher; }
@@ -626,6 +638,9 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (_activeDom == null)
                 return null;
+            
+            // Debug: Log _activeDom hash
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[RefreshAsyncInternal] using _activeDom hash={_activeDom.GetHashCode()}\r\n"); } catch {}
 
             var fetchCss = _activeFetchCss ?? (async _ => string.Empty);
             return await BuildVisualTreeAsync(
