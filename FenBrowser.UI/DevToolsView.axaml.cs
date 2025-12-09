@@ -6,6 +6,7 @@ using Avalonia.Input;
 using Avalonia.Threading;
 using FenBrowser.FenEngine.Rendering;
 using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -16,17 +17,22 @@ namespace FenBrowser.UI
     public partial class DevToolsView : UserControl
     {
         private IBrowser _browser;
-        private readonly ObservableCollection<string> _consoleLogs = new ObservableCollection<string>();
+        // Use ObservableCollection of structured items instead of strings
+        private readonly ObservableCollection<ConsoleLogItem> _consoleLogs = new ObservableCollection<ConsoleLogItem>();
         
         public event EventHandler CloseRequested;
 
         public DevToolsView()
         {
             InitializeComponent();
+            // FIX: Bind the ListBox to our collection
+            var listbox = this.FindControl<ListBox>("ConsoleOutput");
+            if (listbox != null) listbox.ItemsSource = _consoleLogs;
         }
 
         public void Attach(IBrowser browser)
         {
+            try { FenLogger.Debug($"[DevTools] Attach called. Browser: {browser}", LogCategory.General); } catch { }
             if (_browser == browser) return;
             
             Detach();
@@ -43,45 +49,9 @@ namespace FenBrowser.UI
         {
             if (_browser != null)
             {
+                try { FenLogger.Debug("[DevTools] Detach called.", LogCategory.General); } catch { }
                 _browser.ConsoleMessage -= OnConsoleMessage;
                 _browser = null;
-            }
-        }
-
-        private void InitializeComponent()
-        {
-            AvaloniaXamlLoader.Load(this);
-            
-            var btnRefresh = this.FindControl<Button>("BtnRefresh");
-            if (btnRefresh != null) btnRefresh.Click += (s, e) => RefreshDom();
-
-            var btnClose = this.FindControl<Button>("BtnClose");
-            if (btnClose != null) btnClose.Click += (s, e) => CloseRequested?.Invoke(this, EventArgs.Empty);
-
-            var consoleInput = this.FindControl<TextBox>("ConsoleInput");
-            if (consoleInput != null) consoleInput.KeyDown += ConsoleInput_KeyDown;
-
-            var consoleOutput = this.FindControl<ListBox>("ConsoleOutput");
-            if (consoleOutput != null) consoleOutput.ItemsSource = _consoleLogs;
-
-            var domTree = this.FindControl<TreeView>("DomTree");
-            if (domTree != null)
-            {
-                domTree.SelectionChanged += DomTree_SelectionChanged;
-            }
-        }
-
-        private void DomTree_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            if (_browser == null) return;
-            var tree = sender as TreeView;
-            if (tree?.SelectedItem is DomNodeViewModel vm && vm.Element != null)
-            {
-                _browser.HighlightElement(vm.Element);
-            }
-            else
-            {
-                _browser.RemoveHighlight();
             }
         }
 
@@ -89,66 +59,88 @@ namespace FenBrowser.UI
         {
             Dispatcher.UIThread.Post(() =>
             {
-                _consoleLogs.Add(msg);
-                var list = this.FindControl<ListBox>("ConsoleOutput");
-                if (list != null && _consoleLogs.Count > 0)
-                {
-                    list.ScrollIntoView(_consoleLogs.Count - 1);
-                }
+                 if (_consoleLogs.Count > 1000) _consoleLogs.RemoveAt(0);
+                 
+                 // Parser logic to detect log level
+                 var level = ConsoleLogLevel.Info;
+                 var cleanMsg = msg;
+
+                 if (msg.StartsWith("[Error] ", StringComparison.OrdinalIgnoreCase)) 
+                 {
+                     level = ConsoleLogLevel.Error;
+                     cleanMsg = msg.Substring(8);
+                 }
+                 else if (msg.StartsWith("[Warn] ", StringComparison.OrdinalIgnoreCase))
+                 {
+                     level = ConsoleLogLevel.Warning;
+                     cleanMsg = msg.Substring(7);
+                 }
+                 else if (msg.StartsWith("[Info] ", StringComparison.OrdinalIgnoreCase))
+                 {
+                     level = ConsoleLogLevel.Info;
+                     cleanMsg = msg.Substring(7);
+                 }
+
+                 _consoleLogs.Add(new ConsoleLogItem(cleanMsg, level));
+                 
+                 // Auto-scroll
+                 var listbox = this.FindControl<ListBox>("ConsoleOutput");
+                 if (listbox != null && _consoleLogs.Count > 0)
+                 {
+                     listbox.ScrollIntoView(_consoleLogs.Last());
+                 }
             });
         }
 
         private void RefreshDom()
         {
-            if (_browser == null) return;
-            try
-            {
-                var root = _browser.GetDomRoot();
-                var tree = this.FindControl<TreeView>("DomTree");
-                if (tree != null)
-                {
-                    if (root != null)
-                    {
-                        var vm = new DomNodeViewModel(root);
-                        tree.ItemsSource = new[] { vm };
-                    }
-                    else
-                    {
-                        tree.ItemsSource = null;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _consoleLogs.Add($"[Error] Failed to refresh DOM: {ex.Message}");
-            }
+             // Placeholder for DOM tree refresh
+        }
+
+        private void DomTree_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+             // Placeholder for selection change
         }
 
         private async void ConsoleInput_KeyDown(object sender, KeyEventArgs e)
         {
             if (e.Key == Key.Enter)
             {
+                e.Handled = true;
                 var txt = sender as TextBox;
                 if (txt == null) return;
                 var script = txt.Text;
-                if (string.IsNullOrWhiteSpace(script)) return;
+                if (string.IsNullOrWhiteSpace(script)) return; // Don't log empty lines
 
-                _consoleLogs.Add($"> {script}");
+                // Log user input
+                _consoleLogs.Add(new ConsoleLogItem(script, ConsoleLogLevel.Input));
                 txt.Text = "";
+                
+                // Scroll to bottom
+                var listbox = this.FindControl<ListBox>("ConsoleOutput");
+                if (listbox != null) listbox.ScrollIntoView(_consoleLogs.Last());
 
                 try
                 {
+                    try { FenLogger.Debug($"[DevTools] Executing: {script}", LogCategory.General); } catch { }
+
                     if (_browser != null)
                     {
                         var result = await _browser.ExecuteScriptAsync(script);
-                        _consoleLogs.Add($"< {result}");
+                        // Log result
+                        _consoleLogs.Add(new ConsoleLogItem(result?.ToString() ?? "undefined", ConsoleLogLevel.Result));
+                        if (listbox != null) listbox.ScrollIntoView(_consoleLogs.Last());
                     }
                 }
                 catch (Exception ex)
                 {
-                    _consoleLogs.Add($"[Error] {ex.Message}");
+                    _consoleLogs.Add(new ConsoleLogItem(ex.Message, ConsoleLogLevel.Error));
+                    try { FenLogger.Error($"[DevTools] Error executing script: {ex}", LogCategory.Errors, ex); } catch { }
+                    if (listbox != null) listbox.ScrollIntoView(_consoleLogs.Last());
                 }
             }
         }
     }
+
+
 }
