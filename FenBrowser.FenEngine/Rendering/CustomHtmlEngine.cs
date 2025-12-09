@@ -46,6 +46,7 @@ namespace FenBrowser.FenEngine.Rendering
         public event EventHandler<string> TitleChanged;
         public event EventHandler<LiteElement> DomReady;
         public event Action<string> AlertTriggered;
+        public event Action<string> ConsoleMessage; // New event for console logs
         public event Action<Rect?> HighlightRectChanged;
         public bool EnableJavaScript { get; set; } = true;
 
@@ -79,7 +80,13 @@ namespace FenBrowser.FenEngine.Rendering
 
         public object Evaluate(string script)
         {
-            if (_activeJs != null) return _activeJs.Evaluate(script);
+            FenLogger.Debug($"[CustomHtmlEngine.Evaluate] _activeJs is null: {_activeJs == null}", LogCategory.JavaScript);
+            if (_activeJs != null) 
+            {
+                FenLogger.Debug($"[CustomHtmlEngine.Evaluate] Calling _activeJs.Evaluate with script length: {script?.Length}", LogCategory.JavaScript);
+                return _activeJs.Evaluate(script);
+            }
+            FenLogger.Error("[CustomHtmlEngine.Evaluate] _activeJs is NULL - script not executed!", LogCategory.JavaScript);
             return null;
         }
 
@@ -458,7 +465,8 @@ namespace FenBrowser.FenEngine.Rendering
             _activeOnNavigate = onNavigate;
             _activeViewportWidth = viewportWidth;
             _activeFixedBackground = onFixedBackground;
-            _activeJs = js;
+            // Only update _activeJs if a new engine is provided; preserve existing during repaints
+            if (js != null) _activeJs = js;
             if (_activeJs != null)
             {
                 try { _activeJs.FetchOverride = ScriptFetcher; }
@@ -948,6 +956,11 @@ namespace FenBrowser.FenEngine.Rendering
                         },
                         setTitle: null,
                         alert: (msg) => { AlertTriggered?.Invoke(msg); },
+                        log: (msg) => 
+                        { 
+                            FenLogger.Debug($"[CustomHtmlEngine] Received log from JS Engine: {msg}", LogCategory.JavaScript);
+                            ConsoleMessage?.Invoke(msg); 
+                        },
                         scrollToElement: (el) =>
                         {
                             try
@@ -999,6 +1012,8 @@ namespace FenBrowser.FenEngine.Rendering
                         },
                         ExecuteInlineScriptsOnInnerHTML = allowJs
                     };
+
+                    _activeJs = js;
                 }
 
                 if (js != null)
@@ -1445,9 +1460,30 @@ namespace FenBrowser.FenEngine.Rendering
                 catch (Exception ex)
                 {
                     System.Diagnostics.Debug.WriteLine($"[MakeImageAsync] Error: {ex}");
+                    System.Diagnostics.Debug.WriteLine($"[MakeImageAsync] Error: {ex}");
                     return null;
                 }
             });
+        }
+
+
+        public async Task<object> ExecuteScriptAsync(string script)
+        {
+            if (_activeJs == null) 
+            {
+                FenLogger.Error("[CustomHtmlEngine] ExecuteScriptAsync: _activeJs is NULL", LogCategory.JavaScript);
+                return "undefined";
+            }
+            FenLogger.Debug($"[CustomHtmlEngine] Executing script on active engine: {script}", LogCategory.JavaScript);
+            try
+            {
+               var res = _activeJs.Evaluate(script);
+               return res;
+            }
+            catch (Exception ex)
+            {
+                return $"Error: {ex.Message}";
+            }
         }
     }
 }

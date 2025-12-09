@@ -10,6 +10,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
+using FenBrowser.Core.Logging;
 using Avalonia.Input;
 
 namespace FenBrowser.UI
@@ -251,17 +252,19 @@ namespace FenBrowser.UI
             { 
                 _webDriver = new WebDriverServer(_activeBrowser, port ?? 4444); 
                 _webDriver.Start();
-                try { System.IO.File.AppendAllText("debug_log.txt", $"[WebDriver] Started on port {port ?? 4444}\r\n"); } catch { }
+                try { FenLogger.Debug($"[WebDriver] Started on port {port ?? 4444}", LogCategory.General); } catch { }
             } 
             catch (Exception ex) 
             { 
-                try { System.IO.File.AppendAllText("debug_log.txt", $"[WebDriver] Failed to start: {ex.Message}\r\n"); } catch { }
+                try { FenLogger.Debug($"[WebDriver] Failed to start: {ex.Message}", LogCategory.Errors); } catch { }
             }
 
             if (!string.IsNullOrEmpty(initialUrl))
             {
                 _activeBrowser.NavigateAsync(initialUrl);
             }
+
+
         }
 
         private void CreateBrowserForTab(TabItemModel tab)
@@ -281,7 +284,7 @@ namespace FenBrowser.UI
 
             browser.RepaintReady += (s, element) =>
             {
-                try { System.IO.File.AppendAllText("ui_debug.txt", $"[MainWindow] RepaintReady fired. Element: {element}\n"); } catch {}
+                try { FenLogger.Debug($"[MainWindow] RepaintReady fired. Element: {element}", LogCategory.General); } catch {}
                 tab.LastRenderedContent = element;
                 Dispatcher.UIThread.Post(() =>
                 {
@@ -291,22 +294,27 @@ namespace FenBrowser.UI
                         var root = browser.GetDomRoot();
                         var skiaView = this.FindControl<SkiaBrowserView>("SkiaView");
                         
-                        try { System.IO.File.AppendAllText("ui_debug.txt", $"[MainWindow] UI Thread. Root: {root?.Tag}, SkiaView: {skiaView}\n"); } catch {}
+                        try { FenLogger.Debug($"[MainWindow] UI Thread. Root: {root?.Tag}, SkiaView: {skiaView}", LogCategory.General); } catch {}
 
                         if (root != null)
                         {
                            if (skiaView != null) 
                            {
                                // Pass ComputedStyles to renderer
-                               try { System.IO.File.AppendAllText("ui_debug.txt", "[MainWindow] Calling SkiaView.Render\n"); } catch {}
+                               try { FenLogger.Debug("[MainWindow] Calling SkiaView.Render", LogCategory.General); } catch {}
+                               
+                               // 0. Attach Context Menu if missing
+                               if (skiaView.ContextMenu == null)
+                               {
+                                   skiaView.ContextMenu = CreateBrowserContextMenu();
+                               }
                                
                                // 1. Set BaseUrl for relative image resolution
                                var newBaseUrl = browser.CurrentUri?.AbsoluteUri ?? "";
                                
                                // Debug: Log BaseUrl being set (skip if empty to reduce log spam)
                                if (!string.IsNullOrEmpty(newBaseUrl)) {
-                                   try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
-                                       $"[MainWindow] Setting SkiaView.BaseUrl = '{newBaseUrl}'\r\n"); } catch {}
+                                   try { FenLogger.Debug($"[MainWindow] Setting SkiaView.BaseUrl = '{newBaseUrl}'", LogCategory.General); } catch {}
                                }
                                
                                skiaView.BaseUrl = newBaseUrl;
@@ -549,131 +557,136 @@ namespace FenBrowser.UI
             // Attach Context Menu to the content control if possible
             if (content is Control c)
             {
-                var menu = new ContextMenu();
-                
-                // Clipboard operations
-                var copy = new MenuItem { Header = "Copy", InputGesture = new KeyGesture(Key.C, KeyModifiers.Control) };
-                copy.Click += async (s, e) => 
-                {
-                    try
-                    {
-                        var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
-                        if (clipboard != null)
-                        {
-                            // Try to get selected text from focused control
-                            var focused = TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement();
-                            if (focused is TextBox tb && !string.IsNullOrEmpty(tb.SelectedText))
-                            {
-                                await clipboard.SetTextAsync(tb.SelectedText);
-                            }
-                            else if (_activeBrowser?.CurrentUri != null)
-                            {
-                                await clipboard.SetTextAsync(_activeBrowser.CurrentUri.AbsoluteUri);
-                            }
-                        }
-                    }
-                    catch { }
-                };
-                menu.Items.Add(copy);
-                
-                var cut = new MenuItem { Header = "Cut", InputGesture = new KeyGesture(Key.X, KeyModifiers.Control) };
-                cut.Click += async (s, e) => 
-                {
-                    try
-                    {
-                        var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
-                        var focused = TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement();
-                        if (clipboard != null && focused is TextBox tb && !string.IsNullOrEmpty(tb.SelectedText))
-                        {
-                            await clipboard.SetTextAsync(tb.SelectedText);
-                            var start = tb.SelectionStart;
-                            tb.Text = tb.Text.Remove(start, tb.SelectedText.Length);
-                            tb.CaretIndex = start;
-                        }
-                    }
-                    catch { }
-                };
-                menu.Items.Add(cut);
-                
-                var paste = new MenuItem { Header = "Paste", InputGesture = new KeyGesture(Key.V, KeyModifiers.Control) };
-                paste.Click += async (s, e) => 
-                {
-                    try
-                    {
-                        var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
-                        var focused = TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement();
-                        if (clipboard != null && focused is TextBox tb)
-                        {
-                            var text = await clipboard.GetTextAsync();
-                            if (!string.IsNullOrEmpty(text))
-                            {
-                                var start = tb.SelectionStart;
-                                var newText = tb.Text ?? "";
-                                if (tb.SelectionEnd > tb.SelectionStart)
-                                {
-                                    newText = newText.Remove(start, tb.SelectionEnd - start);
-                                }
-                                tb.Text = newText.Insert(start, text);
-                                tb.CaretIndex = start + text.Length;
-                            }
-                        }
-                    }
-                    catch { }
-                };
-                menu.Items.Add(paste);
-                
-                var selectAll = new MenuItem { Header = "Select All", InputGesture = new KeyGesture(Key.A, KeyModifiers.Control) };
-                selectAll.Click += (s, e) => 
-                {
-                    try
-                    {
-                        var focused = TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement();
-                        if (focused is TextBox tb)
-                        {
-                            tb.SelectAll();
-                        }
-                    }
-                    catch { }
-                };
-                menu.Items.Add(selectAll);
-                
-                menu.Items.Add(new Separator());
-                
-                var refresh = new MenuItem { Header = "Refresh", InputGesture = new KeyGesture(Key.R, KeyModifiers.Control) };
-                refresh.Click += (s, e) => Refresh_Click(s, e);
-                menu.Items.Add(refresh);
-                
-                menu.Items.Add(new Separator());
-                
-                var viewSource = new MenuItem { Header = "View page source", InputGesture = new KeyGesture(Key.U, KeyModifiers.Control) };
-                viewSource.Click += (s, e) => 
-                {
-                    if (_activeBrowser?.CurrentUri != null)
-                    {
-                        var url = "view-source:" + _activeBrowser.CurrentUri.AbsoluteUri;
-                        OnNewTabClick(this, null);
-                        if (_activeBrowser != null) _activeBrowser.NavigateAsync(url);
-                    }
-                };
-                menu.Items.Add(viewSource);
-                
-                var inspect = new MenuItem { Header = "Inspect" };
-                inspect.Click += (s, e) => 
-                {
-                    if (_activeBrowser != null)
-                    {
-                        var activeTab = Tabs.FirstOrDefault(t => t.IsActive);
-                        if (activeTab != null && !activeTab.IsDevToolsOpen)
-                        {
-                            ToggleDevTools();
-                        }
-                    }
-                };
-                menu.Items.Add(inspect);
-                
-                c.ContextMenu = menu;
+                c.ContextMenu = CreateBrowserContextMenu();
             }
         }
+
+        private ContextMenu CreateBrowserContextMenu()
+        {
+            var menu = new ContextMenu();
+            
+            // Clipboard operations
+            var copy = new MenuItem { Header = "Copy", InputGesture = new KeyGesture(Key.C, KeyModifiers.Control) };
+            copy.Click += async (s, e) => 
+            {
+                try
+                {
+                    var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+                    if (clipboard != null)
+                    {
+                        var focused = TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement();
+                        if (focused is TextBox tb && !string.IsNullOrEmpty(tb.SelectedText))
+                        {
+                            await clipboard.SetTextAsync(tb.SelectedText);
+                        }
+                        else if (_activeBrowser?.CurrentUri != null)
+                        {
+                            await clipboard.SetTextAsync(_activeBrowser.CurrentUri.AbsoluteUri);
+                        }
+                    }
+                }
+                catch { }
+            };
+            menu.Items.Add(copy);
+            
+            var cut = new MenuItem { Header = "Cut", InputGesture = new KeyGesture(Key.X, KeyModifiers.Control) };
+            cut.Click += async (s, e) => 
+            {
+                try
+                {
+                    var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+                    var focused = TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement();
+                    if (clipboard != null && focused is TextBox tb && !string.IsNullOrEmpty(tb.SelectedText))
+                    {
+                        await clipboard.SetTextAsync(tb.SelectedText);
+                        var start = tb.SelectionStart;
+                        tb.Text = tb.Text.Remove(start, tb.SelectedText.Length);
+                        tb.CaretIndex = start;
+                    }
+                }
+                catch { }
+            };
+            menu.Items.Add(cut);
+            
+            var paste = new MenuItem { Header = "Paste", InputGesture = new KeyGesture(Key.V, KeyModifiers.Control) };
+            paste.Click += async (s, e) => 
+            {
+                try
+                {
+                    var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+                    var focused = TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement();
+                    if (clipboard != null && focused is TextBox tb)
+                    {
+                        var text = await clipboard.GetTextAsync();
+                        if (!string.IsNullOrEmpty(text))
+                        {
+                            var start = tb.SelectionStart;
+                            var newText = tb.Text ?? "";
+                            if (tb.SelectionEnd > tb.SelectionStart)
+                            {
+                                newText = newText.Remove(start, tb.SelectionEnd - start);
+                            }
+                            tb.Text = newText.Insert(start, text);
+                            tb.CaretIndex = start + text.Length;
+                        }
+                    }
+                }
+                catch { }
+            };
+            menu.Items.Add(paste);
+            
+            var selectAll = new MenuItem { Header = "Select All", InputGesture = new KeyGesture(Key.A, KeyModifiers.Control) };
+            selectAll.Click += (s, e) => 
+            {
+                try
+                {
+                    var focused = TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement();
+                    if (focused is TextBox tb)
+                    {
+                        tb.SelectAll();
+                    }
+                }
+                catch { }
+            };
+            menu.Items.Add(selectAll);
+            
+            menu.Items.Add(new Separator());
+            
+            var refresh = new MenuItem { Header = "Refresh", InputGesture = new KeyGesture(Key.R, KeyModifiers.Control) };
+            refresh.Click += (s, e) => Refresh_Click(s, e);
+            menu.Items.Add(refresh);
+            
+            menu.Items.Add(new Separator());
+            
+            var viewSource = new MenuItem { Header = "View page source", InputGesture = new KeyGesture(Key.U, KeyModifiers.Control) };
+            viewSource.Click += (s, e) => 
+            {
+                if (_activeBrowser?.CurrentUri != null)
+                {
+                    var url = "view-source:" + _activeBrowser.CurrentUri.AbsoluteUri;
+                    OnNewTabClick(this, null);
+                    if (_activeBrowser != null) _activeBrowser.NavigateAsync(url);
+                }
+            };
+            menu.Items.Add(viewSource);
+            
+            var inspect = new MenuItem { Header = "Inspect" };
+            inspect.Click += (s, e) => 
+            {
+                if (_activeBrowser != null)
+                {
+                    var activeTab = Tabs.FirstOrDefault(t => t.IsActive);
+                    if (activeTab != null && !activeTab.IsDevToolsOpen)
+                    {
+                        ToggleDevTools();
+                    }
+                }
+            };
+            menu.Items.Add(inspect);
+
+            return menu;
+            }
+
 
         private void RecalculateTabWidth()
         {

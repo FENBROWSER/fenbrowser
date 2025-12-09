@@ -45,6 +45,8 @@ namespace FenBrowser.FenEngine.Core
             set => _context.SetRequestRender(value);
         }
 
+        public Action<string> OnConsoleMessage; // Delegate for console output
+
         public IValue ExecuteFunction(FenFunction func, IValue[] args)
         {
             if (_context.ExecuteFunction != null)
@@ -56,18 +58,26 @@ namespace FenBrowser.FenEngine.Core
 
         private void InitializeBuiltins()
         {
+            try { FenLogger.Debug("[FenRuntime] InitializeBuiltins called", LogCategory.JavaScript); } catch { }
+
             // console object
             var console = new FenObject();
+            FenLogger.Debug("[FenRuntime] Creating console object...", LogCategory.JavaScript);
             console.Set("log", FenValue.FromFunction(new FenFunction("log", (args, thisVal) =>
             {
+                try { FenLogger.Debug("[FenRuntime] console.log invoked from JS", LogCategory.JavaScript); } catch { }
+
                 var messages = new List<string>();
-                foreach (var arg in args)
-                {
-                    messages.Add(arg.ToString());
-                }
+                foreach (var arg in args) messages.Add(arg.ToString());
                 var msg = string.Join(" ", messages);
                 Console.WriteLine(msg);
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Console] {msg}\r\n"); } catch { }
+                // try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Console] {msg}\r\n"); } catch { }
+                try { FenLogger.Debug($"[FenRuntime] Console.log: {msg}", LogCategory.JavaScript); } catch { }
+                try { 
+                    if (OnConsoleMessage == null) FenLogger.Error("[FenRuntime] OnConsoleMessage is NULL!", LogCategory.JavaScript);
+                    else FenLogger.Debug("[FenRuntime] Invoking OnConsoleMessage...", LogCategory.JavaScript);
+                    OnConsoleMessage?.Invoke(msg); 
+                } catch (Exception ex) { FenLogger.Error($"[FenRuntime] OnConsoleMessage error: {ex}", LogCategory.JavaScript); }
                 return FenValue.Undefined;
             })));
             console.Set("error", FenValue.FromFunction(new FenFunction("error", (args, thisVal) =>
@@ -76,7 +86,9 @@ namespace FenBrowser.FenEngine.Core
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine($"ERROR: {msg}");
                 Console.ResetColor();
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Console Error] {msg}\r\n"); } catch { }
+                // try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Console Error] {msg}\r\n"); } catch { }
+                try { FenLogger.Error($"[FenRuntime] Console.error: {msg}", LogCategory.JavaScript); } catch { }
+                try { OnConsoleMessage?.Invoke($"[Error] {msg}"); } catch { }
                 return FenValue.Undefined;
             })));
             console.Set("warn", FenValue.FromFunction(new FenFunction("warn", (args, thisVal) =>
@@ -85,19 +97,24 @@ namespace FenBrowser.FenEngine.Core
                 Console.ForegroundColor = ConsoleColor.Yellow;
                 Console.WriteLine($"WARN: {msg}");
                 Console.ResetColor();
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Console Warn] {msg}\r\n"); } catch { }
+                // try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Console Warn] {msg}\r\n"); } catch { }
+                try { FenLogger.Info($"[FenRuntime] Console.warn: {msg}", LogCategory.JavaScript); } catch { }
+                try { OnConsoleMessage?.Invoke($"[Warn] {msg}"); } catch { }
                 return FenValue.Undefined;
             })));
             console.Set("info", FenValue.FromFunction(new FenFunction("info", (args, thisVal) =>
             {
                 var msg = string.Join(" ", args.Select(a => a.ToString()));
                 Console.WriteLine($"INFO: {msg}");
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Console Info] {msg}\r\n"); } catch { }
+                // try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Console Info] {msg}\r\n"); } catch { }
+                try { FenLogger.Info($"[FenRuntime] Console.info: {msg}", LogCategory.JavaScript); } catch { }
+                try { OnConsoleMessage?.Invoke($"[Info] {msg}"); } catch { }
                 return FenValue.Undefined;
             })));
             console.Set("clear", FenValue.FromFunction(new FenFunction("clear", (args, thisVal) =>
             {
                 Console.Clear();
+                try { OnConsoleMessage?.Invoke("[Clear]"); } catch { }
                 return FenValue.Undefined;
             })));
 

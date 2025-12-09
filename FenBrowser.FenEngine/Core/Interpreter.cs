@@ -3,6 +3,8 @@ using System.Linq;
 using System.Text;
 using System.Collections.Generic;
 using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 using System.Text.RegularExpressions;
 using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType;
 
@@ -171,6 +173,9 @@ namespace FenBrowser.FenEngine.Core
                     {
                         var obj = Eval(me.Object, env, context);
                         if (IsError(obj)) return obj;
+                        
+                        try { FenLogger.Debug($"[Interpreter] Resolving call to {me.Property} on object type {obj.Type}", LogCategory.JavaScript); } catch { }
+
                         
                         // Handle Function.prototype.bind/call/apply
                         if (obj.IsFunction && (me.Property == "bind" || me.Property == "call" || me.Property == "apply"))
@@ -1396,7 +1401,10 @@ namespace FenBrowser.FenEngine.Core
             var function = fn.AsFunction();
             if (function != null)
             {
+                try { FenLogger.Debug($"[Interpreter] ApplyFunction: {function.Name ?? "anonymous"}", LogCategory.JavaScript); } catch { }
+
                 // Handle native functions
+
                 if (function.IsNative)
                 {
                     var prevThis = context.ThisBinding;

@@ -9,6 +9,14 @@
 			"isBackground": false,
 			"problemMatcher": [],
 			"group": "build"
+		},
+		{
+			"label": "Build and Run FenBrowser (PowerShell)",
+			"type": "shell",
+			"command": "dotnet build c:\\Users\\udayk\\Videos\\FENBROWSER\\FenBrowser.sln; if ($?) { c:\\Users\\udayk\\Videos\\FENBROWSER\\run_fenbrowser.bat }",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
 		}
 	]
 }

@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.FenEngine.Scripting
 {
@@ -432,6 +433,7 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 if (!_e.SandboxAllows(SandboxFeature.DomMutation, "element.setAttribute")) return;
                 if (string.IsNullOrWhiteSpace(name)) return;
+                try { FenLogger.Debug($"[JsDomElement] setAttribute {name}='{value}' on {_node.Tag}", LogCategory.DOM); } catch {}
                 _node.SetAttribute(name, value);
                 try
                 {
@@ -670,7 +672,98 @@ namespace FenBrowser.FenEngine.Scripting
                 set { setAttribute("class", value); }
             }
 
+            public JsCssDeclaration style => new JsCssDeclaration(this);
+
             public JsDomTokenList classList => new JsDomTokenList(this);
+        }
+
+        internal sealed class JsCssDeclaration
+        {
+            private readonly JsDomElement _el;
+            public JsCssDeclaration(JsDomElement el) { _el = el; }
+
+            public string cssText
+            {
+                get { return _el.getAttribute("style") ?? ""; }
+                set { _el.setAttribute("style", value ?? ""); }
+            }
+
+            public void setProperty(string name, string value)
+            {
+                if (string.IsNullOrWhiteSpace(name)) return;
+                try { FenLogger.Debug($"[JsCssDeclaration] setProperty {name}='{value}'", LogCategory.DOM); } catch {}
+                var current = cssText;
+                var styles = ParseStyles(current);
+                styles[name] = value ?? "";
+                cssText = SerializeStyles(styles);
+            }
+
+            public string getPropertyValue(string name)
+            {
+                if (string.IsNullOrWhiteSpace(name)) return "";
+                var current = cssText;
+                var styles = ParseStyles(current);
+                return styles.TryGetValue(name, out var val) ? val : "";
+            }
+
+            public string removeProperty(string name)
+            {
+                if (string.IsNullOrWhiteSpace(name)) return "";
+                var current = cssText;
+                var styles = ParseStyles(current);
+                if (styles.TryGetValue(name, out var val))
+                {
+                    styles.Remove(name);
+                    cssText = SerializeStyles(styles);
+                    return val;
+                }
+                return "";
+            }
+
+            // Common properties for direct access (e.g., element.style.display = 'none')
+            public string display { get { return getPropertyValue("display"); } set { setProperty("display", value); } }
+            public string width { get { return getPropertyValue("width"); } set { setProperty("width", value); } }
+            public string height { get { return getPropertyValue("height"); } set { setProperty("height", value); } }
+            public string top { get { return getPropertyValue("top"); } set { setProperty("top", value); } }
+            public string left { get { return getPropertyValue("left"); } set { setProperty("left", value); } }
+            public string position { get { return getPropertyValue("position"); } set { setProperty("position", value); } }
+            public string opacity { get { return getPropertyValue("opacity"); } set { setProperty("opacity", value); } }
+            public string transform { get { return getPropertyValue("transform"); } set { setProperty("transform", value); } }
+            public string backgroundColor { get { return getPropertyValue("background-color"); } set { setProperty("background-color", value); } }
+            public string color { get { return getPropertyValue("color"); } set { setProperty("color", value); } }
+            public string background { get { return getPropertyValue("background"); } set { setProperty("background", value); } }
+            public string margin { get { return getPropertyValue("margin"); } set { setProperty("margin", value); } }
+            public string padding { get { return getPropertyValue("padding"); } set { setProperty("padding", value); } }
+            public string border { get { return getPropertyValue("border"); } set { setProperty("border", value); } }
+
+            private static Dictionary<string, string> ParseStyles(string styleAttr)
+            {
+                var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                if (string.IsNullOrWhiteSpace(styleAttr)) return dict;
+                var parts = styleAttr.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (var p in parts)
+                {
+                    var idx = p.IndexOf(':');
+                    if (idx > 0)
+                    {
+                        var key = p.Substring(0, idx).Trim();
+                        var val = p.Substring(idx + 1).Trim();
+                        if (!string.IsNullOrEmpty(key)) dict[key] = val;
+                    }
+                }
+                return dict;
+            }
+
+            private static string SerializeStyles(Dictionary<string, string> styles)
+            {
+                if (styles == null || styles.Count == 0) return "";
+                var sb = new StringBuilder();
+                foreach (var kv in styles)
+                {
+                    sb.Append(kv.Key).Append(": ").Append(kv.Value).Append("; ");
+                }
+                return sb.ToString().Trim();
+            }
         }
 
         internal sealed class JsDomTokenList

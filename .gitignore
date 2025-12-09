@@ -46,3 +46,4 @@ wpt/
 !test_canvas.html
 !canvas_debug.txt
 !test_js_benchmark.html
+!speedometer_debug.txt

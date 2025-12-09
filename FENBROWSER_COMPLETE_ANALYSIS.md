@@ -681,13 +681,13 @@
 **Features Implemented:**
 
 - Elements tab (DOM tree view)
-- Console tab (log output)
+- ~~Console tab (log output)~~ ✅ Console tab (Edge-style structured logging & input) Dec 10, 2024
 - Network tab (request list)
 - Sources tab (script view)
 - Tab switching
 - DOM element selection
 
-**Score:** 30/100 - Basic DevTools, missing: debugging, profiling
+**Score:** 50/100 - Improved Console, missing: debugging, profiling
 
 ---
 
