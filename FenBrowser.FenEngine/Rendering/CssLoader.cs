@@ -2152,65 +2152,77 @@ namespace FenBrowser.FenEngine.Rendering
             return true;
         }
 
-        private static LiteElement FindAncestorMatching(LiteElement start, SelectorSegment seg)
+        private static SelectorSegment ParseSegment(List<string> tokens)
         {
-            var p = start.Parent;
+            var seg = new SelectorSegment();
+            foreach (var t in tokens)
+            {
+                if (t == " " || t == ">" || t == "+" || t == "~") continue; // Skip combinators
+                if (t == "*") { seg.Tag = "*"; continue; }
+                if (t.StartsWith("."))
+                {
+                    seg.Classes.Add(t.Substring(1));
+                }
+                else if (t.StartsWith("#"))
+                {
+                    seg.Id = t.Substring(1);
+                }
+                else if (t.StartsWith("["))
+                {
+                    // Attribute selector parsing (improved for escapes)
+                    var content = t.TrimStart('[').TrimEnd(']');
+                    if (seg.Attributes == null) seg.Attributes = new List<Tuple<string, string, string>>();
+                    string[] operators = { "~=", "|=", "^=", "$=", "*=", "=" };
+                    string foundOp = null;
+                    int opIndex = -1;
+                    foreach (var op in operators)
+                    {
+                        int idx = content.IndexOf(op);
+                        if (idx >= 0)
+                        {
+                            foundOp = op;
+                            opIndex = idx;
+                            break;
+                        }
+                    }
+                    if (foundOp == null || opIndex < 0)
+                    {
+                        seg.Attributes.Add(Tuple.Create(content.Trim(), "", ""));
+                    }
+                    else
+                    {
+                        var name = content.Substring(0, opIndex).Trim();
+                        var val = content.Substring(opIndex + foundOp.Length).Trim().Trim('"', '\'');
+                        // Unescape CSS escapes
+                        val = Regex.Replace(val, @"\\(.)", "$1");
+                        seg.Attributes.Add(Tuple.Create(name, foundOp, val));
+                    }
+                }
+                else if (t.StartsWith(":"))
+                {
+                    // Pseudo-class or pseudo-element
+                    string val = t.Substring(1).ToLowerInvariant();
+                    if (seg.PseudoClasses == null) seg.PseudoClasses = new List<string>();
+                    seg.PseudoClasses.Add(val);
+                }
+                else if (!string.IsNullOrEmpty(t))
+                {
+                    seg.Tag = t;
+                }
+            }
+            return seg;
+
+        }
+
+        private static LiteElement FindAncestorMatching(LiteElement n, SelectorSegment seg)
+        {
+            var p = n.Parent;
             while (p != null)
             {
                 if (MatchesSingle(p, seg)) return p;
                 p = p.Parent;
             }
             return null;
-        }
-
-        /// Parse an+b notation for :nth-child and :nth-of-type.
-        /// Supports: "odd", "even", "3", "2n", "2n+1", "2n-1", "-n+3", etc.
-        /// </summary>
-        private static bool ParseNthExpression(string expr, out int a, out int b)
-        {
-            a = 0; b = 0;
-            if (string.IsNullOrWhiteSpace(expr)) return false;
-
-            var s = expr.Replace(" ", "").ToLowerInvariant();
-
-            // Handle keywords
-            if (s == "odd") { a = 2; b = 1; return true; }
-            if (s == "even") { a = 2; b = 0; return true; }
-
-            // Find 'n'
-            int posN = s.IndexOf('n');
-            if (posN < 0)
-            {
-                // Just a number (e.g., "3")
-                int num;
-                if (int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out num))
-                {
-                    a = 0;
-                    b = num;
-                    return true;
-                }
-                return false;
-            }
-
-            // Parse 'an' part
-            var aPart = s.Substring(0, posN);
-            if (aPart == "" || aPart == "+") a = 1;
-            else if (aPart == "-") a = -1;
-            else if (!int.TryParse(aPart, NumberStyles.Integer, CultureInfo.InvariantCulture, out a))
-                return false;
-
-            // Parse '+b' or '-b' part
-            var bPart = s.Substring(posN + 1);
-            if (string.IsNullOrEmpty(bPart))
-            {
-                b = 0;
-                return true;
-            }
-
-            if (!int.TryParse(bPart, NumberStyles.Integer, CultureInfo.InvariantCulture, out b))
-                return false;
-
-            return true;
         }
 
         /// <summary>
@@ -2339,7 +2351,8 @@ namespace FenBrowser.FenEngine.Rendering
             if (n == null || seg == null) return false;
             if (n.IsText) return false;
 
-            if (!string.IsNullOrEmpty(seg.Tag))
+            // Universal selector support
+            if (!string.IsNullOrEmpty(seg.Tag) && seg.Tag != "*")
             {
                 if (!string.Equals(n.Tag, seg.Tag, StringComparison.OrdinalIgnoreCase))
                     return false;
@@ -2407,8 +2420,17 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
 
+            // Pseudo-element support (basic: ::before, ::after, ::placeholder)
             if (seg.PseudoClasses != null)
             {
+                foreach (var pseudo in seg.PseudoClasses)
+                {
+                    if (pseudo.StartsWith(":") && (pseudo.Contains("before") || pseudo.Contains("after") || pseudo.Contains("placeholder")))
+                    {
+                        // For now, pseudo-elements do not match real elements
+                        return false;
+                    }
+                }
                 foreach (var ps in seg.PseudoClasses)
                 {
                     if (string.Equals(ps, "first-child", StringComparison.OrdinalIgnoreCase))
@@ -2716,12 +2738,12 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
 
-            // Check :not() selectors - element must NOT match any of them
+            // Check :not() selectors - element must NOT match any of them (compound support)
             if (seg.NotSelectors != null)
             {
                 foreach (var notSeg in seg.NotSelectors)
                 {
-                    if (MatchesSingleBasic(n, notSeg))
+                    if (MatchesSelectorChain(new SelectorChain { Segments = new List<SelectorSegment> { notSeg } }, n))
                     {
                         return false; // Element matches the :not() selector, so it should NOT match the overall selector
                     }
@@ -3624,8 +3646,50 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 tokens.Add(current.ToString());
             }
-
             return tokens;
+        }
+
+        private static double ParseCalcValue(string token, double emBase, double percentBase)
+        {
+            token = token.Trim().ToLowerInvariant();
+            double v;
+            double vpWidth = CssParser.MediaViewportWidth ?? 1920.0;
+            double vpHeight = CssParser.MediaViewportHeight ?? 1080.0;
+
+            if (token.EndsWith("rem"))
+            {
+                if (TryDouble(token.Substring(0, token.Length - 3), out v)) return v * 16.0;
+            }
+            else if (token.EndsWith("em"))
+            {
+                if (TryDouble(token.Substring(0, token.Length - 2), out v)) return v * emBase;
+            }
+            else if (token.EndsWith("vw"))
+            {
+                if (TryDouble(token.Substring(0, token.Length - 2), out v)) return v * vpWidth / 100.0;
+            }
+            else if (token.EndsWith("vh"))
+            {
+                if (TryDouble(token.Substring(0, token.Length - 2), out v)) return v * vpHeight / 100.0;
+            }
+            else if (token.EndsWith("vmin"))
+            {
+                if (TryDouble(token.Substring(0, token.Length - 4), out v)) return v * Math.Min(vpWidth, vpHeight) / 100.0;
+            }
+            else if (token.EndsWith("vmax"))
+            {
+                if (TryDouble(token.Substring(0, token.Length - 4), out v)) return v * Math.Max(vpWidth, vpHeight) / 100.0;
+            }
+            else if (token.EndsWith("%"))
+            {
+                if (TryDouble(token.Substring(0, token.Length - 1), out v)) return v * percentBase / 100.0;
+            }
+            else
+            {
+                // Raw number (treated as px)
+                if (TryDouble(token, out v)) return v;
+            }
+            return 0;
         }
 
         private static bool IsCalcOperator(string token)
@@ -3633,81 +3697,34 @@ namespace FenBrowser.FenEngine.Rendering
             return token == "+" || token == "-" || token == "*" || token == "/";
         }
 
-        private static bool ShouldPopOperator(char stackOp, char newOp)
+        private static bool ShouldPopOperator(char stackTop, char newOp)
         {
-            int stackPrec = (stackOp == '*' || stackOp == '/') ? 2 : 1;
-            int newPrec = (newOp == '*' || newOp == '/') ? 2 : 1;
-            return stackPrec >= newPrec;
+             int p1 = GetPriority(stackTop);
+             int p2 = GetPriority(newOp);
+             return p1 >= p2;
+        }
+
+        private static int GetPriority(char op)
+        {
+            if (op == '*' || op == '/') return 2;
+            if (op == '+' || op == '-') return 1;
+            return 0;
         }
 
         private static void ApplyOperator(Stack<double> output, char op)
         {
             if (output.Count < 2) return;
-            double b = output.Pop();
-            double a = output.Pop();
-            switch (op)
+            double right = output.Pop();
+            double left = output.Pop();
+            double res = 0;
+            switch(op)
             {
-                case '+': output.Push(a + b); break;
-                case '-': output.Push(a - b); break;
-                case '*': output.Push(a * b); break;
-                case '/': output.Push(b != 0 ? a / b : 0); break;
+                case '+': res = left + right; break;
+                case '-': res = left - right; break;
+                case '*': res = left * right; break;
+                case '/': res = right != 0 ? left / right : 0; break;
             }
-        }
-
-        private static double ParseCalcValue(string token, double emBase, double percentBase)
-        {
-            token = token.Trim().ToLowerInvariant();
-            
-            double vpWidth = CssParser.MediaViewportWidth ?? 1920.0;
-            double vpHeight = CssParser.MediaViewportHeight ?? 1080.0;
-
-            if (token.EndsWith("px"))
-            {
-                double v;
-                if (TryDouble(token.Substring(0, token.Length - 2), out v)) return v;
-            }
-            else if (token.EndsWith("rem"))
-            {
-                double v;
-                if (TryDouble(token.Substring(0, token.Length - 3), out v)) return v * 16.0;
-            }
-            else if (token.EndsWith("em"))
-            {
-                double v;
-                if (TryDouble(token.Substring(0, token.Length - 2), out v)) return v * emBase;
-            }
-            else if (token.EndsWith("vw"))
-            {
-                double v;
-                if (TryDouble(token.Substring(0, token.Length - 2), out v)) return v * vpWidth / 100.0;
-            }
-            else if (token.EndsWith("vh"))
-            {
-                double v;
-                if (TryDouble(token.Substring(0, token.Length - 2), out v)) return v * vpHeight / 100.0;
-            }
-            else if (token.EndsWith("vmin"))
-            {
-                double v;
-                if (TryDouble(token.Substring(0, token.Length - 4), out v)) return v * Math.Min(vpWidth, vpHeight) / 100.0;
-            }
-            else if (token.EndsWith("vmax"))
-            {
-                double v;
-                if (TryDouble(token.Substring(0, token.Length - 4), out v)) return v * Math.Max(vpWidth, vpHeight) / 100.0;
-            }
-            else if (token.EndsWith("%"))
-            {
-                double v;
-                if (TryDouble(token.Substring(0, token.Length - 1), out v)) return v * percentBase / 100.0;
-            }
-            else
-            {
-                // Raw number (treated as px)
-                double v;
-                if (TryDouble(token, out v)) return v;
-            }
-            return 0;
+            output.Push(res);
         }
 
 
@@ -4354,6 +4371,37 @@ namespace FenBrowser.FenEngine.Rendering
     private static void DebugLog(string filename, string message)
     {
         try { lock (_logLock) { System.IO.File.AppendAllText(filename, message); } } catch { }
+    }
+
+    /// <summary>
+    /// Matches a SelectorChain against an element (for compound :not() support)
+    /// </summary>
+    private static bool MatchesSelectorChain(SelectorChain chain, LiteElement n)
+    {
+        return Matches(n, chain);
+    }
+
+    /// <summary>
+    /// Parses an nth-expression (e.g. '2n+1', 'odd', 'even') into a and b for an+b
+    /// </summary>
+    private static bool ParseNthExpression(string expr, out int a, out int b)
+    {
+        a = 0; b = 0;
+        expr = expr.Trim().ToLowerInvariant();
+        if (expr == "odd") { a = 2; b = 1; return true; }
+        if (expr == "even") { a = 2; b = 0; return true; }
+        var match = System.Text.RegularExpressions.Regex.Match(expr, @"^([+-]?\d*)n([+-]?\d+)?$");
+        if (match.Success)
+        {
+            var aStr = match.Groups[1].Value;
+            var bStr = match.Groups[2].Value;
+            a = (aStr == "" || aStr == "+") ? 1 : (aStr == "-" ? -1 : int.Parse(aStr));
+            b = bStr == "" ? 0 : int.Parse(bStr);
+            return true;
+        }
+        // Just a number
+        if (int.TryParse(expr, out b)) { a = 0; return true; }
+        return false;
     }
 }
 }
