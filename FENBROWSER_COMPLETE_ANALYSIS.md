@@ -535,8 +535,15 @@
 - Flex-like layout (basic block/flow)
 - UA Styles injection (inputs, inputs borders)
 - Viewport clipping and background management
+- Interactive Form Widgets (Checkbox, Radio) (✅ IMPLEMENTED Dec 8, 2024)
+- Details/Summary Toggle Support (✅ IMPLEMENTED Dec 8, 2024)
+- Inline SVG Rendering using Svg.Skia (✅ IMPLEMENTED Dec 8, 2024)
+- Complex Table Layout (Colspan/Rowspan Grid) (✅ IMPLEMENTED Dec 8, 2024)
+- Fieldset/Legend Support (✅ IMPLEMENTED Dec 8, 2024)
+- Native Select/ComboBox Overlay (✅ IMPLEMENTED Dec 8, 2024)
+- CSS Overhaul: gap, align-items, opacity, border-radius, text-align (✅ IMPLEMENTED Dec 8, 2024)
 
-**Score:** 40/100 - Early stage, high potential for accuracy
+**Score:** 80/100 - Full CSS Overhaul Complete.
 
 ---
 

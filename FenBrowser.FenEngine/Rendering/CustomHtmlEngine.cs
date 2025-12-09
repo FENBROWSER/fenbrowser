@@ -44,6 +44,7 @@ namespace FenBrowser.FenEngine.Rendering
         }
         public event EventHandler<bool> LoadingChanged;
         public event EventHandler<string> TitleChanged;
+        public event EventHandler<LiteElement> DomReady;
         public event Action<string> AlertTriggered;
         public event Action<Rect?> HighlightRectChanged;
         public bool EnableJavaScript { get; set; } = true;
@@ -82,6 +83,7 @@ namespace FenBrowser.FenEngine.Rendering
             return null;
         }
 
+        public LiteElement ActiveDom => _activeDom;
         private LiteElement _activeDom;
         private Control _lastRenderedControl;
         private Uri _activeBaseUri;
@@ -586,184 +588,11 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
             catch { }
-
-            if (imageLoader == null)
-                imageLoader = _ => Task.FromResult<Stream>(null);
-
-            var renderer = new DomBasicRenderer
-            {
-                ComputedStyles = computed,
-                ImageLoader = imageLoader,
-                Js = js
-            };
-
-            Control element = null;
-            var disp = UiThreadHelper.TryGetDispatcher(); // <-- outer 'disp'
-            try
-            {
-                if (disp != null)
-                {
-                    var tcs = new TaskCompletionSource<Control>();
-                    await UiThreadHelper.RunAsyncAwaitable(disp, null, async () =>
-                    {
-                        try
-                        {
-                            // Use DomBasicRenderer (Robust Pipeline)
-                            try { System.IO.File.AppendAllText("debug_log.txt", "[RenderAsync] Calling BuildAsync\r\n"); } catch { }
-                            var visualRoot = await renderer.BuildAsync(dom, baseUri, onNavigate, js);
-                            tcs.TrySetResult(visualRoot);
-                        }
-                        catch (Exception ex)
-                        {
-                            try { System.IO.File.AppendAllText("debug_log.txt", $"[RenderAsync] Error: {ex.ToString()}\r\n"); } catch { }
-                            tcs.TrySetException(ex);
-                        }
-                    });
-                    element = await tcs.Task.ConfigureAwait(true);
-                }
-                else
-                {
-                    // Fallback if no dispatcher (shouldn't happen in UI app)
-                    // We cannot run Painter here because it requires UI thread.
-                    throw new InvalidOperationException("Cannot render visual tree without UI thread access.");
-                }
-            }
-            catch (Exception threadEx)
-            {
-                // ... error handling ...
-                var disp2 = UiThreadHelper.TryGetDispatcher(); // <-- renamed from 'disp' to 'disp2'
-                if (disp2 != null)
-                {
-                    await UiThreadHelper.RunAsyncAwaitable(disp2, null, () =>
-                    {
-                        var sp = new StackPanel { Margin = new Thickness(12, 12, 12, 12) };
-                        sp.Children.Add(new TextBlock { Text = "Render thread error", FontSize = 18, FontWeight = FontWeight.SemiBold, Foreground = new SolidColorBrush(Colors.Black) });
-                        string detail = threadEx.Message;
-                        try { detail += "\n" + (threadEx.StackTrace ?? "(no stack)"); } catch { }
-                        sp.Children.Add(new TextBlock { Text = detail, TextWrapping = TextWrapping.Wrap, Foreground = new SolidColorBrush(Colors.Black), Margin = new Thickness(0,6,0,0) });
-                        element = new Border { Background = new SolidColorBrush(Colors.White), Child = sp };
-                        return Task.CompletedTask;
-                    });
-                }
-            }
-
-            // Wrap in background/border - MUST be on UI thread
-            if (element != null)
-            {
-                // Re-dispatch if we somehow ended up on a background thread (e.g. if disp was null initially but we need UI thread now? Unlikely if disp was null).
-                // If disp != null, we want to ensure this runs on UI thread.
-                var disp3 = UiThreadHelper.TryGetDispatcher();
-                if (disp3 != null && !UiThreadHelper.HasThreadAccess(disp3))
-                {
-                     var tcsWrap = new TaskCompletionSource<Control>();
-                     await UiThreadHelper.RunAsyncAwaitable(disp3, null, () =>
-                     {
-                         try
-                         {
-                             if (computed != null)
-                             {
-                                var bodyNode = dom.Descendants().FirstOrDefault(n => n.Tag == "body");
-                                var htmlNode = dom.Descendants().FirstOrDefault(n => n.Tag == "html");
-                                CssComputed cb = null;
-                                if (bodyNode != null && computed.TryGetValue(bodyNode, out cb) && cb != null && cb.Background != null)
-                                {
-                                    element = new Border { Background = cb.Background, Child = element };
-                                    TryApplyContrastForeground(element, cb.Background);
-                                }
-                                else if (htmlNode != null && computed.TryGetValue(htmlNode, out cb) && cb != null && cb.Background != null)
-                                {
-                                    element = new Border { Background = cb.Background, Child = element };
-                                    TryApplyContrastForeground(element, cb.Background);
-                                }
-                                else
-                                {
-                                    var bg = new SolidColorBrush(Colors.White);
-                                    element = new Border { Background = bg, Child = element };
-                                    TryApplyContrastForeground(element, bg);
-                                }
-                             }
-                             tcsWrap.TrySetResult(element);
-                         }
-                         catch (Exception ex) { tcsWrap.TrySetException(ex); }
-                         return System.Threading.Tasks.Task.CompletedTask;
-                     });
-                     element = await tcsWrap.Task;
-                }
-                else
-                {
-                    // Already on UI thread (or no dispatcher available), run directly
-                    try
-                    {
-                        if (computed != null)
-                        {
-                            var bodyNode = dom.Descendants().FirstOrDefault(n => n.Tag == "body");
-                            var htmlNode = dom.Descendants().FirstOrDefault(n => n.Tag == "html");
-                            CssComputed cb = null;
-                            if (bodyNode != null && computed.TryGetValue(bodyNode, out cb) && cb != null && cb.Background != null)
-                            {
-                                    element = new Border { Background = cb.Background, Child = element };
-                                    TryApplyContrastForeground(element, cb.Background);
-                            }
-                            else if (htmlNode != null && computed.TryGetValue(htmlNode, out cb) && cb != null && cb.Background != null)
-                            {
-                                    element = new Border { Background = cb.Background, Child = element };
-                                    TryApplyContrastForeground(element, cb.Background);
-                            }
-                            else
-                            {
-                                var bg = new SolidColorBrush(Colors.White);
-                                element = new Border { Background = bg, Child = element };
-                                TryApplyContrastForeground(element, bg);
-                            }
-                        }
-                    }
-                    catch { }
-                }
-            }
-
-            if (element == null || IsEffectivelyEmpty(element))
-            {
-                var fallback = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(12, 12, 12, 12) };
-                var fg = new SolidColorBrush(Colors.White);
-                string title = null;
-                try { var tnode = dom.Descendants().FirstOrDefault(n => n.Tag == "title"); if (tnode != null) title = tnode.Text; } catch { }
-                if (string.IsNullOrWhiteSpace(title)) title = baseUri != null ? baseUri.Host : "This page";
-                fallback.Children.Add(new TextBlock { Text = title, FontSize = 20, FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 0, 0, 6), Foreground = fg });
-                fallback.Children.Add(new TextBlock { Text = baseUri != null ? baseUri.AbsoluteUri : string.Empty, TextWrapping = TextWrapping.Wrap, Foreground = fg });
-                element = new Border { Background = new SolidColorBrush(Colors.Black), Child = fallback };
-            }
-
-            // GPU Acceleration: Apply BitmapCache if enabled
-            if (EnableGpuAcceleration && element != null)
-            {
-                try
-                {
-                    // Avalonia doesn't have BitmapCache - ignore
-                }
-                catch { }
-            }
-
-            if (includeDiagnosticsBanner)
-            {
-                try
-                {
-                    var wrap = new StackPanel { Orientation = Orientation.Vertical };
-                    var banner = new Border
-                    {
-                        Background = new SolidColorBrush(Colors.Black),
-                        Child = null
-                    };
-                    wrap.Children.Add(banner);
-                    if (element != null) wrap.Children.Add(element);
-                    element = wrap;
-                }
-                catch { }
-            }
-
-            return element;
+            
+            
+            DomReady?.Invoke(this, dom);
+            return null;
         }
-
-        public bool EnableGpuAcceleration { get; set; } = false;
 
         private async Task<Control> RefreshAsyncInternal(bool includeDiagnosticsBanner)
         {

@@ -10,6 +10,7 @@ using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using System.IO;
 using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 using System.Globalization;
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -302,6 +303,7 @@ namespace FenBrowser.FenEngine.Rendering
             public string PseudoElement;          // e.g. "before", "after"
             public List<Tuple<string, string, string>> Attributes; // e.g. [("type", "=", "text")]
             public Combinator? Next;              // relation to the NEXT segment (left-to-right)
+            public List<SelectorSegment> NotSelectors; // :not() selectors (elements must NOT match these)
         }
 
         // ===========================
@@ -742,9 +744,9 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         /// <summary>
-        /// Check if a CSS property is supported
+        /// Check if a CSS property is supported and log unsupported ones
         /// </summary>
-        private static bool IsSupportedProperty(string property)
+        private static bool IsSupportedProperty(string property, string value = null)
         {
             // List of supported CSS properties
             var supported = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -756,9 +758,33 @@ namespace FenBrowser.FenEngine.Rendering
                 "align-items", "grid", "grid-template-columns", "gap", "transform",
                 "opacity", "overflow", "z-index", "box-shadow", "border-radius",
                 "transition", "filter", "animation", "min-width", "max-width",
-                "min-height", "max-height", "aspect-ratio", "object-fit", "cursor"
+                "min-height", "max-height", "aspect-ratio", "object-fit", "cursor",
+                // Shorthand properties
+                "margin-top", "margin-right", "margin-bottom", "margin-left",
+                "padding-top", "padding-right", "padding-bottom", "padding-left",
+                "border-top", "border-right", "border-bottom", "border-left",
+                "border-width", "border-style", "border-color",
+                "top", "right", "bottom", "left",
+                "flex-grow", "flex-shrink", "flex-basis", "align-self",
+                "order", "grid-template-rows", "grid-column", "grid-row",
+                "line-height", "letter-spacing", "word-spacing", "text-transform",
+                "white-space", "overflow-x", "overflow-y", "visibility",
+                "vertical-align", "float", "clear"
             };
-            return supported.Contains(property);
+            
+            bool isSupported = supported.Contains(property);
+            
+            // Log unsupported properties for debugging (tracks first encounter only)
+            if (!isSupported && !string.IsNullOrEmpty(property))
+            {
+                // Skip vendor prefixes and CSS variables - they're expected to be unsupported
+                if (!property.StartsWith("-") && !property.StartsWith("--"))
+                {
+                    EngineCapabilities.LogUnsupportedCss(property, value, "CSS property not implemented");
+                }
+            }
+            
+            return isSupported;
         }
 
         /// <summary>
@@ -1046,6 +1072,21 @@ namespace FenBrowser.FenEngine.Rendering
                         {
                             seg.PseudoElement = val;
                         }
+                        else if (val.StartsWith("not("))
+                        {
+                            // Handle :not() selector
+                            var notArg = ExtractPseudoArg(val);
+                            if (!string.IsNullOrEmpty(notArg))
+                            {
+                                // Parse the inner selector
+                                var notSeg = ParseSimpleSelector(notArg);
+                                if (notSeg != null)
+                                {
+                                    if (seg.NotSelectors == null) seg.NotSelectors = new List<SelectorSegment>();
+                                    seg.NotSelectors.Add(notSeg);
+                                }
+                            }
+                        }
                         else
                         {
                             if (seg.PseudoClasses == null) seg.PseudoClasses = new List<string>();
@@ -1184,6 +1225,77 @@ namespace FenBrowser.FenEngine.Rendering
             return r;
         }
 
+        /// <summary>
+        /// Parse a simple selector (for :not() argument) - supports tag, .class, #id, [attr]
+        /// </summary>
+        private static SelectorSegment ParseSimpleSelector(string s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return null;
+            s = s.Trim();
+            
+            var seg = new SelectorSegment { Classes = new List<string>() };
+            var tokens = TokenizeSelector(s);
+            
+            foreach (var t in tokens)
+            {
+                if (t == " " || t == ">" || t == "+" || t == "~") continue; // Skip combinators
+                
+                if (t.StartsWith("."))
+                {
+                    seg.Classes.Add(t.Substring(1));
+                }
+                else if (t.StartsWith("#"))
+                {
+                    seg.Id = t.Substring(1);
+                }
+                else if (t.StartsWith("["))
+                {
+                    // Attribute selector parsing
+                    var content = t.TrimStart('[').TrimEnd(']');
+                    if (seg.Attributes == null) seg.Attributes = new List<Tuple<string, string, string>>();
+                    
+                    string[] operators = { "~=", "|=", "^=", "$=", "*=", "=" };
+                    string foundOp = null;
+                    int opIndex = -1;
+                    
+                    foreach (var op in operators)
+                    {
+                        int idx = content.IndexOf(op);
+                        if (idx >= 0)
+                        {
+                            foundOp = op;
+                            opIndex = idx;
+                            break;
+                        }
+                    }
+                    
+                    if (foundOp == null || opIndex < 0)
+                    {
+                        seg.Attributes.Add(Tuple.Create(content.Trim(), "", ""));
+                    }
+                    else
+                    {
+                        var name = content.Substring(0, opIndex).Trim();
+                        var val = content.Substring(opIndex + foundOp.Length).Trim().Trim('"', '\'');
+                        seg.Attributes.Add(Tuple.Create(name, foundOp, val));
+                    }
+                }
+                else if (t.StartsWith(":"))
+                {
+                    // Pseudo-class inside :not() - add to pseudo-classes
+                    string val = t.Substring(1).ToLowerInvariant();
+                    if (seg.PseudoClasses == null) seg.PseudoClasses = new List<string>();
+                    seg.PseudoClasses.Add(val);
+                }
+                else if (!string.IsNullOrEmpty(t))
+                {
+                    seg.Tag = t;
+                }
+            }
+            
+            return seg;
+        }
+
         private static List<CssDecl> ParseDeclarations(string declText)
         {
             var list = new List<CssDecl>();
@@ -1237,6 +1349,7 @@ namespace FenBrowser.FenEngine.Rendering
             var perNode = new Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>>();
             var perNodeBefore = new Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>>();
             var perNodeAfter = new Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>>();
+            var perNodeMarker = new Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>>();
             int matchedNodes = 0;
             foreach (var n in nodes)
             {
@@ -1255,6 +1368,7 @@ namespace FenBrowser.FenEngine.Rendering
                             Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>> targetDict = perNode;
                             if (pe == "before") targetDict = perNodeBefore;
                             else if (pe == "after") targetDict = perNodeAfter;
+                            else if (pe == "marker") targetDict = perNodeMarker;
                             else if (!string.IsNullOrEmpty(pe)) continue; // Unknown pseudo-element
 
                             nodeHasMatches = true;
@@ -1343,8 +1457,9 @@ namespace FenBrowser.FenEngine.Rendering
                 bool hasMain = items != null && items.Count > 0;
                 bool hasBefore = perNodeBefore.ContainsKey(n) && perNodeBefore[n].Count > 0;
                 bool hasAfter = perNodeAfter.ContainsKey(n) && perNodeAfter[n].Count > 0;
+                bool hasMarker = perNodeMarker.ContainsKey(n) && perNodeMarker[n].Count > 0;
 
-                if (!hasMain && !hasBefore && !hasAfter) continue;
+                if (!hasMain && !hasBefore && !hasAfter && !hasMarker) continue;
 
                 var css = ResolveStyle(n, parentCss, items ?? new List<Tuple<CssDecl, SelectorChain, int>>());
 
@@ -1357,9 +1472,29 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     css.After = ResolveStyle(n, css, perNodeAfter[n]);
                 }
+                
+                if (hasMarker)
+                {
+                    css.Marker = ResolveStyle(n, css, perNodeMarker[n]);
+                }
 
                 result[n] = css;
             }
+
+            // Debug: Summary statistics
+            try { 
+                int nodesWithBackground = result.Values.Count(c => c.Background != null || c.BackgroundColor.HasValue);
+                int nodesWithColor = result.Values.Count(c => c.ForegroundColor.HasValue);
+                int nodesWithDisplay = result.Values.Count(c => !string.IsNullOrEmpty(c.Display));
+                System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
+                    $"[CssLoader] === CASCADE SUMMARY ===\r\n" +
+                    $"[CssLoader] Total nodes styled: {result.Count}\r\n" +
+                    $"[CssLoader] Nodes matched by CSS: {matchedNodes}\r\n" +
+                    $"[CssLoader] Match rate: {(nodes.Count > 0 ? (100.0 * matchedNodes / nodes.Count).ToString("F1") : "0")}%\r\n" +
+                    $"[CssLoader] Nodes with background: {nodesWithBackground}\r\n" +
+                    $"[CssLoader] Nodes with color: {nodesWithColor}\r\n" +
+                    $"[CssLoader] Nodes with display: {nodesWithDisplay}\r\n"); 
+            } catch {}
 
             return result;
         }
@@ -1479,6 +1614,20 @@ namespace FenBrowser.FenEngine.Rendering
             if (TryPx(DictGet(css.Map, "min-height"), out sizeVal, currentEmBase)) css.MinHeight = sizeVal;
             if (TryPx(DictGet(css.Map, "max-width"), out sizeVal, currentEmBase)) css.MaxWidth = sizeVal;
             if (TryPx(DictGet(css.Map, "max-height"), out sizeVal, currentEmBase)) css.MaxHeight = sizeVal;
+            
+            // DEBUG: Log sizing properties for important elements
+            string tag = n?.Tag?.ToUpperInvariant() ?? "";
+            string classAttr = n?.Attr != null && n.Attr.TryGetValue("class", out var debugCls) ? debugCls : "";
+            if (tag == "FORM" || tag == "MAIN" || tag == "HEADER" || classAttr.Contains("container") || classAttr.Contains("wrapper"))
+            {
+                string rawMaxW = DictGet(css.Map, "max-width") ?? "null";
+                string rawWidth = DictGet(css.Map, "width") ?? "null";
+                string rawMargin = DictGet(css.Map, "margin") ?? "null";
+                FenLogger.Debug($"[CSS] Sizing parsed: tag={tag} class='{classAttr}' " +
+                    $"width={css.Width?.ToString() ?? "null"} widthPct={css.WidthPercent?.ToString() ?? "null"} " +
+                    $"maxWidth={css.MaxWidth?.ToString() ?? "null"}(raw='{rawMaxW}') " +
+                    $"margin='{rawMargin}'", LogCategory.CSS);
+            }
 
             var aspectRatioRaw = Safe(DictGet(css.Map, "aspect-ratio"));
             if (!string.IsNullOrEmpty(aspectRatioRaw) && !aspectRatioRaw.Contains("auto"))
@@ -1624,6 +1773,32 @@ namespace FenBrowser.FenEngine.Rendering
             CornerRadius cr;
             if (TryCornerRadius(DictGet(css.Map, "border-radius"), out cr)) css.BorderRadius = cr;
             
+            // Parse border-style shorthand
+            var borderStyleValue = Safe(DictGet(css.Map, "border-style"));
+            if (!string.IsNullOrEmpty(borderStyleValue))
+            {
+                string bsTop, bsRight, bsBottom, bsLeft;
+                ExtractBorderStyles(borderStyleValue, out bsTop, out bsRight, out bsBottom, out bsLeft);
+                css.BorderStyleTop = bsTop;
+                css.BorderStyleRight = bsRight;
+                css.BorderStyleBottom = bsBottom;
+                css.BorderStyleLeft = bsLeft;
+            }
+            
+            // Also check for style in "border" shorthand
+            var borderShorthand = Safe(DictGet(css.Map, "border"));
+            if (!string.IsNullOrEmpty(borderShorthand))
+            {
+                var bStyle = ExtractBorderSideStyle(borderShorthand);
+                if (bStyle != "none")
+                {
+                    css.BorderStyleTop = bStyle;
+                    css.BorderStyleRight = bStyle;
+                    css.BorderStyleBottom = bStyle;
+                    css.BorderStyleLeft = bStyle;
+                }
+            }
+            
             var bt = css.BorderThickness;
             double bLeft = bt.Left, bTop = bt.Top, bRight = bt.Right, bBottom = bt.Bottom;
             Avalonia.Media.Color? borderSideColor = null;
@@ -1635,6 +1810,8 @@ namespace FenBrowser.FenEngine.Rendering
                 if (sideWidth > 0) bBottom = sideWidth;
                 var sideCol = ExtractBorderSideColor(borderBottomRaw);
                 if (sideCol.HasValue) borderSideColor = sideCol;
+                var sideStyle = ExtractBorderSideStyle(borderBottomRaw);
+                css.BorderStyleBottom = sideStyle;
             }
             
             var borderTopRaw = Safe(DictGet(css.Map, "border-top"));
@@ -1644,6 +1821,8 @@ namespace FenBrowser.FenEngine.Rendering
                 if (sideWidth > 0) bTop = sideWidth;
                 var sideCol = ExtractBorderSideColor(borderTopRaw);
                 if (sideCol.HasValue) borderSideColor = sideCol;
+                var sideStyle = ExtractBorderSideStyle(borderTopRaw);
+                css.BorderStyleTop = sideStyle;
             }
             
             var borderLeftRaw = Safe(DictGet(css.Map, "border-left"));
@@ -1653,6 +1832,8 @@ namespace FenBrowser.FenEngine.Rendering
                 if (sideWidth > 0) bLeft = sideWidth;
                 var sideCol = ExtractBorderSideColor(borderLeftRaw);
                 if (sideCol.HasValue) borderSideColor = sideCol;
+                var sideStyle = ExtractBorderSideStyle(borderLeftRaw);
+                css.BorderStyleLeft = sideStyle;
             }
             
             var borderRightRaw = Safe(DictGet(css.Map, "border-right"));
@@ -1662,7 +1843,19 @@ namespace FenBrowser.FenEngine.Rendering
                 if (sideWidth > 0) bRight = sideWidth;
                 var sideCol = ExtractBorderSideColor(borderRightRaw);
                 if (sideCol.HasValue) borderSideColor = sideCol;
+                var sideStyle = ExtractBorderSideStyle(borderRightRaw);
+                css.BorderStyleRight = sideStyle;
             }
+            
+            // Parse individual border-style-* properties (override shorthand)
+            var bsTopVal = Safe(DictGet(css.Map, "border-top-style"));
+            if (!string.IsNullOrEmpty(bsTopVal)) css.BorderStyleTop = bsTopVal.ToLowerInvariant();
+            var bsRightVal = Safe(DictGet(css.Map, "border-right-style"));
+            if (!string.IsNullOrEmpty(bsRightVal)) css.BorderStyleRight = bsRightVal.ToLowerInvariant();
+            var bsBottomVal = Safe(DictGet(css.Map, "border-bottom-style"));
+            if (!string.IsNullOrEmpty(bsBottomVal)) css.BorderStyleBottom = bsBottomVal.ToLowerInvariant();
+            var bsLeftVal = Safe(DictGet(css.Map, "border-left-style"));
+            if (!string.IsNullOrEmpty(bsLeftVal)) css.BorderStyleLeft = bsLeftVal.ToLowerInvariant();
             
             css.BorderThickness = new Thickness(bLeft, bTop, bRight, bBottom);
             if (borderSideColor.HasValue && (!css.BorderBrushColor.HasValue || css.BorderBrushColor.Value == default))
@@ -1692,6 +1885,14 @@ namespace FenBrowser.FenEngine.Rendering
             if (TryDouble(DictGet(css.Map, "flex-grow"), out flexVal)) css.FlexGrow = flexVal;
             if (TryDouble(DictGet(css.Map, "flex-shrink"), out flexVal)) css.FlexShrink = flexVal;
             if (TryPx(DictGet(css.Map, "flex-basis"), out flexVal)) css.FlexBasis = flexVal;
+            
+            // align-self for individual flex item alignment override
+            css.AlignSelf = Safe(DictGet(css.Map, "align-self"));
+            
+            // order for flex item ordering
+            int orderVal;
+            if (int.TryParse(DictGet(css.Map, "order"), NumberStyles.Integer, CultureInfo.InvariantCulture, out orderVal))
+                css.Order = orderVal;
 
             var lhRaw = Safe(DictGet(css.Map, "line-height"));
             if (!string.IsNullOrEmpty(lhRaw))
@@ -1700,6 +1901,24 @@ namespace FenBrowser.FenEngine.Rendering
                 if (TryPx(lhRaw, out lh)) css.LineHeight = lh;
                 else if (double.TryParse(lhRaw, NumberStyles.Float, CultureInfo.InvariantCulture, out lh)) css.LineHeight = lh;
             }
+
+            // Parse word-spacing and letter-spacing
+            var wordSpacingRaw = Safe(DictGet(css.Map, "word-spacing"));
+            if (!string.IsNullOrEmpty(wordSpacingRaw) && wordSpacingRaw != "normal")
+            {
+                double ws;
+                if (TryPx(wordSpacingRaw, out ws)) css.WordSpacing = ws;
+            }
+            
+            var letterSpacingRaw = Safe(DictGet(css.Map, "letter-spacing"));
+            if (!string.IsNullOrEmpty(letterSpacingRaw) && letterSpacingRaw != "normal")
+            {
+                double ls;
+                if (TryPx(letterSpacingRaw, out ls)) css.LetterSpacing = ls;
+            }
+
+            // Parse hyphens property for word-breaking behavior
+            css.Hyphens = Safe(DictGet(css.Map, "hyphens"));
 
             css.VerticalAlign = Safe(DictGet(css.Map, "vertical-align"));
             css.WhiteSpace = Safe(DictGet(css.Map, "white-space"));
@@ -2102,6 +2321,19 @@ namespace FenBrowser.FenEngine.Rendering
             return "";
         }
 
+        /// <summary>
+        /// Check if a tag is a form element that can have :enabled/:disabled/:required states
+        /// </summary>
+        private static bool IsFormElement(string tag)
+        {
+            if (string.IsNullOrEmpty(tag)) return false;
+            return string.Equals(tag, "input", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(tag, "button", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(tag, "select", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(tag, "textarea", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(tag, "fieldset", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static bool MatchesSingle(LiteElement n, SelectorSegment seg)
         {
             if (n == null || seg == null) return false;
@@ -2280,6 +2512,299 @@ namespace FenBrowser.FenEngine.Rendering
                                 typeCount++;
                         }
                         if (typeCount != 1) return false;
+                    }
+                    else if (string.Equals(ps, "empty", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // :empty matches elements with no children (including text nodes)
+                        if (n.Children != null && n.Children.Count > 0) return false;
+                    }
+                    // === Interactive state pseudo-classes (don't match at render time) ===
+                    else if (string.Equals(ps, "hover", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // :hover requires runtime interaction - don't match during initial render
+                        return false;
+                    }
+                    else if (string.Equals(ps, "active", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // :active requires runtime interaction - don't match during initial render
+                        return false;
+                    }
+                    else if (string.Equals(ps, "focus", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // :focus requires runtime interaction - don't match during initial render
+                        return false;
+                    }
+                    else if (string.Equals(ps, "focus-within", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // :focus-within requires runtime interaction
+                        return false;
+                    }
+                    else if (string.Equals(ps, "focus-visible", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // :focus-visible requires runtime interaction
+                        return false;
+                    }
+                    // === Link state pseudo-classes ===
+                    else if (string.Equals(ps, "link", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // :link matches <a>, <area>, <link> with href that hasn't been visited
+                        // Since we don't track visited links, match all links
+                        if (!string.Equals(n.Tag, "a", StringComparison.OrdinalIgnoreCase) &&
+                            !string.Equals(n.Tag, "area", StringComparison.OrdinalIgnoreCase))
+                            return false;
+                        string href;
+                        if (n.Attr == null || !n.Attr.TryGetValue("href", out href) || string.IsNullOrWhiteSpace(href))
+                            return false;
+                    }
+                    else if (string.Equals(ps, "visited", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // :visited - we don't track history, so never match
+                        return false;
+                    }
+                    else if (string.Equals(ps, "any-link", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // :any-link matches any <a> or <area> with href
+                        if (!string.Equals(n.Tag, "a", StringComparison.OrdinalIgnoreCase) &&
+                            !string.Equals(n.Tag, "area", StringComparison.OrdinalIgnoreCase))
+                            return false;
+                        string href;
+                        if (n.Attr == null || !n.Attr.TryGetValue("href", out href) || string.IsNullOrWhiteSpace(href))
+                            return false;
+                    }
+                    // === Form state pseudo-classes ===
+                    else if (string.Equals(ps, "checked", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // :checked matches checked checkboxes, radios, and selected options
+                        if (string.Equals(n.Tag, "input", StringComparison.OrdinalIgnoreCase))
+                        {
+                            string type;
+                            if (n.Attr != null && n.Attr.TryGetValue("type", out type))
+                            {
+                                if (string.Equals(type, "checkbox", StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(type, "radio", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    if (n.Attr == null || !n.Attr.ContainsKey("checked")) return false;
+                                }
+                                else return false;
+                            }
+                            else return false;
+                        }
+                        else if (string.Equals(n.Tag, "option", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (n.Attr == null || !n.Attr.ContainsKey("selected")) return false;
+                        }
+                        else return false;
+                    }
+                    else if (string.Equals(ps, "disabled", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // :disabled matches form elements with disabled attribute
+                        if (!IsFormElement(n.Tag)) return false;
+                        if (n.Attr == null || !n.Attr.ContainsKey("disabled")) return false;
+                    }
+                    else if (string.Equals(ps, "enabled", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // :enabled matches form elements WITHOUT disabled attribute
+                        if (!IsFormElement(n.Tag)) return false;
+                        if (n.Attr != null && n.Attr.ContainsKey("disabled")) return false;
+                    }
+                    else if (string.Equals(ps, "read-only", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // :read-only matches elements that are not editable
+                        if (string.Equals(n.Tag, "input", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(n.Tag, "textarea", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (n.Attr == null || !n.Attr.ContainsKey("readonly")) return false;
+                        }
+                        // Non-input elements are always read-only, so they match
+                    }
+                    else if (string.Equals(ps, "read-write", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // :read-write matches editable elements without readonly
+                        if (string.Equals(n.Tag, "input", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(n.Tag, "textarea", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (n.Attr != null && n.Attr.ContainsKey("readonly")) return false;
+                        }
+                        else return false; // Non-form elements don't match
+                    }
+                    else if (string.Equals(ps, "required", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // :required matches form elements with required attribute
+                        if (!IsFormElement(n.Tag)) return false;
+                        if (n.Attr == null || !n.Attr.ContainsKey("required")) return false;
+                    }
+                    else if (string.Equals(ps, "optional", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // :optional matches form elements WITHOUT required attribute
+                        if (!IsFormElement(n.Tag)) return false;
+                        if (n.Attr != null && n.Attr.ContainsKey("required")) return false;
+                    }
+                    else if (string.Equals(ps, "placeholder-shown", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // :placeholder-shown - for now, match if has placeholder and value is empty/missing
+                        if (!string.Equals(n.Tag, "input", StringComparison.OrdinalIgnoreCase) &&
+                            !string.Equals(n.Tag, "textarea", StringComparison.OrdinalIgnoreCase))
+                            return false;
+                        string placeholder;
+                        if (n.Attr == null || !n.Attr.TryGetValue("placeholder", out placeholder) || string.IsNullOrEmpty(placeholder))
+                            return false;
+                        // If there's a value attribute with content, placeholder isn't shown
+                        string val;
+                        if (n.Attr.TryGetValue("value", out val) && !string.IsNullOrEmpty(val))
+                            return false;
+                    }
+                    // === Target pseudo-class ===
+                    else if (string.Equals(ps, "target", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // :target matches element whose ID matches URL fragment - we don't track this
+                        return false;
+                    }
+                    // === Language pseudo-class ===
+                    else if (ps.StartsWith("lang(", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // :lang(xx) matches elements in a specific language
+                        var lang = ExtractPseudoArg(ps);
+                        string elemLang = null;
+                        var current = n;
+                        while (current != null)
+                        {
+                            if (current.Attr != null && current.Attr.TryGetValue("lang", out elemLang))
+                                break;
+                            current = current.Parent;
+                        }
+                        if (elemLang == null || !elemLang.StartsWith(lang, StringComparison.OrdinalIgnoreCase))
+                            return false;
+                    }
+                    // === Scope pseudo-class ===
+                    else if (string.Equals(ps, "scope", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // :scope in document context matches :root (html element)
+                        if (!string.Equals(n.Tag, "html", StringComparison.OrdinalIgnoreCase)) return false;
+                    }
+                    // === Vendor prefixes - silently ignore/don't match ===
+                    else if (ps.StartsWith("-webkit-", StringComparison.OrdinalIgnoreCase) ||
+                             ps.StartsWith("-moz-", StringComparison.OrdinalIgnoreCase) ||
+                             ps.StartsWith("-ms-", StringComparison.OrdinalIgnoreCase) ||
+                             ps.StartsWith("-o-", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Vendor-specific pseudo-classes - don't match but don't log spam
+                        return false;
+                    }
+                    // === Pseudo-elements accidentally parsed as pseudo-classes ===
+                    else if (string.Equals(ps, "placeholder", StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(ps, "before", StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(ps, "after", StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(ps, "first-line", StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(ps, "first-letter", StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(ps, "selection", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // These are pseudo-elements (::), not pseudo-classes (:)
+                        // They style sub-parts of elements, not the element itself
+                        // For now, silently don't match
+                        return false;
+                    }
+                    // === Default state for unknown pseudo-classes: log and don't match ===
+                    else
+                    {
+                        // Log unknown pseudo-class for debugging
+                        try { 
+                            System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
+                                $"[CssLoader] Unknown pseudo-class ':{ps}' on <{n.Tag}> - not matching\r\n"); 
+                        } catch {}
+                        return false; // Unknown pseudo-classes should NOT match
+                    }
+                }
+            }
+
+            // Check :not() selectors - element must NOT match any of them
+            if (seg.NotSelectors != null)
+            {
+                foreach (var notSeg in seg.NotSelectors)
+                {
+                    if (MatchesSingleBasic(n, notSeg))
+                    {
+                        return false; // Element matches the :not() selector, so it should NOT match the overall selector
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Basic matching for :not() argument - checks tag, id, classes, attributes only
+        /// (no pseudo-classes to avoid recursion complexity)
+        /// </summary>
+        private static bool MatchesSingleBasic(LiteElement n, SelectorSegment seg)
+        {
+            if (n == null || seg == null) return false;
+            if (n.IsText) return false;
+
+            // Check tag
+            if (!string.IsNullOrEmpty(seg.Tag))
+            {
+                if (!string.Equals(n.Tag, seg.Tag, StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+
+            // Check ID
+            if (!string.IsNullOrEmpty(seg.Id))
+            {
+                string id;
+                if (n.Attr == null || !n.Attr.TryGetValue("id", out id) || !string.Equals(id ?? "", seg.Id, StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+
+            // Check classes
+            if (seg.Classes != null && seg.Classes.Count > 0)
+            {
+                string cls;
+                if (n.Attr == null || !n.Attr.TryGetValue("class", out cls) || string.IsNullOrWhiteSpace(cls))
+                    return false;
+
+                var have = SplitTokens(cls);
+                foreach (var c in seg.Classes)
+                    if (!have.Contains(c, StringComparer.OrdinalIgnoreCase)) return false;
+            }
+
+            // Check attributes
+            if (seg.Attributes != null)
+            {
+                foreach (var attr in seg.Attributes)
+                {
+                    string val;
+                    if (n.Attr == null || !n.Attr.TryGetValue(attr.Item1, out val)) return false;
+                    
+                    if (string.IsNullOrEmpty(attr.Item2))
+                    {
+                        continue; // Presence check passed
+                    }
+                    else if (attr.Item2 == "=")
+                    {
+                        if (!string.Equals(val ?? "", attr.Item3, StringComparison.OrdinalIgnoreCase)) return false;
+                    }
+                    else if (attr.Item2 == "~=")
+                    {
+                        var tokens = SplitTokens(val ?? "");
+                        if (!tokens.Contains(attr.Item3, StringComparer.OrdinalIgnoreCase)) return false;
+                    }
+                    else if (attr.Item2 == "|=")
+                    {
+                        var v = val ?? "";
+                        if (!string.Equals(v, attr.Item3, StringComparison.OrdinalIgnoreCase) &&
+                            !v.StartsWith(attr.Item3 + "-", StringComparison.OrdinalIgnoreCase)) return false;
+                    }
+                    else if (attr.Item2 == "^=")
+                    {
+                        if (!(val ?? "").StartsWith(attr.Item3, StringComparison.OrdinalIgnoreCase)) return false;
+                    }
+                    else if (attr.Item2 == "$=")
+                    {
+                        if (!(val ?? "").EndsWith(attr.Item3, StringComparison.OrdinalIgnoreCase)) return false;
+                    }
+                    else if (attr.Item2 == "*=")
+                    {
+                        if ((val ?? "").IndexOf(attr.Item3, StringComparison.OrdinalIgnoreCase) < 0) return false;
                     }
                 }
             }
@@ -2888,6 +3413,12 @@ namespace FenBrowser.FenEngine.Rendering
             s = s.Trim();
             var sl = s.ToLowerInvariant();
 
+            // Handle calc() expressions
+            if (sl.StartsWith("calc("))
+            {
+                return TryParseCalc(s, out px, emBase);
+            }
+
             // px
             if (sl.EndsWith("px"))
             {
@@ -2907,11 +3438,51 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             // em (uses provided base, usually 16px if root or inherited)
-            if (sl.EndsWith("em"))
+            if (sl.EndsWith("em") && !sl.EndsWith("rem"))
             {
                 var num = s.Substring(0, s.Length - 2).Trim();
                 double v;
                 if (TryDouble(num, out v)) { px = v * emBase; return true; }
+                return false;
+            }
+
+            // Viewport units - use CssParser.MediaViewportWidth/Height if available
+            double vpWidth = CssParser.MediaViewportWidth ?? 1920.0;
+            double vpHeight = CssParser.MediaViewportHeight ?? 1080.0;
+
+            // vw (viewport width percentage)
+            if (sl.EndsWith("vw"))
+            {
+                var num = s.Substring(0, s.Length - 2).Trim();
+                double v;
+                if (TryDouble(num, out v)) { px = v * vpWidth / 100.0; return true; }
+                return false;
+            }
+
+            // vh (viewport height percentage)
+            if (sl.EndsWith("vh"))
+            {
+                var num = s.Substring(0, s.Length - 2).Trim();
+                double v;
+                if (TryDouble(num, out v)) { px = v * vpHeight / 100.0; return true; }
+                return false;
+            }
+
+            // vmin (smaller of vw or vh)
+            if (sl.EndsWith("vmin"))
+            {
+                var num = s.Substring(0, s.Length - 4).Trim();
+                double v;
+                if (TryDouble(num, out v)) { px = v * Math.Min(vpWidth, vpHeight) / 100.0; return true; }
+                return false;
+            }
+
+            // vmax (larger of vw or vh)
+            if (sl.EndsWith("vmax"))
+            {
+                var num = s.Substring(0, s.Length - 4).Trim();
+                double v;
+                if (TryDouble(num, out v)) { px = v * Math.Max(vpWidth, vpHeight) / 100.0; return true; }
                 return false;
             }
 
@@ -2921,6 +3492,222 @@ namespace FenBrowser.FenEngine.Rendering
                 if (TryDouble(sl, out v)) { px = v; return true; }
             }
             return false;
+        }
+
+        /// <summary>
+        /// Parse CSS calc() expressions like calc(100% - 40px), calc(100vh - 60px), etc.
+        /// Supports: +, -, *, / operators and px, em, rem, %, vw, vh, vmin, vmax units
+        /// </summary>
+        private static bool TryParseCalc(string s, out double px, double emBase = 16.0, double percentBase = 0)
+        {
+            px = 0;
+            if (string.IsNullOrWhiteSpace(s)) return false;
+
+            // Extract content between calc( and )
+            var sl = s.Trim().ToLowerInvariant();
+            if (!sl.StartsWith("calc(") || !sl.EndsWith(")")) return false;
+            
+            var expr = s.Substring(5, s.Length - 6).Trim();
+            if (string.IsNullOrWhiteSpace(expr)) return false;
+
+            try
+            {
+                px = EvaluateCalcExpression(expr, emBase, percentBase);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Evaluate a calc expression supporting +, -, *, / with proper operator precedence
+        /// </summary>
+        private static double EvaluateCalcExpression(string expr, double emBase, double percentBase)
+        {
+            // Tokenize the expression
+            var tokens = TokenizeCalcExpression(expr);
+            if (tokens.Count == 0) return 0;
+
+            // Convert to postfix notation (Shunting-yard algorithm) and evaluate
+            var output = new Stack<double>();
+            var operators = new Stack<char>();
+
+            for (int i = 0; i < tokens.Count; i++)
+            {
+                var token = tokens[i];
+
+                if (IsCalcOperator(token))
+                {
+                    char op = token[0];
+                    while (operators.Count > 0 && ShouldPopOperator(operators.Peek(), op))
+                    {
+                        ApplyOperator(output, operators.Pop());
+                    }
+                    operators.Push(op);
+                }
+                else
+                {
+                    // It's a value with potential unit
+                    double val = ParseCalcValue(token, emBase, percentBase);
+                    output.Push(val);
+                }
+            }
+
+            while (operators.Count > 0)
+            {
+                ApplyOperator(output, operators.Pop());
+            }
+
+            return output.Count > 0 ? output.Pop() : 0;
+        }
+
+        private static List<string> TokenizeCalcExpression(string expr)
+        {
+            var tokens = new List<string>();
+            var current = new System.Text.StringBuilder();
+
+            for (int i = 0; i < expr.Length; i++)
+            {
+                char c = expr[i];
+
+                if (c == ' ' || c == '\t')
+                {
+                    if (current.Length > 0)
+                    {
+                        tokens.Add(current.ToString());
+                        current.Clear();
+                    }
+                    continue;
+                }
+
+                // Handle operators - they must be surrounded by spaces in calc(), but handle anyway
+                if ((c == '+' || c == '-') && current.Length > 0 && !char.IsDigit(expr[Math.Max(0, i - 1)]))
+                {
+                    // This is an operator
+                    if (current.Length > 0)
+                    {
+                        tokens.Add(current.ToString());
+                        current.Clear();
+                    }
+                    tokens.Add(c.ToString());
+                    continue;
+                }
+                else if ((c == '+' || c == '-') && current.Length == 0)
+                {
+                    // Could be a sign or operator - check if there's a previous token
+                    if (tokens.Count > 0 && !IsCalcOperator(tokens[tokens.Count - 1]))
+                    {
+                        tokens.Add(c.ToString());
+                        continue;
+                    }
+                    // Otherwise it's a sign, part of the number
+                    current.Append(c);
+                    continue;
+                }
+                else if (c == '*' || c == '/')
+                {
+                    if (current.Length > 0)
+                    {
+                        tokens.Add(current.ToString());
+                        current.Clear();
+                    }
+                    tokens.Add(c.ToString());
+                    continue;
+                }
+
+                current.Append(c);
+            }
+
+            if (current.Length > 0)
+            {
+                tokens.Add(current.ToString());
+            }
+
+            return tokens;
+        }
+
+        private static bool IsCalcOperator(string token)
+        {
+            return token == "+" || token == "-" || token == "*" || token == "/";
+        }
+
+        private static bool ShouldPopOperator(char stackOp, char newOp)
+        {
+            int stackPrec = (stackOp == '*' || stackOp == '/') ? 2 : 1;
+            int newPrec = (newOp == '*' || newOp == '/') ? 2 : 1;
+            return stackPrec >= newPrec;
+        }
+
+        private static void ApplyOperator(Stack<double> output, char op)
+        {
+            if (output.Count < 2) return;
+            double b = output.Pop();
+            double a = output.Pop();
+            switch (op)
+            {
+                case '+': output.Push(a + b); break;
+                case '-': output.Push(a - b); break;
+                case '*': output.Push(a * b); break;
+                case '/': output.Push(b != 0 ? a / b : 0); break;
+            }
+        }
+
+        private static double ParseCalcValue(string token, double emBase, double percentBase)
+        {
+            token = token.Trim().ToLowerInvariant();
+            
+            double vpWidth = CssParser.MediaViewportWidth ?? 1920.0;
+            double vpHeight = CssParser.MediaViewportHeight ?? 1080.0;
+
+            if (token.EndsWith("px"))
+            {
+                double v;
+                if (TryDouble(token.Substring(0, token.Length - 2), out v)) return v;
+            }
+            else if (token.EndsWith("rem"))
+            {
+                double v;
+                if (TryDouble(token.Substring(0, token.Length - 3), out v)) return v * 16.0;
+            }
+            else if (token.EndsWith("em"))
+            {
+                double v;
+                if (TryDouble(token.Substring(0, token.Length - 2), out v)) return v * emBase;
+            }
+            else if (token.EndsWith("vw"))
+            {
+                double v;
+                if (TryDouble(token.Substring(0, token.Length - 2), out v)) return v * vpWidth / 100.0;
+            }
+            else if (token.EndsWith("vh"))
+            {
+                double v;
+                if (TryDouble(token.Substring(0, token.Length - 2), out v)) return v * vpHeight / 100.0;
+            }
+            else if (token.EndsWith("vmin"))
+            {
+                double v;
+                if (TryDouble(token.Substring(0, token.Length - 4), out v)) return v * Math.Min(vpWidth, vpHeight) / 100.0;
+            }
+            else if (token.EndsWith("vmax"))
+            {
+                double v;
+                if (TryDouble(token.Substring(0, token.Length - 4), out v)) return v * Math.Max(vpWidth, vpHeight) / 100.0;
+            }
+            else if (token.EndsWith("%"))
+            {
+                double v;
+                if (TryDouble(token.Substring(0, token.Length - 1), out v)) return v * percentBase / 100.0;
+            }
+            else
+            {
+                // Raw number (treated as px)
+                double v;
+                if (TryDouble(token, out v)) return v;
+            }
+            return 0;
         }
 
 
@@ -3140,6 +3927,63 @@ namespace FenBrowser.FenEngine.Rendering
             return null;
         }
 
+        /// <summary>
+        /// Extract border style from a border shorthand (e.g., "2px solid #eee")
+        /// Returns the style keyword: none, hidden, dotted, dashed, solid, double, groove, ridge, inset, outset
+        /// </summary>
+        private static string ExtractBorderSideStyle(string borderSide)
+        {
+            if (string.IsNullOrWhiteSpace(borderSide)) return "none";
+            var parts = borderSide.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (var part in parts)
+            {
+                var lower = part.ToLowerInvariant();
+                if (IsBorderStyle(lower)) return lower;
+            }
+            // If border has width but no style specified, default to solid
+            foreach (var part in parts)
+            {
+                double px;
+                if (TryPx(part, out px) && px > 0) return "solid";
+            }
+            return "none";
+        }
+
+        /// <summary>
+        /// Extract border style from border-style shorthand (1-4 values)
+        /// </summary>
+        private static void ExtractBorderStyles(string value, out string top, out string right, out string bottom, out string left)
+        {
+            top = right = bottom = left = "none";
+            if (string.IsNullOrWhiteSpace(value)) return;
+            var parts = value.Trim().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0) return;
+            
+            // CSS shorthand: 1 value = all, 2 values = top/bottom + left/right, 3 values = top + left/right + bottom, 4 = each
+            if (parts.Length == 1)
+            {
+                top = right = bottom = left = parts[0].ToLowerInvariant();
+            }
+            else if (parts.Length == 2)
+            {
+                top = bottom = parts[0].ToLowerInvariant();
+                left = right = parts[1].ToLowerInvariant();
+            }
+            else if (parts.Length == 3)
+            {
+                top = parts[0].ToLowerInvariant();
+                left = right = parts[1].ToLowerInvariant();
+                bottom = parts[2].ToLowerInvariant();
+            }
+            else
+            {
+                top = parts[0].ToLowerInvariant();
+                right = parts[1].ToLowerInvariant();
+                bottom = parts[2].ToLowerInvariant();
+                left = parts[3].ToLowerInvariant();
+            }
+        }
+
         private static void Log(Action<string> log, string msg)
         {
             try { if (log != null) log(msg); } catch { }
@@ -3312,12 +4156,129 @@ namespace FenBrowser.FenEngine.Rendering
                 var brush = new RadialGradientBrush();
                 brush.Center = new RelativePoint(0.5, 0.5, RelativeUnit.Relative);
                 brush.GradientOrigin = new RelativePoint(0.5, 0.5, RelativeUnit.Relative);
-                brush.Radius = 0.5; 
+                brush.RadiusX = new RelativeScalar(0.5, RelativeUnit.Relative);
+                brush.RadiusY = new RelativeScalar(0.5, RelativeUnit.Relative);
 
-                // Check for shape/size/position in first arg (omitted for MVP, assuming simple colors)
-                // If first arg is a color, startIdx = 0. If it contains "circle" or "at", skip it.
+                // Check for shape/size/position in first arg
                 int startIdx = 0;
-                if (parts[0].Contains("circle") || parts[0].Contains("ellipse") || parts[0].Contains("at "))
+                var firstPart = parts[0].ToLowerInvariant();
+                if (firstPart.Contains("circle") || firstPart.Contains("ellipse") || firstPart.Contains("at "))
+                {
+                    startIdx = 1;
+                    
+                    // Parse "at X Y" position
+                    if (firstPart.Contains("at "))
+                    {
+                        var atIdx = firstPart.IndexOf("at ");
+                        var posStr = firstPart.Substring(atIdx + 3).Trim();
+                        var posParts = posStr.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                        double cx = 0.5, cy = 0.5;
+                        
+                        if (posParts.Length >= 1)
+                        {
+                            if (posParts[0] == "left") cx = 0;
+                            else if (posParts[0] == "right") cx = 1;
+                            else if (posParts[0] == "center") cx = 0.5;
+                            else if (posParts[0].EndsWith("%") && TryDouble(posParts[0].TrimEnd('%'), out double px)) cx = px / 100;
+                        }
+                        if (posParts.Length >= 2)
+                        {
+                            if (posParts[1] == "top") cy = 0;
+                            else if (posParts[1] == "bottom") cy = 1;
+                            else if (posParts[1] == "center") cy = 0.5;
+                            else if (posParts[1].EndsWith("%") && TryDouble(posParts[1].TrimEnd('%'), out double py)) cy = py / 100;
+                        }
+                        
+                        brush.Center = new RelativePoint(cx, cy, RelativeUnit.Relative);
+                        brush.GradientOrigin = new RelativePoint(cx, cy, RelativeUnit.Relative);
+                    }
+                    
+                    // Parse "closest-side", "farthest-corner", etc.
+                    if (firstPart.Contains("closest-side"))
+                    {
+                        brush.RadiusX = new RelativeScalar(0.3, RelativeUnit.Relative);
+                        brush.RadiusY = new RelativeScalar(0.3, RelativeUnit.Relative);
+                    }
+                    else if (firstPart.Contains("farthest-corner"))
+                    {
+                        brush.RadiusX = new RelativeScalar(0.71, RelativeUnit.Relative); // sqrt(0.5)
+                        brush.RadiusY = new RelativeScalar(0.71, RelativeUnit.Relative);
+                    }
+                }
+
+                var stops = ParseGradientStops(parts, startIdx);
+                brush.GradientStops.AddRange(stops);
+                return brush;
+            }
+            else if (css.StartsWith("conic-gradient(", StringComparison.OrdinalIgnoreCase))
+            {
+                // Avalonia doesn't have native conic-gradient, approximate with radial
+                var content = ExtractPseudoArg(css);
+                var parts = SplitByComma(content);
+                if (parts.Count < 2) return null;
+
+                var brush = new RadialGradientBrush();
+                brush.Center = new RelativePoint(0.5, 0.5, RelativeUnit.Relative);
+                brush.GradientOrigin = new RelativePoint(0.5, 0.5, RelativeUnit.Relative);
+                brush.RadiusX = new RelativeScalar(0.5, RelativeUnit.Relative);
+                brush.RadiusY = new RelativeScalar(0.5, RelativeUnit.Relative);
+                
+                int startIdx = 0;
+                var firstPart = parts[0].ToLowerInvariant();
+                if (firstPart.Contains("from ") || firstPart.Contains("at "))
+                    startIdx = 1;
+
+                var stops = ParseGradientStops(parts, startIdx);
+                brush.GradientStops.AddRange(stops);
+                return brush;
+            }
+            else if (css.StartsWith("repeating-linear-gradient(", StringComparison.OrdinalIgnoreCase))
+            {
+                var content = ExtractPseudoArg(css);
+                var parts = SplitByComma(content);
+                if (parts.Count < 2) return null;
+
+                var brush = new LinearGradientBrush();
+                brush.SpreadMethod = GradientSpreadMethod.Repeat;
+                int startIdx = 0;
+                
+                var first = parts[0].Trim().ToLowerInvariant();
+                brush.StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative);
+                brush.EndPoint = new RelativePoint(0, 1, RelativeUnit.Relative);
+
+                if (first.StartsWith("to "))
+                {
+                    startIdx = 1;
+                    if (first == "to right") { brush.StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative); brush.EndPoint = new RelativePoint(1, 0, RelativeUnit.Relative); }
+                    else if (first == "to left") { brush.StartPoint = new RelativePoint(1, 0, RelativeUnit.Relative); brush.EndPoint = new RelativePoint(0, 0, RelativeUnit.Relative); }
+                    else if (first == "to bottom") { brush.StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative); brush.EndPoint = new RelativePoint(0, 1, RelativeUnit.Relative); }
+                    else if (first == "to top") { brush.StartPoint = new RelativePoint(0, 1, RelativeUnit.Relative); brush.EndPoint = new RelativePoint(0, 0, RelativeUnit.Relative); }
+                }
+                else if (first.EndsWith("deg"))
+                {
+                    startIdx = 1;
+                    if (first.Contains("45deg")) { brush.StartPoint = new RelativePoint(0, 1, RelativeUnit.Relative); brush.EndPoint = new RelativePoint(1, 0, RelativeUnit.Relative); }
+                }
+
+                var stops = ParseGradientStops(parts, startIdx);
+                brush.GradientStops.AddRange(stops);
+                return brush;
+            }
+            else if (css.StartsWith("repeating-radial-gradient(", StringComparison.OrdinalIgnoreCase))
+            {
+                var content = ExtractPseudoArg(css);
+                var parts = SplitByComma(content);
+                if (parts.Count < 2) return null;
+
+                var brush = new RadialGradientBrush();
+                brush.SpreadMethod = GradientSpreadMethod.Repeat;
+                brush.Center = new RelativePoint(0.5, 0.5, RelativeUnit.Relative);
+                brush.GradientOrigin = new RelativePoint(0.5, 0.5, RelativeUnit.Relative);
+                brush.RadiusX = new RelativeScalar(0.5, RelativeUnit.Relative);
+                brush.RadiusY = new RelativeScalar(0.5, RelativeUnit.Relative);
+
+                int startIdx = 0;
+                if (parts[0].ToLowerInvariant().Contains("circle") || parts[0].ToLowerInvariant().Contains("ellipse") || parts[0].ToLowerInvariant().Contains("at "))
                     startIdx = 1;
 
                 var stops = ParseGradientStops(parts, startIdx);

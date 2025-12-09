@@ -95,6 +95,50 @@ namespace FenBrowser.Core.Logging
             }
         }
 
+        #region Feature Failure Tracking
+
+        /// <summary>
+        /// Log an unsupported HTML element and track it.
+        /// </summary>
+        public static void LogHtmlFailure(string tagName, string reason = null, string suggestion = null)
+        {
+            EngineCapabilities.LogUnsupportedHtml(tagName, reason, suggestion);
+        }
+
+        /// <summary>
+        /// Log an unsupported CSS property and track it.
+        /// </summary>
+        public static void LogCssFailure(string property, string value = null, string reason = null)
+        {
+            EngineCapabilities.LogUnsupportedCss(property, value, reason);
+        }
+
+        /// <summary>
+        /// Log an unsupported JavaScript API and track it.
+        /// </summary>
+        public static void LogJsFailure(string api, string method = null, string reason = null)
+        {
+            EngineCapabilities.LogUnsupportedJs(api, method, reason);
+        }
+
+        /// <summary>
+        /// Get a summary of all feature failures.
+        /// </summary>
+        public static string GetFailureSummary()
+        {
+            return EngineCapabilities.GetFailureSummary();
+        }
+
+        /// <summary>
+        /// Log an informational message about a feature.
+        /// </summary>
+        public static void LogFeature(LogCategory category, string message)
+        {
+            Log(category, LogLevel.Info, message);
+        }
+
+        #endregion
+
         /// <summary>
         /// Get recent log entries from memory buffer.
         /// </summary>

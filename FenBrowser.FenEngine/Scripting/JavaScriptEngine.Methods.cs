@@ -5,6 +5,7 @@ using System.Text;
 using System.Threading.Tasks;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.FenEngine.Scripting
 {
@@ -25,15 +26,22 @@ namespace FenBrowser.FenEngine.Scripting
 
             try
             {
-                // Simple execution wrapper
-                if (code.StartsWith("console.log"))
-                {
-                    var content = code.Substring(11).Trim('(', ')', ';', ' ', '"', '\'');
-                    _host?.SetStatus("[JS] " + content);
-                }
+                // DEBUG: Log execution attempt
+                string snippet = code.Length > 100 ? code.Substring(0, 100) + "..." : code;
+                snippet = snippet.Replace("\n", " ").Replace("\r", "");
+                FenLogger.Debug($"[JS] RunInline (evt={evt} target={target}): {snippet}", LogCategory.JavaScript);
+
+                // ACTUAL EXECUTION
+                // We delegate to the main Evaluate method which uses FenRuntime
+                var result = Evaluate(code);
+                
                 return true;
             }
-            catch { return false; }
+            catch (Exception ex)
+            {
+                FenLogger.Error($"[JS] RunInline Error: {ex.Message}", LogCategory.JavaScript, ex);
+                return false;
+            }
         }
 
         private void TraceFeatureGap(string category, string feature, string detail)
@@ -44,7 +52,8 @@ namespace FenBrowser.FenEngine.Scripting
                 if (_lastFeatureTraceKey == key && (DateTime.UtcNow - _lastFeatureTraceTime).TotalSeconds < 1) return;
                 _lastFeatureTraceKey = key;
                 _lastFeatureTraceTime = DateTime.UtcNow;
-                System.Diagnostics.Debug.WriteLine($"[FeatureGap] {category} - {feature}: {detail}");
+                
+                FenLogger.Warn($"[FeatureGap] {category} - {feature}: {detail}", LogCategory.FeatureGaps);
             }
         }
 
@@ -76,7 +85,14 @@ namespace FenBrowser.FenEngine.Scripting
                         return;
                     }
                 }
-                try { task?.Invoke(); } catch { }
+                try 
+                { 
+                    task?.Invoke(); 
+                } 
+                catch (Exception ex)
+                {
+                    FenLogger.Error($"[JS] Microtask Error: {ex.Message}", LogCategory.JavaScript, ex);
+                }
             }
         }
 
@@ -107,21 +123,37 @@ namespace FenBrowser.FenEngine.Scripting
                     return await client.GetStringAsync(uri);
                 }
             }
-            catch { return null; }
+            catch (Exception ex)
+            {
+                FenLogger.Error($"[JS] FetchModuleTextAsync Error: {ex.Message}", LogCategory.Network, ex);
+                return null; 
+            }
         }
 
         public void ExecuteScriptBlock(string code, string src = null)
         {
+             if (string.IsNullOrWhiteSpace(code)) return;
+             FenLogger.Debug($"[JS] ExecuteScriptBlock src={src ?? "inline"}", LogCategory.JavaScript);
              RunInline(code);
         }
 
         public void RegisterUserFunction(string name, Func<object, object> func)
         {
+            // Placeholder
         }
 
         public string EvalToString(string code)
         {
-            return "";
+            try
+            {
+                var result = Evaluate(code);
+                return result?.ToString() ?? "";
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Error($"[JS] EvalToString failed: {ex.Message}", LogCategory.JavaScript, ex);
+                return "";
+            }
         }
         
         public int ScheduleTimeout(string code, int ms)

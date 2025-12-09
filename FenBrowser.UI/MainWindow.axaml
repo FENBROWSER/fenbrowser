@@ -407,10 +407,9 @@
 				
 				<Grid Grid.Row="0">
 					<!-- TEMPORARY SKIA VERIFICATION -->
-					<rendering:SkiaBrowserView x:Name="SkiaView" ClipToBounds="True" />
-                    <!-- <Border x:Name="BrowserContainer" Background="{DynamicResource WindowBackgroundBrush}">
-						<TextBlock Text="Ready" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}"/>
-					</Border> -->
+					<ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                         <rendering:SkiaBrowserView x:Name="SkiaView" ClipToBounds="True" />
+                    </ScrollViewer>
 					<Canvas x:Name="HighlightOverlay" IsHitTestVisible="False"/>
 				</Grid>
 				

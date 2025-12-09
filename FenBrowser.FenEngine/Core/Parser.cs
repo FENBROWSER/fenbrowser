@@ -57,6 +57,7 @@ namespace FenBrowser.FenEngine.Core
             { TokenType.Percent, Precedence.Product },
             { TokenType.LParen, Precedence.Call },
             { TokenType.Dot, Precedence.Call },  // Member access has same precedence as function calls
+            { TokenType.TemplateString, Precedence.Call },  // Tagged template literals tag`...`
             { TokenType.LBracket, Precedence.Index },
             { TokenType.Question, Precedence.Ternary },  // Ternary operator
             { TokenType.Arrow, Precedence.Assignment },  // Arrow functions
@@ -74,6 +75,7 @@ namespace FenBrowser.FenEngine.Core
             RegisterPrefix(TokenType.Identifier, ParseIdentifier);
             RegisterPrefix(TokenType.Number, ParseIntegerLiteral);
             RegisterPrefix(TokenType.String, ParseStringLiteral);
+            RegisterPrefix(TokenType.TemplateString, ParseTemplateLiteral);  // Template literal `...`
             RegisterPrefix(TokenType.LBracket, ParseArrayLiteral); // NEW: Array
             RegisterPrefix(TokenType.LBrace, ParseObjectLiteral);  // NEW: Object
             RegisterPrefix(TokenType.Bang, ParsePrefixExpression);
@@ -98,10 +100,12 @@ namespace FenBrowser.FenEngine.Core
             RegisterPrefix(TokenType.Colon, ParseEmptyExpression);     // Recovery for labeled statements
             RegisterPrefix(TokenType.Comma, ParseEmptyExpression);     // Recovery for trailing commas
             RegisterPrefix(TokenType.RBrace, ParseEmptyExpression);    // Recovery for empty blocks
+            RegisterPrefix(TokenType.Yield, ParseYieldExpression);     // yield and yield*
             RegisterPrefix(TokenType.Await, ParseAwaitExpression);     // await ...
             RegisterPrefix(TokenType.Async, ParseAsyncPrefix);         // async ...
             RegisterPrefix(TokenType.RParen, ParseEmptyExpression);    // Recovery for empty parens
             RegisterPrefix(TokenType.RBracket, ParseEmptyExpression);  // Recovery for empty brackets
+            RegisterPrefix(TokenType.PrivateIdentifier, ParsePrivateIdentifier); // #field (private class fields)
             RegisterPrefix(TokenType.Else, ParseEmptyExpression);      // Recovery for else without if
             RegisterPrefix(TokenType.Dot, ParseEmptyExpression);       // Recovery for leading dots
             RegisterPrefix(TokenType.Lt, ParseEmptyExpression);        // Recovery for bare < (like in HTML)
@@ -139,6 +143,7 @@ namespace FenBrowser.FenEngine.Core
             RegisterInfix(TokenType.In, ParseInfixExpression);          // in
             RegisterInfix(TokenType.Increment, ParsePostfixIncrement);  // x++
             RegisterInfix(TokenType.Decrement, ParsePostfixDecrement);  // x--
+            RegisterInfix(TokenType.TemplateString, ParseTaggedTemplate);  // tag`template`
 
             // Read two tokens, so curToken and peekToken are both set
             NextToken();
@@ -186,7 +191,7 @@ namespace FenBrowser.FenEngine.Core
             {
                 case TokenType.Let:
                 case TokenType.Var:
-                case TokenType.Const: // Treat const/var as let for now
+                case TokenType.Const:
                     return ParseLetStatement();
                 case TokenType.Function:
                     // Handle function declaration
@@ -238,6 +243,14 @@ namespace FenBrowser.FenEngine.Core
         private LetStatement ParseLetStatement()
         {
             var stmt = new LetStatement { Token = _curToken };
+            
+            // Determine the declaration kind
+            if (_curToken.Type == TokenType.Const)
+                stmt.Kind = DeclarationKind.Const;
+            else if (_curToken.Type == TokenType.Let)
+                stmt.Kind = DeclarationKind.Let;
+            else
+                stmt.Kind = DeclarationKind.Var;
 
             NextToken(); // Move past var/let/const
 
@@ -362,6 +375,13 @@ namespace FenBrowser.FenEngine.Core
             return new Identifier(_curToken, _curToken.Literal);
         }
 
+        private Expression ParsePrivateIdentifier()
+        {
+            // Token literal is "#fieldName", extract just the name
+            string name = _curToken.Literal.Substring(1); // Remove '#'
+            return new PrivateIdentifier(_curToken, name);
+        }
+
         private Expression ParseIntegerLiteral()
         {
             var lit = new IntegerLiteral { Token = _curToken };
@@ -379,6 +399,83 @@ namespace FenBrowser.FenEngine.Core
         private Expression ParseStringLiteral()
         {
             return new StringLiteral { Token = _curToken, Value = _curToken.Literal };
+        }
+
+        // Parse a regular template literal: `Hello ${name}!`
+        private Expression ParseTemplateLiteral()
+        {
+            // The lexer already combined the template literal content into a single token
+            // Just return it as a StringLiteral for now (the interpreter will handle ${} interpolation)
+            return new StringLiteral { Token = _curToken, Value = _curToken.Literal };
+        }
+
+        // Parse a tagged template literal: tag`Hello ${name}!`
+        private Expression ParseTaggedTemplate(Expression left)
+        {
+            var tagged = new TaggedTemplateExpression
+            {
+                Token = _curToken,
+                Tag = left
+            };
+
+            // The template content is in _curToken.Literal
+            // Parse the template literal content to extract strings and expressions
+            string content = _curToken.Literal;
+            
+            // Split by ${...} patterns
+            var strings = new List<string>();
+            var expressions = new List<Expression>();
+            
+            int pos = 0;
+            while (pos < content.Length)
+            {
+                int dollarPos = content.IndexOf("${", pos);
+                if (dollarPos == -1)
+                {
+                    // No more expressions, add the rest as a string
+                    strings.Add(content.Substring(pos));
+                    break;
+                }
+                
+                // Add the string part before ${}
+                strings.Add(content.Substring(pos, dollarPos - pos));
+                
+                // Find the matching closing brace
+                int bracePos = dollarPos + 2;
+                int depth = 1;
+                while (bracePos < content.Length && depth > 0)
+                {
+                    if (content[bracePos] == '{') depth++;
+                    else if (content[bracePos] == '}') depth--;
+                    bracePos++;
+                }
+                
+                // Extract and parse the expression
+                string exprStr = content.Substring(dollarPos + 2, bracePos - dollarPos - 3);
+                if (!string.IsNullOrWhiteSpace(exprStr))
+                {
+                    var exprLexer = new Lexer(exprStr);
+                    var exprParser = new Parser(exprLexer);
+                    var exprProgram = exprParser.ParseProgram();
+                    if (exprProgram.Statements.Count > 0 && exprProgram.Statements[0] is ExpressionStatement exprStmt)
+                    {
+                        expressions.Add(exprStmt.Expression);
+                    }
+                }
+                
+                pos = bracePos;
+            }
+            
+            // Ensure we have at least one string part
+            if (strings.Count == 0)
+            {
+                strings.Add("");
+            }
+            
+            tagged.Strings = strings;
+            tagged.Expressions = expressions;
+            
+            return tagged;
         }
 
         private Expression ParseBoolean()
@@ -525,6 +622,13 @@ namespace FenBrowser.FenEngine.Core
         private Expression ParseFunctionLiteral()
         {
             var lit = new FunctionLiteral { Token = _curToken };
+            
+            // Check for generator function: function*
+            if (PeekTokenIs(TokenType.Asterisk))
+            {
+                NextToken(); // consume *
+                lit.IsGenerator = true;
+            }
 
             if (PeekTokenIs(TokenType.Identifier))
             {
@@ -547,6 +651,27 @@ namespace FenBrowser.FenEngine.Core
             lit.Body = ParseBlockStatement();
 
             return lit;
+        }
+        
+        private Expression ParseYieldExpression()
+        {
+            var yield = new YieldExpression { Token = _curToken };
+            
+            // Check for yield*
+            if (PeekTokenIs(TokenType.Asterisk))
+            {
+                NextToken(); // consume *
+                yield.Delegate = true;
+            }
+            
+            // Check if there's a value after yield
+            if (!PeekTokenIs(TokenType.Semicolon) && !PeekTokenIs(TokenType.RBrace) && !PeekTokenIs(TokenType.Eof))
+            {
+                NextToken();
+                yield.Value = ParseExpression(Precedence.Lowest);
+            }
+            
+            return yield;
         }
 
         private List<Identifier> ParseFunctionParameters()
@@ -1135,10 +1260,14 @@ namespace FenBrowser.FenEngine.Core
             // Parse class body
             while (!PeekTokenIs(TokenType.RBrace) && !PeekTokenIs(TokenType.Eof))
             {
-                var method = ParseMethodDefinition();
-                if (method != null)
+                var member = ParseClassMember();
+                if (member is MethodDefinition method)
                 {
                     stmt.Methods.Add(method);
+                }
+                else if (member is ClassProperty prop)
+                {
+                    stmt.Properties.Add(prop);
                 }
                 NextToken();
             }
@@ -1149,6 +1278,195 @@ namespace FenBrowser.FenEngine.Core
             }
 
             return stmt;
+        }
+
+        private Statement ParseClassMember()
+        {
+            bool isStatic = false;
+            bool isPrivate = false;
+            
+            if (PeekTokenIs(TokenType.Static))
+            {
+                NextToken();
+                isStatic = true;
+            }
+
+            NextToken();
+            
+            // Check for private identifier (#field)
+            if (CurTokenIs(TokenType.PrivateIdentifier))
+            {
+                isPrivate = true;
+                // Token literal is "#fieldName", extract just the name
+                string privateName = _curToken.Literal.Substring(1); // Remove '#'
+                var key = new Identifier(_curToken, privateName);
+                
+                // Is it a method or a property?
+                if (PeekTokenIs(TokenType.LParen))
+                {
+                    // It's a private method
+                    var method = new MethodDefinition
+                    {
+                        Key = key,
+                        Kind = "method",
+                        Static = isStatic,
+                        IsPrivate = true
+                    };
+                    
+                    var funcLit = new FunctionLiteral { Token = _curToken };
+                    if (!ExpectPeek(TokenType.LParen)) return null;
+                    funcLit.Parameters = ParseFunctionParameters();
+                    if (!ExpectPeek(TokenType.LBrace)) return null;
+                    funcLit.Body = ParseBodyAsBlock();
+                    method.Value = funcLit;
+                    return method;
+                }
+                else
+                {
+                    // It's a private property
+                    var prop = new ClassProperty
+                    {
+                        Key = key,
+                        Static = isStatic,
+                        IsPrivate = true
+                    };
+                    
+                    if (PeekTokenIs(TokenType.Assign))
+                    {
+                        NextToken(); // consume =
+                        NextToken(); // move to value
+                        prop.Value = ParseExpression(Precedence.Lowest);
+                    }
+                    
+                    // Skip optional semicolon
+                    if (PeekTokenIs(TokenType.Semicolon))
+                    {
+                        NextToken();
+                    }
+                    return prop;
+                }
+            }
+            
+            // Handle regular member (constructor, method, getter, setter, property)
+            if (CurTokenIs(TokenType.Identifier) || CurTokenIs(TokenType.String))
+            {
+                var key = new Identifier(_curToken, _curToken.Literal);
+                
+                // Check for constructor
+                if (key.Value == "constructor")
+                {
+                    var method = new MethodDefinition
+                    {
+                        Key = key,
+                        Kind = "constructor",
+                        Static = false, // constructor can't be static
+                        IsPrivate = false
+                    };
+                    
+                    var funcLit = new FunctionLiteral { Token = _curToken };
+                    if (!ExpectPeek(TokenType.LParen)) return null;
+                    funcLit.Parameters = ParseFunctionParameters();
+                    if (!ExpectPeek(TokenType.LBrace)) return null;
+                    funcLit.Body = ParseBodyAsBlock();
+                    method.Value = funcLit;
+                    return method;
+                }
+                
+                // Check for getter
+                if (key.Value == "get" && (PeekTokenIs(TokenType.Identifier) || PeekTokenIs(TokenType.PrivateIdentifier)))
+                {
+                    NextToken();
+                    bool getterIsPrivate = CurTokenIs(TokenType.PrivateIdentifier);
+                    string getterName = getterIsPrivate ? _curToken.Literal.Substring(1) : _curToken.Literal;
+                    
+                    var method = new MethodDefinition
+                    {
+                        Key = new Identifier(_curToken, getterName),
+                        Kind = "get",
+                        Static = isStatic,
+                        IsPrivate = getterIsPrivate
+                    };
+                    
+                    var funcLit = new FunctionLiteral { Token = _curToken };
+                    if (!ExpectPeek(TokenType.LParen)) return null;
+                    funcLit.Parameters = ParseFunctionParameters();
+                    if (!ExpectPeek(TokenType.LBrace)) return null;
+                    funcLit.Body = ParseBodyAsBlock();
+                    method.Value = funcLit;
+                    return method;
+                }
+                
+                // Check for setter
+                if (key.Value == "set" && (PeekTokenIs(TokenType.Identifier) || PeekTokenIs(TokenType.PrivateIdentifier)))
+                {
+                    NextToken();
+                    bool setterIsPrivate = CurTokenIs(TokenType.PrivateIdentifier);
+                    string setterName = setterIsPrivate ? _curToken.Literal.Substring(1) : _curToken.Literal;
+                    
+                    var method = new MethodDefinition
+                    {
+                        Key = new Identifier(_curToken, setterName),
+                        Kind = "set",
+                        Static = isStatic,
+                        IsPrivate = setterIsPrivate
+                    };
+                    
+                    var funcLit = new FunctionLiteral { Token = _curToken };
+                    if (!ExpectPeek(TokenType.LParen)) return null;
+                    funcLit.Parameters = ParseFunctionParameters();
+                    if (!ExpectPeek(TokenType.LBrace)) return null;
+                    funcLit.Body = ParseBodyAsBlock();
+                    method.Value = funcLit;
+                    return method;
+                }
+                
+                // Is it a method or a property?
+                if (PeekTokenIs(TokenType.LParen))
+                {
+                    // It's a method
+                    var method = new MethodDefinition
+                    {
+                        Key = key,
+                        Kind = "method",
+                        Static = isStatic,
+                        IsPrivate = false
+                    };
+                    
+                    var funcLit = new FunctionLiteral { Token = _curToken };
+                    if (!ExpectPeek(TokenType.LParen)) return null;
+                    funcLit.Parameters = ParseFunctionParameters();
+                    if (!ExpectPeek(TokenType.LBrace)) return null;
+                    funcLit.Body = ParseBodyAsBlock();
+                    method.Value = funcLit;
+                    return method;
+                }
+                else
+                {
+                    // It's a public property
+                    var prop = new ClassProperty
+                    {
+                        Key = key,
+                        Static = isStatic,
+                        IsPrivate = false
+                    };
+                    
+                    if (PeekTokenIs(TokenType.Assign))
+                    {
+                        NextToken(); // consume =
+                        NextToken(); // move to value
+                        prop.Value = ParseExpression(Precedence.Lowest);
+                    }
+                    
+                    // Skip optional semicolon
+                    if (PeekTokenIs(TokenType.Semicolon))
+                    {
+                        NextToken();
+                    }
+                    return prop;
+                }
+            }
+            
+            return null;
         }
 
         private MethodDefinition ParseMethodDefinition()

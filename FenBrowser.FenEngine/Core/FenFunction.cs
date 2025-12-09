@@ -12,13 +12,19 @@ namespace FenBrowser.FenEngine.Core
         public string Name { get; }
         public Func<IValue[], IValue, IValue> NativeImplementation { get; }
         public bool IsNative { get; }
-        public bool IsAsync { get; set; } // New property for async functions
+        public bool IsAsync { get; set; } // For async functions
+        public bool IsGenerator { get; set; } // For generator functions (function*)
+        public bool IsArrowFunction { get; set; } // Arrow functions don't have own `arguments`
 
         // User-defined function properties
         public List<Identifier> Parameters { get; }
         public AstNode Body { get; }  // Can be BlockStatement or Expression (arrow functions)
         public FenEnvironment Env { get; }
         public FenObject Prototype { get; set; } // For classes/constructors
+        
+        // Class field definitions for initialization during `new`
+        // (fieldName, isPrivate, isStatic, initializer)
+        public List<(string name, bool isPrivate, bool isStatic, Expression initializer)> FieldDefinitions { get; set; }
 
         public FenFunction(string name, Func<IValue[], IValue, IValue> nativeImplementation)
         {

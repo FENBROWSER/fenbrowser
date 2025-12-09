@@ -1458,8 +1458,8 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[FenEngine] Evaluate error: {ex.Message}");
-                    return null;
+                    FenLogger.Error($"[JS] Evaluate error: {ex.Message}", LogCategory.JavaScript, ex);
+                    return "Error: " + ex.Message;
                 }
             }
             
