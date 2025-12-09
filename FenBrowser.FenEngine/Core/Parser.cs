@@ -518,6 +518,33 @@ namespace FenBrowser.FenEngine.Core
         {
             NextToken();
 
+            // Handle empty parens: () => expr  (arrow function with no params)
+            if (CurTokenIs(TokenType.RParen))
+            {
+                // Check if followed by arrow
+                if (PeekTokenIs(TokenType.Arrow))
+                {
+                    NextToken(); // Move to =>
+                    // Parse as arrow function with empty params
+                    var arrow = new ArrowFunctionExpression { Token = _curToken };
+                    arrow.Parameters = new List<Identifier>();
+                    NextToken(); // Move past =>
+                    
+                    // Parse body: either block statement or expression
+                    if (CurTokenIs(TokenType.LBrace))
+                    {
+                        arrow.Body = ParseBlockStatement();
+                    }
+                    else
+                    {
+                        arrow.Body = ParseExpression(Precedence.Lowest);
+                    }
+                    return arrow;
+                }
+                // Empty parens not followed by arrow - this is unusual but return null
+                return null;
+            }
+
             var exp = ParseExpression(Precedence.Lowest);
 
             if (!ExpectPeek(TokenType.RParen))
