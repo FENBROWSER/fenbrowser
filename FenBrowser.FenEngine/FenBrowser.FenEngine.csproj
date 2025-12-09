@@ -8,6 +8,8 @@
     <PackageReference Include="Avalonia" Version="11.3.9" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.9" />
     <PackageReference Include="Avalonia.Skia" Version="11.3.9" />
+    <PackageReference Include="SkiaSharp.HarfBuzz" Version="3.119.1" />
+    <PackageReference Include="Svg.Skia" Version="3.2.1" />
   </ItemGroup>
 
   <PropertyGroup>
