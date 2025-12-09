@@ -260,11 +260,21 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             };
             
-            _resources = new ResourceManager(new HttpClient(handler), isPrivate);
+            var httpClient = new HttpClient(handler);
+            // Use latest Chrome UA to get modern Google page with full CSS features
+            httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+            
+            _resources = new ResourceManager(httpClient, isPrivate);
 
             _engine.RepaintReady += (elem) =>
             {
                 try { RepaintReady?.Invoke(this, elem); }
+                catch { }
+            };
+
+            _engine.DomReady += (s, dom) =>
+            {
+                try { RepaintReady?.Invoke(this, dom); }
                 catch { }
             };
 
@@ -418,11 +428,21 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 Console.WriteLine($"[NavigateAsync] Rendering content for {uri}");
+                
+                // Debug: Log navigation with base URL
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
+                    $"\r\n=== NAVIGATION ===\r\n[BrowserApi] Navigating to: {uri}\r\n[BrowserApi] Previous _current was: {_current?.AbsoluteUri ?? "null"}\r\n"); } catch {}
+                
                 var elem = await _engine.RenderAsync(htmlToRender, uri, u => _resources.FetchTextAsync(u), u => _resources.FetchImageAsync(u), u => { _ = NavigateAsync(u.AbsoluteUri); });
                 
-                try { RepaintReady?.Invoke(this, elem); } catch { }
-
+                // IMPORTANT: Set _current BEFORE firing RepaintReady so UI can access correct BaseUrl
                 _current = uri;
+                
+                // Debug: Log that _current is now set
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
+                    $"[BrowserApi] _current now set to: {_current?.AbsoluteUri}\r\n[BrowserApi] Firing RepaintReady...\r\n"); } catch {}
+                
+                try { RepaintReady?.Invoke(this, elem); } catch { }
 
                 if (!_isNavigatingHistory)
                 {

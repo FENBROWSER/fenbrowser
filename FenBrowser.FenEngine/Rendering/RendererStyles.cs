@@ -357,24 +357,8 @@ namespace FenBrowser.FenEngine.Rendering
             }
             catch { }
 
-            // position:relative offset approximation via margin shift
-            try
-            {
-                var pos = (css.Position ?? (css.Map != null && css.Map.ContainsKey("position") ? css.Map["position"] : null)) ?? string.Empty;
-                pos = pos.Trim().ToLowerInvariant();
-                if (pos == "relative")
-                {
-                    var m = returned.Margin;
-                        double mLeft = m.Left, mTop = m.Top, mRight = m.Right, mBottom = m.Bottom;
-                        if (css.Left.HasValue) mLeft += css.Left.Value;
-                        if (css.Top.HasValue) mTop += css.Top.Value;
-                        // right/bottom move the box in the opposite direction
-                        if (css.Right.HasValue) mLeft -= css.Right.Value;
-                        if (css.Bottom.HasValue) mTop -= css.Bottom.Value;
-                        returned.Margin = new Thickness(mLeft, mTop, mRight, mBottom);
-                }
-            }
-            catch { }
+            // NOTE: position:relative is now properly handled in SkiaDomRenderer.DrawLayout
+            // via canvas translation, not margin adjustment
 
             // overflow (axis-aware best-effort)
             try
@@ -517,13 +501,27 @@ namespace FenBrowser.FenEngine.Rendering
                                      transitionStr.Contains("all");
 
                 var timeSpan = TimeSpan.FromMilliseconds(durationMs);
+                
+                // Parse easing function
+                var easing = ParseTimingFunction(css.TransitionTimingFunction ?? transitionStr);
+                
+                // Parse delay
+                double delayMs = 0;
+                var delayStr = css.TransitionDelay ?? "";
+                if (!string.IsNullOrWhiteSpace(delayStr))
+                {
+                    delayMs = ParseDuration(delayStr);
+                }
+                var delayTimeSpan = TimeSpan.FromMilliseconds(delayMs);
 
                 if (transitionAll || property.Contains("opacity"))
                 {
                     transitions.Add(new Avalonia.Animation.DoubleTransition
                     {
                         Property = Avalonia.Visual.OpacityProperty,
-                        Duration = timeSpan
+                        Duration = timeSpan,
+                        Easing = easing,
+                        Delay = delayTimeSpan
                     });
                 }
 
@@ -532,7 +530,77 @@ namespace FenBrowser.FenEngine.Rendering
                     transitions.Add(new Avalonia.Animation.TransformOperationsTransition
                     {
                         Property = Avalonia.Visual.RenderTransformProperty,
-                        Duration = timeSpan
+                        Duration = timeSpan,
+                        Easing = easing,
+                        Delay = delayTimeSpan
+                    });
+                }
+                
+                // Add width transition
+                if (transitionAll || property.Contains("width"))
+                {
+                    transitions.Add(new Avalonia.Animation.DoubleTransition
+                    {
+                        Property = Avalonia.Layout.Layoutable.WidthProperty,
+                        Duration = timeSpan,
+                        Easing = easing,
+                        Delay = delayTimeSpan
+                    });
+                }
+                
+                // Add height transition
+                if (transitionAll || property.Contains("height"))
+                {
+                    transitions.Add(new Avalonia.Animation.DoubleTransition
+                    {
+                        Property = Avalonia.Layout.Layoutable.HeightProperty,
+                        Duration = timeSpan,
+                        Easing = easing,
+                        Delay = delayTimeSpan
+                    });
+                }
+                
+                // Add background color transition
+                if (transitionAll || property.Contains("background") || property.Contains("color"))
+                {
+                    transitions.Add(new Avalonia.Animation.BrushTransition
+                    {
+                        Property = Avalonia.Controls.Primitives.TemplatedControl.BackgroundProperty,
+                        Duration = timeSpan,
+                        Delay = delayTimeSpan
+                    });
+                }
+                
+                // Add margin transitions
+                if (transitionAll || property.Contains("margin"))
+                {
+                    transitions.Add(new Avalonia.Animation.ThicknessTransition
+                    {
+                        Property = Avalonia.Layout.Layoutable.MarginProperty,
+                        Duration = timeSpan,
+                        Delay = delayTimeSpan
+                    });
+                }
+                
+                // Add padding transitions (for controls that support it)
+                if (transitionAll || property.Contains("padding"))
+                {
+                    transitions.Add(new Avalonia.Animation.ThicknessTransition
+                    {
+                        Property = Avalonia.Controls.Decorator.PaddingProperty,
+                        Duration = timeSpan,
+                        Delay = delayTimeSpan
+                    });
+                }
+                
+                // Add border-radius transition (corner radius)
+                if (transitionAll || property.Contains("border-radius"))
+                {
+                    transitions.Add(new Avalonia.Animation.CornerRadiusTransition
+                    {
+                        Property = Avalonia.Controls.Border.CornerRadiusProperty,
+                        Duration = timeSpan,
+                        Delay = delayTimeSpan
                     });
                 }
 
@@ -542,6 +610,52 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
             catch { }
+        }
+        
+        /// <summary>
+        /// Parse CSS transition timing function to Avalonia Easing
+        /// </summary>
+        private static Avalonia.Animation.Easings.Easing ParseTimingFunction(string timingFunction)
+        {
+            if (string.IsNullOrWhiteSpace(timingFunction))
+                return new Avalonia.Animation.Easings.LinearEasing();
+            
+            timingFunction = timingFunction.ToLowerInvariant();
+            
+            // Check for keywords
+            if (timingFunction.Contains("ease-in-out"))
+                return new Avalonia.Animation.Easings.SineEaseInOut();
+            if (timingFunction.Contains("ease-in"))
+                return new Avalonia.Animation.Easings.SineEaseIn();
+            if (timingFunction.Contains("ease-out"))
+                return new Avalonia.Animation.Easings.SineEaseOut();
+            if (timingFunction.Contains("ease"))
+                return new Avalonia.Animation.Easings.SineEaseInOut(); // Default ease
+            if (timingFunction.Contains("linear"))
+                return new Avalonia.Animation.Easings.LinearEasing();
+            
+            // Parse cubic-bezier
+            var bezierMatch = Regex.Match(timingFunction, @"cubic-bezier\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\)");
+            if (bezierMatch.Success)
+            {
+                if (double.TryParse(bezierMatch.Groups[1].Value, out double x1) &&
+                    double.TryParse(bezierMatch.Groups[2].Value, out double y1) &&
+                    double.TryParse(bezierMatch.Groups[3].Value, out double x2) &&
+                    double.TryParse(bezierMatch.Groups[4].Value, out double y2))
+                {
+                    return new Avalonia.Animation.Easings.SplineEasing(x1, y1, x2, y2);
+                }
+            }
+            
+            // Parse steps function (approximated)
+            var stepsMatch = Regex.Match(timingFunction, @"steps\s*\(\s*(\d+)");
+            if (stepsMatch.Success)
+            {
+                // Avalonia doesn't have native step easing, approximate with linear
+                return new Avalonia.Animation.Easings.LinearEasing();
+            }
+            
+            return new Avalonia.Animation.Easings.LinearEasing();
         }
 
         /// <summary>
