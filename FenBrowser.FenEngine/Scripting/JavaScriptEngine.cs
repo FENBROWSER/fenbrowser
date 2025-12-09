@@ -1419,25 +1419,6 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         {
             try { FenLogger.Debug($"[JavaScriptEngine] Evaluate called with script length: {script?.Length ?? 0}", LogCategory.JavaScript); } catch { }
 
-#if USE_NILJS
-            if (_nil != null)
-            {
-                try
-                {
-                    var result = _nil.Eval(script);
-                    if (result == null) return null;
-                    if (result.IsNumber) return (double)result;
-                    if (result.ValueType == JSValueType.String) return result.ToString();
-                    if (result.ValueType == JSValueType.Boolean) return (bool)result;
-                    return result.ToString();
-                }
-                catch (Exception ex)
-                {
-                    return "Error: " + ex.Message;
-                }
-            }
-#endif
-            
             // Use FenEngine for evaluation
             if (_fenRuntime != null)
             {
@@ -1961,15 +1942,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             
             private void TriggerPopState()
             {
-#if USE_NILJS
-                /*
-                if (_engine.OnPopState != null && _engine.OnPopState.ValueType == JsValType.Function)
-                {
-                    var evt = JsVal.Marshal(new { state = JsVal.Null });
-                    (_engine.OnPopState as Function)?.Call(JsVal.Undefined, new Arguments { evt });
-                }
-                */
-#endif
+                // Pop state handling (currently not implemented)
             }
 
             public int length => 1;
@@ -2002,112 +1975,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             public string Expr;        // expression body source (arrow)
         }
 
-#if USE_NILJS
-        private void _nilInit()
-        {
-            _nil = new Context();
-
-            // Expose standard globals
-            _nil.DefineVariable("window").Assign(_nil.GlobalContext.ProxyValue(new HostWindow(this)));
-            _nil.DefineVariable("document").Assign(_nil.GlobalContext.ProxyValue(new HostDocument(this)));
-            _nil.DefineVariable("console").Assign(_nil.GlobalContext.ProxyValue(new HostConsole(this)));
-            _nil.DefineVariable("navigator").Assign(_nil.GlobalContext.ProxyValue(new HostNavigator(this)));
-            _nil.DefineVariable("location").Assign(_nil.GlobalContext.ProxyValue(new HostLocation(this)));
-            _nil.DefineVariable("history").Assign(_nil.GlobalContext.ProxyValue(new HostHistory(this)));
-            _nil.DefineVariable("localStorage").Assign(_nil.GlobalContext.ProxyValue(new HostLocalStorage(this, false)));
-            _nil.DefineVariable("sessionStorage").Assign(_nil.GlobalContext.ProxyValue(new HostLocalStorage(this, true)));
-        }
-
-        private void _nilSyncDocument()
-        {
-            // Stub
-        }
-
-        // Host Classes for NiL.JS
-
-        public class HostCanvas
-        {
-            public int width { get; set; } = 300;
-            public int height { get; set; } = 150;
-
-            public HostContext2D getContext(string type)
-            {
-                if (type == "2d") return new HostContext2D();
-                return null;
-            }
-        }
-
-        public class HostContext2D
-        {
-            public string fillStyle { get; set; } = "#000000";
-            public string strokeStyle { get; set; } = "#000000";
-            public double lineWidth { get; set; } = 1.0;
-            public string font { get; set; } = "10px sans-serif";
-
-            public void fillRect(double x, double y, double w, double h) 
-            { 
-                System.Diagnostics.Debug.WriteLine($"[Canvas] fillRect({x},{y},{w},{h}) style={fillStyle}");
-            }
-
-            public void strokeRect(double x, double y, double w, double h) 
-            { 
-                System.Diagnostics.Debug.WriteLine($"[Canvas] strokeRect({x},{y},{w},{h}) style={strokeStyle}");
-            }
-
-            public void clearRect(double x, double y, double w, double h) 
-            { 
-                System.Diagnostics.Debug.WriteLine($"[Canvas] clearRect({x},{y},{w},{h})");
-            }
-
-            public void fillText(string text, double x, double y) 
-            { 
-                System.Diagnostics.Debug.WriteLine($"[Canvas] fillText('{text}',{x},{y}) font={font} style={fillStyle}");
-            }
-
-            public JsVal measureText(string text)
-            {
-                // Basic approximation: 6px per char
-                var width = (text ?? "").Length * 6.0;
-                return JsVal.Marshal(new { width = width });
-            }
-
-            public void beginPath() { System.Diagnostics.Debug.WriteLine("[Canvas] beginPath"); }
-            public void closePath() { System.Diagnostics.Debug.WriteLine("[Canvas] closePath"); }
-            public void moveTo(double x, double y) { System.Diagnostics.Debug.WriteLine($"[Canvas] moveTo({x},{y})"); }
-            public void lineTo(double x, double y) { System.Diagnostics.Debug.WriteLine($"[Canvas] lineTo({x},{y})"); }
-            public void stroke() { System.Diagnostics.Debug.WriteLine($"[Canvas] stroke style={strokeStyle}"); }
-            public void fill() { System.Diagnostics.Debug.WriteLine($"[Canvas] fill style={fillStyle}"); }
-            
-            public void drawImage(JsVal image, double x, double y) 
-            { 
-                System.Diagnostics.Debug.WriteLine($"[Canvas] drawImage({image},{x},{y})");
-            }
-        }
-
-        public class HostAudio
-        {
-            public string src { get; set; }
-            public double currentTime { get; set; }
-            public double duration { get; set; }
-            public bool paused { get; set; } = true;
-
-            public HostAudio(string src)
-            {
-                this.src = src;
-            }
-
-            public void play() 
-            { 
-                paused = false; 
-                // Trigger host audio playback if possible
-            }
-            
-            public void pause() 
-            { 
-                paused = true; 
-            }
-        }
-#endif
+        // NilJS host classes removed
 
         private abstract class JsBindingPattern
         {
@@ -2259,42 +2127,12 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             
             // JS is "enabled" in this app; hide server noscript overlays & flip no-js ? js
             this.SanitizeForScriptingEnabled(domRoot);
-#if USE_NILJS
-            try { _nilSyncDocument(); } catch { }
-            
-            // Execute inline scripts
-            try
-            {
-                foreach (var s in _domRoot.SelfAndDescendants())
-                {
-                    if (string.Equals(s.Tag, "script", StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (s.Attr != null && s.Attr.ContainsKey("src")) continue; // Skip external for now
-                        var code = CollectScriptText(s);
-                        if (!string.IsNullOrWhiteSpace(code))
-                        {
-                            RunGlobalScript(code);
-                        }
-                    }
-                }
-            }
-            catch { }
-#endif
         }
 
         private void RunGlobalScript(string js)
         {
             if (string.IsNullOrWhiteSpace(js)) return;
-#if USE_NILJS
-            try
-            {
-                if (_nil != null)
-                {
-                    _nil.Eval(js);
-                }
-            }
-            catch { }
-#endif
+            // No longer used - FenEngine handles script execution in SetDom
         }
 
         private static string CollectScriptText(LiteElement n)
