@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using System.Text.Json;
 using FenBrowser.Core;
 using FenBrowser.Core.Security;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -290,16 +291,21 @@ namespace FenBrowser.FenEngine.Rendering
                 catch { }
             };
 
-            _engine.HighlightRectChanged += (rect) =>
-            {
-                try { HighlightRectChanged?.Invoke(rect); }
-                catch { }
-            };
-
             _engine.AlertTriggered += (msg) =>
             {
                 TriggerAlert(msg);
                 try { ConsoleMessage?.Invoke($"[Alert] {msg}"); } catch { }
+            };
+
+            _engine.ConsoleMessage += (msg) =>
+            {
+                try { ConsoleMessage?.Invoke(msg); } catch { }
+            };
+
+            _engine.HighlightRectChanged += (rect) =>
+            {
+                try { HighlightRectChanged?.Invoke(rect); }
+                catch { }
             };
 
             ResourceManager.LogSink = (msg) =>
@@ -430,8 +436,7 @@ namespace FenBrowser.FenEngine.Rendering
                 Console.WriteLine($"[NavigateAsync] Rendering content for {uri}");
                 
                 // Debug: Log navigation with base URL
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
-                    $"\r\n=== NAVIGATION ===\r\n[BrowserApi] Navigating to: {uri}\r\n[BrowserApi] Previous _current was: {_current?.AbsoluteUri ?? "null"}\r\n"); } catch {}
+                try { FenLogger.Debug($"[BrowserApi] Navigating to: {uri}. Previous _current: {_current?.AbsoluteUri ?? "null"}", LogCategory.General); } catch {}
                 
                 var elem = await _engine.RenderAsync(htmlToRender, uri, u => _resources.FetchTextAsync(u), u => _resources.FetchImageAsync(u), u => { _ = NavigateAsync(u.AbsoluteUri); });
                 
@@ -439,8 +444,7 @@ namespace FenBrowser.FenEngine.Rendering
                 _current = uri;
                 
                 // Debug: Log that _current is now set
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
-                    $"[BrowserApi] _current now set to: {_current?.AbsoluteUri}\r\n[BrowserApi] Firing RepaintReady...\r\n"); } catch {}
+                try { FenLogger.Debug($"[BrowserApi] _current now set to: {_current?.AbsoluteUri}. Firing RepaintReady...", LogCategory.General); } catch {}
                 
                 try { RepaintReady?.Invoke(this, elem); } catch { }
 
@@ -553,6 +557,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         public async Task<object> ExecuteScriptAsync(string script)
         {
+            try { FenLogger.Debug($"[BrowserApi] ExecuteScriptAsync called with script: {script}", LogCategory.JavaScript); } catch { }
             return _engine.Evaluate(script);
         }
 
@@ -958,16 +963,16 @@ namespace FenBrowser.FenEngine.Rendering
             if (args != null && args.Length > 0)
             {
                 var jsonArgs = JsonSerializer.Serialize(args);
-                wrappedScript = $"var arguments = {jsonArgs}; (function() {{ {script} }}).apply(null, arguments)";
+                wrappedScript = $"var __args = {jsonArgs}; (function() {{ {script} }}).apply(null, __args)";
             }
             else
             {
-                wrappedScript = $"var arguments = []; (function() {{ {script} }})()";
+                wrappedScript = $"var __args = []; (function() {{ {script} }})()";
             }
             
-            try { System.IO.File.AppendAllText("js_debug.txt", $"[ExecuteScript] Wrapped: {wrappedScript.Substring(0, Math.Min(500, wrappedScript.Length))}...\r\n"); } catch { }
+            try { FenLogger.Debug($"[ExecuteScript] Wrapped: {wrappedScript.Substring(0, Math.Min(500, wrappedScript.Length))}...", LogCategory.JavaScript); } catch { }
             var rawResult = _engine.Evaluate(wrappedScript);
-            try { System.IO.File.AppendAllText("js_debug.txt", $"[ExecuteScript] Raw result type: {rawResult?.GetType().Name}\r\n"); } catch { }
+            try { FenLogger.Debug($"[ExecuteScript] Raw result type: {rawResult?.GetType().Name}", LogCategory.JavaScript); } catch { }
             
             if (rawResult is FenBrowser.FenEngine.Core.ErrorValue ev)
             {
@@ -1134,23 +1139,23 @@ namespace FenBrowser.FenEngine.Rendering
                 console.log('[WPT] rAF callbacks length: ' + (window.__raf_callbacks ? window.__raf_callbacks.length : 'no array'));
             ";
             
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.txt", $"[AsyncScript] Executing wrapped script (timeout {timeoutMs}ms)\r\n"); } catch { }
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.txt", $"[AsyncScript] Input script (first 500 chars): {(script.Length > 500 ? script.Substring(0, 500) : script)}\r\n"); } catch { }
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.txt", $"[AsyncScript] Processed script (first 500 chars): {(processedScript.Length > 500 ? processedScript.Substring(0, 500) : processedScript)}\r\n"); } catch { }
+            try { FenLogger.Debug($"[AsyncScript] Executing wrapped script (timeout {timeoutMs}ms)", LogCategory.JavaScript); } catch { }
+            try { FenLogger.Debug($"[AsyncScript] Input script (first 500 chars): {(script.Length > 500 ? script.Substring(0, 500) : script)}", LogCategory.JavaScript); } catch { }
+            try { FenLogger.Debug($"[AsyncScript] Processed script (first 500 chars): {(processedScript.Length > 500 ? processedScript.Substring(0, 500) : processedScript)}", LogCategory.JavaScript); } catch { }
             
             // Execute the script (it should call the callback eventually)
             try 
             {
                 var execResult = _engine.Evaluate(wrappedScript);
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.txt", $"[AsyncScript] Script executed, result type: {execResult?.GetType().Name ?? "null"}\r\n"); } catch { }
+                try { FenLogger.Debug($"[AsyncScript] Script executed, result type: {execResult?.GetType().Name ?? "null"}", LogCategory.JavaScript); } catch { }
                 if (execResult is FenBrowser.FenEngine.Core.ErrorValue ev)
                 {
-                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.txt", $"[AsyncScript] Script error: {ev.Message}\r\n"); } catch { }
+                    try { FenLogger.Debug($"[AsyncScript] Script error: {ev.Message}", LogCategory.Errors); } catch { }
                 }
             }
             catch (Exception ex)
             {
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.txt", $"[AsyncScript] Script exception: {ex.Message}\r\n"); } catch { }
+                try { FenLogger.Debug($"[AsyncScript] Script exception: {ex.Message}", LogCategory.Errors); } catch { }
             }
             
             // Process rAF queue helper script
@@ -1185,12 +1190,12 @@ namespace FenBrowser.FenEngine.Rendering
                     var rafResult = _engine.Evaluate(processRafScript);
                     if (loopCount % 100 == 1) // Log every 100th iteration
                     {
-                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.txt", $"[AsyncScript] Poll loop {loopCount}, rafCount: {rafResult}\r\n"); } catch { }
+                        try { FenLogger.Debug($"[AsyncScript] Poll loop {loopCount}, rafCount: {rafResult}", LogCategory.JavaScript); } catch { }
                     }
                 } 
                 catch (Exception ex)
                 {
-                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.txt", $"[AsyncScript] rAF error: {ex.Message}\r\n"); } catch { }
+                    try { FenLogger.Debug($"[AsyncScript] rAF error: {ex.Message}", LogCategory.Errors); } catch { }
                 }
                 
                 // Check if the callback was called
@@ -1199,7 +1204,7 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     // Get the result
                     var result = _engine.Evaluate($"window.__wptrunner_async_result_{callbackId}");
-                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.txt", $"[AsyncScript] Callback received result after {sw.ElapsedMilliseconds}ms\r\n"); } catch { }
+                    try { FenLogger.Debug($"[AsyncScript] Callback received result after {sw.ElapsedMilliseconds}ms", LogCategory.JavaScript); } catch { }
                     
                     // Convert FenValue to native object
                     if (result is FenBrowser.FenEngine.Core.FenValue fenValue)
@@ -1213,7 +1218,7 @@ namespace FenBrowser.FenEngine.Rendering
                 await Task.Delay(10);
             }
             
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.txt", $"[AsyncScript] Timeout after {timeoutMs}ms\r\n"); } catch { }
+            try { FenLogger.Debug($"[AsyncScript] Timeout after {timeoutMs}ms", LogCategory.Errors); } catch { }
             
             // Timeout - throw exception
             throw new TimeoutException($"Script execution timeout ({timeoutMs/1000}s)");
