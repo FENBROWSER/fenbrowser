@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using FenBrowser.FenEngine.Core;
+using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 
@@ -11,10 +12,12 @@ namespace FenBrowser.FenEngine.Scripting
     public sealed partial class JavaScriptEngine
     {
         // --------------------------- Document / Element bridge (minimal) ---------------------------
-        internal sealed class JsDocument
+        internal sealed class JsDocument : IObject
         {
             private readonly JavaScriptEngine _e;
             private LiteElement _root;
+            private IObject _prototype = null;
+            private JsDomElement _bodyCache = null;
             public JsDocument(JavaScriptEngine e, LiteElement root) { _e = e; _root = root; }
 
             public object getElementById(string id)
@@ -257,11 +260,72 @@ namespace FenBrowser.FenEngine.Scripting
                 }
                 catch { }
             }
+
+            // IObject implementation for interpreter property access
+            public IValue Get(string key)
+            {
+                switch (key)
+                {
+                    case "body":
+                        if (_bodyCache == null)
+                        {
+                            foreach (var n in _root.Children)
+                            {
+                                if (n.Tag == "body") { _bodyCache = new JsDomElement(_e, n); break; }
+                            }
+                            if (_bodyCache == null) _bodyCache = new JsDomElement(_e, _root);
+                        }
+                        return FenValue.FromObject(_bodyCache);
+                    case "getElementById": return FenValue.FromFunction(new FenFunction("getElementById", (args, _) => {
+                        var result = args.Length > 0 ? getElementById(args[0].ToString()) : null;
+                        return result is JsDomElement el ? FenValue.FromObject(el) : FenValue.Null;
+                    }));
+                    case "getElementsByTagName": return FenValue.FromFunction(new FenFunction("getElementsByTagName", (args, _) => {
+                        var results = args.Length > 0 ? getElementsByTagName(args[0].ToString()) : new object[0];
+                        var arr = new FenObject();
+                        arr.Set("length", FenValue.FromNumber(results.Length));
+                        for (int i = 0; i < results.Length; i++)
+                        {
+                            if (results[i] is JsDomElement el) arr.Set(i.ToString(), FenValue.FromObject(el));
+                        }
+                        return FenValue.FromObject(arr);
+                    }));
+                    case "querySelector": return FenValue.FromFunction(new FenFunction("querySelector", (args, _) => {
+                        var result = args.Length > 0 ? querySelector(args[0].ToString()) : null;
+                        return result is JsDomElement el ? FenValue.FromObject(el) : FenValue.Null;
+                    }));
+                    case "querySelectorAll": return FenValue.FromFunction(new FenFunction("querySelectorAll", (args, _) => {
+                        var results = args.Length > 0 ? querySelectorAll(args[0].ToString()) : new object[0];
+                        var arr = new FenObject();
+                        arr.Set("length", FenValue.FromNumber(results.Length));
+                        for (int i = 0; i < results.Length; i++)
+                        {
+                            if (results[i] is JsDomElement el) arr.Set(i.ToString(), FenValue.FromObject(el));
+                        }
+                        return FenValue.FromObject(arr);
+                    }));
+                    case "createElement": return FenValue.FromFunction(new FenFunction("createElement", (args, _) => {
+                        var el = args.Length > 0 ? createElement(args[0].ToString()) : null;
+                        return el != null ? FenValue.FromObject(el) : FenValue.Null;
+                    }));
+                    // createTextNode commented out - JsDomText doesn't implement IObject yet
+                    // case "createTextNode": return FenValue.FromFunction(new FenFunction("createTextNode", (args, _) => FenValue.Null));
+                    default:
+                        return FenValue.Undefined;
+                }
+            }
+
+            public void Set(string key, IValue value) { /* Most document properties are read-only */ }
+            public bool Has(string key) => key == "body" || key == "getElementById" || key == "querySelector" || key == "querySelectorAll";
+            public bool Delete(string key) => false;
+            public IEnumerable<string> Keys() => new[] { "body", "getElementById", "getElementsByTagName", "querySelector", "querySelectorAll", "createElement", "createTextNode" };
+            public IObject GetPrototype() => _prototype;
+            public void SetPrototype(IObject prototype) { _prototype = prototype; }
         }
 
         internal abstract class JsDomNodeBase
         {
-            protected readonly JavaScriptEngine _e;
+            internal readonly JavaScriptEngine _e;
             internal readonly LiteElement _node;
             protected JsDomNodeBase(JavaScriptEngine e, LiteElement n) { _e = e; _node = n; }
         }
@@ -273,8 +337,10 @@ namespace FenBrowser.FenEngine.Scripting
             public string data { get { return _node.Text ?? ""; } set { _node.Text = value ?? ""; } }
         }
 
-        internal sealed class JsDomElement : JsDomNodeBase
+        internal sealed class JsDomElement : JsDomNodeBase, IObject
         {
+            private IObject _prototype = null;
+            private JsCssDeclaration _styleCache = null;
             public JsDomElement(JavaScriptEngine e, LiteElement n) : base(e, n) { }
             public string tagName => (_node.Tag ?? "").ToUpperInvariant();
 
@@ -675,11 +741,86 @@ namespace FenBrowser.FenEngine.Scripting
             public JsCssDeclaration style => new JsCssDeclaration(this);
 
             public JsDomTokenList classList => new JsDomTokenList(this);
+
+            // IObject implementation for interpreter property access
+            public IValue Get(string key)
+            {
+                switch (key)
+                {
+                    case "style":
+                        if (_styleCache == null) _styleCache = new JsCssDeclaration(this);
+                        return FenValue.FromObject(_styleCache);
+                    case "tagName": return FenValue.FromString(tagName);
+                    case "id": return FenValue.FromString(id ?? "");
+                    case "className": return FenValue.FromString(className);
+                    case "innerHTML": return FenValue.FromString(innerHTML);
+                    case "innerText": return FenValue.FromString(innerText);
+                    case "textContent": return FenValue.FromString(textContent);
+                    // classList removed - JsDomTokenList doesn't implement IObject
+                    case "getAttribute": return FenValue.FromFunction(new FenFunction("getAttribute", (args, _) => 
+                        FenValue.FromString(args.Length > 0 ? getAttribute(args[0].ToString()) : "")));
+                    case "setAttribute": return FenValue.FromFunction(new FenFunction("setAttribute", (args, _) => { 
+                        if (args.Length >= 2) setAttribute(args[0].ToString(), args[1].ToString()); 
+                        return FenValue.Undefined; 
+                    }));
+                    case "appendChild": return FenValue.FromFunction(new FenFunction("appendChild", (args, _) => { 
+                        if (args.Length > 0) appendChild(args[0]); 
+                        return FenValue.Undefined; 
+                    }));
+                    case "removeChild": return FenValue.FromFunction(new FenFunction("removeChild", (args, _) => { 
+                        if (args.Length > 0) removeChild(args[0]); 
+                        return FenValue.Undefined; 
+                    }));
+                    // addEventListener/removeEventListener handled at engine level
+                    case "querySelector": return FenValue.FromFunction(new FenFunction("querySelector", (args, _) => {
+                        var result = args.Length > 0 ? querySelector(args[0].ToString()) : null;
+                        return result is JsDomElement el ? FenValue.FromObject(el) : FenValue.Null;
+                    }));
+                    case "querySelectorAll": return FenValue.FromFunction(new FenFunction("querySelectorAll", (args, _) => {
+                        var results = args.Length > 0 ? querySelectorAll(args[0].ToString()) : new object[0];
+                        var arr = new FenObject();
+                        arr.Set("length", FenValue.FromNumber(results.Length));
+                        for (int i = 0; i < results.Length; i++)
+                        {
+                            if (results[i] is JsDomElement el) arr.Set(i.ToString(), FenValue.FromObject(el));
+                        }
+                        return FenValue.FromObject(arr);
+                    }));
+                    default:
+                        // Try to get as attribute
+                        var attr = getAttribute(key);
+                        if (!string.IsNullOrEmpty(attr)) return FenValue.FromString(attr);
+                        return FenValue.Undefined;
+                }
+            }
+
+            public void Set(string key, IValue value)
+            {
+                switch (key)
+                {
+                    case "id": id = value?.ToString() ?? ""; break;
+                    case "className": className = value?.ToString() ?? ""; break;
+                    case "innerHTML": innerHTML = value?.ToString() ?? ""; break;
+                    case "innerText": innerText = value?.ToString() ?? ""; break;
+                    case "textContent": textContent = value?.ToString() ?? ""; break;
+                    default:
+                        // Set as attribute
+                        setAttribute(key, value?.ToString() ?? "");
+                        break;
+                }
+            }
+
+            public bool Has(string key) => true;
+            public bool Delete(string key) => false;
+            public IEnumerable<string> Keys() => new[] { "style", "tagName", "id", "className", "innerHTML", "innerText", "textContent", "classList" };
+            public IObject GetPrototype() => _prototype;
+            public void SetPrototype(IObject prototype) { _prototype = prototype; }
         }
 
-        internal sealed class JsCssDeclaration
+        internal sealed class JsCssDeclaration : IObject
         {
             private readonly JsDomElement _el;
+            private IObject _prototype = null;
             public JsCssDeclaration(JsDomElement el) { _el = el; }
 
             public string cssText
@@ -718,6 +859,62 @@ namespace FenBrowser.FenEngine.Scripting
                     return val;
                 }
                 return "";
+            }
+
+            // IObject implementation for interpreter property access
+            public IValue Get(string key)
+            {
+                // Handle method calls
+                if (key == "setProperty") return FenValue.FromFunction(new FenFunction("setProperty", (args, _) => { 
+                    if (args.Length >= 2) setProperty(args[0].ToString(), args[1].ToString()); 
+                    return FenValue.Undefined; 
+                }));
+                if (key == "getPropertyValue") return FenValue.FromFunction(new FenFunction("getPropertyValue", (args, _) => { 
+                    return FenValue.FromString(args.Length > 0 ? getPropertyValue(args[0].ToString()) : ""); 
+                }));
+                if (key == "removeProperty") return FenValue.FromFunction(new FenFunction("removeProperty", (args, _) => { 
+                    return FenValue.FromString(args.Length > 0 ? removeProperty(args[0].ToString()) : ""); 
+                }));
+                if (key == "cssText") return FenValue.FromString(cssText);
+                
+                // Handle common style properties, converted from camelCase or kebab-case
+                var cssKey = ConvertToCssProperty(key);
+                var value = getPropertyValue(cssKey);
+                return FenValue.FromString(value);
+            }
+
+            public void Set(string key, IValue value)
+            {
+                if (key == "cssText") { cssText = value?.ToString() ?? ""; return; }
+                var cssKey = ConvertToCssProperty(key);
+                setProperty(cssKey, value?.ToString() ?? "");
+                _el._e.RequestRepaint();
+            }
+
+            public bool Has(string key) => true; // All CSS properties are valid
+            public bool Delete(string key) => false; // CSS properties can't be deleted this way
+            public IEnumerable<string> Keys() => new[] { "cssText", "display", "width", "height", "background", "color", "margin", "padding", "border", "position", "top", "left", "opacity", "transform" };
+            public IObject GetPrototype() => _prototype;
+            public void SetPrototype(IObject prototype) { _prototype = prototype; }
+
+            // Convert camelCase (backgroundColor) to kebab-case (background-color)
+            private static string ConvertToCssProperty(string name)
+            {
+                if (string.IsNullOrEmpty(name)) return name;
+                var sb = new StringBuilder();
+                foreach (var c in name)
+                {
+                    if (char.IsUpper(c))
+                    {
+                        if (sb.Length > 0) sb.Append('-');
+                        sb.Append(char.ToLower(c));
+                    }
+                    else
+                    {
+                        sb.Append(c);
+                    }
+                }
+                return sb.ToString();
             }
 
             // Common properties for direct access (e.g., element.style.display = 'none')

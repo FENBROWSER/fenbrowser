@@ -2632,6 +2632,12 @@ namespace FenBrowser.FenEngine.Core
         {
             try
             {
+                // Reset execution timer for each new script execution
+                if (_context is ExecutionContext ec)
+                {
+                    ec.Reset();
+                }
+                
                 var lexer = new Lexer(code);
                 var parser = new Parser(lexer);
                 var program = parser.ParseProgram();
