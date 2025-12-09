@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Text;
 using System.Collections.Generic;
 using FenBrowser.FenEngine.Core.Interfaces;
@@ -70,17 +71,34 @@ namespace FenBrowser.FenEngine.Core
                         return EvalDestructuringAssignment(letStmt.DestructuringPattern, valLet, env, context);
                     }
 
-                    env.Set(letStmt.Name.Value, valLet);
+                    // Use SetConst for const declarations to prevent reassignment
+                    if (letStmt.Kind == DeclarationKind.Const)
+                        env.SetConst(letStmt.Name.Value, valLet);
+                    else
+                        env.Set(letStmt.Name.Value, valLet);
                     return valLet;
 
                 case Identifier ident:
                     return EvalIdentifier(ident, env);
 
+                case PrivateIdentifier privateIdent:
+                    return EvalPrivateIdentifier(privateIdent, env);
+
                 case FunctionLiteral funcLit:
-                    return FenValue.FromFunction(new FenFunction(funcLit.Parameters, funcLit.Body, env));
+                    var fenFunc = new FenFunction(funcLit.Parameters, funcLit.Body, env);
+                    fenFunc.IsGenerator = funcLit.IsGenerator;
+                    if (funcLit.IsGenerator)
+                    {
+                        // Return a generator function that creates generator objects when called
+                        return FenValue.FromFunction(fenFunc);
+                    }
+                    return FenValue.FromFunction(fenFunc);
 
                 case MemberExpression memberExpr:
                     return EvalMemberExpression(memberExpr, env, context);
+
+                case TaggedTemplateExpression taggedExpr:
+                    return EvalTaggedTemplate(taggedExpr, env, context);
 
                 case IndexExpression indexExpr:
                     return EvalIndexExpression(indexExpr, env, context);
@@ -103,6 +121,20 @@ namespace FenBrowser.FenEngine.Core
                     if (assignExpr.Left is Identifier leftIdent)
                     {
                         env.Update(leftIdent.Value, value);
+                        return value;
+                    }
+                    
+                    // Handle assignment to private identifier (this.#field = ...)
+                    if (assignExpr.Left is PrivateIdentifier leftPrivate)
+                    {
+                        var thisVal = env.Get("this");
+                        if (thisVal == null || !thisVal.IsObject)
+                        {
+                            return new ErrorValue($"Cannot assign to private field '#${leftPrivate.Name}' outside of a class");
+                        }
+                        var thisObj = thisVal.AsObject();
+                        string privateKey = "#" + leftPrivate.Name;
+                        thisObj.Set(privateKey, value);
                         return value;
                     }
                     
@@ -140,6 +172,57 @@ namespace FenBrowser.FenEngine.Core
                         var obj = Eval(me.Object, env, context);
                         if (IsError(obj)) return obj;
                         
+                        // Handle Function.prototype.bind/call/apply
+                        if (obj.IsFunction && (me.Property == "bind" || me.Property == "call" || me.Property == "apply"))
+                        {
+                            var targetFn = obj.AsFunction();
+                            var fnArgs = EvalExpressionsWithSpread(callExpr.Arguments, env, context);
+                            
+                            if (me.Property == "bind")
+                            {
+                                // bind(thisArg, ...args) - Returns a bound function
+                                var boundThis = fnArgs.Count > 0 ? fnArgs[0] : FenValue.Undefined;
+                                var boundArgs = fnArgs.Count > 1 ? fnArgs.Skip(1).ToList() : new List<IValue>();
+                                
+                                var boundFn = new FenFunction("bound " + targetFn.Name, (invokeArgs, _) =>
+                                {
+                                    var allArgs = new List<IValue>(boundArgs);
+                                    allArgs.AddRange(invokeArgs);
+                                    return targetFn.Invoke(allArgs.ToArray(), context);
+                                });
+                                
+                                return FenValue.FromFunction(boundFn);
+                            }
+                            else if (me.Property == "call")
+                            {
+                                // call(thisArg, ...args) - Invokes with thisArg
+                                var callThis = fnArgs.Count > 0 ? fnArgs[0] : FenValue.Undefined;
+                                var callArgs = fnArgs.Count > 1 ? fnArgs.Skip(1).ToArray() : new IValue[0];
+                                
+                                return ApplyFunction(obj, callArgs.ToList(), context, callThis);
+                            }
+                            else if (me.Property == "apply")
+                            {
+                                // apply(thisArg, argsArray) - Invokes with thisArg and args from array
+                                var applyThis = fnArgs.Count > 0 ? fnArgs[0] : FenValue.Undefined;
+                                var applyArgs = new List<IValue>();
+                                
+                                if (fnArgs.Count > 1 && fnArgs[1].IsObject)
+                                {
+                                    var argsArray = fnArgs[1].AsObject();
+                                    var lenVal = argsArray?.Get("length");
+                                    int len = lenVal != null && lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                                    for (int i = 0; i < len; i++)
+                                    {
+                                        var argVal = argsArray.Get(i.ToString());
+                                        applyArgs.Add(argVal ?? FenValue.Undefined);
+                                    }
+                                }
+                                
+                                return ApplyFunction(obj, applyArgs, context, applyThis);
+                            }
+                        }
+                        
                         {
 
                             thisContext = obj;
@@ -154,6 +237,12 @@ namespace FenBrowser.FenEngine.Core
                             {
                                 // String methods lookup (not length, as it is a property, but methods like substring if we had them)
                                 var proto = GetStringPrototype();
+                                function = proto?.Get(me.Property);
+                            }
+                            else if (obj.IsNumber)
+                            {
+                                // Number methods lookup (toFixed, toPrecision, toExponential, toString)
+                                var proto = GetNumberPrototype();
                                 function = proto?.Get(me.Property);
                             }
 
@@ -245,10 +334,23 @@ namespace FenBrowser.FenEngine.Core
                 // Do-while loop
                 case DoWhileStatement doWhileStmt:
                     return EvalDoWhileStatement(doWhileStmt, env, context);
+                
+                // Yield expression (for generator functions)
+                case YieldExpression yieldExpr:
+                    return EvalYieldExpression(yieldExpr, env, context);
 
             }
 
             return FenValue.Null;
+        }
+        
+        /// <summary>
+        /// Evaluate yield expression - returns a YieldValue for generator iteration
+        /// </summary>
+        private IValue EvalYieldExpression(YieldExpression yieldExpr, FenEnvironment env, IExecutionContext context)
+        {
+            var value = yieldExpr.Value != null ? Eval(yieldExpr.Value, env, context) : FenValue.Undefined;
+            return new YieldValue(value, yieldExpr.Delegate);
         }
 
         private IValue EvalArrayLiteral(ArrayLiteral node, FenEnvironment env, IExecutionContext context)
@@ -322,6 +424,591 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromString(sb.ToString());
             })));
 
+            // Array.prototype.pop()
+            _arrayPrototype.Set("pop", FenValue.FromFunction(new FenFunction("pop", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj == null) return FenValue.Undefined;
+                var lenVal = obj.Get("length");
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                if (len == 0) return FenValue.Undefined;
+                var lastIdx = (len - 1).ToString();
+                var val = obj.Get(lastIdx);
+                obj.Delete(lastIdx);
+                obj.Set("length", FenValue.FromNumber(len - 1));
+                return val ?? FenValue.Undefined;
+            })));
+
+            // Array.prototype.shift()
+            _arrayPrototype.Set("shift", FenValue.FromFunction(new FenFunction("shift", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj == null) return FenValue.Undefined;
+                var lenVal = obj.Get("length");
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                if (len == 0) return FenValue.Undefined;
+                var first = obj.Get("0");
+                for (int i = 1; i < len; i++)
+                {
+                    var val = obj.Get(i.ToString());
+                    obj.Set((i - 1).ToString(), val ?? FenValue.Undefined);
+                }
+                obj.Delete((len - 1).ToString());
+                obj.Set("length", FenValue.FromNumber(len - 1));
+                return first ?? FenValue.Undefined;
+            })));
+
+            // Array.prototype.unshift(...elements)
+            _arrayPrototype.Set("unshift", FenValue.FromFunction(new FenFunction("unshift", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj == null) return FenValue.FromNumber(0);
+                var lenVal = obj.Get("length");
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                int argCount = args.Length;
+                // Shift existing elements
+                for (int i = len - 1; i >= 0; i--)
+                {
+                    var val = obj.Get(i.ToString());
+                    obj.Set((i + argCount).ToString(), val ?? FenValue.Undefined);
+                }
+                // Insert new elements
+                for (int i = 0; i < argCount; i++)
+                {
+                    obj.Set(i.ToString(), args[i]);
+                }
+                obj.Set("length", FenValue.FromNumber(len + argCount));
+                return FenValue.FromNumber(len + argCount);
+            })));
+
+            // Array.prototype.slice(start, end)
+            _arrayPrototype.Set("slice", FenValue.FromFunction(new FenFunction("slice", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj == null) return FenValue.FromObject(new FenObject());
+                var lenVal = obj.Get("length");
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                
+                int start = args.Length > 0 ? (int)args[0].ToNumber() : 0;
+                int end = args.Length > 1 ? (int)args[1].ToNumber() : len;
+                if (start < 0) start = Math.Max(len + start, 0);
+                if (end < 0) end = Math.Max(len + end, 0);
+                start = Math.Min(start, len);
+                end = Math.Min(end, len);
+                
+                var result = new FenObject();
+                int idx = 0;
+                for (int i = start; i < end; i++)
+                {
+                    var val = obj.Get(i.ToString());
+                    result.Set(idx.ToString(), val ?? FenValue.Undefined);
+                    idx++;
+                }
+                result.Set("length", FenValue.FromNumber(idx));
+                return FenValue.FromObject(result);
+            })));
+
+            // Array.prototype.splice(start, deleteCount, ...items)
+            _arrayPrototype.Set("splice", FenValue.FromFunction(new FenFunction("splice", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj == null) return FenValue.FromObject(new FenObject());
+                var lenVal = obj.Get("length");
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                
+                int start = args.Length > 0 ? (int)args[0].ToNumber() : 0;
+                if (start < 0) start = Math.Max(len + start, 0);
+                start = Math.Min(start, len);
+                
+                int deleteCount = args.Length > 1 ? (int)args[1].ToNumber() : len - start;
+                deleteCount = Math.Max(0, Math.Min(deleteCount, len - start));
+                
+                var deleted = new FenObject();
+                for (int i = 0; i < deleteCount; i++)
+                {
+                    var val = obj.Get((start + i).ToString());
+                    deleted.Set(i.ToString(), val ?? FenValue.Undefined);
+                }
+                deleted.Set("length", FenValue.FromNumber(deleteCount));
+                
+                var insertItems = args.Skip(2).ToArray();
+                int insertCount = insertItems.Length;
+                int shift = insertCount - deleteCount;
+                
+                if (shift > 0)
+                {
+                    for (int i = len - 1; i >= start + deleteCount; i--)
+                    {
+                        var val = obj.Get(i.ToString());
+                        obj.Set((i + shift).ToString(), val ?? FenValue.Undefined);
+                    }
+                }
+                else if (shift < 0)
+                {
+                    for (int i = start + deleteCount; i < len; i++)
+                    {
+                        var val = obj.Get(i.ToString());
+                        obj.Set((i + shift).ToString(), val ?? FenValue.Undefined);
+                    }
+                    for (int i = len + shift; i < len; i++)
+                    {
+                        obj.Delete(i.ToString());
+                    }
+                }
+                
+                for (int i = 0; i < insertCount; i++)
+                {
+                    obj.Set((start + i).ToString(), insertItems[i]);
+                }
+                obj.Set("length", FenValue.FromNumber(len + shift));
+                
+                return FenValue.FromObject(deleted);
+            })));
+
+            // Array.prototype.concat(...arrays)
+            _arrayPrototype.Set("concat", FenValue.FromFunction(new FenFunction("concat", (args, thisVal) =>
+            {
+                var result = new FenObject();
+                int idx = 0;
+                
+                var obj = thisVal.AsObject();
+                if (obj != null)
+                {
+                    var lenVal = obj.Get("length");
+                    var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                    for (int i = 0; i < len; i++)
+                    {
+                        result.Set(idx.ToString(), obj.Get(i.ToString()) ?? FenValue.Undefined);
+                        idx++;
+                    }
+                }
+                
+                foreach (var arg in args)
+                {
+                    if (arg.IsObject)
+                    {
+                        var arrObj = arg.AsObject();
+                        var arrLen = arrObj.Get("length");
+                        if (arrLen != null && arrLen.IsNumber)
+                        {
+                            int len = (int)arrLen.ToNumber();
+                            for (int i = 0; i < len; i++)
+                            {
+                                result.Set(idx.ToString(), arrObj.Get(i.ToString()) ?? FenValue.Undefined);
+                                idx++;
+                            }
+                        }
+                        else
+                        {
+                            result.Set(idx.ToString(), arg);
+                            idx++;
+                        }
+                    }
+                    else
+                    {
+                        result.Set(idx.ToString(), arg);
+                        idx++;
+                    }
+                }
+                
+                result.Set("length", FenValue.FromNumber(idx));
+                return FenValue.FromObject(result);
+            })));
+
+            // Array.prototype.indexOf(searchElement, fromIndex)
+            _arrayPrototype.Set("indexOf", FenValue.FromFunction(new FenFunction("indexOf", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj == null || args.Length == 0) return FenValue.FromNumber(-1);
+                var lenVal = obj.Get("length");
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                var search = args[0];
+                int from = args.Length > 1 ? (int)args[1].ToNumber() : 0;
+                if (from < 0) from = Math.Max(len + from, 0);
+                
+                for (int i = from; i < len; i++)
+                {
+                    var val = obj.Get(i.ToString());
+                    if (val != null && val.StrictEquals(search)) return FenValue.FromNumber(i);
+                }
+                return FenValue.FromNumber(-1);
+            })));
+
+            // Array.prototype.lastIndexOf(searchElement, fromIndex)
+            _arrayPrototype.Set("lastIndexOf", FenValue.FromFunction(new FenFunction("lastIndexOf", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj == null || args.Length == 0) return FenValue.FromNumber(-1);
+                var lenVal = obj.Get("length");
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                var search = args[0];
+                int from = args.Length > 1 ? (int)args[1].ToNumber() : len - 1;
+                if (from < 0) from = len + from;
+                from = Math.Min(from, len - 1);
+                
+                for (int i = from; i >= 0; i--)
+                {
+                    var val = obj.Get(i.ToString());
+                    if (val != null && val.StrictEquals(search)) return FenValue.FromNumber(i);
+                }
+                return FenValue.FromNumber(-1);
+            })));
+
+            // Array.prototype.includes(searchElement, fromIndex)
+            _arrayPrototype.Set("includes", FenValue.FromFunction(new FenFunction("includes", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj == null || args.Length == 0) return FenValue.FromBoolean(false);
+                var lenVal = obj.Get("length");
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                var search = args[0];
+                int from = args.Length > 1 ? (int)args[1].ToNumber() : 0;
+                if (from < 0) from = Math.Max(len + from, 0);
+                
+                for (int i = from; i < len; i++)
+                {
+                    var val = obj.Get(i.ToString());
+                    if (val != null && (val.StrictEquals(search) || (search.IsNumber && double.IsNaN(search.ToNumber()) && val.IsNumber && double.IsNaN(val.ToNumber()))))
+                        return FenValue.FromBoolean(true);
+                }
+                return FenValue.FromBoolean(false);
+            })));
+
+            // Array.prototype.reverse()
+            _arrayPrototype.Set("reverse", FenValue.FromFunction(new FenFunction("reverse", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj == null) return thisVal;
+                var lenVal = obj.Get("length");
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                
+                for (int i = 0; i < len / 2; i++)
+                {
+                    var left = obj.Get(i.ToString());
+                    var right = obj.Get((len - 1 - i).ToString());
+                    obj.Set(i.ToString(), right ?? FenValue.Undefined);
+                    obj.Set((len - 1 - i).ToString(), left ?? FenValue.Undefined);
+                }
+                return thisVal;
+            })));
+
+            // Array.prototype.sort(compareFn)
+            _arrayPrototype.Set("sort", FenValue.FromFunction(new FenFunction("sort", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj == null) return thisVal;
+                var lenVal = obj.Get("length");
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                if (len <= 1) return thisVal;
+                
+                var items = new List<IValue>();
+                for (int i = 0; i < len; i++)
+                {
+                    items.Add(obj.Get(i.ToString()) ?? FenValue.Undefined);
+                }
+                
+                FenFunction compareFn = args.Length > 0 ? args[0].AsFunction() : null;
+                
+                items.Sort((a, b) =>
+                {
+                    if (compareFn != null)
+                    {
+                        var result = compareFn.Invoke(new IValue[] { a, b }, null);
+                        return (int)result.ToNumber();
+                    }
+                    return string.Compare(a.ToString(), b.ToString(), StringComparison.Ordinal);
+                });
+                
+                for (int i = 0; i < len; i++)
+                {
+                    obj.Set(i.ToString(), items[i]);
+                }
+                return thisVal;
+            })));
+
+            // Array.prototype.forEach(callback, thisArg)
+            _arrayPrototype.Set("forEach", FenValue.FromFunction(new FenFunction("forEach", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj == null || args.Length == 0) return FenValue.Undefined;
+                var callback = args[0].AsFunction();
+                if (callback == null) return FenValue.Undefined;
+                var lenVal = obj.Get("length");
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                var thisArg = args.Length > 1 ? args[1] : FenValue.Undefined;
+                
+                for (int i = 0; i < len; i++)
+                {
+                    var val = obj.Get(i.ToString());
+                    callback.Invoke(new IValue[] { val ?? FenValue.Undefined, FenValue.FromNumber(i), thisVal }, null);
+                }
+                return FenValue.Undefined;
+            })));
+
+            // Array.prototype.map(callback, thisArg)
+            _arrayPrototype.Set("map", FenValue.FromFunction(new FenFunction("map", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                var result = new FenObject();
+                if (obj == null || args.Length == 0)
+                {
+                    result.Set("length", FenValue.FromNumber(0));
+                    return FenValue.FromObject(result);
+                }
+                var callback = args[0].AsFunction();
+                if (callback == null)
+                {
+                    result.Set("length", FenValue.FromNumber(0));
+                    return FenValue.FromObject(result);
+                }
+                var lenVal = obj.Get("length");
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                
+                for (int i = 0; i < len; i++)
+                {
+                    var val = obj.Get(i.ToString());
+                    var mapped = callback.Invoke(new IValue[] { val ?? FenValue.Undefined, FenValue.FromNumber(i), thisVal }, null);
+                    result.Set(i.ToString(), mapped);
+                }
+                result.Set("length", FenValue.FromNumber(len));
+                return FenValue.FromObject(result);
+            })));
+
+            // Array.prototype.filter(callback, thisArg)
+            _arrayPrototype.Set("filter", FenValue.FromFunction(new FenFunction("filter", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                var result = new FenObject();
+                int idx = 0;
+                if (obj == null || args.Length == 0)
+                {
+                    result.Set("length", FenValue.FromNumber(0));
+                    return FenValue.FromObject(result);
+                }
+                var callback = args[0].AsFunction();
+                if (callback == null)
+                {
+                    result.Set("length", FenValue.FromNumber(0));
+                    return FenValue.FromObject(result);
+                }
+                var lenVal = obj.Get("length");
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                
+                for (int i = 0; i < len; i++)
+                {
+                    var val = obj.Get(i.ToString());
+                    var keep = callback.Invoke(new IValue[] { val ?? FenValue.Undefined, FenValue.FromNumber(i), thisVal }, null);
+                    if (keep.ToBoolean())
+                    {
+                        result.Set(idx.ToString(), val ?? FenValue.Undefined);
+                        idx++;
+                    }
+                }
+                result.Set("length", FenValue.FromNumber(idx));
+                return FenValue.FromObject(result);
+            })));
+
+            // Array.prototype.reduce(callback, initialValue)
+            _arrayPrototype.Set("reduce", FenValue.FromFunction(new FenFunction("reduce", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj == null || args.Length == 0) return FenValue.Undefined;
+                var callback = args[0].AsFunction();
+                if (callback == null) return FenValue.Undefined;
+                var lenVal = obj.Get("length");
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                
+                int start = 0;
+                IValue accumulator;
+                if (args.Length > 1)
+                {
+                    accumulator = args[1];
+                }
+                else
+                {
+                    if (len == 0) return new ErrorValue("Reduce of empty array with no initial value");
+                    accumulator = obj.Get("0") ?? FenValue.Undefined;
+                    start = 1;
+                }
+                
+                for (int i = start; i < len; i++)
+                {
+                    var val = obj.Get(i.ToString());
+                    accumulator = callback.Invoke(new IValue[] { accumulator, val ?? FenValue.Undefined, FenValue.FromNumber(i), thisVal }, null);
+                }
+                return accumulator;
+            })));
+
+            // Array.prototype.reduceRight(callback, initialValue)
+            _arrayPrototype.Set("reduceRight", FenValue.FromFunction(new FenFunction("reduceRight", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj == null || args.Length == 0) return FenValue.Undefined;
+                var callback = args[0].AsFunction();
+                if (callback == null) return FenValue.Undefined;
+                var lenVal = obj.Get("length");
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                
+                int start = len - 1;
+                IValue accumulator;
+                if (args.Length > 1)
+                {
+                    accumulator = args[1];
+                }
+                else
+                {
+                    if (len == 0) return new ErrorValue("Reduce of empty array with no initial value");
+                    accumulator = obj.Get((len - 1).ToString()) ?? FenValue.Undefined;
+                    start = len - 2;
+                }
+                
+                for (int i = start; i >= 0; i--)
+                {
+                    var val = obj.Get(i.ToString());
+                    accumulator = callback.Invoke(new IValue[] { accumulator, val ?? FenValue.Undefined, FenValue.FromNumber(i), thisVal }, null);
+                }
+                return accumulator;
+            })));
+
+            // Array.prototype.find(callback, thisArg)
+            _arrayPrototype.Set("find", FenValue.FromFunction(new FenFunction("find", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj == null || args.Length == 0) return FenValue.Undefined;
+                var callback = args[0].AsFunction();
+                if (callback == null) return FenValue.Undefined;
+                var lenVal = obj.Get("length");
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                
+                for (int i = 0; i < len; i++)
+                {
+                    var val = obj.Get(i.ToString()) ?? FenValue.Undefined;
+                    var result = callback.Invoke(new IValue[] { val, FenValue.FromNumber(i), thisVal }, null);
+                    if (result.ToBoolean()) return val;
+                }
+                return FenValue.Undefined;
+            })));
+
+            // Array.prototype.findIndex(callback, thisArg)
+            _arrayPrototype.Set("findIndex", FenValue.FromFunction(new FenFunction("findIndex", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj == null || args.Length == 0) return FenValue.FromNumber(-1);
+                var callback = args[0].AsFunction();
+                if (callback == null) return FenValue.FromNumber(-1);
+                var lenVal = obj.Get("length");
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                
+                for (int i = 0; i < len; i++)
+                {
+                    var val = obj.Get(i.ToString()) ?? FenValue.Undefined;
+                    var result = callback.Invoke(new IValue[] { val, FenValue.FromNumber(i), thisVal }, null);
+                    if (result.ToBoolean()) return FenValue.FromNumber(i);
+                }
+                return FenValue.FromNumber(-1);
+            })));
+
+            // Array.prototype.some(callback, thisArg)
+            _arrayPrototype.Set("some", FenValue.FromFunction(new FenFunction("some", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj == null || args.Length == 0) return FenValue.FromBoolean(false);
+                var callback = args[0].AsFunction();
+                if (callback == null) return FenValue.FromBoolean(false);
+                var lenVal = obj.Get("length");
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                
+                for (int i = 0; i < len; i++)
+                {
+                    var val = obj.Get(i.ToString()) ?? FenValue.Undefined;
+                    var result = callback.Invoke(new IValue[] { val, FenValue.FromNumber(i), thisVal }, null);
+                    if (result.ToBoolean()) return FenValue.FromBoolean(true);
+                }
+                return FenValue.FromBoolean(false);
+            })));
+
+            // Array.prototype.every(callback, thisArg)
+            _arrayPrototype.Set("every", FenValue.FromFunction(new FenFunction("every", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj == null || args.Length == 0) return FenValue.FromBoolean(true);
+                var callback = args[0].AsFunction();
+                if (callback == null) return FenValue.FromBoolean(true);
+                var lenVal = obj.Get("length");
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                
+                for (int i = 0; i < len; i++)
+                {
+                    var val = obj.Get(i.ToString()) ?? FenValue.Undefined;
+                    var result = callback.Invoke(new IValue[] { val, FenValue.FromNumber(i), thisVal }, null);
+                    if (!result.ToBoolean()) return FenValue.FromBoolean(false);
+                }
+                return FenValue.FromBoolean(true);
+            })));
+
+            // Array.prototype.fill(value, start, end)
+            _arrayPrototype.Set("fill", FenValue.FromFunction(new FenFunction("fill", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj == null) return thisVal;
+                var value = args.Length > 0 ? args[0] : FenValue.Undefined;
+                var lenVal = obj.Get("length");
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                
+                int start = args.Length > 1 ? (int)args[1].ToNumber() : 0;
+                int end = args.Length > 2 ? (int)args[2].ToNumber() : len;
+                if (start < 0) start = Math.Max(len + start, 0);
+                if (end < 0) end = Math.Max(len + end, 0);
+                start = Math.Min(start, len);
+                end = Math.Min(end, len);
+                
+                for (int i = start; i < end; i++)
+                {
+                    obj.Set(i.ToString(), value);
+                }
+                return thisVal;
+            })));
+
+            // Array.prototype.flat(depth)
+            _arrayPrototype.Set("flat", FenValue.FromFunction(new FenFunction("flat", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                var result = new FenObject();
+                if (obj == null)
+                {
+                    result.Set("length", FenValue.FromNumber(0));
+                    return FenValue.FromObject(result);
+                }
+                int depth = args.Length > 0 ? (int)args[0].ToNumber() : 1;
+                var lenVal = obj.Get("length");
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                
+                int idx = 0;
+                void Flatten(IObject arr, int currentDepth)
+                {
+                    var arrLen = arr.Get("length");
+                    int l = arrLen != null && arrLen.IsNumber ? (int)arrLen.ToNumber() : 0;
+                    for (int i = 0; i < l; i++)
+                    {
+                        var val = arr.Get(i.ToString());
+                        if (currentDepth > 0 && val != null && val.IsObject)
+                        {
+                            var innerLen = val.AsObject()?.Get("length");
+                            if (innerLen != null && innerLen.IsNumber)
+                            {
+                                Flatten(val.AsObject(), currentDepth - 1);
+                                continue;
+                            }
+                        }
+                        result.Set(idx.ToString(), val ?? FenValue.Undefined);
+                        idx++;
+                    }
+                }
+                Flatten(obj, depth);
+                result.Set("length", FenValue.FromNumber(idx));
+                return FenValue.FromObject(result);
+            })));
+
             return _arrayPrototype;
         }
 
@@ -362,7 +1049,18 @@ namespace FenBrowser.FenEngine.Core
         private IValue EvalBlockStatement(BlockStatement block, FenEnvironment env, IExecutionContext context)
         {
             IValue result = FenValue.Null;
+            
+            // TDZ: First pass - scan for all let/const declarations and add them to TDZ
+            // This ensures accessing them before initialization throws an error
+            foreach (var stmt in block.Statements)
+            {
+                if (stmt is LetStatement letStmt && letStmt.Name != null)
+                {
+                    env.DeclareTDZ(letStmt.Name.Value);
+                }
+            }
 
+            // Second pass - evaluate statements (let/const will be initialized and removed from TDZ)
             foreach (var stmt in block.Statements)
             {
                 result = Eval(stmt, env, context);
@@ -481,10 +1179,30 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromBoolean(!left.StrictEquals(right));
             }
 
-            // instanceof - simplified check
+            // instanceof - check prototype chain
             if (op == "instanceof")
             {
-                return FenValue.FromBoolean(false);  // Simplified
+                if (!right.IsFunction) return FenValue.FromBoolean(false);
+                var constructor = right.AsFunction();
+                if (constructor == null) return FenValue.FromBoolean(false);
+                
+                // Get the prototype property of the constructor
+                var prototype = constructor.Prototype;
+                if (prototype == null) return FenValue.FromBoolean(false);
+                
+                // Check if left is an object and walk its prototype chain
+                if (!left.IsObject) return FenValue.FromBoolean(false);
+                var obj = left.AsObject() as FenObject;
+                if (obj == null) return FenValue.FromBoolean(false);
+                
+                // Walk the prototype chain
+                var currentProto = obj.GetPrototype();
+                while (currentProto != null)
+                {
+                    if (currentProto == prototype) return FenValue.FromBoolean(true);
+                    currentProto = (currentProto as FenObject)?.GetPrototype();
+                }
+                return FenValue.FromBoolean(false);
             }
 
             // in operator
@@ -630,6 +1348,32 @@ namespace FenBrowser.FenEngine.Core
             return val;
         }
 
+        private IValue EvalPrivateIdentifier(PrivateIdentifier node, FenEnvironment env)
+        {
+            // Private identifier access: this.#field
+            // We need to access from 'this' in the environment
+            var thisVal = env.Get("this");
+            if (thisVal == null || !thisVal.IsObject)
+            {
+                return new ErrorValue($"Cannot use private field '#${node.Name}' outside of a class");
+            }
+            
+            var thisObj = thisVal.AsObject();
+            if (thisObj == null)
+            {
+                return new ErrorValue($"Cannot use private field '#${node.Name}' outside of a class");
+            }
+            
+            // Private fields are stored with a # prefix
+            string privateKey = "#" + node.Name;
+            if (thisObj.Has(privateKey))
+            {
+                return thisObj.Get(privateKey);
+            }
+            
+            return new ErrorValue($"Cannot read private member #{node.Name} from an object whose class did not declare it");
+        }
+
         private List<IValue> EvalExpressions(List<Expression> exps, FenEnvironment env, IExecutionContext context)
         {
             var result = new List<IValue>();
@@ -696,6 +1440,19 @@ namespace FenBrowser.FenEngine.Core
                 env.Set("this", FenValue.Undefined);
             }
 
+            // Create 'arguments' object for non-arrow functions
+            // Arrow functions do NOT have their own arguments object
+            if (!fn.IsArrowFunction)
+            {
+                var argumentsObj = new FenObject();
+                for (int i = 0; i < args.Count; i++)
+                {
+                    argumentsObj.Set(i.ToString(), args[i]);
+                }
+                argumentsObj.Set("length", FenValue.FromNumber(args.Count));
+                env.Set("arguments", FenValue.FromObject(argumentsObj));
+            }
+
             for (int i = 0; i < fn.Parameters.Count; i++)
             {
                 var param = fn.Parameters[i];
@@ -754,6 +1511,52 @@ namespace FenBrowser.FenEngine.Core
                 return obj.Type == JsValueType.Error;
             }
             return false;
+        }
+
+        // Evaluate tagged template literals: tag`Hello ${name}!`
+        // The tag function receives (stringsArray, ...interpolatedValues)
+        private IValue EvalTaggedTemplate(TaggedTemplateExpression taggedExpr, FenEnvironment env, IExecutionContext context)
+        {
+            // Evaluate the tag function
+            var tagFn = Eval(taggedExpr.Tag, env, context);
+            if (IsError(tagFn)) return tagFn;
+            
+            if (!tagFn.IsFunction)
+            {
+                return new ErrorValue($"Tagged template: '{taggedExpr.Tag.String()}' is not a function");
+            }
+            
+            // Create the strings array (first argument)
+            var stringsArray = new FenObject();
+            for (int i = 0; i < taggedExpr.Strings.Count; i++)
+            {
+                stringsArray.Set(i.ToString(), FenValue.FromString(taggedExpr.Strings[i]));
+            }
+            stringsArray.Set("length", FenValue.FromNumber(taggedExpr.Strings.Count));
+            
+            // Add the 'raw' property (same as strings for now, could handle escapes differently)
+            var rawArray = new FenObject();
+            for (int i = 0; i < taggedExpr.Strings.Count; i++)
+            {
+                rawArray.Set(i.ToString(), FenValue.FromString(taggedExpr.Strings[i]));
+            }
+            rawArray.Set("length", FenValue.FromNumber(taggedExpr.Strings.Count));
+            stringsArray.Set("raw", FenValue.FromObject(rawArray));
+            
+            // Build the arguments list: [stringsArray, ...evaluatedExpressions]
+            var args = new List<IValue>();
+            args.Add(FenValue.FromObject(stringsArray));
+            
+            // Evaluate each interpolated expression
+            foreach (var expr in taggedExpr.Expressions)
+            {
+                var val = Eval(expr, env, context);
+                if (IsError(val)) return val;
+                args.Add(val);
+            }
+            
+            // Call the tag function
+            return ApplyFunction(tagFn, args, context);
         }
 
         private IValue EvalMemberExpression(MemberExpression me, FenEnvironment env, IExecutionContext context)
@@ -833,6 +1636,24 @@ namespace FenBrowser.FenEngine.Core
             
             // Bind 'this' to the new instance
             newEnv.Set("this", FenValue.FromObject(instance));
+
+            // Initialize class fields (including private fields) BEFORE running constructor
+            if (fn.FieldDefinitions != null)
+            {
+                foreach (var (fieldName, isPrivate, isStatic, initializer) in fn.FieldDefinitions)
+                {
+                    if (!isStatic)
+                    {
+                        IValue fieldValue = FenValue.Undefined;
+                        if (initializer != null)
+                        {
+                            fieldValue = Eval(initializer, newEnv, context);
+                            if (IsError(fieldValue)) return fieldValue;
+                        }
+                        instance.Set(fieldName, fieldValue);
+                    }
+                }
+            }
 
             // Bind arguments
             for (int i = 0; i < fn.Parameters.Count; i++)
@@ -1041,6 +1862,7 @@ namespace FenBrowser.FenEngine.Core
         }
 
         // Evaluate for-of: for (x of iterable) { ... }
+        // Implements the full iterator protocol: obj[Symbol.iterator]().next()
         private IValue EvalForOfStatement(ForOfStatement fs, FenEnvironment env, IExecutionContext context)
         {
             var loopEnv = new FenEnvironment(env);
@@ -1049,48 +1871,9 @@ namespace FenBrowser.FenEngine.Core
 
             IValue result = FenValue.Null;
 
-            // Handle arrays
-            if (iterableVal.IsObject)
+            // Handle strings first (iterate over characters)
+            if (iterableVal.IsString)
             {
-                var obj = iterableVal.AsObject();
-                if (obj != null)
-                {
-                    // Check if it's an array (has length property and numeric keys)
-                    // For now, we'll just iterate over numeric keys up to length
-                    if (obj.Has("length"))
-                    {
-                        var lenVal = obj.Get("length");
-                        if (lenVal.IsNumber)
-                        {
-                            int len = (int)lenVal.ToNumber();
-                            for (int i = 0; i < len; i++)
-                            {
-                                var val = obj.Get(i.ToString());
-                                loopEnv.Set(fs.Variable.Value, val);
-
-                                result = Eval(fs.Body, loopEnv, context);
-
-                                if (result != null)
-                                {
-                                    if (result is ReturnValue || result is ErrorValue) return result;
-                                    if (result is BreakValue) return FenValue.Null;
-                                    if (result is ContinueValue) continue;
-                                }
-                            }
-                            return result;
-                        }
-                    }
-                    
-                    // Fallback: iterate over values of keys (like for-in but values)
-                    // This is not strictly correct for for-of (which uses iterator protocol),
-                    // but it's a reasonable approximation for plain objects if someone tries it.
-                    // However, standard JS throws "not iterable" for plain objects.
-                    // Let's stick to array-like iteration for now.
-                }
-            }
-            else if (iterableVal.IsString)
-            {
-                // Iterate over characters
                 string str = iterableVal.ToString();
                 foreach (char c in str)
                 {
@@ -1106,6 +1889,117 @@ namespace FenBrowser.FenEngine.Core
                     }
                 }
                 return result;
+            }
+
+            // Handle objects with iterator protocol
+            if (iterableVal.IsObject)
+            {
+                var obj = iterableVal.AsObject();
+                if (obj != null)
+                {
+                    // Check for Symbol.iterator method
+                    // The symbol is stored as an object with __symbolId__ = -1
+                    IValue iteratorMethod = null;
+                    
+                    // Try to get the iterator method via Symbol.iterator
+                    // Symbol.iterator is stored with key "[Symbol.iterator]" or we need to look it up
+                    var symbolIteratorMethod = obj.Get("[Symbol.iterator]");
+                    if (symbolIteratorMethod != null && symbolIteratorMethod.IsFunction)
+                    {
+                        iteratorMethod = symbolIteratorMethod;
+                    }
+                    
+                    // Also check for a method keyed by Symbol.iterator object reference
+                    // Maps, Sets, and custom iterables may use this
+                    if (iteratorMethod == null)
+                    {
+                        // Check for __iterator__ (some implementations use this)
+                        var altIterator = obj.Get("__iterator__");
+                        if (altIterator != null && altIterator.IsFunction)
+                        {
+                            iteratorMethod = altIterator;
+                        }
+                    }
+                    
+                    // If we have an iterator method, use the full protocol
+                    if (iteratorMethod != null && iteratorMethod.IsFunction)
+                    {
+                        // Call the iterator method to get the iterator object
+                        var iterator = ApplyFunction(iteratorMethod, new List<IValue>(), context, iterableVal);
+                        if (IsError(iterator)) return iterator;
+                        
+                        if (iterator.IsObject)
+                        {
+                            var iterObj = iterator.AsObject();
+                            var nextMethod = iterObj?.Get("next");
+                            
+                            if (nextMethod != null && nextMethod.IsFunction)
+                            {
+                                // Iterate using next() until done is true
+                                while (true)
+                                {
+                                    var iterResult = ApplyFunction(nextMethod, new List<IValue>(), context, iterator);
+                                    if (IsError(iterResult)) return iterResult;
+                                    
+                                    if (iterResult.IsObject)
+                                    {
+                                        var resultObj = iterResult.AsObject();
+                                        var doneVal = resultObj?.Get("done");
+                                        var valueVal = resultObj?.Get("value");
+                                        
+                                        if (doneVal != null && IsTruthy(doneVal))
+                                        {
+                                            break; // Iteration complete
+                                        }
+                                        
+                                        loopEnv.Set(fs.Variable.Value, valueVal ?? FenValue.Undefined);
+                                        result = Eval(fs.Body, loopEnv, context);
+                                        
+                                        if (result != null)
+                                        {
+                                            if (result is ReturnValue || result is ErrorValue) return result;
+                                            if (result is BreakValue) return FenValue.Null;
+                                            if (result is ContinueValue) continue;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        break; // Invalid iterator result
+                                    }
+                                }
+                                return result;
+                            }
+                        }
+                    }
+                    
+                    // Fallback for array-like objects (has length property and numeric keys)
+                    if (obj.Has("length"))
+                    {
+                        var lenVal = obj.Get("length");
+                        if (lenVal.IsNumber)
+                        {
+                            int len = (int)lenVal.ToNumber();
+                            for (int i = 0; i < len; i++)
+                            {
+                                var val = obj.Get(i.ToString());
+                                loopEnv.Set(fs.Variable.Value, val ?? FenValue.Undefined);
+
+                                result = Eval(fs.Body, loopEnv, context);
+
+                                if (result != null)
+                                {
+                                    if (result is ReturnValue || result is ErrorValue) return result;
+                                    if (result is BreakValue) return FenValue.Null;
+                                    if (result is ContinueValue) continue;
+                                }
+                            }
+                            return result;
+                        }
+                    }
+                    
+                    // Plain objects without length are not iterable
+                    return new ErrorValue($"{iterableVal} is not iterable");
+                }
             }
 
             return new ErrorValue($"{iterableVal} is not iterable");
@@ -1131,7 +2025,10 @@ namespace FenBrowser.FenEngine.Core
         private IValue EvalArrowFunctionExpression(ArrowFunctionExpression ae, FenEnvironment env)
         {
             // Arrow functions capture the enclosing environment just like regular functions
-            return FenValue.FromFunction(new FenFunction(ae.Parameters, ae.Body, env));
+            // They do NOT have their own `arguments` object
+            var fn = new FenFunction(ae.Parameters, ae.Body, env);
+            fn.IsArrowFunction = true;
+            return FenValue.FromFunction(fn);
         }
 
         // Evaluate switch statement
@@ -1387,10 +2284,24 @@ namespace FenBrowser.FenEngine.Core
                 else
                 {
                     // Instance methods go on the prototype
+                    // Private methods are prefixed with #
                     var methodFunc = new FenFunction(method.Value.Parameters, method.Value.Body, env);
-                    prototype.Set(method.Key.Value, FenValue.FromFunction(methodFunc));
+                    string methodName = method.IsPrivate ? "#" + method.Key.Value : method.Key.Value;
+                    prototype.Set(methodName, FenValue.FromFunction(methodFunc));
                 }
             }
+
+            // Store class field definitions on the constructor for initialization during `new`
+            // We store both regular and private field definitions
+            var fieldDefinitions = new List<(string name, bool isPrivate, bool isStatic, Expression initializer)>();
+            foreach (var prop in stmt.Properties)
+            {
+                string fieldName = prop.IsPrivate ? "#" + prop.Key.Value : prop.Key.Value;
+                fieldDefinitions.Add((fieldName, prop.IsPrivate, prop.Static, prop.Value));
+            }
+            
+            // Store the field definitions on the constructor
+            constructor.FieldDefinitions = fieldDefinitions;
 
             // Link constructor and prototype
             constructor.Prototype = prototype;
@@ -1606,7 +2517,314 @@ namespace FenBrowser.FenEngine.Core
                 }
             })));
 
+            // String.prototype.toLowerCase()
+            _stringPrototype.Set("toLowerCase", FenValue.FromFunction(new FenFunction("toLowerCase", (args, thisVal) =>
+            {
+                return FenValue.FromString(thisVal.ToString().ToLowerInvariant());
+            })));
+
+            // String.prototype.toUpperCase()
+            _stringPrototype.Set("toUpperCase", FenValue.FromFunction(new FenFunction("toUpperCase", (args, thisVal) =>
+            {
+                return FenValue.FromString(thisVal.ToString().ToUpperInvariant());
+            })));
+
+            // String.prototype.trim()
+            _stringPrototype.Set("trim", FenValue.FromFunction(new FenFunction("trim", (args, thisVal) =>
+            {
+                return FenValue.FromString(thisVal.ToString().Trim());
+            })));
+
+            // String.prototype.trimStart() / trimLeft()
+            _stringPrototype.Set("trimStart", FenValue.FromFunction(new FenFunction("trimStart", (args, thisVal) =>
+            {
+                return FenValue.FromString(thisVal.ToString().TrimStart());
+            })));
+            _stringPrototype.Set("trimLeft", FenValue.FromFunction(new FenFunction("trimLeft", (args, thisVal) =>
+            {
+                return FenValue.FromString(thisVal.ToString().TrimStart());
+            })));
+
+            // String.prototype.trimEnd() / trimRight()
+            _stringPrototype.Set("trimEnd", FenValue.FromFunction(new FenFunction("trimEnd", (args, thisVal) =>
+            {
+                return FenValue.FromString(thisVal.ToString().TrimEnd());
+            })));
+            _stringPrototype.Set("trimRight", FenValue.FromFunction(new FenFunction("trimRight", (args, thisVal) =>
+            {
+                return FenValue.FromString(thisVal.ToString().TrimEnd());
+            })));
+
+            // String.prototype.charAt(index)
+            _stringPrototype.Set("charAt", FenValue.FromFunction(new FenFunction("charAt", (args, thisVal) =>
+            {
+                var str = thisVal.ToString();
+                int idx = args.Length > 0 ? (int)args[0].ToNumber() : 0;
+                if (idx < 0 || idx >= str.Length) return FenValue.FromString("");
+                return FenValue.FromString(str[idx].ToString());
+            })));
+
+            // String.prototype.charCodeAt(index)
+            _stringPrototype.Set("charCodeAt", FenValue.FromFunction(new FenFunction("charCodeAt", (args, thisVal) =>
+            {
+                var str = thisVal.ToString();
+                int idx = args.Length > 0 ? (int)args[0].ToNumber() : 0;
+                if (idx < 0 || idx >= str.Length) return FenValue.FromNumber(double.NaN);
+                return FenValue.FromNumber((int)str[idx]);
+            })));
+
+            // String.prototype.substring(start, end)
+            _stringPrototype.Set("substring", FenValue.FromFunction(new FenFunction("substring", (args, thisVal) =>
+            {
+                var str = thisVal.ToString();
+                int start = args.Length > 0 ? Math.Max(0, Math.Min((int)args[0].ToNumber(), str.Length)) : 0;
+                int end = args.Length > 1 ? Math.Max(0, Math.Min((int)args[1].ToNumber(), str.Length)) : str.Length;
+                if (start > end) { int temp = start; start = end; end = temp; }
+                return FenValue.FromString(str.Substring(start, end - start));
+            })));
+
+            // String.prototype.slice(start, end)
+            _stringPrototype.Set("slice", FenValue.FromFunction(new FenFunction("slice", (args, thisVal) =>
+            {
+                var str = thisVal.ToString();
+                int len = str.Length;
+                int start = args.Length > 0 ? (int)args[0].ToNumber() : 0;
+                int end = args.Length > 1 ? (int)args[1].ToNumber() : len;
+                if (start < 0) start = Math.Max(len + start, 0);
+                if (end < 0) end = Math.Max(len + end, 0);
+                start = Math.Min(start, len);
+                end = Math.Min(end, len);
+                if (start >= end) return FenValue.FromString("");
+                return FenValue.FromString(str.Substring(start, end - start));
+            })));
+
+            // String.prototype.split(separator, limit)
+            _stringPrototype.Set("split", FenValue.FromFunction(new FenFunction("split", (args, thisVal) =>
+            {
+                var str = thisVal.ToString();
+                var arr = new FenObject();
+                
+                if (args.Length == 0 || args[0].IsUndefined)
+                {
+                    arr.Set("0", FenValue.FromString(str));
+                    arr.Set("length", FenValue.FromNumber(1));
+                    return FenValue.FromObject(arr);
+                }
+                
+                var separator = args[0].ToString();
+                int limit = args.Length > 1 && !args[1].IsUndefined ? (int)args[1].ToNumber() : int.MaxValue;
+                
+                string[] parts;
+                if (string.IsNullOrEmpty(separator))
+                {
+                    parts = str.Select(c => c.ToString()).ToArray();
+                }
+                else
+                {
+                    parts = str.Split(new[] { separator }, StringSplitOptions.None);
+                }
+                
+                int count = Math.Min(parts.Length, limit);
+                for (int i = 0; i < count; i++)
+                {
+                    arr.Set(i.ToString(), FenValue.FromString(parts[i]));
+                }
+                arr.Set("length", FenValue.FromNumber(count));
+                return FenValue.FromObject(arr);
+            })));
+
+            // String.prototype.indexOf(searchValue, fromIndex)
+            _stringPrototype.Set("indexOf", FenValue.FromFunction(new FenFunction("indexOf", (args, thisVal) =>
+            {
+                var str = thisVal.ToString();
+                if (args.Length == 0) return FenValue.FromNumber(-1);
+                var search = args[0].ToString();
+                int from = args.Length > 1 ? (int)args[1].ToNumber() : 0;
+                from = Math.Max(0, Math.Min(from, str.Length));
+                return FenValue.FromNumber(str.IndexOf(search, from, StringComparison.Ordinal));
+            })));
+
+            // String.prototype.lastIndexOf(searchValue, fromIndex)
+            _stringPrototype.Set("lastIndexOf", FenValue.FromFunction(new FenFunction("lastIndexOf", (args, thisVal) =>
+            {
+                var str = thisVal.ToString();
+                if (args.Length == 0) return FenValue.FromNumber(-1);
+                var search = args[0].ToString();
+                int from = args.Length > 1 ? (int)args[1].ToNumber() : str.Length;
+                from = Math.Max(0, Math.Min(from, str.Length));
+                if (from == 0 && str.Length > 0) return FenValue.FromNumber(str.StartsWith(search) ? 0 : -1);
+                return FenValue.FromNumber(str.LastIndexOf(search, from, StringComparison.Ordinal));
+            })));
+
+            // String.prototype.includes(searchString, position)
+            _stringPrototype.Set("includes", FenValue.FromFunction(new FenFunction("includes", (args, thisVal) =>
+            {
+                var str = thisVal.ToString();
+                if (args.Length == 0) return FenValue.FromBoolean(false);
+                var search = args[0].ToString();
+                int pos = args.Length > 1 ? (int)args[1].ToNumber() : 0;
+                pos = Math.Max(0, Math.Min(pos, str.Length));
+                return FenValue.FromBoolean(str.IndexOf(search, pos, StringComparison.Ordinal) >= 0);
+            })));
+
+            // String.prototype.startsWith(searchString, position)
+            _stringPrototype.Set("startsWith", FenValue.FromFunction(new FenFunction("startsWith", (args, thisVal) =>
+            {
+                var str = thisVal.ToString();
+                if (args.Length == 0) return FenValue.FromBoolean(false);
+                var search = args[0].ToString();
+                int pos = args.Length > 1 ? (int)args[1].ToNumber() : 0;
+                pos = Math.Max(0, Math.Min(pos, str.Length));
+                return FenValue.FromBoolean(str.Substring(pos).StartsWith(search, StringComparison.Ordinal));
+            })));
+
+            // String.prototype.endsWith(searchString, length)
+            _stringPrototype.Set("endsWith", FenValue.FromFunction(new FenFunction("endsWith", (args, thisVal) =>
+            {
+                var str = thisVal.ToString();
+                if (args.Length == 0) return FenValue.FromBoolean(false);
+                var search = args[0].ToString();
+                int len = args.Length > 1 ? (int)args[1].ToNumber() : str.Length;
+                len = Math.Max(0, Math.Min(len, str.Length));
+                return FenValue.FromBoolean(str.Substring(0, len).EndsWith(search, StringComparison.Ordinal));
+            })));
+
+            // String.prototype.repeat(count)
+            _stringPrototype.Set("repeat", FenValue.FromFunction(new FenFunction("repeat", (args, thisVal) =>
+            {
+                var str = thisVal.ToString();
+                int count = args.Length > 0 ? (int)args[0].ToNumber() : 0;
+                if (count < 0) return new ErrorValue("Invalid count value");
+                if (count == 0 || str.Length == 0) return FenValue.FromString("");
+                return FenValue.FromString(string.Concat(Enumerable.Repeat(str, count)));
+            })));
+
+            // String.prototype.padStart(targetLength, padString)
+            _stringPrototype.Set("padStart", FenValue.FromFunction(new FenFunction("padStart", (args, thisVal) =>
+            {
+                var str = thisVal.ToString();
+                int targetLen = args.Length > 0 ? (int)args[0].ToNumber() : 0;
+                if (targetLen <= str.Length) return FenValue.FromString(str);
+                var padStr = args.Length > 1 ? args[1].ToString() : " ";
+                if (string.IsNullOrEmpty(padStr)) return FenValue.FromString(str);
+                int padLen = targetLen - str.Length;
+                var sb = new StringBuilder();
+                while (sb.Length < padLen) sb.Append(padStr);
+                return FenValue.FromString(sb.ToString().Substring(0, padLen) + str);
+            })));
+
+            // String.prototype.padEnd(targetLength, padString)
+            _stringPrototype.Set("padEnd", FenValue.FromFunction(new FenFunction("padEnd", (args, thisVal) =>
+            {
+                var str = thisVal.ToString();
+                int targetLen = args.Length > 0 ? (int)args[0].ToNumber() : 0;
+                if (targetLen <= str.Length) return FenValue.FromString(str);
+                var padStr = args.Length > 1 ? args[1].ToString() : " ";
+                if (string.IsNullOrEmpty(padStr)) return FenValue.FromString(str);
+                int padLen = targetLen - str.Length;
+                var sb = new StringBuilder(str);
+                while (sb.Length < targetLen) sb.Append(padStr);
+                return FenValue.FromString(sb.ToString().Substring(0, targetLen));
+            })));
+
+            // String.prototype.concat(...strings)
+            _stringPrototype.Set("concat", FenValue.FromFunction(new FenFunction("concat", (args, thisVal) =>
+            {
+                var sb = new StringBuilder(thisVal.ToString());
+                foreach (var arg in args)
+                {
+                    sb.Append(arg.ToString());
+                }
+                return FenValue.FromString(sb.ToString());
+            })));
+
+            // String.prototype.replaceAll(searchValue, replaceValue)
+            _stringPrototype.Set("replaceAll", FenValue.FromFunction(new FenFunction("replaceAll", (args, thisVal) =>
+            {
+                var str = thisVal.ToString();
+                if (args.Length == 0) return FenValue.FromString(str);
+                var searchVal = args[0];
+                var replaceVal = args.Length > 1 ? args[1].ToString() : "undefined";
+                
+                if (searchVal.IsObject && searchVal.AsObject() is FenObject fenObj && fenObj.NativeObject is Regex regex)
+                {
+                    return FenValue.FromString(regex.Replace(str, replaceVal));
+                }
+                else
+                {
+                    return FenValue.FromString(str.Replace(searchVal.ToString(), replaceVal));
+                }
+            })));
+
             return _stringPrototype;
+        }
+
+        private FenObject _numberPrototype;
+        
+        private FenObject GetNumberPrototype()
+        {
+            if (_numberPrototype != null) return _numberPrototype;
+            
+            _numberPrototype = new FenObject();
+            
+            // Number.prototype.toFixed(digits)
+            _numberPrototype.Set("toFixed", FenValue.FromFunction(new FenFunction("toFixed", (args, thisVal) =>
+            {
+                var num = thisVal.ToNumber();
+                int digits = args.Length > 0 ? Math.Max(0, Math.Min(100, (int)args[0].ToNumber())) : 0;
+                return FenValue.FromString(num.ToString($"F{digits}", System.Globalization.CultureInfo.InvariantCulture));
+            })));
+            
+            // Number.prototype.toPrecision(precision)
+            _numberPrototype.Set("toPrecision", FenValue.FromFunction(new FenFunction("toPrecision", (args, thisVal) =>
+            {
+                var num = thisVal.ToNumber();
+                if (args.Length == 0) return FenValue.FromString(num.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                int precision = Math.Max(1, Math.Min(100, (int)args[0].ToNumber()));
+                return FenValue.FromString(num.ToString($"G{precision}", System.Globalization.CultureInfo.InvariantCulture));
+            })));
+            
+            // Number.prototype.toExponential(fractionDigits)
+            _numberPrototype.Set("toExponential", FenValue.FromFunction(new FenFunction("toExponential", (args, thisVal) =>
+            {
+                var num = thisVal.ToNumber();
+                if (args.Length == 0) return FenValue.FromString(num.ToString("E", System.Globalization.CultureInfo.InvariantCulture).ToLower());
+                int digits = Math.Max(0, Math.Min(100, (int)args[0].ToNumber()));
+                return FenValue.FromString(num.ToString($"E{digits}", System.Globalization.CultureInfo.InvariantCulture).ToLower());
+            })));
+            
+            // Number.prototype.toString(radix)
+            _numberPrototype.Set("toString", FenValue.FromFunction(new FenFunction("toString", (args, thisVal) =>
+            {
+                var num = thisVal.ToNumber();
+                int radix = args.Length > 0 ? (int)args[0].ToNumber() : 10;
+                if (radix < 2 || radix > 36) return FenValue.FromString(num.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                if (radix == 10) return FenValue.FromString(num.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                if (double.IsNaN(num)) return FenValue.FromString("NaN");
+                if (double.IsPositiveInfinity(num)) return FenValue.FromString("Infinity");
+                if (double.IsNegativeInfinity(num)) return FenValue.FromString("-Infinity");
+                try
+                {
+                    long intPart = (long)num;
+                    return FenValue.FromString(Convert.ToString(intPart, radix));
+                }
+                catch { return FenValue.FromString(num.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
+            })));
+            
+            // Number.prototype.valueOf()
+            _numberPrototype.Set("valueOf", FenValue.FromFunction(new FenFunction("valueOf", (args, thisVal) =>
+            {
+                return FenValue.FromNumber(thisVal.ToNumber());
+            })));
+            
+            // Number.prototype.toLocaleString()
+            _numberPrototype.Set("toLocaleString", FenValue.FromFunction(new FenFunction("toLocaleString", (args, thisVal) =>
+            {
+                var num = thisVal.ToNumber();
+                return FenValue.FromString(num.ToString("N", System.Globalization.CultureInfo.CurrentCulture));
+            })));
+            
+            return _numberPrototype;
         }
 
         private IValue EvalRegexLiteral(RegexLiteral node, FenEnvironment env)
@@ -1721,6 +2939,36 @@ namespace FenBrowser.FenEngine.Core
         public bool StrictEquals(IValue other) => false;
         public bool LooseEquals(IValue other) => false;
         public bool IsUndefined => true;
+        public bool IsNull => false;
+        public bool IsBoolean => false;
+        public bool IsNumber => false;
+        public bool IsString => false;
+        public bool IsObject => false;
+        public bool IsFunction => false;
+        public FenFunction AsFunction() => null;
+        public IObject AsObject() => null;
+    }
+    
+    // Yield control flow value (for generator functions)
+    public class YieldValue : IValue
+    {
+        public IValue Value { get; }
+        public bool IsDelegate { get; } // yield*
+        
+        public YieldValue(IValue value, bool isDelegate = false)
+        {
+            Value = value ?? FenValue.Undefined;
+            IsDelegate = isDelegate;
+        }
+        
+        public JsValueType Type => JsValueType.Object;
+        public bool ToBoolean() => true;
+        public double ToNumber() => double.NaN;
+        public override string ToString() => $"yield {Value}";
+        public IObject ToObject() => null;
+        public bool StrictEquals(IValue other) => ReferenceEquals(this, other);
+        public bool LooseEquals(IValue other) => StrictEquals(other);
+        public bool IsUndefined => false;
         public bool IsNull => false;
         public bool IsBoolean => false;
         public bool IsNumber => false;

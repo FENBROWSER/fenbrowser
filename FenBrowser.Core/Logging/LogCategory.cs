@@ -23,6 +23,10 @@ namespace FenBrowser.Core.Logging
         Errors       = 1 << 10,  // Exceptions, failures, warnings
         DOM          = 1 << 11,  // DOM mutations, elements
         General      = 1 << 12,  // Application lifecycle, generic info
+        HtmlParsing  = 1 << 13,  // HTML element parsing, unsupported tags
+        CssParsing   = 1 << 14,  // CSS property parsing, unsupported properties
+        JsExecution  = 1 << 15,  // JS execution details, API calls, failures
+        FeatureGaps  = 1 << 16,  // Unsupported features summary reporting
         All          = int.MaxValue
     }
 

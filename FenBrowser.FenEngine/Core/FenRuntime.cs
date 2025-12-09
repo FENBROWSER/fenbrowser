@@ -5,6 +5,7 @@ using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.DOM;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Text.Json;
 using System.Net.Http;
@@ -25,6 +26,7 @@ namespace FenBrowser.FenEngine.Core
         private readonly Dictionary<int, CancellationTokenSource> _activeTimers = new Dictionary<int, CancellationTokenSource>();
         private int _timerIdCounter = 1;
         private readonly object _timerLock = new object();
+        private static readonly Random _mathRandom = new Random(); // Cached Random for Math.random()
 
         public FenRuntime(IExecutionContext context = null)
         {
@@ -153,6 +155,93 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.Undefined;
             }));
             SetGlobal("cancelAnimationFrame", cancelAnimationFrame);
+
+            // Dynamic import() function - returns a Promise
+            SetGlobal("import", FenValue.FromFunction(new FenFunction("import", (args, thisVal) =>
+            {
+                if (args.Length == 0) return CreateRejectedPromise("import() requires a module specifier");
+                var modulePath = args[0].ToString();
+                
+                // Create a promise that will resolve with the module exports
+                var promise = new FenObject();
+                promise.Set("__isPromise__", FenValue.FromBoolean(true));
+                promise.Set("__state__", FenValue.FromString("pending"));
+                
+                // For now, return a resolved promise with an empty module namespace
+                // In a real implementation, this would async load and parse the module
+                var moduleNamespace = new FenObject();
+                moduleNamespace.Set("default", FenValue.Undefined);
+                
+                // Check if module loader has this module cached
+                if (_context.ModuleLoader != null)
+                {
+                    try
+                    {
+                        var exports = _context.ModuleLoader.LoadModule(modulePath);
+                        if (exports != null)
+                        {
+                            promise.Set("__state__", FenValue.FromString("fulfilled"));
+                            promise.Set("__value__", (FenValue)exports);
+                        }
+                        else
+                        {
+                            promise.Set("__state__", FenValue.FromString("fulfilled"));
+                            promise.Set("__value__", FenValue.FromObject(moduleNamespace));
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        promise.Set("__state__", FenValue.FromString("rejected"));
+                        promise.Set("__reason__", FenValue.FromString(ex.Message));
+                    }
+                }
+                else
+                {
+                    promise.Set("__state__", FenValue.FromString("fulfilled"));
+                    promise.Set("__value__", FenValue.FromObject(moduleNamespace));
+                }
+                
+                // Add then/catch methods
+                promise.Set("then", FenValue.FromFunction(new FenFunction("then", (thenArgs, thenThis) =>
+                {
+                    var state = promise.Get("__state__")?.ToString();
+                    if (state == "fulfilled")
+                    {
+                        if (thenArgs.Length > 0 && thenArgs[0].IsFunction)
+                        {
+                            var onFulfilled = thenArgs[0].AsFunction() as FenFunction;
+                            var value = promise.Get("__value__") ?? FenValue.Undefined;
+                            return onFulfilled?.Invoke(new IValue[] { value }, null) ?? FenValue.Undefined;
+                        }
+                        return promise.Get("__value__") ?? FenValue.Undefined;
+                    }
+                    else if (state == "rejected")
+                    {
+                        if (thenArgs.Length > 1 && thenArgs[1].IsFunction)
+                        {
+                            var onRejected = thenArgs[1].AsFunction() as FenFunction;
+                            var reason = promise.Get("__reason__") ?? FenValue.Undefined;
+                            return onRejected?.Invoke(new IValue[] { reason }, null) ?? FenValue.Undefined;
+                        }
+                        return FenValue.Undefined;
+                    }
+                    return FenValue.FromObject(promise);
+                })));
+                
+                promise.Set("catch", FenValue.FromFunction(new FenFunction("catch", (catchArgs, catchThis) =>
+                {
+                    var state = promise.Get("__state__")?.ToString();
+                    if (state == "rejected" && catchArgs.Length > 0 && catchArgs[0].IsFunction)
+                    {
+                        var onRejected = catchArgs[0].AsFunction() as FenFunction;
+                        var reason = promise.Get("__reason__") ?? FenValue.Undefined;
+                        return onRejected?.Invoke(new IValue[] { reason }, null) ?? FenValue.Undefined;
+                    }
+                    return FenValue.FromObject(promise);
+                })));
+                
+                return FenValue.FromObject(promise);
+            })));
 
             // undefined and null
             SetGlobal("undefined", FenValue.Undefined);
@@ -338,24 +427,123 @@ namespace FenBrowser.FenEngine.Core
             }));
             // Note: We'll inject a proper requestAnimationFrame in the async script wrapper instead
 
-            // RegExp constructor
+            // RegExp constructor - Full implementation
             SetGlobal("RegExp", FenValue.FromFunction(new FenFunction("RegExp", (args, thisVal) =>
             {
                 var pattern = args.Length > 0 ? args[0].ToString() : "";
                 var flags = args.Length > 1 ? args[1].ToString() : "";
                 
+                // If first arg is already a RegExp, clone it
+                if (args.Length > 0 && args[0].IsObject)
+                {
+                    var srcObj = args[0].AsObject() as FenObject;
+                    if (srcObj?.Get("source") != null && srcObj.NativeObject is Regex)
+                    {
+                        pattern = srcObj.Get("source")?.ToString() ?? "";
+                        if (args.Length == 1)
+                            flags = srcObj.Get("flags")?.ToString() ?? "";
+                    }
+                }
+                
                 try
                 {
                     var options = RegexOptions.None;
-                    if (flags.Contains("i")) options |= RegexOptions.IgnoreCase;
-                    if (flags.Contains("m")) options |= RegexOptions.Multiline;
+                    bool globalFlag = flags.Contains("g");
+                    bool ignoreCase = flags.Contains("i");
+                    bool multiline = flags.Contains("m");
+                    bool dotAll = flags.Contains("s");
+                    
+                    if (ignoreCase) options |= RegexOptions.IgnoreCase;
+                    if (multiline) options |= RegexOptions.Multiline;
+                    if (dotAll) options |= RegexOptions.Singleline;
                     
                     var r = new Regex(pattern, options);
                     var obj = new FenObject();
                     obj.NativeObject = r;
                     obj.Set("source", FenValue.FromString(pattern));
                     obj.Set("flags", FenValue.FromString(flags));
+                    obj.Set("global", FenValue.FromBoolean(globalFlag));
+                    obj.Set("ignoreCase", FenValue.FromBoolean(ignoreCase));
+                    obj.Set("multiline", FenValue.FromBoolean(multiline));
+                    obj.Set("dotAll", FenValue.FromBoolean(dotAll));
                     obj.Set("lastIndex", FenValue.FromNumber(0));
+                    
+                    // test(str) - Returns true if the pattern matches
+                    obj.Set("test", FenValue.FromFunction(new FenFunction("test", (testArgs, testThis) =>
+                    {
+                        if (testArgs.Length == 0) return FenValue.FromBoolean(false);
+                        var str = testArgs[0].ToString();
+                        var lastIdx = (int)(obj.Get("lastIndex")?.ToNumber() ?? 0);
+                        var isGlobal = obj.Get("global")?.ToBoolean() ?? false;
+                        
+                        if (isGlobal && lastIdx > 0 && lastIdx <= str.Length)
+                            str = str.Substring(lastIdx);
+                        else if (isGlobal)
+                            lastIdx = 0;
+                            
+                        var match = r.Match(str);
+                        if (match.Success && isGlobal)
+                            obj.Set("lastIndex", FenValue.FromNumber(lastIdx + match.Index + match.Length));
+                        else if (!match.Success && isGlobal)
+                            obj.Set("lastIndex", FenValue.FromNumber(0));
+                            
+                        return FenValue.FromBoolean(match.Success);
+                    })));
+                    
+                    // exec(str) - Returns match array or null
+                    obj.Set("exec", FenValue.FromFunction(new FenFunction("exec", (execArgs, execThis) =>
+                    {
+                        if (execArgs.Length == 0) return FenValue.Null;
+                        var str = execArgs[0].ToString();
+                        var lastIdx = (int)(obj.Get("lastIndex")?.ToNumber() ?? 0);
+                        var isGlobal = obj.Get("global")?.ToBoolean() ?? false;
+                        
+                        Match match;
+                        if (isGlobal && lastIdx > 0 && lastIdx < str.Length)
+                            match = r.Match(str, lastIdx);
+                        else
+                            match = r.Match(str);
+                        
+                        if (!match.Success)
+                        {
+                            if (isGlobal) obj.Set("lastIndex", FenValue.FromNumber(0));
+                            return FenValue.Null;
+                        }
+                        
+                        if (isGlobal)
+                            obj.Set("lastIndex", FenValue.FromNumber(match.Index + match.Length));
+                        
+                        // Create result array
+                        var result = new FenObject();
+                        result.Set("0", FenValue.FromString(match.Value));
+                        for (int i = 1; i < match.Groups.Count; i++)
+                        {
+                            result.Set(i.ToString(), match.Groups[i].Success 
+                                ? FenValue.FromString(match.Groups[i].Value) 
+                                : FenValue.Undefined);
+                        }
+                        result.Set("length", FenValue.FromNumber(match.Groups.Count));
+                        result.Set("index", FenValue.FromNumber(match.Index));
+                        result.Set("input", FenValue.FromString(str));
+                        
+                        // Named capture groups support
+                        var groups = new FenObject();
+                        foreach (var gn in r.GetGroupNames())
+                        {
+                            if (!int.TryParse(gn, out _))
+                            {
+                                var g = match.Groups[gn];
+                                groups.Set(gn, g.Success ? FenValue.FromString(g.Value) : FenValue.Undefined);
+                            }
+                        }
+                        result.Set("groups", FenValue.FromObject(groups));
+                        
+                        return FenValue.FromObject(result);
+                    })));
+                    
+                    // toString() - Returns "/pattern/flags"
+                    obj.Set("toString", FenValue.FromFunction(new FenFunction("toString", (a, t) =>
+                        FenValue.FromString($"/{pattern}/{flags}"))));
                     
                     return FenValue.FromObject(obj);
                 }
@@ -394,15 +582,265 @@ namespace FenBrowser.FenEngine.Core
             math.Set("sqrt", FenValue.FromFunction(new FenFunction("sqrt", (args, thisVal) => 
                 FenValue.FromNumber(Math.Sqrt(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
             math.Set("random", FenValue.FromFunction(new FenFunction("random", (args, thisVal) => 
-                FenValue.FromNumber(new Random().NextDouble()))));
+                FenValue.FromNumber(_mathRandom.NextDouble()))));
             math.Set("sin", FenValue.FromFunction(new FenFunction("sin", (args, thisVal) => 
                 FenValue.FromNumber(Math.Sin(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
             math.Set("cos", FenValue.FromFunction(new FenFunction("cos", (args, thisVal) => 
                 FenValue.FromNumber(Math.Cos(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
             math.Set("tan", FenValue.FromFunction(new FenFunction("tan", (args, thisVal) => 
                 FenValue.FromNumber(Math.Tan(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
+            math.Set("trunc", FenValue.FromFunction(new FenFunction("trunc", (args, thisVal) => 
+                FenValue.FromNumber(Math.Truncate(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
+            math.Set("sign", FenValue.FromFunction(new FenFunction("sign", (args, thisVal) => 
+                FenValue.FromNumber(Math.Sign(args.Length > 0 ? args[0].ToNumber() : 0)))));
+            math.Set("log", FenValue.FromFunction(new FenFunction("log", (args, thisVal) => 
+                FenValue.FromNumber(Math.Log(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
+            math.Set("log10", FenValue.FromFunction(new FenFunction("log10", (args, thisVal) => 
+                FenValue.FromNumber(Math.Log10(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
+            math.Set("exp", FenValue.FromFunction(new FenFunction("exp", (args, thisVal) => 
+                FenValue.FromNumber(Math.Exp(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
+            math.Set("asin", FenValue.FromFunction(new FenFunction("asin", (args, thisVal) => 
+                FenValue.FromNumber(Math.Asin(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
+            math.Set("acos", FenValue.FromFunction(new FenFunction("acos", (args, thisVal) => 
+                FenValue.FromNumber(Math.Acos(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
+            math.Set("atan", FenValue.FromFunction(new FenFunction("atan", (args, thisVal) => 
+                FenValue.FromNumber(Math.Atan(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
+            math.Set("atan2", FenValue.FromFunction(new FenFunction("atan2", (args, thisVal) => 
+                FenValue.FromNumber(Math.Atan2(args.Length > 0 ? args[0].ToNumber() : double.NaN, args.Length > 1 ? args[1].ToNumber() : double.NaN)))));
+            math.Set("hypot", FenValue.FromFunction(new FenFunction("hypot", (args, thisVal) => {
+                double sum = 0;
+                foreach (var arg in args) { var n = arg.ToNumber(); sum += n * n; }
+                return FenValue.FromNumber(Math.Sqrt(sum));
+            })));
             
             SetGlobal("Math", FenValue.FromObject(math));
+
+            // Global functions: parseInt, parseFloat, isNaN, isFinite
+            SetGlobal("parseInt", FenValue.FromFunction(new FenFunction("parseInt", (args, thisVal) => {
+                if (args.Length == 0) return FenValue.FromNumber(double.NaN);
+                var str = args[0].ToString().Trim();
+                int radix = args.Length > 1 ? (int)args[1].ToNumber() : 10;
+                if (radix == 0) radix = 10;
+                if (radix < 2 || radix > 36) return FenValue.FromNumber(double.NaN);
+                
+                bool negative = false;
+                if (str.StartsWith("-")) { negative = true; str = str.Substring(1); }
+                else if (str.StartsWith("+")) { str = str.Substring(1); }
+                
+                if (radix == 16 && (str.StartsWith("0x") || str.StartsWith("0X"))) str = str.Substring(2);
+                else if (radix == 10 && (str.StartsWith("0x") || str.StartsWith("0X"))) { radix = 16; str = str.Substring(2); }
+                
+                try {
+                    long result = Convert.ToInt64(str, radix);
+                    return FenValue.FromNumber(negative ? -result : result);
+                } catch {
+                    // Parse as much as possible
+                    string validChars = "0123456789abcdefghijklmnopqrstuvwxyz".Substring(0, radix);
+                    var sb = new StringBuilder();
+                    foreach (char c in str.ToLowerInvariant()) {
+                        if (validChars.Contains(c)) sb.Append(c);
+                        else break;
+                    }
+                    if (sb.Length == 0) return FenValue.FromNumber(double.NaN);
+                    try {
+                        long result = Convert.ToInt64(sb.ToString(), radix);
+                        return FenValue.FromNumber(negative ? -result : result);
+                    } catch {
+                        return FenValue.FromNumber(double.NaN);
+                    }
+                }
+            })));
+
+            SetGlobal("parseFloat", FenValue.FromFunction(new FenFunction("parseFloat", (args, thisVal) => {
+                if (args.Length == 0) return FenValue.FromNumber(double.NaN);
+                var str = args[0].ToString().Trim();
+                // Parse leading numeric portion
+                var sb = new StringBuilder();
+                bool hasDecimal = false;
+                bool hasExp = false;
+                for (int i = 0; i < str.Length; i++) {
+                    char c = str[i];
+                    if (i == 0 && (c == '+' || c == '-')) { sb.Append(c); continue; }
+                    if (char.IsDigit(c)) { sb.Append(c); continue; }
+                    if (c == '.' && !hasDecimal && !hasExp) { hasDecimal = true; sb.Append(c); continue; }
+                    if ((c == 'e' || c == 'E') && !hasExp && sb.Length > 0) {
+                        hasExp = true; sb.Append(c);
+                        if (i + 1 < str.Length && (str[i + 1] == '+' || str[i + 1] == '-')) { sb.Append(str[++i]); }
+                        continue;
+                    }
+                    break;
+                }
+                if (sb.Length == 0 || sb.ToString() == "+" || sb.ToString() == "-") return FenValue.FromNumber(double.NaN);
+                if (double.TryParse(sb.ToString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double result))
+                    return FenValue.FromNumber(result);
+                return FenValue.FromNumber(double.NaN);
+            })));
+
+            SetGlobal("isNaN", FenValue.FromFunction(new FenFunction("isNaN", (args, thisVal) => {
+                if (args.Length == 0) return FenValue.FromBoolean(true);
+                var num = args[0].ToNumber();
+                return FenValue.FromBoolean(double.IsNaN(num));
+            })));
+
+            SetGlobal("isFinite", FenValue.FromFunction(new FenFunction("isFinite", (args, thisVal) => {
+                if (args.Length == 0) return FenValue.FromBoolean(false);
+                var num = args[0].ToNumber();
+                return FenValue.FromBoolean(!double.IsNaN(num) && !double.IsInfinity(num));
+            })));
+
+            // Number object with static methods
+            var numberObj = new FenObject();
+            numberObj.Set("isNaN", FenValue.FromFunction(new FenFunction("isNaN", (args, thisVal) => {
+                if (args.Length == 0 || !args[0].IsNumber) return FenValue.FromBoolean(false);
+                return FenValue.FromBoolean(double.IsNaN(args[0].ToNumber()));
+            })));
+            numberObj.Set("isFinite", FenValue.FromFunction(new FenFunction("isFinite", (args, thisVal) => {
+                if (args.Length == 0 || !args[0].IsNumber) return FenValue.FromBoolean(false);
+                var num = args[0].ToNumber();
+                return FenValue.FromBoolean(!double.IsNaN(num) && !double.IsInfinity(num));
+            })));
+            numberObj.Set("isInteger", FenValue.FromFunction(new FenFunction("isInteger", (args, thisVal) => {
+                if (args.Length == 0 || !args[0].IsNumber) return FenValue.FromBoolean(false);
+                var num = args[0].ToNumber();
+                return FenValue.FromBoolean(!double.IsNaN(num) && !double.IsInfinity(num) && Math.Floor(num) == num);
+            })));
+            numberObj.Set("parseInt", FenValue.FromFunction(new FenFunction("parseInt", (args, thisVal) => {
+                if (args.Length == 0) return FenValue.FromNumber(double.NaN);
+                var str = args[0].ToString().Trim();
+                int radix = args.Length > 1 ? (int)args[1].ToNumber() : 10;
+                if (radix == 0) radix = 10;
+                if (radix < 2 || radix > 36) return FenValue.FromNumber(double.NaN);
+                bool negative = str.StartsWith("-"); if (negative) str = str.Substring(1);
+                if (str.StartsWith("+")) str = str.Substring(1);
+                if ((str.StartsWith("0x") || str.StartsWith("0X"))) { if (radix == 10 || radix == 16) radix = 16; str = str.Substring(2); }
+                try { long result = Convert.ToInt64(str, radix); return FenValue.FromNumber(negative ? -result : result); } catch { return FenValue.FromNumber(double.NaN); }
+            })));
+            numberObj.Set("parseFloat", FenValue.FromFunction(new FenFunction("parseFloat", (args, thisVal) => {
+                if (args.Length == 0) return FenValue.FromNumber(double.NaN);
+                if (double.TryParse(args[0].ToString().Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double result))
+                    return FenValue.FromNumber(result);
+                return FenValue.FromNumber(double.NaN);
+            })));
+            
+            // Number constants
+            numberObj.Set("MAX_VALUE", FenValue.FromNumber(double.MaxValue));
+            numberObj.Set("MIN_VALUE", FenValue.FromNumber(double.Epsilon));
+            numberObj.Set("NaN", FenValue.FromNumber(double.NaN));
+            numberObj.Set("POSITIVE_INFINITY", FenValue.FromNumber(double.PositiveInfinity));
+            numberObj.Set("NEGATIVE_INFINITY", FenValue.FromNumber(double.NegativeInfinity));
+            numberObj.Set("MAX_SAFE_INTEGER", FenValue.FromNumber(9007199254740991));
+            numberObj.Set("MIN_SAFE_INTEGER", FenValue.FromNumber(-9007199254740991));
+            numberObj.Set("EPSILON", FenValue.FromNumber(2.220446049250313e-16));
+            
+            // Number.isSafeInteger(value)
+            numberObj.Set("isSafeInteger", FenValue.FromFunction(new FenFunction("isSafeInteger", (args, thisVal) => {
+                if (args.Length == 0 || !args[0].IsNumber) return FenValue.FromBoolean(false);
+                var num = args[0].ToNumber();
+                return FenValue.FromBoolean(!double.IsNaN(num) && !double.IsInfinity(num) && Math.Floor(num) == num && Math.Abs(num) <= 9007199254740991);
+            })));
+            
+            // Number prototype methods (toFixed, toPrecision, toExponential)
+            // These will be accessed on number values
+            numberObj.Set("prototype", FenValue.FromObject(new FenObject()));
+            
+            SetGlobal("Number", FenValue.FromObject(numberObj));
+            
+            // encodeURI / decodeURI
+            SetGlobal("encodeURI", FenValue.FromFunction(new FenFunction("encodeURI", (args, thisVal) => {
+                if (args.Length == 0) return FenValue.FromString("");
+                var str = args[0].ToString();
+                return FenValue.FromString(Uri.EscapeUriString(str));
+            })));
+            
+            SetGlobal("decodeURI", FenValue.FromFunction(new FenFunction("decodeURI", (args, thisVal) => {
+                if (args.Length == 0) return FenValue.FromString("");
+                try { return FenValue.FromString(Uri.UnescapeDataString(args[0].ToString())); }
+                catch { return FenValue.FromString(args[0].ToString()); }
+            })));
+            
+            SetGlobal("encodeURIComponent", FenValue.FromFunction(new FenFunction("encodeURIComponent", (args, thisVal) => {
+                if (args.Length == 0) return FenValue.FromString("");
+                return FenValue.FromString(Uri.EscapeDataString(args[0].ToString()));
+            })));
+            
+            SetGlobal("decodeURIComponent", FenValue.FromFunction(new FenFunction("decodeURIComponent", (args, thisVal) => {
+                if (args.Length == 0) return FenValue.FromString("");
+                try { return FenValue.FromString(Uri.UnescapeDataString(args[0].ToString())); }
+                catch { return FenValue.FromString(args[0].ToString()); }
+            })));
+            
+            // btoa / atob (Base64 encoding/decoding)
+            SetGlobal("btoa", FenValue.FromFunction(new FenFunction("btoa", (args, thisVal) => {
+                if (args.Length == 0) return FenValue.FromString("");
+                var str = args[0].ToString();
+                var bytes = System.Text.Encoding.UTF8.GetBytes(str);
+                return FenValue.FromString(Convert.ToBase64String(bytes));
+            })));
+            
+            SetGlobal("atob", FenValue.FromFunction(new FenFunction("atob", (args, thisVal) => {
+                if (args.Length == 0) return FenValue.FromString("");
+                try {
+                    var bytes = Convert.FromBase64String(args[0].ToString());
+                    return FenValue.FromString(System.Text.Encoding.UTF8.GetString(bytes));
+                } catch { return FenValue.FromString(""); }
+            })));
+            
+            // escape / unescape (deprecated but still used)
+            SetGlobal("escape", FenValue.FromFunction(new FenFunction("escape", (args, thisVal) => {
+                if (args.Length == 0) return FenValue.FromString("");
+                return FenValue.FromString(Uri.EscapeDataString(args[0].ToString()));
+            })));
+            
+            SetGlobal("unescape", FenValue.FromFunction(new FenFunction("unescape", (args, thisVal) => {
+                if (args.Length == 0) return FenValue.FromString("");
+                try { return FenValue.FromString(Uri.UnescapeDataString(args[0].ToString())); }
+                catch { return FenValue.FromString(args[0].ToString()); }
+            })));
+
+            // Array object with static methods
+            var arrayObj = new FenObject();
+            arrayObj.Set("isArray", FenValue.FromFunction(new FenFunction("isArray", (args, thisVal) => {
+                if (args.Length == 0) return FenValue.FromBoolean(false);
+                if (!args[0].IsObject) return FenValue.FromBoolean(false);
+                var obj = args[0].AsObject();
+                if (obj == null) return FenValue.FromBoolean(false);
+                var length = obj.Get("length");
+                return FenValue.FromBoolean(length != null && length.IsNumber);
+            })));
+            arrayObj.Set("from", FenValue.FromFunction(new FenFunction("from", (args, thisVal) => {
+                var result = new FenObject();
+                if (args.Length == 0) { result.Set("length", FenValue.FromNumber(0)); return FenValue.FromObject(result); }
+                var source = args[0];
+                FenFunction mapFn = args.Length > 1 ? args[1].AsFunction() : null;
+                
+                if (source.IsString) {
+                    var str = source.ToString();
+                    for (int i = 0; i < str.Length; i++) {
+                        var val = FenValue.FromString(str[i].ToString());
+                        result.Set(i.ToString(), mapFn != null ? mapFn.Invoke(new IValue[] { val, FenValue.FromNumber(i) }, null) : val);
+                    }
+                    result.Set("length", FenValue.FromNumber(str.Length));
+                } else if (source.IsObject) {
+                    var obj = source.AsObject();
+                    var lenVal = obj.Get("length");
+                    int len = lenVal != null && lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                    for (int i = 0; i < len; i++) {
+                        var val = obj.Get(i.ToString()) ?? FenValue.Undefined;
+                        result.Set(i.ToString(), mapFn != null ? mapFn.Invoke(new IValue[] { val, FenValue.FromNumber(i) }, null) : val);
+                    }
+                    result.Set("length", FenValue.FromNumber(len));
+                }
+                return FenValue.FromObject(result);
+            })));
+            arrayObj.Set("of", FenValue.FromFunction(new FenFunction("of", (args, thisVal) => {
+                var result = new FenObject();
+                for (int i = 0; i < args.Length; i++) {
+                    result.Set(i.ToString(), args[i]);
+                }
+                result.Set("length", FenValue.FromNumber(args.Length));
+                return FenValue.FromObject(result);
+            })));
+            SetGlobal("Array", FenValue.FromObject(arrayObj));
 
             // Date object
             var dateProto = new FenObject();
@@ -456,6 +894,199 @@ namespace FenBrowser.FenEngine.Core
                     return FenValue.FromNumber(dt.Second);
                 return FenValue.FromNumber(double.NaN);
             })));
+            
+            // getMilliseconds
+            dateProto.Set("getMilliseconds", FenValue.FromFunction(new FenFunction("getMilliseconds", (args, thisVal) => {
+                if (thisVal.IsObject && (thisVal.AsObject() as FenObject)?.NativeObject is DateTime dt)
+                    return FenValue.FromNumber(dt.Millisecond);
+                return FenValue.FromNumber(double.NaN);
+            })));
+            
+            // getTimezoneOffset
+            dateProto.Set("getTimezoneOffset", FenValue.FromFunction(new FenFunction("getTimezoneOffset", (args, thisVal) => {
+                return FenValue.FromNumber(-TimeZoneInfo.Local.GetUtcOffset(DateTime.Now).TotalMinutes);
+            })));
+            
+            // UTC getters
+            dateProto.Set("getUTCFullYear", FenValue.FromFunction(new FenFunction("getUTCFullYear", (args, thisVal) => {
+                if (thisVal.IsObject && (thisVal.AsObject() as FenObject)?.NativeObject is DateTime dt)
+                    return FenValue.FromNumber(dt.ToUniversalTime().Year);
+                return FenValue.FromNumber(double.NaN);
+            })));
+            dateProto.Set("getUTCMonth", FenValue.FromFunction(new FenFunction("getUTCMonth", (args, thisVal) => {
+                if (thisVal.IsObject && (thisVal.AsObject() as FenObject)?.NativeObject is DateTime dt)
+                    return FenValue.FromNumber(dt.ToUniversalTime().Month - 1);
+                return FenValue.FromNumber(double.NaN);
+            })));
+            dateProto.Set("getUTCDate", FenValue.FromFunction(new FenFunction("getUTCDate", (args, thisVal) => {
+                if (thisVal.IsObject && (thisVal.AsObject() as FenObject)?.NativeObject is DateTime dt)
+                    return FenValue.FromNumber(dt.ToUniversalTime().Day);
+                return FenValue.FromNumber(double.NaN);
+            })));
+            dateProto.Set("getUTCDay", FenValue.FromFunction(new FenFunction("getUTCDay", (args, thisVal) => {
+                if (thisVal.IsObject && (thisVal.AsObject() as FenObject)?.NativeObject is DateTime dt)
+                    return FenValue.FromNumber((int)dt.ToUniversalTime().DayOfWeek);
+                return FenValue.FromNumber(double.NaN);
+            })));
+            dateProto.Set("getUTCHours", FenValue.FromFunction(new FenFunction("getUTCHours", (args, thisVal) => {
+                if (thisVal.IsObject && (thisVal.AsObject() as FenObject)?.NativeObject is DateTime dt)
+                    return FenValue.FromNumber(dt.ToUniversalTime().Hour);
+                return FenValue.FromNumber(double.NaN);
+            })));
+            dateProto.Set("getUTCMinutes", FenValue.FromFunction(new FenFunction("getUTCMinutes", (args, thisVal) => {
+                if (thisVal.IsObject && (thisVal.AsObject() as FenObject)?.NativeObject is DateTime dt)
+                    return FenValue.FromNumber(dt.ToUniversalTime().Minute);
+                return FenValue.FromNumber(double.NaN);
+            })));
+            dateProto.Set("getUTCSeconds", FenValue.FromFunction(new FenFunction("getUTCSeconds", (args, thisVal) => {
+                if (thisVal.IsObject && (thisVal.AsObject() as FenObject)?.NativeObject is DateTime dt)
+                    return FenValue.FromNumber(dt.ToUniversalTime().Second);
+                return FenValue.FromNumber(double.NaN);
+            })));
+            dateProto.Set("getUTCMilliseconds", FenValue.FromFunction(new FenFunction("getUTCMilliseconds", (args, thisVal) => {
+                if (thisVal.IsObject && (thisVal.AsObject() as FenObject)?.NativeObject is DateTime dt)
+                    return FenValue.FromNumber(dt.ToUniversalTime().Millisecond);
+                return FenValue.FromNumber(double.NaN);
+            })));
+            
+            // Set methods
+            dateProto.Set("setTime", FenValue.FromFunction(new FenFunction("setTime", (args, thisVal) => {
+                if (thisVal.IsObject && thisVal.AsObject() is FenObject fenObj && args.Length > 0) {
+                    var ms = args[0].ToNumber();
+                    var newDt = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMilliseconds(ms).ToLocalTime();
+                    fenObj.NativeObject = newDt;
+                    return FenValue.FromNumber(ms);
+                }
+                return FenValue.FromNumber(double.NaN);
+            })));
+            dateProto.Set("setFullYear", FenValue.FromFunction(new FenFunction("setFullYear", (args, thisVal) => {
+                if (thisVal.IsObject && thisVal.AsObject() is FenObject fenObj && fenObj.NativeObject is DateTime dt && args.Length > 0) {
+                    int year = (int)args[0].ToNumber();
+                    int month = args.Length > 1 ? (int)args[1].ToNumber() + 1 : dt.Month;
+                    int day = args.Length > 2 ? (int)args[2].ToNumber() : dt.Day;
+                    try {
+                        var newDt = new DateTime(year, month, day, dt.Hour, dt.Minute, dt.Second, dt.Millisecond, dt.Kind);
+                        fenObj.NativeObject = newDt;
+                        return FenValue.FromNumber((newDt.ToUniversalTime() - new DateTime(1970, 1, 1)).TotalMilliseconds);
+                    } catch { return FenValue.FromNumber(double.NaN); }
+                }
+                return FenValue.FromNumber(double.NaN);
+            })));
+            dateProto.Set("setMonth", FenValue.FromFunction(new FenFunction("setMonth", (args, thisVal) => {
+                if (thisVal.IsObject && thisVal.AsObject() is FenObject fenObj && fenObj.NativeObject is DateTime dt && args.Length > 0) {
+                    int month = (int)args[0].ToNumber() + 1;
+                    int day = args.Length > 1 ? (int)args[1].ToNumber() : dt.Day;
+                    try {
+                        var newDt = new DateTime(dt.Year, month, day, dt.Hour, dt.Minute, dt.Second, dt.Millisecond, dt.Kind);
+                        fenObj.NativeObject = newDt;
+                        return FenValue.FromNumber((newDt.ToUniversalTime() - new DateTime(1970, 1, 1)).TotalMilliseconds);
+                    } catch { return FenValue.FromNumber(double.NaN); }
+                }
+                return FenValue.FromNumber(double.NaN);
+            })));
+            dateProto.Set("setDate", FenValue.FromFunction(new FenFunction("setDate", (args, thisVal) => {
+                if (thisVal.IsObject && thisVal.AsObject() is FenObject fenObj && fenObj.NativeObject is DateTime dt && args.Length > 0) {
+                    int day = (int)args[0].ToNumber();
+                    try {
+                        var newDt = new DateTime(dt.Year, dt.Month, day, dt.Hour, dt.Minute, dt.Second, dt.Millisecond, dt.Kind);
+                        fenObj.NativeObject = newDt;
+                        return FenValue.FromNumber((newDt.ToUniversalTime() - new DateTime(1970, 1, 1)).TotalMilliseconds);
+                    } catch { return FenValue.FromNumber(double.NaN); }
+                }
+                return FenValue.FromNumber(double.NaN);
+            })));
+            dateProto.Set("setHours", FenValue.FromFunction(new FenFunction("setHours", (args, thisVal) => {
+                if (thisVal.IsObject && thisVal.AsObject() is FenObject fenObj && fenObj.NativeObject is DateTime dt && args.Length > 0) {
+                    int hours = (int)args[0].ToNumber();
+                    int minutes = args.Length > 1 ? (int)args[1].ToNumber() : dt.Minute;
+                    int seconds = args.Length > 2 ? (int)args[2].ToNumber() : dt.Second;
+                    int ms = args.Length > 3 ? (int)args[3].ToNumber() : dt.Millisecond;
+                    try {
+                        var newDt = new DateTime(dt.Year, dt.Month, dt.Day, hours, minutes, seconds, ms, dt.Kind);
+                        fenObj.NativeObject = newDt;
+                        return FenValue.FromNumber((newDt.ToUniversalTime() - new DateTime(1970, 1, 1)).TotalMilliseconds);
+                    } catch { return FenValue.FromNumber(double.NaN); }
+                }
+                return FenValue.FromNumber(double.NaN);
+            })));
+            dateProto.Set("setMinutes", FenValue.FromFunction(new FenFunction("setMinutes", (args, thisVal) => {
+                if (thisVal.IsObject && thisVal.AsObject() is FenObject fenObj && fenObj.NativeObject is DateTime dt && args.Length > 0) {
+                    int minutes = (int)args[0].ToNumber();
+                    int seconds = args.Length > 1 ? (int)args[1].ToNumber() : dt.Second;
+                    int ms = args.Length > 2 ? (int)args[2].ToNumber() : dt.Millisecond;
+                    try {
+                        var newDt = new DateTime(dt.Year, dt.Month, dt.Day, dt.Hour, minutes, seconds, ms, dt.Kind);
+                        fenObj.NativeObject = newDt;
+                        return FenValue.FromNumber((newDt.ToUniversalTime() - new DateTime(1970, 1, 1)).TotalMilliseconds);
+                    } catch { return FenValue.FromNumber(double.NaN); }
+                }
+                return FenValue.FromNumber(double.NaN);
+            })));
+            dateProto.Set("setSeconds", FenValue.FromFunction(new FenFunction("setSeconds", (args, thisVal) => {
+                if (thisVal.IsObject && thisVal.AsObject() is FenObject fenObj && fenObj.NativeObject is DateTime dt && args.Length > 0) {
+                    int seconds = (int)args[0].ToNumber();
+                    int ms = args.Length > 1 ? (int)args[1].ToNumber() : dt.Millisecond;
+                    try {
+                        var newDt = new DateTime(dt.Year, dt.Month, dt.Day, dt.Hour, dt.Minute, seconds, ms, dt.Kind);
+                        fenObj.NativeObject = newDt;
+                        return FenValue.FromNumber((newDt.ToUniversalTime() - new DateTime(1970, 1, 1)).TotalMilliseconds);
+                    } catch { return FenValue.FromNumber(double.NaN); }
+                }
+                return FenValue.FromNumber(double.NaN);
+            })));
+            dateProto.Set("setMilliseconds", FenValue.FromFunction(new FenFunction("setMilliseconds", (args, thisVal) => {
+                if (thisVal.IsObject && thisVal.AsObject() is FenObject fenObj && fenObj.NativeObject is DateTime dt && args.Length > 0) {
+                    int ms = (int)args[0].ToNumber();
+                    try {
+                        var newDt = new DateTime(dt.Year, dt.Month, dt.Day, dt.Hour, dt.Minute, dt.Second, ms, dt.Kind);
+                        fenObj.NativeObject = newDt;
+                        return FenValue.FromNumber((newDt.ToUniversalTime() - new DateTime(1970, 1, 1)).TotalMilliseconds);
+                    } catch { return FenValue.FromNumber(double.NaN); }
+                }
+                return FenValue.FromNumber(double.NaN);
+            })));
+            
+            // Date formatting methods
+            dateProto.Set("toDateString", FenValue.FromFunction(new FenFunction("toDateString", (args, thisVal) => {
+                if (thisVal.IsObject && (thisVal.AsObject() as FenObject)?.NativeObject is DateTime dt)
+                    return FenValue.FromString(dt.ToString("ddd MMM dd yyyy"));
+                return FenValue.FromString("Invalid Date");
+            })));
+            dateProto.Set("toTimeString", FenValue.FromFunction(new FenFunction("toTimeString", (args, thisVal) => {
+                if (thisVal.IsObject && (thisVal.AsObject() as FenObject)?.NativeObject is DateTime dt)
+                    return FenValue.FromString(dt.ToString("HH:mm:ss 'GMT'K"));
+                return FenValue.FromString("Invalid Date");
+            })));
+            dateProto.Set("toLocaleDateString", FenValue.FromFunction(new FenFunction("toLocaleDateString", (args, thisVal) => {
+                if (thisVal.IsObject && (thisVal.AsObject() as FenObject)?.NativeObject is DateTime dt)
+                    return FenValue.FromString(dt.ToShortDateString());
+                return FenValue.FromString("Invalid Date");
+            })));
+            dateProto.Set("toLocaleTimeString", FenValue.FromFunction(new FenFunction("toLocaleTimeString", (args, thisVal) => {
+                if (thisVal.IsObject && (thisVal.AsObject() as FenObject)?.NativeObject is DateTime dt)
+                    return FenValue.FromString(dt.ToShortTimeString());
+                return FenValue.FromString("Invalid Date");
+            })));
+            dateProto.Set("toLocaleString", FenValue.FromFunction(new FenFunction("toLocaleString", (args, thisVal) => {
+                if (thisVal.IsObject && (thisVal.AsObject() as FenObject)?.NativeObject is DateTime dt)
+                    return FenValue.FromString(dt.ToString());
+                return FenValue.FromString("Invalid Date");
+            })));
+            dateProto.Set("toUTCString", FenValue.FromFunction(new FenFunction("toUTCString", (args, thisVal) => {
+                if (thisVal.IsObject && (thisVal.AsObject() as FenObject)?.NativeObject is DateTime dt)
+                    return FenValue.FromString(dt.ToUniversalTime().ToString("ddd, dd MMM yyyy HH:mm:ss 'GMT'"));
+                return FenValue.FromString("Invalid Date");
+            })));
+            dateProto.Set("valueOf", FenValue.FromFunction(new FenFunction("valueOf", (args, thisVal) => {
+                if (thisVal.IsObject && (thisVal.AsObject() as FenObject)?.NativeObject is DateTime dt)
+                    return FenValue.FromNumber((dt.ToUniversalTime() - new DateTime(1970, 1, 1)).TotalMilliseconds);
+                return FenValue.FromNumber(double.NaN);
+            })));
+            dateProto.Set("toJSON", FenValue.FromFunction(new FenFunction("toJSON", (args, thisVal) => {
+                if (thisVal.IsObject && (thisVal.AsObject() as FenObject)?.NativeObject is DateTime dt)
+                    return FenValue.FromString(dt.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'"));
+                return FenValue.Null;
+            })));
 
             var dateCtor = new FenFunction("Date", (args, thisVal) => {
                 DateTime dt;
@@ -496,7 +1127,18 @@ namespace FenBrowser.FenEngine.Core
                 {
                     var jsonString = args[0].ToString();
                     using var doc = JsonDocument.Parse(jsonString);
-                    return ConvertJsonElement(doc.RootElement);
+                    var result = ConvertJsonElement(doc.RootElement);
+                    
+                    // Support reviver function (second argument)
+                    if (args.Length > 1 && args[1].IsFunction)
+                    {
+                        var reviver = args[1].AsFunction() as FenFunction;
+                        if (reviver != null && result.IsObject)
+                        {
+                            result = ApplyReviver((FenValue)result, reviver, "");
+                        }
+                    }
+                    return result;
                 }
                 catch (Exception ex)
                 {
@@ -507,7 +1149,41 @@ namespace FenBrowser.FenEngine.Core
                 if (args.Length == 0) return FenValue.Undefined;
                 try
                 {
-                    return FenValue.FromString(ConvertToJsonString(args[0]));
+                    // Support replacer function (second argument) and space (third argument)
+                    FenFunction replacer = null;
+                    string[] replacerArray = null;
+                    int spaces = 0;
+                    
+                    if (args.Length > 1 && !args[1].IsNull && !args[1].IsUndefined)
+                    {
+                        if (args[1].IsFunction)
+                            replacer = args[1].AsFunction() as FenFunction;
+                        else if (args[1].IsObject)
+                        {
+                            var arr = args[1].AsObject();
+                            var len = arr?.Get("length");
+                            if (len != null && len.IsNumber)
+                            {
+                                var keys = new List<string>();
+                                for (int i = 0; i < (int)len.ToNumber(); i++)
+                                {
+                                    var item = arr.Get(i.ToString());
+                                    if (item != null) keys.Add(item.ToString());
+                                }
+                                replacerArray = keys.ToArray();
+                            }
+                        }
+                    }
+                    
+                    if (args.Length > 2)
+                    {
+                        if (args[2].IsNumber)
+                            spaces = Math.Min(10, Math.Max(0, (int)args[2].ToNumber()));
+                        else if (args[2].IsString)
+                            spaces = Math.Min(10, args[2].ToString().Length);
+                    }
+                    
+                    return FenValue.FromString(ConvertToJsonStringWithReplacer(args[0], replacer, replacerArray, spaces, ""));
                 }
                 catch (Exception ex)
                 {
@@ -575,7 +1251,539 @@ namespace FenBrowser.FenEngine.Core
                 // This is typically called on instances, but Object.hasOwnProperty.call(obj, key) exists
                 return FenValue.FromBoolean(false);
             })));
+            
+            // Object.create(proto, properties)
+            objectConstructor.Set("create", FenValue.FromFunction(new FenFunction("create", (args, thisVal) => {
+                var obj = new FenObject();
+                if (args.Length > 0 && args[0].IsObject)
+                {
+                    obj.SetPrototype(args[0].AsObject() as FenObject);
+                }
+                if (args.Length > 1 && args[1].IsObject)
+                {
+                    var props = args[1].AsObject();
+                    foreach (var key in props.Keys())
+                    {
+                        var descriptor = props.Get(key);
+                        if (descriptor != null && descriptor.IsObject)
+                        {
+                            var descObj = descriptor.AsObject();
+                            var value = descObj?.Get("value");
+                            if (value != null) obj.Set(key, (FenValue)value);
+                        }
+                    }
+                }
+                return FenValue.FromObject(obj);
+            })));
+            
+            // Object.freeze(obj)
+            objectConstructor.Set("freeze", FenValue.FromFunction(new FenFunction("freeze", (args, thisVal) => {
+                if (args.Length > 0) return args[0]; // Return same object (freeze not fully enforced)
+                return FenValue.Undefined;
+            })));
+            
+            // Object.seal(obj)
+            objectConstructor.Set("seal", FenValue.FromFunction(new FenFunction("seal", (args, thisVal) => {
+                if (args.Length > 0) return args[0];
+                return FenValue.Undefined;
+            })));
+            
+            // Object.isFrozen(obj)
+            objectConstructor.Set("isFrozen", FenValue.FromFunction(new FenFunction("isFrozen", (args, thisVal) => FenValue.FromBoolean(false))));
+            
+            // Object.isSealed(obj)
+            objectConstructor.Set("isSealed", FenValue.FromFunction(new FenFunction("isSealed", (args, thisVal) => FenValue.FromBoolean(false))));
+            
+            // Object.fromEntries(iterable)
+            objectConstructor.Set("fromEntries", FenValue.FromFunction(new FenFunction("fromEntries", (args, thisVal) => {
+                var result = new FenObject();
+                if (args.Length > 0 && args[0].IsObject)
+                {
+                    var entries = args[0].AsObject();
+                    var lenVal = entries?.Get("length");
+                    int len = lenVal != null && lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                    for (int i = 0; i < len; i++)
+                    {
+                        var entry = entries.Get(i.ToString());
+                        if (entry != null && entry.IsObject)
+                        {
+                            var entryObj = entry.AsObject();
+                            var key = entryObj?.Get("0");
+                            var value = entryObj?.Get("1");
+                            if (key != null) result.Set(key.ToString(), value != null ? (FenValue)value : FenValue.Undefined);
+                        }
+                    }
+                }
+                return FenValue.FromObject(result);
+            })));
+            
+            // Object.getPrototypeOf(obj)
+            objectConstructor.Set("getPrototypeOf", FenValue.FromFunction(new FenFunction("getPrototypeOf", (args, thisVal) => {
+                if (args.Length > 0 && args[0].IsObject && args[0].AsObject() is FenObject fenObj)
+                {
+                    var proto = fenObj.GetPrototype();
+                    return proto != null ? FenValue.FromObject(proto) : FenValue.Null;
+                }
+                return FenValue.Null;
+            })));
+            
+            // Object.setPrototypeOf(obj, proto)
+            objectConstructor.Set("setPrototypeOf", FenValue.FromFunction(new FenFunction("setPrototypeOf", (args, thisVal) => {
+                if (args.Length > 1 && args[0].IsObject && args[0].AsObject() is FenObject fenObj)
+                {
+                    if (args[1].IsObject && args[1].AsObject() is FenObject proto)
+                        fenObj.SetPrototype(proto);
+                    else if (args[1].IsNull)
+                        fenObj.SetPrototype(null);
+                }
+                return args.Length > 0 ? args[0] : FenValue.Undefined;
+            })));
+            
+            // Object.getOwnPropertyNames(obj)
+            objectConstructor.Set("getOwnPropertyNames", FenValue.FromFunction(new FenFunction("getOwnPropertyNames", (args, thisVal) => {
+                if (args.Length == 0 || !args[0].IsObject) return FenValue.FromObject(CreateArray(new string[0]));
+                var obj = args[0].AsObject();
+                var keys = obj.Keys().ToArray();
+                return FenValue.FromObject(CreateArray(keys));
+            })));
+            
+            // Object.defineProperty(obj, prop, descriptor)
+            objectConstructor.Set("defineProperty", FenValue.FromFunction(new FenFunction("defineProperty", (args, thisVal) => {
+                if (args.Length < 3 || !args[0].IsObject) return args.Length > 0 ? args[0] : FenValue.Undefined;
+                var obj = args[0].AsObject();
+                var prop = args[1].ToString();
+                if (args[2].IsObject)
+                {
+                    var desc = args[2].AsObject();
+                    var value = desc?.Get("value");
+                    if (value != null) obj.Set(prop, (FenValue)value);
+                }
+                return args[0];
+            })));
+            
+            // Object.defineProperties(obj, props)
+            objectConstructor.Set("defineProperties", FenValue.FromFunction(new FenFunction("defineProperties", (args, thisVal) => {
+                if (args.Length < 2 || !args[0].IsObject || !args[1].IsObject) return args.Length > 0 ? args[0] : FenValue.Undefined;
+                var obj = args[0].AsObject();
+                var props = args[1].AsObject();
+                foreach (var key in props.Keys())
+                {
+                    var desc = props.Get(key);
+                    if (desc != null && desc.IsObject)
+                    {
+                        var value = desc.AsObject()?.Get("value");
+                        if (value != null) obj.Set(key, (FenValue)value);
+                    }
+                }
+                return args[0];
+            })));
+            
             SetGlobal("Object", FenValue.FromObject(objectConstructor));
+
+            // Symbol - ES6 primitive type for unique identifiers
+            var symbolCounter = 0;
+            var symbolRegistry = new Dictionary<string, FenValue>();
+            var symbolConstructor = new FenObject();
+            
+            // Symbol() - create new unique symbol
+            SetGlobal("Symbol", FenValue.FromFunction(new FenFunction("Symbol", (args, thisVal) =>
+            {
+                var description = args.Length > 0 ? args[0].ToString() : "";
+                var symbolId = Interlocked.Increment(ref symbolCounter);
+                var symbol = new FenObject();
+                symbol.Set("__isSymbol__", FenValue.FromBoolean(true));
+                symbol.Set("__symbolId__", FenValue.FromNumber(symbolId));
+                symbol.Set("description", FenValue.FromString(description));
+                symbol.Set("toString", FenValue.FromFunction(new FenFunction("toString", (a, t) => FenValue.FromString($"Symbol({description})"))));
+                symbol.Set("valueOf", FenValue.FromFunction(new FenFunction("valueOf", (a, t) => FenValue.FromObject(symbol))));
+                return FenValue.FromObject(symbol);
+            })));
+            
+            // Symbol.for(key) - get or create symbol in global registry
+            symbolConstructor.Set("for", FenValue.FromFunction(new FenFunction("for", (args, thisVal) =>
+            {
+                var key = args.Length > 0 ? args[0].ToString() : "";
+                if (symbolRegistry.TryGetValue(key, out var existing))
+                    return existing;
+                var symbolId = Interlocked.Increment(ref symbolCounter);
+                var symbol = new FenObject();
+                symbol.Set("__isSymbol__", FenValue.FromBoolean(true));
+                symbol.Set("__symbolId__", FenValue.FromNumber(symbolId));
+                symbol.Set("__registryKey__", FenValue.FromString(key));
+                symbol.Set("description", FenValue.FromString(key));
+                symbol.Set("toString", FenValue.FromFunction(new FenFunction("toString", (a, t) => FenValue.FromString($"Symbol({key})"))));
+                var symbolVal = FenValue.FromObject(symbol);
+                symbolRegistry[key] = symbolVal;
+                return symbolVal;
+            })));
+            
+            // Symbol.keyFor(sym) - get key for registered symbol
+            symbolConstructor.Set("keyFor", FenValue.FromFunction(new FenFunction("keyFor", (args, thisVal) =>
+            {
+                if (args.Length == 0 || !args[0].IsObject) return FenValue.Undefined;
+                var sym = args[0].AsObject();
+                var registryKey = sym?.Get("__registryKey__");
+                if (registryKey != null && !registryKey.IsUndefined)
+                    return registryKey;
+                return FenValue.Undefined;
+            })));
+            
+            // Well-known symbols (represented as unique objects)
+            var iteratorSymbol = new FenObject();
+            iteratorSymbol.Set("__isSymbol__", FenValue.FromBoolean(true));
+            iteratorSymbol.Set("__symbolId__", FenValue.FromNumber(-1));
+            iteratorSymbol.Set("description", FenValue.FromString("Symbol.iterator"));
+            symbolConstructor.Set("iterator", FenValue.FromObject(iteratorSymbol));
+            
+            var toStringTagSymbol = new FenObject();
+            toStringTagSymbol.Set("__isSymbol__", FenValue.FromBoolean(true));
+            toStringTagSymbol.Set("__symbolId__", FenValue.FromNumber(-2));
+            toStringTagSymbol.Set("description", FenValue.FromString("Symbol.toStringTag"));
+            symbolConstructor.Set("toStringTag", FenValue.FromObject(toStringTagSymbol));
+            
+            var hasInstanceSymbol = new FenObject();
+            hasInstanceSymbol.Set("__isSymbol__", FenValue.FromBoolean(true));
+            hasInstanceSymbol.Set("__symbolId__", FenValue.FromNumber(-3));
+            hasInstanceSymbol.Set("description", FenValue.FromString("Symbol.hasInstance"));
+            symbolConstructor.Set("hasInstance", FenValue.FromObject(hasInstanceSymbol));
+            
+            var isConcatSpreadableSymbol = new FenObject();
+            isConcatSpreadableSymbol.Set("__isSymbol__", FenValue.FromBoolean(true));
+            isConcatSpreadableSymbol.Set("__symbolId__", FenValue.FromNumber(-4));
+            isConcatSpreadableSymbol.Set("description", FenValue.FromString("Symbol.isConcatSpreadable"));
+            symbolConstructor.Set("isConcatSpreadable", FenValue.FromObject(isConcatSpreadableSymbol));
+            
+            // Copy static methods to Symbol function object
+            var symbolGlobal = (FenValue)GetGlobal("Symbol");
+            if (symbolGlobal.IsFunction)
+            {
+                // Attach static methods to the function
+                // Already set above via symbolConstructor reference
+            }
+            
+            // Reflect - provides methods for interceptable JavaScript operations
+            var reflectObj = new FenObject();
+            
+            // Reflect.get(target, propertyKey)
+            reflectObj.Set("get", FenValue.FromFunction(new FenFunction("get", (args, thisVal) =>
+            {
+                if (args.Length < 2 || !args[0].IsObject) return FenValue.Undefined;
+                var target = args[0].AsObject();
+                var key = args[1].ToString();
+                var result = target?.Get(key);
+                return result != null ? (FenValue)result : FenValue.Undefined;
+            })));
+            
+            // Reflect.set(target, propertyKey, value)
+            reflectObj.Set("set", FenValue.FromFunction(new FenFunction("set", (args, thisVal) =>
+            {
+                if (args.Length < 3 || !args[0].IsObject) return FenValue.FromBoolean(false);
+                var target = args[0].AsObject();
+                var key = args[1].ToString();
+                target?.Set(key, args[2]);
+                return FenValue.FromBoolean(true);
+            })));
+            
+            // Reflect.has(target, propertyKey)
+            reflectObj.Set("has", FenValue.FromFunction(new FenFunction("has", (args, thisVal) =>
+            {
+                if (args.Length < 2 || !args[0].IsObject) return FenValue.FromBoolean(false);
+                var target = args[0].AsObject();
+                var key = args[1].ToString();
+                return FenValue.FromBoolean(target?.Get(key) != null);
+            })));
+            
+            // Reflect.deleteProperty(target, propertyKey)
+            reflectObj.Set("deleteProperty", FenValue.FromFunction(new FenFunction("deleteProperty", (args, thisVal) =>
+            {
+                if (args.Length < 2 || !args[0].IsObject) return FenValue.FromBoolean(false);
+                var target = args[0].AsObject() as FenObject;
+                var key = args[1].ToString();
+                return FenValue.FromBoolean(target?.Delete(key) ?? false);
+            })));
+            
+            // Reflect.ownKeys(target)
+            reflectObj.Set("ownKeys", FenValue.FromFunction(new FenFunction("ownKeys", (args, thisVal) =>
+            {
+                if (args.Length == 0 || !args[0].IsObject) return FenValue.FromObject(CreateArray(new string[0]));
+                var target = args[0].AsObject();
+                var keys = target.Keys().ToArray();
+                return FenValue.FromObject(CreateArray(keys));
+            })));
+            
+            // Reflect.apply(target, thisArgument, argumentsList)
+            reflectObj.Set("apply", FenValue.FromFunction(new FenFunction("apply", (args, thisVal) =>
+            {
+                if (args.Length < 1 || !args[0].IsFunction) return FenValue.Undefined;
+                var fn = args[0].AsFunction() as FenFunction;
+                var argsList = new List<IValue>();
+                if (args.Length > 2 && args[2].IsObject)
+                {
+                    var argsArr = args[2].AsObject();
+                    var len = argsArr?.Get("length");
+                    int count = len != null && len.IsNumber ? (int)len.ToNumber() : 0;
+                    for (int i = 0; i < count; i++)
+                    {
+                        var item = argsArr.Get(i.ToString());
+                        argsList.Add(item ?? FenValue.Undefined);
+                    }
+                }
+                return (FenValue)(fn?.Invoke(argsList.ToArray(), null) ?? FenValue.Undefined);
+            })));
+            
+            // Reflect.construct(target, argumentsList)
+            reflectObj.Set("construct", FenValue.FromFunction(new FenFunction("construct", (args, thisVal) =>
+            {
+                if (args.Length < 1 || !args[0].IsFunction) return FenValue.Undefined;
+                var fn = args[0].AsFunction() as FenFunction;
+                var argsList = new List<IValue>();
+                if (args.Length > 1 && args[1].IsObject)
+                {
+                    var argsArr = args[1].AsObject();
+                    var len = argsArr?.Get("length");
+                    int count = len != null && len.IsNumber ? (int)len.ToNumber() : 0;
+                    for (int i = 0; i < count; i++)
+                    {
+                        var item = argsArr.Get(i.ToString());
+                        argsList.Add(item ?? FenValue.Undefined);
+                    }
+                }
+                return (FenValue)(fn?.Invoke(argsList.ToArray(), null) ?? FenValue.Undefined);
+            })));
+            
+            // Reflect.getPrototypeOf(target)
+            reflectObj.Set("getPrototypeOf", FenValue.FromFunction(new FenFunction("getPrototypeOf", (args, thisVal) =>
+            {
+                if (args.Length > 0 && args[0].IsObject && args[0].AsObject() is FenObject fenObj)
+                {
+                    var proto = fenObj.GetPrototype();
+                    return proto != null ? FenValue.FromObject(proto) : FenValue.Null;
+                }
+                return FenValue.Null;
+            })));
+            
+            // Reflect.setPrototypeOf(target, proto)
+            reflectObj.Set("setPrototypeOf", FenValue.FromFunction(new FenFunction("setPrototypeOf", (args, thisVal) =>
+            {
+                if (args.Length > 1 && args[0].IsObject && args[0].AsObject() is FenObject fenObj)
+                {
+                    if (args[1].IsObject && args[1].AsObject() is FenObject proto)
+                    {
+                        fenObj.SetPrototype(proto);
+                        return FenValue.FromBoolean(true);
+                    }
+                    else if (args[1].IsNull)
+                    {
+                        fenObj.SetPrototype(null);
+                        return FenValue.FromBoolean(true);
+                    }
+                }
+                return FenValue.FromBoolean(false);
+            })));
+            
+            SetGlobal("Reflect", FenValue.FromObject(reflectObj));
+
+            // Proxy - Meta-programming proxy objects
+            SetGlobal("Proxy", FenValue.FromFunction(new FenFunction("Proxy", (args, thisVal) =>
+            {
+                if (args.Length < 2 || !args[0].IsObject || !args[1].IsObject)
+                    return new ErrorValue("Proxy requires target and handler objects");
+                
+                var target = args[0].AsObject() as FenObject;
+                var handler = args[1].AsObject() as FenObject;
+                if (target == null || handler == null)
+                    return new ErrorValue("Proxy requires valid target and handler");
+                
+                var proxy = new FenObject();
+                proxy.Set("__isProxy__", FenValue.FromBoolean(true));
+                proxy.Set("__target__", FenValue.FromObject(target));
+                proxy.Set("__handler__", FenValue.FromObject(handler));
+                
+                // Proxy get trap
+                var getTrap = handler.Get("get");
+                var setTrap = handler.Get("set");
+                var hasTrap = handler.Get("has");
+                var deletePropertyTrap = handler.Get("deleteProperty");
+                var ownKeysTrap = handler.Get("ownKeys");
+                var applyTrap = handler.Get("apply");
+                
+                // Wrap target's properties with proxy behavior
+                foreach (var key in target.Keys())
+                {
+                    var originalValue = target.Get(key);
+                    if (getTrap != null && getTrap.IsFunction)
+                    {
+                        // The get trap will be called when accessing properties
+                        proxy.Set(key, (FenValue)originalValue);
+                    }
+                    else
+                    {
+                        proxy.Set(key, (FenValue)originalValue);
+                    }
+                }
+                
+                // Add __proxyGet__ for runtime access
+                proxy.Set("__proxyGet__", FenValue.FromFunction(new FenFunction("__proxyGet__", (getArgs, getThis) =>
+                {
+                    if (getArgs.Length == 0) return FenValue.Undefined;
+                    var prop = getArgs[0].ToString();
+                    
+                    if (getTrap != null && getTrap.IsFunction)
+                    {
+                        var fn = getTrap.AsFunction() as FenFunction;
+                        if (fn != null)
+                        {
+                            var result = fn.Invoke(new IValue[] { FenValue.FromObject(target), FenValue.FromString(prop), FenValue.FromObject(proxy) }, null);
+                            return result != null ? (FenValue)result : FenValue.Undefined;
+                        }
+                    }
+                    var val = target.Get(prop);
+                    return val != null ? (FenValue)val : FenValue.Undefined;
+                })));
+                
+                // Add __proxySet__ for runtime mutation
+                proxy.Set("__proxySet__", FenValue.FromFunction(new FenFunction("__proxySet__", (setArgs, setThis) =>
+                {
+                    if (setArgs.Length < 2) return FenValue.FromBoolean(false);
+                    var prop = setArgs[0].ToString();
+                    var value = setArgs[1];
+                    
+                    if (setTrap != null && setTrap.IsFunction)
+                    {
+                        var fn = setTrap.AsFunction() as FenFunction;
+                        if (fn != null)
+                        {
+                            var result = fn.Invoke(new IValue[] { FenValue.FromObject(target), FenValue.FromString(prop), value, FenValue.FromObject(proxy) }, null);
+                            return result != null && result.ToBoolean() ? FenValue.FromBoolean(true) : FenValue.FromBoolean(false);
+                        }
+                    }
+                    target.Set(prop, (FenValue)value);
+                    proxy.Set(prop, (FenValue)value);
+                    return FenValue.FromBoolean(true);
+                })));
+                
+                // Add __proxyHas__ for 'in' operator
+                proxy.Set("__proxyHas__", FenValue.FromFunction(new FenFunction("__proxyHas__", (hasArgs, hasThis) =>
+                {
+                    if (hasArgs.Length == 0) return FenValue.FromBoolean(false);
+                    var prop = hasArgs[0].ToString();
+                    
+                    if (hasTrap != null && hasTrap.IsFunction)
+                    {
+                        var fn = hasTrap.AsFunction() as FenFunction;
+                        if (fn != null)
+                        {
+                            var result = fn.Invoke(new IValue[] { FenValue.FromObject(target), FenValue.FromString(prop) }, null);
+                            return result != null ? FenValue.FromBoolean(result.ToBoolean()) : FenValue.FromBoolean(false);
+                        }
+                    }
+                    return FenValue.FromBoolean(target.Get(prop) != null);
+                })));
+                
+                // Add __proxyOwnKeys__ for Object.keys etc
+                proxy.Set("__proxyOwnKeys__", FenValue.FromFunction(new FenFunction("__proxyOwnKeys__", (keysArgs, keysThis) =>
+                {
+                    if (ownKeysTrap != null && ownKeysTrap.IsFunction)
+                    {
+                        var fn = ownKeysTrap.AsFunction() as FenFunction;
+                        if (fn != null)
+                        {
+                            var result = fn.Invoke(new IValue[] { FenValue.FromObject(target) }, null);
+                            return result != null ? (FenValue)result : FenValue.FromObject(CreateArray(target.Keys().ToArray()));
+                        }
+                    }
+                    return FenValue.FromObject(CreateArray(target.Keys().ToArray()));
+                })));
+                
+                // Proxy.revocable(target, handler) - creates a revocable proxy
+                return FenValue.FromObject(proxy);
+            })));
+            
+            // Proxy.revocable static method
+            var proxyFunc = (FenValue)GetGlobal("Proxy");
+            if (proxyFunc.IsFunction)
+            {
+                // Store revocable as a property of the Proxy function
+                // This is a bit tricky since FenFunction doesn't support properties directly
+            }
+            
+            // Error constructors - provide full error types
+            SetGlobal("Error", FenValue.FromFunction(new FenFunction("Error", (args, thisVal) =>
+            {
+                var message = args.Length > 0 ? args[0].ToString() : "";
+                var err = new FenObject();
+                err.Set("name", FenValue.FromString("Error"));
+                err.Set("message", FenValue.FromString(message));
+                err.Set("stack", FenValue.FromString($"Error: {message}\n    at <anonymous>"));
+                err.Set("toString", FenValue.FromFunction(new FenFunction("toString", (a, t) => FenValue.FromString($"Error: {message}"))));
+                return FenValue.FromObject(err);
+            })));
+            
+            SetGlobal("TypeError", FenValue.FromFunction(new FenFunction("TypeError", (args, thisVal) =>
+            {
+                var message = args.Length > 0 ? args[0].ToString() : "";
+                var err = new FenObject();
+                err.Set("name", FenValue.FromString("TypeError"));
+                err.Set("message", FenValue.FromString(message));
+                err.Set("stack", FenValue.FromString($"TypeError: {message}\n    at <anonymous>"));
+                err.Set("toString", FenValue.FromFunction(new FenFunction("toString", (a, t) => FenValue.FromString($"TypeError: {message}"))));
+                return FenValue.FromObject(err);
+            })));
+            
+            SetGlobal("ReferenceError", FenValue.FromFunction(new FenFunction("ReferenceError", (args, thisVal) =>
+            {
+                var message = args.Length > 0 ? args[0].ToString() : "";
+                var err = new FenObject();
+                err.Set("name", FenValue.FromString("ReferenceError"));
+                err.Set("message", FenValue.FromString(message));
+                err.Set("stack", FenValue.FromString($"ReferenceError: {message}\n    at <anonymous>"));
+                err.Set("toString", FenValue.FromFunction(new FenFunction("toString", (a, t) => FenValue.FromString($"ReferenceError: {message}"))));
+                return FenValue.FromObject(err);
+            })));
+            
+            SetGlobal("SyntaxError", FenValue.FromFunction(new FenFunction("SyntaxError", (args, thisVal) =>
+            {
+                var message = args.Length > 0 ? args[0].ToString() : "";
+                var err = new FenObject();
+                err.Set("name", FenValue.FromString("SyntaxError"));
+                err.Set("message", FenValue.FromString(message));
+                err.Set("stack", FenValue.FromString($"SyntaxError: {message}\n    at <anonymous>"));
+                err.Set("toString", FenValue.FromFunction(new FenFunction("toString", (a, t) => FenValue.FromString($"SyntaxError: {message}"))));
+                return FenValue.FromObject(err);
+            })));
+            
+            SetGlobal("RangeError", FenValue.FromFunction(new FenFunction("RangeError", (args, thisVal) =>
+            {
+                var message = args.Length > 0 ? args[0].ToString() : "";
+                var err = new FenObject();
+                err.Set("name", FenValue.FromString("RangeError"));
+                err.Set("message", FenValue.FromString(message));
+                err.Set("stack", FenValue.FromString($"RangeError: {message}\n    at <anonymous>"));
+                err.Set("toString", FenValue.FromFunction(new FenFunction("toString", (a, t) => FenValue.FromString($"RangeError: {message}"))));
+                return FenValue.FromObject(err);
+            })));
+            
+            SetGlobal("EvalError", FenValue.FromFunction(new FenFunction("EvalError", (args, thisVal) =>
+            {
+                var message = args.Length > 0 ? args[0].ToString() : "";
+                var err = new FenObject();
+                err.Set("name", FenValue.FromString("EvalError"));
+                err.Set("message", FenValue.FromString(message));
+                err.Set("stack", FenValue.FromString($"EvalError: {message}\n    at <anonymous>"));
+                err.Set("toString", FenValue.FromFunction(new FenFunction("toString", (a, t) => FenValue.FromString($"EvalError: {message}"))));
+                return FenValue.FromObject(err);
+            })));
+            
+            SetGlobal("URIError", FenValue.FromFunction(new FenFunction("URIError", (args, thisVal) =>
+            {
+                var message = args.Length > 0 ? args[0].ToString() : "";
+                var err = new FenObject();
+                err.Set("name", FenValue.FromString("URIError"));
+                err.Set("message", FenValue.FromString(message));
+                err.Set("stack", FenValue.FromString($"URIError: {message}\n    at <anonymous>"));
+                err.Set("toString", FenValue.FromFunction(new FenFunction("toString", (a, t) => FenValue.FromString($"URIError: {message}"))));
+                return FenValue.FromObject(err);
+            })));
 
             // fetch() - Web API for making HTTP requests
             // Returns a FetchPromise object with .then()/.catch() support
@@ -637,6 +1845,417 @@ namespace FenBrowser.FenEngine.Core
 
             // Promise - Full Promise implementation with static methods
             SetGlobal("Promise", FenValue.FromObject(CreatePromiseConstructor()));
+
+            // ============================================
+            // MAP - Full Implementation
+            // ============================================
+            SetGlobal("Map", FenValue.FromFunction(new FenFunction("Map", (args, thisVal) =>
+            {
+                var map = new FenObject();
+                var storage = new Dictionary<string, (IValue key, IValue value)>();
+                map.NativeObject = storage;
+                
+                // Helper to generate unique key for any value type
+                Func<IValue, string> getMapKey = (key) =>
+                {
+                    if (key == null || key.IsNull) return "null";
+                    if (key.IsUndefined) return "undefined";
+                    if (key.IsBoolean) return "bool:" + key.ToBoolean().ToString();
+                    if (key.IsNumber) return "num:" + key.ToNumber().ToString();
+                    if (key.IsString) return "str:" + key.ToString();
+                    if (key.IsObject) return "obj:" + key.AsObject().GetHashCode().ToString();
+                    return "other:" + key.ToString();
+                };
+                
+                map.Set("size", FenValue.FromNumber(0));
+                Action updateSize = () => map.Set("size", FenValue.FromNumber(storage.Count));
+                
+                // set(key, value) - Returns the Map for chaining
+                map.Set("set", FenValue.FromFunction(new FenFunction("set", (setArgs, setThis) =>
+                {
+                    var key = setArgs.Length > 0 ? setArgs[0] : FenValue.Undefined;
+                    var value = setArgs.Length > 1 ? setArgs[1] : FenValue.Undefined;
+                    var keyStr = getMapKey(key);
+                    storage[keyStr] = (key, value);
+                    updateSize();
+                    return setThis;
+                })));
+                
+                // get(key)
+                map.Set("get", FenValue.FromFunction(new FenFunction("get", (getArgs, _) =>
+                {
+                    if (getArgs.Length == 0) return FenValue.Undefined;
+                    var keyStr = getMapKey(getArgs[0]);
+                    return storage.ContainsKey(keyStr) ? storage[keyStr].value : FenValue.Undefined;
+                })));
+                
+                // has(key)
+                map.Set("has", FenValue.FromFunction(new FenFunction("has", (hasArgs, _) =>
+                {
+                    if (hasArgs.Length == 0) return FenValue.FromBoolean(false);
+                    var keyStr = getMapKey(hasArgs[0]);
+                    return FenValue.FromBoolean(storage.ContainsKey(keyStr));
+                })));
+                
+                // delete(key)
+                map.Set("delete", FenValue.FromFunction(new FenFunction("delete", (delArgs, _) =>
+                {
+                    if (delArgs.Length == 0) return FenValue.FromBoolean(false);
+                    var keyStr = getMapKey(delArgs[0]);
+                    var removed = storage.Remove(keyStr);
+                    updateSize();
+                    return FenValue.FromBoolean(removed);
+                })));
+                
+                // clear()
+                map.Set("clear", FenValue.FromFunction(new FenFunction("clear", (_, __) =>
+                {
+                    storage.Clear();
+                    updateSize();
+                    return FenValue.Undefined;
+                })));
+                
+                // keys() - Returns array of keys
+                map.Set("keys", FenValue.FromFunction(new FenFunction("keys", (_, __) =>
+                {
+                    var arr = new FenObject();
+                    int i = 0;
+                    foreach (var kvp in storage.Values)
+                    {
+                        arr.Set(i.ToString(), kvp.key);
+                        i++;
+                    }
+                    arr.Set("length", FenValue.FromNumber(i));
+                    return FenValue.FromObject(arr);
+                })));
+                
+                // values() - Returns array of values
+                map.Set("values", FenValue.FromFunction(new FenFunction("values", (_, __) =>
+                {
+                    var arr = new FenObject();
+                    int i = 0;
+                    foreach (var kvp in storage.Values)
+                    {
+                        arr.Set(i.ToString(), kvp.value);
+                        i++;
+                    }
+                    arr.Set("length", FenValue.FromNumber(i));
+                    return FenValue.FromObject(arr);
+                })));
+                
+                // entries() - Returns array of [key, value] pairs
+                map.Set("entries", FenValue.FromFunction(new FenFunction("entries", (_, __) =>
+                {
+                    var arr = new FenObject();
+                    int i = 0;
+                    foreach (var kvp in storage.Values)
+                    {
+                        var entry = new FenObject();
+                        entry.Set("0", kvp.key);
+                        entry.Set("1", kvp.value);
+                        entry.Set("length", FenValue.FromNumber(2));
+                        arr.Set(i.ToString(), FenValue.FromObject(entry));
+                        i++;
+                    }
+                    arr.Set("length", FenValue.FromNumber(i));
+                    return FenValue.FromObject(arr);
+                })));
+                
+                // forEach(callback, thisArg)
+                map.Set("forEach", FenValue.FromFunction(new FenFunction("forEach", (feArgs, _) =>
+                {
+                    if (feArgs.Length == 0 || !feArgs[0].IsFunction) return FenValue.Undefined;
+                    var callback = feArgs[0].AsFunction();
+                    var thisArg = feArgs.Length > 1 ? feArgs[1] : FenValue.Undefined;
+                    foreach (var kvp in storage.Values)
+                    {
+                        callback.Invoke(new IValue[] { kvp.value, kvp.key, FenValue.FromObject(map) }, null);
+                    }
+                    return FenValue.Undefined;
+                })));
+                
+                // [Symbol.iterator]() - Returns iterator that yields [key, value] pairs
+                map.Set("[Symbol.iterator]", FenValue.FromFunction(new FenFunction("[Symbol.iterator]", (_, __) =>
+                {
+                    var iterator = new FenObject();
+                    var entries = new List<(IValue key, IValue value)>(storage.Values);
+                    int index = 0;
+                    
+                    iterator.Set("next", FenValue.FromFunction(new FenFunction("next", (___, ____) =>
+                    {
+                        var result = new FenObject();
+                        if (index < entries.Count)
+                        {
+                            var entry = entries[index++];
+                            var pair = new FenObject();
+                            pair.Set("0", entry.key);
+                            pair.Set("1", entry.value);
+                            pair.Set("length", FenValue.FromNumber(2));
+                            result.Set("value", FenValue.FromObject(pair));
+                            result.Set("done", FenValue.FromBoolean(false));
+                        }
+                        else
+                        {
+                            result.Set("value", FenValue.Undefined);
+                            result.Set("done", FenValue.FromBoolean(true));
+                        }
+                        return FenValue.FromObject(result);
+                    })));
+                    
+                    return FenValue.FromObject(iterator);
+                })));
+                
+                // Initialize from iterable if provided
+                if (args.Length > 0 && args[0].IsObject)
+                {
+                    var iterable = args[0].AsObject();
+                    var lenVal = iterable?.Get("length");
+                    int len = lenVal != null && lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                    for (int i = 0; i < len; i++)
+                    {
+                        var entry = iterable.Get(i.ToString());
+                        if (entry != null && entry.IsObject)
+                        {
+                            var entryObj = entry.AsObject();
+                            var key = entryObj?.Get("0") ?? FenValue.Undefined;
+                            var value = entryObj?.Get("1") ?? FenValue.Undefined;
+                            var keyStr = getMapKey(key);
+                            storage[keyStr] = (key, value);
+                        }
+                    }
+                    updateSize();
+                }
+                
+                return FenValue.FromObject(map);
+            })));
+
+            // ============================================
+            // SET - Full Implementation
+            // ============================================
+            SetGlobal("Set", FenValue.FromFunction(new FenFunction("Set", (args, thisVal) =>
+            {
+                var set = new FenObject();
+                var storage = new Dictionary<string, IValue>();
+                set.NativeObject = storage;
+                
+                Func<IValue, string> getSetKey = (val) =>
+                {
+                    if (val == null || val.IsNull) return "null";
+                    if (val.IsUndefined) return "undefined";
+                    if (val.IsBoolean) return "bool:" + val.ToBoolean().ToString();
+                    if (val.IsNumber) return "num:" + val.ToNumber().ToString();
+                    if (val.IsString) return "str:" + val.ToString();
+                    if (val.IsObject) return "obj:" + val.AsObject().GetHashCode().ToString();
+                    return "other:" + val.ToString();
+                };
+                
+                set.Set("size", FenValue.FromNumber(0));
+                Action updateSize = () => set.Set("size", FenValue.FromNumber(storage.Count));
+                
+                // add(value) - Returns Set for chaining
+                set.Set("add", FenValue.FromFunction(new FenFunction("add", (addArgs, addThis) =>
+                {
+                    var value = addArgs.Length > 0 ? addArgs[0] : FenValue.Undefined;
+                    var keyStr = getSetKey(value);
+                    storage[keyStr] = value;
+                    updateSize();
+                    return addThis;
+                })));
+                
+                // has(value)
+                set.Set("has", FenValue.FromFunction(new FenFunction("has", (hasArgs, _) =>
+                {
+                    if (hasArgs.Length == 0) return FenValue.FromBoolean(false);
+                    var keyStr = getSetKey(hasArgs[0]);
+                    return FenValue.FromBoolean(storage.ContainsKey(keyStr));
+                })));
+                
+                // delete(value)
+                set.Set("delete", FenValue.FromFunction(new FenFunction("delete", (delArgs, _) =>
+                {
+                    if (delArgs.Length == 0) return FenValue.FromBoolean(false);
+                    var keyStr = getSetKey(delArgs[0]);
+                    var removed = storage.Remove(keyStr);
+                    updateSize();
+                    return FenValue.FromBoolean(removed);
+                })));
+                
+                // clear()
+                set.Set("clear", FenValue.FromFunction(new FenFunction("clear", (_, __) =>
+                {
+                    storage.Clear();
+                    updateSize();
+                    return FenValue.Undefined;
+                })));
+                
+                // values() - Returns array of values (same as keys for Set)
+                set.Set("values", FenValue.FromFunction(new FenFunction("values", (_, __) =>
+                {
+                    var arr = new FenObject();
+                    int i = 0;
+                    foreach (var kvp in storage.Values)
+                    {
+                        arr.Set(i.ToString(), kvp);
+                        i++;
+                    }
+                    arr.Set("length", FenValue.FromNumber(i));
+                    return FenValue.FromObject(arr);
+                })));
+                
+                // keys() - Same as values() for Set
+                set.Set("keys", set.Get("values"));
+                
+                // entries() - Returns [value, value] pairs for Set
+                set.Set("entries", FenValue.FromFunction(new FenFunction("entries", (_, __) =>
+                {
+                    var arr = new FenObject();
+                    int i = 0;
+                    foreach (var kvp in storage.Values)
+                    {
+                        var entry = new FenObject();
+                        entry.Set("0", kvp);
+                        entry.Set("1", kvp); // [value, value] for Set
+                        entry.Set("length", FenValue.FromNumber(2));
+                        arr.Set(i.ToString(), FenValue.FromObject(entry));
+                        i++;
+                    }
+                    arr.Set("length", FenValue.FromNumber(i));
+                    return FenValue.FromObject(arr);
+                })));
+                
+                // forEach(callback, thisArg)
+                set.Set("forEach", FenValue.FromFunction(new FenFunction("forEach", (feArgs, _) =>
+                {
+                    if (feArgs.Length == 0 || !feArgs[0].IsFunction) return FenValue.Undefined;
+                    var callback = feArgs[0].AsFunction();
+                    var thisArg = feArgs.Length > 1 ? feArgs[1] : FenValue.Undefined;
+                    foreach (var kvp in storage.Values)
+                    {
+                        callback.Invoke(new IValue[] { kvp, kvp, FenValue.FromObject(set) }, null);
+                    }
+                    return FenValue.Undefined;
+                })));
+                
+                // [Symbol.iterator]() - Returns iterator that yields values
+                set.Set("[Symbol.iterator]", FenValue.FromFunction(new FenFunction("[Symbol.iterator]", (_, __) =>
+                {
+                    var iterator = new FenObject();
+                    var values = new List<IValue>(storage.Values);
+                    int index = 0;
+                    
+                    iterator.Set("next", FenValue.FromFunction(new FenFunction("next", (___, ____) =>
+                    {
+                        var result = new FenObject();
+                        if (index < values.Count)
+                        {
+                            result.Set("value", values[index++]);
+                            result.Set("done", FenValue.FromBoolean(false));
+                        }
+                        else
+                        {
+                            result.Set("value", FenValue.Undefined);
+                            result.Set("done", FenValue.FromBoolean(true));
+                        }
+                        return FenValue.FromObject(result);
+                    })));
+                    
+                    return FenValue.FromObject(iterator);
+                })));
+                
+                // Initialize from iterable
+                if (args.Length > 0 && args[0].IsObject)
+                {
+                    var iterable = args[0].AsObject();
+                    var lenVal = iterable?.Get("length");
+                    int len = lenVal != null && lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                    for (int i = 0; i < len; i++)
+                    {
+                        var value = iterable.Get(i.ToString()) ?? FenValue.Undefined;
+                        storage[getSetKey(value)] = value;
+                    }
+                    updateSize();
+                }
+                
+                return FenValue.FromObject(set);
+            })));
+
+            // ============================================
+            // WEAKMAP - Implementation (uses object hash codes)
+            // ============================================
+            SetGlobal("WeakMap", FenValue.FromFunction(new FenFunction("WeakMap", (args, thisVal) =>
+            {
+                var wmap = new FenObject();
+                var storage = new Dictionary<int, IValue>();
+                wmap.NativeObject = storage;
+                
+                // set(key, value) - Key must be an object
+                wmap.Set("set", FenValue.FromFunction(new FenFunction("set", (setArgs, setThis) =>
+                {
+                    if (setArgs.Length == 0 || !setArgs[0].IsObject) return setThis;
+                    var keyObj = setArgs[0].AsObject();
+                    var value = setArgs.Length > 1 ? setArgs[1] : FenValue.Undefined;
+                    storage[keyObj.GetHashCode()] = value;
+                    return setThis;
+                })));
+                
+                // get(key)
+                wmap.Set("get", FenValue.FromFunction(new FenFunction("get", (getArgs, _) =>
+                {
+                    if (getArgs.Length == 0 || !getArgs[0].IsObject) return FenValue.Undefined;
+                    var keyHash = getArgs[0].AsObject().GetHashCode();
+                    return storage.ContainsKey(keyHash) ? storage[keyHash] : FenValue.Undefined;
+                })));
+                
+                // has(key)
+                wmap.Set("has", FenValue.FromFunction(new FenFunction("has", (hasArgs, _) =>
+                {
+                    if (hasArgs.Length == 0 || !hasArgs[0].IsObject) return FenValue.FromBoolean(false);
+                    return FenValue.FromBoolean(storage.ContainsKey(hasArgs[0].AsObject().GetHashCode()));
+                })));
+                
+                // delete(key)
+                wmap.Set("delete", FenValue.FromFunction(new FenFunction("delete", (delArgs, _) =>
+                {
+                    if (delArgs.Length == 0 || !delArgs[0].IsObject) return FenValue.FromBoolean(false);
+                    return FenValue.FromBoolean(storage.Remove(delArgs[0].AsObject().GetHashCode()));
+                })));
+                
+                return FenValue.FromObject(wmap);
+            })));
+
+            // ============================================
+            // WEAKSET - Implementation
+            // ============================================
+            SetGlobal("WeakSet", FenValue.FromFunction(new FenFunction("WeakSet", (args, thisVal) =>
+            {
+                var wset = new FenObject();
+                var storage = new HashSet<int>();
+                wset.NativeObject = storage;
+                
+                // add(value) - Value must be an object
+                wset.Set("add", FenValue.FromFunction(new FenFunction("add", (addArgs, addThis) =>
+                {
+                    if (addArgs.Length == 0 || !addArgs[0].IsObject) return addThis;
+                    storage.Add(addArgs[0].AsObject().GetHashCode());
+                    return addThis;
+                })));
+                
+                // has(value)
+                wset.Set("has", FenValue.FromFunction(new FenFunction("has", (hasArgs, _) =>
+                {
+                    if (hasArgs.Length == 0 || !hasArgs[0].IsObject) return FenValue.FromBoolean(false);
+                    return FenValue.FromBoolean(storage.Contains(hasArgs[0].AsObject().GetHashCode()));
+                })));
+                
+                // delete(value)
+                wset.Set("delete", FenValue.FromFunction(new FenFunction("delete", (delArgs, _) =>
+                {
+                    if (delArgs.Length == 0 || !delArgs[0].IsObject) return FenValue.FromBoolean(false);
+                    return FenValue.FromBoolean(storage.Remove(delArgs[0].AsObject().GetHashCode()));
+                })));
+                
+                return FenValue.FromObject(wset);
+            })));
 
             // Worker - Web Workers for background script execution
             SetGlobal("Worker", FenValue.FromFunction(new FenFunction("Worker", (args, thisVal) =>
@@ -1029,6 +2648,16 @@ namespace FenBrowser.FenEngine.Core
                 arr.Set(i.ToString(), FenValue.FromString(items[i]));
             }
             arr.Set("length", FenValue.FromNumber(items.Length));
+            return arr;
+        }
+
+        /// <summary>
+        /// Create an empty array with length 0
+        /// </summary>
+        private FenObject CreateEmptyArray()
+        {
+            var arr = new FenObject();
+            arr.Set("length", FenValue.FromNumber(0));
             return arr;
         }
 
@@ -1784,50 +3413,534 @@ namespace FenBrowser.FenEngine.Core
         {
             var promiseCtor = new FenObject();
             
+            // Promise constructor: new Promise((resolve, reject) => { ... })
+            promiseCtor.NativeObject = new FenFunction("Promise", (args, thisVal) =>
+            {
+                if (args.Length == 0 || !args[0].IsFunction)
+                    return CreateRejectedPromise("Promise resolver is not a function");
+                
+                var executor = args[0].AsFunction();
+                return CreateExecutorPromise(executor, promiseCtor);
+            });
+            
             // Promise.resolve(value) - Creates a resolved promise
             promiseCtor.Set("resolve", FenValue.FromFunction(new FenFunction("resolve", (args, thisVal) =>
             {
                 var value = args.Length > 0 ? args[0] : FenValue.Undefined;
+                // If already a promise/thenable, return it
+                if (value.IsObject)
+                {
+                    var thenMethod = value.AsObject()?.Get("then");
+                    if (thenMethod != null && thenMethod.IsFunction) return value;
+                }
                 return CreateResolvedPromise(value);
             })));
             
             // Promise.reject(reason) - Creates a rejected promise  
             promiseCtor.Set("reject", FenValue.FromFunction(new FenFunction("reject", (args, thisVal) =>
             {
-                var reason = args.Length > 0 ? args[0].ToString() : "";
-                return CreateRejectedPromise(reason);
+                var reason = args.Length > 0 ? args[0] : FenValue.Undefined;
+                return CreateRejectedPromiseValue(reason);
             })));
             
-            // Promise.all(iterable) - Waits for all promises
+            // Promise.all(iterable) - Waits for all promises to resolve
             promiseCtor.Set("all", FenValue.FromFunction(new FenFunction("all", (args, thisVal) =>
             {
-                // Simplified: immediately resolve with the array
-                var arr = args.Length > 0 ? args[0] : FenValue.Undefined;
-                return CreateResolvedPromise(arr);
+                if (args.Length == 0 || !args[0].IsObject)
+                    return CreateResolvedPromise(FenValue.FromObject(CreateEmptyArray()));
+                
+                var iterable = args[0].AsObject();
+                var lenVal = iterable?.Get("length");
+                int len = lenVal != null && lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                
+                if (len == 0)
+                    return CreateResolvedPromise(FenValue.FromObject(CreateEmptyArray()));
+                
+                return CreateExecutorPromise(new FenFunction("allExecutor", (exArgs, _) =>
+                {
+                    var resolve = exArgs.Length > 0 && exArgs[0].IsFunction ? exArgs[0].AsFunction() : null;
+                    var reject = exArgs.Length > 1 && exArgs[1].IsFunction ? exArgs[1].AsFunction() : null;
+                    
+                    var results = new FenObject();
+                    results.Set("length", FenValue.FromNumber(len));
+                    int completed = 0;
+                    bool rejected = false;
+                    object lockObj = new object();
+                    
+                    for (int i = 0; i < len; i++)
+                    {
+                        int index = i;
+                        var item = iterable.Get(i.ToString()) ?? FenValue.Undefined;
+                        
+                        // Handle thenable/promise
+                        if (item.IsObject)
+                        {
+                            var thenMethod = item.AsObject()?.Get("then");
+                            if (thenMethod != null && thenMethod.IsFunction)
+                            {
+                                thenMethod.AsFunction().Invoke(new IValue[] {
+                                    FenValue.FromFunction(new FenFunction("resolve", (a, __) =>
+                                    {
+                                        lock (lockObj)
+                                        {
+                                            if (rejected) return FenValue.Undefined;
+                                            results.Set(index.ToString(), a.Length > 0 ? a[0] : FenValue.Undefined);
+                                            completed++;
+                                            if (completed == len) resolve?.Invoke(new IValue[] { FenValue.FromObject(results) }, null);
+                                        }
+                                        return FenValue.Undefined;
+                                    })),
+                                    FenValue.FromFunction(new FenFunction("reject", (a, __) =>
+                                    {
+                                        lock (lockObj)
+                                        {
+                                            if (rejected) return FenValue.Undefined;
+                                            rejected = true;
+                                            reject?.Invoke(a, null);
+                                        }
+                                        return FenValue.Undefined;
+                                    }))
+                                }, null);
+                                continue;
+                            }
+                        }
+                        // Non-promise value
+                        lock (lockObj)
+                        {
+                            if (rejected) continue;
+                            results.Set(index.ToString(), item);
+                            completed++;
+                            if (completed == len) resolve?.Invoke(new IValue[] { FenValue.FromObject(results) }, null);
+                        }
+                    }
+                    return FenValue.Undefined;
+                }), promiseCtor);
             })));
             
             // Promise.race(iterable) - Returns first settled promise
             promiseCtor.Set("race", FenValue.FromFunction(new FenFunction("race", (args, thisVal) =>
             {
-                // Simplified: immediately resolve with first element
-                if (args.Length > 0 && args[0].IsObject)
+                if (args.Length == 0 || !args[0].IsObject)
+                    return CreateExecutorPromise(new FenFunction("raceExecutor", (_, __) => FenValue.Undefined), promiseCtor);
+                
+                var iterable = args[0].AsObject();
+                var lenVal = iterable?.Get("length");
+                int len = lenVal != null && lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                
+                return CreateExecutorPromise(new FenFunction("raceExecutor", (exArgs, _) =>
                 {
-                    var arrObj = args[0].AsObject() as FenObject;
-                    var first = arrObj?.Get("0");
-                    if (first != null && !first.IsUndefined)
-                        return CreateResolvedPromise(first);
-                }
-                return CreateResolvedPromise(FenValue.Undefined);
+                    var resolve = exArgs.Length > 0 && exArgs[0].IsFunction ? exArgs[0].AsFunction() : null;
+                    var reject = exArgs.Length > 1 && exArgs[1].IsFunction ? exArgs[1].AsFunction() : null;
+                    bool settled = false;
+                    object lockObj = new object();
+                    
+                    for (int i = 0; i < len; i++)
+                    {
+                        var item = iterable.Get(i.ToString()) ?? FenValue.Undefined;
+                        
+                        if (item.IsObject)
+                        {
+                            var thenMethod = item.AsObject()?.Get("then");
+                            if (thenMethod != null && thenMethod.IsFunction)
+                            {
+                                thenMethod.AsFunction().Invoke(new IValue[] {
+                                    FenValue.FromFunction(new FenFunction("resolve", (a, __) =>
+                                    {
+                                        lock (lockObj) { if (settled) return FenValue.Undefined; settled = true; }
+                                        resolve?.Invoke(a, null);
+                                        return FenValue.Undefined;
+                                    })),
+                                    FenValue.FromFunction(new FenFunction("reject", (a, __) =>
+                                    {
+                                        lock (lockObj) { if (settled) return FenValue.Undefined; settled = true; }
+                                        reject?.Invoke(a, null);
+                                        return FenValue.Undefined;
+                                    }))
+                                }, null);
+                                continue;
+                            }
+                        }
+                        // Non-promise settles immediately
+                        lock (lockObj) { if (settled) continue; settled = true; }
+                        resolve?.Invoke(new IValue[] { item }, null);
+                        break;
+                    }
+                    return FenValue.Undefined;
+                }), promiseCtor);
             })));
 
-            // Promise.allSettled(iterable)
+            // Promise.allSettled(iterable) - Waits for all to settle (resolve or reject)
             promiseCtor.Set("allSettled", FenValue.FromFunction(new FenFunction("allSettled", (args, thisVal) =>
             {
-                var arr = args.Length > 0 ? args[0] : FenValue.Undefined;
-                return CreateResolvedPromise(arr);
+                if (args.Length == 0 || !args[0].IsObject)
+                    return CreateResolvedPromise(FenValue.FromObject(CreateEmptyArray()));
+                
+                var iterable = args[0].AsObject();
+                var lenVal = iterable?.Get("length");
+                int len = lenVal != null && lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                
+                if (len == 0)
+                    return CreateResolvedPromise(FenValue.FromObject(CreateEmptyArray()));
+                
+                return CreateExecutorPromise(new FenFunction("allSettledExecutor", (exArgs, _) =>
+                {
+                    var resolve = exArgs.Length > 0 && exArgs[0].IsFunction ? exArgs[0].AsFunction() : null;
+                    
+                    var results = new FenObject();
+                    results.Set("length", FenValue.FromNumber(len));
+                    int completed = 0;
+                    object lockObj = new object();
+                    
+                    for (int i = 0; i < len; i++)
+                    {
+                        int index = i;
+                        var item = iterable.Get(i.ToString()) ?? FenValue.Undefined;
+                        
+                        if (item.IsObject)
+                        {
+                            var thenMethod = item.AsObject()?.Get("then");
+                            if (thenMethod != null && thenMethod.IsFunction)
+                            {
+                                thenMethod.AsFunction().Invoke(new IValue[] {
+                                    FenValue.FromFunction(new FenFunction("resolve", (a, __) =>
+                                    {
+                                        var result = new FenObject();
+                                        result.Set("status", FenValue.FromString("fulfilled"));
+                                        result.Set("value", a.Length > 0 ? a[0] : FenValue.Undefined);
+                                        lock (lockObj)
+                                        {
+                                            results.Set(index.ToString(), FenValue.FromObject(result));
+                                            completed++;
+                                            if (completed == len) resolve?.Invoke(new IValue[] { FenValue.FromObject(results) }, null);
+                                        }
+                                        return FenValue.Undefined;
+                                    })),
+                                    FenValue.FromFunction(new FenFunction("reject", (a, __) =>
+                                    {
+                                        var result = new FenObject();
+                                        result.Set("status", FenValue.FromString("rejected"));
+                                        result.Set("reason", a.Length > 0 ? a[0] : FenValue.Undefined);
+                                        lock (lockObj)
+                                        {
+                                            results.Set(index.ToString(), FenValue.FromObject(result));
+                                            completed++;
+                                            if (completed == len) resolve?.Invoke(new IValue[] { FenValue.FromObject(results) }, null);
+                                        }
+                                        return FenValue.Undefined;
+                                    }))
+                                }, null);
+                                continue;
+                            }
+                        }
+                        // Non-promise resolves immediately
+                        var res = new FenObject();
+                        res.Set("status", FenValue.FromString("fulfilled"));
+                        res.Set("value", item);
+                        lock (lockObj)
+                        {
+                            results.Set(index.ToString(), FenValue.FromObject(res));
+                            completed++;
+                            if (completed == len) resolve?.Invoke(new IValue[] { FenValue.FromObject(results) }, null);
+                        }
+                    }
+                    return FenValue.Undefined;
+                }), promiseCtor);
+            })));
+            
+            // Promise.any(iterable) - Returns first fulfilled or AggregateError if all reject
+            promiseCtor.Set("any", FenValue.FromFunction(new FenFunction("any", (args, thisVal) =>
+            {
+                if (args.Length == 0 || !args[0].IsObject)
+                {
+                    var aggErr = new FenObject();
+                    aggErr.Set("name", FenValue.FromString("AggregateError"));
+                    aggErr.Set("message", FenValue.FromString("All promises were rejected"));
+                    aggErr.Set("errors", FenValue.FromObject(CreateEmptyArray()));
+                    return CreateRejectedPromiseValue(FenValue.FromObject(aggErr));
+                }
+                
+                var iterable = args[0].AsObject();
+                var lenVal = iterable?.Get("length");
+                int len = lenVal != null && lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                
+                if (len == 0)
+                {
+                    var aggErr = new FenObject();
+                    aggErr.Set("name", FenValue.FromString("AggregateError"));
+                    aggErr.Set("message", FenValue.FromString("All promises were rejected"));
+                    aggErr.Set("errors", FenValue.FromObject(CreateEmptyArray()));
+                    return CreateRejectedPromiseValue(FenValue.FromObject(aggErr));
+                }
+                
+                return CreateExecutorPromise(new FenFunction("anyExecutor", (exArgs, _) =>
+                {
+                    var resolve = exArgs.Length > 0 && exArgs[0].IsFunction ? exArgs[0].AsFunction() : null;
+                    var reject = exArgs.Length > 1 && exArgs[1].IsFunction ? exArgs[1].AsFunction() : null;
+                    
+                    var errors = new FenObject();
+                    errors.Set("length", FenValue.FromNumber(len));
+                    int rejectedCount = 0;
+                    bool fulfilled = false;
+                    object lockObj = new object();
+                    
+                    for (int i = 0; i < len; i++)
+                    {
+                        int index = i;
+                        var item = iterable.Get(i.ToString()) ?? FenValue.Undefined;
+                        
+                        if (item.IsObject)
+                        {
+                            var thenMethod = item.AsObject()?.Get("then");
+                            if (thenMethod != null && thenMethod.IsFunction)
+                            {
+                                thenMethod.AsFunction().Invoke(new IValue[] {
+                                    FenValue.FromFunction(new FenFunction("resolve", (a, __) =>
+                                    {
+                                        lock (lockObj) { if (fulfilled) return FenValue.Undefined; fulfilled = true; }
+                                        resolve?.Invoke(a, null);
+                                        return FenValue.Undefined;
+                                    })),
+                                    FenValue.FromFunction(new FenFunction("reject", (a, __) =>
+                                    {
+                                        lock (lockObj)
+                                        {
+                                            if (fulfilled) return FenValue.Undefined;
+                                            errors.Set(index.ToString(), a.Length > 0 ? a[0] : FenValue.Undefined);
+                                            rejectedCount++;
+                                            if (rejectedCount == len)
+                                            {
+                                                var aggErr = new FenObject();
+                                                aggErr.Set("name", FenValue.FromString("AggregateError"));
+                                                aggErr.Set("message", FenValue.FromString("All promises were rejected"));
+                                                aggErr.Set("errors", FenValue.FromObject(errors));
+                                                reject?.Invoke(new IValue[] { FenValue.FromObject(aggErr) }, null);
+                                            }
+                                        }
+                                        return FenValue.Undefined;
+                                    }))
+                                }, null);
+                                continue;
+                            }
+                        }
+                        // Non-promise fulfills immediately
+                        lock (lockObj) { if (fulfilled) continue; fulfilled = true; }
+                        resolve?.Invoke(new IValue[] { item }, null);
+                        break;
+                    }
+                    return FenValue.Undefined;
+                }), promiseCtor);
             })));
             
             return promiseCtor;
+        }
+
+        /// <summary>
+        /// Creates a Promise with an executor function (for new Promise((resolve, reject) => {}))
+        /// </summary>
+        private IValue CreateExecutorPromise(FenFunction executor, FenObject promiseCtor)
+        {
+            var promise = new FenObject();
+            string state = "pending";
+            IValue result = FenValue.Undefined;
+            var fulfillCallbacks = new List<(FenFunction onFulfill, FenFunction onReject, FenFunction chainResolve, FenFunction chainReject)>();
+            var rejectCallbacks = new List<(FenFunction onFulfill, FenFunction onReject, FenFunction chainResolve, FenFunction chainReject)>();
+            object lockObj = new object();
+            
+            Action<string, IValue> settle = (newState, value) =>
+            {
+                lock (lockObj)
+                {
+                    if (state != "pending") return;
+                    state = newState;
+                    result = value;
+                    promise.Set("__state", FenValue.FromString(state));
+                    promise.Set(newState == "fulfilled" ? "__value" : "__reason", value);
+                }
+                
+                var callbacks = newState == "fulfilled" ? fulfillCallbacks : rejectCallbacks;
+                foreach (var (onFulfill, onReject, chainResolve, chainReject) in callbacks)
+                {
+                    try
+                    {
+                        var handler = newState == "fulfilled" ? onFulfill : onReject;
+                        if (handler != null)
+                        {
+                            var cbResult = handler.Invoke(new IValue[] { result }, null);
+                            chainResolve?.Invoke(new IValue[] { cbResult }, null);
+                        }
+                        else if (newState == "fulfilled")
+                            chainResolve?.Invoke(new IValue[] { result }, null);
+                        else
+                            chainReject?.Invoke(new IValue[] { result }, null);
+                    }
+                    catch (Exception ex)
+                    {
+                        chainReject?.Invoke(new IValue[] { FenValue.FromString(ex.Message) }, null);
+                    }
+                }
+                fulfillCallbacks.Clear();
+                rejectCallbacks.Clear();
+            };
+            
+            var resolveFn = new FenFunction("resolve", (resolveArgs, _) =>
+            {
+                var value = resolveArgs.Length > 0 ? resolveArgs[0] : FenValue.Undefined;
+                // Handle thenable resolution
+                if (value.IsObject)
+                {
+                    var thenMethod = value.AsObject()?.Get("then");
+                    if (thenMethod != null && thenMethod.IsFunction)
+                    {
+                        try
+                        {
+                            thenMethod.AsFunction().Invoke(new IValue[] {
+                                FenValue.FromFunction(new FenFunction("res", (a, __) => { settle("fulfilled", a.Length > 0 ? a[0] : FenValue.Undefined); return FenValue.Undefined; })),
+                                FenValue.FromFunction(new FenFunction("rej", (a, __) => { settle("rejected", a.Length > 0 ? a[0] : FenValue.Undefined); return FenValue.Undefined; }))
+                            }, null);
+                        }
+                        catch (Exception ex) { settle("rejected", FenValue.FromString(ex.Message)); }
+                        return FenValue.Undefined;
+                    }
+                }
+                settle("fulfilled", value);
+                return FenValue.Undefined;
+            });
+            
+            var rejectFn = new FenFunction("reject", (rejectArgs, _) =>
+            {
+                settle("rejected", rejectArgs.Length > 0 ? rejectArgs[0] : FenValue.Undefined);
+                return FenValue.Undefined;
+            });
+            
+            promise.Set("__state", FenValue.FromString("pending"));
+            
+            // then(onFulfilled, onRejected)
+            promise.Set("then", FenValue.FromFunction(new FenFunction("then", (thenArgs, thenThis) =>
+            {
+                var onFulfilled = thenArgs.Length > 0 && thenArgs[0].IsFunction ? thenArgs[0].AsFunction() : null;
+                var onRejected = thenArgs.Length > 1 && thenArgs[1].IsFunction ? thenArgs[1].AsFunction() : null;
+                
+                FenFunction chainResolve = null, chainReject = null;
+                var chainedPromise = CreateExecutorPromise(new FenFunction("chainExecutor", (exArgs, _) =>
+                {
+                    chainResolve = exArgs.Length > 0 && exArgs[0].IsFunction ? exArgs[0].AsFunction() : null;
+                    chainReject = exArgs.Length > 1 && exArgs[1].IsFunction ? exArgs[1].AsFunction() : null;
+                    return FenValue.Undefined;
+                }), promiseCtor);
+                
+                lock (lockObj)
+                {
+                    if (state == "pending")
+                    {
+                        fulfillCallbacks.Add((onFulfilled, onRejected, chainResolve, chainReject));
+                        rejectCallbacks.Add((onFulfilled, onRejected, chainResolve, chainReject));
+                    }
+                    else
+                    {
+                        Task.Run(() =>
+                        {
+                            try
+                            {
+                                var handler = state == "fulfilled" ? onFulfilled : onRejected;
+                                if (handler != null)
+                                {
+                                    var cbResult = handler.Invoke(new IValue[] { result }, null);
+                                    chainResolve?.Invoke(new IValue[] { cbResult }, null);
+                                }
+                                else if (state == "fulfilled")
+                                    chainResolve?.Invoke(new IValue[] { result }, null);
+                                else
+                                    chainReject?.Invoke(new IValue[] { result }, null);
+                            }
+                            catch (Exception ex)
+                            {
+                                chainReject?.Invoke(new IValue[] { FenValue.FromString(ex.Message) }, null);
+                            }
+                        });
+                    }
+                }
+                
+                return chainedPromise;
+            })));
+            
+            // catch(onRejected)
+            promise.Set("catch", FenValue.FromFunction(new FenFunction("catch", (catchArgs, _) =>
+            {
+                var thenMethod = promise.Get("then");
+                if (thenMethod != null && thenMethod.IsFunction)
+                    return thenMethod.AsFunction().Invoke(new IValue[] { FenValue.Undefined, catchArgs.Length > 0 ? catchArgs[0] : FenValue.Undefined }, null);
+                return FenValue.FromObject(promise);
+            })));
+            
+            // finally(onFinally)
+            promise.Set("finally", FenValue.FromFunction(new FenFunction("finally", (finallyArgs, _) =>
+            {
+                var onFinally = finallyArgs.Length > 0 && finallyArgs[0].IsFunction ? finallyArgs[0].AsFunction() : null;
+                if (onFinally == null) return FenValue.FromObject(promise);
+                
+                var thenMethod = promise.Get("then");
+                if (thenMethod != null && thenMethod.IsFunction)
+                {
+                    return thenMethod.AsFunction().Invoke(new IValue[] {
+                        FenValue.FromFunction(new FenFunction("onFulfill", (a, __) => { onFinally.Invoke(new IValue[0], null); return a.Length > 0 ? a[0] : FenValue.Undefined; })),
+                        FenValue.FromFunction(new FenFunction("onReject", (a, __) => { onFinally.Invoke(new IValue[0], null); return CreateRejectedPromiseValue(a.Length > 0 ? a[0] : FenValue.Undefined); }))
+                    }, null);
+                }
+                return FenValue.FromObject(promise);
+            })));
+            
+            // Execute the executor
+            try
+            {
+                executor.Invoke(new IValue[] { FenValue.FromFunction(resolveFn), FenValue.FromFunction(rejectFn) }, null);
+            }
+            catch (Exception ex)
+            {
+                settle("rejected", FenValue.FromString(ex.Message));
+            }
+            
+            return FenValue.FromObject(promise);
+        }
+
+        /// <summary>
+        /// Creates a rejected Promise with an IValue reason
+        /// </summary>
+        private IValue CreateRejectedPromiseValue(IValue reason)
+        {
+            var promise = new FenObject();
+            promise.Set("__rejected", FenValue.FromBoolean(true));
+            promise.Set("__reason", reason);
+            
+            promise.Set("then", FenValue.FromFunction(new FenFunction("then", (args, thisVal) =>
+            {
+                if (args.Length > 1 && args[1].IsFunction)
+                {
+                    var cb = args[1].AsFunction();
+                    var result = cb.Invoke(new IValue[] { reason }, null);
+                    return CreateResolvedPromise(result);
+                }
+                return thisVal;
+            })));
+            
+            promise.Set("catch", FenValue.FromFunction(new FenFunction("catch", (args, thisVal) =>
+            {
+                if (args.Length > 0 && args[0].IsFunction)
+                {
+                    var cb = args[0].AsFunction();
+                    var result = cb.Invoke(new IValue[] { reason }, null);
+                    return CreateResolvedPromise(result);
+                }
+                return thisVal;
+            })));
+            
+            promise.Set("finally", FenValue.FromFunction(new FenFunction("finally", (args, thisVal) =>
+            {
+                if (args.Length > 0 && args[0].IsFunction)
+                    args[0].AsFunction().Invoke(new IValue[0], null);
+                return thisVal;
+            })));
+            
+            return FenValue.FromObject(promise);
         }
 
         /// <summary>
@@ -2063,6 +4176,142 @@ namespace FenBrowser.FenEngine.Core
             })));
             
             return FenValue.FromObject(dv);
+        }
+
+        /// <summary>
+        /// Apply reviver function to parsed JSON
+        /// </summary>
+        private FenValue ApplyReviver(FenValue value, FenFunction reviver, string key)
+        {
+            if (value.IsObject && !value.IsNull)
+            {
+                var obj = value.AsObject() as FenObject;
+                if (obj != null)
+                {
+                    foreach (var k in obj.Keys().ToList())
+                    {
+                        var v = obj.Get(k);
+                        if (v != null)
+                        {
+                            var newV = ApplyReviver((FenValue)v, reviver, k);
+                            if (newV.IsUndefined)
+                                obj.Delete(k);
+                            else
+                                obj.Set(k, newV);
+                        }
+                    }
+                }
+            }
+            
+            var holder = new FenObject();
+            holder.Set(key, value);
+            var result = reviver.Invoke(new IValue[] { FenValue.FromString(key), value }, null);
+            return result != null ? (FenValue)result : FenValue.Undefined;
+        }
+
+        /// <summary>
+        /// Convert to JSON string with replacer function/array support
+        /// </summary>
+        private string ConvertToJsonStringWithReplacer(IValue value, FenFunction replacer, string[] replacerArray, int spaces, string indent)
+        {
+            if (value == null || value.IsUndefined) return "undefined";
+            if (value.IsNull) return "null";
+            
+            // Apply replacer function
+            if (replacer != null)
+            {
+                var holder = new FenObject();
+                holder.Set("", (FenValue)value);
+                var result = replacer.Invoke(new IValue[] { FenValue.FromString(""), value }, null);
+                if (result != null && !result.IsUndefined)
+                    value = result;
+                else if (result != null && result.IsUndefined)
+                    return null;
+            }
+            
+            if (value.IsNull) return "null";
+            if (value.IsBoolean) return value.ToBoolean() ? "true" : "false";
+            if (value.IsNumber)
+            {
+                var n = value.ToNumber();
+                if (double.IsNaN(n) || double.IsInfinity(n)) return "null";
+                return n.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
+            if (value.IsString) return $"\"{EscapeJsonString(value.ToString())}\"";
+            
+            if (value.IsObject)
+            {
+                var obj = value.AsObject();
+                if (obj == null) return "null";
+                
+                var lenVal = obj.Get("length");
+                bool isArray = lenVal != null && lenVal.IsNumber;
+                
+                var newIndent = spaces > 0 ? indent + new string(' ', spaces) : "";
+                var sep = spaces > 0 ? "\n" : "";
+                var colonSpace = spaces > 0 ? " " : "";
+                
+                if (isArray)
+                {
+                    int len = (int)lenVal.ToNumber();
+                    var items = new List<string>();
+                    for (int i = 0; i < len; i++)
+                    {
+                        var item = obj.Get(i.ToString());
+                        var itemStr = ConvertToJsonStringWithReplacer(item ?? FenValue.Null, replacer, replacerArray, spaces, newIndent);
+                        items.Add(itemStr ?? "null");
+                    }
+                    if (spaces > 0 && items.Count > 0)
+                        return $"[{sep}{newIndent}{string.Join($",{sep}{newIndent}", items)}{sep}{indent}]";
+                    return $"[{string.Join(",", items)}]";
+                }
+                else
+                {
+                    var pairs = new List<string>();
+                    var keys = replacerArray ?? obj.Keys().ToArray();
+                    foreach (var key in keys)
+                    {
+                        var val = obj.Get(key);
+                        if (val != null && !val.IsUndefined && !val.IsFunction)
+                        {
+                            var valStr = ConvertToJsonStringWithReplacer(val, replacer, replacerArray, spaces, newIndent);
+                            if (valStr != null)
+                                pairs.Add($"\"{EscapeJsonString(key)}\"{colonSpace}:{colonSpace}{valStr}");
+                        }
+                    }
+                    if (spaces > 0 && pairs.Count > 0)
+                        return $"{{{sep}{newIndent}{string.Join($",{sep}{newIndent}", pairs)}{sep}{indent}}}";
+                    return $"{{{string.Join(",", pairs)}}}";
+                }
+            }
+            
+            return "null";
+        }
+
+        private string EscapeJsonString(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return s;
+            var sb = new StringBuilder();
+            foreach (var c in s)
+            {
+                switch (c)
+                {
+                    case '"': sb.Append("\\\""); break;
+                    case '\\': sb.Append("\\\\"); break;
+                    case '\b': sb.Append("\\b"); break;
+                    case '\f': sb.Append("\\f"); break;
+                    case '\n': sb.Append("\\n"); break;
+                    case '\r': sb.Append("\\r"); break;
+                    case '\t': sb.Append("\\t"); break;
+                    default:
+                        if (c < 32)
+                            sb.Append($"\\u{(int)c:x4}");
+                        else
+                            sb.Append(c);
+                        break;
+                }
+            }
+            return sb.ToString();
         }
 
         #endregion

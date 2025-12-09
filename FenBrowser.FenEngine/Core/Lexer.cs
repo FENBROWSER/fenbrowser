@@ -106,6 +106,7 @@ namespace FenBrowser.FenEngine.Core
         Export,       // export
         From,         // from
         As,           // as
+        Yield,        // yield (for generators)
 
         // JavaScript special operators
         Question,   // ?
@@ -115,7 +116,8 @@ namespace FenBrowser.FenEngine.Core
         TemplateString, // Template literal content
         TemplateExprStart, // ${
         TemplateExprEnd,   // }
-        Ellipsis           // ...
+        Ellipsis,          // ...
+        PrivateIdentifier  // #field (for private class fields)
     }
 
     public class Token
@@ -198,6 +200,7 @@ namespace FenBrowser.FenEngine.Core
                     { "case", TokenType.Case },
                     { "default", TokenType.Default },
                     { "do", TokenType.Do },
+                    { "yield", TokenType.Yield },
                 };
             }
             catch (Exception ex)
@@ -458,7 +461,19 @@ namespace FenBrowser.FenEngine.Core
                     token = new Token(TokenType.String, ReadString(_ch), _line, startColumn);
                     break;
                 case '`':
-                    token = new Token(TokenType.String, ReadTemplateLiteral(), _line, startColumn);
+                    token = new Token(TokenType.TemplateString, ReadTemplateLiteral(), _line, startColumn);
+                    break;
+                case '#':
+                    // Private identifier (e.g., #field for private class fields)
+                    ReadChar(); // consume #
+                    if (IsLetter(_ch))
+                    {
+                        string privateName = ReadIdentifier();
+                        var t = new Token(TokenType.PrivateIdentifier, "#" + privateName, _line, startColumn);
+                        _prevToken = t;
+                        return t;
+                    }
+                    token = new Token(TokenType.Illegal, "#", _line, startColumn);
                     break;
                 case '\0':
                     token = new Token(TokenType.Eof, "", _line, startColumn);

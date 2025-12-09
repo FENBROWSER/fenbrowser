@@ -61,10 +61,31 @@ namespace FenBrowser.FenEngine.Core
         public override string String() => Value;
     }
 
+    // Private identifier for private class members (#field, #method)
+    public class PrivateIdentifier : Expression
+    {
+        public string Name { get; set; } // The name without the # prefix
+
+        public PrivateIdentifier(Token token, string name)
+        {
+            Token = token;
+            Name = name;
+        }
+
+        public override string String() => "#" + Name;
+    }
+
     // Empty expression for recovery (;, trailing commas, etc.)
     public class EmptyExpression : Expression
     {
         public override string String() => "";
+    }
+
+    public enum DeclarationKind
+    {
+        Var,
+        Let,
+        Const
     }
 
     public class LetStatement : Statement
@@ -72,6 +93,7 @@ namespace FenBrowser.FenEngine.Core
         public Identifier Name { get; set; }
         public Expression DestructuringPattern { get; set; }
         public Expression Value { get; set; }
+        public DeclarationKind Kind { get; set; } = DeclarationKind.Var; // Track var/let/const
 
         public override string String()
         {
@@ -219,11 +241,15 @@ namespace FenBrowser.FenEngine.Core
         public string Name { get; set; }
         public List<Identifier> Parameters { get; set; } = new List<Identifier>();
         public BlockStatement Body { get; set; }
+        public bool IsGenerator { get; set; } = false; // function* syntax
+        public bool IsAsync { get; set; } = false;
 
         public override string String()
         {
             var sb = new StringBuilder();
+            if (IsAsync) sb.Append("async ");
             sb.Append(TokenLiteral());
+            if (IsGenerator) sb.Append("*");
             sb.Append("(");
             var paramsStr = new List<string>();
             foreach (var p in Parameters)
@@ -234,6 +260,22 @@ namespace FenBrowser.FenEngine.Core
             sb.Append(") ");
             sb.Append(Body.String());
             return sb.ToString();
+        }
+    }
+    
+    /// <summary>
+    /// yield expression for generator functions
+    /// </summary>
+    public class YieldExpression : Expression
+    {
+        public Expression Value { get; set; }
+        public bool Delegate { get; set; } // yield* (delegation)
+
+        public override string String()
+        {
+            if (Delegate)
+                return $"yield* {Value?.String() ?? ""}";
+            return $"yield {Value?.String() ?? ""}";
         }
     }
 
@@ -512,13 +554,38 @@ namespace FenBrowser.FenEngine.Core
         public FunctionLiteral Value { get; set; }
         public string Kind { get; set; } // "constructor", "method", "get", "set"
         public bool Static { get; set; }
+        public bool IsPrivate { get; set; } // true if #methodName
 
         public override string String()
         {
             var sb = new StringBuilder();
             if (Static) sb.Append("static ");
+            if (IsPrivate) sb.Append("#");
             sb.Append(Key.String());
             sb.Append(Value.String());
+            return sb.ToString();
+        }
+    }
+
+    // Class field (property) declaration
+    public class ClassProperty : Statement
+    {
+        public Identifier Key { get; set; }
+        public Expression Value { get; set; }
+        public bool Static { get; set; }
+        public bool IsPrivate { get; set; } // true if #field
+
+        public override string String()
+        {
+            var sb = new StringBuilder();
+            if (Static) sb.Append("static ");
+            if (IsPrivate) sb.Append("#");
+            sb.Append(Key.String());
+            if (Value != null)
+            {
+                sb.Append(" = ");
+                sb.Append(Value.String());
+            }
             return sb.ToString();
         }
     }
@@ -529,6 +596,7 @@ namespace FenBrowser.FenEngine.Core
         public Identifier SuperClass { get; set; }
         public BlockStatement Body { get; set; } // Contains MethodDefinitions
         public List<MethodDefinition> Methods { get; set; } = new List<MethodDefinition>();
+        public List<ClassProperty> Properties { get; set; } = new List<ClassProperty>(); // Class fields (including private)
 
         public override string String()
         {
@@ -541,6 +609,11 @@ namespace FenBrowser.FenEngine.Core
                 sb.Append(SuperClass.String());
             }
             sb.Append(" { ");
+            foreach (var prop in Properties)
+            {
+                sb.Append(prop.String());
+                sb.Append("; ");
+            }
             foreach (var method in Methods)
             {
                 sb.Append(method.String());
@@ -728,6 +801,33 @@ namespace FenBrowser.FenEngine.Core
         public override string String()
         {
             return $"do {Body.String()} while ({Condition.String()});";
+        }
+    }
+
+    // Tagged template literal: tag`template ${expr} literal`
+    public class TaggedTemplateExpression : Expression
+    {
+        public Expression Tag { get; set; }  // The tag function (e.g., html, css, myTag)
+        public List<string> Strings { get; set; } = new List<string>();  // String parts
+        public List<Expression> Expressions { get; set; } = new List<Expression>();  // Interpolated expressions
+
+        public override string String()
+        {
+            var sb = new StringBuilder();
+            sb.Append(Tag.String());
+            sb.Append("`");
+            for (int i = 0; i < Strings.Count; i++)
+            {
+                sb.Append(Strings[i]);
+                if (i < Expressions.Count)
+                {
+                    sb.Append("${");
+                    sb.Append(Expressions[i].String());
+                    sb.Append("}");
+                }
+            }
+            sb.Append("`");
+            return sb.ToString();
         }
     }
 }
