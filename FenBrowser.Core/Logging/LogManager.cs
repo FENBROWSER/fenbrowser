@@ -26,9 +26,23 @@ namespace FenBrowser.Core.Logging
 
         private LogManager()
         {
-            var fenBrowserPath = Path.Combine("C:\\Users\\udayk\\Videos\\FENBROWSER", "logs");
-            Directory.CreateDirectory(fenBrowserPath);
-            _logFilePath = Path.Combine(fenBrowserPath, $"fenbrowser_{DateTime.Now:yyyyMMdd}.log");
+            try 
+            {
+                // Hardcode path for reliability in this environment
+                var fenBrowserPath = @"C:\Users\udayk\Videos\FENBROWSER\logs";
+                if (!Directory.Exists(fenBrowserPath)) Directory.CreateDirectory(fenBrowserPath);
+                
+                _logFilePath = Path.Combine(fenBrowserPath, $"fenbrowser_{DateTime.Now:yyyyMMdd_HHmmss}.log");
+                
+                // Write Header
+                File.WriteAllText(_logFilePath, $"[LogManager] Initialized at {DateTime.Now:O}\n[LogManager] System: {Environment.OSVersion}\n--------------------------------------------------\n");
+            }
+            catch (Exception ex)
+            {
+                // Fallback if logging initialization fails
+                System.Diagnostics.Debug.WriteLine($"ERROR: LogManager failed to initialize file sink: {ex.Message}");
+                _logFilePath = null; // Prevent further file operations if initialization failed
+            }
         }
 
         /// <summary>

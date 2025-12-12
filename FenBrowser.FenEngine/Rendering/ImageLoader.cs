@@ -79,16 +79,93 @@ namespace FenBrowser.FenEngine.Rendering
                 // Simple dedup check (race condition possible but low impact for now)
                 if (_memoryCache.ContainsKey(url)) return;
 
-                // Handle base64
-                if (url.StartsWith("data:image"))
+                // Handle base64 / Data URIs
+                if (url.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
                 {
-                     var base64Data = url.Substring(url.IndexOf(",") + 1);
-                     var bytes = Convert.FromBase64String(base64Data);
-                     var bmp = SKBitmap.Decode(bytes);
-                     if (bmp != null)
+                     // Format: data:[<mediatype>][;base64],<data>
+                     int commaIndex = url.IndexOf(',');
+                     if (commaIndex < 0) return;
+
+                     string metadata = url.Substring(5, commaIndex - 5); // between data: and ,
+                     string dataStr = url.Substring(commaIndex + 1);
+
+                     bool isBase64 = metadata.IndexOf(";base64", StringComparison.OrdinalIgnoreCase) >= 0;
+                     string mimeType = metadata.Split(';')[0];
+                     
+                     // Security/Feature Check: Only allow images
+                     if (!string.IsNullOrEmpty(mimeType) && !mimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
                      {
-                         _memoryCache[url] = bmp;
-                         RequestDebouncedRepaint();
+                         try { File.AppendAllText(debugLogPath, $"[ImageLoader] Blocked non-image Data URI: {mimeType}\r\n"); } catch {}
+                         return;
+                     }
+
+                     byte[] bytes = null;
+                     if (isBase64)
+                     {
+                         // Robust Base64 cleanup
+                         dataStr = Uri.UnescapeDataString(dataStr);
+                         dataStr = dataStr.Replace("\r", "").Replace("\n", "").Replace(" ", "").Replace("\t", "");
+                         try 
+                         {
+                             bytes = Convert.FromBase64String(dataStr);
+                         }
+                         catch (Exception b64Ex)
+                         {
+                             try { File.AppendAllText(debugLogPath, $"[ImageLoader] Base64 Parse Error: {b64Ex.Message}\r\n"); } catch {}
+                             return;
+                         }
+                     }
+                     else
+                     {
+                         // URL encoded raw data
+                         dataStr = Uri.UnescapeDataString(dataStr);
+                         bytes = System.Text.Encoding.UTF8.GetBytes(dataStr);
+                     }
+
+                     if (bytes != null && bytes.Length > 0)
+                     {
+                         SKBitmap bmp = null;
+                         // Check for SVG
+                         if (mimeType.Contains("svg"))
+                         {
+                             // Simple SVG handling from bytes
+                             try 
+                             {
+                                 using (var ms = new MemoryStream(bytes))
+                                 {
+                                     var svg = new Svg.Skia.SKSvg();
+                                     svg.Load(ms);
+                                     if (svg.Picture != null)
+                                     {
+                                         var cull = svg.Picture.CullRect;
+                                         int w = (int)cull.Width;
+                                         int h = (int)cull.Height;
+                                         if (w <= 0 || h <= 0) { w = 300; h = 150; }
+                                         bmp = new SKBitmap(w, h);
+                                         using (var canvas = new SKCanvas(bmp))
+                                         {
+                                             canvas.Clear(SKColors.Transparent);
+                                             canvas.DrawPicture(svg.Picture);
+                                         }
+                                     }
+                                 }
+                             }
+                             catch {}
+                         }
+                         else
+                         {
+                             bmp = SKBitmap.Decode(bytes);
+                         }
+
+                         if (bmp != null)
+                         {
+                             _memoryCache[url] = bmp;
+                             // Log success for specific debugging
+                             if (url.Length > 50) 
+                                 try { File.AppendAllText(debugLogPath, $"[ImageLoader] Loaded Data URI (len={bytes.Length})\r\n"); } catch {}
+                             
+                             RequestDebouncedRepaint();
+                         }
                      }
                      return;
                 }
