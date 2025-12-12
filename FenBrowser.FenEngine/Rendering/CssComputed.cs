@@ -17,6 +17,9 @@ namespace FenBrowser.FenEngine.Rendering
         public CssComputed Before { get; set; }
         public CssComputed After { get; set; }
         public CssComputed Marker { get; set; }  // ::marker pseudo-element styles
+        
+        // Cache for virtual DOM node used in Rendering
+        public object PseudoElementInstance { get; set; }
 
         public CssComputed()
         {
