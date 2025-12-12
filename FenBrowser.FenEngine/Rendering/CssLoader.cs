@@ -1,4 +1,4 @@
-﻿using Avalonia.Controls;
+using Avalonia.Controls;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -16,6 +16,9 @@ namespace FenBrowser.FenEngine.Rendering
 {
     public static class CssLoader
     {
+        // Debug file logging - DISABLE for production (sync file I/O causes severe lag)
+        private const bool DEBUG_FILE_LOGGING = false;
+
         // ===========================
         // Public API
         // ===========================
@@ -44,7 +47,7 @@ namespace FenBrowser.FenEngine.Rendering
             var cssBlobs = new List<CssSource>(); // collected CSS texts with source ordering
             int sourceIndex = 0;
 
-            // 0) UA stylesheet (very small normalize) � lowest precedence
+            // 0) UA stylesheet (very small normalize) ? lowest precedence
             try
             {
                 var uaCss = @"
@@ -93,7 +96,7 @@ namespace FenBrowser.FenEngine.Rendering
                     try {
                     try {
                         var msg = $"[{DateTime.Now:HH:mm:ss}] [CssLoader] Found style block: {text.Length} chars. Content start: {text.Substring(0, Math.Min(text.Length, 50))}\r\n";
-                        DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", msg);
+                        if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", msg);
                     } catch {}
                     } catch {}
                     
@@ -114,13 +117,18 @@ namespace FenBrowser.FenEngine.Rendering
             // 2) External <link rel="stylesheet"> (DOM order)
             // Fetch in parallel with a small concurrency limit to avoid blocking UI
             var linkNodes = root.Descendants().Where(n => !n.IsText && n.Tag == "link").ToList();
-            DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[LINK] Found {linkNodes.Count} link elements\r\n");
+            if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[LINK] Found {linkNodes.Count} link elements in DOM root\r\n");
             var extTasks = new List<Task>();
             var gate = new System.Threading.SemaphoreSlim(8); // Shared gate for all CSS fetches (links + imports)
             foreach (var link in linkNodes)
             {
-                if (link.Attr == null) continue;
-                string rel; if (!link.Attr.TryGetValue("rel", out rel)) continue;
+                if (link.Attr == null) { if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", "[LINK] Link has no attributes\r\n"); continue; }
+                string rel;
+                if (!link.Attr.TryGetValue("rel", out rel)) 
+                {
+                     if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", "[LINK] Link has no rel attribute\r\n");
+                     continue; 
+                }
                 try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[LINK] Found link with rel='{rel}'\r\n"); } catch {}
                 if (!ContainsToken(rel, "stylesheet")) continue;
                 string href; if (!link.Attr.TryGetValue("href", out href) || string.IsNullOrWhiteSpace(href)) continue;
@@ -142,6 +150,7 @@ namespace FenBrowser.FenEngine.Rendering
                     try
                     {
                         var css = await fetchExternalCssAsync(abs).ConfigureAwait(false);
+                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[LINK] Fetched CSS len={css?.Length ?? -1} for {abs}\r\n"); } catch {}
                         if (!string.IsNullOrWhiteSpace(css))
                         {
                             lock (cssBlobs)
@@ -742,6 +751,105 @@ namespace FenBrowser.FenEngine.Rendering
 
             return false;
         }
+        
+        /// <summary>
+        /// Handle @container queries - conditional styles based on container size
+        /// For now, we use viewport width as the container size (simplified implementation)
+        /// </summary>
+        private static string FlattenContainerQueries(string text, float viewportWidth, Action<string> log)
+        {
+            if (string.IsNullOrEmpty(text)) return text;
+            if (text.IndexOf("@container", StringComparison.OrdinalIgnoreCase) < 0) return text;
+
+            var result = new StringBuilder();
+            int i = 0;
+
+            while (i < text.Length)
+            {
+                int contPos = text.IndexOf("@container", i, StringComparison.OrdinalIgnoreCase);
+                if (contPos < 0)
+                {
+                    result.Append(text.Substring(i));
+                    break;
+                }
+
+                result.Append(text.Substring(i, contPos - i));
+
+                int braceOpen = text.IndexOf('{', contPos);
+                if (braceOpen < 0) { i = contPos + 10; continue; }
+
+                int braceClose = FindMatchingBrace(text, braceOpen);
+                if (braceClose < 0) { i = braceOpen + 1; continue; }
+
+                // Parse the condition (between @container and {)
+                string condition = text.Substring(contPos + 10, braceOpen - contPos - 10).Trim();
+                string body = text.Substring(braceOpen + 1, braceClose - braceOpen - 1);
+
+                // Check if condition is met using viewport as container size
+                if (IsContainerConditionMet(condition, viewportWidth))
+                {
+                    result.Append(body);
+                    log?.Invoke($"[CSS] @container condition met: {condition}");
+                }
+                else
+                {
+                    log?.Invoke($"[CSS] @container condition NOT met: {condition}");
+                }
+
+                i = braceClose + 1;
+            }
+
+            return result.ToString();
+        }
+        
+        /// <summary>
+        /// Evaluate a @container condition against container (viewport) width
+        /// </summary>
+        private static bool IsContainerConditionMet(string condition, float containerWidth)
+        {
+            if (string.IsNullOrWhiteSpace(condition)) return true;
+            condition = condition.Trim().ToLowerInvariant();
+            
+            // Skip container name if present (e.g., "container-name (min-width: 400px)")
+            int parenIndex = condition.IndexOf('(');
+            if (parenIndex > 0 && !condition.StartsWith("("))
+            {
+                condition = condition.Substring(parenIndex);
+            }
+            
+            // Handle min-width: 400px
+            var minMatch = Regex.Match(condition, @"\(\s*min-width\s*:\s*([\d.]+)(px|em|rem|%)?\s*\)");
+            if (minMatch.Success)
+            {
+                float minWidth = float.Parse(minMatch.Groups[1].Value);
+                string unit = minMatch.Groups[2].Value;
+                if (unit == "em" || unit == "rem") minWidth *= 16; // Approximate
+                return containerWidth >= minWidth;
+            }
+            
+            // Handle max-width: 400px
+            var maxMatch = Regex.Match(condition, @"\(\s*max-width\s*:\s*([\d.]+)(px|em|rem|%)?\s*\)");
+            if (maxMatch.Success)
+            {
+                float maxWidth = float.Parse(maxMatch.Groups[1].Value);
+                string unit = maxMatch.Groups[2].Value;
+                if (unit == "em" || unit == "rem") maxWidth *= 16;
+                return containerWidth <= maxWidth;
+            }
+            
+            // Handle width: 400px (exact)
+            var widthMatch = Regex.Match(condition, @"\(\s*width\s*:\s*([\d.]+)(px|em|rem|%)?\s*\)");
+            if (widthMatch.Success)
+            {
+                float width = float.Parse(widthMatch.Groups[1].Value);
+                string unit = widthMatch.Groups[2].Value;
+                if (unit == "em" || unit == "rem") width *= 16;
+                return Math.Abs(containerWidth - width) < 1;
+            }
+            
+            // Default: include content if no recognizable condition
+            return true;
+        }
 
         /// <summary>
         /// Check if a CSS property is supported and log unsupported ones
@@ -769,7 +877,49 @@ namespace FenBrowser.FenEngine.Rendering
                 "order", "grid-template-rows", "grid-column", "grid-row",
                 "line-height", "letter-spacing", "word-spacing", "text-transform",
                 "white-space", "overflow-x", "overflow-y", "visibility",
-                "vertical-align", "float", "clear"
+                "vertical-align", "float", "clear",
+                "content", "counter-reset", "counter-increment", "counter-set",
+                "filter", "backdrop-filter", "clip-path",
+                // Grid Layout (from gap report)
+                "grid-template-areas", "grid-area", "grid-auto-flow", 
+                "grid-auto-columns", "grid-auto-rows", "place-items", "place-content",
+                "row-gap", "column-gap",
+                // Flexbox (from gap report)
+                "align-content",
+                // Visual Effects (from gap report)
+                "mix-blend-mode", "isolation", "mask", "mask-image",
+                // Typography (from gap report)
+                "font-variant", "font-stretch", "text-orientation", "writing-mode",
+                "hyphens", "word-break", "text-indent", "text-overflow",
+                // Logical Properties (from gap report)
+                "margin-block", "margin-block-start", "margin-block-end",
+                "margin-inline", "margin-inline-start", "margin-inline-end",
+                "padding-block", "padding-block-start", "padding-block-end",
+                "padding-inline", "padding-inline-start", "padding-inline-end",
+                "inset", "inset-block", "inset-inline", "block-size", "inline-size",
+                // Interactivity (from gap report)
+                "pointer-events", "touch-action", "user-select", "resize",
+                // Scroll Control (from gap report)
+                "overscroll-behavior", "scroll-behavior", "scroll-margin", "scroll-padding",
+                // Animation (from gap report)
+                "animation-name", "animation-duration", "animation-timing-function",
+                "animation-delay", "animation-iteration-count", "animation-direction",
+                "animation-fill-mode", "animation-play-state",
+                // Background enhancements
+                "background-position", "background-size", "background-repeat",
+                "background-attachment", "background-origin", "background-clip",
+                // Border enhancements
+                "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
+                "border-top-style", "border-right-style", "border-bottom-style", "border-left-style",
+                "border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
+                "border-top-left-radius", "border-top-right-radius",
+                "border-bottom-left-radius", "border-bottom-right-radius",
+                // Outline
+                "outline", "outline-width", "outline-style", "outline-color", "outline-offset",
+                // List styles
+                "list-style", "list-style-type", "list-style-position", "list-style-image",
+                // Table
+                "border-collapse", "border-spacing", "table-layout", "caption-side", "empty-cells"
             };
             
             bool isSupported = supported.Contains(property);
@@ -785,6 +935,31 @@ namespace FenBrowser.FenEngine.Rendering
             }
             
             return isSupported;
+        }
+
+        /// <summary>
+        /// Public method to check if an element matches a CSS selector string.
+        /// Used by DOM API methods like matches() and closest().
+        /// </summary>
+        public static bool MatchesSelector(LiteElement element, string selectorString)
+        {
+            if (element == null || string.IsNullOrWhiteSpace(selectorString))
+                return false;
+            
+            try
+            {
+                // Parse the selector string into a SelectorChain
+                var chain = ParseSelectorChain(selectorString.Trim());
+                if (chain == null || chain.Segments == null || chain.Segments.Count == 0)
+                    return false;
+                
+                // Check if the element matches
+                return Matches(element, chain);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         /// <summary>
@@ -848,12 +1023,12 @@ namespace FenBrowser.FenEngine.Rendering
             var rules = new List<CssRule>();
             if (string.IsNullOrWhiteSpace(css)) return rules;
 
-            try { DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_raw_css.txt", "\n--- RAW CSS BLOCK ---\n" + css + "\n-------------------\n"); } catch {}
+            try { if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_raw_css.txt", "\n--- RAW CSS BLOCK ---\n" + css + "\n-------------------\n"); } catch {}
             var text = StripComments(css);
             
             // DEBUG: Log CSS after comment stripping
             // DEBUG: Log CSS after comment stripping
-             try { DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_full_css.txt", "\n--- NEW CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch {}
+             try { if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_full_css.txt", "\n--- NEW CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch {}
 
             // (Very) basic @media handling: keep simple "screen" blocks; ignore others.
             // We flatten recognized @media blocks by inlining their contents.
@@ -870,6 +1045,9 @@ namespace FenBrowser.FenEngine.Rendering
 
             // Handle @layer cascade layers
             text = ExtractLayers(text, log);
+            
+            // Handle @container queries (container queries)
+            text = FlattenContainerQueries(text, (float)(viewportWidth ?? 1024), log);
 
             // Split by braces into selector/declarations pairs.
             // This is a naive parser but resistant to most content without nested braces in values.
@@ -898,14 +1076,14 @@ namespace FenBrowser.FenEngine.Rendering
                     try { 
                         var chainStr = string.Join(", ", chains.Select(c => string.Join(" ", c.Segments.Select(seg => 
                             $"{seg.Tag ?? "*"}{(seg.Id != null ? "#"+seg.Id : "")}{(seg.Classes != null && seg.Classes.Count > 0 ? "."+string.Join(".", seg.Classes) : "")}{(seg.Attributes != null && seg.Attributes.Count > 0 ? "["+string.Join("][", seg.Attributes.Select(a => $"{a.Item1}{a.Item2}{a.Item3}"))+"]" : "")}"))));
-                        DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[SELECTOR] {selectorText} => Chains: {chainStr}\r\n"); 
+                        if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[SELECTOR] {selectorText} => Chains: {chainStr}\r\n"); 
                     } catch {}
                 }
 
                 // DEBUG: Log raw declarations for .picture
                 if (selectorText.Contains("picture"))
                 {
-                    try { DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[PARSER_RAW] Selectors: {selectorText} | Decls: {declText}\r\n"); } catch {}
+                    try { if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[PARSER_RAW] Selectors: {selectorText} | Decls: {declText}\r\n"); } catch {}
                 }
 
                 var decls = ParseDeclarations(declText);
@@ -994,7 +1172,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static List<SelectorChain> ParseSelectors(string selectorText)
         {
-            // Split on commas at top level (not inside anything else � here we assume plain selectors).
+            // Split on commas at top level (not inside anything else ? here we assume plain selectors).
             var parts = selectorText.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
             var list = new List<SelectorChain>();
             foreach (var p in parts)
@@ -1422,7 +1600,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             } catch {}
 
-            // Inline style beats author rules; include as highest priority �rule�
+            // Inline style beats author rules; include as highest priority ?rule?
             foreach (var n in nodes)
             {
                 if (n.IsText) continue;
@@ -1600,6 +1778,28 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (TryPx(DictGet(css.Map, "bottom"), out posVal, currentEmBase)) css.Bottom = posVal;
             else if (TryPercent(DictGet(css.Map, "bottom"), out posVal)) css.BottomPercent = posVal;
+            
+            // inset property: shorthand for top, right, bottom, left
+            Thickness insetTh;
+            if (TryThickness(DictGet(css.Map, "inset"), out insetTh, currentEmBase))
+            {
+                css.Top = insetTh.Top;
+                css.Right = insetTh.Right;
+                css.Bottom = insetTh.Bottom;
+                css.Left = insetTh.Left;
+            }
+            // inset-block: shorthand for top, bottom (in horizontal-tb)
+            if (TryThickness(DictGet(css.Map, "inset-block"), out insetTh, currentEmBase))
+            {
+                css.Top = insetTh.Top;
+                css.Bottom = insetTh.Bottom;
+            }
+            // inset-inline: shorthand for left, right (in horizontal-tb)
+            if (TryThickness(DictGet(css.Map, "inset-inline"), out insetTh, currentEmBase))
+            {
+                css.Left = insetTh.Left;
+                css.Right = insetTh.Right;
+            }
 
             double sizeVal;
             
@@ -1765,7 +1965,32 @@ namespace FenBrowser.FenEngine.Rendering
             if (TryPx(DictGet(css.Map, "margin-top"), out mVal, currentEmBase)) mTop = mVal;
             if (TryPx(DictGet(css.Map, "margin-right"), out mVal, currentEmBase)) mRight = mVal;
             if (TryPx(DictGet(css.Map, "margin-bottom"), out mVal, currentEmBase)) mBottom = mVal;
+            
+            // Logical Properties: margin-block/margin-inline (horizontal-tb writing mode)
+            // margin-block-start -> top, margin-block-end -> bottom
+            // margin-inline-start -> left, margin-inline-end -> right
+            if (TryThickness(DictGet(css.Map, "margin-block"), out th, currentEmBase))
+            {
+                mTop = th.Top; mBottom = th.Bottom;
+            }
+            if (TryPx(DictGet(css.Map, "margin-block-start"), out mVal, currentEmBase)) mTop = mVal;
+            if (TryPx(DictGet(css.Map, "margin-block-end"), out mVal, currentEmBase)) mBottom = mVal;
+            if (TryThickness(DictGet(css.Map, "margin-inline"), out th, currentEmBase))
+            {
+                mLeft = th.Left; mRight = th.Right;
+            }
+            if (TryPx(DictGet(css.Map, "margin-inline-start"), out mVal, currentEmBase)) mLeft = mVal;
+            if (TryPx(DictGet(css.Map, "margin-inline-end"), out mVal, currentEmBase)) mRight = mVal;
+            
             css.Margin = new Thickness(mLeft, mTop, mRight, mBottom);
+            
+            // DEBUG: Log H2 margin to trace 2400px margin-top bug
+            if (tag == "H2")
+            {
+                string rawMarginH2 = DictGet(css.Map, "margin") ?? "(none)";
+                string rawMarginTop = DictGet(css.Map, "margin-top") ?? "(none)";
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-H2-MARGIN] margin='{rawMarginH2}' margin-top='{rawMarginTop}' computed=L:{mLeft},T:{mTop},R:{mRight},B:{mBottom}\r\n"); } catch {}
+            }
 
             if (TryThickness(DictGet(css.Map, "padding"), out th, currentEmBase)) css.Padding = th;
 
@@ -1775,6 +2000,22 @@ namespace FenBrowser.FenEngine.Rendering
             if (TryPx(DictGet(css.Map, "padding-top"), out mVal, currentEmBase)) pTop = mVal;
             if (TryPx(DictGet(css.Map, "padding-right"), out mVal, currentEmBase)) pRight = mVal;
             if (TryPx(DictGet(css.Map, "padding-bottom"), out mVal, currentEmBase)) pBottom = mVal;
+            
+            // Logical Properties: padding-block/padding-inline (horizontal-tb writing mode)
+            if (TryThickness(DictGet(css.Map, "padding-block"), out th, currentEmBase))
+            {
+                pTop = th.Top; pBottom = th.Bottom;
+            }
+            if (TryPx(DictGet(css.Map, "padding-block-start"), out mVal, currentEmBase)) pTop = mVal;
+            if (TryPx(DictGet(css.Map, "padding-block-end"), out mVal, currentEmBase)) pBottom = mVal;
+            if (TryThickness(DictGet(css.Map, "padding-inline"), out th, currentEmBase))
+            {
+                pLeft = th.Left; pRight = th.Right;
+            }
+            if (TryPx(DictGet(css.Map, "padding-inline-start"), out mVal, currentEmBase)) pLeft = mVal;
+            if (TryPx(DictGet(css.Map, "padding-inline-end"), out mVal, currentEmBase)) pRight = mVal;
+            
+            css.Padding = new Thickness(pLeft, pTop, pRight, pBottom);
             
             var borderColor = TryColor(ExtractBorderColor(css.Map));
             if (borderColor.HasValue) css.BorderBrushColor = borderColor;
@@ -2069,6 +2310,13 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 css.ClipPath = clipPathRaw2;
             }
+
+
+
+            // Generated Content & Counters
+            css.Content = Safe(DictGet(css.Map, "content"));
+            css.CounterReset = Safe(DictGet(css.Map, "counter-reset"));
+            css.CounterIncrement = Safe(DictGet(css.Map, "counter-increment"));
 
             return css;
         }
@@ -2472,19 +2720,29 @@ namespace FenBrowser.FenEngine.Rendering
                             return false; // Invalid nth-expression
                         }
                     }
-                    else if (ps.StartsWith("nth-of-type(", StringComparison.OrdinalIgnoreCase))
+
+                    else if (ps.StartsWith("matches(", StringComparison.OrdinalIgnoreCase) || 
+                             ps.StartsWith("is(", StringComparison.OrdinalIgnoreCase) || 
+                             ps.StartsWith("where(", StringComparison.OrdinalIgnoreCase))
                     {
                         var arg = ExtractPseudoArg(ps);
-                        int a, b;
-                        if (ParseNthExpression(arg, out a, out b))
-                        {
-                            int index = GetTypeIndex(n);
-                            if (index == 0 || !MatchesNth(index, a, b)) return false;
-                        }
-                        else
-                        {
-                            return false; // Invalid nth-expression
-                        }
+                        if (!MatchesSelectorList(n, arg)) return false;
+                    }
+                    else if (ps.StartsWith("has(", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var arg = ExtractPseudoArg(ps);
+                        if (!MatchesHas(n, arg)) return false;
+                    }
+                    else if (ps.StartsWith("not(", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var arg = ExtractPseudoArg(ps);
+                        if (MatchesSelectorList(n, arg)) return false;
+                    }
+                    // Keep existing :not implementation for backward compat if needed, but the above covers it generally if arg is complex
+                    // The existing parser might have stored :not as not(xyz) in PseudoClasses
+                    else if (string.Equals(ps, "empty", StringComparison.OrdinalIgnoreCase))
+                    {
+                         if (n.Children != null && n.Children.Any(c => !c.IsText || !string.IsNullOrWhiteSpace(c.Text))) return false;
                     }
                     else if (ps.StartsWith("nth-last-child(", StringComparison.OrdinalIgnoreCase))
                     {
@@ -4374,8 +4632,6 @@ namespace FenBrowser.FenEngine.Rendering
             return list;
         }
 
-
-
     private static readonly object _logLock = new object();
     private static void DebugLog(string filename, string message)
     {
@@ -4411,6 +4667,64 @@ namespace FenBrowser.FenEngine.Rendering
         // Just a number
         if (int.TryParse(expr, out b)) { a = 0; return true; }
         return false;
+    }
+
+    // ==========================================
+    // Selector Helpers for :is, :where, :has
+    // ==========================================
+
+    private static bool MatchesSelectorList(LiteElement n, string selectorList)
+    {
+        if (string.IsNullOrWhiteSpace(selectorList)) return false;
+        
+        var parts = SplitByComma(selectorList);
+        foreach (var part in parts)
+        {
+            var chain = ParseSelectorChain(part.Trim());
+            if (chain != null && Matches(n, chain)) return true;
+        }
+        return false;
+    }
+
+    private static bool MatchesHas(LiteElement n, string selectorList)
+    {
+        if (string.IsNullOrWhiteSpace(selectorList)) return false;
+        
+        var parts = SplitByComma(selectorList);
+        var chains = new List<SelectorChain>();
+        foreach (var p in parts)
+        {
+            var c = ParseSelectorChain(p.Trim());
+            if (c != null) chains.Add(c);
+        }
+        
+        if (chains.Count == 0) return false;
+
+        var queue = new Queue<LiteElement>();
+        if (n.Children != null)
+        {
+            foreach(var c in n.Children) queue.Enqueue(c);
+        }
+        
+        while (queue.Count > 0)
+        {
+            var curr = queue.Dequeue();
+            foreach (var chain in chains)
+            {
+                if (Matches(curr, chain)) return true;
+            }
+            
+            if (curr.Children != null)
+            {
+                foreach (var c in curr.Children) queue.Enqueue(c);
+            }
+        }
+        return false;
+    }
+    
+    private static bool IsIdentChar(char c)
+    {
+        return char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '*' || c >= 128;
     }
 }
 }
