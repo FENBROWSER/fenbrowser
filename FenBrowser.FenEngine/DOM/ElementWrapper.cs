@@ -15,7 +15,7 @@ namespace FenBrowser.FenEngine.DOM
     /// Wraps a LiteElement to expose it to JavaScript.
     /// Provides DOM manipulation methods with permission checking.
     /// </summary>
-    public class ElementWrapper : IObject
+    public partial class ElementWrapper : IObject
     {
         private readonly LiteElement _element;
         private readonly IExecutionContext _context;
@@ -78,6 +78,70 @@ namespace FenBrowser.FenEngine.DOM
 
                 case "style":
                     return FenValue.FromObject(new CSSStyleDeclaration(_element, _context));
+
+                case "matches":
+                    return FenValue.FromFunction(new FenFunction("matches", MatchesSelector));
+
+                case "closest":
+                    return FenValue.FromFunction(new FenFunction("closest", ClosestSelector));
+
+                case "queryselector":
+                    return FenValue.FromFunction(new FenFunction("querySelector", QuerySelector));
+
+                case "queryselectorall":
+                    return FenValue.FromFunction(new FenFunction("querySelectorAll", QuerySelectorAll));
+
+                case "classname":
+                    return FenValue.FromString(_element.Attr?.ContainsKey("class") == true ? _element.Attr["class"] : "");
+
+                case "parentelement":
+                case "parentnode":
+                    if (_element.Parent != null)
+                        return FenValue.FromObject(new ElementWrapper(_element.Parent, _context));
+                    return FenValue.Null;
+
+                case "children":
+                    var childElements = _element.Children?.Where(c => !c.IsText).ToList() ?? new List<LiteElement>();
+                    return CreateArrayFromElements(childElements);
+
+                case "firstelementchild":
+                    var firstChild = _element.Children?.FirstOrDefault(c => !c.IsText);
+                    return firstChild != null ? FenValue.FromObject(new ElementWrapper(firstChild, _context)) : FenValue.Null;
+
+                case "lastelementchild":
+                    var lastChild = _element.Children?.LastOrDefault(c => !c.IsText);
+                    return lastChild != null ? FenValue.FromObject(new ElementWrapper(lastChild, _context)) : FenValue.Null;
+                
+                // DIALOG ELEMENT METHODS
+                case "show":
+                    return FenValue.FromFunction(new FenFunction("show", ShowDialog));
+                
+                case "showmodal":
+                    return FenValue.FromFunction(new FenFunction("showModal", ShowModalDialog));
+                
+                case "close":
+                    return FenValue.FromFunction(new FenFunction("close", CloseDialog));
+                
+                case "open":
+                    // Check if dialog is open
+                    if (_element.Tag?.ToUpperInvariant() == "DIALOG")
+                        return FenValue.FromBoolean(_element.Attr?.ContainsKey("open") == true);
+                    return FenValue.Undefined;
+                
+                
+                // Shadow DOM
+                case "attachshadow":
+                    return FenValue.FromFunction(new FenFunction("attachShadow", AttachShadow));
+                
+                case "shadowroot":
+                    if (_element.ShadowRoot != null)
+                    {
+                        // Return a wrapper for the shadow root
+                        var shadowHost = new LiteElement("shadow-root");
+                        shadowHost.Children.AddRange(_element.ShadowRoot);
+                        return FenValue.FromObject(new ElementWrapper(shadowHost, _context));
+                    }
+                    return FenValue.Null;
                 
                 default:
 
@@ -341,6 +405,164 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.Null;
         }
 
+        /// <summary>
+        /// Implements element.matches(selector) - checks if element matches a CSS selector
+        /// </summary>
+        private IValue MatchesSelector(IValue[] args, IValue thisVal)
+        {
+            if (args.Length == 0 || !args[0].IsString) return FenValue.FromBoolean(false);
+            
+            try
+            {
+                var selector = args[0].ToString();
+                var result = Rendering.CssLoader.MatchesSelector(_element, selector);
+                return FenValue.FromBoolean(result);
+            }
+            catch
+            {
+                return FenValue.FromBoolean(false);
+            }
+        }
+
+        /// <summary>
+        /// Implements element.closest(selector) - finds nearest ancestor matching selector
+        /// </summary>
+        private IValue ClosestSelector(IValue[] args, IValue thisVal)
+        {
+            if (args.Length == 0 || !args[0].IsString) return FenValue.Null;
+            
+            try
+            {
+                var selector = args[0].ToString();
+                var current = _element;
+                
+                while (current != null)
+                {
+                    if (Rendering.CssLoader.MatchesSelector(current, selector))
+                    {
+                        return FenValue.FromObject(new ElementWrapper(current, _context));
+                    }
+                    current = current.Parent;
+                }
+                
+                return FenValue.Null;
+            }
+            catch
+            {
+                return FenValue.Null;
+            }
+        }
+
+        /// <summary>
+        /// Implements element.querySelector(selector) - finds first descendant matching selector
+        /// </summary>
+        private IValue QuerySelector(IValue[] args, IValue thisVal)
+        {
+            if (args.Length == 0 || !args[0].IsString) return FenValue.Null;
+            
+            try
+            {
+                var selector = args[0].ToString();
+                var result = FindFirstDescendant(_element, selector);
+                return result != null ? FenValue.FromObject(new ElementWrapper(result, _context)) : FenValue.Null;
+            }
+            catch
+            {
+                return FenValue.Null;
+            }
+        }
+
+        /// <summary>
+        /// Implements element.querySelectorAll(selector) - finds all descendants matching selector
+        /// </summary>
+        private IValue QuerySelectorAll(IValue[] args, IValue thisVal)
+        {
+            if (args.Length == 0 || !args[0].IsString) return CreateEmptyArray();
+            
+            try
+            {
+                var selector = args[0].ToString();
+                var results = new List<IValue>();
+                FindAllDescendants(_element, selector, results);
+                return CreateArrayFromResults(results);
+            }
+            catch
+            {
+                return CreateEmptyArray();
+            }
+        }
+
+        private LiteElement FindFirstDescendant(LiteElement parent, string selector)
+        {
+            if (parent.Children == null) return null;
+            
+            foreach (var child in parent.Children)
+            {
+                if (child.IsText) continue;
+                
+                if (Rendering.CssLoader.MatchesSelector(child, selector))
+                    return child;
+                
+                var result = FindFirstDescendant(child, selector);
+                if (result != null) return result;
+            }
+            
+            return null;
+        }
+
+        private void FindAllDescendants(LiteElement parent, string selector, List<IValue> results)
+        {
+            if (parent.Children == null) return;
+            
+            foreach (var child in parent.Children)
+            {
+                if (child.IsText) continue;
+                
+                if (Rendering.CssLoader.MatchesSelector(child, selector))
+                    results.Add(FenValue.FromObject(new ElementWrapper(child, _context)));
+                
+                FindAllDescendants(child, selector, results);
+            }
+        }
+
+        /// <summary>
+        /// Create an array-like FenObject from a list of LiteElements
+        /// </summary>
+        private IValue CreateArrayFromElements(List<LiteElement> elements)
+        {
+            var arr = new FenObject();
+            for (int i = 0; i < elements.Count; i++)
+            {
+                arr.Set(i.ToString(), FenValue.FromObject(new ElementWrapper(elements[i], _context)));
+            }
+            arr.Set("length", FenValue.FromNumber(elements.Count));
+            return FenValue.FromObject(arr);
+        }
+
+        /// <summary>
+        /// Create an array-like FenObject from a list of IValue results
+        /// </summary>
+        private IValue CreateArrayFromResults(List<IValue> results)
+        {
+            var arr = new FenObject();
+            for (int i = 0; i < results.Count; i++)
+            {
+                arr.Set(i.ToString(), results[i]);
+            }
+            arr.Set("length", FenValue.FromNumber(results.Count));
+            return FenValue.FromObject(arr);
+        }
+
+        /// <summary>
+        /// Create an empty array-like FenObject
+        /// </summary>
+        private IValue CreateEmptyArray()
+        {
+            var arr = new FenObject();
+            arr.Set("length", FenValue.FromNumber(0));
+            return FenValue.FromObject(arr);
+        }
+
         // Expose underlying element to other wrappers
         internal LiteElement Element => _element;
     }
@@ -420,6 +642,102 @@ namespace FenBrowser.FenEngine.DOM
                 }
             }
             return dict;
+        }
+    }
+    
+    // ElementWrapper partial class - dialog methods
+    public partial class ElementWrapper
+    {
+        /// <summary>
+        /// Show the dialog element (non-modal)
+        /// </summary>
+        private IValue ShowDialog(IValue[] args, IValue thisValue)
+        {
+            if (_element.Tag?.ToUpperInvariant() != "DIALOG")
+                return FenValue.Undefined;
+            
+            if (_element.Attr != null)
+            {
+                _element.Attr["open"] = "";
+                _context?.RequestRender?.Invoke();
+            }
+            return FenValue.Undefined;
+        }
+        
+        /// <summary>
+        /// Show the dialog element as a modal (with backdrop)
+        /// </summary>
+        private IValue ShowModalDialog(IValue[] args, IValue thisValue)
+        {
+            if (_element.Tag?.ToUpperInvariant() != "DIALOG")
+                return FenValue.Undefined;
+            
+            if (_element.Attr != null)
+            {
+                _element.Attr["open"] = "";
+                _element.Attr["modal"] = ""; // Mark as modal for backdrop rendering
+                _context?.RequestRender?.Invoke();
+            }
+            return FenValue.Undefined;
+        }
+        
+        /// <summary>
+        /// Close the dialog element
+        /// </summary>
+        private IValue CloseDialog(IValue[] args, IValue thisValue)
+        {
+            if (_element.Tag?.ToUpperInvariant() != "DIALOG")
+                return FenValue.Undefined;
+            
+            _element.Attr?.Remove("open");
+            _element.Attr?.Remove("modal");
+            _context?.RequestRender?.Invoke();
+            return FenValue.Undefined;
+        }
+        
+        /// <summary>
+        /// Attach a shadow root to this element (Shadow DOM)
+        /// </summary>
+        private IValue AttachShadow(IValue[] args, IValue thisValue)
+        {
+            // Check if element can have shadow root
+            string tag = _element.Tag?.ToUpperInvariant();
+            var validTags = new[] { "ARTICLE", "ASIDE", "BLOCKQUOTE", "BODY", "DIV", "FOOTER", 
+                "H1", "H2", "H3", "H4", "H5", "H6", "HEADER", "MAIN", "NAV", "P", "SECTION", "SPAN" };
+            
+            bool isValid = Array.Exists(validTags, t => t == tag);
+            if (!isValid)
+            {
+                throw new Errors.FenInternalError($"Failed to execute 'attachShadow': {tag} is not a valid element for shadow DOM");
+            }
+            
+            if (_element.ShadowRoot != null)
+            {
+                throw new Errors.FenInternalError("Failed to execute 'attachShadow': Shadow root already attached");
+            }
+            
+            // Parse options (mode: 'open' or 'closed')
+            string mode = "open";
+            if (args.Length >= 1 && args[0] is FenValue optVal && optVal.AsObject() is FenObject optObj)
+            {
+                var modeVal = optObj.Get("mode");
+                if (modeVal is FenValue mv)
+                {
+                    mode = mv.AsString()?.ToLowerInvariant() ?? "open";
+                }
+            }
+            
+            // Create shadow root
+            _element.ShadowRoot = new List<LiteElement>();
+            
+            // Return the shadow root wrapper (for open mode)
+            if (mode == "open")
+            {
+                var shadowHost = new LiteElement("shadow-root");
+                return FenValue.FromObject(new ElementWrapper(shadowHost, _context));
+            }
+            
+            return FenValue.Null;
         }
     }
 }
