@@ -220,52 +220,46 @@ namespace FenBrowser.FenEngine.Rendering
         public BrowserHost(bool isPrivate = false)
         {
             IsPrivate = isPrivate;
-            var handler = new HttpClientHandler
+            
+            // Get HTTP/2 and Brotli enabled handler from factory
+            var config = NetworkConfiguration.Instance;
+            var handler = FenBrowser.Core.Network.HttpClientFactory.CreateHandler();
+            
+            // Add certificate callback for security display
+            handler.ServerCertificateCustomValidationCallback = (msg, cert, chain, errors) =>
             {
-                SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13,
-                ServerCertificateCustomValidationCallback = (msg, cert, chain, errors) =>
+                // Capture certificate info
+                var info = new CertificateInfo
                 {
-                    // Capture certificate info
-                    var info = new CertificateInfo
-                    {
-                        Subject = cert.Subject,
-                        Issuer = cert.Issuer,
-                        NotBefore = cert.GetEffectiveDateString() != null ? DateTime.Parse(cert.GetEffectiveDateString()) : DateTime.MinValue, // X509Certificate doesn't expose NotBefore/NotAfter directly in generic way easily without X509Certificate2
-                        // Let's cast to X509Certificate2 for better properties
-                        IsValid = errors == System.Net.Security.SslPolicyErrors.None,
-                        Thumbprint = cert.GetCertHashString()
-                    };
+                    Subject = cert.Subject,
+                    Issuer = cert.Issuer,
+                    NotBefore = cert.GetEffectiveDateString() != null ? DateTime.Parse(cert.GetEffectiveDateString()) : DateTime.MinValue,
+                    IsValid = errors == System.Net.Security.SslPolicyErrors.None,
+                    Thumbprint = cert.GetCertHashString()
+                };
 
-                    if (cert is System.Security.Cryptography.X509Certificates.X509Certificate2 cert2)
-                    {
-                        info.NotBefore = cert2.NotBefore;
-                        info.NotAfter = cert2.NotAfter;
-                        info.Thumbprint = cert2.Thumbprint;
-                    }
-
-                    // Store on message properties to retrieve later? 
-                    // Or better, we need to pass this back via ResourceManager.
-                    // Since ResourceManager creates the client, we actually need to change WHERE the client is created or how it's configured.
-                    // BrowserHost creates ResourceManager with a new HttpClient().
-                    
-                    // We need to attach this info to the request/response flow.
-                    // Storing in a thread-local or async-local might be complex.
-                    // Easiest is to let ResourceManager own the Handler if possible, or exposing the callback there.
-                    // But ResourceManager takes an HttpClient instance.
-                    
-                    // Let's store the LAST certificate seen by this host for UI display purposes (simplification for single-tab/single-host view).
-                    _lastCertificate = info;
-                    _lastSslErrors = errors;
-
-                    return errors == System.Net.Security.SslPolicyErrors.None; // Enforce validity
+                if (cert is System.Security.Cryptography.X509Certificates.X509Certificate2 cert2)
+                {
+                    info.NotBefore = cert2.NotBefore;
+                    info.NotAfter = cert2.NotAfter;
+                    info.Thumbprint = cert2.Thumbprint;
                 }
+
+                _lastCertificate = info;
+                _lastSslErrors = errors;
+
+                return errors == System.Net.Security.SslPolicyErrors.None;
             };
             
-            var httpClient = new HttpClient(handler);
-            // Use latest Chrome UA to get modern Google page with full CSS features
-            httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+            // Create HTTP/2 + Brotli enabled client
+            var httpClient = FenBrowser.Core.Network.HttpClientFactory.CreateClient(handler);
+            
+            // Log HTTP/2 and Brotli configuration
+            FenLogger.Info($"[BrowserHost] HTTP/2: {config.EnableHttp2}, Brotli: {config.EnableBrotli}, " +
+                          $"Version: {httpClient.DefaultRequestVersion}", LogCategory.Network);
             
             _resources = new ResourceManager(httpClient, isPrivate);
+
 
             _engine.RepaintReady += (elem) =>
             {
