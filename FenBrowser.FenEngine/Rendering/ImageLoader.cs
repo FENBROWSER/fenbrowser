@@ -1,32 +1,236 @@
 using SkiaSharp;
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Net.Http;
 using System.Threading.Tasks;
 using System.IO;
 using System.Threading;
+using System.Linq;
+using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.FenEngine.Rendering
 {
+    /// <summary>
+    /// Image entry with metadata for memory tracking and LRU eviction
+    /// </summary>
+    internal class ImageCacheEntry
+    {
+        public SKBitmap Bitmap { get; set; }
+        public long ByteSize { get; set; }
+        public DateTime LastAccessed { get; set; }
+        public bool IsLazy { get; set; }
+    }
+
+    /// <summary>
+    /// Lazy image registration for viewport-based loading
+    /// </summary>
+    internal class LazyImageInfo
+    {
+        public string Url { get; set; }
+        public SKRect ElementBounds { get; set; }
+        public bool LoadStarted { get; set; }
+    }
+
     public static class ImageLoader
     {
-        private static readonly ConcurrentDictionary<string, SKBitmap> _memoryCache = new ConcurrentDictionary<string, SKBitmap>();
+        // Main cache with metadata for memory tracking
+        private static readonly ConcurrentDictionary<string, ImageCacheEntry> _memoryCache = 
+            new ConcurrentDictionary<string, ImageCacheEntry>();
+        
+        // Legacy cache for backward compatibility
+        private static readonly ConcurrentDictionary<string, SKBitmap> _legacyCache = 
+            new ConcurrentDictionary<string, SKBitmap>();
+        
         private static readonly HttpClient _httpClient;
+        
+        // ========== Lazy Loading Support ==========
+        private static readonly ConcurrentDictionary<string, LazyImageInfo> _lazyRegistry = 
+            new ConcurrentDictionary<string, LazyImageInfo>();
+        private static readonly HashSet<string> _pendingLoads = new HashSet<string>();
+        private static readonly object _pendingLock = new object();
+        private static SKRect _currentViewport = SKRect.Empty;
+        private static readonly SemaphoreSlim _loadSemaphore = new SemaphoreSlim(4); // Max concurrent loads
+        
+        // ========== Memory Management ==========
+        private static long _currentCacheBytes = 0;
+        private static readonly object _cacheLock = new object();
         
         // Debounce mechanism to prevent flickering from rapid repaint requests
         private static Timer _repaintDebounceTimer;
         private static readonly object _timerLock = new object();
         private static bool _repaintPending = false;
-        private const int DEBOUNCE_DELAY_MS = 100; // Wait 100ms before triggering repaint
+        private const int DEBOUNCE_DELAY_MS = 100;
         
         static ImageLoader()
         {
-            _httpClient = new HttpClient();
-            _httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 FenBrowser/1.0");
+            _httpClient = FenBrowser.Core.Network.HttpClientFactory.GetSharedClient();
         }
         
         // Callback to request a repaint when image loads
         public static Action RequestRepaint { get; set; }
+
+        // ========== Memory Management Properties ==========
+        
+        /// <summary>
+        /// Current memory usage by cached images in bytes
+        /// </summary>
+        public static long CurrentCacheBytes => _currentCacheBytes;
+        
+        /// <summary>
+        /// Number of images currently cached
+        /// </summary>
+        public static int CacheCount => _memoryCache.Count + _legacyCache.Count;
+        
+        /// <summary>
+        /// Number of images registered for lazy loading
+        /// </summary>
+        public static int LazyRegistryCount => _lazyRegistry.Count;
+
+        // ========== Lazy Loading API ==========
+
+        /// <summary>
+        /// Register an image for lazy loading. Will not load until visible in viewport.
+        /// </summary>
+        public static void RegisterLazyImage(string url, SKRect elementBounds)
+        {
+            if (string.IsNullOrEmpty(url)) return;
+            
+            // Already cached? No need to register as lazy
+            if (_memoryCache.ContainsKey(url) || _legacyCache.ContainsKey(url)) return;
+            
+            _lazyRegistry[url] = new LazyImageInfo
+            {
+                Url = url,
+                ElementBounds = elementBounds,
+                LoadStarted = false
+            };
+            
+            FenLogger.Debug($"[ImageLoader] Registered lazy image: {url.Substring(0, Math.Min(50, url.Length))}...", 
+                           LogCategory.Rendering);
+        }
+
+        /// <summary>
+        /// Update the current viewport bounds. Triggers loading of visible lazy images.
+        /// </summary>
+        public static void UpdateViewport(SKRect viewportBounds)
+        {
+            _currentViewport = viewportBounds;
+            
+            // Check which lazy images are now visible
+            var config = NetworkConfiguration.Instance;
+            var threshold = config.LazyLoadThresholdPx;
+            var expandedViewport = new SKRect(
+                viewportBounds.Left - threshold,
+                viewportBounds.Top - threshold,
+                viewportBounds.Right + threshold,
+                viewportBounds.Bottom + threshold
+            );
+            
+            foreach (var kvp in _lazyRegistry)
+            {
+                if (kvp.Value.LoadStarted) continue;
+                
+                // Check if element is within expanded viewport
+                if (expandedViewport.IntersectsWith(kvp.Value.ElementBounds))
+                {
+                    kvp.Value.LoadStarted = true;
+                    LoadImageAsync(kvp.Key, isLazy: true);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Check if an image should be lazy loaded (not yet visible)
+        /// </summary>
+        public static bool IsLazyPending(string url)
+        {
+            return _lazyRegistry.TryGetValue(url, out var info) && !info.LoadStarted;
+        }
+
+        /// <summary>
+        /// Clear all lazy registrations (call on navigation)
+        /// </summary>
+        public static void ClearLazyRegistry()
+        {
+            _lazyRegistry.Clear();
+            lock (_pendingLock)
+            {
+                _pendingLoads.Clear();
+            }
+        }
+
+        // ========== Memory Management API ==========
+
+        /// <summary>
+        /// Clear all cached images and reset memory tracking
+        /// </summary>
+        public static void ClearCache()
+        {
+            foreach (var entry in _memoryCache.Values)
+            {
+                entry.Bitmap?.Dispose();
+            }
+            _memoryCache.Clear();
+            
+            foreach (var bitmap in _legacyCache.Values)
+            {
+                bitmap?.Dispose();
+            }
+            _legacyCache.Clear();
+            
+            lock (_cacheLock)
+            {
+                _currentCacheBytes = 0;
+            }
+            
+            ClearLazyRegistry();
+            
+            FenLogger.Info("[ImageLoader] Cache cleared", LogCategory.Rendering);
+        }
+
+        /// <summary>
+        /// Evict oldest images to stay under memory limit
+        /// </summary>
+        private static void EvictIfNeeded()
+        {
+            var config = NetworkConfiguration.Instance;
+            var maxBytes = config.MaxImageCacheBytes;
+            var maxCount = config.MaxImageCacheCount;
+            
+            if (_currentCacheBytes <= maxBytes && _memoryCache.Count <= maxCount) return;
+            
+            // Sort by last accessed time and evict oldest
+            var toEvict = _memoryCache
+                .OrderBy(kvp => kvp.Value.LastAccessed)
+                .Take(Math.Max(1, _memoryCache.Count / 4)) // Evict 25%
+                .ToList();
+            
+            foreach (var kvp in toEvict)
+            {
+                if (_memoryCache.TryRemove(kvp.Key, out var entry))
+                {
+                    lock (_cacheLock)
+                    {
+                        _currentCacheBytes -= entry.ByteSize;
+                    }
+                    entry.Bitmap?.Dispose();
+                    
+                    FenLogger.Debug($"[ImageLoader] Evicted: {kvp.Key.Substring(0, Math.Min(40, kvp.Key.Length))}...", 
+                                   LogCategory.Rendering);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Get cache statistics for debugging
+        /// </summary>
+        public static string GetCacheStats()
+        {
+            return $"Images: {CacheCount}, Memory: {_currentCacheBytes / (1024 * 1024)}MB, " +
+                   $"Lazy Pending: {_lazyRegistry.Count(x => !x.Value.LoadStarted)}";
+        }
         
         /// <summary>
         /// Request a debounced repaint. Multiple calls within DEBOUNCE_DELAY_MS
@@ -54,30 +258,70 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        public static SKBitmap GetImage(string url)
+        /// <summary>
+        /// Get image from cache, or trigger load. Supports lazy loading.
+        /// </summary>
+        /// <param name="url">Image URL</param>
+        /// <param name="isLazy">If true, only register for lazy loading if not in viewport</param>
+        /// <param name="elementBounds">Element bounds for lazy loading registration</param>
+        public static SKBitmap GetImage(string url, bool isLazy = false, SKRect? elementBounds = null)
         {
             if (string.IsNullOrEmpty(url)) return null;
 
-            if (_memoryCache.TryGetValue(url, out var bitmap))
+            // Check new cache first
+            if (_memoryCache.TryGetValue(url, out var entry))
+            {
+                entry.LastAccessed = DateTime.UtcNow;
+                return entry.Bitmap;
+            }
+            
+            // Check legacy cache
+            if (_legacyCache.TryGetValue(url, out var bitmap))
             {
                 return bitmap;
             }
 
-            // If not cached, trigger load and return null (or placeholder logic in renderer)
-            // We fire-and-forget the load. 
-            // In a real engine, we'd track "pending" state to avoid duplicate requests.
-            LoadImageAsync(url);
+            // For lazy images, check if we should defer loading
+            if (isLazy && elementBounds.HasValue && NetworkConfiguration.Instance.EnableLazyLoading)
+            {
+                // Check if element is currently in viewport
+                var config = NetworkConfiguration.Instance;
+                var threshold = config.LazyLoadThresholdPx;
+                var expandedViewport = new SKRect(
+                    _currentViewport.Left - threshold,
+                    _currentViewport.Top - threshold,
+                    _currentViewport.Right + threshold,
+                    _currentViewport.Bottom + threshold
+                );
+                
+                if (!expandedViewport.IsEmpty && !expandedViewport.IntersectsWith(elementBounds.Value))
+                {
+                    // Not in viewport - register for lazy loading
+                    RegisterLazyImage(url, elementBounds.Value);
+                    return null; // Renderer should show placeholder
+                }
+            }
+
+            // Either not lazy, or in viewport - load immediately
+            lock (_pendingLock)
+            {
+                if (_pendingLoads.Contains(url)) return null; // Already loading
+                _pendingLoads.Add(url);
+            }
             
+            LoadImageAsync(url, isLazy);
             return null;
         }
 
-        private static async void LoadImageAsync(string url)
+
+
+        private static async void LoadImageAsync(string url, bool isLazy = false)
         {
             string debugLogPath = @"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt";
             try
             {
-                // Simple dedup check (race condition possible but low impact for now)
-                if (_memoryCache.ContainsKey(url)) return;
+                // Check caches before loading
+                if (_memoryCache.ContainsKey(url) || _legacyCache.ContainsKey(url)) return;
 
                 // Handle base64 / Data URIs
                 if (url.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
@@ -159,7 +403,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                          if (bmp != null)
                          {
-                             _memoryCache[url] = bmp;
+                             _legacyCache[url] = bmp;
                              // Log success for specific debugging
                              if (url.Length > 50) 
                                  try { File.AppendAllText(debugLogPath, $"[ImageLoader] Loaded Data URI (len={bytes.Length})\r\n"); } catch {}
@@ -245,7 +489,24 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 if (bitmap != null)
                 {
-                    _memoryCache[url] = bitmap;
+                    _legacyCache[url] = bitmap;
+                    
+                    // Track memory usage
+                    lock (_cacheLock)
+                    {
+                        _currentCacheBytes += bitmap.ByteCount;
+                    }
+                    EvictIfNeeded();
+                    
+                    // Remove from pending
+                    lock (_pendingLock)
+                    {
+                        _pendingLoads.Remove(url);
+                    }
+                    
+                    // Remove from lazy registry if present
+                    _lazyRegistry.TryRemove(url, out _);
+                    
                     try { File.AppendAllText(debugLogPath, $"[ImageLoader] Success: {url} ({bitmap.Width}x{bitmap.Height})\r\n"); } catch {}
                     RequestDebouncedRepaint();
                 }
