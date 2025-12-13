@@ -67,6 +67,12 @@ namespace FenBrowser.Core
         public LogSettings Logging { get; set; } = new LogSettings();
         public bool EnableJavaScript { get; set; } = true;
         public bool EnableTrackingPrevention { get; set; } = true;
+        
+        /// <summary>
+        /// Home page URL for the Home button
+        /// </summary>
+        public string HomePage { get; set; } = "https://www.google.com";
+        
         public bool BlockThirdPartyCookies { get; set; } = false;
         public static string GetUserAgentString(UserAgentType type, bool useMobile = false)
         {

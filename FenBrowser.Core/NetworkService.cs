@@ -11,16 +11,30 @@ public class NetworkService : INetworkService
     public NetworkService()
     {
         _httpClient = new HttpClient();
-        _httpClient.DefaultRequestHeaders.Add("User-Agent", "FenBrowser/1.0");
+        // Don't set default UA here - we'll use BrowserSettings per-request
+    }
+    
+    /// <summary>
+    /// Gets the current User-Agent from BrowserSettings
+    /// </summary>
+    private string GetCurrentUserAgent()
+    {
+        return BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent);
     }
 
     public async Task<Stream> GetStreamAsync(string url)
     {
-        return await _httpClient.GetStreamAsync(url);
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.TryAddWithoutValidation("User-Agent", GetCurrentUserAgent());
+        var response = await _httpClient.SendAsync(request);
+        return await response.Content.ReadAsStreamAsync();
     }
 
     public async Task<string> GetStringAsync(string url)
     {
-        return await _httpClient.GetStringAsync(url);
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.TryAddWithoutValidation("User-Agent", GetCurrentUserAgent());
+        var response = await _httpClient.SendAsync(request);
+        return await response.Content.ReadAsStringAsync();
     }
 }
