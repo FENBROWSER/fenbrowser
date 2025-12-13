@@ -6,172 +6,231 @@
              xmlns:ui="using:FenBrowser.UI"
              mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="300"
              x:Class="FenBrowser.UI.DevToolsView"
-             Background="#FFFFFF"
-             Foreground="#333333">
+             Background="#1E1E1E"
+             Foreground="#CCCCCC">
   
   <UserControl.Styles>
+    <!-- Icon Button Style -->
     <Style Selector="Button.icon">
         <Setter Property="Background" Value="Transparent"/>
         <Setter Property="BorderThickness" Value="0"/>
         <Setter Property="Padding" Value="6"/>
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="CornerRadius" Value="4"/>
+        <Setter Property="Width" Value="28"/>
+        <Setter Property="Height" Value="28"/>
     </Style>
     <Style Selector="Button.icon:pointerover /template/ ContentPresenter">
-        <Setter Property="Background" Value="#E5E5E5"/>
+        <Setter Property="Background" Value="#3C3C3C"/>
     </Style>
     
-    <!-- Console Log Item Style -->
+    <!-- Tab Button Style -->
+    <Style Selector="Button.tab">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Padding" Value="12,8"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Foreground" Value="#9D9D9D"/>
+        <Setter Property="FontSize" Value="12"/>
+    </Style>
+    <Style Selector="Button.tab:pointerover /template/ ContentPresenter">
+        <Setter Property="Background" Value="#2D2D30"/>
+    </Style>
+    <Style Selector="Button.tab.active">
+        <Setter Property="Background" Value="#1E1E1E"/>
+        <Setter Property="Foreground" Value="#FFFFFF"/>
+    </Style>
+    
+    <!-- TreeView Dark Theme -->
+    <Style Selector="TreeView">
+        <Setter Property="Background" Value="#1E1E1E"/>
+        <Setter Property="Foreground" Value="#CCCCCC"/>
+    </Style>
+    <Style Selector="TreeViewItem">
+        <Setter Property="Padding" Value="2"/>
+        <Setter Property="Background" Value="Transparent"/>
+    </Style>
+    <Style Selector="TreeViewItem:selected /template/ Border#PART_LayoutRoot">
+        <Setter Property="Background" Value="#094771"/>
+    </Style>
+    <Style Selector="TreeViewItem:pointerover /template/ Border#PART_LayoutRoot">
+        <Setter Property="Background" Value="#2A2D2E"/>
+    </Style>
+    
+    <!-- ListBox Dark Theme -->
+    <Style Selector="ListBox">
+        <Setter Property="Background" Value="#1E1E1E"/>
+        <Setter Property="BorderThickness" Value="0"/>
+    </Style>
     <Style Selector="ListBoxItem">
         <Setter Property="Padding" Value="0"/>
         <Setter Property="Margin" Value="0"/>
-        <Setter Property="BorderThickness" Value="0,0,0,1"/>
-        <Setter Property="BorderBrush" Value="#F0F0F0"/>
+        <Setter Property="Background" Value="Transparent"/>
     </Style>
     <Style Selector="ListBoxItem:selected /template/ ContentPresenter">
-        <Setter Property="Background" Value="#E8F0FE"/>
+        <Setter Property="Background" Value="#094771"/>
     </Style>
     <Style Selector="ListBoxItem:pointerover /template/ ContentPresenter">
-        <Setter Property="Background" Value="#F5F5F5"/>
+        <Setter Property="Background" Value="#2A2D2E"/>
     </Style>
-
-    <Style Selector="TabItem">
-        <Setter Property="FontSize" Value="12"/>
-        <Setter Property="Padding" Value="12,8"/>
-        <Setter Property="Foreground" Value="#666666"/>
-        <Setter Property="FontWeight" Value="SemiBold"/>
+    
+    <!-- TextBox Dark Theme -->
+    <Style Selector="TextBox">
+        <Setter Property="Background" Value="#252526"/>
+        <Setter Property="Foreground" Value="#CCCCCC"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="SelectionBrush" Value="#264F78"/>
     </Style>
-    <Style Selector="TabItem:selected">
-        <Setter Property="Foreground" Value="#0078D7"/>
-        <Setter Property="BorderBrush" Value="#0078D7"/>
-        <Setter Property="BorderThickness" Value="0,0,0,2"/>
+    
+    <!-- ComboBox Dark Theme -->
+    <Style Selector="ComboBox">
+        <Setter Property="Background" Value="#3C3C3C"/>
+        <Setter Property="Foreground" Value="#CCCCCC"/>
+        <Setter Property="BorderThickness" Value="0"/>
     </Style>
   </UserControl.Styles>
 
   <Grid RowDefinitions="Auto,*">
-    <!-- Main Toolbar -->
-    <Grid Grid.Row="0" Background="#F3F3F3" ColumnDefinitions="Auto,*,Auto" Height="36" RenderOptions.EdgeMode="Aliased">
-        <StackPanel Orientation="Horizontal" Spacing="0" Margin="4,0">
-             <!-- Tabs are hosted visually by TabControl headers below, logic handled by TabControl -->
+    
+    <!-- Header Bar: Tabs + Action Buttons -->
+    <Border Grid.Row="0" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1" Height="32">
+      <Grid ColumnDefinitions="*,Auto">
+        
+        <!-- Tab Buttons (Left aligned) -->
+        <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="0" Margin="4,0,0,0">
+          <Button x:Name="TabElements" Classes="tab active" Click="OnTabClick" Content="Elements"/>
+          <Button x:Name="TabConsole" Classes="tab" Click="OnTabClick" Content="Console"/>
+          <Button x:Name="TabNetwork" Classes="tab" Click="OnTabClick" Content="Network"/>
         </StackPanel>
         
-        <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="0,0,8,0">
-             <Button Name="BtnRefresh" Classes="icon" ToolTip.Tip="Refresh DOM">
-                <Path Data="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" 
-                      Fill="#5F6368" Width="14" Height="14" Stretch="Uniform"/>
-             </Button>
-             <Button Name="BtnClose" Classes="icon" ToolTip.Tip="Close DevTools">
-                <Path Data="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" 
-                      Fill="#5F6368" Width="14" Height="14" Stretch="Uniform"/>
-             </Button>
+        <!-- Action Buttons (Right aligned) -->
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" Margin="0,0,8,0" VerticalAlignment="Center">
+          <Button Name="BtnRefresh" Classes="icon" ToolTip.Tip="Refresh DOM">
+            <Path Data="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" 
+                  Fill="#9D9D9D" Width="14" Height="14" Stretch="Uniform"/>
+          </Button>
+          <Button Name="BtnClose" Classes="icon" ToolTip.Tip="Close DevTools">
+            <Path Data="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" 
+                  Fill="#9D9D9D" Width="14" Height="14" Stretch="Uniform"/>
+          </Button>
         </StackPanel>
-    </Grid>
-
-    <TabControl Grid.Row="1" Background="#FFFFFF" Margin="0,-36,0,0" Padding="0,36,0,0">
+      </Grid>
+    </Border>
+    
+    <!-- Content Panels -->
+    <Grid Grid.Row="1" Background="#1E1E1E">
       
-      <!-- ELEMENTS TAB -->
-      <TabItem Header="Elements">
-        <Grid RowDefinitions="Auto,*">
-             <!-- Breadcrumbs or filter could go here -->
-             <TreeView Name="DomTree" Grid.Row="1" Background="#FFFFFF" Foreground="#333333" BorderThickness="0">
-              <TreeView.ItemTemplate>
-                <TreeDataTemplate ItemsSource="{Binding Children}">
-                  <StackPanel Orientation="Horizontal" Spacing="4">
-                    <TextBlock Text="&lt;" Foreground="#808080"/>
-                    <TextBlock Text="{Binding Tag}" Foreground="#800080"/>
-                    <TextBlock Text="{Binding AttrString}" Foreground="#0000FF" Margin="4,0,0,0"/>
-                    <TextBlock Text="&gt;" Foreground="#808080"/>
-                    <TextBlock Text="{Binding TextPreview}" Foreground="#333333" Margin="4,0,0,0" TextTrimming="CharacterEllipsis" MaxWidth="400"/>
-                    
-                    <StackPanel Orientation="Horizontal" IsVisible="{Binding HasChildren, Converter={x:Static BoolConverters.Not}}">
-                        <TextBlock Text="&lt;/" Foreground="#808080"/>
-                        <TextBlock Text="{Binding Tag}" Foreground="#800080"/>
-                        <TextBlock Text="&gt;" Foreground="#808080"/>
-                    </StackPanel>
-                  </StackPanel>
-                </TreeDataTemplate>
-              </TreeView.ItemTemplate>
-            </TreeView>
-        </Grid>
-      </TabItem>
-      
-      <!-- CONSOLE TAB -->
-      <TabItem Header="Console">
-        <Grid RowDefinitions="Auto,*,Auto">
-          
-          <!-- Console Toolbar -->
-          <Border Grid.Row="0" Background="#F8F8F8" BorderBrush="#E0E0E0" BorderThickness="0,0,0,1" Padding="8,4">
-              <StackPanel Orientation="Horizontal" Spacing="8">
-                  <Button Name="BtnClear" Classes="icon" ToolTip.Tip="Clear Console">
-                    <Grid>
-                      <Path Data="M0 0h24v24H0z" Fill="Transparent"/> <!-- Hitbox -->
-                      <Path Data="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" 
-                            Fill="#666666" Width="14" Height="14" Stretch="Uniform"/>
-                    </Grid>
-                  </Button>
-                  <ComboBox SelectedIndex="0" BorderThickness="0" Background="Transparent" Height="24" Padding="4,0">
-                      <ComboBoxItem>Verbose</ComboBoxItem>
-                      <ComboBoxItem>Info</ComboBoxItem>
-                      <ComboBoxItem>Warnings</ComboBoxItem>
-                      <ComboBoxItem>Errors</ComboBoxItem>
-                  </ComboBox>
+      <!-- Elements Panel -->
+      <Grid x:Name="ElementsPanel" IsVisible="True" RowDefinitions="Auto,*">
+        <!-- Breadcrumb / Filter Bar -->
+        <Border Grid.Row="0" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1" Padding="8,4">
+          <TextBlock Text="DOM Elements" Foreground="#9D9D9D" FontSize="11"/>
+        </Border>
+        
+        <!-- DOM Tree -->
+        <TreeView Name="DomTree" Grid.Row="1" Padding="4">
+          <TreeView.ItemTemplate>
+            <TreeDataTemplate ItemsSource="{Binding Children}">
+              <StackPanel Orientation="Horizontal" Spacing="2">
+                <TextBlock Text="&lt;" Foreground="#808080" FontFamily="Consolas" FontSize="12"/>
+                <TextBlock Text="{Binding Tag}" Foreground="#569CD6" FontFamily="Consolas" FontSize="12" FontWeight="Bold"/>
+                <TextBlock Text="{Binding AttrString}" Foreground="#9CDCFE" FontFamily="Consolas" FontSize="12" Margin="4,0,0,0"/>
+                <TextBlock Text="&gt;" Foreground="#808080" FontFamily="Consolas" FontSize="12"/>
+                <TextBlock Text="{Binding TextPreview}" Foreground="#CE9178" FontFamily="Consolas" FontSize="12" Margin="4,0,0,0" TextTrimming="CharacterEllipsis" MaxWidth="400"/>
+                
+                <StackPanel Orientation="Horizontal" IsVisible="{Binding HasChildren, Converter={x:Static BoolConverters.Not}}">
+                  <TextBlock Text="&lt;/" Foreground="#808080" FontFamily="Consolas" FontSize="12"/>
+                  <TextBlock Text="{Binding Tag}" Foreground="#569CD6" FontFamily="Consolas" FontSize="12"/>
+                  <TextBlock Text="&gt;" Foreground="#808080" FontFamily="Consolas" FontSize="12"/>
+                </StackPanel>
               </StackPanel>
-          </Border>
+            </TreeDataTemplate>
+          </TreeView.ItemTemplate>
+        </TreeView>
+      </Grid>
+      
+      <!-- Console Panel -->
+      <Grid x:Name="ConsolePanel" IsVisible="False" RowDefinitions="Auto,*,Auto">
+        
+        <!-- Console Toolbar -->
+        <Border Grid.Row="0" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1" Padding="8,4">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Button Name="BtnClear" Classes="icon" ToolTip.Tip="Clear Console" Width="24" Height="24">
+              <Path Data="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" 
+                    Fill="#9D9D9D" Width="12" Height="12" Stretch="Uniform"/>
+            </Button>
+            <TextBlock Text="|" Foreground="#3C3C3C" VerticalAlignment="Center"/>
+            <ComboBox SelectedIndex="0" FontSize="11" MinWidth="80">
+              <ComboBoxItem>All levels</ComboBoxItem>
+              <ComboBoxItem>Errors</ComboBoxItem>
+              <ComboBoxItem>Warnings</ComboBoxItem>
+              <ComboBoxItem>Info</ComboBoxItem>
+            </ComboBox>
+          </StackPanel>
+        </Border>
 
-          <!-- Console Output List -->
-          <ListBox Name="ConsoleOutput" Grid.Row="1" Background="#FFFFFF" BorderThickness="0">
-            <ListBox.ItemTemplate>
-              <DataTemplate x:DataType="ui:ConsoleLogItem">
-                <Grid ColumnDefinitions="24,*,Auto" Background="{Binding BackgroundColor}">
-                    <!-- Icon Column -->
-                    <Panel Grid.Column="0" VerticalAlignment="Top" Margin="4,2,0,0">
-                        <!-- Error Icon -->
-                        <Path Data="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" 
-                              Fill="#D93025" Width="14" Height="14" Stretch="Uniform"
-                              IsVisible="{Binding IconKind, Converter={x:Static ObjectConverters.Equal}, ConverterParameter='Error'}"/>
-                        <!-- Warning Icon -->
-                         <Path Data="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" 
-                              Fill="#F9AB00" Width="14" Height="14" Stretch="Uniform"
-                              IsVisible="{Binding IconKind, Converter={x:Static ObjectConverters.Equal}, ConverterParameter='Warning'}"/>
-                        <!-- Input Icon -->
-                         <Path Data="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z" 
-                              Fill="#0078D7" Width="14" Height="14" Stretch="Uniform"
-                              IsVisible="{Binding IconKind, Converter={x:Static ObjectConverters.Equal}, ConverterParameter='Input'}"/>
-                         <!-- Result Icon -->
-                         <Path Data="M15.41 16.59L10.83 12 15.41 7.41 14 6l-6 6 6 6 1.41-1.41z" 
-                              Fill="#666666" Width="14" Height="14" Stretch="Uniform"
-                              IsVisible="{Binding IconKind, Converter={x:Static ObjectConverters.Equal}, ConverterParameter='Result'}"/>
-                    </Panel>
-
-                    <!-- Message Column -->
-                    <TextBlock Grid.Column="1" Text="{Binding Message}" 
-                               Foreground="{Binding TextColor}"
-                               FontFamily="Consolas, Monospace" FontSize="12" 
-                               TextWrapping="Wrap" Margin="4,2,8,2" VerticalAlignment="Top"/>
-                    
-                    <!-- Timestamp -->
-                    <TextBlock Grid.Column="2" Text="{Binding Timestamp, StringFormat='HH:mm:ss.fff'}" 
-                               Foreground="#AAAAAA" FontSize="10" 
-                               Margin="0,2,4,0" VerticalAlignment="Top"
-                               IsVisible="{Binding IsLog}"/>
-                </Grid>
-              </DataTemplate>
-            </ListBox.ItemTemplate>
-          </ListBox>
-          
-          <!-- Input Area - Wrap in Border for BorderBrush properties -->
-          <Border Grid.Row="2" BorderBrush="#E0E0E0" BorderThickness="0,1,0,0">
-              <Grid ColumnDefinitions="Auto,*" Background="#FFFFFF">
+        <!-- Console Output List -->
+        <ListBox Name="ConsoleOutput" Grid.Row="1" Padding="0">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="ui:ConsoleLogItem">
+              <Grid ColumnDefinitions="24,*,Auto" Background="{Binding BackgroundColor}" MinHeight="22">
+                <!-- Icon Column -->
+                <Panel Grid.Column="0" VerticalAlignment="Center" HorizontalAlignment="Center">
+                  <!-- Error Icon -->
+                  <Path Data="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" 
+                        Fill="#F14C4C" Width="14" Height="14" Stretch="Uniform"
+                        IsVisible="{Binding IconKind, Converter={x:Static ObjectConverters.Equal}, ConverterParameter='Error'}"/>
+                  <!-- Warning Icon -->
+                  <Path Data="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" 
+                        Fill="#CCA700" Width="14" Height="14" Stretch="Uniform"
+                        IsVisible="{Binding IconKind, Converter={x:Static ObjectConverters.Equal}, ConverterParameter='Warning'}"/>
+                  <!-- Input Icon -->
                   <Path Data="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z" 
-                        Fill="#0078D7" Width="12" Height="12" Stretch="Uniform" VerticalAlignment="Center" Margin="8,0,0,0"/>
-                  <TextBox Name="ConsoleInput" KeyDown="ConsoleInput_KeyDown" Grid.Column="1" 
-                           Background="Transparent" Foreground="#333333" BorderThickness="0" 
-                           FontFamily="Consolas, Monospace" CaretBrush="Black"
-                           Watermark="Run JavaScript..." Padding="6"/>
+                        Fill="#569CD6" Width="14" Height="14" Stretch="Uniform"
+                        IsVisible="{Binding IconKind, Converter={x:Static ObjectConverters.Equal}, ConverterParameter='Input'}"/>
+                  <!-- Result Icon -->
+                  <Path Data="M15.41 16.59L10.83 12 15.41 7.41 14 6l-6 6 6 6 1.41-1.41z" 
+                        Fill="#9D9D9D" Width="14" Height="14" Stretch="Uniform"
+                        IsVisible="{Binding IconKind, Converter={x:Static ObjectConverters.Equal}, ConverterParameter='Result'}"/>
+                </Panel>
+
+                <!-- Message Column -->
+                <TextBlock Grid.Column="1" Text="{Binding Message}" 
+                           Foreground="{Binding TextColor}"
+                           FontFamily="Consolas, Monospace" FontSize="12" 
+                           TextWrapping="Wrap" Margin="4,4,8,4" VerticalAlignment="Center"/>
+                
+                <!-- Timestamp -->
+                <TextBlock Grid.Column="2" Text="{Binding Timestamp, StringFormat='HH:mm:ss.fff'}" 
+                           Foreground="#6A6A6A" FontSize="10" FontFamily="Consolas"
+                           Margin="0,4,8,4" VerticalAlignment="Center"
+                           IsVisible="{Binding IsLog}"/>
               </Grid>
-          </Border>
-        </Grid>
-      </TabItem>
-    </TabControl>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+        
+        <!-- Input Area -->
+        <Border Grid.Row="2" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,1,0,0">
+          <Grid ColumnDefinitions="Auto,*">
+            <Path Data="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z" 
+                  Fill="#569CD6" Width="12" Height="12" Stretch="Uniform" VerticalAlignment="Center" Margin="8,0,4,0"/>
+            <TextBox Name="ConsoleInput" KeyDown="ConsoleInput_KeyDown" Grid.Column="1" 
+                     FontFamily="Consolas, Monospace" FontSize="12" CaretBrush="#AEAFAD"
+                     Watermark="Run JavaScript..." Padding="4,8"/>
+          </Grid>
+        </Border>
+      </Grid>
+      
+      <!-- Network Panel (Placeholder) -->
+      <Grid x:Name="NetworkPanel" IsVisible="False">
+        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8">
+          <Path Data="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" 
+                Fill="#6A6A6A" Width="48" Height="48" Stretch="Uniform"/>
+          <TextBlock Text="Network tab - Coming soon" Foreground="#6A6A6A" FontSize="14"/>
+        </StackPanel>
+      </Grid>
+      
+    </Grid>
   </Grid>
 </UserControl>
