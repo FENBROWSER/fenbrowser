@@ -94,6 +94,8 @@ namespace FenBrowser.UI
         private Canvas _highlightOverlay;
         private Avalonia.Controls.Shapes.Path _securityIconPath;
         private Button _siteInfoButton;
+        private ScrollViewer _skiaScrollViewer;
+        private ContentControl _specialPageContainer;
 
         public ObservableCollection<TabItemModel> Tabs { get; } = new ObservableCollection<TabItemModel>();
         public ObservableCollection<ExtensionModel> Extensions { get; } = new ObservableCollection<ExtensionModel>();
@@ -128,6 +130,8 @@ namespace FenBrowser.UI
             _securityIconPath = this.FindControl<Avalonia.Controls.Shapes.Path>("SecurityIconPath");
             _securityIconPath = this.FindControl<Avalonia.Controls.Shapes.Path>("SecurityIconPath");
             _siteInfoButton = this.FindControl<Button>("SiteInfoButton");
+            _skiaScrollViewer = this.FindControl<ScrollViewer>("SkiaScrollViewer");
+            _specialPageContainer = this.FindControl<ContentControl>("SpecialPageContainer");
             
             // Wire up SkiaView interaction
             var skiaView = this.FindControl<SkiaBrowserView>("SkiaView");
@@ -560,6 +564,40 @@ namespace FenBrowser.UI
                 c.ContextMenu = CreateBrowserContextMenu();
             }
         }
+        
+        /// <summary>
+        /// Show a special page (Settings, etc.) and hide SkiaView
+        /// </summary>
+        private void ShowSpecialPage(Control content)
+        {
+            if (_skiaScrollViewer != null)
+                _skiaScrollViewer.IsVisible = false;
+            
+            if (_specialPageContainer != null)
+            {
+                // Detach content from previous parent if any
+                if (content.Parent is ContentControl oldCc)
+                    oldCc.Content = null;
+                    
+                _specialPageContainer.Content = content;
+                _specialPageContainer.IsVisible = true;
+            }
+        }
+        
+        /// <summary>
+        /// Show SkiaView (web content) and hide special page container
+        /// </summary>
+        private void ShowWebContent()
+        {
+            if (_specialPageContainer != null)
+            {
+                _specialPageContainer.Content = null;
+                _specialPageContainer.IsVisible = false;
+            }
+            
+            if (_skiaScrollViewer != null)
+                _skiaScrollViewer.IsVisible = true;
+        }
 
         private ContextMenu CreateBrowserContextMenu()
         {
@@ -725,6 +763,77 @@ namespace FenBrowser.UI
                 _ = _activeBrowser.NavigateAsync(_activeBrowser.CurrentUri.AbsoluteUri);
             }
         }
+        
+        private async void Home_Click(object sender, RoutedEventArgs e)
+        {
+            // Navigate to home page (configurable, default to about:blank or a start page)
+            var homePage = BrowserSettings.Instance.HomePage ?? "about:blank";
+            if (_activeBrowser != null)
+            {
+                await _activeBrowser.NavigateAsync(homePage);
+            }
+        }
+        
+        private void OnBookmarkClick(object sender, RoutedEventArgs e)
+        {
+            // Toggle bookmark for current page
+            if (_activeBrowser?.CurrentUri == null) return;
+            
+            var url = _activeBrowser.CurrentUri.AbsoluteUri;
+            var title = Tabs.FirstOrDefault(t => t.IsActive)?.Title ?? "Untitled";
+            
+            // Check if already bookmarked
+            var bookmarkIcon = this.FindControl<Avalonia.Controls.Shapes.Path>("BookmarkIconPath");
+            bool isBookmarked = BookmarkManager.Instance.IsBookmarked(url);
+            
+            if (isBookmarked)
+            {
+                BookmarkManager.Instance.RemoveBookmark(url);
+                if (bookmarkIcon != null)
+                {
+                    bookmarkIcon.Fill = (Avalonia.Media.IBrush)this.FindResource("MutedTextBrush");
+                }
+            }
+            else
+            {
+                BookmarkManager.Instance.AddBookmark(url, title);
+                if (bookmarkIcon != null)
+                {
+                    bookmarkIcon.Fill = Avalonia.Media.Brushes.Gold;
+                }
+            }
+        }
+        
+        private double _currentZoom = 1.0;
+        
+        private void ZoomIn_Click(object sender, RoutedEventArgs e)
+        {
+            _currentZoom = Math.Min(3.0, _currentZoom + 0.1);
+            ApplyZoom();
+        }
+        
+        private void ZoomOut_Click(object sender, RoutedEventArgs e)
+        {
+            _currentZoom = Math.Max(0.25, _currentZoom - 0.1);
+            ApplyZoom();
+        }
+        
+        private void ApplyZoom()
+        {
+            var percentage = this.FindControl<TextBlock>("ZoomPercentage");
+            if (percentage != null)
+            {
+                percentage.Text = $"{(int)(_currentZoom * 100)}%";
+            }
+            
+            // Apply zoom to SkiaView
+            var skiaView = this.FindControl<SkiaBrowserView>("SkiaView");
+            if (skiaView != null)
+            {
+                skiaView.ZoomLevel = (float)_currentZoom;
+                skiaView.InvalidateVisual();
+            }
+        }
 
         private async void OnGoClick(object sender, RoutedEventArgs e)
         {
@@ -873,7 +982,7 @@ namespace FenBrowser.UI
                     // Switch to existing settings tab
                     foreach (var t in Tabs) t.IsActive = t.Id == existingSettingsTab.Id;
                     if (existingSettingsTab.LastRenderedContent is Control c)
-                        SetBrowserContainerContent(c);
+                        ShowSpecialPage(c);
                     if (AddressBox != null) AddressBox.Text = "fen://settings";
                     return;
                 }
@@ -895,7 +1004,7 @@ namespace FenBrowser.UI
 
                 // Store settings page as the tab's content
                 settingsTab.LastRenderedContent = settingsPage;
-                SetBrowserContainerContent(settingsPage);
+                ShowSpecialPage(settingsPage);
 
                 if (AddressBox != null)
                     AddressBox.Text = "fen://settings";
@@ -989,15 +1098,25 @@ namespace FenBrowser.UI
                 
                 if (model.IsActive)
                 {
-                    _activeBrowser = model.Browser;
-                    if (model.LastRenderedContent is Control c)
-                        SetBrowserContainerContent(c);
+                    // Only update _activeBrowser if the tab has a browser (not for special pages like settings)
+                    if (model.Browser != null)
+                    {
+                        _activeBrowser = model.Browser;
+                    }
+                    
+                    // Handle special pages vs web content
+                    if (model.Title == "Settings" || model.LastRenderedContent is SettingsPage)
+                    {
+                        if (model.LastRenderedContent is Control c)
+                            ShowSpecialPage(c);
+                        if (AddressBox != null) AddressBox.Text = "fen://settings";
+                    }
                     else
-                        SetBrowserContainerContent(new TextBlock { Text = "Ready" });
-                        
-
-                        
-                    UpdateAddressBar(_activeBrowser);
+                    {
+                        ShowWebContent();
+                        UpdateAddressBar(_activeBrowser);
+                    }
+                    
                     UpdateDevToolsVisibility(model);
                 }
             }
