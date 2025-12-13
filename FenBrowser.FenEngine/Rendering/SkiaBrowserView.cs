@@ -72,6 +72,11 @@ namespace FenBrowser.FenEngine.Rendering
         // Ah, DrawOperation used property 'BaseUrl'.
         // So here in Render(), we pass 'BaseUrl'.
         
+        /// <summary>
+        /// Page zoom level (1.0 = 100%)
+        /// </summary>
+        public float ZoomLevel { get; set; } = 1.0f;
+        
         // Event to bubble up link clicks to the container
         public event EventHandler<string> LinkInternalClicked;
 

@@ -703,6 +703,16 @@ namespace FenBrowser.FenEngine.Rendering
             // ALSO shrink when shrinkToContent is true (used by flex layout for flex items)
             bool shouldShrinkToContent = shrinkToContent || display == "inline" || display == "inline-block";
 
+            // DEBUG: Log flex detection for key containers (button wrappers, forms)
+            string debugClass = null;
+            node.Attr?.TryGetValue("class", out debugClass);
+            if (display == "flex" || display == "inline-flex" || 
+                nodeTag == "FORM" || nodeTag == "BUTTON" ||
+                (debugClass != null && (debugClass.Contains("FPdoL") || debugClass.Contains("aajZC") || debugClass.Contains("lJ9F") || debugClass.Contains("button"))))
+            {
+                FenLogger.Debug($"[FlexDetect] {nodeTag} class='{debugClass}' display='{display}' flex-dir='{style?.FlexDirection}'", LogCategory.Layout);
+            }
+
             if (display == "flex" || display == "inline-flex")
             {
                 contentHeight = ComputeFlexLayout(node, box.ContentBox, style, out maxChildWidth, flexContainerHeight);
@@ -1113,8 +1123,10 @@ namespace FenBrowser.FenEngine.Rendering
                     if (string.IsNullOrEmpty(d))
                     {
                         string t = child.Tag?.ToUpperInvariant();
-                        if (t == "IMG" || t=="SPAN" || t == "A" || t=="B" || t=="STRONG" || t=="I" || t=="EM" || t=="SMALL" || t=="LABEL" || t=="CODE" || t=="BR") 
-                            d = "inline";
+                        // Form elements and inline elements default to inline/inline-block
+                        if (t == "IMG" || t=="SPAN" || t == "A" || t=="B" || t=="STRONG" || t=="I" || t=="EM" || t=="SMALL" || t=="LABEL" || t=="CODE" || t=="BR" ||
+                            t == "BUTTON" || t == "INPUT" || t == "SELECT" || t == "TEXTAREA") 
+                            d = "inline-block";  // Form elements should be inline-block, not just inline
                         else
                             d = "block";
                     }
@@ -3706,6 +3718,71 @@ namespace FenBrowser.FenEngine.Rendering
                 canvas.Restore();
             }
         }
+        
+        /// <summary>
+        /// Recursively checks if an element or any of its descendants contains button/form elements.
+        /// Used to detect button wrapper containers for inline layout heuristic.
+        /// </summary>
+        private bool ContainsButtonOrFormDescendant(LiteElement element)
+        {
+            if (element == null) return false;
+            
+            string tag = element.Tag?.ToUpperInvariant();
+            if (tag == "BUTTON" || tag == "INPUT" || tag == "SELECT")
+            {
+                return true;
+            }
+            
+            // For INPUT, also check type to ensure it's not hidden
+            if (tag == "INPUT" && element.Attr != null)
+            {
+                element.Attr.TryGetValue("type", out var inputType);
+                if (inputType?.ToLowerInvariant() == "hidden")
+                    return false;
+            }
+            
+            // Check children recursively
+            if (element.Children != null)
+            {
+                foreach (var child in element.Children)
+                {
+                    if (ContainsButtonOrFormDescendant(child))
+                        return true;
+                }
+            }
+            
+            return false;
+        }
+        
+        /// <summary>
+        /// Checks if an element contains significant block content (paragraphs, headings, lists).
+        /// If true, the container should NOT be treated as inline even if it contains buttons.
+        /// </summary>
+        private bool ContainsSignificantBlockContent(LiteElement element)
+        {
+            if (element == null) return false;
+            
+            string tag = element.Tag?.ToUpperInvariant();
+            // These are tags that indicate substantive block content
+            var significantBlockTags = new HashSet<string> { "P", "H1", "H2", "H3", "H4", "H5", "H6", "UL", "OL", "LI", "TABLE", "PRE", "ARTICLE", "SECTION" };
+            
+            if (significantBlockTags.Contains(tag))
+                return true;
+            
+            // Check children recursively (but only first level to avoid false positives)
+            if (element.Children != null)
+            {
+                foreach (var child in element.Children)
+                {
+                    string childTag = child.Tag?.ToUpperInvariant();
+                    if (significantBlockTags.Contains(childTag))
+                        return true;
+                }
+            }
+            
+            return false;
+        }
+        
         private void ApplyUserAgentStyles(LiteElement node, ref CssComputed style)
         {
             if (node == null) return;
@@ -3781,6 +3858,39 @@ namespace FenBrowser.FenEngine.Rendering
                 if (!isButtonType && (tag == "INPUT" || tag == "TEXTAREA") && style.BorderRadius.TopLeft == 0)
                 {
                     style.BorderRadius = new Avalonia.CornerRadius(24); // Google search box uses 24px radius
+                }
+                
+                // 6. Add height constraints for input elements to prevent oversized controls
+                // This fixes Google search box being too tall
+                if (tag == "INPUT" && !isButtonType)
+                {
+                    // Single-line inputs should have reasonable height
+                    if (!style.Height.HasValue && !style.MaxHeight.HasValue)
+                    {
+                        // Don't override explicit height, but set max to prevent stretch
+                        style.MaxHeight = 44; // Google search box is ~44px
+                    }
+                }
+                
+                if (tag == "TEXTAREA")
+                {
+                    // Textareas can be taller but shouldn't be unbounded
+                    if (!style.Height.HasValue && !style.MinHeight.HasValue)
+                    {
+                        style.MinHeight = 60; // Reasonable minimum
+                    }
+                }
+                
+                // 7. Set align-self to prevent flexbox stretch
+                if ((tag == "INPUT" || tag == "BUTTON" || tag == "SELECT") && string.IsNullOrEmpty(style.AlignSelf))
+                {
+                    style.AlignSelf = "center"; // Prevent stretching in flex containers
+                }
+                
+                // 8. Set display to inline-block for buttons to keep them in a row
+                if (isButtonType && string.IsNullOrEmpty(style.Display))
+                {
+                    style.Display = "inline-block"; // Buttons should be inline, not block
                 }
             }
             
