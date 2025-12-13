@@ -1984,13 +1984,13 @@ namespace FenBrowser.FenEngine.Rendering
             
             css.Margin = new Thickness(mLeft, mTop, mRight, mBottom);
             
-            // DEBUG: Log H2 margin to trace 2400px margin-top bug
-            if (tag == "H2")
-            {
-                string rawMarginH2 = DictGet(css.Map, "margin") ?? "(none)";
-                string rawMarginTop = DictGet(css.Map, "margin-top") ?? "(none)";
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-H2-MARGIN] margin='{rawMarginH2}' margin-top='{rawMarginTop}' computed=L:{mLeft},T:{mTop},R:{mRight},B:{mBottom}\r\n"); } catch {}
-            }
+            // DEBUG: Log H2 margin to trace 2400px margin-top bug (DISABLED - causes performance issues)
+            // if (tag == "H2")
+            // {
+            //     string rawMarginH2 = DictGet(css.Map, "margin") ?? "(none)";
+            //     string rawMarginTop = DictGet(css.Map, "margin-top") ?? "(none)";
+            //     try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-H2-MARGIN] margin='{rawMarginH2}' margin-top='{rawMarginTop}' computed=L:{mLeft},T:{mTop},R:{mRight},B:{mBottom}\r\n"); } catch {}
+            // }
 
             if (TryThickness(DictGet(css.Map, "padding"), out th, currentEmBase)) css.Padding = th;
 
@@ -2175,6 +2175,30 @@ namespace FenBrowser.FenEngine.Rendering
             css.TextOverflow = Safe(DictGet(css.Map, "text-overflow"));
             css.BoxSizing = Safe(DictGet(css.Map, "box-sizing"));
             css.Cursor = Safe(DictGet(css.Map, "cursor"));
+            
+            // **CRITICAL FIX**: Assign display, position, and flexbox properties from Map
+            // These were previously missing, causing flex container detection to fail
+            css.Display = Safe(DictGet(css.Map, "display"));
+            css.Position = Safe(DictGet(css.Map, "position"));
+            css.Float = Safe(DictGet(css.Map, "float"));
+            css.Overflow = Safe(DictGet(css.Map, "overflow"));
+            
+            // Flexbox properties - critical for Google.com layout
+            css.FlexDirection = Safe(DictGet(css.Map, "flex-direction"));
+            css.FlexWrap = Safe(DictGet(css.Map, "flex-wrap"));
+            css.JustifyContent = Safe(DictGet(css.Map, "justify-content"));
+            css.AlignItems = Safe(DictGet(css.Map, "align-items"));
+            css.AlignContent = Safe(DictGet(css.Map, "align-content"));
+            css.AlignSelf = Safe(DictGet(css.Map, "align-self"));
+            
+            // Flex item properties
+            double flexPropVal;
+            if (TryDouble(DictGet(css.Map, "flex-grow"), out flexPropVal)) css.FlexGrow = flexPropVal;
+            if (TryDouble(DictGet(css.Map, "flex-shrink"), out flexPropVal)) css.FlexShrink = flexPropVal;
+            if (TryPx(DictGet(css.Map, "flex-basis"), out flexPropVal)) css.FlexBasis = flexPropVal;
+            if (int.TryParse(DictGet(css.Map, "order"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var flexOrderVal))
+                css.Order = flexOrderVal;
+
 
             int zIndex;
             if (int.TryParse(DictGet(css.Map, "z-index"), NumberStyles.Integer, CultureInfo.InvariantCulture, out zIndex))
