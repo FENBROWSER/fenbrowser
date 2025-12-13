@@ -1,6 +1,7 @@
 using System.IO;
 using System.Net.Http;
 using System.Threading.Tasks;
+using FenBrowser.Core.Network;
 
 namespace FenBrowser.Core;
 
@@ -10,9 +11,10 @@ public class NetworkService : INetworkService
 
     public NetworkService()
     {
-        _httpClient = new HttpClient();
-        // Don't set default UA here - we'll use BrowserSettings per-request
+        // Use HttpClientFactory for HTTP/2 and Brotli support
+        _httpClient = HttpClientFactory.GetSharedClient();
     }
+
     
     /// <summary>
     /// Gets the current User-Agent from BrowserSettings

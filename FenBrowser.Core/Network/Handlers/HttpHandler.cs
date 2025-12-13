@@ -1,6 +1,7 @@
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core.Network.Handlers
 {
@@ -10,8 +11,10 @@ namespace FenBrowser.Core.Network.Handlers
 
         public HttpHandler(HttpClient httpClient = null)
         {
-            _httpClient = httpClient ?? new HttpClient();
+            // Use HttpClientFactory for HTTP/2 and Brotli support
+            _httpClient = httpClient ?? HttpClientFactory.GetSharedClient();
         }
+
 
         public async Task HandleAsync(NetworkContext context, System.Func<Task> next, CancellationToken ct)
         {
