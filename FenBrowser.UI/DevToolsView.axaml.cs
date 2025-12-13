@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Markup.Xaml;
 using Avalonia.Interactivity;
 using Avalonia.Input;
@@ -20,14 +21,66 @@ namespace FenBrowser.UI
         // Use ObservableCollection of structured items instead of strings
         private readonly ObservableCollection<ConsoleLogItem> _consoleLogs = new ObservableCollection<ConsoleLogItem>();
         
+        // Panel references
+        private Grid _elementsPanel;
+        private Grid _consolePanel;
+        private Grid _networkPanel;
+        private Button _tabElements;
+        private Button _tabConsole;
+        private Button _tabNetwork;
+        
         public event EventHandler CloseRequested;
 
         public DevToolsView()
         {
             InitializeComponent();
-            // FIX: Bind the ListBox to our collection
+            
+            // Get panel references
+            _elementsPanel = this.FindControl<Grid>("ElementsPanel");
+            _consolePanel = this.FindControl<Grid>("ConsolePanel");
+            _networkPanel = this.FindControl<Grid>("NetworkPanel");
+            _tabElements = this.FindControl<Button>("TabElements");
+            _tabConsole = this.FindControl<Button>("TabConsole");
+            _tabNetwork = this.FindControl<Button>("TabNetwork");
+            
+            // Bind the ListBox to our collection
             var listbox = this.FindControl<ListBox>("ConsoleOutput");
             if (listbox != null) listbox.ItemsSource = _consoleLogs;
+            
+            // Wire up button handlers
+            var btnRefresh = this.FindControl<Button>("BtnRefresh");
+            var btnClose = this.FindControl<Button>("BtnClose");
+            var btnClear = this.FindControl<Button>("BtnClear");
+            
+            if (btnRefresh != null) btnRefresh.Click += (s, e) => RefreshDom();
+            if (btnClose != null) btnClose.Click += (s, e) => CloseRequested?.Invoke(this, EventArgs.Empty);
+            if (btnClear != null) btnClear.Click += (s, e) => _consoleLogs.Clear();
+        }
+        
+        private void OnTabClick(object sender, RoutedEventArgs e)
+        {
+            // Remove active class from all tabs
+            _tabElements?.Classes.Remove("active");
+            _tabConsole?.Classes.Remove("active");
+            _tabNetwork?.Classes.Remove("active");
+            
+            // Hide all panels
+            if (_elementsPanel != null) _elementsPanel.IsVisible = false;
+            if (_consolePanel != null) _consolePanel.IsVisible = false;
+            if (_networkPanel != null) _networkPanel.IsVisible = false;
+            
+            // Show selected tab and panel
+            if (sender is Button btn)
+            {
+                btn.Classes.Add("active");
+                
+                if (btn == _tabElements && _elementsPanel != null)
+                    _elementsPanel.IsVisible = true;
+                else if (btn == _tabConsole && _consolePanel != null)
+                    _consolePanel.IsVisible = true;
+                else if (btn == _tabNetwork && _networkPanel != null)
+                    _networkPanel.IsVisible = true;
+            }
         }
 
         public void Attach(IBrowser browser)
@@ -94,12 +147,37 @@ namespace FenBrowser.UI
 
         private void RefreshDom()
         {
-             // Placeholder for DOM tree refresh
+            var domTree = this.FindControl<TreeView>("DomTree");
+            if (domTree == null || _browser == null) return;
+            
+            try
+            {
+                var root = _browser.GetDomRoot();
+                if (root != null)
+                {
+                    var viewModels = new List<DomElementModel> { DomElementModel.FromLiteElement(root) };
+                    domTree.ItemsSource = viewModels;
+                }
+                else
+                {
+                    domTree.ItemsSource = new List<DomElementModel> 
+                    { 
+                        new DomElementModel { Tag = "html", TextPreview = "(No document loaded)" }
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                domTree.ItemsSource = new List<DomElementModel> 
+                { 
+                    new DomElementModel { Tag = "error", TextPreview = ex.Message }
+                };
+            }
         }
 
         private void DomTree_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-             // Placeholder for selection change
+             // Placeholder for selection change - could highlight element in page
         }
 
         private async void ConsoleInput_KeyDown(object sender, KeyEventArgs e)
@@ -141,6 +219,72 @@ namespace FenBrowser.UI
             }
         }
     }
-
-
+    
+    /// <summary>
+    /// ViewModel for DOM tree items
+    /// </summary>
+    public class DomElementModel
+    {
+        public string Tag { get; set; } = "";
+        public string AttrString { get; set; } = "";
+        public string TextPreview { get; set; } = "";
+        public bool HasChildren => Children?.Count > 0;
+        public List<DomElementModel> Children { get; set; } = new List<DomElementModel>();
+        
+        public static DomElementModel FromLiteElement(LiteElement el)
+        {
+            var model = new DomElementModel
+            {
+                Tag = el.Tag ?? "#text",
+                AttrString = FormatAttributes(el.Attr),
+                TextPreview = GetTextPreview(el)
+            };
+            
+            if (el.Children != null)
+            {
+                foreach (var child in el.Children)
+                {
+                    model.Children.Add(FromLiteElement(child));
+                }
+            }
+            
+            return model;
+        }
+        
+        private static string FormatAttributes(Dictionary<string, string> attr)
+        {
+            if (attr == null || attr.Count == 0) return "";
+            
+            var parts = new List<string>();
+            foreach (var kv in attr.Take(3)) // Limit to 3 attrs for display
+            {
+                if (kv.Key == "class")
+                    parts.Add($"class=\"{TruncateString(kv.Value, 20)}\"");
+                else if (kv.Key == "id")
+                    parts.Add($"id=\"{TruncateString(kv.Value, 20)}\"");
+                else
+                    parts.Add($"{kv.Key}=\"{TruncateString(kv.Value, 15)}\"");
+            }
+            if (attr.Count > 3) parts.Add("...");
+            return string.Join(" ", parts);
+        }
+        
+        private static string GetTextPreview(LiteElement el)
+        {
+            if (!string.IsNullOrWhiteSpace(el.Text))
+            {
+                return TruncateString(el.Text.Trim(), 50);
+            }
+            return "";
+        }
+        
+        private static string TruncateString(string s, int max)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            s = s.Replace("\n", " ").Replace("\r", "").Trim();
+            if (s.Length <= max) return s;
+            return s.Substring(0, max) + "...";
+        }
+    }
 }
+
