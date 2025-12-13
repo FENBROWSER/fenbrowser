@@ -188,7 +188,7 @@ namespace FenBrowser.FenEngine.Scripting
 
         private void BuildSafeSubresourceHeaders(System.Net.Http.HttpRequestMessage req, Uri uri)
         {
-            req.Headers.TryAddWithoutValidation("User-Agent", "FenBrowser/1.0");
+            req.Headers.TryAddWithoutValidation("User-Agent", BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent));
         }
 
         private string DecodeBytes(byte[] bytes, string encoding)
