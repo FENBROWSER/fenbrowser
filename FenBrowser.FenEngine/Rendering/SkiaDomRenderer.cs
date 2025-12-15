@@ -83,6 +83,8 @@ namespace FenBrowser.FenEngine.Rendering
             public Avalonia.Thickness Border;
             public Avalonia.Thickness Padding;
             public float LineHeight; // Computed line height for text
+            public float Ascent;     // Distance from baseline to top of content
+            public float Descent;    // Distance from baseline to bottom of content
             public TransformParsed Transform; // Transform for this element
         }
 
@@ -102,14 +104,38 @@ namespace FenBrowser.FenEngine.Rendering
         // Deferred absolute-positioned elements for two-pass layout
         private readonly List<LiteElement> _deferredAbsoluteElements = new List<LiteElement>();
         
+        // Intrinsic size cache for images and text (reduces re-layout calls)
+        private readonly Dictionary<string, (float width, float height)> _intrinsicSizeCache = new Dictionary<string, (float, float)>();
+        private readonly Dictionary<LiteElement, float> _textMeasureCache = new Dictionary<LiteElement, float>();
+        
+        // Display List for deferred rendering (Phase 6)
+        private List<RenderCommand> _displayList = new List<RenderCommand>();
+        private bool _useDisplayList = false; // Disable display list mode to force direct rendering (fix white screen)
+        
+        // Stacking Context Tree for correct z-order (Phase 7)
+        private StackingContext _rootStackingContext;
+        private StackingContext _currentStackingContext;
+        
+        // Dirty Rect Optimization (Phase 9)
+        private readonly List<SKRect> _dirtyRects = new List<SKRect>();
+        private readonly Dictionary<LiteElement, SKRect> _previousBounds = new Dictionary<LiteElement, SKRect>();
+        private bool _fullRepaintNeeded = true; // Start with full repaint
+        private bool _enableDirtyRectOptimization = false; // Disabled until stable
+        
         // Debug layout visualization - set to true to see box boundaries
         private const bool DEBUG_LAYOUT = false;
         
         // Debug file logging - DISABLE for production (sync file I/O causes severe lag)
-        private const bool DEBUG_FILE_LOGGING = false;
+        private const bool DEBUG_FILE_LOGGING = true;
+        
+        // Scrollbar state persistence to prevent layout jitter and infinite loops (Google infinite scroll fix)
+        private bool _verticalScrollbarVisible = false;
         
         // Scroll offset for hash fragment navigation (position:fixed elements need to counter this)
         private float _scrollOffsetY = 0;
+        
+        // Recursion depth for layout safety
+        private int _layoutDepth = 0;
         // Text line for wrapping
         private class TextLine
         {
@@ -120,19 +146,36 @@ namespace FenBrowser.FenEngine.Rendering
 
         public SkiaDomRenderer() { }
 
-        public void Render(LiteElement root, SKCanvas canvas, Dictionary<LiteElement, CssComputed> styles, SKRect viewport, string baseUrl = null, Action<SKSize, List<InputOverlayData>> onLayoutUpdated = null)
+        public void Render(LiteElement root, SKCanvas canvas, Dictionary<LiteElement, CssComputed> styles, SKRect viewport, string baseUrl = null, Action<SKSize, List<InputOverlayData>> onLayoutUpdated = null, SKSize? separateLayoutViewport = null)
         {
-            _styles = styles;
-            _boxes.Clear(); // ConcurrentDictionary.Clear is thread-safe
+            _boxes.Clear();
+            _deferredAbsoluteElements.Clear();
             _parents.Clear();
             _textLines.Clear();
             CurrentOverlays.Clear();
             _baseUrl = baseUrl; // Store for relative path resolution
+            _styles = styles; // Assign styles for layout engine
             
             // Store viewport height for height:100% resolution
-            _viewportHeight = viewport.Height;
-            _viewportWidth = viewport.Width;
-            _viewport = viewport;
+            // CRITICAL FIX: Use separate layout viewport if provided (window size)
+            // preventing infinite feedback loops where content height becomes viewport height
+            if (separateLayoutViewport.HasValue)
+            {
+                _viewportHeight = separateLayoutViewport.Value.Height;
+                _viewportWidth = separateLayoutViewport.Value.Width;
+                
+                // If scrollbar is visible, reduce layout width to simulate scrollbar taking space
+                // This logic is mostly handled by the caller (MainWindow) passing the Viewport width which already excludes scrollbar?
+                // Actually ScrollViewer.Viewport *excludes* scrollbars usually.
+                // But let's respect our internal logic too if needed.
+            }
+            else
+            {
+                _viewportHeight = viewport.Height;
+                _viewportWidth = viewport.Width;
+            }
+            
+            _viewport = viewport; // Paint bounds (what we can draw to)
             if (_viewportHeight <= 0) _viewportHeight = 1080; // Fallback
             if (_viewportWidth <= 0) _viewportWidth = 1920;   // Fallback
             
@@ -140,6 +183,15 @@ namespace FenBrowser.FenEngine.Rendering
             _counters.Clear();
             
             Console.WriteLine($"[RENDER] viewport.Height={viewport.Height} viewport.Width={viewport.Width} _viewportHeight={_viewportHeight}");
+            if (separateLayoutViewport.HasValue)
+            {
+                Console.WriteLine($"[RENDER] using separateLayoutViewport: {_viewportWidth}x{_viewportHeight} (Origin: window/scrollviewer)");
+                if (DEBUG_FILE_LOGGING) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[RENDER] separateLayoutViewport: {_viewportWidth}x{_viewportHeight}\r\n"); } catch {} }
+            }
+            else
+            {
+                 if (DEBUG_FILE_LOGGING) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[RENDER] viewport fallback: {_viewportWidth}x{_viewportHeight}\r\n"); } catch {} }
+            }
             
             // Draw background only in the strict viewport of the control
             using (var paint = new SKPaint { Color = SKColors.White })
@@ -157,8 +209,11 @@ namespace FenBrowser.FenEngine.Rendering
                 hashFragment = baseUrl.Substring(hashIndex + 1);
                 if (DEBUG_FILE_LOGGING) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Render] Hash fragment detected: #{hashFragment}\r\n"); } catch {} }            }
 
+            if (DEBUG_FILE_LOGGING) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\render_debug.txt", $"[RENDER] PaintViewport: {viewport.Width}x{viewport.Height} LayoutViewport: {_viewportWidth}x{_viewportHeight}\r\n"); } catch {} }
+
             // 1. Layout Pass
             // Use viewport width for layout constraints
+            if (DEBUG_FILE_LOGGING) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\render_debug.txt", $"[RENDER] Starting ComputeLayout...\r\n"); } catch {} }
             float initialWidth = viewport.Width;
             if (initialWidth <= 0) initialWidth = 1920; // Fallback
 
@@ -168,7 +223,63 @@ namespace FenBrowser.FenEngine.Rendering
                 _deferredAbsoluteElements.Clear();
                 
                 // First pass: Layout all non-absolute elements
-                ComputeLayout(root, 0, 0, initialWidth, shrinkToContent: false, availableHeight: _viewportHeight);
+                float scrollbarWidth = 16.0f; // Standard scrollbar width
+                float layoutWidth = initialWidth;
+                
+                // Use persistent scrollbar state to determine initial layout width
+                // This prevents frame-by-frame jitter which confuses JS layout logic (e.g. Google)
+                if (_verticalScrollbarVisible)
+                {
+                    layoutWidth -= scrollbarWidth;
+                }
+                
+                try
+                {
+                    ComputeLayout(root, 0, 0, layoutWidth, shrinkToContent: false, availableHeight: _viewportHeight);
+                    if (DEBUG_FILE_LOGGING) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[RENDER] ComputeLayout success.\r\n"); } catch {} }
+                }
+                catch (Exception layoutEx)
+                {
+                    Console.WriteLine($"[Layout] CRASH: {layoutEx}");
+                    if (DEBUG_FILE_LOGGING) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Layout] CRASH: {layoutEx}\r\n"); } catch {} }
+                }
+                
+                // Check for vertical overflow
+                bool hasOverflow = false;
+                if (_boxes.TryGetValue(root, out var rootBoxCheck))
+                {
+                    hasOverflow = rootBoxCheck.MarginBox.Bottom > _viewportHeight;
+                }
+                
+                // Update scrollbar state if it changed
+                // (Only update if meaningful change to avoid oscillation)
+                if (hasOverflow != _verticalScrollbarVisible)
+                {
+                    // State changed!
+                    bool prev = _verticalScrollbarVisible;
+                    _verticalScrollbarVisible = hasOverflow;
+                    
+                    if (DEBUG_FILE_LOGGING) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Layout] Scrollbar state changed: {prev}->{_verticalScrollbarVisible}. Re-layout.\r\n"); } catch {} }
+
+                    // Perform re-layout if needed
+                    // Case 1: Was NO scrollbar, now YES -> Shrink width, Re-layout
+                    // Case 2: Was YES scrollbar, now NO -> Expand width, Re-layout ??
+                    // Expanding width usually removes overflow, so we oscillate.
+                    // Hysteresis: Only expand if SIGNIFICANTLY under overflow?
+                    // For now: Always respect current frame overflow status to ensure correctness.
+                    // To stop infinite loop, JS needs STABLE width. 
+                    // If we flip-flop, JS sees width change every frame.
+                    
+                    // Force re-layout with new state
+                    float newLayoutWidth = initialWidth;
+                    if (_verticalScrollbarVisible) newLayoutWidth -= scrollbarWidth;
+                    
+                    // Clear Previous Layout
+                    _boxes.Clear();
+                    _deferredAbsoluteElements.Clear();
+                    
+                    ComputeLayout(root, 0, 0, newLayoutWidth, shrinkToContent: false, availableHeight: _viewportHeight);
+                }
                 
                 // Second pass: Layout deferred absolute-positioned elements
                 // Now all positioned ancestors should have their boxes computed
@@ -183,7 +294,11 @@ namespace FenBrowser.FenEngine.Rendering
                         if (_styles != null) _styles.TryGetValue(element, out s);
                         string pos = s?.Position?.ToLowerInvariant();
                         
-                        SKRect container = pos == "fixed" ? _viewport : FindPositionedAncestorBox(element);
+                        SKRect container;
+                        if (pos == "fixed")
+                            container = FindFixedContainer(element);
+                        else
+                            container = FindAbsoluteContainer(element);
                         ComputeAbsoluteLayout(element, container);
                         
                         // DEBUG: Log position:fixed elements to trace viewport positioning
@@ -201,6 +316,66 @@ namespace FenBrowser.FenEngine.Rendering
                 if (_boxes.TryGetValue(root, out var rootBox))
                 {
                     totalHeight = rootBox.MarginBox.Bottom;
+                    
+                    // BUGFIX: Exclude position:fixed elements from height calculation
+                    // Fixed elements should not contribute to scrollable content height
+                    // They are positioned relative to viewport, not document flow
+                    float maxFlowHeight = 0;
+                    LiteElement tallestElement = null;
+                    
+                    foreach (var kvp in _boxes)
+                    {
+                        var element = kvp.Key;
+                        var box = kvp.Value;
+                        
+                        // Skip fixed elements - they don't contribute to scroll height
+                        if (_styles != null && _styles.TryGetValue(element, out var elStyle))
+                        {
+                            string elPos = elStyle?.Position?.ToLowerInvariant();
+                            if (elPos == "fixed")
+                                continue;
+                        }
+                        
+                        // Skip elements with unreasonable bottom values (likely layout bugs)
+                        if (box.MarginBox.Bottom > _viewportHeight * 10)
+                        {
+                            // Log the problematic element
+                            if (DEBUG_FILE_LOGGING) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[HEIGHT] Skipping element with huge bottom: {element.Tag} class={element.GetAttribute("class")} bottom={box.MarginBox.Bottom}\r\n"); } catch {} }
+                            continue;
+                        }
+                        
+                        // Track maximum bottom of in-flow elements
+                        if (box.MarginBox.Bottom > maxFlowHeight)
+                        {
+                            maxFlowHeight = box.MarginBox.Bottom;
+                            
+                            // Ignore root containers when reporting the "tallest" element to find the culprit
+                            string tag = element.Tag?.ToUpperInvariant();
+                            if (tag != "#DOCUMENT" && tag != "HTML" && tag != "BODY")
+                            {
+                                tallestElement = element;
+                            }
+                        }
+                    }
+                    
+                    // Ensure totalHeight is at least the viewport height (prevent white screen on empty/absolute-only pages)
+                    if (maxFlowHeight < _viewportHeight)
+                    {
+                        if (DEBUG_FILE_LOGGING) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[HEIGHT] maxFlowHeight {maxFlowHeight} < viewport {_viewportHeight}. Clamping to viewport.\r\n"); } catch {} }
+                        maxFlowHeight = _viewportHeight;
+                    }
+                    
+                    // Use the calculated flow height
+                    totalHeight = maxFlowHeight;
+                    
+                    // Sanity check: Limit maximum height to 10x viewport
+                    // This prevents infinite scrolling bugs from layout errors
+                    float maxReasonableHeight = _viewportHeight * 10;
+                    if (totalHeight > maxReasonableHeight)
+                    {
+                        if (DEBUG_FILE_LOGGING) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Render] WARNING: totalHeight {totalHeight} exceeds max, clamping to {maxReasonableHeight}\r\n"); } catch {} }
+                        totalHeight = maxReasonableHeight;
+                    }
                     
                     // Find html element (may be root or child of #document)
                     LiteElement htmlElement = null;
@@ -246,15 +421,72 @@ namespace FenBrowser.FenEngine.Rendering
                 // 3. Paint Pass (this is where overlays are collected)
                 // Store scroll offset for use in DrawLayout (position:fixed elements counter this)
                 _scrollOffsetY = scrollOffsetY;
+                
+                // Clear display list for new frame
+                ClearDisplayList();
+                
+                // Build stacking context tree for correct z-order (Phase 7)
+                var stackingBuilder = new StackingContextBuilder(_styles);
+                _rootStackingContext = stackingBuilder.BuildTree(root);
+                _currentStackingContext = _rootStackingContext;
+                
                 canvas.Save();
                 if (scrollOffsetY > 0)
                 {
                     canvas.Translate(0, -scrollOffsetY);
                 }
+                
+                // DrawLayout populates the display list with commands
+                if (DEBUG_FILE_LOGGING) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[RENDER] Starting DrawLayout...\r\n"); } catch {} }
                 DrawLayout(root, canvas);
+                if (DEBUG_FILE_LOGGING) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[RENDER] DrawLayout done.\r\n"); } catch {} }
+                
+                // Execute display list using stacking context for correct paint order
+                if (_useDisplayList && _displayList.Count > 0)
+                {
+                    // Calculate the visible viewport accounting for scroll
+                    var visibleViewport = new SKRect(
+                        _viewport.Left,
+                        _viewport.Top + scrollOffsetY,
+                        _viewport.Right,
+                        _viewport.Bottom + scrollOffsetY
+                    );
+                    
+                    // Apply dirty rect clipping if optimization is enabled (Phase 9)
+                    SKRect effectiveViewport = visibleViewport;
+                    bool useDirtyClip = _enableDirtyRectOptimization && !_fullRepaintNeeded && _dirtyRects.Count > 0;
+                    
+                    if (useDirtyClip)
+                    {
+                        // Get union of dirty rects and intersect with viewport
+                        var dirtyUnion = GetDirtyUnion();
+                        effectiveViewport = SKRect.Intersect(visibleViewport, dirtyUnion);
+                        
+                        // Clip canvas to dirty region for faster rendering
+                        canvas.Save();
+                        canvas.ClipRect(effectiveViewport);
+                    }
+                    
+                    // Use stacking context tree to get correct paint order
+                    // For now, execute commands directly (stacking context integration is foundation)
+                    // Future: Replace with _rootStackingContext.Flatten() when DrawLayout fully converted
+                    ExecuteDisplayList(canvas, effectiveViewport);
+                    if (DEBUG_FILE_LOGGING) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[RENDER] ExecuteDisplayList done.\r\n"); } catch {} }
+                    
+                    if (useDirtyClip)
+                    {
+                        canvas.Restore();
+                    }
+                    
+                    // Store bounds for next frame comparison and clear dirty rects
+                    StorePreviousBounds();
+                    ClearDirtyRects();
+                }
+                
                 canvas.Restore();
                 
                 // Invoke callback with Size AND Overlays AFTER DrawLayout populates CurrentOverlays
+                if (DEBUG_FILE_LOGGING) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[RENDER] totalHeight calculated: {totalHeight} Boxes: {_boxes.Count}. Callback invoked.\r\n"); } catch {} }
                 var overlaysCopy = new List<InputOverlayData>(CurrentOverlays);
                 onLayoutUpdated?.Invoke(new SKSize(initialWidth, totalHeight), overlaysCopy);
             }
@@ -265,8 +497,238 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        // Added shrinkToContent and availableHeight parameters
+        /// <summary>
+        /// Execute the display list with viewport culling.
+        /// Commands outside the viewport are skipped for performance.
+        /// </summary>
+        private void ExecuteDisplayList(SKCanvas canvas, SKRect viewport)
+        {
+            if (_displayList == null || _displayList.Count == 0)
+                return;
+            
+            int totalCommands = _displayList.Count;
+            int culledCommands = 0;
+            
+            foreach (var command in _displayList)
+            {
+                // Cull commands completely outside the viewport
+                // Note: Some commands (Save, Restore, Clip) have empty bounds and should always execute
+                bool hasValidBounds = command.Bounds.Width > 0 || command.Bounds.Height > 0;
+                
+                if (hasValidBounds && !command.IntersectsWith(viewport))
+                {
+                    culledCommands++;
+                    continue; // Skip off-screen commands
+                }
+                
+                command.Execute(canvas);
+            }
+            
+            // Log culling stats for debugging
+            if (culledCommands > 0)
+            {
+                FenLogger.Debug($"[DisplayList] Executed {totalCommands - culledCommands}/{totalCommands} commands ({culledCommands} culled)", LogCategory.Rendering);
+            }
+        }
+        
+        /// <summary>
+        /// Clear the display list for next frame
+        /// </summary>
+        private void ClearDisplayList()
+        {
+            _displayList.Clear();
+        }
+        
+        /// <summary>
+        /// Add a command to the display list
+        /// </summary>
+        private void AddCommand(RenderCommand command)
+        {
+            _displayList.Add(command);
+        }
+
+        #region Dirty Rect Optimization (Phase 9)
+        
+        /// <summary>
+        /// Mark an element as dirty, requiring repaint of its bounding box.
+        /// Also marks the area where the element was previously drawn.
+        /// </summary>
+        public void MarkDirty(LiteElement element)
+        {
+            if (element == null || !_enableDirtyRectOptimization) 
+            {
+                _fullRepaintNeeded = true;
+                return;
+            }
+            
+            // Get current bounds
+            if (_boxes.TryGetValue(element, out var box))
+            {
+                _dirtyRects.Add(box.MarginBox);
+            }
+            
+            // Also mark previous location as dirty (for moved elements)
+            if (_previousBounds.TryGetValue(element, out var prevBounds))
+            {
+                _dirtyRects.Add(prevBounds);
+            }
+        }
+        
+        /// <summary>
+        /// Mark a specific rectangle as dirty for repaint
+        /// </summary>
+        public void MarkDirtyRect(SKRect rect)
+        {
+            if (!_enableDirtyRectOptimization)
+            {
+                _fullRepaintNeeded = true;
+                return;
+            }
+            _dirtyRects.Add(rect);
+        }
+        
+        /// <summary>
+        /// Request a full repaint of the entire viewport
+        /// </summary>
+        public void RequestFullRepaint()
+        {
+            _fullRepaintNeeded = true;
+            _dirtyRects.Clear();
+        }
+        
+        /// <summary>
+        /// Get the union of all dirty rectangles for clipping
+        /// </summary>
+        private SKRect GetDirtyUnion()
+        {
+            if (_fullRepaintNeeded || _dirtyRects.Count == 0)
+                return _viewport;
+            
+            float left = float.MaxValue, top = float.MaxValue;
+            float right = float.MinValue, bottom = float.MinValue;
+            
+            foreach (var rect in _dirtyRects)
+            {
+                if (rect.Left < left) left = rect.Left;
+                if (rect.Top < top) top = rect.Top;
+                if (rect.Right > right) right = rect.Right;
+                if (rect.Bottom > bottom) bottom = rect.Bottom;
+            }
+            
+            // Expand slightly to avoid aliasing issues
+            return new SKRect(left - 1, top - 1, right + 1, bottom + 1);
+        }
+        
+        /// <summary>
+        /// Store current element bounds for next frame comparison
+        /// </summary>
+        private void StorePreviousBounds()
+        {
+            _previousBounds.Clear();
+            foreach (var kvp in _boxes)
+            {
+                _previousBounds[kvp.Key] = kvp.Value.MarginBox;
+            }
+        }
+        
+        /// <summary>
+        /// Clear dirty rects after processing
+        /// </summary>
+        private void ClearDirtyRects()
+        {
+            _dirtyRects.Clear();
+            _fullRepaintNeeded = false;
+        }
+        
+        /// <summary>
+        /// Check if any dirty rects are pending
+        /// </summary>
+        public bool HasDirtyRects => _fullRepaintNeeded || _dirtyRects.Count > 0;
+        
+        /// <summary>
+        /// Enable or disable dirty rect optimization
+        /// </summary>
+        public bool EnableDirtyRectOptimization
+        {
+            get => _enableDirtyRectOptimization;
+            set
+            {
+                _enableDirtyRectOptimization = value;
+                if (!value) _fullRepaintNeeded = true;
+            }
+        }
+        
+        /// <summary>
+        /// Called when mouse hovers over an element - marks for repaint
+        /// </summary>
+        public void OnHover(LiteElement element, LiteElement previousElement = null)
+        {
+            if (previousElement != null)
+            {
+                MarkDirty(previousElement); // Unhover old element
+            }
+            if (element != null)
+            {
+                MarkDirty(element); // Hover new element
+            }
+        }
+        
+        /// <summary>
+        /// Called when an element is clicked - marks for repaint
+        /// </summary>
+        public void OnClick(LiteElement element)
+        {
+            if (element != null)
+            {
+                MarkDirty(element);
+            }
+        }
+        
+        /// <summary>
+        /// Called when an element receives/loses focus - marks for repaint
+        /// </summary>
+        public void OnFocus(LiteElement element, bool focused)
+        {
+            if (element != null)
+            {
+                MarkDirty(element);
+            }
+        }
+        
+        /// <summary>
+        /// Called when an element's style changes - marks for repaint
+        /// </summary>
+        public void OnStyleChange(LiteElement element)
+        {
+            if (element != null)
+            {
+                MarkDirty(element);
+                // Also mark parent for layout-affecting changes
+                if (element.Parent != null)
+                {
+                    MarkDirty(element.Parent);
+                }
+            }
+        }
+        
+        #endregion
+
         private void ComputeLayout(LiteElement node, float x, float y, float availableWidth, bool shrinkToContent = false, float availableHeight = 0)
+        {
+            _layoutDepth++;
+            try
+            {
+                if (_layoutDepth > 200) throw new Exception($"Layout recursion too deep on {node.Tag ?? "unknown"}");
+                ComputeLayoutInternal(node, x, y, availableWidth, shrinkToContent, availableHeight);
+            }
+            finally
+            {
+                _layoutDepth--;
+            }
+        }
+
+        // Added shrinkToContent and availableHeight parameters
+        private void ComputeLayoutInternal(LiteElement node, float x, float y, float availableWidth, bool shrinkToContent = false, float availableHeight = 0)
         {
             // Get styles
             CssComputed style = null;
@@ -274,7 +736,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             // Process CSS counters
             ProcessCssCounters(style);
-
+            
             // VISIBILITY CHECK
             if (ShouldHide(node, style)) return;
 
@@ -336,26 +798,69 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
 
-            // Content width = available - (margin + border + padding)
-            float contentWidth = availableWidth - (marginLeft + marginRight + borderLeft + borderRight + paddingLeft + paddingRight);
-            if (contentWidth < 0) contentWidth = 0;
+            // Box Model Calculation (Content Width)
+            
+            // Check box-sizing
+            string boxSizing = style?.Map != null && style.Map.TryGetValue("box-sizing", out var bs) ? bs.ToLowerInvariant() : "content-box";
+            bool isBorderBox = boxSizing == "border-box";
 
+            // Content width calculation
+            float contentWidth = 0;
+            
             // explicit width override (pixel value)
             bool hasExplicitWidth = style?.Width.HasValue == true;
+            
             if (hasExplicitWidth)
             {
-                contentWidth = (float)style.Width.Value;
+                float declaredWidth = (float)style.Width.Value;
+                if (isBorderBox)
+                {
+                    // Width includes padding + border, so we subtract them to get content width
+                    contentWidth = declaredWidth - (paddingLeft + paddingRight + borderLeft + borderRight);
+                }
+                else
+                {
+                    // content-box: Width IS the content width
+                    contentWidth = declaredWidth;
+                }
             }
             // Also handle percentage width (e.g., width: 100%)
             else if (style?.WidthPercent.HasValue == true)
             {
                 hasExplicitWidth = true; // Treat percentage as explicit for sizing decisions
                 float percentValue = (float)style.WidthPercent.Value;
-                // Calculate pixel width from percentage of available content width
-                float availableContentWidth = availableWidth - (marginLeft + marginRight + borderLeft + borderRight + paddingLeft + paddingRight);
-                contentWidth = (percentValue / 100f) * availableContentWidth;
-                if (contentWidth < 0) contentWidth = 0;
+                
+                // Base for percentage: usually the parent's content width (availableWidth)
+                // But we must subtract margins from availableWidth to get the "containing block logic" correct?
+                // Actually availableWidth passed here = parent.ContentWidth (usually)
+                
+                // If border-box, percentage refers to the border-box width
+                // If content-box, percentage refers to the content-box width
+                
+                // Standard block flow: availableWidth is the width of the containing block
+                // For a child in normal flow, width:100% means it fills the containing block.
+                // But we must account for margins of THIS element.
+                float availableForBox = availableWidth - (marginLeft + marginRight);
+                
+                float calculatedWidth = (percentValue / 100f) * availableForBox;
+                
+                if (isBorderBox)
+                {
+                    contentWidth = calculatedWidth - (paddingLeft + paddingRight + borderLeft + borderRight);
+                }
+                else
+                {
+                    contentWidth = calculatedWidth;
+                }
             }
+            else
+            {
+                // Auto width
+                // In normal flow, auto width = available - margins - borders - padding
+                contentWidth = availableWidth - (marginLeft + marginRight + borderLeft + borderRight + paddingLeft + paddingRight);
+            }
+            
+            if (contentWidth < 0) contentWidth = 0;
             
             // Apply max-width constraint
             bool hasMaxWidth = style?.MaxWidth.HasValue == true;
@@ -625,14 +1130,28 @@ namespace FenBrowser.FenEngine.Rendering
                                  if (DEBUG_FILE_LOGGING) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
                                      $"[SkiaRenderer] IMG URL resolved: '{originalSrc}' + base '{_baseUrl}' => '{src}'\r\n"); } catch {} }                             }
                              
-                             var bmp = ImageLoader.GetImage(src);
-                             if (bmp != null)
+                             // Check cache first
+                             if (_intrinsicSizeCache.TryGetValue(src, out var cachedSize))
                              {
-                                 intrinsicWidth = bmp.Width;
-                                 intrinsicHeight = bmp.Height;
+                                 intrinsicWidth = cachedSize.width;
+                                 intrinsicHeight = cachedSize.height;
+                             }
+                             else
+                             {
+                                 var bmp = ImageLoader.GetImage(src);
+                                 if (bmp != null)
+                                 {
+                                     intrinsicWidth = bmp.Width;
+                                     intrinsicHeight = bmp.Height;
+                                     // Store in cache for future use
+                                     _intrinsicSizeCache[src] = (intrinsicWidth, intrinsicHeight);
+                                 }
                              }
                          }
-                         catch {}
+                         catch (Exception ex)
+                         {
+                             FenLogger.Error($"[ComputeLayout] Failed to load/decode image: {src} - {ex.Message}", LogCategory.Rendering);
+                         }
                     }
                 }
                 
@@ -650,9 +1169,16 @@ namespace FenBrowser.FenEngine.Rendering
                 if (isReplaced)
                 {
                     // FIX: Replaced elements default to intrinsic width.
-                    // If intrinsic is 0 (loading), we use 0 (or updated intrinsic), NOT availableWidth.
-                    // This prevents images stretching to full screen width before load.
-                    contentWidth = (intrinsicWidth > 0) ? intrinsicWidth : 0;
+                    // If height is explicit and we have aspect ratio, derive width from height.
+                    if (style?.Height.HasValue == true && aspectRatio > 0)
+                    {
+                        contentWidth = (float)style.Height.Value * aspectRatio;
+                    }
+                    else
+                    {
+                        // Otherwise use intrinsic or 0
+                        contentWidth = (intrinsicWidth > 0) ? intrinsicWidth : 0;
+                    }
                     
                     if (contentWidth > availableWidth) contentWidth = availableWidth;
                     
@@ -793,6 +1319,11 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 // Update Max Child Width reported
                  if (maxChildWidth < contentWidth) maxChildWidth = contentWidth;
+                 
+                 // Replaced elements default baseline is the bottom margin edge (or content bottom)
+                 // For now, let's say Ascent = Height, Descent = 0 (sits on baseline)
+                 box.Ascent = contentHeight + (float)box.Padding.Top + (float)box.Padding.Bottom + (float)box.Border.Top + (float)box.Border.Bottom; 
+                 box.Descent = 0;
             }
 
             // TEXT CONTENT
@@ -861,6 +1392,15 @@ namespace FenBrowser.FenEngine.Rendering
                                 maxTextWidth = result.Width;
                                 var metrics = paint.FontMetrics;
                                 textHeight = lineHeight;
+                                
+                                // Calculate baseline metrics with leading
+                                float fontAscent = -metrics.Ascent; // Make positive
+                                float fontDescent = metrics.Descent;
+                                float fontHeight = fontAscent + fontDescent;
+                                float halfLeading = (lineHeight - fontHeight) / 2;
+                                
+                                box.Ascent = fontAscent + halfLeading;
+                                box.Descent = fontDescent + halfLeading;
                             }
                             
                             _textLines[node] = new List<TextLine> { new TextLine { Text = text, Width = maxTextWidth, Y = 0 } };
@@ -875,6 +1415,15 @@ namespace FenBrowser.FenEngine.Rendering
                         paint.MeasureText(text, ref bounds);
                         maxTextWidth = bounds.Width;
                         textHeight = lineHeight;
+                        
+                        // Fallback metrics
+                        var m = paint.FontMetrics;
+                        float fa = -m.Ascent;
+                        float fd = m.Descent;
+                        float fl = (lineHeight - (fa + fd)) / 2;
+                        box.Ascent = fa + fl;
+                        box.Descent = fd + fl;
+                        
                         _textLines[node] = new List<TextLine> { new TextLine { Text = text, Width = maxTextWidth, Y = 0 } };
                     }
 
@@ -934,7 +1483,20 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             // Finalize Heights
-            if (style?.Height.HasValue == true) contentHeight = (float)style.Height.Value;
+            if (style?.Height.HasValue == true)
+            {
+                float declaredHeight = (float)style.Height.Value;
+                if (isBorderBox)
+                {
+                    // Height includes padding + border, so we subtract them
+                    contentHeight = declaredHeight - ((float)box.Padding.Top + (float)box.Padding.Bottom + (float)box.Border.Top + (float)box.Border.Bottom);
+                }
+                else
+                {
+                    contentHeight = declaredHeight;
+                }
+                if (contentHeight < 0) contentHeight = 0;
+            }
             // Handle height: 100% (or other percentages)
             // This is crucial for Acid2 layout which uses % heights for face parts
             else if (style?.HeightPercent.HasValue == true)
@@ -945,9 +1507,23 @@ namespace FenBrowser.FenEngine.Rendering
                 // but for absolute elements, availableHeight IS passed.
                 float baseHeight = availableHeight > 0 ? availableHeight : 0;
                 
+                // For nested elements, availableHeight usually excludes parent padding (content-box logic)
+                // But for the child, if it's border-box, the % resolves against the containing block, 
+                // and then we subtract OUR padding/border to get content height.
+                
                 if (baseHeight > 0)
                 {
                     float resolvedHeight = baseHeight * (percentValue / 100f);
+                    
+                    if (isBorderBox)
+                    {
+                        contentHeight = resolvedHeight - ((float)box.Padding.Top + (float)box.Padding.Bottom + (float)box.Border.Top + (float)box.Border.Bottom);
+                    }
+                    else
+                    {
+                         contentHeight = resolvedHeight;
+                    }
+                    if (contentHeight < 0) contentHeight = 0;
                     // Adjust for padding/border if box-sizing is border-box (not implemented yet, assuming content-box default)
                     if (resolvedHeight >= 0) contentHeight = resolvedHeight;
                     
@@ -1206,6 +1782,63 @@ namespace FenBrowser.FenEngine.Rendering
             Action flushLine = () => {
                 if (lineItems.Count == 0) return;
                 
+                // 1. Calculate Line Metrics (Max Ascent, Max Descent)
+                float lineAscent = 0;
+                float lineDescent = 0;
+
+                // Calculate strut height from inherited line-height (minimum line-box height)
+                // The strut is an invisible inline box at the start of each line
+                // with zero width but with the same ascent, descent, and line height
+                // as the containing block's font properties
+                float strutHeight = 0;
+                float strutAscent = 0;
+                float strutDescent = 0;
+                
+                if (lineItems.Count > 0)
+                {
+                    // Get parent's line-height to compute strut
+                    var firstItem = lineItems[0].e;
+                    if (_styles != null && firstItem.Parent != null && 
+                        _styles.TryGetValue(firstItem.Parent, out var parentStyle))
+                    {
+                        float inheritedFontSize = (float)(parentStyle.FontSize ?? 16.0);
+                        float inheritedLineHeight = (float)(parentStyle.LineHeight ?? (inheritedFontSize * 1.2));
+                        
+                        // Strut splits line-height evenly between ascent and descent
+                        // Based on em-box with half-leading distribution
+                        strutAscent = inheritedFontSize * 0.8f; // Approximate ascent ratio
+                        strutDescent = inheritedFontSize * 0.2f; // Approximate descent ratio
+                        strutHeight = (float)Math.Max(inheritedLineHeight, strutAscent + strutDescent);
+                        
+                        // Initialize line metrics with strut
+                        lineAscent = strutAscent;
+                        lineDescent = (float)Math.Max(strutDescent, strutHeight - strutAscent);
+                    }
+                }
+
+                foreach(var item in lineItems)
+                {
+                    if (_boxes.TryGetValue(item.e, out var box))
+                    {
+                        if (box.Ascent > lineAscent) lineAscent = box.Ascent;
+                        if (box.Descent > lineDescent) lineDescent = box.Descent;
+                    } 
+                    else 
+                    {
+                        // Fallback
+                        if (item.h > lineAscent) lineAscent = item.h;
+                    }
+                }
+
+                // Line height is sum of max ascent and max descent
+                float lineHeight = lineAscent + lineDescent;
+                
+                // Enforce strut: line height cannot be less than strut height
+                if (lineHeight < strutHeight) lineHeight = strutHeight;
+                
+                // Fallback: if calculated height is less than tracked max height (e.g. erratic metrics), take max height
+                if (lineHeight < currentLineH) lineHeight = currentLineH;
+
                 // Horizontal Alignment
                 float lineWidth = currentLineX - rangeLeft;
                 if (lineWidth > trackedMaxLineWidth) trackedMaxLineWidth = lineWidth;
@@ -1222,15 +1855,41 @@ namespace FenBrowser.FenEngine.Rendering
                     if (_styles != null && _styles.TryGetValue(item.e, out var s) && s?.VerticalAlign != null) 
                         vAlign = s.VerticalAlign.ToLowerInvariant();
                         
-                    float vShift = currentLineH - item.h; // Default bottom align (simplification of baseline)
-                    if (vAlign == "top") vShift = 0;
-                    else if (vAlign == "middle") vShift = (currentLineH - item.h) / 2;
-                    else if (vAlign == "bottom") vShift = currentLineH - item.h;
+                    float vShift = 0;
+                    
+                    if (_boxes.TryGetValue(item.e, out var box))
+                    {
+                        if (vAlign == "top")
+                        {
+                            vShift = 0; 
+                        }
+                        else if (vAlign == "bottom")
+                        {
+                            vShift = lineHeight - box.MarginBox.Height;
+                        }
+                        else if (vAlign == "middle")
+                        {
+                            vShift = (lineHeight - box.MarginBox.Height) / 2;
+                        }
+                        else // baseline (default)
+                        {
+                            // Align item baseline to line baseline
+                            // Line baseline is at y = lineAscent (relative to line top)
+                            // Item baseline is at y = box.Ascent (relative to item top)
+                            // Shift needed: lineAscent - box.Ascent
+                            vShift = lineAscent - box.Ascent;
+                        }
+                    }
+                    else
+                    {
+                        // Fallback for missing box
+                        vShift = lineHeight - item.h;
+                    }
                     
                     ShiftTree(item.e, offsetX, vShift); 
                 }
                 
-                currentY += currentLineH;
+                currentY += lineHeight;
                 startLine(); // Prep next line
             };
 
@@ -1313,6 +1972,7 @@ namespace FenBrowser.FenEngine.Rendering
             string alignItems = style?.AlignItems?.ToLowerInvariant() ?? "stretch";
             string alignContent = style?.AlignContent?.ToLowerInvariant() ?? "stretch";
             string flexWrap = style?.FlexWrap?.ToLowerInvariant() ?? "nowrap";
+
             bool shouldWrap = flexWrap == "wrap" || flexWrap == "wrap-reverse";
             bool wrapReverse = flexWrap == "wrap-reverse";
             
@@ -1376,6 +2036,9 @@ namespace FenBrowser.FenEngine.Rendering
             List<LiteElement> flexItems = new List<LiteElement>();
             foreach(var c in node.Children)
             {
+                 // SKIP WHITESPACE TEXT NODES
+                 if (c.IsText && string.IsNullOrWhiteSpace(c.Text)) continue;
+
                  CssComputed cStyle = null;
                  if (_styles != null) _styles.TryGetValue(c, out cStyle);
                  string cPos = cStyle?.Position?.ToLowerInvariant();
@@ -1403,8 +2066,8 @@ namespace FenBrowser.FenEngine.Rendering
             if (isRow)
             {
                 // Flex row layout with wrapping support + flex-grow/flex-shrink
-                var lines = new List<List<(LiteElement element, float width, float height, float grow, float shrink, float basis)>>();
-                var currentLine = new List<(LiteElement, float, float, float, float, float)>();
+                var lines = new List<List<(LiteElement element, float width, float height, float grow, float shrink, float basis, float measuredWidth)>>();
+                var currentLine = new List<(LiteElement element, float width, float height, float grow, float shrink, float basis, float measuredWidth)>();
                 float currentLineWidth = 0;
                 
                 // First pass: measure all items and organize into lines
@@ -1440,21 +2103,34 @@ namespace FenBrowser.FenEngine.Rendering
                         {
                             // Standard CSS wrap
                             lines.Add(currentLine);
-                            currentLine = new List<(LiteElement, float, float, float, float, float)>();
+                            currentLine = new List<(LiteElement element, float width, float height, float grow, float shrink, float basis, float measuredWidth)>();
                             currentLineWidth = 0;
                         }
                         else if (!shouldWrap && testWidth > contentBox.Width * 1.5f)
                         {
-                            // Safety wrap: Force wrap if items would go significantly beyond container bounds
                             // This catches cases where hidden elements (like style tags) are flex items
                             // or where elements designed for different layouts would position way off-screen
                             lines.Add(currentLine);
-                            currentLine = new List<(LiteElement, float, float, float, float, float)>();
+                            currentLine = new List<(LiteElement element, float width, float height, float grow, float shrink, float basis, float measuredWidth)>();
                             currentLineWidth = 0;
                         }
                     }
                     
-                    currentLine.Add((child, childWidth, childHeight, grow, shrink, basis));
+                    
+                    // Capture original measured width as the implicit minimum content width for min-width: auto
+                    float measuredWidth = (childWidth == basis && basis > 0) ? childBox?.MarginBox.Width ?? 0 : childWidth;
+                    // If we just overwrote childWidth with basis, we need to make sure measuredWidth reflects the INTIRNSIC size,
+                    // which was in childWidth BEFORE the basis check.
+                    // Correct logic:
+                    // 1. childWidth = childBox.MarginBox.Width (Intrinsic)
+                    // 2. measuredWidth = childWidth
+                    // 3. if (basis > 0) childWidth = basis
+                    // So we must act before line 1591 or restore it.
+                    // Let's rely on re-reading childBox since we have it.
+                    float intrinsicWidth = 0;
+                    if (childBox != null) intrinsicWidth = childBox.MarginBox.Width;
+                    
+                    currentLine.Add((child, childWidth, childHeight, grow, shrink, basis, intrinsicWidth));
                     currentLineWidth += (currentLine.Count > 1 ? gapValue : 0) + childWidth;
                 }
                 
@@ -1540,7 +2216,7 @@ namespace FenBrowser.FenEngine.Rendering
                     if (freeSpace > 0 && totalGrow > 0)
                     {
                         // Distribute extra space according to flex-grow
-                        foreach (var (child, childWidth, childHeight, grow, shrink, basis) in line)
+                        foreach (var (child, childWidth, childHeight, grow, shrink, basis, measuredWidth) in line)
                         {
                             float extraWidth = grow > 0 ? freeSpace * (grow / totalGrow) : 0;
                             adjustedWidths.Add(childWidth + extraWidth);
@@ -1552,11 +2228,33 @@ namespace FenBrowser.FenEngine.Rendering
                         float totalShrinkWeighted = line.Sum(item => item.shrink * item.width);
                         if (totalShrinkWeighted > 0)
                         {
-                            foreach (var (child, childWidth, childHeight, grow, shrink, basis) in line)
+                            foreach (var (child, childWidth, childHeight, grow, shrink, basis, measuredWidth) in line)
                             {
                                 float shrinkRatio = (shrink * childWidth) / totalShrinkWeighted;
                                 float shrinkAmount = Math.Abs(freeSpace) * shrinkRatio;
-                                adjustedWidths.Add(Math.Max(0, childWidth - shrinkAmount));
+                                float targetWidth = childWidth - shrinkAmount;
+                                
+                                // Apply min-width: auto logic
+                                // Spec: min-width: auto means min-content size if overflow is visible
+                                CssComputed cStyle = null;
+                                if (_styles != null) _styles.TryGetValue(child, out cStyle);
+                                
+                                float minSize = 0;
+                                if (cStyle?.MinWidth.HasValue == true)
+                                {
+                                    minSize = (float)cStyle.MinWidth.Value;
+                                }
+                                else
+                                {
+                                    // min-width: auto
+                                    bool overflowVisible = cStyle?.Overflow == null || cStyle.Overflow == "visible";
+                                    if (overflowVisible)
+                                    {
+                                        minSize = measuredWidth;
+                                    }
+                                }
+                                
+                                adjustedWidths.Add(Math.Max(minSize, targetWidth));
                             }
                         }
                         else
@@ -1607,7 +2305,7 @@ namespace FenBrowser.FenEngine.Rendering
                     
                     for (int i = 0; i < line.Count; i++)
                     {
-                        var (child, childWidth, childHeight, grow, shrink, basis) = line[i];
+                        var (child, childWidth, childHeight, grow, shrink, basis, _) = line[i];
                         float finalWidth = adjustedWidths[i];
                         
                         // Get align-self for this specific item
@@ -1629,7 +2327,51 @@ namespace FenBrowser.FenEngine.Rendering
                                 // Simplified: same as flex-start
                                 break;
                             case "stretch":
-                                // For stretch, we'd need to re-layout with fixed height
+                                // Stretch Logic: Force child height to line height (minus vertical margins)
+                                // Stretch Logic: Force child height to line height (minus vertical margins)
+                                // Only stretch if height is auto (neither fixed px nor percent is set)
+                                if (itemStyle?.Height == null && itemStyle?.HeightPercent == null)
+                                {
+                                    float newHeight = lineHeight;
+                                     // Account for margins if they are part of the box measurement logic in ComputeLayout
+                                     // Here ComputeLayout takes 'width', and calculates height.
+                                     // We need to force height.
+                                     // In CSS, stretch imposes definite cross-size.
+                                     // We verify if we can re-measure with fixed height.
+                                     
+                                     // Re-measure with fixed height
+                                     // Note: ComputeLayout signature isn't designed for forcing height easily without style hacks, 
+                                     // but we can pass it down or modifying style temporarily? No, style is computed.
+                                     // Better: Update the box dimensions directly after layout if ComputeLayout doesn't support input height easily.
+                                     // Actually, standard approach: Re-call ComputeLayout with definite height constraint if possible.
+                                     // Simplest for now: Let it layout, then override height of the box.
+                                     // But re-layout is needed for children that depend on height (column flex children etc).
+                                     
+                                     // For minimal risk change:
+                                     // 1. Calculate target height
+                                     float targetH = lineHeight;
+                                     // 2. Subtract margins
+                                     if (_boxes.TryGetValue(child, out var oldBox))
+                                     {
+                                         targetH -= (oldBox.MarginBox.Height - oldBox.BorderBox.Height); 
+                                     }
+                                     
+                                     // 3. Force re-layout or just set bounds?
+                                     // Re-layout is safer for content.
+                                     // We don't have a direct "ForceHeight" param. 
+                                     // Let's rely on setting the box height after layout for now to avoid massive refactor,
+                                     // OR use the box to set content height if it's a block.
+                                     
+                                     // Let's do the "Post-Layout Fixup" which is common in simple engines.
+                                     // We will perform the layout, then forcefully expand the box height.
+                                     
+                                     // Actually, we are about to call ComputeLayout below.
+                                     // If we could pass "stretchHeight", that would be best.
+                                     // BUT we can't change signature easily.
+                                     
+                                     // So... we let it layout naturally (auto height), then we stretch it.
+                                     // itemY = lineY is correct (stretch starts at top).
+                                }
                                 break;
                         }
                         
@@ -1640,6 +2382,32 @@ namespace FenBrowser.FenEngine.Rendering
                             FenLogger.Debug($"[ComputeFlexLayout] Row reposition: childTag={childTagDbg} itemX={itemX} itemY={itemY} finalWidth={finalWidth}", LogCategory.Layout);
                         }
                         ComputeLayout(child, itemX, itemY, finalWidth, shrinkToContent: true);
+
+                        // Apply Stretch (Post-Layout)
+                        if (itemAlign == "stretch" || (string.IsNullOrEmpty(itemAlign) && alignItems == "stretch"))
+                        {
+                             // Check if height is auto (fixed heights shouldn't stretch)
+                             // Check if height is auto (fixed heights shouldn't stretch)
+                             bool isAutoHeight = itemStyle?.Height == null && itemStyle?.HeightPercent == null;
+                             if (isAutoHeight)
+                             {
+                                 if (_boxes.TryGetValue(child, out var finalChildBox))
+                                 {
+                                     float marginY = finalChildBox.MarginBox.Height - finalChildBox.BorderBox.Height;
+                                     float targetHeight = lineHeight - marginY;
+                                     if (targetHeight > finalChildBox.BorderBox.Height)
+                                     {
+                                         float diff = targetHeight - finalChildBox.BorderBox.Height;
+                                         finalChildBox.ContentBox.Bottom += diff;
+                                         finalChildBox.PaddingBox.Bottom += diff;
+                                         finalChildBox.BorderBox.Bottom += diff;
+                                         finalChildBox.MarginBox.Bottom += diff;
+                                         // Log stretch
+                                         FenLogger.Debug($"[FlexStretch] Row: Stretched {child.Tag} from {finalChildBox.BorderBox.Height} to {targetHeight}", LogCategory.Layout);
+                                     }
+                                 }
+                             }
+                        }
                         
                         itemX += finalWidth + gapValue + extraGap;
                     }
@@ -1700,6 +2468,9 @@ namespace FenBrowser.FenEngine.Rendering
                         
                         foreach (var (child, childWidth, childHeight) in column)
                         {
+                            CssComputed childStyle = null;
+                            if (_styles != null) _styles.TryGetValue(child, out childStyle);
+
                             // For column layout, align-items controls horizontal positioning
                             float itemX = columnX;
                             switch (alignItems)
@@ -1713,12 +2484,34 @@ namespace FenBrowser.FenEngine.Rendering
                                     itemX = contentBox.Right - childWidth;
                                     break;
                                 case "stretch":
-                                    // For stretch, item width should match container - handled at measurement
-                                    break;
+                                     // Stretch (Column): Start at left
+                                     itemX = contentBox.Left;
+                                     break;
                                 // flex-start is default - itemX stays at columnX
                             }
                             
-                            ComputeLayout(child, itemX, itemY, childWidth, shrinkToContent: true);
+                            // For Column Stretch: Force width to container width (minus margins) if width is auto
+                            bool forceStretchWidth = alignItems == "stretch" && (childStyle?.Width == null && childStyle?.WidthPercent == null);
+                            float childLayoutWidth = childWidth;
+                            
+                            if (forceStretchWidth)
+                            {
+                                // We want the child margin-box to be contentBox.Width
+                                // But we pass 'availableWidth' to ComputeLayout.
+                                // ComputeLayout normally respects it if shrinkToContent is false?
+                                // If we pass shrinkToContent=false, block layout expands to width.
+                                // So for stretch items, we should turn OFF shrinkToContent.
+                                
+                                // HOWEVER, we already measured it once (line 1670) with shrinkToContent=true to get intrinsic size.
+                                // Now we re-layout for final position.
+                                
+                                childLayoutWidth = contentBox.Width; // Force full width
+                                ComputeLayout(child, itemX, itemY, childLayoutWidth, shrinkToContent: false); 
+                            }
+                            else
+                            {
+                                ComputeLayout(child, itemX, itemY, childLayoutWidth, shrinkToContent: true);
+                            }
                             itemY += childHeight + rowGap;
                         }
                         
@@ -1732,16 +2525,10 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 else
                 {
-                    // Simple column layout (no wrap) with FLEX-GROW support for footer positioning
+                    // Simple column layout (no wrap) with FLEX-GROW support
                     float maxWidth = 0;
                     
-                    // DEBUG: Log column layout for CENTER
-                    if (nodeTag == "CENTER")
-                    {
-                        FenLogger.Debug($"[ComputeFlexLayout] CENTER column layout: alignItems={alignItems} flexItems={flexItems.Count} contentBox.Width={contentBox.Width}", LogCategory.Layout);
-                    }
-                    
-                    // FIRST PASS: Measure all items and calculate flex-grow totals
+                    // FIRST PASS: Measure all items and calculate flex-grow totals (Step 3)
                     float totalChildrenHeight = 0;
                     float totalGrow = 0;
                     var childMeasurements = new List<(LiteElement child, float width, float height, float grow)>();
@@ -1754,11 +2541,6 @@ namespace FenBrowser.FenEngine.Rendering
                         float grow = (float)(childStyle?.FlexGrow ?? 0);
                         
                         // Measure child with shrink-to-content
-                        string childTag = child.Tag?.ToUpperInvariant() ?? "TEXT";
-                        if (childTag == "TEXTAREA" || childTag == "INPUT")
-                        {
-                            FenLogger.Debug($"[ComputeFlexLayout] Column measurement: childTag={childTag} cursorX={cursorX} contentBox.Left={contentBox.Left} contentBox.Width={contentBox.Width}", LogCategory.Layout);
-                        }
                         ComputeLayout(child, cursorX, 0, contentBox.Width, shrinkToContent: true);
                         
                         float childWidth = 0, childHeight = 0;
@@ -1775,96 +2557,131 @@ namespace FenBrowser.FenEngine.Rendering
                         if (childWidth > maxWidth) maxWidth = childWidth;
                     }
                     
-                    // Calculate free space for flex-grow distribution
-                    // Use passed containerHeight if available, otherwise contentBox.Height, otherwise viewport
-                    float effectiveContainerHeight = containerHeight;
-                    if (effectiveContainerHeight <= 0 || float.IsInfinity(effectiveContainerHeight))
+                    // Step 2 & 4: Compute Free Space (Main Axis = Vertical)
+                    // Use passed containerHeight if available, otherwise contentBox.Height
+                    float effectiveContainerHeight = containerHeight > 0 ? containerHeight : contentBox.Height;
+                    // Fallback to explicit style height if measurement didn't set it yet
+                    if ((effectiveContainerHeight <= 0 || float.IsInfinity(effectiveContainerHeight)) && style != null && style.Height.HasValue)
                     {
-                        effectiveContainerHeight = contentBox.Height;
+                        effectiveContainerHeight = (float)style.Height.Value;
                     }
                     if (effectiveContainerHeight <= 0 || float.IsInfinity(effectiveContainerHeight))
                     {
-                        effectiveContainerHeight = _viewportHeight;
+                         // If no height, free space is 0 (layout just stacks)
+                         effectiveContainerHeight = totalChildrenHeight; 
                     }
+
+                    float freeMain = effectiveContainerHeight - totalChildrenHeight - (rowGap * (flexItems.Count - 1));
+
+                    // Step 5: Apply justify-content (Main Axis -> Vertical)
+                    float mainOffsetStart = 0;
+                    float extraGap = 0; // For spacing distribution
+
+                    // Only apply alignment if no grow is active
+                    if (totalGrow == 0) 
+                    {
+                        switch (justifyContent)
+                        {
+                            case "center":
+                                mainOffsetStart = freeMain / 2;
+                                break;
+                            case "flex-end":
+                                mainOffsetStart = freeMain;
+                                break;
+                            case "space-between":
+                                if (flexItems.Count > 1) extraGap = freeMain / (flexItems.Count - 1);
+                                break;
+                            case "space-around":
+                                extraGap = freeMain / flexItems.Count;
+                                mainOffsetStart = extraGap / 2;
+                                break;
+                            case "space-evenly":
+                                extraGap = freeMain / (flexItems.Count + 1);
+                                mainOffsetStart = extraGap;
+                                break;
+                        }
+                    }
+
+                    // Step 7: Final Child Positioning
+                    float currentY = cursorY + mainOffsetStart; // Step 7: y = container.y + paddingTop + mainOffsetStart
+                    // note: cursorY is contentBox.Top
                     
-                    float freeSpace = effectiveContainerHeight - totalChildrenHeight - (rowGap * (flexItems.Count - 1));
-                    
-                    FenLogger.Debug($"[ComputeFlexLayout] Column flex-grow: effectiveContainerHeight={effectiveContainerHeight} totalChildrenHeight={totalChildrenHeight} freeSpace={freeSpace} totalGrow={totalGrow}", LogCategory.Layout);
-                    
-                    // SECOND PASS: Position items with flex-grow distribution
-                    float itemY = cursorY;
                     float totalHeight = 0;
-                    
+
                     foreach (var (child, childWidth, childHeight, grow) in childMeasurements)
                     {
                         float finalHeight = childHeight;
                         
-                        // Apply flex-grow if there's free space and this child wants to grow
-                        if (freeSpace > 0 && totalGrow > 0 && grow > 0)
+                        // Apply flex-grow (Standard Flex Logic, preserved as 'correct')
+                        if (freeMain > 0 && totalGrow > 0 && grow > 0)
                         {
-                            float extraHeight = freeSpace * (grow / totalGrow);
+                            float extraHeight = freeMain * (grow / totalGrow);
                             finalHeight = childHeight + extraHeight;
                         }
                         
-                        // Shift child to final Y position (don't re-layout, just move)
-                        if (_boxes.TryGetValue(child, out var childBox))
-                        {
-                            float currentY = childBox.MarginBox.Top;
-                            float deltaY = itemY - currentY;
-                            if (Math.Abs(deltaY) > 0.1f)
-                            {
-                                ShiftTree(child, 0, deltaY);
-                            }
-                            
-                            // If flex-grow applied, extend the box heights
-                            if (finalHeight > childHeight + 0.1f)
-                            {
-                                float heightDelta = finalHeight - childHeight;
-                                childBox.ContentBox.Bottom += heightDelta;
-                                childBox.PaddingBox.Bottom += heightDelta;
-                                childBox.BorderBox.Bottom += heightDelta;
-                                childBox.MarginBox.Bottom += heightDelta;
-                            }
-                        }
-                        
-                        // Get align-self for this specific item (overrides parent's align-items)
+                        // Get align-self/align-items
                         CssComputed childStyle = null;
                         if (_styles != null) _styles.TryGetValue(child, out childStyle);
                         string itemAlign = !string.IsNullOrEmpty(childStyle?.AlignSelf) ? childStyle.AlignSelf : alignItems;
-                        
-                        // Apply horizontal alignment (align-items/align-self in column direction)
+
+                        // Step 6: Apply align-items (Cross Axis -> Horizontal)
+                        float crossOffset = 0;
                         if (_boxes.TryGetValue(child, out var finalChildBox))
                         {
-                            float alignOffset = 0;
+                            // freeCross for this child = contentBox.Width - child.MarginBox.Width
                             switch (itemAlign)
                             {
                                 case "center":
-                                    alignOffset = (contentBox.Width - finalChildBox.MarginBox.Width) / 2;
+                                    crossOffset = (contentBox.Width - finalChildBox.MarginBox.Width) / 2;
+                                    FenLogger.Debug($"[ColumnAlign] child={child.Tag} align={itemAlign} contentW={contentBox.Width} childW={finalChildBox.MarginBox.Width} offset={crossOffset}", FenBrowser.Core.Logging.LogCategory.Layout);
                                     break;
                                 case "flex-end":
-                                    alignOffset = contentBox.Width - finalChildBox.MarginBox.Width;
+                                    crossOffset = contentBox.Width - finalChildBox.MarginBox.Width;
                                     break;
                                 case "stretch":
-                                    // For stretch, item should expand to fill container width
-                                    // This would require re-layout with fixed width
+                                    // Stretch not implemented fully (requires re-measure), treating as flex-start per user 'minimal'
                                     break;
                             }
                             
-                            if (alignOffset != 0)
+                            // PLACEMENT: Move child to (currentX + crossOffset, currentY)
+                            // We use ShiftTree because child was placed at (cursorX, 0) relative during measure?
+                            // No, ComputeLayout(..., cursorX, 0...) actually places at cursorX, 0 (absolute Y=0).
+                            // So finalChildBox.MarginBox.Top is 0. finalChildBox.MarginBox.Left is cursorX.
+                            
+                            float targetX = cursorX + crossOffset;
+                            float targetY = currentY;
+                            
+                            float deltaX = targetX - finalChildBox.MarginBox.Left; // = crossOffset
+                            float deltaY = targetY - finalChildBox.MarginBox.Top;  // = currentY - 0 = currentY
+                            
+                            if (Math.Abs(deltaX) > 0.01f || Math.Abs(deltaY) > 0.01f)
                             {
-                                ShiftTree(child, alignOffset, 0);
+                                ShiftTree(child, deltaX, deltaY);
+                            }
+                            
+                            // Extend box height if grown
+                            if (finalHeight > childHeight + 0.1f)
+                            {
+                                float heightDelta = finalHeight - childHeight;
+                                // Need to update the box properties directly
+                                finalChildBox.ContentBox.Bottom += heightDelta;
+                                finalChildBox.PaddingBox.Bottom += heightDelta;
+                                finalChildBox.BorderBox.Bottom += heightDelta;
+                                finalChildBox.MarginBox.Bottom += heightDelta;
                             }
                         }
                         
-                        itemY += finalHeight + rowGap;
-                        totalHeight += finalHeight + rowGap;
+                        // Advance Main Axis
+                        currentY += finalHeight + rowGap + extraGap;
+                        totalHeight += finalHeight + rowGap + extraGap;
                     }
                     
                     maxChildWidth = maxWidth;
                     return totalHeight > 0 ? totalHeight - rowGap : 0;
-                }
+
             }
         }
+    }
 
         /// <summary>
         /// CSS Grid layout implementation
@@ -1883,7 +2700,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
             
             // Parse grid-template-areas for named area placement
-            var gridAreas = ParseGridTemplateAreas(style?.Map?.TryGetValue("grid-template-areas", out var areasStr) == true ? areasStr : null);
+            var gridAreas = ParseGridTemplateAreas(style?.GridTemplateAreas);
             
             // Parse gap
             float columnGap = 0, rowGap = 0;
@@ -1936,7 +2753,7 @@ namespace FenBrowser.FenEngine.Rendering
                 CssComputed cStyle = null;
                 if (_styles != null) _styles.TryGetValue(child, out cStyle);
                 
-                string gridArea = cStyle?.Map?.TryGetValue("grid-area", out var ga) == true ? ga?.Trim() : null;
+                string gridArea = cStyle?.GridArea?.Trim();
                 
                 if (!string.IsNullOrEmpty(gridArea) && gridAreas.Count > 0)
                 {
@@ -2124,12 +2941,36 @@ namespace FenBrowser.FenEngine.Rendering
                     var match = Regex.Match(p, @"minmax\s*\(\s*([^,]+)\s*,\s*([^)]+)\s*\)");
                     if (match.Success)
                     {
-                        // Use the max value for simplicity
-                        var maxVal = match.Groups[2].Value.Trim();
+                        string minVal = match.Groups[1].Value.Trim();
+                        string maxVal = match.Groups[2].Value.Trim();
+                        
+                        // Parse min value
+                        float minWidth = 0;
+                        if (minVal.EndsWith("px") || minVal.EndsWith("em") || minVal.EndsWith("rem"))
+                            minWidth = ParseCssLength(minVal);
+                        else if (minVal == "auto" || minVal == "min-content")
+                            minWidth = 0; // Will be determined by content
+                        else if (minVal.EndsWith("%"))
+                        {
+                            if (float.TryParse(minVal.TrimEnd('%'), NumberStyles.Float, CultureInfo.InvariantCulture, out float pct))
+                                minWidth = containerWidth * pct / 100;
+                        }
+                        
+                        // Parse max value
+                        float maxWidth = containerWidth;
                         if (maxVal == "1fr" || maxVal == "auto")
-                            widths.Add(containerWidth / 4);
-                        else
-                            widths.Add(ParseCssLength(maxVal));
+                            maxWidth = containerWidth / 4; // Placeholder for fr distribution
+                        else if (maxVal.EndsWith("px") || maxVal.EndsWith("em") || maxVal.EndsWith("rem"))
+                            maxWidth = ParseCssLength(maxVal);
+                        else if (maxVal.EndsWith("%"))
+                        {
+                            if (float.TryParse(maxVal.TrimEnd('%'), NumberStyles.Float, CultureInfo.InvariantCulture, out float pct))
+                                maxWidth = containerWidth * pct / 100;
+                        }
+                        
+                        // Use max as initial, clamp by min later when distributing
+                        // For now, use max but ensure it's at least min
+                        widths.Add(Math.Max(minWidth, maxWidth));
                     }
                 }
                 // Plain number
@@ -2179,9 +3020,35 @@ namespace FenBrowser.FenEngine.Rendering
             else if (countStr == "auto-fill" || countStr == "auto-fit")
             {
                 // Calculate how many columns fit
-                float colWidth = ParseCssLength(value);
+                // Handle minmax(min, max) - use the minimum value for counting
+                float colWidth = 0;
+                
+                var minmaxMatch = Regex.Match(value, @"minmax\s*\(\s*([^,]+)\s*,\s*([^)]+)\s*\)");
+                if (minmaxMatch.Success)
+                {
+                    string minVal = minmaxMatch.Groups[1].Value.Trim();
+                    // Use minimum value for calculating how many fit
+                    if (minVal.EndsWith("px") || minVal.EndsWith("em") || minVal.EndsWith("rem"))
+                        colWidth = ParseCssLength(minVal);
+                    else if (minVal.EndsWith("%"))
+                    {
+                        if (float.TryParse(minVal.TrimEnd('%'), NumberStyles.Float, CultureInfo.InvariantCulture, out float pct))
+                            colWidth = containerWidth * pct / 100;
+                    }
+                    else
+                        colWidth = ParseCssLength(value); // Fallback
+                }
+                else
+                {
+                    colWidth = ParseCssLength(value);
+                }
+                
                 if (colWidth > 0)
-                    count = Math.Max(1, (int)(containerWidth / colWidth));
+                {
+                    // Account for potential gaps (estimate 10px gap if not specified)
+                    float estimatedGap = 10;
+                    count = Math.Max(1, (int)((containerWidth + estimatedGap) / (colWidth + estimatedGap)));
+                }
             }
             
             var expanded = string.Join(" ", Enumerable.Repeat(value, count));
@@ -2638,7 +3505,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 else
                 {
-                    isOverlay = true;
+                    isOverlay = false;
                     overlayType = "button";
                     // Truncate if too long
                     if (overlayValue.Length > 50) overlayValue = overlayValue.Substring(0, 50);
@@ -2649,10 +3516,12 @@ namespace FenBrowser.FenEngine.Rendering
                  overlayValue = node.Attr != null && node.Attr.TryGetValue("value", out var v) ? v : "";
                  if (node.Attr != null && node.Attr.TryGetValue("type", out var t)) overlayType = t.ToLowerInvariant();
                  // Checkbox, Radio, Hidden are NOT overlays
-                 // Button, Submit, Reset use Avalonia Button overlays for proper click handling
+                 // Button, Submit, Reset use NATIVE rendering to respect CSS styles (background, border, font)
+                 // We do NOT use Overlay for them anymore, to prevent "Incorrect Button Styles" regression.
                  // Color, Range, File, Date need custom drawing fallback if overlay not supported
                  if (overlayType != "checkbox" && overlayType != "radio" && overlayType != "hidden" &&
-                     overlayType != "color" && overlayType != "range" && overlayType != "file" && overlayType != "date")
+                     overlayType != "color" && overlayType != "range" && overlayType != "file" && overlayType != "date" &&
+                     overlayType != "submit" && overlayType != "button" && overlayType != "reset")
                  {
                      isOverlay = true;
                  }
@@ -2843,19 +3712,37 @@ namespace FenBrowser.FenEngine.Rendering
             bool isRelativePositioned = false;
             float relativeOffsetX = 0f, relativeOffsetY = 0f;
             string positionValue = layoutStyle?.Position?.ToLowerInvariant();
-            if (positionValue == "relative")
+            if (positionValue == "relative" || positionValue == "sticky")
             {
                 isRelativePositioned = true;
+                
+                // Get containing block dimensions (parent content box)
+                float parentW = 0, parentH = 0;
+                var parentNode = node.Parent;
+                if (parentNode != null && _boxes.TryGetValue(parentNode, out var parentBox))
+                {
+                    parentW = parentBox.ContentBox.Width;
+                    parentH = parentBox.ContentBox.Height;
+                }
+                
                 // left overrides right, top overrides bottom
                 if (layoutStyle.Left.HasValue)
                     relativeOffsetX = (float)layoutStyle.Left.Value;
+                else if (layoutStyle.LeftPercent.HasValue)
+                    relativeOffsetX = (float)layoutStyle.LeftPercent.Value / 100f * parentW;
                 else if (layoutStyle.Right.HasValue)
                     relativeOffsetX = -(float)layoutStyle.Right.Value;
+                else if (layoutStyle.RightPercent.HasValue)
+                    relativeOffsetX = -((float)layoutStyle.RightPercent.Value / 100f * parentW);
                 
                 if (layoutStyle.Top.HasValue)
                     relativeOffsetY = (float)layoutStyle.Top.Value;
+                else if (layoutStyle.TopPercent.HasValue)
+                    relativeOffsetY = (float)layoutStyle.TopPercent.Value / 100f * parentH;
                 else if (layoutStyle.Bottom.HasValue)
                     relativeOffsetY = -(float)layoutStyle.Bottom.Value;
+                else if (layoutStyle.BottomPercent.HasValue)
+                    relativeOffsetY = -((float)layoutStyle.BottomPercent.Value / 100f * parentH);
             }
 
             // Get opacity (default 1.0 = fully opaque)
@@ -2868,11 +3755,15 @@ namespace FenBrowser.FenEngine.Rendering
             if (layoutStyle?.BorderRadius.TopLeft > 0)
                 borderRadius = (float)layoutStyle.BorderRadius.TopLeft;
 
-            // Parse transform
-            TransformParsed transform = null;
+            // Parse transform using full 3D transform support
+            SKMatrix? transformMatrix = null;
             if (!string.IsNullOrEmpty(layoutStyle?.Transform))
             {
-                transform = ParseTransform(layoutStyle.Transform);
+                var transform3D = CssTransform3D.Parse(layoutStyle.Transform);
+                if (transform3D.HasTransform)
+                {
+                    transformMatrix = transform3D.ToSKMatrix();
+                }
             }
 
             // Parse box-shadow
@@ -2899,10 +3790,8 @@ namespace FenBrowser.FenEngine.Rendering
                 canvas.Translate(relativeOffsetX, relativeOffsetY);
             }
 
-            // Apply transform if present
-            bool hasTransform = transform != null && (transform.TranslateX != 0 || transform.TranslateY != 0 ||
-                                transform.ScaleX != 1 || transform.ScaleY != 1 || transform.Rotate != 0 ||
-                                transform.SkewX != 0 || transform.SkewY != 0);
+            // Apply transform if present (using combined 3D matrix)
+            bool hasTransform = transformMatrix.HasValue && !transformMatrix.Value.IsIdentity;
             
             if (hasTransform)
             {
@@ -2912,22 +3801,12 @@ namespace FenBrowser.FenEngine.Rendering
                 float cx = box.BorderBox.MidX;
                 float cy = box.BorderBox.MidY;
                 
-                canvas.Translate(cx, cy);
+                // Build centered transform: translate to center, apply matrix, translate back
+                var centeredMatrix = SKMatrix.CreateTranslation(cx, cy);
+                centeredMatrix = centeredMatrix.PreConcat(transformMatrix.Value);
+                centeredMatrix = centeredMatrix.PreConcat(SKMatrix.CreateTranslation(-cx, -cy));
                 
-                if (transform.Rotate != 0)
-                    canvas.RotateDegrees(transform.Rotate);
-                
-                if (transform.ScaleX != 1 || transform.ScaleY != 1)
-                    canvas.Scale(transform.ScaleX, transform.ScaleY);
-                
-                if (transform.SkewX != 0 || transform.SkewY != 0)
-                {
-                    var skewMatrix = SKMatrix.CreateSkew((float)Math.Tan(transform.SkewX * Math.PI / 180), 
-                                                          (float)Math.Tan(transform.SkewY * Math.PI / 180));
-                    canvas.Concat(ref skewMatrix);
-                }
-                
-                canvas.Translate(-cx + transform.TranslateX, -cy + transform.TranslateY);
+                canvas.Concat(ref centeredMatrix);
             }
 
             // Apply clip-path if present
@@ -2999,19 +3878,33 @@ namespace FenBrowser.FenEngine.Rendering
                 var shader = CreateShaderFromBrush(layoutStyle.Background, box.BorderBox, opacity);
                 if (shader != null)
                 {
-                    using (var paint = new SKPaint())
+                    if (_useDisplayList)
                     {
-                        paint.Shader = shader;
-                        paint.IsAntialias = true;
-                        
-                        if (!string.IsNullOrEmpty(filter))
-                            ApplyFilter(paint, filter);
-                        
-                        if (borderRadius > 0)
-                            canvas.DrawRoundRect(box.BorderBox, borderRadius, borderRadius, paint);
-                        else
-                            canvas.DrawRect(box.BorderBox, paint);
-                        
+                        AddCommand(new DrawShaderRectCommand
+                        {
+                            Rect = box.BorderBox,
+                            Shader = shader,
+                            BorderRadius = borderRadius,
+                            Bounds = box.BorderBox,
+                            Opacity = opacity
+                        });
+                        backgroundDrawn = true;
+                    }
+                    else
+                    {
+                        using (var paint = new SKPaint())
+                        {
+                            paint.Shader = shader;
+                            paint.IsAntialias = true;
+                            
+                            if (!string.IsNullOrEmpty(filter))
+                                ApplyFilter(paint, filter);
+                            
+                            if (borderRadius > 0)
+                                canvas.DrawRoundRect(box.BorderBox, borderRadius, borderRadius, paint);
+                            else
+                                canvas.DrawRect(box.BorderBox, paint);
+                        }
                         backgroundDrawn = true;
                     }
                     shader.Dispose();
@@ -3033,16 +3926,45 @@ namespace FenBrowser.FenEngine.Rendering
                     FenLogger.Debug($"[DrawLayout] Large white background: tag={nodeDbgTag} class={nodeDbgClass} color=RGB({c.R},{c.G},{c.B}) box={box.BorderBox}", LogCategory.Layout);
                 }
                 
-                using (var paint = new SKPaint { Color = new SKColor(c.R, c.G, c.B, alpha) })
+                // Use display list if enabled, otherwise draw directly
+                if (_useDisplayList)
                 {
-                    // Apply filter if present
-                    if (!string.IsNullOrEmpty(filter))
-                        ApplyFilter(paint, filter);
-                    
                     if (borderRadius > 0)
-                        canvas.DrawRoundRect(box.BorderBox, borderRadius, borderRadius, paint);
+                    {
+                        AddCommand(new DrawRoundRectCommand
+                        {
+                            Rect = box.BorderBox,
+                            RadiusX = borderRadius,
+                            RadiusY = borderRadius,
+                            Color = new SKColor(c.R, c.G, c.B, alpha),
+                            Bounds = box.BorderBox,
+                            Opacity = 1f // Already applied to alpha
+                        });
+                    }
                     else
-                        canvas.DrawRect(box.BorderBox, paint); 
+                    {
+                        AddCommand(new DrawRectCommand
+                        {
+                            Rect = box.BorderBox,
+                            Color = new SKColor(c.R, c.G, c.B, alpha),
+                            Bounds = box.BorderBox,
+                            Opacity = 1f
+                        });
+                    }
+                }
+                else
+                {
+                    using (var paint = new SKPaint { Color = new SKColor(c.R, c.G, c.B, alpha) })
+                    {
+                        // Apply filter if present
+                        if (!string.IsNullOrEmpty(filter))
+                            ApplyFilter(paint, filter);
+                        
+                        if (borderRadius > 0)
+                            canvas.DrawRoundRect(box.BorderBox, borderRadius, borderRadius, paint);
+                        else
+                            canvas.DrawRect(box.BorderBox, paint); 
+                    }
                 }
             }
 
@@ -3053,6 +3975,11 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             // 2. Draw Borders (with opacity, rounded corners, and multiple styles)
+            if (DEBUG_FILE_LOGGING && _boxes.Count < 500) // Log draws for debug
+            {
+                 try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\render_debug.txt", $"[DRAW] Tag={node.Tag} Box={box.BorderBox} Opacity={opacity} Visibility={visibility}\r\n"); } catch {} 
+            }
+
             if (box.Border.Left > 0 || box.Border.Top > 0 || box.Border.Right > 0 || box.Border.Bottom > 0)
             {
                 DrawStyledBorders(canvas, box, layoutStyle, borderRadius, opacity);
@@ -3075,35 +4002,61 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 DrawProgressElement(node, box, canvas, opacity);
             }
+            
+            // 2.45 Apply border-radius content clipping (clips children/content to rounded corners)
+            // This is separate from overflow clipping - it ensures images/children are rounded
+            bool hasBorderRadiusClip = false;
+            SKPath borderRadiusClipPath = null;
+            
+            if (borderRadius > 0)
+            {
+                hasBorderRadiusClip = true;
+                canvas.Save();
+                borderRadiusClipPath = new SKPath();
+                borderRadiusClipPath.AddRoundRect(box.PaddingBox, borderRadius, borderRadius);
+                canvas.ClipPath(borderRadiusClipPath);
+            }
 
             // 2.5 Apply overflow clipping (before drawing content like text, images, children)
             // This ensures "red leaks" (content overflowing padding box) are hidden
             bool hasOverflowClip = false;
             SKPath clipPathSaved = null; // Track if we need to dispose a path
             
-            string overflowValue = layoutStyle?.Overflow?.ToLowerInvariant();
-            // Also check overflow from the Map if not set
-            if (string.IsNullOrEmpty(overflowValue) && layoutStyle?.Map != null)
+            // Use typed OverflowX and OverflowY properties (already resolved from CSS)
+            string overflowX = layoutStyle?.OverflowX?.ToLowerInvariant() ?? "visible";
+            string overflowY = layoutStyle?.OverflowY?.ToLowerInvariant() ?? "visible";
+            
+            // Determine if we need to clip on each axis
+            bool clipX = overflowX == "hidden" || overflowX == "clip" || overflowX == "scroll" || overflowX == "auto";
+            bool clipY = overflowY == "hidden" || overflowY == "clip" || overflowY == "scroll" || overflowY == "auto";
+            
+            // DEBUG: Log overflow values for debugging
+            if (clipX || clipY)
             {
-                layoutStyle.Map.TryGetValue("overflow", out overflowValue);
-                overflowValue = overflowValue?.Trim().ToLowerInvariant();
+                if (DEBUG_FILE_LOGGING) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[DrawLayout] tag={node.Tag} class={node.Attr?.GetValueOrDefault("class", "")} overflowX='{overflowX}' overflowY='{overflowY}'\r\n"); } catch {} }
             }
             
-            // DEBUG: Log all overflow values being processed (only if hidden/clip)
-            if (!string.IsNullOrEmpty(overflowValue) && (overflowValue == "hidden" || overflowValue == "clip"))
-            {
-                if (DEBUG_FILE_LOGGING) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[DrawLayout] tag={node.Tag} class={node.Attr?.GetValueOrDefault("class", "")} overflow='{overflowValue}'\r\n"); } catch {} }            }
-            
-            if (overflowValue == "hidden" || overflowValue == "clip")
+            if (clipX || clipY)
             {
                 hasOverflowClip = true;
                 canvas.Save();
                 
-                // Use the element's padding box for clipping (standard behavior)
+                // Calculate clip rect based on which axes need clipping
                 SKRect clipRect = box.PaddingBox;
                 
+                if (!clipX)
+                {
+                    // Don't clip horizontally - extend to viewport bounds
+                    clipRect = new SKRect(-10000, clipRect.Top, 10000, clipRect.Bottom);
+                }
+                if (!clipY)
+                {
+                    // Don't clip vertically - extend to viewport bounds
+                    clipRect = new SKRect(clipRect.Left, -10000, clipRect.Right, 10000);
+                }
+                
                 // Use rounded rect clipping if border-radius is present
-                if (borderRadius > 0)
+                if (borderRadius > 0 && clipX && clipY)
                 {
                     clipPathSaved = new SKPath();
                     clipPathSaved.AddRoundRect(clipRect, borderRadius, borderRadius);
@@ -3114,7 +4067,7 @@ namespace FenBrowser.FenEngine.Rendering
                     canvas.ClipRect(clipRect);
                 }
                 
-                FenLogger.Debug($"[DrawLayout] Applied overflow:hidden clipping for tag={node.Tag} box={clipRect}", LogCategory.Rendering);
+                FenLogger.Debug($"[DrawLayout] Applied overflow clipping for tag={node.Tag} clipX={clipX} clipY={clipY} box={clipRect}", LogCategory.Rendering);
             }
 
             // 3. Draw Text (with wrapping support)
@@ -3169,7 +4122,10 @@ namespace FenBrowser.FenEngine.Rendering
                         string ff = layoutStyle?.FontFamily?.ToString();
                         paint.Typeface = ResolveTypeface(ff, node.Text);
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        FenLogger.Debug($"[DrawLayout] Font resolution failed for '{layoutStyle?.FontFamily}': {ex.Message}", LogCategory.Rendering);
+                    }
                     
                     // Get text decoration from parent
                     TextDecorationParsed deco = null;
@@ -3357,27 +4313,173 @@ namespace FenBrowser.FenEngine.Rendering
                          var resolved = new Uri(baseUri, src);
                          src = resolved.AbsoluteUri;
                      }
-                     catch { }
+                     catch (Exception ex)
+                     {
+                         FenLogger.Debug($"[DrawLayout] Image URL resolution failed: base='{_baseUrl}' src='{src}' - {ex.Message}", LogCategory.Rendering);
+                     }
                  }
 
                  var bitmap = ImageLoader.GetImage(src);
                  
                  if (bitmap != null)
                  {
-                     // Draw Bitmap
+                     // Draw Bitmap with object-fit support
+                     string objectFit = layoutStyle?.Map?.TryGetValue("object-fit", out var of) == true ? of : "fill";
+                     
                      using (var paint = new SKPaint { FilterQuality = SKFilterQuality.High, IsAntialias = true })
                      {
-                         canvas.DrawBitmap(bitmap, box.ContentBox, paint); 
-                     }
+                         if (objectFit == "fill")
+                         {
+                             if (_useDisplayList)
+                             {
+                                 AddCommand(new DrawImageCommand
+                                 {
+                                     Bitmap = bitmap,
+                                     DestRect = box.ContentBox,
+                                     Bounds = box.ContentBox,
+                                     Opacity = opacity
+                                 });
+                             }
+                             else
+                             {
+                                 canvas.DrawBitmap(bitmap, box.ContentBox, paint);
+                             }
+                         }
+                         else
+                         {
+                             // Setup for customized rendering
+                             float imgW = bitmap.Width;
+                             float imgH = bitmap.Height;
+                             float destW = box.ContentBox.Width;
+                             float destH = box.ContentBox.Height;
+                             
+                             if (imgW > 0 && imgH > 0 && destW > 0 && destH > 0)
+                             {
+                                 float scaleX = destW / imgW;
+                                 float scaleY = destH / imgH;
+                                 float scale = 1.0f;
+                                 
+                                 SKRect srcRect = new SKRect(0, 0, imgW, imgH);
+                                 SKRect dstRect = box.ContentBox;
+                                 
+                                 canvas.Save();
+                                 canvas.ClipRect(box.ContentBox); // Clip to content box
+                                 
+                                 if (objectFit == "contain")
+                                 {
+                                     scale = Math.Min(scaleX, scaleY);
+                                     float renderW = imgW * scale;
+                                     float renderH = imgH * scale;
+                                     float offsetX = (destW - renderW) / 2;
+                                     float offsetY = (destH - renderH) / 2;
+                                     
+                                     dstRect = new SKRect(
+                                         box.ContentBox.Left + offsetX,
+                                         box.ContentBox.Top + offsetY,
+                                         box.ContentBox.Left + offsetX + renderW,
+                                         box.ContentBox.Top + offsetY + renderH);
+                                 }
+                                 else if (objectFit == "cover")
+                                 {
+                                     scale = Math.Max(scaleX, scaleY);
+                                     // We fill the destination, but crop the source
+                                     float rendersrcW = destW / scale;
+                                     float rendersrcH = destH / scale;
+                                     float cropX = (imgW - rendersrcW) / 2;
+                                     float cropY = (imgH - rendersrcH) / 2;
+                                     
+                                     srcRect = new SKRect(cropX, cropY, cropX + rendersrcW, cropY + rendersrcH);
+                                     dstRect = box.ContentBox;
+                                 }
+                                 else if (objectFit == "none")
+                                 {
+                                     // Draw original size centered
+                                     float offsetX = (destW - imgW) / 2;
+                                     float offsetY = (destH - imgH) / 2;
+                                     dstRect = new SKRect(
+                                         box.ContentBox.Left + offsetX,
+                                         box.ContentBox.Top + offsetY,
+                                         box.ContentBox.Left + offsetX + imgW,
+                                         box.ContentBox.Top + offsetY + imgH);
+                                 }
+                                 else if (objectFit == "scale-down")
+                                 {
+                                     // Smallest of none or contain
+                                     float containScale = Math.Min(scaleX, scaleY);
+                                     scale = Math.Min(1.0f, containScale); // Don't upscale
+                                     
+                                     float renderW = imgW * scale;
+                                     float renderH = imgH * scale;
+                                     float offsetX = (destW - renderW) / 2;
+                                     float offsetY = (destH - renderH) / 2;
+                                     
+                                     dstRect = new SKRect(
+                                         box.ContentBox.Left + offsetX,
+                                         box.ContentBox.Top + offsetY,
+                                         box.ContentBox.Left + offsetX + renderW,
+                                         box.ContentBox.Top + offsetY + renderH);
+                                 }
+                                 
+                                 if (_useDisplayList)
+                                 {
+                                     AddCommand(new DrawImageCommand
+                                     {
+                                         Bitmap = bitmap,
+                                         SourceRect = srcRect,
+                                         DestRect = dstRect,
+                                         Bounds = box.ContentBox,
+                                         Opacity = opacity
+                                     });
+                                 }
+                                 else
+                                 {
+                                     canvas.DrawBitmap(bitmap, srcRect, dstRect, paint);
+                                 }
+                                 canvas.Restore();
+                             }
+                         }
+                     } 
                  }
                  else
                  {
                      // Draw placeholder X
-                     using (var paint = new SKPaint { Style = SKPaintStyle.Stroke, Color = SKColors.LightGray })
+                     if (_useDisplayList)
                      {
-                        canvas.DrawRect(box.ContentBox, paint);
-                        canvas.DrawLine(box.ContentBox.Left, box.ContentBox.Top, box.ContentBox.Right, box.ContentBox.Bottom, paint);
-                        canvas.DrawLine(box.ContentBox.Right, box.ContentBox.Top, box.ContentBox.Left, box.ContentBox.Bottom, paint);
+                         AddCommand(new DrawRectCommand
+                         {
+                             Rect = box.ContentBox,
+                             Color = SKColors.LightGray,
+                             Style = SKPaintStyle.Stroke,
+                             Bounds = box.ContentBox,
+                             Opacity = 1f
+                         });
+                         AddCommand(new DrawLineCommand
+                         {
+                             X1 = box.ContentBox.Left,
+                             Y1 = box.ContentBox.Top,
+                             X2 = box.ContentBox.Right,
+                             Y2 = box.ContentBox.Bottom,
+                             Color = SKColors.LightGray,
+                             Bounds = box.ContentBox
+                         });
+                         AddCommand(new DrawLineCommand
+                         {
+                             X1 = box.ContentBox.Right,
+                             Y1 = box.ContentBox.Top,
+                             X2 = box.ContentBox.Left,
+                             Y2 = box.ContentBox.Bottom,
+                             Color = SKColors.LightGray,
+                             Bounds = box.ContentBox
+                         });
+                     }
+                     else
+                     {
+                         using (var paint = new SKPaint { Style = SKPaintStyle.Stroke, Color = SKColors.LightGray })
+                         {
+                            canvas.DrawRect(box.ContentBox, paint);
+                            canvas.DrawLine(box.ContentBox.Left, box.ContentBox.Top, box.ContentBox.Right, box.ContentBox.Bottom, paint);
+                            canvas.DrawLine(box.ContentBox.Right, box.ContentBox.Top, box.ContentBox.Left, box.ContentBox.Bottom, paint);
+                         }
                      }
                  }
             }
@@ -3444,7 +4546,10 @@ namespace FenBrowser.FenEngine.Rendering
                              }
                          }
                      }
-                     catch { /* Ignore invalid SVG */ }
+                     catch (Exception ex)
+                     {
+                         FenLogger.Debug($"[DrawLayout] SVG rendering failed: {ex.Message}", LogCategory.Rendering);
+                     }
                  }
             }
 
@@ -3657,20 +4762,65 @@ namespace FenBrowser.FenEngine.Rendering
 
 
             // 5. Recurse (with z-index sorting)
-            if (node.Children != null)
+            // 5. Recurse (Painting Order per Stacking Context)
+            if (node.Children != null && node.Children.Count > 0)
             {
-                // Sort children by z-index for proper stacking
-                var sortedChildren = node.Children.OrderBy(c =>
+                // Group children by painting layer
+                var negZ = new List<(LiteElement node, int z)>();
+                var blocks = new List<LiteElement>();
+                var floats = new List<LiteElement>();
+                var inlines = new List<LiteElement>();
+                var posZ = new List<(LiteElement node, int z)>(); // Includes z-index: auto (0) and > 0
+
+                foreach (var child in node.Children)
                 {
-                    if (_styles != null && _styles.TryGetValue(c, out var childStyle))
-                        return childStyle?.ZIndex ?? 0;
-                    return 0;
-                }).ToList();
-                
-                foreach (var child in sortedChildren)
-                {
-                    DrawLayout(child, canvas);
+                    CssComputed childStyle = null;
+                    if (_styles != null) _styles.TryGetValue(child, out childStyle);
+                    
+                    bool isPositioned = childStyle?.Position != null && childStyle.Position != "static";
+                    int zIndex = childStyle?.ZIndex ?? 0;
+                    bool isFloat = !string.IsNullOrEmpty(childStyle?.Float) && childStyle.Float != "none";
+                    
+                    if (isPositioned)
+                    {
+                        if (zIndex < 0) negZ.Add((child, zIndex));
+                        else posZ.Add((child, zIndex));
+                    }
+                    else if (isFloat)
+                    {
+                        floats.Add(child);
+                    }
+                    else
+                    {
+                        // Determine if block or inline level
+                        bool isText = child.IsText;
+                        string display = childStyle?.Display?.ToLowerInvariant();
+                        
+                        if (isText || display == "inline" || display == "inline-block" || display == "inline-flex" || display == "inline-grid" || display == "inline-table")
+                        {
+                            inlines.Add(child);
+                        }
+                        else
+                        {
+                            blocks.Add(child);
+                        }
+                    }
                 }
+
+                // 1. Negative Z-Index (Backgrounds of Stacking Context descendants)
+                foreach (var item in negZ.OrderBy(x => x.z)) DrawLayout(item.node, canvas);
+
+                // 2. Block Level (Non-positioned) - Backgrounds/Borders painted first (simplification: paint whole element)
+                foreach (var item in blocks) DrawLayout(item, canvas);
+
+                // 3. Floats (Non-positioned)
+                foreach (var item in floats) DrawLayout(item, canvas);
+
+                // 4. Inline Level (Non-positioned) - Text/Images
+                foreach (var item in inlines) DrawLayout(item, canvas);
+
+                // 5. Positive/Auto Z-Index (Positioned)
+                foreach (var item in posZ.OrderBy(x => x.z)) DrawLayout(item.node, canvas);
             }
             
             // 6. Restore canvas after overflow clipping
@@ -3678,6 +4828,13 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 canvas.Restore();
                 if (clipPathSaved != null) clipPathSaved.Dispose();
+            }
+            
+            // 6.5 Restore canvas after border-radius content clipping
+            if (hasBorderRadiusClip)
+            {
+                canvas.Restore();
+                if (borderRadiusClipPath != null) borderRadiusClipPath.Dispose();
             }
 
             
@@ -3787,6 +4944,45 @@ namespace FenBrowser.FenEngine.Rendering
         {
             if (node == null) return;
             string tag = node.Tag?.ToUpperInvariant();
+
+            if (tag == "BODY")
+            {
+                if (style == null) style = new CssComputed();
+                // Default browser margin is usually 8px
+                if (style.Margin.Left == 0 && style.Margin.Top == 0 && style.Margin.Right == 0 && style.Margin.Bottom == 0)
+                {
+                    style.Margin = new Avalonia.Thickness(8);
+                }
+            }
+
+            if (tag.Length == 2 && tag[0] == 'H' && char.IsDigit(tag[1]))
+            {
+                if (style == null) style = new CssComputed();
+                if (!style.FontSize.HasValue)
+                {
+                    double baseSize = 16.0; // Default
+                    switch (tag)
+                    {
+                        case "H1": baseSize = 32.0; break; // 2em
+                        case "H2": baseSize = 24.0; break; // 1.5em
+                        case "H3": baseSize = 18.72; break; // 1.17em
+                        case "H4": baseSize = 16.0; break; // 1em
+                        case "H5": baseSize = 13.28; break; // 0.83em
+                        case "H6": baseSize = 10.72; break; // 0.67em
+                    }
+                    style.FontSize = baseSize;
+                }
+                if (!style.FontWeight.HasValue) style.FontWeight = Avalonia.Media.FontWeight.Bold; // Bold
+                
+                // Add default margins if not present (simple em approximation)
+                if (style.Margin.Left == 0 && style.Margin.Top == 0 && style.Margin.Right == 0 && style.Margin.Bottom == 0)
+                {
+                    double marginEm = 1.0;
+                    if (tag == "H1" || tag == "H2") marginEm = 0.67; 
+                    float m = (float)(style.FontSize.Value * marginEm);
+                    style.Margin = new Avalonia.Thickness(0, m, 0, m);
+                }
+            }
 
             if (tag == "INPUT" || tag == "TEXTAREA" || tag == "BUTTON" || tag == "SELECT" || tag == "FIELDSET")
             {
@@ -5292,19 +6488,57 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         var checkRect = new SKRect(r.Left, r.Top + (r.Height-size)/2, r.Left + size, r.Top + (r.Height-size)/2 + size);
                         canvas.DrawRect(checkRect, paint);
-                        if (isChecked)
-                        {
-                            // Draw checkmark
-                            paint.Color = SKColors.Black;
-                            paint.StrokeWidth = 2;
-                            var path = new SKPath();
-                            path.MoveTo(checkRect.Left + 3, checkRect.Top + size/2);
-                            path.LineTo(checkRect.Left + size/2 - 1, checkRect.Bottom - 3);
-                            path.LineTo(checkRect.Right - 3, checkRect.Top + 3);
-                            canvas.DrawPath(path, paint);
-                        }
+                    if (isChecked)
+                    {
+                        // Draw checkmark
+                        paint.Color = SKColors.Black;
+                        paint.StrokeWidth = 2;
+                        var path = new SKPath();
+                        path.MoveTo(checkRect.Left + 3, checkRect.Top + size/2);
+                        path.LineTo(checkRect.Left + size/2 - 1, checkRect.Bottom - 3);
+                        path.LineTo(checkRect.Right - 3, checkRect.Top + 3);
+                        canvas.DrawPath(path, paint);
                     }
                 }
+            }
+            else if (type == "submit" || type == "reset" || type == "button")
+            {
+                // Draw text for input buttons
+                if (!string.IsNullOrEmpty(val))
+                {
+                     using (var textPaint = new SKPaint { IsAntialias = true })
+                     {
+                         // Fix Color: Convert Avalonia Color to SKColor
+                         if (style.ForegroundColor.HasValue)
+                         {
+                             var ac = style.ForegroundColor.Value;
+                             textPaint.Color = new SKColor(ac.R, ac.G, ac.B, ac.A);
+                         }
+                         else
+                         {
+                             textPaint.Color = SKColors.Black;
+                         }
+
+                         // Fix FontSize: Cast double to float
+                         textPaint.TextSize = (float)(style.FontSize ?? DefaultFontSize);
+
+                         // Fix FontWeight: Compare Avalonia FontWeight
+                         if (style.FontWeight.HasValue && style.FontWeight.Value == Avalonia.Media.FontWeight.Bold)
+                         {
+                             textPaint.FakeBoldText = true;
+                         }
+
+                         textPaint.TextAlign = SKTextAlign.Center;
+                         
+                         var bounds = new SKRect();
+                         textPaint.MeasureText(val, ref bounds);
+                         float y = r.MidY - bounds.MidY;
+                         
+                         canvas.DrawText(val, r.MidX, y, textPaint);
+                     }
+                }
+            }
+
             }
         }
         
@@ -6124,6 +7358,121 @@ namespace FenBrowser.FenEngine.Rendering
                 case "luminosity": return SKBlendMode.Luminosity;
                 default: return SKBlendMode.SrcOver;
             }
+        }
+
+        private bool IsTransformContainer(LiteElement element)
+        {
+            if (element == null) return false;
+            // Check if element has any property that establishes a containing block for fixed elements
+            if (_styles.TryGetValue(element, out var style))
+            {
+                if (Check(style, "transform") || 
+                    Check(style, "filter") || 
+                    Check(style, "perspective") || 
+                    Check(style, "backdrop-filter")) 
+                    return true;
+                    
+                if (style.Map.TryGetValue("will-change", out var wc) && 
+                   (wc.Contains("transform") || wc.Contains("filter") || wc.Contains("perspective")))
+                   return true;
+
+                if (style.Map.TryGetValue("contain", out var c) && 
+                   (c.Contains("paint") || c.Contains("layout") || c.Contains("strict") || c.Contains("content")))
+                   return true;
+            }
+            return false;
+        }
+        
+        private bool Check(CssComputed style, string key)
+        {
+            return style.Map.TryGetValue(key, out var val) && !string.Equals(val, "none", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private SKRect FindFixedContainer(LiteElement element)
+        {
+            var parent = element.Parent;
+            while (parent != null)
+            {
+                if (IsTransformContainer(parent))
+                {
+                     if (_boxes.TryGetValue(parent, out var box))
+                         return box.PaddingBox;
+                }
+                parent = parent.Parent;
+            }
+            return _viewport;
+        }
+
+        private SKRect FindAbsoluteContainer(LiteElement element)
+        {
+             var parent = element.Parent;
+             while (parent != null)
+             {
+                 if (IsTransformContainer(parent))
+                 {
+                     if (_boxes.TryGetValue(parent, out var box)) return box.PaddingBox;
+                 }
+                 
+                 // Also stop at positioned ancestor
+                 if (_styles.TryGetValue(parent, out var style) && 
+                     style.Position != null && 
+                     style.Position != "static")
+                 {
+                     if (_boxes.TryGetValue(parent, out var box)) return box.PaddingBox;
+                 }
+                 
+                 parent = parent.Parent;
+             }
+             return _viewport;
+        }
+        
+        /// <summary>
+        /// Check if an element creates a new stacking context (CSS spec rules)
+        /// </summary>
+        private bool CreatesStackingContext(CssComputed style)
+        {
+            if (style == null) return false;
+            
+            // 1. position: absolute/relative/fixed/sticky with z-index != auto
+            string pos = style.Position?.ToLowerInvariant();
+            if (pos == "absolute" || pos == "relative" || pos == "fixed" || pos == "sticky")
+            {
+                if (style.ZIndex.HasValue) return true;
+            }
+            
+            // 2. opacity < 1
+            if (style.Opacity.HasValue && style.Opacity.Value < 1.0) return true;
+            
+            // 3. transform != none
+            if (!string.IsNullOrEmpty(style.Transform) && 
+                !style.Transform.Equals("none", StringComparison.OrdinalIgnoreCase)) return true;
+            
+            // 4. filter != none
+            if (!string.IsNullOrEmpty(style.Filter) && 
+                !style.Filter.Equals("none", StringComparison.OrdinalIgnoreCase)) return true;
+            
+            // 5. will-change contains transform, opacity, filter
+            if (style.Map.TryGetValue("will-change", out var wc) && !string.IsNullOrEmpty(wc))
+            {
+                if (wc.Contains("transform") || wc.Contains("opacity") || wc.Contains("filter"))
+                    return true;
+            }
+            
+            // 6. contain: layout, paint, strict, content
+            if (style.Map.TryGetValue("contain", out var contain) && !string.IsNullOrEmpty(contain))
+            {
+                if (contain.Contains("layout") || contain.Contains("paint") || 
+                    contain.Contains("strict") || contain.Contains("content"))
+                    return true;
+            }
+            
+            // 7. display: flex/grid with z-index
+            string disp = style.Display?.ToLowerInvariant();
+            if ((disp == "flex" || disp == "grid" || disp == "inline-flex" || disp == "inline-grid") &&
+                style.ZIndex.HasValue)
+                return true;
+            
+            return false;
         }
     }
 }

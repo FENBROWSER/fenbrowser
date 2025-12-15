@@ -57,11 +57,26 @@ namespace FenBrowser.FenEngine.Rendering
             };
         }
 
+        private SKSize? _layoutViewport;
+        public SKSize? LayoutViewport 
+        { 
+            get => _layoutViewport;
+            set
+            {
+                if (_layoutViewport != value)
+                {
+                    _layoutViewport = value;
+                    // Trigger repaint when layout constraints change
+                    if (_backdrop != null) _backdrop.InvalidateVisual();
+                }
+            }
+        }
+
         public void Render(LiteElement root, Dictionary<LiteElement, CssComputed> styles)
         {
             _root = root;
             _styles = styles;
-            _backdrop.SetContent(root, styles, BaseUrl);
+            _backdrop.SetContent(root, styles, BaseUrl, LayoutViewport);
         }
 
         public string BaseUrl { get; set; } // Property is fine, but need to update backdrop if set? 
@@ -308,13 +323,12 @@ namespace FenBrowser.FenEngine.Rendering
                              tb.Watermark = overlay.Placeholder;
                          }
                          
-                         // Apply Google-style search box appearance
-                         tb.Background = Brushes.White;
-                         tb.BorderBrush = new SolidColorBrush(Color.FromRgb(0xdd, 0xdd, 0xdd));
-                         tb.BorderThickness = new Thickness(1);
-                         tb.CornerRadius = new CornerRadius(24); // Rounded pill-style
-                         tb.Padding = new Thickness(12, 8, 12, 8);
-                         tb.FontSize = 16;
+                         // Input styling should match underlying CSS
+                         tb.Background = Brushes.Transparent;
+                         tb.BorderThickness = new Thickness(0);
+                         tb.CornerRadius = new CornerRadius(0);
+                         tb.Padding = new Thickness(0); // Overlay is already sized to padding box
+                         tb.FontSize = 14; // Default or inherit? Hard to know. 14 is safe.
                          tb.VerticalContentAlignment = Avalonia.Layout.VerticalAlignment.Center;
                          
                          tb.TextChanged += (s, e) => 
@@ -372,6 +386,7 @@ namespace FenBrowser.FenEngine.Rendering
             private LiteElement _root;
             private Dictionary<LiteElement, CssComputed> _styles;
             private string _baseUrl;
+            private SKSize? _layoutViewport;
             private Action<SKSize, List<InputOverlayData>> _callback;
 
             public SkiaBackdrop(SkiaDomRenderer renderer, Action<SKSize, List<InputOverlayData>> callback)
@@ -380,11 +395,12 @@ namespace FenBrowser.FenEngine.Rendering
                 _callback = callback;
             }
 
-            public void SetContent(LiteElement root, Dictionary<LiteElement, CssComputed> styles, string baseUrl)
+            public void SetContent(LiteElement root, Dictionary<LiteElement, CssComputed> styles, string baseUrl, SKSize? layoutViewport)
             {
                 _root = root;
                 _styles = styles;
                 _baseUrl = baseUrl;
+                _layoutViewport = layoutViewport;
                 InvalidateVisual();
             }
 
@@ -396,7 +412,7 @@ namespace FenBrowser.FenEngine.Rendering
                     return;
                 }
                 
-                context.Custom(new SkiaDrawOperation(new Rect(0, 0, Bounds.Width, Bounds.Height), _root, _renderer, _styles, _baseUrl, _callback));
+                context.Custom(new SkiaDrawOperation(new Rect(0, 0, Bounds.Width, Bounds.Height), _root, _renderer, _styles, _baseUrl, _callback, _layoutViewport));
             }
         }
 
@@ -408,10 +424,11 @@ namespace FenBrowser.FenEngine.Rendering
             private readonly Dictionary<LiteElement, CssComputed> _styles;
             private readonly string _baseUrl;
             private readonly Action<SKSize, List<InputOverlayData>> _onLayout;
+            private readonly SKSize? _layoutViewport;
 
             public Rect Bounds { get; }
 
-            public SkiaDrawOperation(Rect bounds, LiteElement root, SkiaDomRenderer renderer, Dictionary<LiteElement, CssComputed> styles, string baseUrl, Action<SKSize, List<InputOverlayData>> onLayout)
+            public SkiaDrawOperation(Rect bounds, LiteElement root, SkiaDomRenderer renderer, Dictionary<LiteElement, CssComputed> styles, string baseUrl, Action<SKSize, List<InputOverlayData>> onLayout, SKSize? layoutViewport)
             {
                 Bounds = bounds;
                 _root = root;
@@ -419,6 +436,7 @@ namespace FenBrowser.FenEngine.Rendering
                 _styles = styles;
                 _baseUrl = baseUrl;
                 _onLayout = onLayout;
+                _layoutViewport = layoutViewport;
             }
 
             public void Dispose() { }
@@ -434,9 +452,13 @@ namespace FenBrowser.FenEngine.Rendering
                 try
                 {
                     var viewport = new SKRect((float)Bounds.X, (float)Bounds.Y, (float)Bounds.Right, (float)Bounds.Bottom);
-                    _renderer.Render(_root, canvas, _styles, viewport, _baseUrl, _onLayout);
+                    _renderer.Render(_root, canvas, _styles, viewport, _baseUrl, _onLayout, _layoutViewport);
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[SkiaDraw] Render Error: {ex}");
+                     if (true) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[SkiaDraw] CRASH: {ex}\r\n"); } catch {} }
+                }
                 finally { canvas.Restore(); }
             }
         }
