@@ -10,21 +10,28 @@ namespace FenBrowser.FenEngine.DOM
     /// <summary>
     /// MutationObserver implementation - observes DOM changes
     /// </summary>
+    /// <summary>
+    /// MutationObserver implementation - observes DOM changes
+    /// </summary>
     public class MutationObserverWrapper
     {
-        private readonly FenFunction _callback;
+        public FenFunction Callback { get; }
         private readonly List<(LiteElement target, MutationObserverOptions options)> _observed = 
             new List<(LiteElement, MutationObserverOptions)>();
         private readonly List<MutationRecordEntry> _pendingRecords = new List<MutationRecordEntry>();
         
         public MutationObserverWrapper(FenFunction callback)
         {
-            _callback = callback ?? throw new ArgumentNullException(nameof(callback));
+            Callback = callback ?? throw new ArgumentNullException(nameof(callback));
         }
         
+        public bool HasPendingRecords => _pendingRecords.Count > 0;
+
         public void Observe(LiteElement target, MutationObserverOptions options)
         {
             if (target == null) return;
+            // Remove existing observation for this target
+            _observed.RemoveAll(x => ReferenceEquals(x.target, target));
             _observed.Add((target, options ?? new MutationObserverOptions()));
         }
         
@@ -34,12 +41,12 @@ namespace FenBrowser.FenEngine.DOM
             _pendingRecords.Clear();
         }
         
-        public FenObject[] TakeRecords()
+        public FenObject[] TakeRecords(IExecutionContext context)
         {
             var records = new List<FenObject>();
             foreach (var rec in _pendingRecords)
             {
-                records.Add(rec.ToFenObject());
+                records.Add(rec.ToFenObject(context));
             }
             _pendingRecords.Clear();
             return records.ToArray();
@@ -70,9 +77,21 @@ namespace FenBrowser.FenEngine.DOM
                 if (!matches) continue;
                 
                 // Check if this mutation type is being observed
-                if (type == "attributes" && !options.Attributes) continue;
-                if (type == "childList" && !options.ChildList) continue;
-                if (type == "characterData" && !options.CharacterData) continue;
+                if (type == "attributes")
+                {
+                    if (!options.Attributes) continue;
+                    if (options.AttributeFilter != null && !options.AttributeFilter.Contains(attributeName)) continue;
+                    if (!options.AttributeOldValue) oldValue = null;
+                }
+                else if (type == "childList")
+                {
+                     if (!options.ChildList) continue;
+                }
+                else if (type == "characterData")
+                {
+                    if (!options.CharacterData) continue;
+                    if (!options.CharacterDataOldValue) oldValue = null;
+                }
                 
                 var record = new MutationRecordEntry
                 {
@@ -88,7 +107,7 @@ namespace FenBrowser.FenEngine.DOM
             }
         }
         
-        public FenObject ToFenObject()
+        public FenObject ToFenObject(IExecutionContext context)
         {
             var obj = new FenObject();
             
@@ -110,6 +129,32 @@ namespace FenBrowser.FenEngine.DOM
                         
                         var subtreeVal = optObj.Get("subtree");
                         if (subtreeVal is FenValue sv) options.Subtree = sv.ToBoolean();
+                        
+                        // New options
+                        var attrOldVal = optObj.Get("attributeOldValue");
+                        if (attrOldVal is FenValue aov) options.AttributeOldValue = aov.ToBoolean();
+                        
+                        var charOldVal = optObj.Get("characterDataOldValue");
+                        if (charOldVal is FenValue cov) options.CharacterDataOldValue = cov.ToBoolean();
+                        
+                        var attrFilterVal = optObj.Get("attributeFilter");
+                        if (attrFilterVal is FenValue afv && afv.IsObject) // Array
+                        {
+                            options.AttributeFilter = new List<string>();
+                            // Handle array iteration... assuming simplified 'length' access
+                             var len = afv.AsObject().Get("length")?.ToNumber() ?? 0;
+                             for(int i=0; i<len; i++)
+                             {
+                                 var item = afv.AsObject().Get(i.ToString());
+                                 if (item != null) options.AttributeFilter.Add(item.ToString());
+                             }
+                        }
+                        
+                        // Option dependencies (Spec logic)
+                        if ((options.AttributeOldValue || (options.AttributeFilter != null)) && !options.Attributes)
+                            options.Attributes = true;
+                        if (options.CharacterDataOldValue && !options.CharacterData)
+                            options.CharacterData = true;
                     }
                     Observe(ew.Element, options);
                 }
@@ -124,7 +169,7 @@ namespace FenBrowser.FenEngine.DOM
             
             obj.Set("takeRecords", FenValue.FromFunction(new FenFunction("takeRecords", (args, thisVal) =>
             {
-                var records = TakeRecords();
+                var records = TakeRecords(context);
                 var arr = new FenObject();
                 arr.Set("length", FenValue.FromNumber(records.Length));
                 for (int i = 0; i < records.Length; i++)
@@ -146,6 +191,7 @@ namespace FenBrowser.FenEngine.DOM
         public bool Subtree { get; set; }
         public bool AttributeOldValue { get; set; }
         public bool CharacterDataOldValue { get; set; }
+        public List<string> AttributeFilter { get; set; }
     }
     
     public class MutationRecordEntry
@@ -157,19 +203,30 @@ namespace FenBrowser.FenEngine.DOM
         public List<LiteElement> AddedNodes { get; set; } = new List<LiteElement>();
         public List<LiteElement> RemovedNodes { get; set; } = new List<LiteElement>();
         
-        public FenObject ToFenObject()
+        public FenObject ToFenObject(IExecutionContext context)
         {
             var obj = new FenObject();
             obj.Set("type", FenValue.FromString(Type ?? ""));
+            obj.Set("target", Target != null ? FenValue.FromObject(new ElementWrapper(Target, context)) : FenValue.Null);
             obj.Set("attributeName", AttributeName != null ? FenValue.FromString(AttributeName) : FenValue.Null);
             obj.Set("oldValue", OldValue != null ? FenValue.FromString(OldValue) : FenValue.Null);
             
-            // AddedNodes as array-like
+            // AddedNodes as array-like (NodeList)
             var addedArr = new FenObject();
             addedArr.Set("length", FenValue.FromNumber(AddedNodes?.Count ?? 0));
+            if (AddedNodes != null)
+            {
+                for(int i=0; i<AddedNodes.Count; i++)
+                    addedArr.Set(i.ToString(), FenValue.FromObject(new ElementWrapper(AddedNodes[i], context)));
+            }
             
             var removedArr = new FenObject();
             removedArr.Set("length", FenValue.FromNumber(RemovedNodes?.Count ?? 0));
+            if (RemovedNodes != null)
+            {
+                for(int i=0; i<RemovedNodes.Count; i++)
+                    removedArr.Set(i.ToString(), FenValue.FromObject(new ElementWrapper(RemovedNodes[i], context)));
+            }
             
             obj.Set("addedNodes", FenValue.FromObject(addedArr));
             obj.Set("removedNodes", FenValue.FromObject(removedArr));

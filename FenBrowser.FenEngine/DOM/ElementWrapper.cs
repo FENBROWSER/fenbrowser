@@ -143,11 +143,37 @@ namespace FenBrowser.FenEngine.DOM
                     }
                     return FenValue.Null;
                 
+                // DOM Level 3 Events
+                case "addeventlistener":
+                    return FenValue.FromFunction(new FenFunction("addEventListener", AddEventListenerMethod));
+                
+                case "removeeventlistener":
+                    return FenValue.FromFunction(new FenFunction("removeEventListener", RemoveEventListenerMethod));
+                
+                case "dispatchevent":
+                    return FenValue.FromFunction(new FenFunction("dispatchEvent", DispatchEventMethod));
+
+                case "focus":
+                    return FenValue.FromFunction(new FenFunction("focus", FocusMethod));
+
+                case "blur":
+                    return FenValue.FromFunction(new FenFunction("blur", BlurMethod));
+
+                case "clonenode":
+                    return FenValue.FromFunction(new FenFunction("cloneNode", CloneNodeMethod));
+
+                case "dataset":
+                    return FenValue.FromObject(new DOMStringMap(_element, _context));
+
+                case "classlist":
+                    return FenValue.FromObject(new DOMTokenList(_element, "class", _context));
+                
                 default:
 
                     return FenValue.Undefined;
             }
         }
+
 
         public void Set(string key, IValue value)
         {
@@ -565,6 +591,153 @@ namespace FenBrowser.FenEngine.DOM
 
         // Expose underlying element to other wrappers
         internal LiteElement Element => _element;
+
+        private IValue FocusMethod(IValue[] args, IValue thisVal)
+        {
+            if (_element.OwnerDocument != null)
+            {
+                var prev = _element.OwnerDocument.ActiveElement;
+                if (prev != _element)
+                {
+                    if (prev != null)
+                    {
+                        // Blur previous
+                        var blurEvent = new DomEvent("blur");
+                        // Dispatch blur on prev? 
+                        // For now just set active element.
+                    }
+                    _element.OwnerDocument.ActiveElement = _element;
+                    _context?.RequestRender?.Invoke();
+                    // Dispatch focus event
+                    // Ensure we have 'new DomEvent' available.
+                    // Assuming basic support.
+                }
+            }
+            return FenValue.Undefined;
+        }
+
+        private IValue BlurMethod(IValue[] args, IValue thisVal)
+        {
+             if (_element.OwnerDocument != null && _element.OwnerDocument.ActiveElement == _element)
+             {
+                 _element.OwnerDocument.ActiveElement = null; // Or body
+                 _context?.RequestRender?.Invoke();
+             }
+             return FenValue.Undefined;
+        }
+
+        private IValue CloneNodeMethod(IValue[] args, IValue thisVal)
+        {
+            bool deep = false;
+            if (args.Length > 0) deep = args[0].ToBoolean();
+
+            var clone = _element.Clone(deep);
+            return FenValue.FromObject(new ElementWrapper(clone, _context));
+        }
+    }
+
+    public class DOMTokenList : IObject
+    {
+        private readonly LiteElement _element;
+        private readonly string _attrName;
+        private readonly IExecutionContext _context;
+        private IObject _prototype;
+
+        public DOMTokenList(LiteElement element, string attrName, IExecutionContext context)
+        {
+            _element = element;
+            _attrName = attrName;
+            _context = context;
+        }
+
+        public IValue Get(string key)
+        {
+            var val = _element.Attr != null && _element.Attr.ContainsKey(_attrName) ? _element.Attr[_attrName] : "";
+            var tokens = new List<string>(val.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries));
+
+            switch (key.ToLowerInvariant())
+            {
+                case "add": return FenValue.FromFunction(new FenFunction("add", (args, _) => Modify(tokens, args, (t, list) => { if (!list.Contains(t)) list.Add(t); })));
+                case "remove": return FenValue.FromFunction(new FenFunction("remove", (args, _) => Modify(tokens, args, (t, list) => list.Remove(t))));
+                case "toggle": return FenValue.FromFunction(new FenFunction("toggle", (args, _) => Toggle(tokens, args)));
+                case "contains": return FenValue.FromFunction(new FenFunction("contains", (args, _) => FenValue.FromBoolean(args.Length > 0 && tokens.Contains(args[0].ToString()))));
+                case "length": return FenValue.FromNumber(tokens.Count);
+                default: 
+                    if (int.TryParse(key, out int index) && index >= 0 && index < tokens.Count)
+                        return FenValue.FromString(tokens[index]);
+                    return FenValue.Undefined;
+            }
+        }
+
+        private IValue Modify(List<string> tokens, IValue[] args, Action<string, List<string>> action)
+        {
+            foreach (var arg in args) action(arg.ToString(), tokens);
+            Update(tokens);
+            return FenValue.Undefined;
+        }
+
+        private IValue Toggle(List<string> tokens, IValue[] args)
+        {
+             if (args.Length == 0) return FenValue.FromBoolean(false);
+             var token = args[0].ToString();
+             bool has = tokens.Contains(token);
+             if (has) tokens.Remove(token);
+             else tokens.Add(token);
+             Update(tokens);
+             return FenValue.FromBoolean(!has);
+        }
+
+        private void Update(List<string> tokens)
+        {
+            _element.SetAttribute(_attrName, string.Join(" ", tokens));
+            _context?.RequestRender?.Invoke();
+        }
+
+        public void Set(string key, IValue value) { }
+        public bool Has(string key) => !Get(key).IsUndefined;
+        public bool Delete(string key) => false;
+        public IEnumerable<string> Keys() => new string[0];
+        public IObject GetPrototype() => _prototype;
+        public void SetPrototype(IObject prototype) => _prototype = prototype;
+    }
+
+    public class DOMStringMap : IObject
+    {
+        private readonly LiteElement _element;
+        private readonly IExecutionContext _context;
+        private IObject _prototype;
+
+        public DOMStringMap(LiteElement element, IExecutionContext context)
+        {
+            _element = element;
+            _context = context;
+        }
+
+        public IValue Get(string key)
+        {
+            var attrName = "data-" + CamelToKebab(key);
+            if (_element.Attr != null && _element.Attr.TryGetValue(attrName, out var val))
+                return FenValue.FromString(val);
+            return FenValue.Undefined;
+        }
+
+        public void Set(string key, IValue value)
+        {
+            var attrName = "data-" + CamelToKebab(key);
+            _element.SetAttribute(attrName, value.ToString());
+             _context?.RequestRender?.Invoke();
+        }
+
+        public bool Has(string key) => !Get(key).IsUndefined;
+        public bool Delete(string key) => false;
+        public IEnumerable<string> Keys() => new string[0];
+        public IObject GetPrototype() => _prototype;
+        public void SetPrototype(IObject prototype) => _prototype = prototype;
+
+        private string CamelToKebab(string s)
+        {
+            return System.Text.RegularExpressions.Regex.Replace(s, "(?<!^)([A-Z])", "-$1").ToLower();
+        }
     }
 
     public class CSSStyleDeclaration : IObject
@@ -585,6 +758,14 @@ namespace FenBrowser.FenEngine.DOM
             // Simplified: parsing style attribute every time is slow but works for now
             var styleStr = _element.Attr?.ContainsKey("style") == true ? _element.Attr["style"] : "";
             var styles = ParseStyle(styleStr);
+            
+            if (string.Equals(key, "setProperty", StringComparison.OrdinalIgnoreCase))
+                return FenValue.FromFunction(new FenFunction("setProperty", SetProperty));
+            if (string.Equals(key, "getPropertyValue", StringComparison.OrdinalIgnoreCase))
+                return FenValue.FromFunction(new FenFunction("getPropertyValue", GetPropertyValue));
+            if (string.Equals(key, "removeProperty", StringComparison.OrdinalIgnoreCase))
+                return FenValue.FromFunction(new FenFunction("removeProperty", RemoveProperty));
+                
             return styles.ContainsKey(key) ? FenValue.FromString(styles[key]) : FenValue.Undefined;
         }
 
@@ -620,6 +801,43 @@ namespace FenBrowser.FenEngine.DOM
             }
             FenLogger.Debug($"[CSS] Set style {key}={value}", LogCategory.CSS);
             _context.RequestRender?.Invoke();
+        }
+
+        private IValue SetProperty(IValue[] args, IValue thisVal)
+        {
+            if (args.Length < 2) return FenValue.Undefined;
+            Set(args[0].ToString(), args[1]);
+            return FenValue.Undefined;
+        }
+
+        private IValue GetPropertyValue(IValue[] args, IValue thisVal)
+        {
+            if (args.Length == 0) return FenValue.FromString("");
+            var val = Get(args[0].ToString());
+            return val.IsUndefined ? FenValue.FromString("") : val;
+        }
+
+        private IValue RemoveProperty(IValue[] args, IValue thisVal)
+        {
+             if (args.Length == 0) return FenValue.FromString("");
+             var key = args[0].ToString();
+             
+            var styleStr = _element.Attr?.ContainsKey("style") == true ? _element.Attr["style"] : "";
+            var styles = ParseStyle(styleStr);
+            if (styles.ContainsKey(key))
+            {
+                var val = styles[key];
+                styles.Remove(key);
+                
+                // Rebuild
+                var sb = new StringBuilder();
+                foreach (var kvp in styles) sb.Append($"{kvp.Key}:{kvp.Value};");
+                if (_element.Attr != null) _element.Attr["style"] = sb.ToString();
+                
+                 _context?.RequestRender?.Invoke();
+                 return FenValue.FromString(val);
+            }
+            return FenValue.FromString("");
         }
 
         public bool Has(string key) => !Get(key).IsUndefined;
@@ -738,6 +956,243 @@ namespace FenBrowser.FenEngine.DOM
             }
             
             return FenValue.Null;
+        }
+    }
+
+    // ElementWrapper partial class - DOM Level 3 Events
+    public partial class ElementWrapper
+    {
+        // Global event listener registry (shared across all ElementWrapper instances)
+        private static readonly EventListenerRegistry _eventRegistry = new EventListenerRegistry();
+
+        /// <summary>
+        /// Get the global event listener registry
+        /// </summary>
+        public static EventListenerRegistry EventRegistry => _eventRegistry;
+
+        /// <summary>
+        /// element.addEventListener(type, listener, options)
+        /// </summary>
+        private IValue AddEventListenerMethod(IValue[] args, IValue thisValue)
+        {
+            if (args.Length < 2) return FenValue.Undefined;
+
+            var type = args[0].ToString();
+            var callback = args[1];
+
+            if (string.IsNullOrEmpty(type) || callback == null || !callback.IsFunction)
+                return FenValue.Undefined;
+
+            // Parse options (can be boolean for capture, or object with options)
+            bool capture = false;
+            bool once = false;
+            bool passive = false;
+
+            if (args.Length >= 3)
+            {
+                if (args[2].IsBoolean)
+                {
+                    capture = args[2].ToBoolean();
+                }
+                else if (args[2].IsObject)
+                {
+                    var opts = args[2].AsObject() as FenObject;
+                    if (opts != null)
+                    {
+                        capture = opts.Get("capture")?.ToBoolean() ?? false;
+                        once = opts.Get("once")?.ToBoolean() ?? false;
+                        passive = opts.Get("passive")?.ToBoolean() ?? false;
+                    }
+                }
+            }
+
+            _eventRegistry.Add(_element, type, callback, capture, once, passive);
+            return FenValue.Undefined;
+        }
+
+        /// <summary>
+        /// element.removeEventListener(type, listener, options)
+        /// </summary>
+        private IValue RemoveEventListenerMethod(IValue[] args, IValue thisValue)
+        {
+            if (args.Length < 2) return FenValue.Undefined;
+
+            var type = args[0].ToString();
+            var callback = args[1];
+
+            if (string.IsNullOrEmpty(type) || callback == null)
+                return FenValue.Undefined;
+
+            // Parse capture option
+            bool capture = false;
+            if (args.Length >= 3)
+            {
+                if (args[2].IsBoolean)
+                {
+                    capture = args[2].ToBoolean();
+                }
+                else if (args[2].IsObject)
+                {
+                    var opts = args[2].AsObject() as FenObject;
+                    capture = opts?.Get("capture")?.ToBoolean() ?? false;
+                }
+            }
+
+            _eventRegistry.Remove(_element, type, callback, capture);
+            return FenValue.Undefined;
+        }
+
+        /// <summary>
+        /// element.dispatchEvent(event)
+        /// Implements W3C event dispatch algorithm with capture/target/bubble phases
+        /// </summary>
+        private IValue DispatchEventMethod(IValue[] args, IValue thisValue)
+        {
+            if (args.Length == 0 || !args[0].IsObject)
+                return FenValue.FromBoolean(false);
+
+            var eventObj = args[0].AsObject() as DomEvent;
+            if (eventObj == null)
+            {
+                // May be a FenObject with event-like properties - create a DomEvent from it
+                var obj = args[0].AsObject() as FenObject;
+                if (obj == null) return FenValue.FromBoolean(false);
+
+                var type = obj.Get("type")?.ToString() ?? "";
+                var bubbles = obj.Get("bubbles")?.ToBoolean() ?? false;
+                var cancelable = obj.Get("cancelable")?.ToBoolean() ?? false;
+                eventObj = new DomEvent(type, bubbles, cancelable);
+            }
+
+            // Execute dispatch algorithm
+            bool result = DispatchEventInternal(eventObj);
+            return FenValue.FromBoolean(result);
+        }
+
+        /// <summary>
+        /// Internal event dispatch implementation following W3C spec
+        /// </summary>
+        private bool DispatchEventInternal(DomEvent domEvent)
+        {
+            if (domEvent == null || string.IsNullOrEmpty(domEvent.Type))
+                return true;
+
+            // 1. Build propagation path (target → ancestors)
+            var path = BuildEventPath(_element);
+            domEvent.Target = _element;
+            domEvent.Path = path;
+
+            FenLogger.Debug($"[DispatchEvent] Dispatching '{domEvent.Type}' on <{_element.Tag}>, path length: {path.Count}", LogCategory.Events);
+
+            // 2. CAPTURING PHASE (ancestors → target, in reverse order)
+            domEvent.EventPhase = DomEvent.CAPTURING_PHASE;
+            for (int i = path.Count - 1; i >= 0; i--)
+            {
+                if (path[i] == _element) continue; // Skip target in capture phase
+                
+                domEvent.CurrentTarget = path[i];
+                domEvent.UpdateJsProperties(_context);
+                ExecuteListeners(path[i], domEvent, capture: true);
+                
+                if (domEvent.PropagationStopped) break;
+            }
+
+            // 3. AT_TARGET PHASE
+            if (!domEvent.PropagationStopped)
+            {
+                domEvent.EventPhase = DomEvent.AT_TARGET;
+                domEvent.CurrentTarget = _element;
+                domEvent.UpdateJsProperties(_context);
+                
+                // Execute both capture and bubble listeners at target
+                ExecuteListeners(_element, domEvent, capture: true);
+                if (!domEvent.ImmediatePropagationStopped)
+                    ExecuteListeners(_element, domEvent, capture: false);
+            }
+
+            // 4. BUBBLING PHASE (target → ancestors)
+            if (!domEvent.PropagationStopped && domEvent.Bubbles)
+            {
+                domEvent.EventPhase = DomEvent.BUBBLING_PHASE;
+                foreach (var element in path)
+                {
+                    if (element == _element) continue; // Skip target in bubble phase
+                    
+                    domEvent.CurrentTarget = element;
+                    domEvent.UpdateJsProperties(_context);
+                    ExecuteListeners(element, domEvent, capture: false);
+                    
+                    if (domEvent.PropagationStopped) break;
+                }
+            }
+
+            // 5. Return whether default was NOT prevented
+            return !domEvent.DefaultPrevented;
+        }
+
+        /// <summary>
+        /// Build the event propagation path from target to root
+        /// </summary>
+        private List<LiteElement> BuildEventPath(LiteElement target)
+        {
+            var path = new List<LiteElement>();
+            var current = target;
+            
+            while (current != null)
+            {
+                path.Add(current);
+                current = current.Parent;
+            }
+            
+            return path;
+        }
+
+        /// <summary>
+        /// Execute all listeners for an element in the specified phase
+        /// </summary>
+        private void ExecuteListeners(LiteElement element, DomEvent domEvent, bool capture)
+        {
+            var listeners = _eventRegistry.Get(element, domEvent.Type, capture);
+            var listenersToRemove = new List<EventListener>();
+
+            foreach (var listener in listeners)
+            {
+                if (domEvent.ImmediatePropagationStopped) break;
+
+                try
+                {
+                    // Update event properties for this listener
+                    domEvent.UpdateJsProperties(_context);
+
+                    // Execute the callback
+                    if (listener.Callback.IsFunction)
+                    {
+                        var func = listener.Callback.AsFunction();
+                        if (func is FenFunction fenFunc)
+                        {
+                            fenFunc.Invoke(new IValue[] { FenValue.FromObject(domEvent) }, _context);
+                        }
+                    }
+
+                    FenLogger.Debug($"[DispatchEvent] Executed listener for '{domEvent.Type}' on <{element.Tag}> (capture={capture})", LogCategory.Events);
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Error($"[DispatchEvent] Listener error: {ex.Message}", LogCategory.Events);
+                }
+
+                // Mark 'once' listeners for removal
+                if (listener.Once)
+                {
+                    listenersToRemove.Add(listener);
+                }
+            }
+
+            // Remove 'once' listeners
+            foreach (var listener in listenersToRemove)
+            {
+                _eventRegistry.RemoveOnce(element, domEvent.Type, listener);
+            }
         }
     }
 }
