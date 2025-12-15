@@ -173,16 +173,16 @@
 		</Style>
 		
 		<Style Selector="ScrollBar:vertical">
-			<Setter Property="Width" Value="12"/> <!-- Thinner scrollbar -->
+			<Setter Property="Width" Value="6"/> <!-- Thinner scrollbar -->
 		</Style>
 		
 		<Style Selector="ScrollBar:horizontal">
-			<Setter Property="Height" Value="12"/>
+			<Setter Property="Height" Value="6"/>
 		</Style>
 
 		<Style Selector="ScrollBar /template/ Thumb">
 			<Setter Property="Background" Value="{DynamicResource PressedColor}"/>
-			<Setter Property="CornerRadius" Value="6"/>
+			<Setter Property="CornerRadius" Value="4"/>
 		</Style>
 
 		<Style Selector="ScrollBar /template/ Thumb:pointerover">
@@ -418,9 +418,11 @@
 				
 				<Grid Grid.Row="0">
 					<!-- Web content rendered by Skia -->
-					<ScrollViewer x:Name="SkiaScrollViewer" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
-                         <rendering:SkiaBrowserView x:Name="SkiaView" ClipToBounds="True" />
-                    </ScrollViewer>
+                    <Border Margin="12" BorderThickness="1" BorderBrush="#d0d0d0" CornerRadius="8" BoxShadow="0 4 10 0 #20000000" Background="White" ClipToBounds="True">
+					    <ScrollViewer x:Name="SkiaScrollViewer" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                             <rendering:SkiaBrowserView x:Name="SkiaView" ClipToBounds="True" />
+                        </ScrollViewer>
+                    </Border>
 					
 					<!-- Special pages container (Settings, etc.) -->
 					<ContentControl x:Name="SpecialPageContainer" IsVisible="False" />
