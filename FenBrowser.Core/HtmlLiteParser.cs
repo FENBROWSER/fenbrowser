@@ -38,12 +38,177 @@ namespace FenBrowser.Core
             "math", "script", "style" // SVG handled normally to allow structure parsing
         };
 
+        // HTML5 Insertion Modes
+        private enum InsertionMode
+        {
+            Initial,
+            BeforeHtml,
+            BeforeHead,
+            InHead,
+            AfterHead,
+            InBody,
+            Text,
+            InTable,
+            InTableBody,
+            InRow,
+            InCell,
+            InSelect,
+            InTemplate,
+            AfterBody,
+            InForeignContent
+        }
+
+        // Formatting elements requiring adoption agency algorithm
+        private static readonly HashSet<string> FormattingElements = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "a", "b", "big", "code", "em", "font", "i", "nobr", "s", "small", 
+            "strike", "strong", "tt", "u", "mark", "ruby", "rt", "rp"
+        };
+
+        // Special elements that create scope boundaries
+        private static readonly HashSet<string> SpecialElements = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "address", "applet", "area", "article", "aside", "base", "basefont", "bgsound",
+            "blockquote", "body", "br", "button", "caption", "center", "col", "colgroup",
+            "dd", "details", "dir", "div", "dl", "dt", "embed", "fieldset", "figcaption",
+            "figure", "footer", "form", "frame", "frameset", "h1", "h2", "h3", "h4", "h5", "h6",
+            "head", "header", "hgroup", "hr", "html", "iframe", "img", "input", "keygen",
+            "li", "link", "listing", "main", "marquee", "menu", "meta", "nav", "noembed",
+            "noframes", "noscript", "object", "ol", "p", "param", "plaintext", "pre",
+            "script", "section", "select", "source", "style", "summary", "table", "tbody",
+            "td", "template", "textarea", "tfoot", "th", "thead", "title", "tr", "track",
+            "ul", "wbr", "xmp"
+        };
+
+        // SVG elements that should break out to HTML namespace
+        private static readonly HashSet<string> SvgIntegrationPoints = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "foreignobject", "desc", "title"
+        };
+
+        // MathML integration points
+        private static readonly HashSet<string> MathMlIntegrationPoints = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "mi", "mo", "mn", "ms", "mtext", "annotation-xml"
+        };
+
+        // SVG attribute name adjustments (HTML is case-insensitive but SVG is case-sensitive)
+        private static readonly Dictionary<string, string> SvgAttributeAdjustments = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["attributename"] = "attributeName",
+            ["attributetype"] = "attributeType",
+            ["basefrequency"] = "baseFrequency",
+            ["baseprofile"] = "baseProfile",
+            ["calcmode"] = "calcMode",
+            ["clippathunits"] = "clipPathUnits",
+            ["diffuseconstant"] = "diffuseConstant",
+            ["edgemode"] = "edgeMode",
+            ["filterunits"] = "filterUnits",
+            ["glyphref"] = "glyphRef",
+            ["gradienttransform"] = "gradientTransform",
+            ["gradientunits"] = "gradientUnits",
+            ["kernelmatrix"] = "kernelMatrix",
+            ["kernelunitlength"] = "kernelUnitLength",
+            ["keypoints"] = "keyPoints",
+            ["keysplines"] = "keySplines",
+            ["keytimes"] = "keyTimes",
+            ["lengthadjust"] = "lengthAdjust",
+            ["limitingconeangle"] = "limitingConeAngle",
+            ["markerheight"] = "markerHeight",
+            ["markerunits"] = "markerUnits",
+            ["markerwidth"] = "markerWidth",
+            ["maskcontentunits"] = "maskContentUnits",
+            ["maskunits"] = "maskUnits",
+            ["numoctaves"] = "numOctaves",
+            ["pathlength"] = "pathLength",
+            ["patterncontentunits"] = "patternContentUnits",
+            ["patterntransform"] = "patternTransform",
+            ["patternunits"] = "patternUnits",
+            ["pointsatx"] = "pointsAtX",
+            ["pointsaty"] = "pointsAtY",
+            ["pointsatz"] = "pointsAtZ",
+            ["preservealpha"] = "preserveAlpha",
+            ["preserveaspectratio"] = "preserveAspectRatio",
+            ["primitiveunits"] = "primitiveUnits",
+            ["refx"] = "refX",
+            ["refy"] = "refY",
+            ["repeatcount"] = "repeatCount",
+            ["repeatdur"] = "repeatDur",
+            ["requiredextensions"] = "requiredExtensions",
+            ["requiredfeatures"] = "requiredFeatures",
+            ["specularconstant"] = "specularConstant",
+            ["specularexponent"] = "specularExponent",
+            ["spreadmethod"] = "spreadMethod",
+            ["startoffset"] = "startOffset",
+            ["stddeviation"] = "stdDeviation",
+            ["stitchtiles"] = "stitchTiles",
+            ["surfacescale"] = "surfaceScale",
+            ["systemlanguage"] = "systemLanguage",
+            ["tablevalues"] = "tableValues",
+            ["targetx"] = "targetX",
+            ["targety"] = "targetY",
+            ["textlength"] = "textLength",
+            ["viewbox"] = "viewBox",
+            ["viewtarget"] = "viewTarget",
+            ["xchannelselector"] = "xChannelSelector",
+            ["ychannelselector"] = "yChannelSelector",
+            ["zoomandpan"] = "zoomAndPan"
+        };
+
+        // SVG tag name adjustments (HTML lowercases but SVG needs camelCase)
+        private static readonly Dictionary<string, string> SvgTagAdjustments = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["altglyph"] = "altGlyph",
+            ["altglyphdef"] = "altGlyphDef",
+            ["altglyphitem"] = "altGlyphItem",
+            ["animatecolor"] = "animateColor",
+            ["animatemotion"] = "animateMotion",
+            ["animatetransform"] = "animateTransform",
+            ["clippath"] = "clipPath",
+            ["feblend"] = "feBlend",
+            ["fecolormatrix"] = "feColorMatrix",
+            ["fecomponenttransfer"] = "feComponentTransfer",
+            ["fecomposite"] = "feComposite",
+            ["feconvolvematrix"] = "feConvolveMatrix",
+            ["fediffuselighting"] = "feDiffuseLighting",
+            ["fedisplacementmap"] = "feDisplacementMap",
+            ["fedistantlight"] = "feDistantLight",
+            ["fedropshadow"] = "feDropShadow",
+            ["feflood"] = "feFlood",
+            ["fefunca"] = "feFuncA",
+            ["fefuncb"] = "feFuncB",
+            ["fefuncg"] = "feFuncG",
+            ["fefuncr"] = "feFuncR",
+            ["fegaussianblur"] = "feGaussianBlur",
+            ["feimage"] = "feImage",
+            ["femerge"] = "feMerge",
+            ["femergenode"] = "feMergeNode",
+            ["femorphology"] = "feMorphology",
+            ["feoffset"] = "feOffset",
+            ["fepointlight"] = "fePointLight",
+            ["fespecularlighting"] = "feSpecularLighting",
+            ["fespotlight"] = "feSpotLight",
+            ["fetile"] = "feTile",
+            ["feturbulence"] = "feTurbulence",
+            ["foreignobject"] = "foreignObject",
+            ["glyphref"] = "glyphRef",
+            ["lineargradient"] = "linearGradient",
+            ["radialgradient"] = "radialGradient",
+            ["textpath"] = "textPath"
+        };
+
+        // Active formatting elements list for adoption agency
+        private List<LiteElement> _activeFormattingElements = new List<LiteElement>();
+        private InsertionMode _insertionMode = InsertionMode.Initial;
+        private bool _inForeignContent = false;
+
         public HtmlLiteParser(string html)
         {
             _html = html ?? "";
             _n = _html.Length;
             _i = 0;
         }
+
 
         public LiteElement Parse()
         {
@@ -399,6 +564,283 @@ namespace FenBrowser.Core
                 last.Text += raw;
             else
                 parent.Append(new LiteElement("#text") { Text = raw });
+        }
+
+        // -------------------- Adoption Agency Algorithm --------------------
+
+        /// <summary>
+        /// Run the adoption agency algorithm for formatting elements.
+        /// This handles cases like <b><i></b></i> by properly nesting the elements.
+        /// Per HTML5 spec section 8.2.5.4.7
+        /// </summary>
+        private void RunAdoptionAgency(string endTag, Stack<LiteElement> stack)
+        {
+            const int outerLoopLimit = 8;
+
+            for (int outerLoop = 0; outerLoop < outerLoopLimit; outerLoop++)
+            {
+                // Step 1: Find formatting element in active formatting list
+                int formattingIndex = -1;
+                LiteElement formattingElement = null;
+                for (int i = _activeFormattingElements.Count - 1; i >= 0; i--)
+                {
+                    if (string.Equals(_activeFormattingElements[i].Tag, endTag, StringComparison.OrdinalIgnoreCase))
+                    {
+                        formattingIndex = i;
+                        formattingElement = _activeFormattingElements[i];
+                        break;
+                    }
+                }
+
+                // If no formatting element found, just pop normally
+                if (formattingElement == null)
+                {
+                    while (stack.Count > 1 && !string.Equals(stack.Peek().Tag, endTag, StringComparison.OrdinalIgnoreCase))
+                        stack.Pop();
+                    if (stack.Count > 1) stack.Pop();
+                    return;
+                }
+
+                // Step 2: Check if formatting element is in stack
+                var stackList = new List<LiteElement>(stack);
+                stackList.Reverse();
+                int stackIndex = stackList.FindIndex(e => ReferenceEquals(e, formattingElement));
+                
+                if (stackIndex < 0)
+                {
+                    // Not in stack, remove from active list
+                    _activeFormattingElements.RemoveAt(formattingIndex);
+                    return;
+                }
+
+                // Step 3: Find furthest block after formatting element
+                LiteElement furthestBlock = null;
+                int furthestBlockIndex = -1;
+                for (int i = stackIndex + 1; i < stackList.Count; i++)
+                {
+                    if (SpecialElements.Contains(stackList[i].Tag))
+                    {
+                        furthestBlock = stackList[i];
+                        furthestBlockIndex = i;
+                        break;
+                    }
+                }
+
+                // If no furthest block, pop elements and remove from active list
+                if (furthestBlock == null)
+                {
+                    while (stack.Count > 0 && !ReferenceEquals(stack.Peek(), formattingElement))
+                        stack.Pop();
+                    if (stack.Count > 0) stack.Pop();
+                    _activeFormattingElements.RemoveAt(formattingIndex);
+                    return;
+                }
+
+                // Step 4-7: Reparent nodes (simplified adoption)
+                // For simplicity, we do basic adoption without full reconstruction
+                var commonAncestor = stackIndex > 0 ? stackList[stackIndex - 1] : stackList[0];
+                
+                // Create clone of formatting element
+                var clone = formattingElement.ShallowClone();
+                
+                // Reparent furthest block's children to clone
+                foreach (var child in new List<LiteElement>(furthestBlock.Children))
+                {
+                    child.Remove();
+                    clone.Append(child);
+                }
+                
+                // Add clone to furthest block
+                furthestBlock.Append(clone);
+                
+                // Update active formatting list
+                if (formattingIndex < _activeFormattingElements.Count)
+                {
+                    _activeFormattingElements[formattingIndex] = clone;
+                }
+
+                // Pop to formatting element
+                while (stack.Count > 0 && !ReferenceEquals(stack.Peek(), formattingElement))
+                    stack.Pop();
+                if (stack.Count > 0) stack.Pop();
+                
+                return;
+            }
+        }
+
+        /// <summary>
+        /// Add element to active formatting elements list
+        /// </summary>
+        private void PushFormattingElement(LiteElement element)
+        {
+            // Limit identical elements per spec (Noah's Ark clause)
+            int count = 0;
+            for (int i = _activeFormattingElements.Count - 1; i >= 0; i--)
+            {
+                var el = _activeFormattingElements[i];
+                if (string.Equals(el.Tag, element.Tag, StringComparison.OrdinalIgnoreCase))
+                {
+                    count++;
+                    if (count >= 3)
+                    {
+                        _activeFormattingElements.RemoveAt(i);
+                        break;
+                    }
+                }
+            }
+            _activeFormattingElements.Add(element);
+        }
+
+        /// <summary>
+        /// Reconstruct active formatting elements
+        /// </summary>
+        private void ReconstructActiveFormattingElements(Stack<LiteElement> stack)
+        {
+            if (_activeFormattingElements.Count == 0) return;
+            
+            var stackList = new List<LiteElement>(stack);
+            
+            // Find entries not in stack and reopen them
+            for (int i = 0; i < _activeFormattingElements.Count; i++)
+            {
+                var el = _activeFormattingElements[i];
+                if (!stackList.Contains(el))
+                {
+                    var clone = el.ShallowClone();
+                    if (stack.Count > 0)
+                    {
+                        stack.Peek().Append(clone);
+                    }
+                    stack.Push(clone);
+                    _activeFormattingElements[i] = clone;
+                }
+            }
+        }
+
+        // -------------------- SVG/MathML Foreign Content --------------------
+
+        /// <summary>
+        /// Adjust SVG attribute names to proper camelCase
+        /// </summary>
+        private static string AdjustSvgAttributeName(string name)
+        {
+            if (SvgAttributeAdjustments.TryGetValue(name, out var adjusted))
+                return adjusted;
+            return name;
+        }
+
+        /// <summary>
+        /// Adjust SVG tag names to proper camelCase
+        /// </summary>
+        private static string AdjustSvgTagName(string tag)
+        {
+            if (SvgTagAdjustments.TryGetValue(tag, out var adjusted))
+                return adjusted;
+            return tag;
+        }
+
+        /// <summary>
+        /// Check if currently in foreign content (SVG/MathML)
+        /// </summary>
+        private bool IsInForeignContent(Stack<LiteElement> stack)
+        {
+            foreach (var el in stack)
+            {
+                var tag = el.Tag?.ToLowerInvariant();
+                if (tag == "svg" || tag == "math")
+                    return true;
+                if (SvgIntegrationPoints.Contains(tag) || MathMlIntegrationPoints.Contains(tag))
+                    return false;
+            }
+            return false;
+        }
+
+        // -------------------- Enhanced Error Recovery --------------------
+
+        /// <summary>
+        /// Recover from malformed tag by skipping to next valid boundary
+        /// </summary>
+        private void RecoverFromMalformedTag()
+        {
+            // Skip until we find a tag start or EOF
+            while (!Eof())
+            {
+                var c = Peek();
+                if (c == '<')
+                {
+                    // Check if it's a valid tag start
+                    if (_i + 1 < _n)
+                    {
+                        var next = _html[_i + 1];
+                        if (char.IsLetter(next) || next == '/' || next == '!')
+                            break;
+                    }
+                }
+                _i++;
+            }
+        }
+
+        /// <summary>
+        /// Close all pending tags at document end
+        /// </summary>
+        private void ClosePendingTags(Stack<LiteElement> stack)
+        {
+            while (stack.Count > 1)
+            {
+                stack.Pop();
+            }
+            _activeFormattingElements.Clear();
+        }
+
+        /// <summary>
+        /// Handle missing closing quote in attribute value
+        /// </summary>
+        private string RecoverMissingQuote(char expectedQuote)
+        {
+            var start = _i;
+            // Read until we hit a tag boundary or newline
+            while (!Eof())
+            {
+                var c = Peek();
+                if (c == '>' || c == '\r' || c == '\n' || c == expectedQuote)
+                    break;
+                _i++;
+            }
+            var value = _html.Substring(start, _i - start);
+            if (!Eof() && Peek() == expectedQuote)
+                _i++; // consume the quote if found
+            return DecodeEntities(value);
+        }
+
+        /// <summary>
+        /// Check if a tag is a block-level element
+        /// </summary>
+        private static bool IsBlockElement(string tag)
+        {
+            switch (tag?.ToLowerInvariant())
+            {
+                case "address": case "article": case "aside": case "blockquote":
+                case "canvas": case "dd": case "div": case "dl": case "dt":
+                case "fieldset": case "figcaption": case "figure": case "footer":
+                case "form": case "h1": case "h2": case "h3": case "h4": case "h5": case "h6":
+                case "header": case "hr": case "li": case "main": case "nav":
+                case "noscript": case "ol": case "p": case "pre": case "section":
+                case "table": case "tfoot": case "ul": case "video":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        /// <summary>
+        /// Handle unexpected null bytes in input
+        /// </summary>
+        private char SafePeek()
+        {
+            if (_i >= _n) return '\0';
+            var c = _html[_i];
+            // Replace NULL with replacement character per HTML5 spec
+            return c == '\0' ? '\uFFFD' : c;
         }
     }
 }

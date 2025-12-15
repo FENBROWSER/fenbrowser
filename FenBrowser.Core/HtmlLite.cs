@@ -24,6 +24,40 @@ namespace FenBrowser.Core
         public LiteElement Parent { get; private set; }
         public LiteElement OwnerDocument { get; private set; }
 
+        // --- DOM Level 3 Events ---
+        // Event listeners storage: type -> list of listener entries
+        private Dictionary<string, List<EventListenerEntry>> _eventListeners;
+
+        // --- MutationObserver integration ---
+        // Global callback for DOM mutations (set by MutationObserver system)
+        public static Action<LiteElement, string, string, string, List<LiteElement>, List<LiteElement>> OnMutation;
+
+        // --- Template element support ---
+        // Cached template content (DocumentFragment)
+        private LiteElement _templateContent;
+
+        /// <summary>
+        /// For template elements, returns a DocumentFragment containing the content
+        /// </summary>
+        public LiteElement Content
+        {
+            get
+            {
+                if (!string.Equals(Tag, "template", StringComparison.OrdinalIgnoreCase))
+                    return null;
+
+                if (_templateContent == null)
+                {
+                    _templateContent = new LiteElement("#document-fragment");
+                    foreach (var child in Children)
+                    {
+                        _templateContent.Append(child.DeepClone());
+                    }
+                }
+                return _templateContent;
+            }
+        }
+
         public LiteElement(string tag)
         {
             Tag = (tag ?? "#document").ToLowerInvariant();
@@ -38,6 +72,7 @@ namespace FenBrowser.Core
         }
 
         public bool IsText { get { return Tag == "#text"; } }
+
 
         public string Id
         {
@@ -59,6 +94,19 @@ namespace FenBrowser.Core
             }
         }
 
+        private LiteElement _activeElement;
+        public LiteElement ActiveElement
+        {
+            get => OwnerDocument != null && OwnerDocument != this ? OwnerDocument.ActiveElement : _activeElement;
+            set
+            {
+                if (OwnerDocument != null && OwnerDocument != this)
+                    OwnerDocument.ActiveElement = value;
+                else
+                    _activeElement = value;
+            }
+        }
+
         // ---- DOM mutation helpers (non-breaking additions) --------------------
 
         public void Append(LiteElement child)
@@ -69,7 +117,11 @@ namespace FenBrowser.Core
             child.Parent = this;
             child.OwnerDocument = this.OwnerDocument;
             Children.Add(child);
+            
+            // Notify MutationObserver
+            OnMutation?.Invoke(this, "childList", null, null, new List<LiteElement> { child }, null);
         }
+
 
         public void Prepend(LiteElement child)
         {
@@ -107,7 +159,11 @@ namespace FenBrowser.Core
             if (p == null) return;
             p.Children.Remove(this);
             Parent = null;
+            
+            // Notify MutationObserver
+            OnMutation?.Invoke(p, "childList", null, null, null, new List<LiteElement> { this });
         }
+
 
         public void RemoveAllChildren()
         {
@@ -446,6 +502,11 @@ namespace FenBrowser.Core
             return c;
         }
 
+        public LiteElement Clone(bool deep)
+        {
+             return deep ? DeepClone() : ShallowClone();
+        }
+
         // Keep exactly ONE helper like this in your project to avoid CS0121 ambiguity.
         public static LiteElement TextNode(string text)
         {
@@ -520,6 +581,99 @@ namespace FenBrowser.Core
             }
             return string.Join(" > ", stack.ToArray());
         }
+
+        // ---- DOM Level 3 Events - Event Listener Management ----
+
+        /// <summary>
+        /// Add an event listener to this element (DOM Level 3 Events)
+        /// </summary>
+        public void AddEventListener(string type, object callback, bool capture = false, bool once = false, bool passive = false)
+        {
+            if (string.IsNullOrEmpty(type) || callback == null) return;
+
+            if (_eventListeners == null)
+                _eventListeners = new Dictionary<string, List<EventListenerEntry>>(StringComparer.OrdinalIgnoreCase);
+
+            if (!_eventListeners.TryGetValue(type, out var list))
+            {
+                list = new List<EventListenerEntry>();
+                _eventListeners[type] = list;
+            }
+
+            // Check for duplicate (same callback + same capture)
+            foreach (var existing in list)
+            {
+                if (ReferenceEquals(existing.Callback, callback) && existing.Capture == capture)
+                    return; // Already registered
+            }
+
+            list.Add(new EventListenerEntry
+            {
+                Callback = callback,
+                Capture = capture,
+                Once = once,
+                Passive = passive
+            });
+        }
+
+        /// <summary>
+        /// Remove an event listener from this element (DOM Level 3 Events)
+        /// </summary>
+        public void RemoveEventListener(string type, object callback, bool capture = false)
+        {
+            if (string.IsNullOrEmpty(type) || callback == null || _eventListeners == null) return;
+
+            if (!_eventListeners.TryGetValue(type, out var list)) return;
+
+            for (int i = list.Count - 1; i >= 0; i--)
+            {
+                if (ReferenceEquals(list[i].Callback, callback) && list[i].Capture == capture)
+                {
+                    list.RemoveAt(i);
+                    break;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Get all event listeners for a given type
+        /// </summary>
+        public List<EventListenerEntry> GetEventListeners(string type)
+        {
+            if (string.IsNullOrEmpty(type) || _eventListeners == null)
+                return new List<EventListenerEntry>();
+
+            return _eventListeners.TryGetValue(type, out var list) 
+                ? new List<EventListenerEntry>(list) 
+                : new List<EventListenerEntry>();
+        }
+
+        /// <summary>
+        /// Check if this element has any listeners for the given type
+        /// </summary>
+        public bool HasEventListeners(string type)
+        {
+            if (string.IsNullOrEmpty(type) || _eventListeners == null) return false;
+            return _eventListeners.TryGetValue(type, out var list) && list.Count > 0;
+        }
+    }
+
+    /// <summary>
+    /// Entry for a registered event listener (DOM Level 3 Events)
+    /// </summary>
+    public class EventListenerEntry
+    {
+        /// <summary>Callback object (can be FenFunction or any delegate)</summary>
+        public object Callback { get; set; }
+
+        /// <summary>Whether the listener runs in capture phase</summary>
+        public bool Capture { get; set; }
+
+        /// <summary>Whether to remove after first invocation</summary>
+        public bool Once { get; set; }
+
+        /// <summary>Whether the listener will never call preventDefault</summary>
+        public bool Passive { get; set; }
     }
 
 }

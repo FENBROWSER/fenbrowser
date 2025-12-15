@@ -343,7 +343,7 @@ namespace FenBrowser.FenEngine.Core
             return stmt;
         }
 
-        private Expression ParseExpression(Precedence precedence)
+        public Expression ParseExpression(Precedence precedence)
         {
             if (!_prefixParseFns.TryGetValue(_curToken.Type, out var prefix))
             {

@@ -7,6 +7,7 @@ using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using System.Text.RegularExpressions;
 using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType;
+using FenBrowser.FenEngine.DevTools;
 
 namespace FenBrowser.FenEngine.Core
 {
@@ -16,6 +17,20 @@ namespace FenBrowser.FenEngine.Core
 
         public IValue Eval(AstNode node, FenEnvironment env, IExecutionContext context)
         {
+            // Debugger Hook
+            if (node != null && context != null && !string.IsNullOrEmpty(context.CurrentUrl))
+            {
+                 int line = -1;
+                 if (node is Statement s && s.Token != null) line = s.Token.Line;
+                 else if (node is Expression e && e.Token != null) line = e.Token.Line;
+        
+                 // Only pause on valid lines. Optimization: could cache DevTools instance or check a dirty flag
+                 if (line > 0 && DevToolsCore.Instance.ShouldPause(context.CurrentUrl, line))
+                 {
+                     DevToolsCore.Instance.Pause(context.CurrentUrl, line, "breakpoint", env, context);
+                 }
+            }
+
             if (node == null) return FenValue.Null;
 
             switch (node)
@@ -1420,10 +1435,24 @@ namespace FenBrowser.FenEngine.Core
                 }
                 
                 // Handle user-defined functions
+                // Handle user-defined functions
                 context.PushCallFrame(function.Name ?? "anonymous");
                 var extendedEnv = ExtendFunctionEnv(function, args, context, thisContext);
-                var evaluated = Eval(function.Body, extendedEnv, context);
-                context.PopCallFrame();
+                
+                // DevTools CallStack Hook
+                DevToolsCore.Instance.PushCallFrame(function.Name ?? "anonymous", context.CurrentUrl, -1, extendedEnv);
+
+                IValue evaluated;
+                try
+                {
+                    evaluated = Eval(function.Body, extendedEnv, context);
+                }
+                finally
+                {
+                    DevToolsCore.Instance.PopCallFrame();
+                    context.PopCallFrame();
+                }
+                
                 return UnwrapReturnValue(evaluated);
             }
             

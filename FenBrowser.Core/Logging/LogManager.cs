@@ -17,6 +17,11 @@ namespace FenBrowser.Core.Logging
         private static LogLevel _minimumLevel = LogLevel.Info;
         private static bool _isEnabled = false;
         
+        /// <summary>
+        /// Enable JSON structured logging output (writes to .jsonl file)
+        /// </summary>
+        public static bool UseJsonFormat { get; set; } = false;
+        
         private readonly ConcurrentQueue<LogEntry> _memoryBuffer = new ConcurrentQueue<LogEntry>();
         private readonly object _fileLock = new object();
         private readonly int _maxMemoryEntries = 1000;
@@ -193,11 +198,44 @@ namespace FenBrowser.Core.Logging
                 _memoryBuffer.TryDequeue(out _);
             }
 
-            // File sink
-            WriteToFile(entry);
+            // File sink (JSON or text format)
+            if (UseJsonFormat)
+                WriteJsonToFile(entry);
+            else
+                WriteToFile(entry);
+
+            // Log shipping to external service
+            if (LogShippingService.Instance.IsEnabled)
+            {
+                LogShippingService.Instance.Enqueue(entry);
+            }
 
             // Debug output
             System.Diagnostics.Debug.WriteLine(entry.ToString());
+        }
+
+        private void WriteJsonToFile(LogEntry entry)
+        {
+            try
+            {
+                lock (_fileLock)
+                {
+                    var jsonPath = _logFilePath?.Replace(".log", ".jsonl") ?? _logFilePath;
+                    File.AppendAllText(jsonPath, entry.ToJson() + Environment.NewLine);
+                    
+                    // Rotate if file gets too large (default 10MB)
+                    var fileInfo = new FileInfo(jsonPath);
+                    if (fileInfo.Exists && fileInfo.Length > 10 * 1024 * 1024)
+                    {
+                        var archivePath = jsonPath.Replace(".jsonl", $"_{DateTime.Now:HHmmss}.jsonl");
+                        File.Move(jsonPath, archivePath);
+                    }
+                }
+            }
+            catch
+            {
+                // Never throw from logging
+            }
         }
 
         private void WriteToFile(LogEntry entry)

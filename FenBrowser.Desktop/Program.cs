@@ -18,6 +18,7 @@ class Program
             return;
         }
 
+        FenBrowser.Core.Logging.LogManager.Initialize(true, FenBrowser.Core.Logging.LogCategory.All, FenBrowser.Core.Logging.LogLevel.Debug);
         FenBrowser.Core.FenLogger.Initialize(@"C:\Users\udayk\Videos\FENBROWSER\fenbrowser.log");
         FenBrowser.Core.FenLogger.Info("FenBrowser Started", FenBrowser.Core.Logging.LogCategory.General);
 

@@ -60,9 +60,6 @@ namespace FenBrowser.FenEngine.Core
         /// <summary>
         /// Callback to trigger UI repaint
         /// </summary>
-        /// <summary>
-        /// Callback to trigger UI repaint
-        /// </summary>
         Action RequestRender { get; }
         void SetRequestRender(Action action);
 
@@ -92,6 +89,11 @@ namespace FenBrowser.FenEngine.Core
         /// Callback for DOM mutations
         /// </summary>
         Action<MutationRecord> OnMutation { get; set; }
+
+        /// <summary>
+        /// Current script URL being executed (for debugging)
+        /// </summary>
+        string CurrentUrl { get; set; }
     }
 
     /// <summary>
@@ -124,6 +126,7 @@ namespace FenBrowser.FenEngine.Core
         public Func<IValue, IValue[], IValue> ExecuteFunction { get; set; }
         public IModuleLoader ModuleLoader { get; set; }
         public Action<MutationRecord> OnMutation { get; set; }
+        public string CurrentUrl { get; set; }
 
         public ExecutionContext(
             IPermissionManager permissions = null, 
