@@ -891,6 +891,8 @@ namespace FenBrowser.FenEngine.Rendering
                 // Typography (from gap report)
                 "font-variant", "font-stretch", "text-orientation", "writing-mode",
                 "hyphens", "word-break", "text-indent", "text-overflow",
+                // Bidirectional text (Phase 8)
+                "direction", "unicode-bidi",
                 // Logical Properties (from gap report)
                 "margin-block", "margin-block-start", "margin-block-end",
                 "margin-inline", "margin-inline-start", "margin-inline-end",
@@ -1748,6 +1750,60 @@ namespace FenBrowser.FenEngine.Rendering
                 if (IsCustomPropertyName(d.Name)) continue;
                 var val = ResolveCustomPropertyReferences(d.Value, css, rawCustom, new HashSet<string>());
                 css.Map[d.Name] = val;
+            }
+
+            // Populate core display/positioning properties from the map
+            css.Display = Safe(DictGet(css.Map, "display"))?.ToLowerInvariant();
+            css.Position = Safe(DictGet(css.Map, "position"))?.ToLowerInvariant();
+            css.FlexDirection = Safe(DictGet(css.Map, "flex-direction"))?.ToLowerInvariant();
+            css.FlexWrap = Safe(DictGet(css.Map, "flex-wrap"))?.ToLowerInvariant();
+            css.JustifyContent = Safe(DictGet(css.Map, "justify-content"))?.ToLowerInvariant();
+            css.AlignItems = Safe(DictGet(css.Map, "align-items"))?.ToLowerInvariant();
+            css.AlignContent = Safe(DictGet(css.Map, "align-content"))?.ToLowerInvariant();
+            css.AlignSelf = Safe(DictGet(css.Map, "align-self"))?.ToLowerInvariant();
+            
+            // Grid Properties
+            css.GridTemplateColumns = Safe(DictGet(css.Map, "grid-template-columns"));
+            css.GridTemplateRows = Safe(DictGet(css.Map, "grid-template-rows"));
+            css.GridTemplateAreas = Safe(DictGet(css.Map, "grid-template-areas"));
+            
+            // Grid Placement
+            css.GridArea = Safe(DictGet(css.Map, "grid-area"));
+            css.GridColumnStart = Safe(DictGet(css.Map, "grid-column-start"));
+            css.GridColumnEnd = Safe(DictGet(css.Map, "grid-column-end"));
+            css.GridRowStart = Safe(DictGet(css.Map, "grid-row-start"));
+            css.GridRowEnd = Safe(DictGet(css.Map, "grid-row-end"));
+            
+            // Overflow properties
+            css.Overflow = Safe(DictGet(css.Map, "overflow"))?.ToLowerInvariant();
+            css.OverflowX = Safe(DictGet(css.Map, "overflow-x"))?.ToLowerInvariant() ?? css.Overflow;
+            css.OverflowY = Safe(DictGet(css.Map, "overflow-y"))?.ToLowerInvariant() ?? css.Overflow;
+            
+            // z-index
+            double zVal;
+            if (TryDouble(DictGet(css.Map, "z-index"), out zVal)) css.ZIndex = (int)zVal;
+            
+            // Background properties
+            css.BackgroundClip = Safe(DictGet(css.Map, "background-clip"))?.ToLowerInvariant();
+            css.BackgroundOrigin = Safe(DictGet(css.Map, "background-origin"))?.ToLowerInvariant();
+            css.BackgroundRepeat = Safe(DictGet(css.Map, "background-repeat"))?.ToLowerInvariant();
+
+            double cssFlexVal;
+            if (TryDouble(DictGet(css.Map, "flex-grow"), out cssFlexVal)) css.FlexGrow = cssFlexVal;
+            if (TryDouble(DictGet(css.Map, "flex-shrink"), out cssFlexVal)) css.FlexShrink = cssFlexVal;
+            if (TryDouble(DictGet(css.Map, "order"), out cssFlexVal)) css.Order = (int)cssFlexVal;
+            
+            // Handle 'flex' shorthand: flex: [grow] [shrink] [basis]
+            string flexShorthand = DictGet(css.Map, "flex");
+            if (!string.IsNullOrEmpty(flexShorthand))
+            {
+                double fg, fs, fb;
+                if (TryFlexShorthand(flexShorthand, out fg, out fs, out fb))
+                {
+                    css.FlexGrow = fg;
+                    css.FlexShrink = fs;
+                    if (!double.IsNaN(fb)) css.FlexBasis = fb;
+                }
             }
 
             double emBase = 16.0;

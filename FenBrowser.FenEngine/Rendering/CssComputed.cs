@@ -40,6 +40,13 @@ namespace FenBrowser.FenEngine.Rendering
         public double? Bottom { get; set; }
         public double? BottomPercent { get; set; }
         public string Overflow { get; set; }
+        public string OverflowX { get; set; }
+        public string OverflowY { get; set; }
+        
+        // Background properties
+        public string BackgroundClip { get; set; }    // border-box, padding-box, content-box
+        public string BackgroundOrigin { get; set; }  // border-box, padding-box, content-box
+        public string BackgroundRepeat { get; set; }  // repeat, no-repeat, repeat-x, repeat-y
 
         // Box model
         public Thickness Margin { get; set; }
@@ -70,6 +77,15 @@ namespace FenBrowser.FenEngine.Rendering
         public double? RowGap { get; set; }
         public double? Gap { get; set; }
         public string GridTemplateColumns { get; set; }
+        public string GridTemplateRows { get; set; }
+        public string GridTemplateAreas { get; set; }
+        
+        // Grid Item Placement
+        public string GridColumnStart { get; set; }
+        public string GridColumnEnd { get; set; }
+        public string GridRowStart { get; set; }
+        public string GridRowEnd { get; set; }
+        public string GridArea { get; set; } // Shorthand storage
 
         // Flexbox
         public string FlexDirection { get; set; }
@@ -133,6 +149,10 @@ namespace FenBrowser.FenEngine.Rendering
         public string TextOverflow { get; set; }
         public string BoxSizing { get; set; }
         public string Cursor { get; set; }
+        
+        // Bidirectional text support
+        public string Direction { get; set; }            // ltr, rtl, auto
+        public string UnicodeBidi { get; set; }          // normal, embed, bidi-override, isolate, isolate-override, plaintext
 
         // CSS Transitions
         public string Transition { get; set; }              // transition shorthand
