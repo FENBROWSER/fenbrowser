@@ -7,6 +7,7 @@ using System.Text.Json;
 using FenBrowser.Core;
 using FenBrowser.Core.Security;
 using FenBrowser.Core.Logging;
+using FenBrowser.FenEngine.DevTools;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -259,6 +260,45 @@ namespace FenBrowser.FenEngine.Rendering
                           $"Version: {httpClient.DefaultRequestVersion}", LogCategory.Network);
             
             _resources = new ResourceManager(httpClient, isPrivate);
+
+            // Wire up DevTools Network Monitoring
+            _resources.NetworkRequestStarting += (id, req) =>
+            {
+                try
+                {
+                    var headers = req.Headers.ToDictionary(h => h.Key, h => string.Join(", ", h.Value));
+                    // Pass the ResourceManager's ID to DevToolsCore so we can correlate completion
+                    DevToolsCore.Instance.RecordRequest(req.RequestUri.ToString(), req.Method.ToString(), headers, id);
+                }
+                catch { }
+            };
+
+            _resources.NetworkRequestCompleted += (id, resp) =>
+            {
+                try
+                {
+                    if (resp == null) return;
+                    var headers = resp.Headers.ToDictionary(h => h.Key, h => string.Join(", ", h.Value));
+                    if (resp.Content?.Headers != null)
+                    {
+                        foreach (var h in resp.Content.Headers) headers[h.Key] = string.Join(", ", h.Value);
+                    }
+                    var size = resp.Content?.Headers?.ContentLength ?? 0;
+                    var mime = resp.Content?.Headers?.ContentType?.MediaType ?? "";
+                    DevToolsCore.Instance.CompleteRequest(id, (int)resp.StatusCode, headers, size, mime);
+                }
+                catch { }
+            };
+
+            _resources.NetworkRequestFailed += (id, ex) =>
+            {
+                try
+                {
+                    // Use 599 to indicate network failure (treated as error in DevToolsCore)
+                    DevToolsCore.Instance.CompleteRequest(id, 599, null, 0, "error");
+                }
+                catch { }
+            };
 
 
             _engine.RepaintReady += (elem) =>

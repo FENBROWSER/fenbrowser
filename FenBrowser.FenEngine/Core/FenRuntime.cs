@@ -4,6 +4,7 @@ using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.DOM;
+using FenBrowser.FenEngine.DevTools;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -44,6 +45,8 @@ namespace FenBrowser.FenEngine.Core
             get => _context.RequestRender;
             set => _context.SetRequestRender(value);
         }
+
+        public IExecutionContext Context => _context;
 
         public Action<string> OnConsoleMessage; // Delegate for console output
 
@@ -430,7 +433,56 @@ namespace FenBrowser.FenEngine.Core
             SetGlobal("removeEventListener", removeEventListenerFunc);
             SetGlobal("dispatchEvent", dispatchEventFunc);
 
+            // Event constructor (DOM Level 3)
+            SetGlobal("Event", FenValue.FromFunction(new FenFunction("Event", (args, thisVal) =>
+            {
+                var type = args.Length > 0 ? args[0].ToString() : "";
+                bool bubbles = false;
+                bool cancelable = false;
+                bool composed = false;
+
+                if (args.Length > 1 && args[1].IsObject)
+                {
+                    var opts = args[1].AsObject() as FenObject;
+                    if (opts != null)
+                    {
+                        bubbles = opts.Get("bubbles")?.ToBoolean() ?? false;
+                        cancelable = opts.Get("cancelable")?.ToBoolean() ?? false;
+                        composed = opts.Get("composed")?.ToBoolean() ?? false;
+                    }
+                }
+
+                return FenValue.FromObject(new FenBrowser.FenEngine.DOM.DomEvent(type, bubbles, cancelable, composed));
+            })));
+
+            // CustomEvent constructor (DOM Level 3)
+            SetGlobal("CustomEvent", FenValue.FromFunction(new FenFunction("CustomEvent", (args, thisVal) =>
+            {
+                var type = args.Length > 0 ? args[0].ToString() : "";
+                bool bubbles = false;
+                bool cancelable = false;
+                IValue detail = FenValue.Null;
+
+                if (args.Length > 1 && args[1].IsObject)
+                {
+                    var opts = args[1].AsObject() as FenObject;
+                    if (opts != null)
+                    {
+                        bubbles = opts.Get("bubbles")?.ToBoolean() ?? false;
+                        cancelable = opts.Get("cancelable")?.ToBoolean() ?? false;
+                        detail = opts.Get("detail") ?? FenValue.Null;
+                    }
+                }
+
+                return FenValue.FromObject(new FenBrowser.FenEngine.DOM.CustomEvent(type, bubbles, cancelable, detail));
+            })));
+
+            // Custom Elements Registry (Web Components)
+            var customElementsRegistry = new FenBrowser.FenEngine.DOM.CustomElementRegistry();
+            SetGlobal("customElements", FenValue.FromObject(customElementsRegistry.ToFenObject()));
+
             // requestAnimationFrame / cancelAnimationFrame
+
             // Use a simple counter and store callbacks in window.__raf_queue
             var requestAnimationFrameFunc = FenValue.FromFunction(new FenFunction("requestAnimationFrame", (args, thisVal) =>
             {
@@ -2628,7 +2680,7 @@ namespace FenBrowser.FenEngine.Core
         /// <summary>
         /// Execute JavaScript code using the FenEngine Parser and Interpreter
         /// </summary>
-        public IValue ExecuteSimple(string code)
+        public IValue ExecuteSimple(string code, string url = "script")
         {
             try
             {
@@ -2637,6 +2689,9 @@ namespace FenBrowser.FenEngine.Core
                 {
                     ec.Reset();
                 }
+                
+                // Set context URL for debugging
+                if (_context != null) _context.CurrentUrl = url;
                 
                 var lexer = new Lexer(code);
                 var parser = new Parser(lexer);
@@ -2648,6 +2703,11 @@ namespace FenBrowser.FenEngine.Core
                 }
                 
                 var interpreter = new Interpreter();
+                
+                // Register with DevTools
+                DevToolsCore.Instance.SetInterpreter(interpreter);
+                DevToolsCore.Instance.RegisterSource(url, code);
+                
                 var result = interpreter.Eval(program, _globalEnv, _context);
 
                 return result ?? FenValue.Undefined;

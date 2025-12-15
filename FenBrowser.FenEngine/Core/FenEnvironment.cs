@@ -108,5 +108,13 @@ namespace FenBrowser.FenEngine.Core
             _store[name] = value;
             return value;
         }
+
+        /// <summary>
+        /// Inspect variables in this scope (for DevTools)
+        /// </summary>
+        public IDictionary<string, IValue> InspectVariables()
+        {
+            return new Dictionary<string, IValue>(_store);
+        }
     }
 }

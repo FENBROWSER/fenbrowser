@@ -233,7 +233,39 @@ namespace FenBrowser.UI
 
             InitializeBrowser(port, initialTab, initialUrl);
             
+
+            // Fix: Bind SkiaView LayoutViewport here since SetBrowserContainerContent is bypassed
+            BindSkiaViewport();
+            
             this.KeyDown += OnWindowKeyDown;
+        }
+
+        private void BindSkiaViewport()
+        {
+            if (_skiaScrollViewer != null && this.FindControl<SkiaBrowserView>("SkiaView") is SkiaBrowserView skiaView)
+            {
+                void UpdateLayoutViewport()
+                {
+                    Dispatcher.UIThread.Post(() => {
+                        var vp = _skiaScrollViewer.Viewport;
+                        // Use Bounds if Viewport is invalid/zero (initial state)
+                        if (vp.Width <= 0 || vp.Height <= 0) vp = _skiaScrollViewer.Bounds.Size;
+                        
+                        if (vp.Width > 0 && vp.Height > 0)
+                        {
+                            var skSize = new SkiaSharp.SKSize((float)vp.Width, (float)vp.Height);
+                            skiaView.LayoutViewport = skSize;
+                        }
+                    });
+                }
+                
+                // Initial
+                UpdateLayoutViewport();
+                
+                // Subscribe
+                _skiaScrollViewer.GetObservable(ScrollViewer.ViewportProperty).Subscribe(new Avalonia.Reactive.AnonymousObserver<Size>(_ => UpdateLayoutViewport()));
+                _skiaScrollViewer.SizeChanged += (s, e) => UpdateLayoutViewport();
+            }
         }
 
         private void OnWindowKeyDown(object sender, Avalonia.Input.KeyEventArgs e)
@@ -534,6 +566,7 @@ namespace FenBrowser.UI
                             }
 
                             // Initial update
+                            if (sv.Viewport.Height <= 0) contentControl.MinHeight = 100; // Ensure at least one render pass happens
                             UpdateContentSize();
 
                             // Update on ScrollViewer resize (window resize/maximize)
@@ -541,6 +574,11 @@ namespace FenBrowser.UI
                             
                             // Update when Viewport changes (e.g. scrollbars appear/disappear)
                             sv.GetObservable(ScrollViewer.ViewportProperty).Subscribe(new Avalonia.Reactive.AnonymousObserver<Size>(_ => UpdateContentSize()));
+                        }
+                        else if (content is FenBrowser.FenEngine.Rendering.SkiaBrowserView skiaView)
+                        {
+                            // This path is likely unused if SkiaView is in XAML, but kept for dynamic injection support
+                            // Logic moved to BindSkiaViewport() for XAML instance, but good to have here too as backup
                         }
                         decorator.Child = sv;
                     }

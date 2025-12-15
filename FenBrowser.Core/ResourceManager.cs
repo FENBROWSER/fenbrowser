@@ -62,6 +62,11 @@ namespace FenBrowser.Core
 
         public int BlockedRequestCount { get; private set; }
         public event EventHandler<int> BlockedCountChanged;
+        
+        // DevTools Network Monitoring Events
+        public event Action<string, HttpRequestMessage> NetworkRequestStarting;
+        public event Action<string, HttpResponseMessage> NetworkRequestCompleted;
+        public event Action<string, Exception> NetworkRequestFailed;
 
         public void ResetBlockedCount()
         {
@@ -344,7 +349,7 @@ namespace FenBrowser.Core
                         cts.CancelAfter(System.TimeSpan.FromSeconds(sec));
                     }
                     catch { }
-                    try { resp = await _client.SendAsync(req, cts.Token); }
+                    try { resp = await SendRequestTrackedAsync(req, cts.Token); }
                     catch (Exception sendEx)
                     {
                         Console.WriteLine($"[FetchTextError] send failed {current} ex={sendEx.Message}");
@@ -500,7 +505,7 @@ namespace FenBrowser.Core
 
                     try 
                     { 
-                        resp = await _client.SendAsync(req, cts.Token); 
+                        resp = await SendRequestTrackedAsync(req, cts.Token); 
                     }
                     catch (TaskCanceledException)
                     {
@@ -613,7 +618,7 @@ namespace FenBrowser.Core
                 var cts = new System.Threading.CancellationTokenSource();
                 try { cts.CancelAfter(TimeSpan.FromSeconds(30)); } catch { }
                 HttpResponseMessage resp = null;
-                try { resp = await _client.SendAsync(req, cts.Token); } catch (Exception sendEx) { try { System.Diagnostics.Debug.WriteLine("[FetchTextOptError] send " + url + " ex=" + sendEx.Message); } catch { } }
+                try { resp = await SendRequestTrackedAsync(req, cts.Token); } catch (Exception sendEx) { try { System.Diagnostics.Debug.WriteLine("[FetchTextOptError] send " + url + " ex=" + sendEx.Message); } catch { } }
                 if (resp == null || !resp.IsSuccessStatusCode)
                 { try { System.Diagnostics.Debug.WriteLine("[FetchTextOptFail] url=" + url + " status=" + (resp!=null?(int)resp.StatusCode:0)); } catch { } return null; }
                 LastTextResponseUri = resp.RequestMessage != null ? resp.RequestMessage.RequestUri : url;
@@ -717,7 +722,7 @@ namespace FenBrowser.Core
                     if (effectiveReferer != null) AddHeaderSafe(req, "Referer", effectiveReferer.AbsoluteUri);
                     var cts = new System.Threading.CancellationTokenSource();
                     try { cts.CancelAfter(System.TimeSpan.FromSeconds(30)); } catch { }
-                    resp = await _client.SendAsync(req, cts.Token);
+                    resp = await SendRequestTrackedAsync(req, cts.Token);
                     
                     if (resp != null)
                     {
@@ -798,7 +803,7 @@ namespace FenBrowser.Core
                         cts.CancelAfter(System.TimeSpan.FromSeconds(sec));
                     }
                     catch { }
-                    resp = await _client.SendAsync(req, cts.Token);
+                    resp = await SendRequestTrackedAsync(req, cts.Token);
                     if (resp != null)
                     {
                         var code = (int)resp.StatusCode;
@@ -822,6 +827,27 @@ namespace FenBrowser.Core
                 return buf;
             }
             catch { return null; }
+        }
+
+        private async Task<HttpResponseMessage> SendRequestTrackedAsync(HttpRequestMessage req, CancellationToken token)
+        {
+            // Generate a tracking ID
+            string id = Guid.NewGuid().ToString("N");
+            
+            try
+            {
+                NetworkRequestStarting?.Invoke(id, req);
+                
+                var resp = await _client.SendAsync(req, token);
+                
+                NetworkRequestCompleted?.Invoke(id, resp);
+                return resp;
+            }
+            catch (Exception ex)
+            {
+                NetworkRequestFailed?.Invoke(id, ex);
+                throw;
+            }
         }
     }
 }

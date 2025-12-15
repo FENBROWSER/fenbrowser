@@ -4,7 +4,7 @@
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:c="using:Avalonia.Data.Converters"
              xmlns:ui="using:FenBrowser.UI"
-             mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="300"
+             mc:Ignorable="d" d:DesignWidth="1200" d:DesignHeight="400"
              x:Class="FenBrowser.UI.DevToolsView"
              Background="#1E1E1E"
              Foreground="#CCCCCC">
@@ -82,11 +82,13 @@
         <Setter Property="SelectionBrush" Value="#264F78"/>
     </Style>
     
-    <!-- ComboBox Dark Theme -->
-    <Style Selector="ComboBox">
+
+    
+    <!-- Progress Bar -->
+    <Style Selector="ProgressBar">
         <Setter Property="Background" Value="#3C3C3C"/>
-        <Setter Property="Foreground" Value="#CCCCCC"/>
-        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Foreground" Value="#0E639C"/>
+        <Setter Property="Height" Value="4"/>
     </Style>
   </UserControl.Styles>
 
@@ -100,12 +102,16 @@
         <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="0" Margin="4,0,0,0">
           <Button x:Name="TabElements" Classes="tab active" Click="OnTabClick" Content="Elements"/>
           <Button x:Name="TabConsole" Classes="tab" Click="OnTabClick" Content="Console"/>
+          <Button x:Name="TabSources" Classes="tab" Click="OnTabClick" Content="Sources"/>
           <Button x:Name="TabNetwork" Classes="tab" Click="OnTabClick" Content="Network"/>
+          <Button x:Name="TabPerformance" Classes="tab" Click="OnTabClick" Content="Performance"/>
+          <Button x:Name="TabMemory" Classes="tab" Click="OnTabClick" Content="Memory"/>
+          <Button x:Name="TabApplication" Classes="tab" Click="OnTabClick" Content="Application"/>
         </StackPanel>
         
         <!-- Action Buttons (Right aligned) -->
         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" Margin="0,0,8,0" VerticalAlignment="Center">
-          <Button Name="BtnRefresh" Classes="icon" ToolTip.Tip="Refresh DOM">
+          <Button Name="BtnRefresh" Classes="icon" ToolTip.Tip="Refresh">
             <Path Data="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" 
                   Fill="#9D9D9D" Width="14" Height="14" Stretch="Uniform"/>
           </Button>
@@ -121,38 +127,48 @@
     <Grid Grid.Row="1" Background="#1E1E1E">
       
       <!-- Elements Panel -->
-      <Grid x:Name="ElementsPanel" IsVisible="True" RowDefinitions="Auto,*">
-        <!-- Breadcrumb / Filter Bar -->
-        <Border Grid.Row="0" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1" Padding="8,4">
-          <TextBlock Text="DOM Elements" Foreground="#9D9D9D" FontSize="11"/>
-        </Border>
-        
+      <Grid x:Name="ElementsPanel" IsVisible="True" ColumnDefinitions="*,Auto,300">
         <!-- DOM Tree -->
-        <TreeView Name="DomTree" Grid.Row="1" Padding="4">
-          <TreeView.ItemTemplate>
-            <TreeDataTemplate ItemsSource="{Binding Children}">
-              <StackPanel Orientation="Horizontal" Spacing="2">
-                <TextBlock Text="&lt;" Foreground="#808080" FontFamily="Consolas" FontSize="12"/>
-                <TextBlock Text="{Binding Tag}" Foreground="#569CD6" FontFamily="Consolas" FontSize="12" FontWeight="Bold"/>
-                <TextBlock Text="{Binding AttrString}" Foreground="#9CDCFE" FontFamily="Consolas" FontSize="12" Margin="4,0,0,0"/>
-                <TextBlock Text="&gt;" Foreground="#808080" FontFamily="Consolas" FontSize="12"/>
-                <TextBlock Text="{Binding TextPreview}" Foreground="#CE9178" FontFamily="Consolas" FontSize="12" Margin="4,0,0,0" TextTrimming="CharacterEllipsis" MaxWidth="400"/>
-                
-                <StackPanel Orientation="Horizontal" IsVisible="{Binding HasChildren, Converter={x:Static BoolConverters.Not}}">
-                  <TextBlock Text="&lt;/" Foreground="#808080" FontFamily="Consolas" FontSize="12"/>
-                  <TextBlock Text="{Binding Tag}" Foreground="#569CD6" FontFamily="Consolas" FontSize="12"/>
+        <Grid RowDefinitions="Auto,*">
+          <Border Grid.Row="0" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1" Padding="8,4">
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <TextBlock Text="DOM Elements" Foreground="#9D9D9D" FontSize="11"/>
+              <TextBox x:Name="ElementSearch" Watermark="Search DOM..." Width="200" FontSize="11" Padding="4,2"/>
+            </StackPanel>
+          </Border>
+          <TreeView Name="DomTree" Grid.Row="1" Padding="4">
+            <TreeView.ItemTemplate>
+              <TreeDataTemplate ItemsSource="{Binding Children}">
+                <StackPanel Orientation="Horizontal" Spacing="2">
+                  <TextBlock Text="&lt;" Foreground="#808080" FontFamily="Consolas" FontSize="12"/>
+                  <TextBlock Text="{Binding Tag}" Foreground="#569CD6" FontFamily="Consolas" FontSize="12" FontWeight="Bold"/>
+                  <TextBlock Text="{Binding AttrString}" Foreground="#9CDCFE" FontFamily="Consolas" FontSize="12" Margin="4,0,0,0"/>
                   <TextBlock Text="&gt;" Foreground="#808080" FontFamily="Consolas" FontSize="12"/>
+                  <TextBlock Text="{Binding TextPreview}" Foreground="#CE9178" FontFamily="Consolas" FontSize="12" Margin="4,0,0,0" TextTrimming="CharacterEllipsis" MaxWidth="400"/>
                 </StackPanel>
-              </StackPanel>
-            </TreeDataTemplate>
-          </TreeView.ItemTemplate>
-        </TreeView>
+              </TreeDataTemplate>
+            </TreeView.ItemTemplate>
+          </TreeView>
+        </Grid>
+        
+        <!-- Splitter -->
+        <GridSplitter Grid.Column="1" Width="4" Background="#3C3C3C"/>
+        
+        <!-- Styles Panel -->
+        <Grid Grid.Column="2" RowDefinitions="Auto,*">
+          <Border Grid.Row="0" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1" Padding="8,4">
+            <TextBlock Text="Styles" Foreground="#9D9D9D" FontSize="11"/>
+          </Border>
+          <ScrollViewer Grid.Row="1" Padding="8">
+            <StackPanel x:Name="StylesPanel" Spacing="4">
+              <TextBlock Text="Select an element to view styles" Foreground="#6A6A6A" FontSize="11"/>
+            </StackPanel>
+          </ScrollViewer>
+        </Grid>
       </Grid>
       
       <!-- Console Panel -->
       <Grid x:Name="ConsolePanel" IsVisible="False" RowDefinitions="Auto,*,Auto">
-        
-        <!-- Console Toolbar -->
         <Border Grid.Row="0" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1" Padding="8,4">
           <StackPanel Orientation="Horizontal" Spacing="8">
             <Button Name="BtnClear" Classes="icon" ToolTip.Tip="Clear Console" Width="24" Height="24">
@@ -160,57 +176,45 @@
                     Fill="#9D9D9D" Width="12" Height="12" Stretch="Uniform"/>
             </Button>
             <TextBlock Text="|" Foreground="#3C3C3C" VerticalAlignment="Center"/>
-            <ComboBox SelectedIndex="0" FontSize="11" MinWidth="80">
+            <ComboBox x:Name="LogFilter" SelectedIndex="0" FontSize="11" MinWidth="80">
               <ComboBoxItem>All levels</ComboBoxItem>
               <ComboBoxItem>Errors</ComboBoxItem>
               <ComboBoxItem>Warnings</ComboBoxItem>
               <ComboBoxItem>Info</ComboBoxItem>
+              <ComboBoxItem>Debug</ComboBoxItem>
             </ComboBox>
+            <CheckBox Content="Preserve log" FontSize="11" Foreground="#9D9D9D"/>
           </StackPanel>
         </Border>
-
-        <!-- Console Output List -->
         <ListBox Name="ConsoleOutput" Grid.Row="1" Padding="0">
           <ListBox.ItemTemplate>
             <DataTemplate x:DataType="ui:ConsoleLogItem">
               <Grid ColumnDefinitions="24,*,Auto" Background="{Binding BackgroundColor}" MinHeight="22">
-                <!-- Icon Column -->
                 <Panel Grid.Column="0" VerticalAlignment="Center" HorizontalAlignment="Center">
-                  <!-- Error Icon -->
                   <Path Data="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" 
                         Fill="#F14C4C" Width="14" Height="14" Stretch="Uniform"
                         IsVisible="{Binding IconKind, Converter={x:Static ObjectConverters.Equal}, ConverterParameter='Error'}"/>
-                  <!-- Warning Icon -->
                   <Path Data="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" 
                         Fill="#CCA700" Width="14" Height="14" Stretch="Uniform"
                         IsVisible="{Binding IconKind, Converter={x:Static ObjectConverters.Equal}, ConverterParameter='Warning'}"/>
-                  <!-- Input Icon -->
                   <Path Data="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z" 
                         Fill="#569CD6" Width="14" Height="14" Stretch="Uniform"
                         IsVisible="{Binding IconKind, Converter={x:Static ObjectConverters.Equal}, ConverterParameter='Input'}"/>
-                  <!-- Result Icon -->
                   <Path Data="M15.41 16.59L10.83 12 15.41 7.41 14 6l-6 6 6 6 1.41-1.41z" 
                         Fill="#9D9D9D" Width="14" Height="14" Stretch="Uniform"
                         IsVisible="{Binding IconKind, Converter={x:Static ObjectConverters.Equal}, ConverterParameter='Result'}"/>
                 </Panel>
-
-                <!-- Message Column -->
                 <TextBlock Grid.Column="1" Text="{Binding Message}" 
                            Foreground="{Binding TextColor}"
                            FontFamily="Consolas, Monospace" FontSize="12" 
                            TextWrapping="Wrap" Margin="4,4,8,4" VerticalAlignment="Center"/>
-                
-                <!-- Timestamp -->
                 <TextBlock Grid.Column="2" Text="{Binding Timestamp, StringFormat='HH:mm:ss.fff'}" 
                            Foreground="#6A6A6A" FontSize="10" FontFamily="Consolas"
-                           Margin="0,4,8,4" VerticalAlignment="Center"
-                           IsVisible="{Binding IsLog}"/>
+                           Margin="0,4,8,4" VerticalAlignment="Center"/>
               </Grid>
             </DataTemplate>
           </ListBox.ItemTemplate>
         </ListBox>
-        
-        <!-- Input Area -->
         <Border Grid.Row="2" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,1,0,0">
           <Grid ColumnDefinitions="Auto,*">
             <Path Data="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z" 
@@ -222,13 +226,263 @@
         </Border>
       </Grid>
       
-      <!-- Network Panel (Placeholder) -->
-      <Grid x:Name="NetworkPanel" IsVisible="False">
-        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8">
-          <Path Data="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" 
-                Fill="#6A6A6A" Width="48" Height="48" Stretch="Uniform"/>
-          <TextBlock Text="Network tab - Coming soon" Foreground="#6A6A6A" FontSize="14"/>
-        </StackPanel>
+      <!-- Sources Panel (NEW) -->
+      <Grid x:Name="SourcesPanel" IsVisible="False" ColumnDefinitions="200,Auto,*">
+        <!-- File Tree -->
+        <Grid RowDefinitions="Auto,*">
+          <Border Grid.Row="0" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1" Padding="8,4">
+            <TextBlock Text="Page Sources" Foreground="#9D9D9D" FontSize="11"/>
+          </Border>
+          <TreeView x:Name="SourceTree" Grid.Row="1" Padding="4"/>
+        </Grid>
+        
+        <GridSplitter Grid.Column="1" Width="4" Background="#3C3C3C"/>
+        
+        <!-- Code View + Debugger -->
+        <Grid Grid.Column="2" RowDefinitions="Auto,*,Auto">
+          <!-- Debugger Toolbar -->
+          <Border Grid.Row="0" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1" Padding="4">
+            <StackPanel Orientation="Horizontal" Spacing="4">
+              <Button x:Name="BtnResume" Classes="icon" ToolTip.Tip="Resume (F8)">
+                <Path Data="M8 5v14l11-7z" Fill="#75BEFF" Width="14" Height="14" Stretch="Uniform"/>
+              </Button>
+              <Button x:Name="BtnStepOver" Classes="icon" ToolTip.Tip="Step Over (F10)">
+                <Path Data="M12 14l-4-4h8z" Fill="#9D9D9D" Width="14" Height="14" Stretch="Uniform"/>
+              </Button>
+              <Button x:Name="BtnStepInto" Classes="icon" ToolTip.Tip="Step Into (F11)">
+                <Path Data="M7 10l5 5 5-5z" Fill="#9D9D9D" Width="14" Height="14" Stretch="Uniform"/>
+              </Button>
+              <Button x:Name="BtnStepOut" Classes="icon" ToolTip.Tip="Step Out (Shift+F11)">
+                <Path Data="M7 14l5-5 5 5z" Fill="#9D9D9D" Width="14" Height="14" Stretch="Uniform"/>
+              </Button>
+              <TextBlock Text="|" Foreground="#3C3C3C" VerticalAlignment="Center" Margin="4,0"/>
+              <TextBlock x:Name="DebugStatus" Text="Not paused" Foreground="#6A6A6A" FontSize="11" VerticalAlignment="Center"/>
+            </StackPanel>
+          </Border>
+          
+          <!-- Code Editor -->
+          <ScrollViewer Grid.Row="1">
+            <StackPanel x:Name="CodeView" Background="#1E1E1E" Margin="0">
+              <!-- Code lines with line numbers will be generated programmatically -->
+              <TextBlock Text="Select a source file to view" Foreground="#6A6A6A" Margin="48,16"/>
+            </StackPanel>
+          </ScrollViewer>
+          
+          <!-- Call Stack / Scope -->
+          <Border Grid.Row="2" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,1,0,0" Height="120">
+            <Grid ColumnDefinitions="*,*">
+              <Grid RowDefinitions="Auto,*">
+                <TextBlock Grid.Row="0" Text="Call Stack" Foreground="#9D9D9D" FontSize="11" Margin="8,4"/>
+                <ListBox x:Name="CallStackList" Grid.Row="1" Padding="4"/>
+              </Grid>
+              <Grid Grid.Column="1" RowDefinitions="Auto,*">
+                <TextBlock Grid.Row="0" Text="Scope" Foreground="#9D9D9D" FontSize="11" Margin="8,4"/>
+                <ListBox x:Name="ScopeList" Grid.Row="1" Padding="4"/>
+              </Grid>
+            </Grid>
+          </Border>
+        </Grid>
+      </Grid>
+      
+      <!-- Network Panel (ENHANCED) -->
+      <Grid x:Name="NetworkPanel" IsVisible="False" RowDefinitions="Auto,*,Auto">
+        <!-- Toolbar -->
+        <Border Grid.Row="0" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1" Padding="8,4">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Button x:Name="BtnClearNetwork" Classes="icon" ToolTip.Tip="Clear" Width="24" Height="24">
+              <Path Data="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" 
+                    Fill="#9D9D9D" Width="12" Height="12" Stretch="Uniform"/>
+            </Button>
+            <TextBlock Text="|" Foreground="#3C3C3C" VerticalAlignment="Center"/>
+            <TextBox x:Name="NetworkFilter" Watermark="Filter..." Width="200" FontSize="11" Padding="4,2"/>
+            <TextBlock Text="|" Foreground="#3C3C3C" VerticalAlignment="Center"/>
+            <Button Classes="tab" Content="All"/>
+            <Button Classes="tab" Content="XHR"/>
+            <Button Classes="tab" Content="JS"/>
+            <Button Classes="tab" Content="CSS"/>
+            <Button Classes="tab" Content="Img"/>
+            <Button Classes="tab" Content="Doc"/>
+          </StackPanel>
+        </Border>
+        
+        <!-- Request List -->
+        <ListBox x:Name="NetworkList" Grid.Row="1" Padding="4">
+          <ListBox.ItemTemplate>
+            <DataTemplate>
+              <Grid ColumnDefinitions="200,60,100,80,80" Background="Transparent" MinHeight="24">
+                <TextBlock Grid.Column="0" Text="{Binding Name}" Foreground="#CCCCCC" FontFamily="Consolas" FontSize="11" Margin="4,2" TextTrimming="CharacterEllipsis"/>
+                <TextBlock Grid.Column="1" Text="{Binding Status}" Foreground="#4EC9B0" FontFamily="Consolas" FontSize="11" Margin="4,2"/>
+                <TextBlock Grid.Column="2" Text="{Binding MimeType}" Foreground="#9D9D9D" FontFamily="Consolas" FontSize="11" Margin="4,2" TextTrimming="CharacterEllipsis"/>
+                <TextBlock Grid.Column="3" Text="{Binding SizeFormatted}" Foreground="#DCDCAA" FontFamily="Consolas" FontSize="11" Margin="4,2"/>
+                <TextBlock Grid.Column="4" Text="{Binding DurationFormatted}" Foreground="#C586C0" FontFamily="Consolas" FontSize="11" Margin="4,2"/>
+              </Grid>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+        
+        <!-- Summary -->
+        <Border Grid.Row="2" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,1,0,0" Padding="8,4">
+          <StackPanel Orientation="Horizontal" Spacing="16">
+            <TextBlock x:Name="NetworkSummary" Text="0 requests | 0 B transferred" Foreground="#9D9D9D" FontSize="11"/>
+          </StackPanel>
+        </Border>
+      </Grid>
+      
+      <!-- Performance Panel (NEW) -->
+      <Grid x:Name="PerformancePanel" IsVisible="False" RowDefinitions="Auto,*">
+        <!-- Toolbar -->
+        <Border Grid.Row="0" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1" Padding="8,4">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Button x:Name="BtnStartProfiling" Classes="icon" ToolTip.Tip="Start Recording" Width="24" Height="24">
+              <Ellipse Width="12" Height="12" Fill="#F14C4C"/>
+            </Button>
+            <Button x:Name="BtnStopProfiling" Classes="icon" ToolTip.Tip="Stop Recording" Width="24" Height="24" IsEnabled="False">
+              <Rectangle Width="10" Height="10" Fill="#9D9D9D"/>
+            </Button>
+            <TextBlock Text="|" Foreground="#3C3C3C" VerticalAlignment="Center"/>
+            <TextBlock x:Name="ProfilingStatus" Text="Ready to record" Foreground="#9D9D9D" FontSize="11" VerticalAlignment="Center"/>
+          </StackPanel>
+        </Border>
+        
+        <!-- Timeline/Flame Chart -->
+        <Grid Grid.Row="1">
+          <ScrollViewer>
+            <StackPanel x:Name="PerformanceTimeline" Margin="8">
+              <TextBlock Text="Click record to start profiling" Foreground="#6A6A6A" FontSize="14" HorizontalAlignment="Center" Margin="0,48"/>
+              
+              <!-- Performance metrics will be shown here -->
+              <StackPanel x:Name="PerformanceMetrics" Spacing="16" Margin="0,16">
+                <Border Background="#2D2D30" CornerRadius="4" Padding="16">
+                  <StackPanel Spacing="8">
+                    <TextBlock Text="Performance Summary" Foreground="#FFFFFF" FontSize="14" FontWeight="Bold"/>
+                    <Grid ColumnDefinitions="*,*,*,*" RowDefinitions="Auto,Auto">
+                      <StackPanel Grid.Column="0">
+                        <TextBlock x:Name="MetricFPS" Text="0" Foreground="#4EC9B0" FontSize="24" FontWeight="Bold"/>
+                        <TextBlock Text="FPS" Foreground="#9D9D9D" FontSize="11"/>
+                      </StackPanel>
+                      <StackPanel Grid.Column="1">
+                        <TextBlock x:Name="MetricScriptTime" Text="0 ms" Foreground="#DCDCAA" FontSize="24" FontWeight="Bold"/>
+                        <TextBlock Text="Script" Foreground="#9D9D9D" FontSize="11"/>
+                      </StackPanel>
+                      <StackPanel Grid.Column="2">
+                        <TextBlock x:Name="MetricLayoutTime" Text="0 ms" Foreground="#C586C0" FontSize="24" FontWeight="Bold"/>
+                        <TextBlock Text="Layout" Foreground="#9D9D9D" FontSize="11"/>
+                      </StackPanel>
+                      <StackPanel Grid.Column="3">
+                        <TextBlock x:Name="MetricPaintTime" Text="0 ms" Foreground="#4FC1FF" FontSize="24" FontWeight="Bold"/>
+                        <TextBlock Text="Paint" Foreground="#9D9D9D" FontSize="11"/>
+                      </StackPanel>
+                    </Grid>
+                  </StackPanel>
+                </Border>
+              </StackPanel>
+            </StackPanel>
+          </ScrollViewer>
+        </Grid>
+      </Grid>
+      
+      <!-- Memory Panel (NEW) -->
+      <Grid x:Name="MemoryPanel" IsVisible="False" RowDefinitions="Auto,*">
+        <!-- Toolbar -->
+        <Border Grid.Row="0" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1" Padding="8,4">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Button x:Name="BtnTakeSnapshot" Classes="icon" ToolTip.Tip="Take Heap Snapshot" Width="24" Height="24">
+              <Path Data="M9 3L5 6.99h3V14h2V6.99h3L9 3zm7 14.01V10h-2v7.01h-3L15 21l4-3.99h-3z" 
+                    Fill="#9D9D9D" Width="14" Height="14" Stretch="Uniform"/>
+            </Button>
+            <Button x:Name="BtnForceGC" Classes="icon" ToolTip.Tip="Force Garbage Collection" Width="24" Height="24">
+              <Path Data="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" 
+                    Fill="#9D9D9D" Width="14" Height="14" Stretch="Uniform"/>
+            </Button>
+            <TextBlock Text="|" Foreground="#3C3C3C" VerticalAlignment="Center"/>
+            <TextBlock x:Name="MemoryStatus" Text="Ready" Foreground="#9D9D9D" FontSize="11" VerticalAlignment="Center"/>
+          </StackPanel>
+        </Border>
+        
+        <!-- Memory View -->
+        <Grid Grid.Row="1" ColumnDefinitions="*,*">
+          <!-- Snapshots List -->
+          <Grid RowDefinitions="Auto,*">
+            <TextBlock Grid.Row="0" Text="Heap Snapshots" Foreground="#9D9D9D" FontSize="11" Margin="8,8,8,4"/>
+            <ListBox x:Name="SnapshotsList" Grid.Row="1" Padding="4"/>
+          </Grid>
+          
+          <!-- Memory Stats -->
+          <StackPanel Grid.Column="1" Margin="16" Spacing="16">
+            <Border Background="#2D2D30" CornerRadius="4" Padding="16">
+              <StackPanel Spacing="8">
+                <TextBlock Text="Current Memory Usage" Foreground="#FFFFFF" FontSize="14" FontWeight="Bold"/>
+                <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto">
+                  <StackPanel Grid.Column="0" Grid.Row="0" Margin="0,8">
+                    <TextBlock x:Name="MemoryTotal" Text="0 MB" Foreground="#4EC9B0" FontSize="20" FontWeight="Bold"/>
+                    <TextBlock Text="Working Set" Foreground="#9D9D9D" FontSize="11"/>
+                  </StackPanel>
+                  <StackPanel Grid.Column="1" Grid.Row="0" Margin="0,8">
+                    <TextBlock x:Name="MemoryGC" Text="0 MB" Foreground="#DCDCAA" FontSize="20" FontWeight="Bold"/>
+                    <TextBlock Text="GC Heap" Foreground="#9D9D9D" FontSize="11"/>
+                  </StackPanel>
+                  <StackPanel Grid.Column="0" Grid.Row="1" Margin="0,8">
+                    <TextBlock x:Name="MemoryGen0" Text="0" Foreground="#C586C0" FontSize="20" FontWeight="Bold"/>
+                    <TextBlock Text="Gen 0 GCs" Foreground="#9D9D9D" FontSize="11"/>
+                  </StackPanel>
+                  <StackPanel Grid.Column="1" Grid.Row="1" Margin="0,8">
+                    <TextBlock x:Name="MemoryGen2" Text="0" Foreground="#4FC1FF" FontSize="20" FontWeight="Bold"/>
+                    <TextBlock Text="Gen 2 GCs" Foreground="#9D9D9D" FontSize="11"/>
+                  </StackPanel>
+                </Grid>
+              </StackPanel>
+            </Border>
+          </StackPanel>
+        </Grid>
+      </Grid>
+      
+      <!-- Application Panel (NEW) -->
+      <Grid x:Name="ApplicationPanel" IsVisible="False" ColumnDefinitions="200,Auto,*">
+        <!-- Storage Navigation -->
+        <Grid RowDefinitions="Auto,*">
+          <Border Grid.Row="0" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1" Padding="8,4">
+            <TextBlock Text="Storage" Foreground="#9D9D9D" FontSize="11"/>
+          </Border>
+          <TreeView x:Name="StorageTree" Grid.Row="1" Padding="4">
+            <TreeViewItem Header="Local Storage" IsExpanded="True"/>
+            <TreeViewItem Header="Session Storage" IsExpanded="True"/>
+            <TreeViewItem Header="Cookies" IsExpanded="True"/>
+            <TreeViewItem Header="IndexedDB" IsExpanded="True"/>
+            <TreeViewItem Header="Cache Storage"/>
+          </TreeView>
+        </Grid>
+        
+        <GridSplitter Grid.Column="1" Width="4" Background="#3C3C3C"/>
+        
+        <!-- Storage Content -->
+        <Grid Grid.Column="2" RowDefinitions="Auto,*,Auto">
+          <Border Grid.Row="0" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1" Padding="8,4">
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <Button x:Name="BtnClearStorage" Classes="icon" ToolTip.Tip="Clear" Width="24" Height="24">
+                <Path Data="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" 
+                      Fill="#9D9D9D" Width="12" Height="12" Stretch="Uniform"/>
+              </Button>
+              <TextBox x:Name="StorageFilter" Watermark="Filter..." Width="200" FontSize="11" Padding="4,2"/>
+            </StackPanel>
+          </Border>
+          
+          <ListBox x:Name="StorageList" Grid.Row="1" Padding="4">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <Grid ColumnDefinitions="200,*" Background="Transparent" MinHeight="22">
+                  <TextBlock Grid.Column="0" Text="{Binding Key}" Foreground="#9CDCFE" FontFamily="Consolas" FontSize="11" Margin="4,2" TextTrimming="CharacterEllipsis"/>
+                  <TextBlock Grid.Column="1" Text="{Binding Value}" Foreground="#CE9178" FontFamily="Consolas" FontSize="11" Margin="4,2" TextTrimming="CharacterEllipsis"/>
+                </Grid>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+          
+          <Border Grid.Row="2" Background="#252526" BorderBrush="#3C3C3C" BorderThickness="0,1,0,0" Padding="8,4">
+            <StackPanel Orientation="Horizontal" Spacing="16">
+              <TextBlock x:Name="StorageSummary" Text="0 items" Foreground="#9D9D9D" FontSize="11"/>
+            </StackPanel>
+          </Border>
+        </Grid>
       </Grid>
       
     </Grid>
