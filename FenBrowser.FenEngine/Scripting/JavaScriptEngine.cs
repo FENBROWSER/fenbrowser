@@ -20,6 +20,7 @@ using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Security;
 using Avalonia;
 using Avalonia.VisualTree;
+using FenBrowser.FenEngine.DOM;
 
 namespace FenBrowser.FenEngine.Scripting
 {
@@ -119,44 +120,17 @@ namespace FenBrowser.FenEngine.Scripting
                 if (args.Length < 1 || !args[0].IsFunction)
                     return new ErrorValue("MutationObserver constructor requires a callback function");
 
+                // Use the new DOM-compliant wrapper
                 var callback = args[0].AsFunction();
-                var instance = new FenObject();
-                
-                // Store callback in the instance (hidden property)
-                instance.Set("__callback", FenValue.FromFunction(callback));
-                
-                // observe(target, options)
-                instance.Set("observe", FenValue.FromFunction(new FenFunction("observe", (obsArgs, obsThis) =>
-                {
-                    // Register this observer
-                    lock (_mutationLock)
-                    {
-                        if (!_fenMutationObservers.Contains(callback))
-                            _fenMutationObservers.Add(callback);
-                    }
-                    return FenValue.Undefined;
-                })));
-                
-                // disconnect()
-                instance.Set("disconnect", FenValue.FromFunction(new FenFunction("disconnect", (obsArgs, obsThis) =>
-                {
-                    lock (_mutationLock)
-                    {
-                        _fenMutationObservers.Remove(callback);
-                    }
-                    return FenValue.Undefined;
-                })));
-                
-                // takeRecords()
-                instance.Set("takeRecords", FenValue.FromFunction(new FenFunction("takeRecords", (obsArgs, obsThis) =>
-                {
-                    // Return empty array for now as we process mutations immediately
-                    var arr = new FenObject();
-                    arr.Set("length", FenValue.FromNumber(0));
-                    return FenValue.FromObject(arr);
-                })));
+                var wrapper = new MutationObserverWrapper(callback);
 
-                return FenValue.FromObject(instance);
+                lock (_mutationLock)
+                {
+                    _fenMutationObservers.Add(wrapper);
+                }
+
+                // Return the FenObject interface provided by the wrapper
+                return FenValue.FromObject(wrapper.ToFenObject(_fenRuntime.Context));
             });
 
             _fenRuntime.SetGlobal("MutationObserver", FenValue.FromFunction(moConstructor));
@@ -372,7 +346,7 @@ namespace FenBrowser.FenEngine.Scripting
 
         // Mutation observers / pending mutations
         private readonly System.Collections.Generic.List<string> _mutationObservers = new System.Collections.Generic.List<string>();
-        private readonly System.Collections.Generic.List<FenFunction> _fenMutationObservers = new System.Collections.Generic.List<FenFunction>();
+        private readonly System.Collections.Generic.List<MutationObserverWrapper> _fenMutationObservers = new System.Collections.Generic.List<MutationObserverWrapper>();
         private readonly object _mutationLock = new object();
         private readonly System.Collections.Generic.List<MutationRecord> _pendingMutations = new System.Collections.Generic.List<MutationRecord>();
         private string _docTitle = string.Empty;
@@ -1610,125 +1584,82 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         // When the DOM changes, invoke any registered MutationObserver callbacks as microtasks
         private void InvokeMutationObservers()
         {
-            List<MutationRecord> mutations = null;
-            lock (_mutationLock)
-            {
-                if (_pendingMutations.Count > 0)
-                {
-                    mutations = new List<MutationRecord>(_pendingMutations);
-                    _pendingMutations.Clear();
-                }
-            }
-
-            if (mutations == null || mutations.Count == 0) return;
-
-            // 1. Legacy string-based observers
+            // 1. Legacy string-based observers (keep for backward compatibility if any)
             try
             {
-                string[] legacyObservers;
-                lock (_mutationObservers) legacyObservers = _mutationObservers.ToArray();
-
-                if (legacyObservers.Length > 0)
+                List<MutationRecord> mutations = null;
+                lock (_mutationLock)
                 {
-                    var sb = new StringBuilder();
-                    sb.Append("[");
-                    bool first = true;
-                    foreach (var mr in mutations)
+                    if (_pendingMutations.Count > 0)
                     {
-                        if (!first) sb.Append(",");
-                        sb.Append("{");
-                        sb.Append($"'type':'{mr.Type}'");
-                        sb.Append("}");
-                        first = false;
+                        mutations = new List<MutationRecord>(_pendingMutations);
+                        _pendingMutations.Clear();
                     }
-                    sb.Append("]");
-                    var json = sb.ToString();
-                    
-                    foreach (var fn in legacyObservers)
+                }
+
+                if (mutations != null && mutations.Count > 0)
+                {
+                    string[] legacyObservers;
+                    lock (_mutationObservers) legacyObservers = _mutationObservers.ToArray();
+
+                    if (legacyObservers.Length > 0)
                     {
-                        EnqueueMicrotask(() => { try { RunInline(fn + "(" + json + ")", _ctx); } catch { } });
+                        var sb = new StringBuilder();
+                        sb.Append("[");
+                        bool first = true;
+                        foreach (var mr in mutations)
+                        {
+                            if (!first) sb.Append(",");
+                            sb.Append("{");
+                            sb.Append($"'type':'{mr.Type}'");
+                            sb.Append("}");
+                            first = false;
+                        }
+                        sb.Append("]");
+                        var json = sb.ToString();
+                        
+                        foreach (var fn in legacyObservers)
+                        {
+                            EnqueueMicrotask(() => { try { RunInline(fn + "(" + json + ")", _ctx); } catch { } });
+                        }
                     }
                 }
             }
             catch { }
 
-            // 2. New FenFunction observers
+            // 2. New Wrapper-based observers (Standard MutationObserver)
             try
             {
-                FenFunction[] fenObservers;
-                lock (_mutationLock) fenObservers = _fenMutationObservers.ToArray();
+                MutationObserverWrapper[] wrappers;
+                lock (_mutationLock) wrappers = _fenMutationObservers.ToArray();
 
-                if (fenObservers.Length > 0)
+                foreach (var wrapper in wrappers)
                 {
-                    var fenArray = new FenObject();
-                    int idx = 0;
-                    foreach (var mr in mutations)
+                    if (wrapper.HasPendingRecords)
                     {
-                        if (mr.Type == "attributes")
-                        {
-                             var rec = new FenObject();
-                             rec.Set("type", FenValue.FromString("attributes"));
-                             if (mr.AttributeName != null)
-                                rec.Set("attributeName", FenValue.FromString(mr.AttributeName));
-                             
-                             fenArray.Set(idx.ToString(), FenValue.FromObject(rec));
-                             idx++;
-                        }
-                        else
-                        {
-                            var rec = new FenObject();
-                            rec.Set("type", FenValue.FromString(mr.Type));
-                            
-                            // Added nodes
-                            if (mr.AddedNodes != null && mr.AddedNodes.Count > 0)
-                            {
-                                var added = new FenObject();
-                                for(int i=0; i<mr.AddedNodes.Count; i++) 
-                                {
-                                    var nodeObj = new FenObject();
-                                    nodeObj.Set("nodeName", FenValue.FromString(mr.AddedNodes[i].Tag));
-                                    added.Set(i.ToString(), FenValue.FromObject(nodeObj));
-                                }
-                                added.Set("length", FenValue.FromNumber(mr.AddedNodes.Count));
-                                rec.Set("addedNodes", FenValue.FromObject(added));
-                            }
-                            else
-                            {
-                                 var empty = new FenObject(); empty.Set("length", FenValue.FromNumber(0));
-                                 rec.Set("addedNodes", FenValue.FromObject(empty));
-                            }
+                        // Safely get context
+                        var context = _fenRuntime?.Context;
+                        if (context == null) continue;
 
-                            // Removed nodes
-                            if (mr.RemovedNodes != null && mr.RemovedNodes.Count > 0)
-                            {
-                                var removed = new FenObject();
-                                for(int i=0; i<mr.RemovedNodes.Count; i++) 
-                                {
-                                    var nodeObj = new FenObject();
-                                    nodeObj.Set("nodeName", FenValue.FromString(mr.RemovedNodes[i].Tag));
-                                    removed.Set(i.ToString(), FenValue.FromObject(nodeObj));
-                                }
-                                removed.Set("length", FenValue.FromNumber(mr.RemovedNodes.Count));
-                                rec.Set("removedNodes", FenValue.FromObject(removed));
-                            }
-                            else
-                            {
-                                 var empty = new FenObject(); empty.Set("length", FenValue.FromNumber(0));
-                                 rec.Set("removedNodes", FenValue.FromObject(empty));
-                            }
-                            
-                            fenArray.Set(idx.ToString(), FenValue.FromObject(rec));
-                            idx++;
+                        // Get records as FenObjects, correctly serialized with ElementWrappers
+                        var recordObjs = wrapper.TakeRecords(context);
+                        
+                        // Create JS Array
+                        var jsArray = new FenObject();
+                        jsArray.Set("length", FenValue.FromNumber(recordObjs.Length));
+                        for (int i = 0; i < recordObjs.Length; i++)
+                        {
+                            jsArray.Set(i.ToString(), FenValue.FromObject(recordObjs[i]));
                         }
-                    }
-                    fenArray.Set("length", FenValue.FromNumber(idx));
-                    var args = new[] { FenValue.FromObject(fenArray), FenValue.Undefined };
 
-                    foreach (var obs in fenObservers)
-                    {
+                        // Call callback: callback(mutations, observer)
+                        // Note: We don't have the observer fen object handy here implies 'this' binding might be loose, 
+                        // but 2nd arg is passed.
+                        var args = new[] { FenValue.FromObject(jsArray), FenValue.Undefined }; 
+                        
                         EnqueueMicrotask(() => 
                         {
-                            try { _fenRuntime.ExecuteFunction(obs, args); } catch { }
+                            try { _fenRuntime.ExecuteFunction(wrapper.Callback, args); } catch { }
                         });
                     }
                 }
@@ -1738,10 +1669,24 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
 
         private void RecordMutation(MutationRecord record)
         {
+            // 1. Dispatch to wrappers immediately (they filter internally and queue records)
             lock (_mutationLock)
             {
-                _pendingMutations.Add(record);
+                foreach (var wrapper in _fenMutationObservers)
+                {
+                    wrapper.RecordMutation(record.Target, record.Type, record.AttributeName, record.OldValue, record.AddedNodes, record.RemovedNodes);
+                }
             }
+            
+            // 2. Keep queue for legacy string observers (only if any exist to save memory)
+            lock (_mutationObservers) 
+            {
+                if (_mutationObservers.Count > 0)
+                {
+                    lock (_mutationLock) _pendingMutations.Add(record);
+                }
+            }
+
             // Schedule microtask to deliver mutations
             EnqueueMicrotask(InvokeMutationObservers);
         }
