@@ -31,14 +31,22 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             // Handle local file paths
+            // Fix: Only treat as file if it looks like a Windows path (drive letter or UNC)
             if (System.IO.Path.IsPathRooted(url) && !url.StartsWith("http") && !url.StartsWith("file://"))
             {
-                url = "file:///" + url.Replace("\\", "/");
+                // Check if it has a colon (e.g. C:\) or starts with \\ (UNC)
+                if (url.IndexOf(':') >= 0 || url.StartsWith("\\\\"))
+                {
+                    url = "file:///" + url.Replace("\\", "/");
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[NavigationManager] Converted to file URI: {url}\r\n"); } catch {}
+                }
             }
 
             // Default to HTTPS if no scheme
             if (!url.StartsWith("http://") && !url.StartsWith("https://") && !url.StartsWith("file://") && !url.StartsWith("fen://") && !url.StartsWith("about:") && !url.StartsWith("data:"))
             {
+                // Log what we are doing
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[NavigationManager] Defaulting '{url}' to HTTPS\r\n"); } catch {}
                 url = "https://" + url;
             }
 

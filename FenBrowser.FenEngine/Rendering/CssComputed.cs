@@ -99,6 +99,10 @@ namespace FenBrowser.FenEngine.Rendering
         public double? FlexBasis { get; set; }
         public int? Order { get; set; }  // Flex item ordering
 
+        // Image object-fit and object-position (for img, video, etc.)
+        public string ObjectFit { get; set; }        // fill, contain, cover, none, scale-down
+        public string ObjectPosition { get; set; }   // CSS position value (e.g., "center", "top left")
+
         // Typography & Visuals
         public IBrush Background { get; set; }
         public Color? BackgroundColor { get; set; }

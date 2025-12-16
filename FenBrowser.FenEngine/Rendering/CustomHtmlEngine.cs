@@ -741,6 +741,8 @@ if(el) {{
             }
 
             var view = _cachedView;
+            if (baseUri == null) FenLogger.Debug("[BuildVisualTree] BaseUrl is NULL!", LogCategory.General);
+            else FenLogger.Debug($"[BuildVisualTree] Setting BaseUrl to: {baseUri}", LogCategory.General);
             view.BaseUrl = baseUri?.ToString();
             
             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[BuildVisualTree] Calling view.Render...\r\n"); } catch { }
