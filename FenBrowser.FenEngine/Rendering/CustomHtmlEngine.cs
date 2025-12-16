@@ -15,6 +15,7 @@ using System.IO;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core.Security;
+using FenBrowser.FenEngine.Security; // Added
 using FenBrowser.FenEngine.Scripting;
 using static FenBrowser.FenEngine.Rendering.CssLoader;
 using FenBrowser.FenEngine.Rendering;
@@ -35,6 +36,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         // EXPOSED STYLES FOR SKIA RENDERER
         public Dictionary<LiteElement, CssComputed> LastComputedStyles { get; private set; }
+        public List<CssLoader.CssSource> LastCssSources { get; private set; }
 
         public event Action<Control> RepaintReady;
         private void OnRepaintReady(Control control)
@@ -48,6 +50,7 @@ namespace FenBrowser.FenEngine.Rendering
         public event Action<string> AlertTriggered;
         public event Action<string> ConsoleMessage; // New event for console logs
         public event Action<Rect?> HighlightRectChanged;
+        public event Func<string, JsPermissions, Task<bool>> PermissionRequested; // Permission API event
         public bool EnableJavaScript { get; set; } = true;
 
         public void HighlightElement(LiteElement element)
@@ -91,6 +94,7 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         public LiteElement ActiveDom => _activeDom;
+        public JavaScriptEngine JsEngine => _activeJs;
         private LiteElement _activeDom;
         private Control _lastRenderedControl;
         private Uri _activeBaseUri;
@@ -104,7 +108,11 @@ namespace FenBrowser.FenEngine.Rendering
         private readonly System.Threading.SemaphoreSlim _repaintGate = new System.Threading.SemaphoreSlim(1, 1);
         private int _repaintScheduled;
         private readonly object _uiDispatcher;
-
+        
+        // Cache view/renderer to avoid full recreation
+        private SkiaBrowserView _cachedView;
+        private SkiaDomRenderer _cachedRenderer;
+        
         public CustomHtmlEngine()
         {
             _uiDispatcher = UiThreadHelper.TryGetDispatcher();
@@ -165,9 +173,11 @@ namespace FenBrowser.FenEngine.Rendering
             try
             {
                 _repaintGate.Dispose();
-                // Unsubscribe events if necessary or clean up JS engine
-                _activeJs = null; 
+                // _activeJs does not implement IDisposable, just clear ref
+                _activeJs = null;
                 _activeDom = null;
+                _cachedView = null;
+                _cachedRenderer = null;
             }
             catch { }
         }
@@ -448,7 +458,7 @@ namespace FenBrowser.FenEngine.Rendering
             return outSb.ToString().Trim();
         }
 
-        private void CaptureActiveContext(
+        private async Task CaptureActiveContextAsync(
             LiteElement dom,
             Uri baseUri,
             Func<Uri, Task<string>> fetchExternalCssAsync,
@@ -473,7 +483,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 try 
                 { 
-                    _activeJs.SetDom(dom, baseUri);
+                    await _activeJs.SetDomAsync(dom, baseUri).ConfigureAwait(false);
                     try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CaptureActiveContext] Synced JS DOM to _activeDom hash={dom.GetHashCode()}\r\n"); } catch {}
                 }
                 catch { }
@@ -531,10 +541,13 @@ namespace FenBrowser.FenEngine.Rendering
 
             ConfigureMedia(viewportWidth);
 
-            var cssFetcher = fetchExternalCssAsync ?? (async _ => string.Empty);
-            var computed = await CssLoader.ComputeAsync(dom, baseUri, cssFetcher, viewportWidth, null);
-            LastComputedStyles = computed;
+            var cssFetcher = fetchExternalCssAsync ?? (async _ => { await Task.CompletedTask; return string.Empty; });
+            var result = await CssLoader.ComputeWithResultAsync(dom, baseUri, cssFetcher, viewportWidth, null);
+            LastComputedStyles = result.Computed;
+            LastCssSources = result.Sources;
+            var computed = result.Computed;
 
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[BuildVisualTree] Computed styles ready. Checking background...\r\n"); } catch { }
             try
             {
                 if (onFixedBackground != null && computed != null)
@@ -607,11 +620,142 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }
             }
-            catch { }
+            catch (Exception bgEx) 
+            {
+                 try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[BuildVisualTree] Background check error: {bgEx}\r\n"); } catch { }
+            }
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[BuildVisualTree] Background check done. Invoking DomReady...\r\n"); } catch { }
             
+            try { DomReady?.Invoke(this, dom); } catch (Exception drEx) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[BuildVisualTree] DomReady error: {drEx}\r\n"); } catch { } }
+
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[BuildVisualTree] Creating renderer/view...\r\n"); } catch { }
+
+            if (_cachedView == null || _cachedRenderer == null)
+            {
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[BuildVisualTree] Creating NEW renderer/view...\r\n"); } catch { }
+                _cachedRenderer = new SkiaDomRenderer();
+                _cachedView = new SkiaBrowserView(_cachedRenderer);
+                
+                // Wire events (only once)
+                _cachedView.LinkInternalClicked += (sender, href) => 
+                {
+                    if (onNavigate != null && !string.IsNullOrWhiteSpace(href))
+                    {
+                        try
+                        {
+                            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[LinkClick] href='{href}' base='{baseUri}'\r\n"); } catch {}
+                            var target = new Uri(baseUri, href);
+                            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[LinkClick] Resolved target='{target}'\r\n"); } catch {}
+                            onNavigate(target);
+                        }
+                        catch (Exception navEx)
+                        {
+                            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[LinkClick] Error: {navEx.Message}\r\n"); } catch {}
+                        }
+                    }
+                };
+
+                _cachedView.FormSubmitted += (sender, formEl) =>
+                {
+                    try
+                    {
+                        // TODO: Implement full form submission (POST/GET)
+                        // For now, log it so we know it works
+                        var action = formEl.Attr.ContainsKey("action") ? formEl.Attr["action"] : "";
+                        var method = formEl.Attr.ContainsKey("method") ? formEl.Attr["method"] : "GET";
+                        System.Diagnostics.Debug.WriteLine($"[FormSubmit] action='{action}' method='{method}'");
+                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[FormSubmit] action='{action}' method='{method}'\r\n"); } catch {}
+                        AlertTriggered?.Invoke($"Form submission detected: {method} {action}");
+                    }
+                    catch {}
+                };
+
+                _cachedView.SizeChanged += (sender, e) =>
+                {
+                     if (_activeJs != null)
+                     {
+                         var w = e.NewSize.Width;
+                         var h = e.NewSize.Height;
+                         try { 
+                             _activeJs.Evaluate($"window.innerWidth = {w}; window.innerHeight = {h}; window.dispatchEvent(new Event('resize'));"); 
+                         } catch {}
+                     }
+                };
+
+                _cachedView.InputChanged += (sender, el) =>
+                {
+                    if (_activeJs != null && el != null)
+                    {
+                        try
+                        {
+                            string id = el.Attr.ContainsKey("id") ? el.Attr["id"] : null;
+                            if (string.IsNullOrEmpty(id))
+                            {
+                                id = "fen_auto_" + Guid.NewGuid().ToString("N");
+                                el.Attr["id"] = id;
+                            }
+                            string val = el.Attr.ContainsKey("value") ? el.Attr["value"] : "";
+                            // Serialize value to safe JS string
+                            string jsonVal = System.Text.Json.JsonSerializer.Serialize(val);
+                            
+                            _activeJs.Evaluate($@"
+var el = document.getElementById('{id}'); 
+if(el) {{ 
+    el.value = {jsonVal}; 
+    el.dispatchEvent(new Event('input', {{bubbles:true}})); 
+    el.dispatchEvent(new Event('change', {{bubbles:true}})); 
+}}");
+                        }
+                        catch {}
+                    }
+                };
+
+                _cachedView.ElementClicked += (sender, el) =>
+                {
+                    if (_activeJs != null && el != null)
+                    {
+                        try
+                        {
+                            // If element is a link, we might not want to double-fire if handled by LinkInternalClicked?
+                            // But ElementClicked usually comes from Buttons. 
+                            string id = el.Attr.ContainsKey("id") ? el.Attr["id"] : null;
+                            if (string.IsNullOrEmpty(id))
+                            {
+                                id = "fen_auto_" + Guid.NewGuid().ToString("N");
+                                el.Attr["id"] = id;
+                            }
+                            
+                            _activeJs.Evaluate($@"
+var el = document.getElementById('{id}'); 
+if(el) {{ 
+    el.click(); 
+}}");
+                        }
+                        catch {}
+                    }
+                };
+            }
+            else
+            {
+                 try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[BuildVisualTree] Reusing existing view...\r\n"); } catch { }
+            }
+
+            var view = _cachedView;
+            view.BaseUrl = baseUri?.ToString();
             
-            DomReady?.Invoke(this, dom);
-            return null;
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[BuildVisualTree] Calling view.Render...\r\n"); } catch { }
+            
+            // Trigger initial render/layout (updates content in existing view)
+            view.Render(dom, computed);
+            
+            _lastRenderedControl = view;
+            var control = view;
+
+            // If we have a diagnostics banner request or debug flags, wrapping might happen inside renderer
+            // But here we return the root control (usually a ScrollViewer or Panel)
+            
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[RenderAsync] Visual tree built successfully\r\n"); } catch { }
+            return control;
         }
 
         private async Task<Control> RefreshAsyncInternal(bool includeDiagnosticsBanner)
@@ -642,7 +786,7 @@ namespace FenBrowser.FenEngine.Rendering
             // Debug: Log _activeDom hash
             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[RefreshAsyncInternal] using _activeDom hash={_activeDom.GetHashCode()}\r\n"); } catch {}
 
-            var fetchCss = _activeFetchCss ?? (async _ => string.Empty);
+            var fetchCss = _activeFetchCss ?? (async _ => { await Task.CompletedTask; return string.Empty; });
             return await BuildVisualTreeAsync(
                 _activeDom,
                 _activeBaseUri,
@@ -667,10 +811,11 @@ namespace FenBrowser.FenEngine.Rendering
                 if (disp != null && !UiThreadHelper.HasThreadAccess(disp))
                 {
                     // Fix: Add 'async' here so the lambda returns the expected Task
-                    await UiThreadHelper.RunAsyncAwaitable(disp, null, async () =>
+                    await UiThreadHelper.RunAsyncAwaitable(disp, null, () =>
                     {
                         try { handler(element); }
                         catch { }
+                        return Task.CompletedTask;
                     }).ConfigureAwait(false);
                 }
                 else
@@ -782,7 +927,7 @@ namespace FenBrowser.FenEngine.Rendering
                 Console.WriteLine($"[RenderAsync] Start. HTML Length: {html?.Length ?? 0}");
                 
                 // PROTECTION: Validate HTML size to prevent crashes
-                const int MaxHtmlSize = 2 * 1024 * 1024; // 2MB limit
+                const int MaxHtmlSize = 50 * 1024 * 1024; // 50MB limit (increased from 2MB)
                 if (!string.IsNullOrEmpty(html) && html.Length > MaxHtmlSize)
                 {
                     try { System.IO.File.AppendAllText("debug_log.txt", $"[RenderAsync] HTML too large: {html.Length} bytes, truncating to {MaxHtmlSize}\r\n"); } catch { }
@@ -945,7 +1090,7 @@ namespace FenBrowser.FenEngine.Rendering
                     catch { }
                 }
 
-                var cssFetcher = fetchExternalCssAsync ?? (async _ => string.Empty);
+                var cssFetcher = fetchExternalCssAsync ?? (async _ => { await Task.CompletedTask; return string.Empty; });
 
                 JavaScriptEngine js = null;
                 if (allowJs)
@@ -1027,6 +1172,13 @@ namespace FenBrowser.FenEngine.Rendering
                         },
                         ExecuteInlineScriptsOnInnerHTML = allowJs
                     };
+                    
+                    // Wire up permission requests
+                    js.PermissionRequested += async (origin, perm) => 
+                    {
+                        if (PermissionRequested != null) return await PermissionRequested(origin, perm);
+                        return false;
+                    };
 
                     _activeJs = js;
                 }
@@ -1083,37 +1235,35 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 catch { }
 
-                CaptureActiveContext(dom, baseUri, cssFetcher, imageLoader, onNavigate, viewportWidth, onFixedBackground, js);
+                // 5. Capture context (DOM + JS) for repaints/interactions
+                await CaptureActiveContextAsync(dom, baseUri, cssFetcher, imageLoader, onNavigate, viewportWidth, onFixedBackground, js).ConfigureAwait(false);
 
-                if (allowJs)
+                // 6. Build visual tree
+                Console.WriteLine("[RenderAsync] Building Visual Tree");
+                
+                // Fetch CSS is handled inside BuildVisualTreeAsync or passed as delegate
+                var control = await BuildVisualTreeAsync(dom, baseUri, cssFetcher, imageLoader, onNavigate, js, viewportWidth, onFixedBackground, includeDiagnosticsBanner: false).ConfigureAwait(false);
+                
+                // 7. Execute Scripts (if enabled)
+                if (js != null)
                 {
                     try { System.IO.File.AppendAllText("debug_log.txt", "[RenderAsync] Running Scripts\r\n"); } catch { }
                     Console.WriteLine("[RenderAsync] Running Scripts");
                     
                     // STEP 1: Inject JS detection helper (runs first to ensure sites detect JS is enabled)
-                    // This script flips no-js -> js class and hides noscript fallback elements
+                    // STEP 1: Enable JS classes on HTML/BODY immediately
                     try
                     {
-                        const string detectionHelper = @"
+                        var detectionHelper = @"
 (function() {
     try {
-        // Remove no-js class, add js class on html element
         var html = document.documentElement;
-        if (html && html.className) {
-            html.className = html.className.replace(/\bno-js\b/gi, '').trim();
-            if (html.className.indexOf('js') === -1) {
-                html.className = (html.className + ' js').trim();
-            }
-        } else if (html) {
-            html.className = 'js';
+        if (html) {
+            html.className = html.className.replace('no-js', 'js');
+            if (html.className.indexOf('js') < 0) html.className += ' js';
         }
-        // Also check body element
-        var body = document.body;
-        if (body && body.className) {
-            body.className = body.className.replace(/\bno-js\b/gi, '').trim();
-        }
-        // Hide common noscript fallback indicators by class
-        var nojs = document.querySelectorAll('.no-js, .noscript, [data-nojs], .js-disabled');
+        // Handle explicit <noscript> hiding manually since we don't have CSS processor for it yet
+        var nojs = document.getElementsByTagName('noscript');
         for (var i = 0; i < nojs.length; i++) {
             if (nojs[i] && nojs[i].style) nojs[i].style.display = 'none';
         }
@@ -1137,7 +1287,7 @@ namespace FenBrowser.FenEngine.Rendering
                     try 
                     {
                         // Add timeout protection for script execution (Wikipedia has many scripts)
-                        var scriptTask = Task.Run(() => { js.SetDom(dom, baseUri); });
+                        var scriptTask = Task.Run(async () => { await js.SetDomAsync(dom, baseUri).ConfigureAwait(false); });
                         var timeoutTask = Task.Delay(15000); // 15 second timeout
                         var completedTask = await Task.WhenAny(scriptTask, timeoutTask);
                         
@@ -1450,6 +1600,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (_lastRenderedControl == null) return null;
             return await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(async () =>
             {
+                await Task.CompletedTask;
                 try
                 {
                     // Ensure layout is updated
@@ -1480,6 +1631,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         public async Task<object> ExecuteScriptAsync(string script)
         {
+            await Task.CompletedTask;
             if (_activeJs == null) 
             {
                 FenLogger.Error("[CustomHtmlEngine] ExecuteScriptAsync: _activeJs is NULL", LogCategory.JavaScript);
