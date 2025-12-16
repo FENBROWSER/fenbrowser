@@ -206,23 +206,210 @@ namespace FenBrowser.FenEngine.DOM
         private IValue GetContext(IValue[] args, IValue thisVal)
         {
             if (args.Length == 0) return FenValue.Null;
-            var type = args[0].ToString();
+            var type = args[0].ToString()?.ToLowerInvariant();
             
             // Check if element is canvas
-            if (string.Equals(_element.Tag, "canvas", StringComparison.OrdinalIgnoreCase) && 
-                string.Equals(type, "2d", StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(_element.Tag, "canvas", StringComparison.OrdinalIgnoreCase))
+                return FenValue.Null;
+            
+            // Get canvas dimensions
+            int width = 300, height = 150; // Default canvas size per HTML spec
+            if (_element.Attr != null)
             {
-                // We need access to JavaScriptEngine to create context
-                // But ElementWrapper only has IExecutionContext.
-                // We might need to store the engine or access it via context?
-                // Actually, CanvasRenderingContext2D needs JavaScriptEngine for GetVisual.
-                // Let's assume we can get it or pass null if not strictly needed for basic drawing?
-                // Wait, GetVisual is static in JavaScriptEngine!
-                // So we just need to pass null as engine if it's not used for other things.
-                
+                if (_element.Attr.TryGetValue("width", out var w) && int.TryParse(w, out var pw)) width = pw;
+                if (_element.Attr.TryGetValue("height", out var h) && int.TryParse(h, out var ph)) height = ph;
+            }
+            
+            // 2D Canvas Context
+            if (type == "2d")
+            {
                 return FenValue.FromObject(new FenBrowser.FenEngine.Scripting.CanvasRenderingContext2D(_element, null));
             }
+            
+            // WebGL Context
+            if (type == "webgl" || type == "experimental-webgl")
+            {
+                var canvasId = _element.Attr?.GetValueOrDefault("id") ?? _element.GetHashCode().ToString();
+                var context = FenBrowser.FenEngine.Rendering.WebGL.WebGLContextManager.GetContext(canvasId, width, height, webgl2: false);
+                if (context != null)
+                {
+                    // Create JavaScript wrapper object with all WebGL methods and constants
+                    var wrapper = FenBrowser.FenEngine.Rendering.WebGL.WebGLJavaScriptBindings.CreateJSWrapper(context);
+                    return FenValue.FromObject(new WebGLContextWrapper(context, wrapper));
+                }
+            }
+            
+            // WebGL2 Context
+            if (type == "webgl2")
+            {
+                var canvasId = _element.Attr?.GetValueOrDefault("id") ?? _element.GetHashCode().ToString();
+                var context = FenBrowser.FenEngine.Rendering.WebGL.WebGLContextManager.GetContext(canvasId, width, height, webgl2: true);
+                if (context != null)
+                {
+                    var wrapper = FenBrowser.FenEngine.Rendering.WebGL.WebGLJavaScriptBindings.CreateJSWrapper(context);
+                    return FenValue.FromObject(new WebGLContextWrapper(context, wrapper));
+                }
+            }
+            
             return FenValue.Null;
+        }
+        
+        /// <summary>
+        /// Wrapper to expose WebGL context to JavaScript
+        /// </summary>
+        private class WebGLContextWrapper : IObject
+        {
+            private readonly FenBrowser.FenEngine.Rendering.WebGL.WebGLRenderingContext _context;
+            private readonly Dictionary<string, object> _methods;
+            private IObject _prototype;
+            
+            public WebGLContextWrapper(FenBrowser.FenEngine.Rendering.WebGL.WebGLRenderingContext context, object methods)
+            {
+                _context = context;
+                _methods = methods as Dictionary<string, object> ?? new Dictionary<string, object>();
+            }
+            
+            public IValue Get(string key)
+            {
+                if (_methods.TryGetValue(key, out var value))
+                {
+                    // Convert delegates to FenFunction
+                    if (value is Delegate del)
+                    {
+                        return FenValue.FromFunction(new FenFunction(key, (args, thisVal) =>
+                        {
+                            try
+                            {
+                                var parameters = del.Method.GetParameters();
+                                var convertedArgs = new object[parameters.Length];
+                                for (int i = 0; i < parameters.Length && i < args.Length; i++)
+                                {
+                                    convertedArgs[i] = ConvertArg(args[i], parameters[i].ParameterType);
+                                }
+                                var result = del.DynamicInvoke(convertedArgs);
+                                return ConvertResult(result);
+                            }
+                            catch (Exception ex)
+                            {
+                                // Log error silently - FenLogger may not be available in this context
+                                System.Diagnostics.Debug.WriteLine($"[WebGL] Error calling {key}: {ex.Message}");
+                                return FenValue.Undefined;
+                            }
+                        }));
+                    }
+                    // Constants (uint, int, etc.)
+                    if (value is uint ui) return FenValue.FromNumber(ui);
+                    if (value is int i) return FenValue.FromNumber(i);
+                    if (value is float f) return FenValue.FromNumber(f);
+                    if (value is double d) return FenValue.FromNumber(d);
+                    if (value is string s) return FenValue.FromString(s);
+                    if (value is bool b) return FenValue.FromBoolean(b);
+                }
+                
+                // Also expose properties like drawingBufferWidth, drawingBufferHeight
+                if (key == "drawingBufferWidth") return FenValue.FromNumber(_context.DrawingBufferWidth);
+                if (key == "drawingBufferHeight") return FenValue.FromNumber(_context.DrawingBufferHeight);
+                if (key == "canvas") return FenValue.Undefined; // TODO: return canvas element
+                
+                return FenValue.Undefined;
+            }
+            
+            private object ConvertArg(IValue arg, Type targetType)
+            {
+                if (targetType == typeof(uint)) return (uint)arg.ToNumber();
+                if (targetType == typeof(int)) return (int)arg.ToNumber();
+                if (targetType == typeof(float)) return (float)arg.ToNumber();
+                if (targetType == typeof(double)) return arg.ToNumber();
+                if (targetType == typeof(bool)) return arg.ToBoolean();
+                if (targetType == typeof(string)) return arg.ToString();
+                if (targetType == typeof(byte[]))
+                {
+                    // Convert array-like object to byte array
+                    if (arg.IsObject)
+                    {
+                        var obj = arg.AsObject();
+                        var lenVal = obj.Get("length");
+                        if (lenVal != null && lenVal.IsNumber)
+                        {
+                            int len = (int)lenVal.ToNumber();
+                            var bytes = new byte[len];
+                            for (int i = 0; i < len; i++)
+                            {
+                                var v = obj.Get(i.ToString());
+                                bytes[i] = v != null ? (byte)v.ToNumber() : (byte)0;
+                            }
+                            return bytes;
+                        }
+                    }
+                    return null;
+                }
+                if (targetType == typeof(float[]))
+                {
+                    if (arg.IsObject)
+                    {
+                        var obj = arg.AsObject();
+                        var lenVal = obj.Get("length");
+                        if (lenVal != null && lenVal.IsNumber)
+                        {
+                            int len = (int)lenVal.ToNumber();
+                            var floats = new float[len];
+                            for (int i = 0; i < len; i++)
+                            {
+                                var v = obj.Get(i.ToString());
+                                floats[i] = v != null ? (float)v.ToNumber() : 0f;
+                            }
+                            return floats;
+                        }
+                    }
+                    return null;
+                }
+                // WebGL objects - check if it's already the correct type
+                if (arg.IsObject)
+                {
+                    var obj = arg.AsObject();
+                    if (targetType.IsAssignableFrom(obj.GetType()))
+                        return obj;
+                }
+                return null;
+            }
+            
+            private IValue ConvertResult(object result)
+            {
+                if (result == null) return FenValue.Null;
+                if (result is uint ui) return FenValue.FromNumber(ui);
+                if (result is int i) return FenValue.FromNumber(i);
+                if (result is float f) return FenValue.FromNumber(f);
+                if (result is double d) return FenValue.FromNumber(d);
+                if (result is bool b) return FenValue.FromBoolean(b);
+                if (result is string s) return FenValue.FromString(s);
+                if (result is byte[] bytes)
+                {
+                    var arr = new FenObject();
+                    for (int j = 0; j < bytes.Length; j++)
+                        arr.Set(j.ToString(), FenValue.FromNumber(bytes[j]));
+                    arr.Set("length", FenValue.FromNumber(bytes.Length));
+                    return FenValue.FromObject(arr);
+                }
+                if (result is string[] strings)
+                {
+                    var arr = new FenObject();
+                    for (int j = 0; j < strings.Length; j++)
+                        arr.Set(j.ToString(), FenValue.FromString(strings[j]));
+                    arr.Set("length", FenValue.FromNumber(strings.Length));
+                    return FenValue.FromObject(arr);
+                }
+                // Return WebGL objects as-is (they implement IObject)
+                if (result is IObject obj) return FenValue.FromObject(obj);
+                // Unknown types - just convert toString
+                return FenValue.FromString(result.ToString());
+            }
+            
+            public bool Has(string key) => _methods.ContainsKey(key) || key == "drawingBufferWidth" || key == "drawingBufferHeight" || key == "canvas";
+            public void Set(string key, IValue value) { /* WebGL context properties are read-only */ }
+            public bool Delete(string key) => false;
+            public IEnumerable<string> Keys() => _methods.Keys;
+            public IObject GetPrototype() => _prototype;
+            public void SetPrototype(IObject prototype) => _prototype = prototype;
         }
 
         private IValue GetInnerHTML()
