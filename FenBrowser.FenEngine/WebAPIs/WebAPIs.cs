@@ -14,8 +14,6 @@ namespace FenBrowser.FenEngine.WebAPIs
     public static class GeolocationAPI
     {
         // Default to a privacy-preserving approximate location (city center, not exact)
-        private static double _defaultLat = 0.0;
-        private static double _defaultLon = 0.0;
         private static bool _permissionGranted = false;
         
         public static FenObject CreateGeolocationObject()

@@ -48,6 +48,9 @@ namespace FenBrowser.UI
         // Storage
         private readonly ObservableCollection<StorageItem> _storageItems = new();
         
+        // Console History Navigation
+        private int _historyIndex = -1;
+        
         // Event for close request
         public event EventHandler CloseRequested;
 
@@ -192,10 +195,53 @@ namespace FenBrowser.UI
             _browser = browser;
             _rootElement = browser?.GetDomRoot();
             
-            // Subscribe to console messages
             if (_browser != null)
             {
                 _browser.ConsoleMessage += msg => AddConsoleMessage("info", msg);
+                _browser.RepaintReady += (s, e) =>
+                {
+                     // Update root if changed
+                     _rootElement = _browser.GetDomRoot();
+                };
+            }
+
+            if (_browser is BrowserHost host)
+            {
+                // Wire up Global Context for Console (so it works when running)
+                Action updateGlobalContext = () =>
+                {
+                     if (host.Engine?.JsEngine?.GlobalContext != null)
+                     {
+                         DevToolsCore.Instance.SetGlobalContext(host.Engine.JsEngine.GlobalContext);
+                     }
+                };
+                
+                // Update on navigation
+                host.Navigated += (s, e) => updateGlobalContext();
+                host.LoadingChanged += (s, loading) => { if (!loading) updateGlobalContext(); };
+                
+                // Initial try
+                updateGlobalContext();
+                
+                // Wire up Style Inspector Rule Matcher (Real Cascade)
+                DevToolsCore.Instance.RuleMatcher = (el) =>
+                {
+                    if (host.Engine?.LastCssSources != null)
+                    {
+                        return CssLoader.GetMatchedRules(el, host.Engine.LastCssSources); 
+                    }
+                    return new List<CssLoader.MatchedRule>();
+                };
+
+                // Wire up Computed Style Provider
+                DevToolsCore.Instance.ComputedStyleProvider = (el) =>
+                {
+                    if (host.Engine?.LastComputedStyles != null)
+                    {
+                        return host.Engine.LastComputedStyles.TryGetValue(el, out var computed) ? computed : null;
+                    }
+                    return null;
+                };
             }
             
             RefreshDom();
@@ -242,27 +288,93 @@ namespace FenBrowser.UI
 
         private void ConsoleInput_KeyDown(object sender, KeyEventArgs e)
         {
-            if (e.Key != Key.Enter) return;
-            
             var textBox = sender as TextBox;
-            if (textBox == null || string.IsNullOrWhiteSpace(textBox.Text)) return;
+            if (textBox == null) return;
             
-            var cmd = textBox.Text.Trim();
-            textBox.Text = "";
+            var history = DevToolsCore.Instance.ConsoleHistory;
             
-            // Add input to console
-            _consoleLogs.Add(new ConsoleLogItem(cmd, ConsoleLogLevel.Input));
-            
-            // Execute JavaScript - placeholder for now
-            try
+            // Up arrow - previous history
+            if (e.Key == Key.Up)
             {
-                var result = DevToolsCore.Instance.EvaluateExpression(cmd);
-                var output = result?.ToString() ?? "undefined";
-                _consoleLogs.Add(new ConsoleLogItem(output, ConsoleLogLevel.Result));
+                if (history.Count > 0)
+                {
+                    if (_historyIndex < 0) _historyIndex = history.Count;
+                    _historyIndex = Math.Max(0, _historyIndex - 1);
+                    textBox.Text = history[_historyIndex];
+                    textBox.CaretIndex = textBox.Text.Length;
+                }
+                e.Handled = true;
+                return;
             }
-            catch (Exception ex)
+            
+            // Down arrow - next history
+            if (e.Key == Key.Down)
             {
-                _consoleLogs.Add(new ConsoleLogItem($"Error: {ex.Message}", ConsoleLogLevel.Error));
+                if (history.Count > 0 && _historyIndex >= 0)
+                {
+                    _historyIndex = Math.Min(history.Count - 1, _historyIndex + 1);
+                    textBox.Text = history[_historyIndex];
+                    textBox.CaretIndex = textBox.Text.Length;
+                }
+                e.Handled = true;
+                return;
+            }
+            
+            // Tab - autocomplete
+            if (e.Key == Key.Tab)
+            {
+                var prefix = textBox.Text?.Trim() ?? "";
+                if (!string.IsNullOrEmpty(prefix))
+                {
+                    var completions = DevToolsCore.Instance.GetCompletions(prefix);
+                    if (completions.Count == 1)
+                    {
+                        textBox.Text = completions[0];
+                        textBox.CaretIndex = textBox.Text.Length;
+                    }
+                    else if (completions.Count > 1)
+                    {
+                        // Show suggestions in console
+                        _consoleLogs.Add(new ConsoleLogItem($"Suggestions: {string.Join(", ", completions)}", ConsoleLogLevel.Info));
+                    }
+                }
+                e.Handled = true;
+                return;
+            }
+            
+            // Enter - execute
+            if (e.Key == Key.Enter)
+            {
+                if (string.IsNullOrWhiteSpace(textBox.Text)) return;
+            
+                var cmd = textBox.Text.Trim();
+                textBox.Text = "";
+                _historyIndex = -1; // Reset history index
+            
+                // Add to history
+                DevToolsCore.Instance.AddToHistory(cmd);
+            
+                // Add input to console
+                _consoleLogs.Add(new ConsoleLogItem(cmd, ConsoleLogLevel.Input));
+            
+                // Execute JavaScript
+                try
+                {
+                    var result = DevToolsCore.Instance.EvaluateExpression(cmd);
+                    var output = result?.ToString() ?? "undefined";
+                    _consoleLogs.Add(new ConsoleLogItem(output, ConsoleLogLevel.Result));
+                }
+                catch (Exception ex)
+                {
+                    _consoleLogs.Add(new ConsoleLogItem($"Error: {ex.Message}", ConsoleLogLevel.Error));
+                }
+                
+                // Auto-scroll
+                var consoleOutput = this.FindControl<ListBox>("ConsoleOutput");
+                if (consoleOutput != null && _consoleLogs.Count > 0)
+                {
+                    consoleOutput.ScrollIntoView(_consoleLogs[^1]);
+                }
             }
         }
 
@@ -318,8 +430,10 @@ namespace FenBrowser.UI
                     Margin = new Thickness(0, 8, 0, 4)
                 });
                 
-                foreach (var kv in computed)
+                if (computed != null)
                 {
+                    foreach (var kv in computed.Map)
+                    {
                     var row = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal };
                     row.Children.Add(new TextBlock
                     {
@@ -339,6 +453,7 @@ namespace FenBrowser.UI
                 }
             }
         }
+    }
 
         #endregion
 
@@ -378,6 +493,11 @@ namespace FenBrowser.UI
             var lines = content.Split('\n');
             var breakpoints = DevToolsCore.Instance.GetBreakpointsForFile(url).ToList();
             
+            // Regex for syntax highlighting
+            var keywords = @"\b(break|case|catch|class|const|continue|debugger|default|delete|do|else|export|extends|finally|for|function|if|import|in|instanceof|let|new|return|super|switch|this|throw|try|typeof|var|void|while|with|yield|async|await|null|true|false)\b";
+            var pattern = $@"(?<Comment>//.*)|(?<String>""(?:[^""\\]|\\.)*""|'(?:[^'\\]|\\.)*')|(?<Keyword>{keywords})";
+            var regex = new System.Text.RegularExpressions.Regex(pattern, System.Text.RegularExpressions.RegexOptions.Compiled);
+
             for (int i = 0; i < lines.Length; i++)
             {
                 int lineNum = i + 1;
@@ -417,15 +537,71 @@ namespace FenBrowser.UI
                     [Grid.ColumnProperty] = 1
                 });
                 
-                // Code
-                row.Children.Add(new TextBlock
+                // Code with Syntax Highlighting
+                var tb = new TextBlock
                 {
-                    Text = lines[i],
-                    Foreground = new SolidColorBrush(Color.Parse("#CCCCCC")),
                     FontFamily = new FontFamily("Consolas"),
                     FontSize = 12,
                     [Grid.ColumnProperty] = 2
-                });
+                };
+                
+                // Default color
+                // tb.Foreground = new SolidColorBrush(Color.Parse("#D4D4D4"));
+                
+                var lineText = lines[i];
+                int lastIndex = 0;
+                
+                foreach (System.Text.RegularExpressions.Match m in regex.Matches(lineText))
+                {
+                    // Unmatched text before match
+                    if (m.Index > lastIndex)
+                    {
+                        tb.Inlines.Add(new Avalonia.Controls.Documents.Run 
+                        { 
+                            Text = lineText.Substring(lastIndex, m.Index - lastIndex),
+                            Foreground = new SolidColorBrush(Color.Parse("#D4D4D4"))
+                        });
+                    }
+                    
+                    if (m.Groups["Comment"].Success)
+                    {
+                        tb.Inlines.Add(new Avalonia.Controls.Documents.Run 
+                        { 
+                            Text = m.Value, 
+                            Foreground = new SolidColorBrush(Color.Parse("#6A9955")) 
+                        });
+                    }
+                    else if (m.Groups["String"].Success)
+                    {
+                        tb.Inlines.Add(new Avalonia.Controls.Documents.Run 
+                        { 
+                            Text = m.Value, 
+                            Foreground = new SolidColorBrush(Color.Parse("#CE9178")) 
+                        });
+                    }
+                    else if (m.Groups["Keyword"].Success)
+                    {
+                        tb.Inlines.Add(new Avalonia.Controls.Documents.Run 
+                        { 
+                            Text = m.Value, 
+                            Foreground = new SolidColorBrush(Color.Parse("#569CD6")) 
+                        });
+                    }
+                    
+                    lastIndex = m.Index + m.Length;
+                }
+                
+                // Remaining text
+                if (lastIndex < lineText.Length)
+                {
+                    tb.Inlines.Add(new Avalonia.Controls.Documents.Run 
+                    { 
+                        Text = lineText.Substring(lastIndex),
+                        Foreground = new SolidColorBrush(Color.Parse("#D4D4D4"))
+                    });
+                }
+                
+                row.Children.Add(tb);
                 
                 // Click to toggle breakpoint
                 int capturedLine = lineNum;
@@ -739,6 +915,118 @@ namespace FenBrowser.UI
         {
             if (string.IsNullOrEmpty(s)) return "";
             return s.Length <= max ? s : s.Substring(0, max) + "...";
+        }
+    }
+
+    // ===== Storage Editing Event Handlers in DevToolsView =====
+    public partial class DevToolsView
+    {
+        private string _currentStorageType = "localStorage";
+        
+        private void AddStorageItem(object sender, RoutedEventArgs e)
+        {
+            var newItem = new StorageItem { Key = "newKey", Value = "newValue" };
+            _storageItems.Add(newItem);
+            UpdateStorageSummary();
+            
+            // Persist to actual storage via browser
+            SaveStorageItem(newItem.Key, newItem.Value);
+        }
+        
+        private void DeleteStorageItem(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button btn && btn.Tag is string key)
+            {
+                var item = _storageItems.FirstOrDefault(i => i.Key == key);
+                if (item != null)
+                {
+                    _storageItems.Remove(item);
+                    RemoveStorageItem(key);
+                    UpdateStorageSummary();
+                }
+            }
+        }
+        
+        private void ClearStorage(object sender, RoutedEventArgs e)
+        {
+            _storageItems.Clear();
+            ClearAllStorageItems();
+            UpdateStorageSummary();
+        }
+        
+        private void StorageKeyChanged(object sender, RoutedEventArgs e)
+        {
+            // Key changes need to delete old and add new
+            RefreshStorageList();
+        }
+        
+        private void StorageValueChanged(object sender, RoutedEventArgs e)
+        {
+            if (sender is TextBox tb && tb.DataContext is StorageItem item)
+            {
+                SaveStorageItem(item.Key, item.Value);
+            }
+        }
+        
+        private void UpdateStorageSummary()
+        {
+            var summary = this.FindControl<TextBlock>("StorageSummary");
+            if (summary != null)
+            {
+                summary.Text = $"{_storageItems.Count} items";
+            }
+        }
+        
+        private void SaveStorageItem(string key, string value)
+        {
+            // Save via DevTools bridge - uses browser's localStorage/sessionStorage
+            if (_browser is BrowserHost host)
+            {
+                try
+                {
+                    if (_currentStorageType == "localStorage")
+                        host.Engine?.JsEngine?.RunInline($"localStorage.setItem('{key}', '{value}');");
+                    else
+                        host.Engine?.JsEngine?.RunInline($"sessionStorage.setItem('{key}', '{value}');");
+                }
+                catch { /* ignore storage errors */ }
+            }
+        }
+        
+        private void RemoveStorageItem(string key)
+        {
+            if (_browser is BrowserHost host)
+            {
+                try
+                {
+                    if (_currentStorageType == "localStorage")
+                        host.Engine?.JsEngine?.RunInline($"localStorage.removeItem('{key}');");
+                    else
+                        host.Engine?.JsEngine?.RunInline($"sessionStorage.removeItem('{key}');");
+                }
+                catch { /* ignore storage errors */ }
+            }
+        }
+        
+        private void ClearAllStorageItems()
+        {
+            if (_browser is BrowserHost host)
+            {
+                try
+                {
+                    if (_currentStorageType == "localStorage")
+                        host.Engine?.JsEngine?.RunInline("localStorage.clear();");
+                    else
+                        host.Engine?.JsEngine?.RunInline("sessionStorage.clear();");
+                }
+                catch { /* ignore storage errors */ }
+            }
+        }
+        
+        private void RefreshStorageList()
+        {
+            // Could implement full refresh from browser storage
+            UpdateStorageSummary();
         }
     }
 

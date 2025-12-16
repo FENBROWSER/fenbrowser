@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using System.Text.Json;
 using FenBrowser.Core;
 using FenBrowser.Core.Security;
+using FenBrowser.FenEngine.Security; // Added
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.DevTools;
 
@@ -34,6 +35,7 @@ namespace FenBrowser.FenEngine.Rendering
         event EventHandler<object> RepaintReady;
         event Action<string> ConsoleMessage;
         event Action<Avalonia.Rect?> HighlightRectChanged;
+        event Func<string, JsPermissions, Task<bool>> PermissionRequested;
 
         // Navigation
         Task<bool> NavigateAsync(string url);
@@ -190,6 +192,7 @@ namespace FenBrowser.FenEngine.Rendering
         public event EventHandler<object> RepaintReady;
         public event Action<string> ConsoleMessage;
         public event Action<Avalonia.Rect?> HighlightRectChanged;
+        public event Func<string, JsPermissions, Task<bool>> PermissionRequested;
 
         public Uri CurrentUri => _current;
         public ResourceManager ResourceManager => _resources;
@@ -204,6 +207,7 @@ namespace FenBrowser.FenEngine.Rendering
         public SecurityState SecurityState { get; private set; } = SecurityState.None;
         public CspPolicy CurrentPolicy { get; private set; }
         public Dictionary<LiteElement, CssComputed> ComputedStyles => _engine.LastComputedStyles;
+        public CustomHtmlEngine Engine => _engine;
 
         // ========== INJECTABLE DELEGATES FOR WEBDRIVER ==========
         // These are set by MainWindow/WebDriverIntegration to provide real implementations
@@ -341,6 +345,15 @@ namespace FenBrowser.FenEngine.Rendering
                 try { HighlightRectChanged?.Invoke(rect); }
                 catch { }
             };
+            
+            _engine.PermissionRequested += async (origin, perm) =>
+            {
+                if (PermissionRequested != null)
+                {
+                    return await PermissionRequested(origin, perm);
+                }
+                return false;
+            };
 
             ResourceManager.LogSink = (msg) =>
             {
@@ -348,6 +361,7 @@ namespace FenBrowser.FenEngine.Rendering
                 try { ConsoleMessage?.Invoke(msg); } catch { }
             };
             Console.WriteLine($"[BrowserHost] CWD: {Environment.CurrentDirectory}");
+            _engine.ScriptFetcher = (u) => _resources.FetchTextAsync(u);
             _navManager = new NavigationManager(_resources);
         }
 
@@ -580,6 +594,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         public async Task<string> GetTitleAsync()
         {
+            await Task.CompletedTask;
             var dom = _engine.GetActiveDom();
             if (dom != null)
             {
@@ -591,12 +606,14 @@ namespace FenBrowser.FenEngine.Rendering
 
         public async Task<object> ExecuteScriptAsync(string script)
         {
+            await Task.CompletedTask;
             try { FenLogger.Debug($"[BrowserApi] ExecuteScriptAsync called with script: {script}", LogCategory.JavaScript); } catch { }
             return _engine.Evaluate(script);
         }
 
         public async Task<string> FindElementAsync(string strategy, string value)
         {
+            await Task.CompletedTask;
             var dom = _engine.GetActiveDom();
             if (dom == null) throw new Exception("No active DOM");
 
@@ -730,6 +747,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         public async Task<string> FindElementAsync(string strategy, string value, string parentId = null)
         {
+            await Task.CompletedTask;
             var dom = _engine.GetActiveDom();
             if (dom == null) return null;
 
@@ -749,6 +767,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         public async Task<string[]> FindElementsAsync(string strategy, string value, string parentId = null)
         {
+            await Task.CompletedTask;
             var dom = _engine.GetActiveDom();
             if (dom == null) return Array.Empty<string>();
 
@@ -991,6 +1010,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         public async Task<object> ExecuteScriptAsync(string script, object[] args = null)
         {
+            await Task.CompletedTask;
             // WebDriver spec: scripts are executed as an anonymous function
             // So we wrap the script: (function() { <script> }).apply(null, arguments)
             string wrappedScript;
@@ -1025,6 +1045,7 @@ namespace FenBrowser.FenEngine.Rendering
         // Storage for async script callback result
         private object _asyncScriptResult = null;
         private bool _asyncScriptDone = false;
+        private bool _pointerDown = false;
         private readonly object _asyncScriptLock = new object();
 
         public async Task<object> ExecuteAsyncScriptAsync(string script, object[] args, int timeoutMs)
@@ -1258,7 +1279,7 @@ namespace FenBrowser.FenEngine.Rendering
             throw new TimeoutException($"Script execution timeout ({timeoutMs/1000}s)");
         }
 
-        public new async Task<string> CaptureScreenshotAsync()
+        public async Task<string> CaptureScreenshotAsync()
         {
             // Use delegate if available (injected from MainWindow/WebDriverIntegration)
             if (CaptureScreenshotDelegate != null)
@@ -1315,7 +1336,7 @@ namespace FenBrowser.FenEngine.Rendering
         // Actions - Pointer/Keyboard state
         private double _pointerX = 0;
         private double _pointerY = 0;
-        private bool _pointerDown = false;
+
         private HashSet<string> _pressedKeys = new HashSet<string>();
 
         public async Task PerformActionsAsync(List<ActionChain> actions)

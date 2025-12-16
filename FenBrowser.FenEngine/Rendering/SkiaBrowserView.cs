@@ -20,9 +20,13 @@ namespace FenBrowser.FenEngine.Rendering
         private LiteElement _root;
         private Dictionary<LiteElement, CssComputed> _styles;
 
-        public SkiaBrowserView()
+        public SkiaBrowserView() : this(new SkiaDomRenderer()) 
+        { 
+        }
+
+        public SkiaBrowserView(SkiaDomRenderer renderer)
         {
-            _renderer = new SkiaDomRenderer();
+            _renderer = renderer;
             
             // Set a transparent background so the Grid receives hit tests
             this.Background = Avalonia.Media.Brushes.Transparent;
@@ -128,11 +132,18 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                     else if (type == "radio")
                     {
-                        // Uncheck siblings with same name?
-                        // Simplified: just check this one for now.
                         curr.Attr["checked"] = "checked";
                         stateChanged = true;
                     }
+                    else if (type == "submit" || type == "image" || type == "button")
+                    {
+                        // Potential form submit
+                        if (CheckSubmit(curr)) return;
+                    }
+                }
+                else if (curr.Tag?.ToUpperInvariant() == "BUTTON")
+                {
+                    if (CheckSubmit(curr)) return;
                 }
 
                 // 3. Check for Summary (Toggle Details)
@@ -158,6 +169,26 @@ namespace FenBrowser.FenEngine.Rendering
                      Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(_backdrop.InvalidateVisual);
                 }
             }
+        }
+
+        public event EventHandler<LiteElement> FormSubmitted;
+        public event EventHandler<LiteElement> InputChanged;
+        public event EventHandler<LiteElement> ElementClicked;
+
+        private bool CheckSubmit(LiteElement element)
+        {
+            // Traverse up to find parent FORM
+            var p = element;
+            while (p != null)
+            {
+                if (p.Tag?.ToUpperInvariant() == "FORM")
+                {
+                    FormSubmitted?.Invoke(this, p);
+                    return true;
+                }
+                 p = _renderer.GetParent(p);
+            }
+            return false;
         }
         
         // CheckLink - returns true if element is a link, optionally invokes navigation
@@ -287,7 +318,16 @@ namespace FenBrowser.FenEngine.Rendering
                          btn.CornerRadius = new CornerRadius(4);
                          btn.BorderThickness = new Thickness(1);
                          // Hover effect handled by Avalonia's default button styles
-                         match = btn;
+                        
+                        btn.Click += (s, e) =>
+                        {
+                            ElementClicked?.Invoke(this, overlay.Node);
+                            if (overlay.Type == "submit")
+                            {
+                                CheckSubmit(overlay.Node);
+                            }
+                        };
+                        match = btn;
                      }
                      else if (overlay.Type == "select")
                      {
@@ -323,21 +363,72 @@ namespace FenBrowser.FenEngine.Rendering
                              tb.Watermark = overlay.Placeholder;
                          }
                          
-                         // Input styling should match underlying CSS
-                         tb.Background = Brushes.Transparent;
-                         tb.BorderThickness = new Thickness(0);
-                         tb.CornerRadius = new CornerRadius(0);
-                         tb.Padding = new Thickness(0); // Overlay is already sized to padding box
-                         tb.FontSize = 14; // Default or inherit? Hard to know. 14 is safe.
-                         tb.VerticalContentAlignment = Avalonia.Layout.VerticalAlignment.Center;
-                         
-                         tb.TextChanged += (s, e) => 
+                         // Apply CSS Styles to Avalonia Control
+                         if (overlay.BackgroundColor.HasValue)
                          {
-                             if (overlay.Node.Attr != null)
-                             {
-                                 overlay.Node.Attr["value"] = tb.Text;
-                             }
-                         };
+                             var c = overlay.BackgroundColor.Value;
+                             // If completely transparent, keep transparent. If partly transparent, use it.
+                             // Avalonia TextBox default is usually white/transparent.
+                             // Google input: #fff (or #202124 dark mode).
+                             tb.Background = new SolidColorBrush(Color.FromUInt32((uint)c));
+                         }
+                         else
+                         {
+                             tb.Background = Brushes.Transparent;
+                         }
+
+                         if (overlay.TextColor.HasValue)
+                         {
+                             var c = overlay.TextColor.Value;
+                             tb.Foreground = new SolidColorBrush(Color.FromUInt32((uint)c));
+                         }
+                         
+                         if (!string.IsNullOrEmpty(overlay.FontFamily))
+                         {
+                             tb.FontFamily = new FontFamily(overlay.FontFamily);
+                         }
+                         
+                         if (overlay.FontSize > 0)
+                         {
+                             tb.FontSize = overlay.FontSize;
+                         }
+                         
+                         // Borders
+                         tb.BorderThickness = overlay.BorderThickness;
+                         if (overlay.BorderColor.HasValue)
+                         {
+                             var c = overlay.BorderColor.Value;
+                             tb.BorderBrush = new SolidColorBrush(Color.FromUInt32((uint)c));
+                         }
+                         else
+                         {
+                             tb.BorderBrush = Brushes.Transparent;
+                         }
+                         
+                         tb.CornerRadius = overlay.BorderRadius;
+                         
+                         // Text Align
+                         if (!string.IsNullOrEmpty(overlay.TextAlign))
+                         {
+                            if (overlay.TextAlign == "center") tb.HorizontalContentAlignment = Avalonia.Layout.HorizontalAlignment.Center;
+                            else if (overlay.TextAlign == "right") tb.HorizontalContentAlignment = Avalonia.Layout.HorizontalAlignment.Right;
+                            else tb.HorizontalContentAlignment = Avalonia.Layout.HorizontalAlignment.Left;
+                         }
+                         else
+                         {
+                            tb.VerticalContentAlignment = Avalonia.Layout.VerticalAlignment.Center;
+                         }
+
+                         tb.Padding = new Thickness(4, 0, 4, 0); // Add small padding for text cursor breathing room
+                         
+                        tb.TextChanged += (s, e) => 
+                        {
+                            if (overlay.Node.Attr != null)
+                            {
+                                overlay.Node.Attr["value"] = tb.Text;
+                                InputChanged?.Invoke(this, overlay.Node);
+                            }
+                        };
                          
                          match = tb;
                      }

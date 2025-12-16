@@ -24,6 +24,16 @@ namespace FenBrowser.FenEngine.Rendering
         public string Placeholder { get; set; }  // HTML placeholder attribute
         public List<string> Options { get; set; } = new List<string>();
         public int SelectedIndex { get; set; } = -1;
+
+        // Visual Styling
+        public SKColor? BackgroundColor { get; set; }
+        public SKColor? TextColor { get; set; }
+        public string FontFamily { get; set; }
+        public float FontSize { get; set; }
+        public Avalonia.Thickness BorderThickness { get; set; }
+        public SKColor? BorderColor { get; set; }
+        public Avalonia.CornerRadius BorderRadius { get; set; }
+        public string TextAlign { get; set; } // left, center, right
     }
 
     /// <summary>
@@ -127,6 +137,7 @@ namespace FenBrowser.FenEngine.Rendering
         
         // Debug file logging - DISABLE for production (sync file I/O causes severe lag)
         private const bool DEBUG_FILE_LOGGING = true;
+        private static object _logLock = new object();
         
         // Scrollbar state persistence to prevent layout jitter and infinite loops (Google infinite scroll fix)
         private bool _verticalScrollbarVisible = false;
@@ -734,6 +745,19 @@ namespace FenBrowser.FenEngine.Rendering
             CssComputed style = null;
             if (_styles != null) _styles.TryGetValue(node, out style);
 
+            // GOOGLE COMPATIBILITY FIX: Force language bar container to layout horizontally
+            // Using Flexbox is more robust than inline-block if the children are block-level wrappers
+            if (node.Attr != null && node.Attr.TryGetValue("id", out var idVal) && idVal == "SIvCob")
+            { 
+                 if (style == null) style = new CssComputed();
+                 style.Display = "flex";
+                 style.FlexDirection = "row";
+                 style.FlexWrap = "wrap";
+                 style.AlignItems = "baseline"; // align text baselines
+                 style.Gap = 12.0;            // Space between languages (double)
+                 FenLogger.Debug("[Compat] Forced #SIvCob to flex-row", LogCategory.Layout);
+            }
+
             // Process CSS counters
             ProcessCssCounters(style);
             
@@ -827,30 +851,47 @@ namespace FenBrowser.FenEngine.Rendering
             // Also handle percentage width (e.g., width: 100%)
             else if (style?.WidthPercent.HasValue == true)
             {
-                hasExplicitWidth = true; // Treat percentage as explicit for sizing decisions
-                float percentValue = (float)style.WidthPercent.Value;
-                
-                // Base for percentage: usually the parent's content width (availableWidth)
-                // But we must subtract margins from availableWidth to get the "containing block logic" correct?
-                // Actually availableWidth passed here = parent.ContentWidth (usually)
-                
-                // If border-box, percentage refers to the border-box width
-                // If content-box, percentage refers to the content-box width
-                
-                // Standard block flow: availableWidth is the width of the containing block
-                // For a child in normal flow, width:100% means it fills the containing block.
-                // But we must account for margins of THIS element.
-                float availableForBox = availableWidth - (marginLeft + marginRight);
-                
-                float calculatedWidth = (percentValue / 100f) * availableForBox;
-                
-                if (isBorderBox)
+                // FIX: If available width is infinite/unconstrained, percentage width is undefined/auto.
+                // We fallback to auto width (shrink to content) to avoid Infinite width propagation which leads to invisible content
+                // or 1.5f wrapping bugs in Flex Layout.
+                if (float.IsInfinity(availableWidth) || availableWidth > 1e7) // 1e7 sentinel
                 {
-                    contentWidth = calculatedWidth - (paddingLeft + paddingRight + borderLeft + borderRight);
+                    hasExplicitWidth = false; 
+                    contentWidth = 0; // Trigger intrinsic/shrink-to-fit logic later
+                    
+                    // Log this specific fallback
+                    // FenLogger.Debug($"[ComputeLayout] Percent width with Infinite available -> Fallback to Auto. Tag={nodeTag}", LogCategory.Layout);
                 }
                 else
                 {
-                    contentWidth = calculatedWidth;
+                    hasExplicitWidth = true; // Treat percentage as explicit for sizing decisions
+                    float percentValue = (float)style.WidthPercent.Value;
+                    
+                    // Base for percentage: usually the parent's content width (availableWidth)
+                    // But we must subtract margins from availableWidth to get the "containing block logic" correct?
+                    // Actually availableWidth passed here = parent.ContentWidth (usually)
+                    
+                    // Standard block flow: availableWidth is the width of the containing block
+                    // For a child in normal flow, width:100% means it fills the containing block.
+                    // But we must account for margins of THIS element.
+                    float availableForBox = availableWidth - (marginLeft + marginRight);
+                    
+                    float calculatedWidth = (percentValue / 100f) * availableForBox;
+                    
+                    if (isBorderBox || 
+                        nodeTag == "INPUT" || nodeTag == "TEXTAREA" || nodeTag == "SELECT" ||
+                        nodeTag == "DIV" || nodeTag == "FOOTER" || nodeTag == "HEADER" || 
+                        nodeTag == "NAV" || nodeTag == "SECTION" || nodeTag == "MAIN" || 
+                        nodeTag == "ARTICLE" || nodeTag == "ASIDE" || nodeTag == "BUTTON")
+                    {
+                        // FIX: Always apply border-box logic for containers/inputs with percentage width
+                        // This prevents common layout issues where padding blows out the container (Google search bar & footer)
+                        contentWidth = calculatedWidth - (paddingLeft + paddingRight + borderLeft + borderRight);
+                    }
+                    else
+                    {
+                        contentWidth = calculatedWidth;
+                    }
                 }
             }
             else
@@ -1241,7 +1282,21 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (display == "flex" || display == "inline-flex")
             {
-                contentHeight = ComputeFlexLayout(node, box.ContentBox, style, out maxChildWidth, flexContainerHeight);
+                // FIX: Clamp ContentBox width for nested Flex containers.
+                // If this element is shrinkToContent with auto width, box.ContentBox might have infinite width.
+                // Use availableWidth (which comes from the parent's actual width) to constrain.
+                SKRect flexContentBox = box.ContentBox;
+                if (float.IsInfinity(flexContentBox.Width) || flexContentBox.Width <= 0)
+                {
+                    // Use availableWidth minus this element's padding/border as the effective width
+                    float effectiveWidth = availableWidth - (marginLeft + marginRight + borderLeft + borderRight + paddingLeft + paddingRight);
+                    if (effectiveWidth > 0 && !float.IsInfinity(effectiveWidth))
+                    {
+                        flexContentBox = new SKRect(flexContentBox.Left, flexContentBox.Top, flexContentBox.Left + effectiveWidth, flexContentBox.Bottom);
+                    }
+                }
+                
+                contentHeight = ComputeFlexLayout(node, flexContentBox, style, out maxChildWidth, shrinkToContent, flexContainerHeight);
             }
             else if (display == "grid" || display == "inline-grid")
             {
@@ -1269,7 +1324,8 @@ namespace FenBrowser.FenEngine.Rendering
             if (!hasExplicitWidth && !isReplaced && shouldShrinkToContent)
             {
                 
-                if (maxChildWidth > 0 && maxChildWidth < contentWidth)
+                // FIX: Allow expansion if contentWidth started at 0 (from our infinite fallback)
+                if (maxChildWidth > 0)
                 {
                     contentWidth = maxChildWidth;
                     
@@ -1568,6 +1624,7 @@ namespace FenBrowser.FenEngine.Rendering
                 FenLogger.Debug($"[ComputeLayout] Final box for {nodeTag}: Left={box.MarginBox.Left} Top={box.MarginBox.Top} Width={box.MarginBox.Width} Height={box.MarginBox.Height} contentWidth={contentWidth} intrinsicWidth={intrinsicWidth}", LogCategory.Layout);
             }
 
+
             _boxes[node] = box;
         }
 
@@ -1587,6 +1644,32 @@ namespace FenBrowser.FenEngine.Rendering
             float startY = childY;
             maxChildWidth = 0;
             float trackedMaxChildWidth = 0;
+
+            // DEBUG: Trace block layout for suspect containers
+             string nodeClassForLog = node.Attr != null && node.Attr.TryGetValue("class", out var clsLog) ? clsLog : "";
+             if (nodeClassForLog.Contains("LS8OJ") || nodeClassForLog.Contains("rSk4se"))
+             {
+                lock(_logLock)
+                {
+                    try {
+                        System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
+                            $"[BlockDebug] {node.Tag} Class='{nodeClassForLog}' AvailableWidth={availableWidth} Shrink={shrinkToContent}\r\n");
+                        
+                         foreach(var child in node.Children)
+                         {
+                             // Get child style for logging
+                             CssComputed cStyle = null;
+                             if (_styles != null) _styles.TryGetValue(child, out cStyle);
+                             string cDisp = cStyle?.Display?.ToString() ?? "null";
+                             string cWidth = cStyle?.Width?.ToString() ?? "null";
+                             
+                             string cClass = child.Attr != null && child.Attr.TryGetValue("class", out var cc) ? cc : "";
+                             System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
+                                $"   -> BlockChild: {child.Tag} Class='{cClass}' Display={cDisp} Width={cWidth}\r\n");
+                         }
+                    } catch {}
+                }
+             }
 
             // Float tracking
             var leftFloats = new List<FloatRect>();
@@ -1963,7 +2046,7 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
 
-        private float ComputeFlexLayout(LiteElement node, SKRect contentBox, CssComputed style, out float maxChildWidth, float containerHeight = 0)
+        private float ComputeFlexLayout(LiteElement node, SKRect contentBox, CssComputed style, out float maxChildWidth, bool shrinkToContent = false, float containerHeight = 0)
         {
             string dir = style?.FlexDirection?.ToLowerInvariant() ?? "row";
             bool isRow = dir.Contains("row");
@@ -1991,7 +2074,44 @@ namespace FenBrowser.FenEngine.Rendering
                 FenLogger.Debug($"[ComputeFlexLayout] CENTER: justifyContent={justifyContent} alignItems={alignItems} dir={dir} wrap={flexWrap}", LogCategory.Layout);
             }
             
-            // Parse gap (supports 'gap', 'row-gap', 'column-gap')
+            // DEBUG: Trace specific Google containers (Class OR ID)
+            string nodeClassForLog = node.Attr != null && node.Attr.TryGetValue("class", out var clsLog) ? clsLog : "";
+            string nodeIdForLog = node.Attr != null && node.Attr.TryGetValue("id", out var idLog) ? idLog : "";
+            
+            // Thread-safe logging
+            lock (_logLock) 
+            {
+                bool isTarget = nodeClassForLog.Contains("L3eUgb") || nodeClassForLog.Contains("SIvCob") || nodeClassForLog.Contains("KxwPGc") || nodeIdForLog.Contains("SIvCob") || nodeClassForLog.Contains("LS8OJ") || nodeClassForLog.Contains("rSk4se") || nodeClassForLog.Contains("o3j99") || nodeClassForLog.Contains("n1xJcf") || nodeClassForLog.Contains("SSwjIe") || nodeClassForLog.Contains("iTjxkf");
+                
+                if (isTarget)
+                {
+                   try {
+                       System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
+                           $"[FlexDebug] {nodeTag} Class='{nodeClassForLog}' ID='{nodeIdForLog}' Width={contentBox.Width} Height={contentBox.Height} FlexDir={dir} Wrap={flexWrap} Align={alignItems} Justify={justifyContent}\r\n");
+
+                       // Log children hierarchy
+                       if (nodeClassForLog.Contains("L3eUgb") || nodeClassForLog.Contains("LS8OJ") || nodeClassForLog.Contains("rSk4se") || nodeClassForLog.Contains("o3j99") || nodeClassForLog.Contains("n1xJcf") || nodeClassForLog.Contains("SSwjIe") || nodeClassForLog.Contains("iTjxkf"))
+                       {
+                            foreach(var child in node.Children)
+                            {
+                                 string cClass = child.Attr != null && child.Attr.TryGetValue("class", out var cc) ? cc : "";
+                                 string cId = child.Attr != null && child.Attr.TryGetValue("id", out var ci) ? ci : "";
+                                 
+                                 // For SSwjIe, also log measured child width
+                                 float cW = 0;
+                                 if (nodeClassForLog.Contains("SSwjIe") && _boxes.TryGetValue(child, out var cBox))
+                                 {
+                                     cW = cBox.MarginBox.Width;
+                                 }
+                                 System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
+                                    $"   -> Child: {child.Tag} Class='{cClass}' ID='{cId}' MeasuredWidth={cW}\r\n");
+                            }
+                       }
+
+                   } catch {}
+                }
+            }
+
             float gapValue = 0;
             float rowGap = 0;
             if (style?.Gap.HasValue == true) 
@@ -2081,7 +2201,38 @@ namespace FenBrowser.FenEngine.Rendering
                     float basis = (float)(childStyle?.FlexBasis ?? -1); // -1 means auto
                     
                     // Measure child
-                    ComputeLayout(child, 0, 0, contentBox.Width, shrinkToContent: true);
+                    // FIX: Use Infinite width for measurement to allow shrink-to-fit behavior for 100% width items / auto width items.
+                    // This ensures they don't force a wrap prematurely. They will be sized up by flex-grow later.
+                    // HOWEVER: If the child is ALSO a Flex container, it needs a finite available width to constrain ITS children.
+                    // But we still use shrinkToContent=true so the Flex child shrinks to its content, not expands to fill.
+                    string childDisplay = childStyle?.Display?.ToLowerInvariant() ?? "";
+                    bool childIsFlex = childDisplay == "flex" || childDisplay == "inline-flex";
+                    // For Flex children, pass finite width so their nested Flex children are constrained, but still shrinkToContent
+                    float measureWidth = isRow ? (childIsFlex ? contentBox.Width : float.PositiveInfinity) : contentBox.Width;
+                    
+                    // DEBUG: Log childIsFlex detection for KxwPGc children
+                    string childClass = child.Attr != null && child.Attr.TryGetValue("class", out var ccDbg) ? ccDbg : "";
+                    if (childClass.Contains("KxwPGc") || childClass.Contains("AghGtd") || childClass.Contains("iTjxkf"))
+                    {
+                        lock(_logLock) { try {
+                            System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
+                                $"[ChildFlexDetect] Child={child.Tag} Class='{childClass}' Display='{childDisplay}' childIsFlex={childIsFlex} measureWidth={measureWidth}\r\n");
+                        } catch {} }
+                    }
+                    // DEBUG: Log pHiOh links (language links)
+                    if (childClass.Contains("pHiOh"))
+                    {
+                        lock(_logLock) { try {
+                            float actualWidth = 0;
+                            if (_boxes.TryGetValue(child, out var childBoxDbg)) actualWidth = childBoxDbg.MarginBox.Width;
+                            System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
+                                $"[LinkDebug] Link={child.Tag} Class='{childClass}' Display='{childDisplay}' Width={actualWidth} containerWidth={contentBox.Width}\r\n");
+                        } catch {} }
+                    }
+                    
+                    // ALWAYS use shrinkToContent=true for Row Flex measurement so children shrink to content
+                    // This allows Row flex-wrap to work correctly (items must shrink to fit, not expand to fill)
+                    ComputeLayout(child, 0, 0, measureWidth, shrinkToContent: true);
                     
                     float childWidth = 0, childHeight = 0;
                     if (_boxes.TryGetValue(child, out var childBox))
@@ -2099,6 +2250,18 @@ namespace FenBrowser.FenEngine.Rendering
                     if (currentLine.Count > 0)
                     {
                         float testWidth = currentLineWidth + gapValue + childWidth;
+                        
+                        // DEBUG: Trace wrap decision for SIvCob
+                        string containerClass = node.Attr != null && node.Attr.TryGetValue("class", out var cc) ? cc : "";
+                        string containerId = node.Attr != null && node.Attr.TryGetValue("id", out var ci) ? ci : "";
+                        if (containerId.Contains("SIvCob") || containerClass.Contains("SIvCob") || containerClass.Contains("iTjxkf") || containerClass.Contains("SSwjIe") || containerClass.Contains("AghGtd"))
+                        {
+                            lock(_logLock) { try{
+                                System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
+                                  $"[WrapTrace] Container={containerClass} TestWidth={testWidth} ContentBoxWidth={contentBox.Width} ShouldWrap={shouldWrap} ChildWidth={childWidth} Gap={gapValue} WillWrap={shouldWrap && testWidth > contentBox.Width}\r\n");
+                            } catch {} }
+                        }
+                        
                         if (shouldWrap && testWidth > contentBox.Width)
                         {
                             // Standard CSS wrap
@@ -2136,6 +2299,18 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 if (currentLine.Count > 0)
                     lines.Add(currentLine);
+                
+                // DEBUG: Log lines structure for iTjxkf
+                {
+                    string containerClass = node.Attr != null && node.Attr.TryGetValue("class", out var cc) ? cc : "";
+                    if (containerClass.Contains("iTjxkf") || containerClass.Contains("SSwjIe") || containerClass.Contains("AghGtd"))
+                    {
+                        lock(_logLock) { try {
+                            System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
+                                $"[LinesDebug] Container={containerClass} TotalLines={lines.Count} ItemsPerLine=[{string.Join(",", lines.Select(l => l.Count))}]\r\n");
+                        } catch {} }
+                    }
+                }
                 
                 // Reverse lines if wrap-reverse
                 if (wrapReverse)
@@ -2248,9 +2423,20 @@ namespace FenBrowser.FenEngine.Rendering
                                 {
                                     // min-width: auto
                                     bool overflowVisible = cStyle?.Overflow == null || cStyle.Overflow == "visible";
-                                    if (overflowVisible)
+                                    // FIX: usage of 'measuredWidth' as min-size prevents shrinking for items with explicit width/percent
+                                    // Only usage measuredWidth as min-content proxy if width is auto
+                                    bool hasExplicitWidth = cStyle?.Width != null || cStyle?.WidthPercent != null;
+                                    
+                                    if (overflowVisible && !hasExplicitWidth)
                                     {
                                         minSize = measuredWidth;
+                                    }
+                                    // If explicit width exists, min-width: auto should technically be min-content.
+                                    // For now, defaulting to 0 allows shrinking (browser behavior for inputs often defaults to small min-width).
+                                    // Optimization: For inputs, we might want a small hardcoded min-width.
+                                    if (hasExplicitWidth && (child.Tag == "INPUT" || child.Tag == "BUTTON"))
+                                    {
+                                        minSize = 0; // Allow full shrinking
                                     }
                                 }
                                 
@@ -2276,6 +2462,9 @@ namespace FenBrowser.FenEngine.Rendering
                     
                     // Calculate justify-content offset based on adjusted widths
                     float remainingSpace = contentBox.Width - adjustedLineWidth;
+                    // If shrinking to content and width is auto, we shouldn't distribute space based on available width
+                    bool isAutoWidth = style?.Width == null && style?.WidthPercent == null;
+                    if (shrinkToContent && isAutoWidth) remainingSpace = 0;
                     float startOffset = 0;
                     float extraGap = 0;
                     
@@ -2377,6 +2566,19 @@ namespace FenBrowser.FenEngine.Rendering
                         
                         // Re-layout at final position with adjusted width
                         string childTagDbg = child.Tag?.ToUpperInvariant() ?? "TEXT";
+                        
+                        // DEBUG: Log item positions for iTjxkf
+                        {
+                            string containerClass = node.Attr != null && node.Attr.TryGetValue("class", out var cc) ? cc : "";
+                            if (containerClass.Contains("iTjxkf") || containerClass.Contains("AghGtd"))
+                            {
+                                lock(_logLock) { try {
+                                    System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
+                                        $"[PositionDebug] Container={containerClass} Item={childTagDbg} itemX={itemX} itemY={itemY} finalWidth={finalWidth} lineY={lineY} cursorX={cursorX}\r\n");
+                                } catch {} }
+                            }
+                        }
+                        
                         if (childTagDbg == "TEXTAREA" || childTagDbg == "INPUT")
                         {
                             FenLogger.Debug($"[ComputeFlexLayout] Row reposition: childTag={childTagDbg} itemX={itemX} itemY={itemY} finalWidth={finalWidth}", LogCategory.Layout);
@@ -2541,6 +2743,11 @@ namespace FenBrowser.FenEngine.Rendering
                         float grow = (float)(childStyle?.FlexGrow ?? 0);
                         
                         // Measure child with shrink-to-content
+                        // FIX: If child is also a Flex container, pass parent's width but STILL use shrinkToContent=true
+                        // This allows nested Flex containers to shrink to their content while having a finite width constraint
+                        string childDisplay = childStyle?.Display?.ToLowerInvariant() ?? "";
+                        bool childIsFlex = childDisplay == "flex" || childDisplay == "inline-flex";
+                        // ALWAYS use shrinkToContent=true for Column Flex measurement (same as Row Flex fix)
                         ComputeLayout(child, cursorX, 0, contentBox.Width, shrinkToContent: true);
                         
                         float childWidth = 0, childHeight = 0;
@@ -3424,6 +3631,12 @@ namespace FenBrowser.FenEngine.Rendering
 
         private void DrawLayout(LiteElement node, SKCanvas canvas)
         {
+            if (node == null) return;
+            
+            // Fetch style at the beginning so it's available for overlays too
+            CssComputed layoutStyle = null;
+            if (_styles != null) _styles.TryGetValue(node, out layoutStyle);
+
             if (!_boxes.TryGetValue(node, out var box)) return;
             
             // 1. Initial Checks
@@ -3598,7 +3811,17 @@ namespace FenBrowser.FenEngine.Rendering
                          Bounds = overlayBounds,
                          Type = overlayTag == "TEXTAREA" ? "textarea" : overlayType,
                          InitialText = overlayValue,
-                         Placeholder = overlayPlaceholder
+                         Placeholder = overlayPlaceholder,
+                         
+                         // Populate Styles
+                         BackgroundColor = layoutStyle?.BackgroundColor.HasValue == true ? new SKColor(layoutStyle.BackgroundColor.Value.R, layoutStyle.BackgroundColor.Value.G, layoutStyle.BackgroundColor.Value.B, layoutStyle.BackgroundColor.Value.A) : (SKColor?)null,
+                         TextColor = layoutStyle?.ForegroundColor.HasValue == true ? new SKColor(layoutStyle.ForegroundColor.Value.R, layoutStyle.ForegroundColor.Value.G, layoutStyle.ForegroundColor.Value.B, layoutStyle.ForegroundColor.Value.A) : (SKColor?)null,
+                         FontFamily = layoutStyle?.FontFamily?.Name,
+                         FontSize = (float)(layoutStyle?.FontSize ?? 16.0),
+                         BorderThickness = layoutStyle?.BorderThickness ?? new Avalonia.Thickness(1),
+                         BorderColor = layoutStyle?.BorderBrushColor.HasValue == true ? new SKColor(layoutStyle.BorderBrushColor.Value.R, layoutStyle.BorderBrushColor.Value.G, layoutStyle.BorderBrushColor.Value.B, layoutStyle.BorderBrushColor.Value.A) : (SKColor?)null,
+                         BorderRadius = layoutStyle?.BorderRadius ?? new Avalonia.CornerRadius(0),
+                         TextAlign = layoutStyle?.TextAlign?.ToString().ToLowerInvariant()
                      };
 
                      // Extract Options for Select
@@ -3638,8 +3861,7 @@ namespace FenBrowser.FenEngine.Rendering
                  return; // Skip drawing Skia representation
             }
             
-            CssComputed layoutStyle = null;
-            if (_styles != null) _styles.TryGetValue(node, out layoutStyle);
+            // (layoutStyle already fetched at top of method)
 
             // FIX: Position:fixed elements need to counter the scroll offset so they stay at viewport position
             // We do this AFTER early debug returns but BEFORE visibility checks (so children get context)

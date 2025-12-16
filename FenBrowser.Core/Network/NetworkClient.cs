@@ -46,7 +46,7 @@ namespace FenBrowser.Core.Network
             try
             {
                 // Throttle concurrent requests
-                await _connectionSemaphore.WaitAsync(ct);
+                await _connectionSemaphore.WaitAsync(ct).ConfigureAwait(false);
                 
                 // Track connection
                 var connInfo = _activeConnections.GetOrAdd(hostKey, _ => new ConnectionInfo(hostKey));
@@ -60,7 +60,7 @@ namespace FenBrowser.Core.Network
                 }
                 
                 var context = new NetworkContext(request);
-                await ExecutePipelineAsync(context, 0, ct);
+                await ExecutePipelineAsync(context, 0, ct).ConfigureAwait(false);
                 
                 sw.Stop();
                 
@@ -110,7 +110,7 @@ namespace FenBrowser.Core.Network
                 var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 cts.CancelAfter(TimeSpan.FromSeconds(5));
                 
-                await SendAsync(request, cts.Token);
+                await SendAsync(request, cts.Token).ConfigureAwait(false);
                 
                 LogManager.Log(LogCategory.Network, LogLevel.Debug,
                     $"[NetworkClient] Preconnected to {hostKey}");
@@ -159,7 +159,7 @@ namespace FenBrowser.Core.Network
             }
 
             var handler = _handlers[index];
-            await handler.HandleAsync(context, () => ExecutePipelineAsync(context, index + 1, ct), ct);
+            await handler.HandleAsync(context, () => ExecutePipelineAsync(context, index + 1, ct), ct).ConfigureAwait(false);
         }
 
         private static string GetHostKey(Uri uri)
@@ -170,28 +170,28 @@ namespace FenBrowser.Core.Network
         public async Task<string> GetStringAsync(string url, CancellationToken ct = default)
         {
             using (var req = new HttpRequestMessage(HttpMethod.Get, url))
-            using (var resp = await SendAsync(req, ct))
+            using (var resp = await SendAsync(req, ct).ConfigureAwait(false))
             {
                 resp.EnsureSuccessStatusCode();
-                return await resp.Content.ReadAsStringAsync();
+                return await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
             }
         }
 
         public async Task<Stream> GetStreamAsync(string url, CancellationToken ct = default)
         {
             var req = new HttpRequestMessage(HttpMethod.Get, url);
-            var resp = await SendAsync(req, ct);
+            var resp = await SendAsync(req, ct).ConfigureAwait(false);
             resp.EnsureSuccessStatusCode();
-            return await resp.Content.ReadAsStreamAsync();
+            return await resp.Content.ReadAsStreamAsync().ConfigureAwait(false);
         }
 
         public async Task<byte[]> GetByteArrayAsync(string url, CancellationToken ct = default)
         {
             using (var req = new HttpRequestMessage(HttpMethod.Get, url))
-            using (var resp = await SendAsync(req, ct))
+            using (var resp = await SendAsync(req, ct).ConfigureAwait(false))
             {
                 resp.EnsureSuccessStatusCode();
-                return await resp.Content.ReadAsByteArrayAsync();
+                return await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
             }
         }
     }

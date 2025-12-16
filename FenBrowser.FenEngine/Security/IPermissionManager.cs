@@ -45,6 +45,7 @@ namespace FenBrowser.FenEngine.Security
         ServiceWorkers = 1 << 18,    // Service Workers
         Notifications = 1 << 19,     // Notification API
         Geolocation = 1 << 20,       // navigator.geolocation
+        Camera = 1 << 21,            // Camera/Microphone
         
         // DANGEROUS - Never grant these
         Eval = 1 << 30,              // eval(), Function constructor
@@ -89,6 +90,20 @@ namespace FenBrowser.FenEngine.Security
         /// Get all violations logged so far
         /// </summary>
         System.Collections.Generic.IReadOnlyList<SecurityViolation> GetViolations();
+
+        /// <summary>
+        /// Request a permission asynchronously (checks persistence and prompts user if needed).
+        /// </summary>
+        /// <param name="permission">The permission to request.</param>
+        /// <param name="origin">The origin requesting the permission.</param>
+        /// <returns>True if granted, false otherwise.</returns>
+        System.Threading.Tasks.Task<bool> RequestPermissionAsync(JsPermissions permission, string origin);
+
+        /// <summary>
+        /// Handler for UI permission prompts. 
+        /// Params: Origin, Permission. Returns: Granted (true/false).
+        /// </summary>
+        Func<string, JsPermissions, System.Threading.Tasks.Task<bool>> PermissionRequestedHandler { get; set; }
     }
 
     /// <summary>

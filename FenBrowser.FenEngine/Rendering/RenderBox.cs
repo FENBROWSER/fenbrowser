@@ -61,27 +61,52 @@ namespace FenBrowser.FenEngine.Rendering
                 targetWidth = Style.Width.Value;
                 if (!isBorderBox) targetWidth += padding.Left + padding.Right + border.Left + border.Right;
             }
-            else if (Style.WidthPercent.HasValue) targetWidth = availableSize.Width * (Style.WidthPercent.Value / 100.0) - margin.Left - margin.Right;
+            else if (Style.WidthPercent.HasValue) 
+            {
+                if (double.IsInfinity(availableSize.Width)) targetWidth = double.PositiveInfinity;
+                else targetWidth = availableSize.Width * (Style.WidthPercent.Value / 100.0) - margin.Left - margin.Right;
+            }
             else targetWidth = availableSize.Width - margin.Left - margin.Right;
             
-            bool isBlock = Style.Display == "block" || Style.Display == null; 
+            if (Style.Display == null) // Default UA styles
+            {
+                var tag = Node?.Tag?.ToUpperInvariant();
+                if (tag == "INPUT" || tag == "SELECT" || tag == "TEXTAREA" || tag == "BUTTON" || tag == "IMG") 
+                    Style.Display = "inline-block";
+                else if (tag == "SPAN" || tag == "A" || tag == "LABEL" || tag == "B" || tag == "I" || tag == "STRONG" || tag == "EM")
+                    Style.Display = "inline";
+                else 
+                    Style.Display = "block";
+            }
+            
+            bool isBlock = Style.Display == "block" || Style.Display == "flex" || Style.Display == "grid"; 
             
             if (!Style.Width.HasValue && !Style.WidthPercent.HasValue)
             {
+                // Intrinsic widths for replaced elements
                 var tag = Node?.Tag?.ToUpperInvariant();
-                if (tag == "INPUT" || tag == "BUTTON" || tag == "SELECT" || tag == "IMG")
+                if (tag == "INPUT" || tag == "BUTTON" || tag == "SELECT")
                 {
-                    // If it's a block, it takes full width (already set above).
-                    // If it's inline/inline-block, we give it intrinsic width.
-                    if (Style.Display == "inline" || Style.Display == "inline-block")
-                    {
-                         if (tag == "IMG") targetWidth = 300;
-                         else targetWidth = 150;
-                    }
+                     targetWidth = 150; // Default generic width
+                }
+                else if (tag == "IMG")
+                {
+                     targetWidth = 300; // Placeholder
                 }
                 else if (tag == "HR")
                 {
-                    // HR takes full width by default
+                    // HR takes full width by default (stays as initialized)
+                }
+                else if (Style.Display == "inline" || Style.Display == "inline-block")
+                {
+                     // Shrink to fit content is handled later via IsInfinity check or LayoutInlineChildren
+                     // But here we need to set a base? 
+                     // No, if isBlock is false, LayoutInlineChildren logic applies.
+                     // But Wait, LayoutInlineChildren returns HEIGHT.
+                     // RenderBox Width needs to be known. 
+                     // If it's inline-block, it should be shrink-to-fit.
+                     // We set targetWidth to Infinity to trigger shrink logic later.
+                     targetWidth = double.PositiveInfinity;
                 }
             }
 
@@ -185,9 +210,27 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 targetWidth = maxRight + padding.Right + border.Right;
                 
+                // Fallback for replaced elements with percentage width (which became Infinity) but no children
+                if (Children.Count == 0)
+                {
+                    var tag = Node?.Tag?.ToUpperInvariant();
+                    if (tag == "INPUT" || tag == "SELECT" || tag == "BUTTON" || tag == "TEXTAREA") 
+                        targetWidth = Math.Max(targetWidth, 150 + padding.Left + padding.Right + border.Left + border.Right);
+                    else if (tag == "IMG") 
+                        targetWidth = Math.Max(targetWidth, 300 + padding.Left + padding.Right + border.Left + border.Right);
+                }
+                
                 // Re-apply min/max constraints
-                if (Style.MinWidth.HasValue && targetWidth < Style.MinWidth.Value) targetWidth = Style.MinWidth.Value;
                 if (Style.MaxWidth.HasValue && targetWidth > Style.MaxWidth.Value) targetWidth = Style.MaxWidth.Value;
+
+                // Re-layout children if we resolved a finite width from infinity
+                // This is crucial for justify-content: center/end to work correctly after we determine our size
+                if (isFlex && !double.IsInfinity(targetWidth) && targetWidth > 0)
+                {
+                    double resolvedContentWidth = targetWidth - padding.Left - padding.Right - border.Left - border.Right;
+                    if (resolvedContentWidth < 0) resolvedContentWidth = 0;
+                    LayoutFlexChildren(resolvedContentWidth);
+                }
             }
 
             // 6. Set Final Bounds
@@ -415,7 +458,11 @@ namespace FenBrowser.FenEngine.Rendering
                 double startMain = isRow ? startX : startY;
                 double gapMain = 0;
 
-                if (isRow) // Justify applies to main axis
+                // If contentWidth is infinite (measuring phase), we CANNOT justify (it would push items to infinity).
+                // Force flex-start behavior.
+                bool performJustify = isRow ? !double.IsInfinity(contentWidth) : true; // TODO: Column height support
+
+                if (isRow && performJustify) // Justify applies to main axis
                 {
                     if (justify == "center") startMain += remainingMain / 2;
                     else if (justify == "flex-end") startMain += remainingMain;

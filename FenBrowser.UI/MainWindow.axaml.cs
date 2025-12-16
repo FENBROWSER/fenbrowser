@@ -5,6 +5,7 @@ using Avalonia.Interactivity;
 using Avalonia.Threading;
 using FenBrowser.Core;
 using FenBrowser.FenEngine.Rendering;
+using FenBrowser.FenEngine.Security; // Added
 using FenBrowser.WebDriver;
 using System;
 using System.Collections.Generic;
@@ -430,6 +431,67 @@ namespace FenBrowser.UI
                     {
                         UpdateHighlight(rect);
                     }
+                });
+            };
+
+            browser.PermissionRequested += async (origin, perm) =>
+            {
+                return await Dispatcher.UIThread.InvokeAsync(async () =>
+                {
+                    // Simple custom dialog
+                    var tcs = new System.Threading.Tasks.TaskCompletionSource<bool>();
+                    
+                    var dialog = new Window
+                    {
+                        Width = 400,
+                        Height = 180,
+                        Title = "Permissions",
+                        WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                        CanResize = false,
+                        SystemDecorations = SystemDecorations.BorderOnly
+                    };
+
+                    // Styling
+                    dialog.Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#FAFAFA"));
+                    var border = new Border 
+                    { 
+                        BorderBrush = Avalonia.Media.Brushes.Gray, 
+                        BorderThickness = new Thickness(1),
+                        Padding = new Thickness(20)
+                    };
+
+                    var mainPanel = new StackPanel { Spacing = 15 };
+                    mainPanel.Children.Add(new TextBlock 
+                    { 
+                        Text = "Permission Request", 
+                        FontWeight = Avalonia.Media.FontWeight.Bold, 
+                        FontSize = 16 
+                    });
+                    
+                    mainPanel.Children.Add(new TextBlock 
+                    { 
+                        Text = $"The website \"{origin}\" would like to access your:\n{perm}",
+                        TextWrapping = Avalonia.Media.TextWrapping.Wrap
+                    });
+
+                    var buttons = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right, Spacing = 10 };
+                    var btnAllow = new Button { Content = "Allow" }; // Default styles apply
+                    var btnDeny = new Button { Content = "Block" };
+
+                    btnAllow.Click += (_, __) => { tcs.TrySetResult(true); dialog.Close(); };
+                    btnDeny.Click += (_, __) => { tcs.TrySetResult(false); dialog.Close(); };
+
+                    buttons.Children.Add(btnAllow);
+                    buttons.Children.Add(btnDeny);
+                    mainPanel.Children.Add(buttons);
+
+                    border.Child = mainPanel;
+                    dialog.Content = border;
+
+                    dialog.Closed += (_, __) => tcs.TrySetResult(false);
+
+                    await dialog.ShowDialog(this);
+                    return await tcs.Task;
                 });
             };
         }

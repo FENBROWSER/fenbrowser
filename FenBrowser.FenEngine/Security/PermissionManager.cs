@@ -14,6 +14,8 @@ namespace FenBrowser.FenEngine.Security
         private readonly List<SecurityViolation> _violations = new List<SecurityViolation>();
         private readonly object _lock = new object();
 
+        public Func<string, JsPermissions, System.Threading.Tasks.Task<bool>> PermissionRequestedHandler { get; set; }
+
         public PermissionManager(JsPermissions initialPermissions = JsPermissions.None)
         {
             _grantedPermissions = initialPermissions;
@@ -50,6 +52,41 @@ namespace FenBrowser.FenEngine.Security
             {
                 _grantedPermissions &= ~permission;
             }
+        }
+
+        public async System.Threading.Tasks.Task<bool> RequestPermissionAsync(JsPermissions permission, string origin)
+        {
+            // 1. Check in-memory grant first
+            if (Check(permission)) return true;
+
+            // 2. Check persistent store
+            var storeState = PermissionStore.Instance.GetState(origin, permission);
+            if (storeState == PermissionState.Granted)
+            {
+                Grant(permission); // Sync memory
+                return true;
+            }
+            if (storeState == PermissionState.Denied)
+            {
+                return false;
+            }
+
+            // 3. Prompt user if Prompt
+            if (PermissionRequestedHandler != null)
+            {
+                bool granted = await PermissionRequestedHandler(origin, permission);
+                
+                // Update Store
+                PermissionStore.Instance.SetState(origin, permission, granted ? PermissionState.Granted : PermissionState.Denied);
+
+                if (granted)
+                {
+                    Grant(permission);
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         public void LogViolation(JsPermissions permission, string operation, string details = null)

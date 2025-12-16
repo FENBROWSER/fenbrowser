@@ -80,8 +80,8 @@ namespace FenBrowser.Core
             {
                 case UserAgentType.Chrome:
                     return useMobile
-                        ? "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
-                        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+                        ? "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Mobile Safari/537.36"
+                        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36";
 
                 case UserAgentType.Firefox:
                     return useMobile
@@ -90,8 +90,8 @@ namespace FenBrowser.Core
 
                 case UserAgentType.FenBrowser:
                     return useMobile
-                        ? "Mozilla/5.0 (Android 14; Mobile; rv:133.0) Gecko/133.0 FenBrowser/1.0"
-                        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 FenBrowser/1.0";
+                        ? "Mozilla/5.0 (Android 14; Mobile; rv:146.0) Gecko/146.0 FenBrowser/1.0"
+                        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:146.0) Gecko/20100101 FenBrowser/1.0";
 
                 default:
                     return GetUserAgentString(UserAgentType.Chrome, useMobile);

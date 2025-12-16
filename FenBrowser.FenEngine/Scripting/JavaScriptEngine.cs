@@ -31,6 +31,9 @@ namespace FenBrowser.FenEngine.Scripting
     public sealed partial class JavaScriptEngine
     {
         public Func<Uri, Task<string>> FetchOverride { get; set; }
+        
+        // Permission Request Event
+        public event Func<string, JsPermissions, Task<bool>> PermissionRequested;
 
         // FenEngine runtime
         private FenRuntime _fenRuntime;
@@ -41,6 +44,7 @@ namespace FenBrowser.FenEngine.Scripting
 #endif
         private readonly IJsHost _host;
         // private MiniJs.Engine _mini;      // MiniJS interpreter instance - DISABLED
+        public IExecutionContext GlobalContext => _fenRuntime?.Context;
         private JsContext _ctx;
 
         public JavaScriptEngine(IJsHost host)
@@ -55,6 +59,20 @@ namespace FenBrowser.FenEngine.Scripting
         {
             _ctx = _ctx ?? new JsContext();
             var permissions = new PermissionManager(JsPermissions.StandardWeb);
+            
+            // Wire up the permission handler
+            permissions.PermissionRequestedHandler = async (origin, perm) =>
+            {
+                if (PermissionRequested != null)
+                {
+                    // Dispatch to UI thread if needed? The handler in MainWindow is likely UI bound.
+                    // But here we are in JS thread context potentially.
+                    // The event handler in MainWindow should handle thread safety.
+                    return await PermissionRequested(origin, perm);
+                }
+                return false; // Default deny if no handler
+            };
+
             var context = new FenBrowser.FenEngine.Core.ExecutionContext(permissions);
 
             // Configure function execution delegate
@@ -107,11 +125,31 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 _fenRuntime.SetAlert(msg => _host.Alert(msg));
             }
+            
+            SetupPermissions();
         }
 
         // timers
         private readonly Dictionary<int, System.Threading.Timer> _timers = new Dictionary<int, System.Threading.Timer>();
-        private int _nextTimerId = 0;
+        // fields restored
+        private int _nextTimerId = 1;
+        private List<MutationObserverWrapper> _fenMutationObservers = new List<MutationObserverWrapper>();
+        private List<string> _mutationObservers = new List<string>(); // Legacy observers
+        private List<MutationRecord> _pendingMutations = new List<MutationRecord>();
+        private bool _repaintRequested = false;
+        private List<Uri> _history = new List<Uri>();
+        private int _historyIndex = -1;
+        private string _docTitle = "";
+        
+        // script cache
+        private object _responseLock = new object();
+
+        private Dictionary<string, ResponseEntry> _responseRegistry = new Dictionary<string, ResponseEntry>();
+        private int _responseCapacity = 100;
+        private LinkedList<string> _responseLru = new LinkedList<string>();
+        // private int _scriptCap = 0; // Removing unused
+        private int _inlineThreshold = 1024;
+        
 
         private void SetupMutationObserver()
         {
@@ -134,6 +172,150 @@ namespace FenBrowser.FenEngine.Scripting
             });
 
             _fenRuntime.SetGlobal("MutationObserver", FenValue.FromFunction(moConstructor));
+        }
+
+        private void SetupPermissions()
+        {
+            // 1. navigator.permissions
+            var permissionsObj = new FenBrowser.FenEngine.Core.FenObject();
+            permissionsObj.Set("query", FenValue.FromFunction(new FenFunction("query", (args, thisVal) =>
+            {
+                // Returns a Thenable (Promise-like)
+                var thenable = new FenBrowser.FenEngine.Core.FenObject();
+                thenable.Set("then", FenValue.FromFunction(new FenFunction("then", (thenArgs, thenThis) =>
+                {
+                    var onFulfilled = ((thenArgs != null && thenArgs.Length > 0 && thenArgs[0].IsFunction) ? thenArgs[0].AsFunction() : null);
+                    
+                    if (onFulfilled == null) return FenValue.FromObject(thenable); // Chain?
+
+                    // Async execution
+                    var desc = (args.Length > 0 && args[0].IsObject) ? args[0].AsObject() : null;
+                    var origin = OriginKey(_ctx?.BaseUri);
+
+                    Task.Run(() =>
+                    {
+                        try
+                        {
+                            var name = "";
+                            if (desc != null)
+                            {
+                                var val = desc.Get("name");
+                                if (val is FenValue fv) name = fv.AsString();
+                                else name = val.ToString();
+                            }
+                            
+                            JsPermissions permFlag = JsPermissions.None;
+                            if (name == "geolocation") permFlag = JsPermissions.Geolocation;
+                            else if (name == "notifications") permFlag = JsPermissions.Notifications;
+                            else if (name == "camera" || name == "microphone") permFlag = JsPermissions.Camera;
+
+                            var state = "granted";
+                            if (permFlag != JsPermissions.None)
+                            {
+                                var ps = PermissionStore.Instance.GetState(origin, permFlag);
+                                state = ps.ToString().ToLowerInvariant(); // "granted", "denied", "prompt"
+                            }
+                            else if (string.IsNullOrEmpty(name))
+                            {
+                                state = "prompt";
+                            }
+
+                            // Return PermissionStatus object
+                            var statusObj = new FenBrowser.FenEngine.Core.FenObject();
+                            statusObj.Set("state", FenValue.FromString(state));
+                            statusObj.Set("onchange", FenValue.Null); 
+
+                            _fenRuntime.Context.ScheduleCallback(() => {
+                                try { onFulfilled.Invoke(new FenBrowser.FenEngine.Core.Interfaces.IValue[] { FenValue.FromObject(statusObj) }, _fenRuntime.Context); } catch {}
+                            }, 0);
+                        }
+                        catch { }
+                    });
+                    
+                    return FenValue.FromObject(thenable);
+                })));
+                return FenValue.FromObject(thenable);
+            })));
+
+            // 2. navigator.geolocation
+            var geoObj = new FenBrowser.FenEngine.Core.FenObject();
+            geoObj.Set("getCurrentPosition", FenValue.FromFunction(new FenFunction("getCurrentPosition", (args, thisVal) =>
+            {
+                if (args.Length < 1) return FenValue.Undefined;
+                var successCb = args[0].AsFunction();
+                var errorCb = (args.Length > 1 && args[1].IsFunction) ? args[1].AsFunction() : null;
+                var origin = OriginKey(_ctx?.BaseUri);
+
+                Task.Run(async () =>
+                {
+                    bool granted = false;
+                    try
+                    {
+                        granted = await _fenRuntime.Context.Permissions.RequestPermissionAsync(JsPermissions.Geolocation, origin);
+                    }
+                    catch { }
+
+                    if (granted)
+                    {
+                         // Mock position
+                         var pos = new FenBrowser.FenEngine.Core.FenObject();
+                         var coords = new FenBrowser.FenEngine.Core.FenObject();
+                         coords.Set("latitude", FenValue.FromNumber(37.422));
+                         coords.Set("longitude", FenValue.FromNumber(-122.084));
+                         coords.Set("accuracy", FenValue.FromNumber(100));
+                         pos.Set("coords", FenValue.FromObject(coords));
+                         pos.Set("timestamp", FenValue.FromNumber((DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())));
+                         
+                         _fenRuntime.Context.ScheduleCallback(() => {
+                            try { successCb.Invoke(new FenBrowser.FenEngine.Core.Interfaces.IValue[] { FenValue.FromObject(pos) }, _fenRuntime.Context); } catch {}
+                         }, 0);
+                    }
+                    else
+                    {
+                        if (errorCb != null)
+                        {
+                             var err = new FenBrowser.FenEngine.Core.FenObject();
+                             err.Set("code", FenValue.FromNumber(1)); // PERMISSION_DENIED
+                             err.Set("message", FenValue.FromString("User denied Geolocation"));
+                             _fenRuntime.Context.ScheduleCallback(() => {
+                                try { errorCb.Invoke(new FenBrowser.FenEngine.Core.Interfaces.IValue[] { FenValue.FromObject(err) }, _fenRuntime.Context); } catch {}
+                             }, 0);
+                        }
+                    }
+                });
+                return FenValue.Undefined;
+            })));
+
+            // Check if 'navigator' exists, create or extend
+            var existingNav = _fenRuntime.GetGlobal("navigator");
+            FenBrowser.FenEngine.Core.FenObject navObj = null;
+            if (existingNav.IsObject) navObj = (FenBrowser.FenEngine.Core.FenObject)existingNav.AsObject();
+            else 
+            {
+                navObj = new FenBrowser.FenEngine.Core.FenObject();
+                _fenRuntime.SetGlobal("navigator", FenValue.FromObject(navObj));
+            }
+
+            navObj.Set("permissions", FenValue.FromObject(permissionsObj));
+            navObj.Set("geolocation", FenValue.FromObject(geoObj));
+            
+            // Service Workers API - navigator.serviceWorker
+            navObj.Set("serviceWorker", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.ServiceWorkerAPI.CreateServiceWorkerContainer()));
+            
+            // Clipboard API - navigator.clipboard
+            navObj.Set("clipboard", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.ClipboardAPI.CreateClipboardObject()));
+            
+            // Web Audio API - AudioContext constructor
+            _fenRuntime.SetGlobal("AudioContext", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.WebAudioAPI.CreateAudioContextConstructor()));
+            _fenRuntime.SetGlobal("webkitAudioContext", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.WebAudioAPI.CreateAudioContextConstructor()));
+            
+            // WebRTC API - RTCPeerConnection constructor
+            _fenRuntime.SetGlobal("RTCPeerConnection", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.WebRTCAPI.CreateRTCPeerConnectionConstructor()));
+            _fenRuntime.SetGlobal("webkitRTCPeerConnection", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.WebRTCAPI.CreateRTCPeerConnectionConstructor()));
+            _fenRuntime.SetGlobal("MediaStream", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.WebRTCAPI.CreateMediaStreamConstructor()));
+            
+            // Notifications API - Notification constructor
+            _fenRuntime.SetGlobal("Notification", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.NotificationsAPI.CreateNotificationConstructor()));
         }
 
 
@@ -177,7 +359,7 @@ namespace FenBrowser.FenEngine.Scripting
         public LiteElement DomRoot => _domRoot;
         
         // Document ready state (for document.readyState property)
-        private string _readyState = "loading";
+
         public JsVal OnPopState { get; set; }
         public JsVal OnHashChange { get; set; }
         
@@ -283,27 +465,18 @@ namespace FenBrowser.FenEngine.Scripting
     private bool _microtaskPumpScheduled = false;
 
     // Macro-task queue (setTimeout, setInterval, etc.)
-    private readonly System.Collections.Generic.Queue<System.Action> _macroTasks = new System.Collections.Generic.Queue<System.Action>();
-    private readonly object _macroTaskLock = new object();
-    private bool _macroPumpScheduled = false;
-
+    
     // Feature gap tracing throttling
     private readonly object _featureTraceLock = new object();
     private string _lastFeatureTraceKey;
     private System.DateTime _lastFeatureTraceTime = System.DateTime.MinValue;
 
         // Response registry (tokenized large response bodies)
-        private readonly System.Collections.Generic.Dictionary<string, JavaScriptEngine.ResponseEntry> _responseRegistry =
-            new System.Collections.Generic.Dictionary<string, JavaScriptEngine.ResponseEntry>(System.StringComparer.Ordinal);
-        private readonly System.Collections.Generic.LinkedList<string> _responseLru = new System.Collections.Generic.LinkedList<string>();
-        private readonly object _responseLock = new object();
-        private System.TimeSpan _responseTtl = System.TimeSpan.FromMinutes(5);
-        private int _responseCapacity = 64;
-        private volatile bool _responseCleanupRunning = false;
+        
 
         // Inline thresholds / repaint flags
-        private int _inlineThreshold = 1024;
-        private volatile bool _repaintRequested = false;
+
+        
 
         // --- Mobile-oriented JS limits ---
         // Soft cap on total bytes of script source executed per page. This is
@@ -311,7 +484,7 @@ namespace FenBrowser.FenEngine.Scripting
         // extremely large desktop-style bundles while still running typical
         // mobile-sized scripts.
         private int _pageScriptByteBudget = 10 * 1024 * 1024; // 10 MB default for modern sites
-        private int _pageScriptBytesUsed = 0;
+        
 
         // Small allowance for very tiny inline handlers (e.g., "return false")
         // that should work even when the main script budget is exhausted.
@@ -327,7 +500,7 @@ namespace FenBrowser.FenEngine.Scripting
             new Dictionary<string, LinkedListNode<Tuple<string, ScriptCacheEntry>>>(StringComparer.Ordinal);
         private readonly LinkedList<Tuple<string, ScriptCacheEntry>> _scriptLru =
             new LinkedList<Tuple<string, ScriptCacheEntry>>();
-        private readonly int _scriptCap = 64;
+
 
         /// <summary>
         /// Gets or sets the approximate per-page script byte budget. When the
@@ -342,14 +515,11 @@ namespace FenBrowser.FenEngine.Scripting
         }
 
         // ECMAScript modules
-        private readonly ModuleLoader _moduleLoader;
+        
 
         // Mutation observers / pending mutations
-        private readonly System.Collections.Generic.List<string> _mutationObservers = new System.Collections.Generic.List<string>();
-        private readonly System.Collections.Generic.List<MutationObserverWrapper> _fenMutationObservers = new System.Collections.Generic.List<MutationObserverWrapper>();
+        
         private readonly object _mutationLock = new object();
-        private readonly System.Collections.Generic.List<MutationRecord> _pendingMutations = new System.Collections.Generic.List<MutationRecord>();
-        private string _docTitle = string.Empty;
         
         // --- DOM visual registry for approximate layout metrics ---
         
@@ -434,7 +604,7 @@ namespace FenBrowser.FenEngine.Scripting
     // Track stopPropagation requests inside a single handler execution (JS-0 allowlist)
     private volatile bool _stopPropagationRequested;
     // Track preventDefault requests surfaced via runtime event wrappers
-    private volatile bool _preventDefaultRequested;
+    
 
         private void RegisterListener(Dictionary<string, List<string>> bag, string evt, string fnName)
         {
@@ -522,18 +692,13 @@ namespace FenBrowser.FenEngine.Scripting
         private readonly Dictionary<string, Dictionary<string, string>> _sessionStorageMap =
             new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
         private readonly object _storageLock = new object();
-        private const string LocalStorageFile = "lb_localstorage.txt"; // tab-separated: origin\tkey\tvalue per line
-        private int _cbCounter;
+        
 
         // loader/event firing
-        private int _pendingAsyncScripts = 0;
-        private volatile bool _domContentLoadedFired = false;
-        private volatile bool _windowLoadFired = false;
+
+
 
         // lightweight navigation history
-        private readonly List<Uri> _history = new List<Uri>();
-        private int _historyIndex = -1;
-
         // Enqueue a microtask to run after current synchronous work
         private void EnqueueMicrotask(Action a)
         {
@@ -862,6 +1027,7 @@ namespace FenBrowser.FenEngine.Scripting
         // Persist localStorage to disk (best-effort)
         private async Task SaveLocalStorageAsync()
         {
+            await Task.CompletedTask;
             /*
             try
             {
@@ -888,6 +1054,7 @@ namespace FenBrowser.FenEngine.Scripting
 
         private async Task RestoreLocalStorageAsync()
         {
+            await Task.CompletedTask;
             /*
             try
             {
@@ -1243,7 +1410,7 @@ namespace FenBrowser.FenEngine.Scripting
                         {
                             using (var client = new System.Net.Http.HttpClient(CreateManagedHandler()))
                             {
-                                client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 FenBrowser");
+                                client.DefaultRequestHeaders.UserAgent.ParseAdd(BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent));
                                 
                                 // Add Origin header for CORS
                                 if (pageOrigin != null)
@@ -1552,7 +1719,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             {
                 using (var hc = new HttpClient())
                 {
-                    try { hc.DefaultRequestHeaders.UserAgent.ParseAdd("MiniJs/1.0"); } catch { }
+                    try { hc.DefaultRequestHeaders.UserAgent.ParseAdd(BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent)); } catch { }
                     return hc.GetStringAsync(uri).GetAwaiter().GetResult();
                 }
             }
@@ -1723,7 +1890,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             {
                 using (var client = new System.Net.Http.HttpClient(CreateManagedHandler()))
                 {
-                    client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows Phone 8.1; ARM; Trident/7.0; Touch; rv:11.0; IEMobile/11.0; NOKIA; Lumia 520) like Gecko");
+                    client.DefaultRequestHeaders.UserAgent.ParseAdd(BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent));
                     return await client.GetStringAsync(uri);
                 }
             }
@@ -1976,7 +2143,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         private readonly Dictionary<string, JsFuncDef> _userFunctionsEx = new Dictionary<string, JsFuncDef>(StringComparer.Ordinal);
 
         /// <summary>Expose current DOM to the engine (for document.* bridge).</summary>
-        public void SetDom(LiteElement domRoot, Uri baseUri = null)
+        public async Task SetDomAsync(LiteElement domRoot, Uri baseUri = null)
         {
             _domRoot = domRoot;
             
@@ -1986,7 +2153,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                 try
                 {
                     _fenRuntime.SetDom(domRoot);
-                    try { System.IO.File.AppendAllText("debug_log.txt", "[JavaScriptEngine] SetDom called on FenRuntime\r\n"); } catch { }
+                    try { System.IO.File.AppendAllText("debug_log.txt", "[JavaScriptEngine] SetDomAsync called on FenRuntime\r\n"); } catch { }
                 }
                 catch (Exception ex)
                 {
@@ -1997,13 +2164,14 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                 // Execute inline scripts with FenEngine
                 try
                 {
-                    try { System.IO.File.AppendAllText("debug_log.txt", "[JavaScriptEngine] Starting inline script execution\r\n"); } catch { }
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[JavaScriptEngine] Starting inline script execution\r\n"); } catch { }
                     
                     foreach (var s in _domRoot.SelfAndDescendants())
                     {
                         if (string.Equals(s.Tag, "script", StringComparison.OrdinalIgnoreCase))
                         {
                             string code = null;
+                            bool isAsync = false;
 
                             // External script
                             if (s.Attr != null && s.Attr.ContainsKey("src")) 
@@ -2020,7 +2188,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                         // Check SubresourceAllowed delegate
                                         if (SubresourceAllowed != null && !SubresourceAllowed(scriptUri, "script"))
                                         {
-                                             try { System.IO.File.AppendAllText("debug_log.txt", $"[JavaScriptEngine] Blocked script {scriptUri}\r\n"); } catch { }
+                                             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[JavaScriptEngine] Blocked script {scriptUri}\r\n"); } catch { }
                                              continue;
                                         }
 
@@ -2029,7 +2197,8 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                         // Use ExternalScriptFetcher if available (uses ResourceManager/Cache)
                                         if (ExternalScriptFetcher != null)
                                         {
-                                             code = ExternalScriptFetcher(scriptUri, baseUri).Result;
+                                             // Fix: await the task instead of .Result to prevent deadlock
+                                             code = await ExternalScriptFetcher(scriptUri, baseUri).ConfigureAwait(false);
                                         }
                                         else
                                         {
@@ -2037,13 +2206,14 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                             using (var client = new System.Net.Http.HttpClient())
                                             {
                                                 client.Timeout = TimeSpan.FromSeconds(5);
-                                                code = client.GetStringAsync(scriptUri).Result;
+                                                // Fix: await the task instead of .Result
+                                                code = await client.GetStringAsync(scriptUri).ConfigureAwait(false);
                                             }
                                         }
                                     }
                                     catch (Exception ex)
                                     {
-                                        try { System.IO.File.AppendAllText("debug_log.txt", $"[JavaScriptEngine] Failed to fetch script {src}: {ex.Message}\r\n"); } catch { }
+                                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[JavaScriptEngine] Failed to fetch script {src}: {ex.Message}\r\n"); } catch { }
                                     }
                                 }
                             }
@@ -2072,6 +2242,14 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             
             // JS is "enabled" in this app; hide server noscript overlays & flip no-js ? js
             this.SanitizeForScriptingEnabled(domRoot);
+        }
+
+        // Backward compatibility wrapper (deprecated)
+        public void SetDom(LiteElement domRoot, Uri baseUri = null)
+        {
+             // This is dangerous if called on UI thread, but provided for compatibility compilation
+             // Ideally calls should move to SetDomAsync
+             SetDomAsync(domRoot, baseUri).Wait();
         }
 
         private void RunGlobalScript(string js)
