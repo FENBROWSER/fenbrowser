@@ -140,34 +140,40 @@ namespace FenBrowser.UI
             {
                 skiaView.LinkInternalClicked += (s, url) =>
                 {
-                    Dispatcher.UIThread.Post(async () =>
-                    {
-                        if (_activeBrowser != null)
-                        {
-                             // Determine if absolute or relative?
-                             // SkiaDomRenderer resolved it? No, checks href.
-                             // ImageLoader handles relative URLs for images.
-                             // We should probably help resolve it here if needed, 
-                             // OR ensure CheckLink in SkiaBrowserView resolves it.
-                             // But let's assume raw href and resolving happens in BrowserApi or BrowserHost.
-                             // Usually NavigateAsync(url) handles absolute.
-                             // If it is "/wiki/Foo", NavigateAsync might fail if it expects absolute.
-                             // Let's resolve against current URI if relative.
-                             
-                             var current = _activeBrowser.CurrentUri;
-                             if (current != null && !url.StartsWith("http") && !url.StartsWith("data:"))
-                             {
-                                 try
-                                 {
-                                     var resolved = new Uri(current, url);
-                                     url = resolved.AbsoluteUri;
-                                 }
-                                 catch {}
-                             }
-                             
-                             await _activeBrowser.NavigateAsync(url);
-                        }
-                    });
+                     Dispatcher.UIThread.Post(async () =>
+                     {
+                         if (_activeBrowser != null)
+                         {
+                              FenLogger.Debug($"[MainWindow] LinkClicked: {url}", LogCategory.General);
+                              // Determine if absolute or relative?
+                              // SkiaDomRenderer resolved it? No, checks href.
+                              // ImageLoader handles relative URLs for images.
+                              // We should probably help resolve it here if needed, 
+                              // OR ensure CheckLink in SkiaBrowserView resolves it.
+                              // But let's assume raw href and resolving happens in BrowserApi or BrowserHost.
+                              // Usually NavigateAsync(url) handles absolute.
+                              // If it is "/wiki/Foo", NavigateAsync might fail if it expects absolute.
+                              // Let's resolve against current URI if relative.
+                              
+                              var current = _activeBrowser.CurrentUri;
+                              try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[MainWindow] LinkInternalClicked received: '{url}'. CurrentUri: '{current}'\r\n"); } catch {}
+
+                     if (current != null && !url.StartsWith("http") && !url.StartsWith("data:") && !url.StartsWith("about:") && !url.StartsWith("file:"))
+                     {
+                         try
+                         {
+                             var resolved = new Uri(current, url);
+                             url = resolved.AbsoluteUri;
+                             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[MainWindow] Resolved to: '{url}'\r\n"); } catch {}
+                         }
+                         catch (Exception resEx) {
+                             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[MainWindow] Resolution failed: {resEx.Message}\r\n"); } catch {}
+                         }
+                     }
+                     
+                     await _activeBrowser.NavigateAsync(url);
+                         }
+                     });
                 };
             }
 
@@ -374,6 +380,7 @@ namespace FenBrowser.UI
 
             browser.Navigated += (s, uri) =>
             {
+                try { FenLogger.Debug($"[MainWindow] Navigated event received for: '{uri}'", LogCategory.General); } catch {}
                 Dispatcher.UIThread.Post(() =>
                 {
                     if (tab.IsActive) UpdateAddressBar(browser);
@@ -523,6 +530,7 @@ namespace FenBrowser.UI
             var uri = browser?.CurrentUri;
             if (_addressBox != null && uri != null)
             {
+                try { FenLogger.Debug($"[MainWindow] UpdateAddressBar setting text to: '{uri.AbsoluteUri}'", LogCategory.General); } catch {}
                 _addressBox.Text = uri.AbsoluteUri;
             }
 
