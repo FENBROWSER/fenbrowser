@@ -34,3 +34,5 @@ bld/
 wpt/
 debug_log.txt
 build_log.txt
+build_*.log
+erro_*.log
