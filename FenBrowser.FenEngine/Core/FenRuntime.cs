@@ -269,7 +269,7 @@ namespace FenBrowser.FenEngine.Core
 
             // navigator object - Privacy-focused (generic values to prevent fingerprinting)
             var navigator = new FenObject();
-            navigator.Set("userAgent", FenValue.FromString("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:146.0) Gecko/20100101 Firefox/146.0 FenBrowser/1.0"));
+            navigator.Set("userAgent", FenValue.FromString("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.7499.109 Safari/537.36"));
             navigator.Set("platform", FenValue.FromString("Win32"));
             navigator.Set("language", FenValue.FromString("en-US"));
             navigator.Set("languages", FenValue.FromObject(CreateArray(new[] { "en-US", "en" })));
@@ -295,6 +295,9 @@ namespace FenBrowser.FenEngine.Core
             // Anti-Bot / Anti-Fingerprinting extras
             navigator.Set("webdriver", FenValue.FromBoolean(false)); // Explicitly deny automation
             navigator.Set("pdfViewerEnabled", FenValue.FromBoolean(false));
+            
+            // javaEnabled() method - Standard requires it to exist and return false (mostly)
+            navigator.Set("javaEnabled", FenValue.FromFunction(new FenFunction("javaEnabled", (args, thisVal) => FenValue.FromBoolean(false))));
             
             // Network Information Spoofing
             var connection = new FenObject();
@@ -2447,11 +2450,11 @@ namespace FenBrowser.FenEngine.Core
         /// Sets the DOM root for this runtime.
         /// Creates the 'document' global object.
         /// </summary>
-        public void SetDom(LiteElement root)
+        public void SetDom(LiteElement root, Uri baseUri = null)
         {
             if (root == null) return;
 
-            var documentWrapper = new DocumentWrapper(root, _context);
+            var documentWrapper = new DocumentWrapper(root, _context, baseUri);
             var docValue = FenValue.FromObject(documentWrapper);
             SetGlobal("document", docValue);
 

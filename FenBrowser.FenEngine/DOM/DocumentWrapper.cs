@@ -18,13 +18,15 @@ namespace FenBrowser.FenEngine.DOM
     {
         private readonly LiteElement _root;
         private readonly IExecutionContext _context;
+        private readonly Uri _baseUri;
         private IObject _prototype;
         private string _readyState = "complete"; // Default, managed by SetReadyState
 
-        public DocumentWrapper(LiteElement root, IExecutionContext context)
+        public DocumentWrapper(LiteElement root, IExecutionContext context, Uri baseUri = null)
         {
             _root = root ?? throw new ArgumentNullException(nameof(root));
             _context = context ?? throw new ArgumentNullException(nameof(context));
+            _baseUri = baseUri;
         }
 
         public IValue Get(string key)
@@ -91,6 +93,39 @@ namespace FenBrowser.FenEngine.DOM
                 case "readystate":
                     return FenValue.FromString(_readyState);
 
+                // DOM Level 3 Events
+                case "addeventlistener":
+                    return FenValue.FromFunction(new FenFunction("addEventListener", AddEventListenerMethod));
+
+                case "removeeventlistener":
+                    return FenValue.FromFunction(new FenFunction("removeEventListener", RemoveEventListenerMethod));
+
+                case "dispatchevent":
+                    return FenValue.FromFunction(new FenFunction("dispatchEvent", DispatchEventMethod));
+
+                case "cookie":
+                    // Simple cookie stub - non-persistent for now
+                    return FenValue.FromString(""); 
+
+                case "domain":
+                    return FenValue.FromString(_baseUri?.Host ?? "");
+
+                case "implementation":
+                    // DOMImplementation interface
+                    var impl = new FenObject();
+                    impl.Set("hasFeature", FenValue.FromFunction(new FenFunction("hasFeature", (args, _) => FenValue.FromBoolean(true))));
+                    impl.Set("createHTMLDocument", FenValue.FromFunction(new FenFunction("createHTMLDocument", (args, _) => {
+                         var title = args.Length > 0 ? args[0].ToString() : "";
+                         var newLite = new LiteElement("html"); 
+                         // Minimal structure
+                         var head = new LiteElement("head");
+                         if (!string.IsNullOrEmpty(title)) { var t = new LiteElement("title") { Text = title }; head.Append(t); }
+                         newLite.Append(head);
+                         newLite.Append(new LiteElement("body"));
+                         return FenValue.FromObject(new DocumentWrapper(newLite, _context));
+                    })));
+                    return FenValue.FromObject(impl);
+
                 default:
                     return FenValue.Undefined;
             }
@@ -98,6 +133,13 @@ namespace FenBrowser.FenEngine.DOM
 
         public void Set(string key, IValue value)
         {
+            if (key.ToLowerInvariant() == "cookie")
+            {
+                // Accept cookie writes (log them)
+                try { FenLogger.Debug($"[DocumentWrapper] Set cookie: {value}", FenBrowser.Core.Logging.LogCategory.JavaScript); } catch {}
+                // TODO: Parse and store cookies properly
+                return;
+            }
             // document properties are mostly read-only
             // Could add support for document.title setter
         }
@@ -105,7 +147,7 @@ namespace FenBrowser.FenEngine.DOM
         public bool Has(string key) => !Get(key).IsUndefined;
         public bool Delete(string key) => false;
         public IEnumerable<string> Keys() 
-            => new[] { "getElementById", "querySelector", "querySelectorAll", "createElement", "createDocumentFragment", "createTextNode", "createComment", "createEvent", "getElementsByClassName", "getElementsByTagName", "body", "head", "title", "documentElement", "readyState" };
+            => new[] { "getElementById", "querySelector", "querySelectorAll", "createElement", "createDocumentFragment", "createTextNode", "createComment", "createEvent", "getElementsByClassName", "getElementsByTagName", "body", "head", "title", "documentElement", "readyState", "addEventListener", "removeEventListener", "dispatchEvent", "cookie", "domain", "implementation" };
         public IObject GetPrototype() => _prototype;
         public void SetPrototype(IObject prototype) => _prototype = prototype;
 
@@ -308,6 +350,101 @@ namespace FenBrowser.FenEngine.DOM
             }
 
             return null;
+        }
+
+        // --- Event Listener Implementation ---
+
+        private IValue AddEventListenerMethod(IValue[] args, IValue thisValue)
+        {
+            if (args.Length < 2) return FenValue.Undefined;
+
+            var type = args[0].ToString();
+            var callback = args[1];
+
+            if (string.IsNullOrEmpty(type) || callback == null || !callback.IsFunction)
+                return FenValue.Undefined;
+            
+            FenLogger.Debug($"[DocumentWrapper] addEventListener called for '{type}'", FenBrowser.Core.Logging.LogCategory.JavaScript);
+
+            // Handle immediate execution for load events if ready
+            if ((type == "DOMContentLoaded" || type == "load") && (_readyState == "complete" || _readyState == "interactive"))
+            {
+                FenLogger.Debug($"[DocumentWrapper] Immediate execution of {type}", FenBrowser.Core.Logging.LogCategory.JavaScript);
+                try {
+                    var evt = new DomEvent(type);
+                    callback.AsFunction().Invoke(new IValue[] { FenValue.FromObject(evt) }, _context);
+                } catch (Exception ex) {
+                    FenLogger.Error($"[DocumentWrapper] Error executing immediate {type}: {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript);
+                }
+            }
+
+            // Use ElementWrapper's registry to store listeners on the root element
+            // This is a simplification; ideally Document has its own registry or we use a virtual element.
+            // Using _root means document listeners are effective on the <html> element.
+            bool capture = false;
+            bool once = false;
+            bool passive = false;
+
+            if (args.Length >= 3)
+            {
+                if (args[2].IsBoolean) capture = args[2].ToBoolean();
+                else if (args[2].IsObject)
+                {
+                    var opts = args[2].AsObject() as FenObject;
+                    if (opts != null)
+                    {
+                        capture = opts.Get("capture")?.ToBoolean() ?? false;
+                        once = opts.Get("once")?.ToBoolean() ?? false;
+                        passive = opts.Get("passive")?.ToBoolean() ?? false;
+                    }
+                }
+            }
+
+            ElementWrapper.EventRegistry.Add(_root, type, callback, capture, once, passive);
+            return FenValue.Undefined;
+        }
+
+        private IValue RemoveEventListenerMethod(IValue[] args, IValue thisValue)
+        {
+            if (args.Length < 2) return FenValue.Undefined;
+            var type = args[0].ToString();
+            var callback = args[1];
+            bool capture = false;
+            if (args.Length >= 3 && args[2].IsBoolean) capture = args[2].ToBoolean();
+            
+            ElementWrapper.EventRegistry.Remove(_root, type, callback, capture);
+            return FenValue.Undefined;
+        }
+
+        private IValue DispatchEventMethod(IValue[] args, IValue thisValue)
+        {
+            if (args.Length == 0 || !args[0].IsObject) return FenValue.FromBoolean(false);
+            
+            var eventObj = args[0].AsObject() as DomEvent;
+            // Create proper event object if needed
+            if (eventObj == null)
+            {
+                var obj = args[0].AsObject() as FenObject;
+                if (obj == null) return FenValue.FromBoolean(false);
+                var type = obj.Get("type")?.ToString() ?? "";
+                eventObj = new DomEvent(type);
+            }
+
+            FenLogger.Debug($"[DocumentWrapper] dispatchEvent '{eventObj.Type}'", FenBrowser.Core.Logging.LogCategory.JavaScript);
+
+            // Dispatch on _root using ElementWrapper's logic (if we could access DispatchEventInternal there)
+            // Since we can't easily access private method, we might need to duplicate dispatch logic 
+            // OR just support basic listeners for now.
+            // For detection, just returning true often works.
+            // But let's try to execute listeners if possible.
+            
+            var listeners = ElementWrapper.EventRegistry.Get(_root, eventObj.Type, false);
+            foreach(var l in listeners) 
+            {
+                 try { l.Callback.AsFunction().Invoke(new IValue[] { FenValue.FromObject(eventObj) }, _context); } catch {}
+            }
+            
+            return FenValue.FromBoolean(true);
         }
     }
 }
