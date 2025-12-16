@@ -84,6 +84,13 @@ namespace FenBrowser.Core.Network
             // Set default headers
             client.DefaultRequestHeaders.ConnectionClose = false; // Keep-alive
             
+            // Set User-Agent from Settings
+            var uaString = BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent);
+            if (!string.IsNullOrEmpty(uaString))
+            {
+                client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", uaString);
+            }
+            
             // Log configuration if debugging enabled
             if (config.LogHttp2Details)
             {
