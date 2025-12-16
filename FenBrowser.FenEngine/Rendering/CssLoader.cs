@@ -2751,29 +2751,58 @@ namespace FenBrowser.FenEngine.Rendering
             if (n == null || seg == null) return false;
             if (n.IsText) return false;
 
+            // GOOGLE DEEP DIVE LOGGING
+            bool isDebug = false;
+            if (seg.Classes != null)
+            {
+                if (seg.Classes.Contains("L3eUgb") || seg.Classes.Contains("SIvCob") || 
+                    seg.Classes.Contains("AghGtd") || seg.Classes.Contains("RNNXgb") || 
+                    seg.Classes.Contains("SDkEP") || seg.Classes.Contains("FPdoL") || 
+                    seg.Classes.Contains("lJ9F") || seg.Classes.Contains("gNO89b") || 
+                    seg.Classes.Contains("RNmpXc")) // Button classes
+                {
+                    isDebug = true;
+                }
+            }
+
             // Universal selector support
             if (!string.IsNullOrEmpty(seg.Tag) && seg.Tag != "*")
             {
                 if (!string.Equals(n.Tag, seg.Tag, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (isDebug) FenLogger.Debug($"[DeepDive] Match FAIL: Tag mismatch. Validating '{seg.Tag}' against '{n.Tag}' for classes {string.Join(",", seg.Classes)}", LogCategory.Layout);
                     return false;
+                }
             }
 
             if (!string.IsNullOrEmpty(seg.Id))
             {
-                string id;
+                string id = null;
                 if (n.Attr == null || !n.Attr.TryGetValue("id", out id) || !string.Equals(id ?? "", seg.Id, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (isDebug) FenLogger.Debug($"[DeepDive] Match FAIL: ID mismatch. Validating '{seg.Id}' against '{id ?? "null"}'", LogCategory.Layout);
                     return false;
+                }
             }
 
             if (seg.Classes != null && seg.Classes.Count > 0)
             {
                 string cls;
                 if (n.Attr == null || !n.Attr.TryGetValue("class", out cls) || string.IsNullOrWhiteSpace(cls))
+                {
+                    if (isDebug) FenLogger.Debug($"[DeepDive] Match FAIL: No class attr. Expected {string.Join(",", seg.Classes)}", LogCategory.Layout);
                     return false;
+                }
 
                 var have = SplitTokens(cls);
                 foreach (var c in seg.Classes)
-                    if (!have.Contains(c, StringComparer.OrdinalIgnoreCase)) return false;
+                {
+                    if (!have.Contains(c, StringComparer.OrdinalIgnoreCase)) 
+                    {
+                        if (isDebug) FenLogger.Debug($"[DeepDive] Match FAIL: Missing class '{c}'. Have '{cls}'", LogCategory.Layout);
+                        return false;
+                    }
+                }
             }
 
             if (seg.Attributes != null)
@@ -2781,7 +2810,11 @@ namespace FenBrowser.FenEngine.Rendering
                 foreach (var attr in seg.Attributes)
                 {
                     string val;
-                    if (n.Attr == null || !n.Attr.TryGetValue(attr.Item1, out val)) return false;
+                    if (n.Attr == null || !n.Attr.TryGetValue(attr.Item1, out val))
+                    {
+                         if (isDebug) FenLogger.Debug($"[DeepDive] Match FAIL: Missing attribute '{attr.Item1}'", LogCategory.Layout);
+                         return false;
+                    }
                     
                     // Empty operator means just presence check
                     if (string.IsNullOrEmpty(attr.Item2))
@@ -3153,11 +3186,13 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     if (MatchesSelectorChain(new SelectorChain { Segments = new List<SelectorSegment> { notSeg } }, n))
                     {
+                        if (isDebug) FenLogger.Debug($"[DeepDive] Match FAIL: Matches :not() selector", LogCategory.Layout);
                         return false; // Element matches the :not() selector, so it should NOT match the overall selector
                     }
                 }
             }
 
+            if (isDebug) FenLogger.Debug($"[DeepDive] Match SUCCESS: {seg.Tag} {string.Join(".", seg.Classes ?? new List<string>())}", LogCategory.Layout);
             return true;
         }
 
@@ -4456,13 +4491,66 @@ namespace FenBrowser.FenEngine.Rendering
                     var val = kvp.Value.Value;
                     if (val != null && val.IndexOf("var(--", StringComparison.OrdinalIgnoreCase) >= 0)
                     {
-                        var newVal = Regex.Replace(val, @"var\((--[^)]+)\)", m =>
+                        // Manual parsing to handle nested parenthesis and fallbacks
+                        var sb = new StringBuilder();
+                        int lastPos = 0;
+                        int i = 0;
+                        while ((i = val.IndexOf("var(--", i, StringComparison.OrdinalIgnoreCase)) >= 0)
                         {
-                            var name = m.Groups[1].Value.Trim();
-                            string sub;
-                            if (vars.TryGetValue(name, out sub)) return sub;
-                            return m.Value;
-                        });
+                            sb.Append(val.Substring(lastPos, i - lastPos));
+                            
+                            // Find closing parenthesis accounting for nesting
+                            int open = i + 3; // pointing to '(' of var(
+                            int balance = 0;
+                            int j = open + 1;
+                            bool foundClose = false;
+                            
+                            for (; j < val.Length; j++)
+                            {
+                                if (val[j] == '(') balance++;
+                                else if (val[j] == ')')
+                                {
+                                    if (balance == 0) { foundClose = true; break; }
+                                    balance--;
+                                }
+                            }
+                            
+                            if (foundClose)
+                            {
+                                string content = val.Substring(open + 1, j - open - 1);
+                                string varName = content;
+                                string fallback = null;
+                                
+                                int comma = content.IndexOf(',');
+                                if (comma > 0)
+                                {
+                                    varName = content.Substring(0, comma).Trim();
+                                    fallback = content.Substring(comma + 1).Trim();
+                                }
+                                else
+                                {
+                                    varName = varName.Trim();
+                                }
+                                
+                                string resolved = null;
+                                if (vars.TryGetValue(varName, out var sub)) resolved = sub;
+                                else if (fallback != null) resolved = fallback;
+                                
+                                sb.Append(resolved ?? $"var({content})");
+                                
+                                i = j + 1;
+                                lastPos = i;
+                            }
+                            else
+                            {
+                                // No matching close, skip
+                                sb.Append(val.Substring(i, 4)); // var(
+                                i += 4;
+                                lastPos = i;
+                            }
+                        }
+                        sb.Append(val.Substring(lastPos));
+                        var newVal = sb.ToString();
 
                         if (newVal != val)
                         {

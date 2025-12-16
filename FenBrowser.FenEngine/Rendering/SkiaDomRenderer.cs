@@ -2,6 +2,10 @@ using SkiaSharp;
 using SkiaSharp.HarfBuzz;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.FenEngine.Rendering.Core;
+using FenBrowser.FenEngine.Rendering.Layout;
+using FenBrowser.FenEngine.Rendering.Interaction;
+using FenBrowser.FenEngine.Rendering.UserAgent;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using System;
@@ -45,8 +49,8 @@ namespace FenBrowser.FenEngine.Rendering
         public float OffsetY { get; set; }
         public float BlurRadius { get; set; }
         public float SpreadRadius { get; set; }
-        public SKColor Color { get; set; } = new SKColor(0, 0, 0, 80);
-        public bool Inset { get; set; }
+        public SKColor Color { get; set; } = SKColors.Black;
+        public bool Inset { get; set; } = false;
     }
 
     /// <summary>
@@ -75,12 +79,29 @@ namespace FenBrowser.FenEngine.Rendering
         public string Style { get; set; } = "solid"; // solid, dashed, dotted, wavy
     }
 
-    public class SkiaDomRenderer
+    public class SkiaDomRenderer : ILayoutEngine
     {
         private const float DefaultFontSize = 16f;
         private const float DefaultLineHeightMultiplier = 1.2f;
         
         public List<InputOverlayData> CurrentOverlays { get; private set; } = new List<InputOverlayData>();
+
+        // ILayoutEngine.Context implementation - provides access to shared state
+        private RenderContext _context;
+        public RenderContext Context 
+        { 
+            get 
+            {
+                if (_context == null) _context = new RenderContext();
+                // Sync state from renderer to context
+                _context.Styles = _styles;
+                _context.ViewportHeight = _viewportHeight;
+                _context.ViewportWidth = _viewportWidth;
+                _context.Viewport = _viewport;
+                _context.BaseUrl = _baseUrl;
+                return _context;
+            }
+        }
 
         // Box Model storage
         private class BoxModel
@@ -247,12 +268,12 @@ namespace FenBrowser.FenEngine.Rendering
                 try
                 {
                     ComputeLayout(root, 0, 0, layoutWidth, shrinkToContent: false, availableHeight: _viewportHeight);
-                    if (DEBUG_FILE_LOGGING) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[RENDER] ComputeLayout success.\r\n"); } catch {} }
+                    FenLogger.Debug("[RENDER] ComputeLayout success.", LogCategory.Rendering);
                 }
                 catch (Exception layoutEx)
                 {
                     Console.WriteLine($"[Layout] CRASH: {layoutEx}");
-                    if (DEBUG_FILE_LOGGING) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Layout] CRASH: {layoutEx}\r\n"); } catch {} }
+                    FenLogger.Error($"[Layout] CRASH: {layoutEx}", LogCategory.Rendering);
                 }
                 
                 // Check for vertical overflow
@@ -724,7 +745,7 @@ namespace FenBrowser.FenEngine.Rendering
         
         #endregion
 
-        private void ComputeLayout(LiteElement node, float x, float y, float availableWidth, bool shrinkToContent = false, float availableHeight = 0)
+        public void ComputeLayout(LiteElement node, float x, float y, float availableWidth, bool shrinkToContent = false, float availableHeight = 0)
         {
             _layoutDepth++;
             try
@@ -747,15 +768,17 @@ namespace FenBrowser.FenEngine.Rendering
 
             // GOOGLE COMPATIBILITY FIX: Force language bar container to layout horizontally
             // Using Flexbox is more robust than inline-block if the children are block-level wrappers
-            if (node.Attr != null && node.Attr.TryGetValue("id", out var idVal) && idVal == "SIvCob")
+            if (node.Attr != null && node.Attr.TryGetValue("id", out var idVal) && idVal.IndexOf("SIvCob", StringComparison.OrdinalIgnoreCase) >= 0)
             { 
                  if (style == null) style = new CssComputed();
                  style.Display = "flex";
                  style.FlexDirection = "row";
                  style.FlexWrap = "wrap";
                  style.AlignItems = "baseline"; // align text baselines
+                 style.JustifyContent = "center"; // FIX: Center the languages!
+                 style.TextAlign = Avalonia.Media.TextAlignment.Center;      // Extra insurance for text nodes
                  style.Gap = 12.0;            // Space between languages (double)
-                 FenLogger.Debug("[Compat] Forced #SIvCob to flex-row", LogCategory.Layout);
+                 FenLogger.Debug("[Compat] Forced #SIvCob to flex-row center", LogCategory.Layout);
             }
 
             // Process CSS counters
@@ -770,6 +793,14 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 string nodeClass = node.Attr != null && node.Attr.TryGetValue("class", out var cls) ? cls : "";
                 FenLogger.Debug($"[ComputeLayout] CENTER passed visibility check, class='{nodeClass}' children={node.Children?.Count}", LogCategory.Layout);
+            }
+
+            // DEBUG: Trace INPUT element to find Search Box Container
+            if (nodeTag == "INPUT")
+            {
+                 var parent = _parents.ContainsKey(node) ? _parents[node] : null;
+                 string pClass = parent?.Attr != null && parent.Attr.TryGetValue("class", out var pc) ? pc : "null";
+                 FenLogger.Debug($"[InputProbe] Found INPUT. Parent Tag={parent?.Tag} Class='{pClass}'", LogCategory.Layout);
             }
 
             // Apply User Agent (UA) styles for inputs if missing
@@ -787,6 +818,9 @@ namespace FenBrowser.FenEngine.Rendering
             float marginLeft = (float)box.Margin.Left;
             float marginRight = (float)box.Margin.Right;
             float borderLeft = (float)box.Border.Left;
+
+
+            // NOTE: Previous Google-specific patches removed - CSS parser handles these properly now
             float borderRight = (float)box.Border.Right;
             float paddingLeft = (float)box.Padding.Left;
             float paddingRight = (float)box.Padding.Right;
@@ -1266,6 +1300,45 @@ namespace FenBrowser.FenEngine.Rendering
                 flexContainerHeight = _viewportHeight * (percentValue / 100f);
             }
 
+            // GOOGLE DEEP DIVE: Probe for Main Wrapper (L3eUgb)
+            // Reverted compat patch. Watching natural state.
+            if (node.Attr != null && node.Attr.TryGetValue("class", out var l3Class) && l3Class.Contains("L3eUgb"))
+            {
+                 var sb = new System.Text.StringBuilder();
+                 if (style != null && style.Map != null)
+                 {
+                     foreach(var kvp in style.Map) sb.Append(kvp.Key + "=" + kvp.Value + "; ");
+                 }
+                 try {
+                     System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
+                        $"[DeepDive] L3eUgb Natural: Height={style?.Height} MinHeight={style?.MinHeight} HeightPercent={style?.HeightPercent} Display={style?.Display} FlexDir={style?.FlexDirection} Map={sb}\r\n");
+                 } catch {}
+            }
+            
+            // DEBUG: Log styling for L3eUgb
+            if (node.Attr != null && node.Attr.TryGetValue("class", out var dbgC) && dbgC.Contains("L3eUgb"))
+            {
+                 var sb = new System.Text.StringBuilder();
+                 if (style != null && style.Map != null)
+                 {
+                     foreach(var kvp in style.Map) sb.Append(kvp.Key + "=" + kvp.Value + "; ");
+                 }
+                 try {
+                     System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
+                        $"[L3eUgb_Style] Height={style?.Height} MinHeight={style?.MinHeight} HeightPercent={style?.HeightPercent} Map={sb.ToString()}\r\n");
+                 } catch {}
+            }
+            
+            // FIX: Apply MinHeight to available flex container height.
+            // This is CRITICAL for 'min-height: 100vh' + 'justify-content: center' to work.
+            // Without this, the container is treated as 'auto' height during layout (0 or content-height),
+            // so there is no "extra space" to distribute for centering.
+            if (style?.MinHeight.HasValue == true)
+            {
+                float minH = (float)style.MinHeight.Value;
+                if (flexContainerHeight < minH) flexContainerHeight = minH;
+            }
+
             // For inline/inline-block without explicit width, shrink to content
             // ALSO shrink when shrinkToContent is true (used by flex layout for flex items)
             bool shouldShrinkToContent = shrinkToContent || display == "inline" || display == "inline-block";
@@ -1464,7 +1537,7 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                     catch (Exception ex)
                     {
-                        if (DEBUG_FILE_LOGGING) System.IO.File.AppendAllText("debug_log.txt", $"HarfBuzz Measure Error: {ex.Message}\n");
+                        FenLogger.Error($"HarfBuzz Measure Error: {ex.Message}", LogCategory.Rendering);
                         
                         // Fallback measurement
                         var bounds = new SKRect();
@@ -3435,7 +3508,7 @@ namespace FenBrowser.FenEngine.Rendering
             return rowY[currentRowIndex] - startY;
         }
 
-        private void ShiftTree(LiteElement node, float dx, float dy)
+        public void ShiftTree(LiteElement node, float dx, float dy)
         {
              // First, shift the node itself
              if (_boxes.TryGetValue(node, out var b))
@@ -3587,7 +3660,7 @@ namespace FenBrowser.FenEngine.Rendering
                         $"Top={(hasTop ? style.Top : "null")} Bottom={(hasBottom ? style.Bottom : "null")} Height={box.MarginBox.Height} " +
                         $"Constraint: {(heightConstrained ? "DUAL" : "SINGLE/NONE")}";
                     FenLogger.Debug(logMsg, LogCategory.Layout);
-                    if (DEBUG_FILE_LOGGING) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", logMsg + "\r\n"); } catch {} }                }
+                        }
             }
             
             // 5. Restore Styles
@@ -3685,21 +3758,24 @@ namespace FenBrowser.FenEngine.Rendering
             string overlayValue = "";
 
             // DEBUG: Log submit button positions at DrawLayout time
-            if (overlayTag == "INPUT" && node.Attr != null)
+            // DEBUG: Log ALL input button positions at DrawLayout time (Standard Logger)
+            if (overlayTag == "INPUT" || (node.Tag != null && node.Tag.Equals("input", StringComparison.OrdinalIgnoreCase)))
             {
                 node.Attr.TryGetValue("type", out var inputType);
                 node.Attr.TryGetValue("value", out var inputVal);
-                if (inputType?.ToLowerInvariant() == "submit")
-                {
-                    FenLogger.Debug($"[DrawLayout] Submit button '{inputVal}': box.PaddingBox={box.PaddingBox}", LogCategory.Layout);
-                }
+                string cssClass = node.Attr?.GetValueOrDefault("class", "") ?? "";
+                
+                string bg = layoutStyle?.BackgroundColor?.ToString() ?? "null";
+                string bgRaw = layoutStyle?.Map?.ContainsKey("background-color") == true ? layoutStyle.Map["background-color"] : "missing";
+                
+                FenLogger.Debug($"[DrawLayout] INPUT DETECTED: Type='{inputType}' Val='{inputVal}' Class='{cssClass}' BG={bg} RAW_BG={bgRaw} Box={box.PaddingBox}", LogCategory.Layout);
             }
-
+            
             if (overlayTag == "TEXTAREA")
             {
                 isOverlay = true;
                 string textareaId = node.Attr?.TryGetValue("id", out var tid) == true ? tid : "no-id";
-                FenLogger.Debug($"[DrawLayout] TEXTAREA detected id={textareaId}: box.BorderBox={box.BorderBox} Width={box.BorderBox.Width} Height={box.BorderBox.Height}", LogCategory.Layout);
+                // FenLogger.Debug($"[DrawLayout] TEXTAREA detected id={textareaId}: box.BorderBox={box.BorderBox} Width={box.BorderBox.Width} Height={box.BorderBox.Height}", LogCategory.Layout);
             }
             else if (overlayTag == "BUTTON")
             {
@@ -5165,11 +5241,26 @@ namespace FenBrowser.FenEngine.Rendering
         private void ApplyUserAgentStyles(LiteElement node, ref CssComputed style)
         {
             if (node == null) return;
+            
+            // Delegate to decoupled UAStyleProvider module
+            UAStyleProvider.Apply(node, ref style);
+            
             string tag = node.Tag?.ToUpperInvariant();
+
+            if (tag == "HTML" || tag == "BODY")
+            {
+                if (style == null) style = new CssComputed();
+                
+                // Ensure Root elements fill the viewport (Critical for modern layouts using 100% or vh)
+                if (!style.Height.HasValue && !style.HeightPercent.HasValue)
+                {
+                    style.HeightPercent = 100;
+                }
+                if (string.IsNullOrEmpty(style.Display)) style.Display = "block";
+            }
 
             if (tag == "BODY")
             {
-                if (style == null) style = new CssComputed();
                 // Default browser margin is usually 8px
                 if (style.Margin.Left == 0 && style.Margin.Top == 0 && style.Margin.Right == 0 && style.Margin.Bottom == 0)
                 {
@@ -5505,12 +5596,12 @@ namespace FenBrowser.FenEngine.Rendering
                         // Found a positioned ancestor - return its content box
                         if (_boxes.TryGetValue(current, out var ancestorBox))
                         {
-                            if (DEBUG_FILE_LOGGING) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[FindPositionedAncestor] element={element.Tag} found ancestor={current.Tag} class={current.Attr?.GetValueOrDefault("class", "")} pos={pos} box={ancestorBox.ContentBox}\r\n"); } catch {} }                            return ancestorBox.ContentBox;
+                            FenLogger.Debug($"[FindPositionedAncestor] element={element.Tag} found ancestor={current.Tag} class={current.Attr?.GetValueOrDefault("class", "")} pos={pos} box={ancestorBox.ContentBox}", LogCategory.Layout);                            return ancestorBox.ContentBox;
                         }
                         else
                         {
                             // Positioned ancestor found but not yet laid out - log this and use viewport as fallback
-                            if (DEBUG_FILE_LOGGING) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[FindPositionedAncestor] element={element.Tag} FOUND ANCESTOR={current.Tag} class={current.Attr?.GetValueOrDefault("class", "")} pos={pos} BUT BOX NOT YET COMPUTED, using viewport\r\n"); } catch {} }                            return _viewport;
+                            FenLogger.Debug($"[FindPositionedAncestor] element={element.Tag} FOUND ANCESTOR={current.Tag} class={current.Attr?.GetValueOrDefault("class", "")} pos={pos} BUT BOX NOT YET COMPUTED, using viewport", LogCategory.Layout);                            return _viewport;
                         }
                     }
                 }
@@ -5518,7 +5609,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
             
             // No positioned ancestor found - use viewport (initial containing block)
-            if (DEBUG_FILE_LOGGING) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[FindPositionedAncestor] element={element.Tag} no positioned ancestor, using viewport={_viewport}\r\n"); } catch {} }            return _viewport;
+            FenLogger.Debug($"[FindPositionedAncestor] element={element.Tag} no positioned ancestor, using viewport={_viewport}", LogCategory.Layout);            return _viewport;
         }
 
 

@@ -78,12 +78,22 @@ namespace FenBrowser.FenEngine.Rendering
 
         public void Render(LiteElement root, Dictionary<LiteElement, CssComputed> styles)
         {
+            FenLogger.Debug($"[SkiaBrowserView.Render] Called with BaseUrl propery: '{BaseUrl}'", LogCategory.General);
             _root = root;
             _styles = styles;
             _backdrop.SetContent(root, styles, BaseUrl, LayoutViewport);
         }
 
-        public string BaseUrl { get; set; } // Property is fine, but need to update backdrop if set? 
+        private string _baseUrl;
+        public string BaseUrl 
+        { 
+            get => _baseUrl; 
+            set 
+            {
+                _baseUrl = value;
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[SkiaBrowserView] BaseUrl set to: '{_baseUrl}'\r\n"); } catch {}
+            }
+        }
         // Logic: usually Render() is called with fresh state. SkiaBackdrop.SetContent takes BaseUrl.
         // We pass BaseUrl from property in Render()? No, Render() signature doesn't take BaseUrl.
         // SkiaBrowserView.BaseUrl is used. 
@@ -199,6 +209,41 @@ namespace FenBrowser.FenEngine.Rendering
                  if (invoke)
                  {
                      string href = element.Attr["href"];
+                     FenLogger.Debug($"[CheckLink] Original href: '{href}', BaseUrl: '{BaseUrl}'", LogCategory.General);
+
+                     // Fix: Resolve relative URLs using BaseUrl
+                     if (!string.IsNullOrEmpty(BaseUrl))
+                     {
+                         try
+                         {
+                             // Ensure BaseUrl is absolute
+                             if (Uri.TryCreate(BaseUrl, UriKind.Absolute, out var baseUri))
+                             {
+                                 // Fix: Do not resolve relative paths against about:blank
+                                 // This delegates resolution to MainWindow which might have a more up-to-date CurrentUri
+                                 if (baseUri.Scheme.Equals("about", StringComparison.OrdinalIgnoreCase))
+                                 {
+                                      FenLogger.Debug($"[CheckLink] BaseUrl is '{BaseUrl}' (about scheme). Skipping resolution of '{href}'.", LogCategory.General);
+                                 }
+                                 else if (Uri.TryCreate(baseUri, href, out var resolved))
+                                 {
+                                     string oldHref = href;
+                                     href = resolved.AbsoluteUri;
+                                     FenLogger.Debug($"[CheckLink] Resolved '{oldHref}' -> '{href}'", LogCategory.General);
+                                 }
+                             }
+                         }
+                         catch (Exception ex)
+                         {
+                             FenLogger.Error($"[CheckLink] Resolution failed: {ex.Message}", LogCategory.General);
+                         }
+                     }
+                     else
+                     {
+                         FenLogger.Debug("[CheckLink] BaseUrl is empty, skipping resolution.", LogCategory.General);
+                     }
+
+                     try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CheckLink] Clicked href='{href}' BaseUrl='{BaseUrl}'\r\n"); } catch {}
                      LinkInternalClicked?.Invoke(this, href);
                  }
                  return true;

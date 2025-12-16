@@ -395,6 +395,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         public async Task<bool> NavigateAsync(string url)
         {
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[BrowserHost] NavigateAsync called for: '{url}'\r\n"); } catch {}
             if (_disposed) return false;
             if (string.IsNullOrWhiteSpace(url)) return false;
 
@@ -443,6 +444,13 @@ namespace FenBrowser.FenEngine.Rendering
                     htmlToRender = $"<html><head><title>Source of {url}</title></head><body style='font-family: Consolas, monospace; white-space: pre; background-color: #f8f8f8; color: #333; padding: 10px; font-size: 13px;'>{escaped}</body></html>";
                 }
 
+                if (uri == null) 
+                {
+                    System.Diagnostics.Debug.WriteLine("[NavigateAsync] CRITICAL: FinalUri is null! Defaulting to about:blank");
+                    uri = new Uri("about:blank");
+                }
+                FenLogger.Debug($"[BrowserHost] Navigation done. FinalUri: {uri.AbsoluteUri} (Status: {result.Status})", LogCategory.General);
+
                 if (result.Status != FetchStatus.Success)
                 {
                     // Render error page
@@ -484,12 +492,19 @@ namespace FenBrowser.FenEngine.Rendering
                 Console.WriteLine($"[NavigateAsync] Rendering content for {uri}");
                 
                 // Debug: Log navigation with base URL
+                // Debug: Log navigation with base URL
                 try { FenLogger.Debug($"[BrowserApi] Navigating to: {uri}. Previous _current: {_current?.AbsoluteUri ?? "null"}", LogCategory.General); } catch {}
+
+                // FIX: Set _current BEFORE rendering so UI has access to correct BaseUrl during render events
+                _current = uri;
+                try { FenLogger.Debug($"[BrowserApi] _current updated early to: {_current?.AbsoluteUri}", LogCategory.General); } catch {}
                 
                 var elem = await _engine.RenderAsync(htmlToRender, uri, u => _resources.FetchTextAsync(u), u => _resources.FetchImageAsync(u), u => { _ = NavigateAsync(u.AbsoluteUri); });
                 
-                // IMPORTANT: Set _current BEFORE firing RepaintReady so UI can access correct BaseUrl
-                _current = uri;
+                // _current already set above
+                
+                // Debug: Log that _current is now set
+                try { FenLogger.Debug($"[BrowserApi] RenderAsync finished. Firing RepaintReady...", LogCategory.General); } catch {}
                 
                 // Debug: Log that _current is now set
                 try { FenLogger.Debug($"[BrowserApi] _current now set to: {_current?.AbsoluteUri}. Firing RepaintReady...", LogCategory.General); } catch {}
