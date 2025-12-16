@@ -127,7 +127,64 @@ namespace FenBrowser.FenEngine.Scripting
             }
             
             SetupPermissions();
+            SetupWindowEvents();
         }
+
+        public FenValue AddEventListenerNative(FenBrowser.FenEngine.Core.Interfaces.IValue[] args, object thisVal)
+        {
+            if (args.Length < 2) return FenValue.Undefined;
+            var evt = args[0].ToString();
+            try { FenLogger.Debug($"[JS_API] addEventListener called for '{evt}'", LogCategory.JavaScript); } catch { }
+            
+            var callback = (args[1].IsFunction) ? args[1].AsFunction() : null;
+            
+            if (callback != null && (evt == "DOMContentLoaded" || evt == "load"))
+            {
+                // Execute immediately as we assume ready
+                _fenRuntime.Context.ScheduleCallback(() => {
+                     try { 
+                        FenLogger.Debug($"[EventListener] Firing {evt} event immediately", LogCategory.JavaScript);
+                        callback.Invoke(new FenBrowser.FenEngine.Core.Interfaces.IValue[] { FenValue.FromObject(new FenBrowser.FenEngine.Core.FenObject()) }, _fenRuntime.Context); 
+                     } catch (Exception ex) {
+                        FenLogger.Error($"[EventListener] Error executing {evt}: {ex.Message}", LogCategory.JavaScript, ex);
+                     }
+                }, 0);
+            }
+            return FenValue.Undefined;
+        }
+
+        private void SetupWindowEvents()
+        {
+            try { FenLogger.Debug("[SetupWindowEvents] Configuring window/document events", LogCategory.JavaScript); } catch { }
+            
+            // Ensure 'window' exists
+            var win = _fenRuntime.GetGlobal("window");
+            FenBrowser.FenEngine.Core.FenObject winObj;
+            if (win.IsObject) winObj = (FenBrowser.FenEngine.Core.FenObject)win.AsObject();
+            else 
+            {
+                winObj = new FenBrowser.FenEngine.Core.FenObject();
+                _fenRuntime.SetGlobal("window", FenValue.FromObject(winObj));
+            }
+            
+            // Add addEventListener to window object using shared implementation
+            var fnVal = FenValue.FromFunction(new FenFunction("addEventListener", AddEventListenerNative));
+            winObj.Set("addEventListener", fnVal);
+            _fenRuntime.SetGlobal("addEventListener", fnVal);
+            
+            // Also ensure document is on window
+            var doc = _fenRuntime.GetGlobal("document");
+            if (doc.IsObject)
+            {
+                var docObj = doc.AsObject();
+                try { FenLogger.Debug($"[SetupWindowEvents] document type: {docObj.GetType().Name}", LogCategory.JavaScript); } catch { }
+                winObj.Set("document", doc);
+                
+                // Note: DocumentWrapper now exposes addEventListener natively via Get/Has/Keys.
+                // We don't need to overwrite it here.
+            }
+        }
+
 
         // timers
         private readonly Dictionary<int, System.Threading.Timer> _timers = new Dictionary<int, System.Threading.Timer>();
@@ -299,6 +356,16 @@ namespace FenBrowser.FenEngine.Scripting
             navObj.Set("permissions", FenValue.FromObject(permissionsObj));
             navObj.Set("geolocation", FenValue.FromObject(geoObj));
             
+            // Basic navigator properties for detection
+            navObj.Set("javaEnabled", FenValue.FromFunction(new FenFunction("javaEnabled", (args, ctx) => FenValue.FromBoolean(false))));
+            navObj.Set("cookieEnabled", FenValue.FromBoolean(true));
+            navObj.Set("userAgent", FenValue.FromString(BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent)));
+            navObj.Set("appName", FenValue.FromString("FenBrowser"));
+            navObj.Set("appVersion", FenValue.FromString("5.0"));
+            navObj.Set("platform", FenValue.FromString("Win32"));
+            navObj.Set("language", FenValue.FromString(CultureInfo.CurrentCulture.TwoLetterISOLanguageName));
+            navObj.Set("languages", FenValue.FromObject(new FenBrowser.FenEngine.Core.FenObject())); // Empty array-like
+
             // Service Workers API - navigator.serviceWorker
             navObj.Set("serviceWorker", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.ServiceWorkerAPI.CreateServiceWorkerContainer()));
             
@@ -2152,7 +2219,9 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             {
                 try
                 {
-                    _fenRuntime.SetDom(domRoot);
+                    _fenRuntime.SetDom(domRoot, baseUri);
+                    SetupPermissions(); // Re-apply permissions to new context if needed
+                    SetupWindowEvents(); // Re-apply addEventListener to new document
                     try { System.IO.File.AppendAllText("debug_log.txt", "[JavaScriptEngine] SetDomAsync called on FenRuntime\r\n"); } catch { }
                 }
                 catch (Exception ex)
