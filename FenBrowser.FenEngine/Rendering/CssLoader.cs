@@ -16,8 +16,56 @@ namespace FenBrowser.FenEngine.Rendering
 {
     public static class CssLoader
     {
+        public class CssLoadResult
+        {
+            public Dictionary<LiteElement, CssComputed> Computed { get; set; } = new Dictionary<LiteElement, CssComputed>();
+            public List<CssSource> Sources { get; set; } = new List<CssSource>();
+        }
+
         // Debug file logging - DISABLE for production (sync file I/O causes severe lag)
         private const bool DEBUG_FILE_LOGGING = false;
+
+        public class MatchedRule
+        {
+            public CssRule Rule;
+            public CssSource Source;
+        }
+
+        public static List<MatchedRule> GetMatchedRules(LiteElement element, List<CssSource> sources)
+        {
+             var matched = new List<MatchedRule>();
+             if (element == null || sources == null) return matched;
+             
+             // 1. Gather all rules from all sources
+             // WARNING: Re-parsing is expensive. Better to parse once?
+             // But sources only contains TEXT.
+             // We need to re-parse.
+             
+             foreach(var source in sources)
+             {
+                 try
+                 {
+                     var rules = ParseRules(source.CssText, source.SourceOrder, source.BaseUri, null, null);
+                     foreach(var rule in rules)
+                     {
+                         // Check each selector chain
+                         foreach(var chain in rule.Selectors)
+                         {
+                             if (Matches(element, chain))
+                             {
+                                 matched.Add(new MatchedRule { Rule = rule, Source = source });
+                                 break; // Rule matches via at least one selector
+                             }
+                         }
+                     }
+                 }
+                 catch {}
+             }
+             
+             // Sort by weight: SourceOrder ASC
+             matched.Sort((a,b) => a.Rule.SourceOrder.CompareTo(b.Rule.SourceOrder));
+             return matched;
+        }
 
         // ===========================
         // Public API
@@ -41,8 +89,19 @@ namespace FenBrowser.FenEngine.Rendering
             double? viewportWidth = null,
             Action<string> log = null)
         {
+            var result = await ComputeWithResultAsync(root, baseUri, fetchExternalCssAsync, viewportWidth, log);
+            return result.Computed;
+        }
+
+        public static async Task<CssLoadResult> ComputeWithResultAsync(
+            LiteElement root,
+            Uri baseUri,
+            Func<Uri, Task<string>> fetchExternalCssAsync,
+            double? viewportWidth = null,
+            Action<string> log = null)
+        {
             if (root == null)
-                return new Dictionary<LiteElement, CssComputed>();
+                return new CssLoadResult();
 
             var cssBlobs = new List<CssSource>(); // collected CSS texts with source ordering
             int sourceIndex = 0;
@@ -205,12 +264,16 @@ namespace FenBrowser.FenEngine.Rendering
             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CssLoader] Total CSS rules parsed: {allRules.Count}\r\n"); } catch {}
 
             // 4.5) Resolve CSS variables
+            // 4.5) Resolve CSS variables & 5) Compute per-element cascaded styles
+            // CRITICAL FIX: Offload heavy CSS matching/cascading to background thread to avoid freezing UI
             ResolveVariables(allRules);
-
-            // 5) Compute per-element cascaded styles
             var computed = CascadeIntoComputedStyles(root, allRules, log);
-
-            return computed;
+            
+            return new CssLoadResult
+            {
+                Computed = computed,
+                Sources = cssBlobs
+            };
         }
 
         /// <summary>
@@ -228,7 +291,7 @@ namespace FenBrowser.FenEngine.Rendering
         // Model & helpers
         // ===========================
 
-        private enum CssOrigin
+        public enum CssOrigin
         {
             Inline, External, Imported,
             UserAgent
@@ -270,7 +333,7 @@ namespace FenBrowser.FenEngine.Rendering
             _keyframes.TryGetValue(name, out var kf);
             return kf;
         }
-        private sealed class CssSource
+        public class CssSource
         {
             public string CssText;
             public CssOrigin Origin;
@@ -278,7 +341,7 @@ namespace FenBrowser.FenEngine.Rendering
             public Uri BaseUri;
         }
 
-        private sealed class CssRule
+        public class CssRule
         {
             public List<SelectorChain> Selectors = new List<SelectorChain>(); // comma-separated selectors
             public Dictionary<string, CssDecl> Declarations = new Dictionary<string, CssDecl>(StringComparer.OrdinalIgnoreCase);
@@ -286,7 +349,7 @@ namespace FenBrowser.FenEngine.Rendering
             public Uri BaseUri;        // for url() resolving
         }
 
-        private sealed class CssDecl
+        public class CssDecl
         {
             public string Name;       // canonicalized (lowercase)
             public string Value;      // raw value
@@ -295,15 +358,15 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         /// <summary>Single selector fragment with combinators, e.g. "div.foo #bar > span"</summary>
-        private sealed class SelectorChain
+        public class SelectorChain
         {
             public List<SelectorSegment> Segments = new List<SelectorSegment>(); // left-to-right parsed
             public int Specificity; // computed from segments
         }
 
-        private enum Combinator { Descendant, Child, AdjacentSibling, GeneralSibling }
+        public enum Combinator { Descendant, Child, AdjacentSibling, GeneralSibling }
 
-        private sealed class SelectorSegment
+        public class SelectorSegment
         {
             public string Tag;                    // e.g. "div"
             public string Id;                     // e.g. "main"
@@ -1582,7 +1645,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
             
             // Debug: Log how many nodes had CSS rule matches
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CssLoader] Nodes with CSS matches: {matchedNodes} out of {nodes.Count}\r\n"); } catch {}
+            // Log removed
             
             // Debug: Log CSS properties for key Acid2 elements
             try {
@@ -1597,7 +1660,7 @@ namespace FenBrowser.FenEngine.Rendering
                         perNode.TryGetValue(n, out items);
                         int propCount = items != null ? items.Count : 0;
                         var propList = items != null ? string.Join(", ", items.Select(i => i.Item1.Name + ":" + i.Item1.Value).Take(10)) : "none";
-                        System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[CASCADE] <{n.Tag} class='{cls}'> matched {propCount} props: [{propList}]\r\n");
+                        // Log removed
                     }
                 }
             } catch {}
@@ -1724,7 +1787,7 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         try {
                             var orderedInfo = string.Join("; ", ordered.Select(o => $"[val={o.Item1.Value}, spec={o.Item1.Specificity}, srcOrder={o.Item3}]"));
-                            System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[CASCADE_RESOLVE] .picture background: {orderedInfo} => Winner: {ordered[0].Item1.Value}\r\n");
+                            // Log removed
                         } catch {}
                     }
                 }
@@ -3076,10 +3139,8 @@ namespace FenBrowser.FenEngine.Rendering
                     else
                     {
                         // Log unknown pseudo-class for debugging
-                        try { 
-                            System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
-                                $"[CssLoader] Unknown pseudo-class ':{ps}' on <{n.Tag}> - not matching\r\n"); 
-                        } catch {}
+                        // Log filtered to avoid performance hit on large sites with modern CSS (e.g. view-transition)
+                        // try { System.IO.File.AppendAllText(...) } catch {}
                         return false; // Unknown pseudo-classes should NOT match
                     }
                 }
