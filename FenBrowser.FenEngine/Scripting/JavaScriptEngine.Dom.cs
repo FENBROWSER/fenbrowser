@@ -266,6 +266,9 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 switch (key)
                 {
+                    case "addEventListener": 
+                        try { FenLogger.Debug("[JsDocument] Get addEventListener", LogCategory.JavaScript); } catch { }
+                        return FenValue.FromFunction(new FenFunction("addEventListener", _e.AddEventListenerNative));
                     case "body":
                         if (_bodyCache == null)
                         {
@@ -316,9 +319,9 @@ namespace FenBrowser.FenEngine.Scripting
             }
 
             public void Set(string key, IValue value) { /* Most document properties are read-only */ }
-            public bool Has(string key) => key == "body" || key == "getElementById" || key == "querySelector" || key == "querySelectorAll";
+            public bool Has(string key) => key == "body" || key == "getElementById" || key == "querySelector" || key == "querySelectorAll" || key == "addEventListener";
             public bool Delete(string key) => false;
-            public IEnumerable<string> Keys() => new[] { "body", "getElementById", "getElementsByTagName", "querySelector", "querySelectorAll", "createElement", "createTextNode" };
+            public IEnumerable<string> Keys() => new[] { "body", "getElementById", "getElementsByTagName", "querySelector", "querySelectorAll", "createElement", "createTextNode", "addEventListener" };
             public IObject GetPrototype() => _prototype;
             public void SetPrototype(IObject prototype) { _prototype = prototype; }
         }
@@ -771,6 +774,9 @@ namespace FenBrowser.FenEngine.Scripting
                         if (args.Length > 0) removeChild(args[0]); 
                         return FenValue.Undefined; 
                     }));
+                    case "addEventListener": 
+                        try { FenLogger.Debug("[JsDomElement] Get addEventListener", LogCategory.JavaScript); } catch { }
+                        return FenValue.FromFunction(new FenFunction("addEventListener", _e.AddEventListenerNative));
                     // addEventListener/removeEventListener handled at engine level
                     case "querySelector": return FenValue.FromFunction(new FenFunction("querySelector", (args, _) => {
                         var result = args.Length > 0 ? querySelector(args[0].ToString()) : null;
