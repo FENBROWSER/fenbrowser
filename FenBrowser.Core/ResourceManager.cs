@@ -259,7 +259,7 @@ namespace FenBrowser.Core
             {
                 try
                 {
-                    return await File.ReadAllTextAsync(url.LocalPath);
+                    return await File.ReadAllTextAsync(url.LocalPath).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
@@ -286,7 +286,7 @@ namespace FenBrowser.Core
                 {
                     try
                     {
-                        var metaPayload = await File.ReadAllTextAsync(metaPath);
+                        var metaPayload = await File.ReadAllTextAsync(metaPath).ConfigureAwait(false);
                         var timestampPart = metaPayload;
                         var finalPart = string.Empty;
                         if (!string.IsNullOrEmpty(metaPayload))
@@ -308,7 +308,7 @@ namespace FenBrowser.Core
                                 try { if (!Uri.TryCreate(finalPart, UriKind.Absolute, out cachedFinal)) cachedFinal = null; } catch { cachedFinal = null; }
                             }
                             LastTextResponseUri = cachedFinal ?? url;
-                            return await File.ReadAllTextAsync(filePath);
+                            return await File.ReadAllTextAsync(filePath).ConfigureAwait(false);
                         }
                     }
                     catch { }
@@ -349,7 +349,7 @@ namespace FenBrowser.Core
                         cts.CancelAfter(System.TimeSpan.FromSeconds(sec));
                     }
                     catch { }
-                    try { resp = await SendRequestTrackedAsync(req, cts.Token); }
+                    try { resp = await SendRequestTrackedAsync(req, cts.Token).ConfigureAwait(false); }
                     catch (Exception sendEx)
                     {
                         Console.WriteLine($"[FetchTextError] send failed {current} ex={sendEx.Message}");
@@ -388,7 +388,7 @@ namespace FenBrowser.Core
 
                 var ct = resp.Content != null && resp.Content.Headers != null && resp.Content.Headers.ContentType != null ? resp.Content.Headers.ContentType.MediaType : null;
                 string text = null;
-                try { text = await resp.Content.ReadAsStringAsync(); }
+                try { text = await resp.Content.ReadAsStringAsync().ConfigureAwait(false); }
                 catch (Exception bodyEx)
                 {
                     try { System.Diagnostics.Debug.WriteLine("[FetchTextError] body read failed url=" + url + " ex=" + bodyEx.Message); } catch { }
@@ -417,9 +417,9 @@ namespace FenBrowser.Core
                         try
                         {
                             Directory.CreateDirectory(folderPath); // Ensure dir exists
-                            await File.WriteAllTextAsync(filePath, entry.Body);
+                            await File.WriteAllTextAsync(filePath, entry.Body).ConfigureAwait(false);
                             var metaPayload = DateTimeOffset.UtcNow.ToString("o") + "|" + (finalUri != null ? finalUri.AbsoluteUri : string.Empty);
-                            await File.WriteAllTextAsync(metaPath, metaPayload);
+                            await File.WriteAllTextAsync(metaPath, metaPayload).ConfigureAwait(false);
                         }
                         catch { }
                     }
@@ -450,7 +450,7 @@ namespace FenBrowser.Core
             {
                 try
                 {
-                    var text = await File.ReadAllTextAsync(url.LocalPath);
+                    var text = await File.ReadAllTextAsync(url.LocalPath).ConfigureAwait(false);
                     return new FetchResult { Status = FetchStatus.Success, Content = text, FinalUri = url, ContentType = "text/html" };
                 }
                 catch (FileNotFoundException)
@@ -505,7 +505,7 @@ namespace FenBrowser.Core
 
                     try 
                     { 
-                        resp = await SendRequestTrackedAsync(req, cts.Token); 
+                        resp = await SendRequestTrackedAsync(req, cts.Token).ConfigureAwait(false); 
                     }
                     catch (TaskCanceledException)
                     {
@@ -558,7 +558,7 @@ namespace FenBrowser.Core
                 {
                     // 404, 500, etc.
                     string errBody = null;
-                    try { errBody = await resp.Content.ReadAsStringAsync(); } catch {}
+                    try { errBody = await resp.Content.ReadAsStringAsync().ConfigureAwait(false); } catch {}
                     
                     FetchStatus status = FetchStatus.UnknownError;
                     if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) status = FetchStatus.NotFound;
@@ -575,7 +575,7 @@ namespace FenBrowser.Core
                 }
 
                 string text = null;
-                try { text = await resp.Content.ReadAsStringAsync(); }
+                try { text = await resp.Content.ReadAsStringAsync().ConfigureAwait(false); }
                 catch (Exception bodyEx)
                 {
                     return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = "Failed to read body: " + bodyEx.Message, FinalUri = finalUri };
@@ -618,11 +618,11 @@ namespace FenBrowser.Core
                 var cts = new System.Threading.CancellationTokenSource();
                 try { cts.CancelAfter(TimeSpan.FromSeconds(30)); } catch { }
                 HttpResponseMessage resp = null;
-                try { resp = await SendRequestTrackedAsync(req, cts.Token); } catch (Exception sendEx) { try { System.Diagnostics.Debug.WriteLine("[FetchTextOptError] send " + url + " ex=" + sendEx.Message); } catch { } }
+                try { resp = await SendRequestTrackedAsync(req, cts.Token).ConfigureAwait(false); } catch (Exception sendEx) { try { System.Diagnostics.Debug.WriteLine("[FetchTextOptError] send " + url + " ex=" + sendEx.Message); } catch { } }
                 if (resp == null || !resp.IsSuccessStatusCode)
                 { try { System.Diagnostics.Debug.WriteLine("[FetchTextOptFail] url=" + url + " status=" + (resp!=null?(int)resp.StatusCode:0)); } catch { } return null; }
                 LastTextResponseUri = resp.RequestMessage != null ? resp.RequestMessage.RequestUri : url;
-                string text = null; try { text = await resp.Content.ReadAsStringAsync(); } catch (Exception bodyEx) { try { System.Diagnostics.Debug.WriteLine("[FetchTextOptError] body " + url + " ex=" + bodyEx.Message); } catch { } }
+                string text = null; try { text = await resp.Content.ReadAsStringAsync().ConfigureAwait(false); } catch (Exception bodyEx) { try { System.Diagnostics.Debug.WriteLine("[FetchTextOptError] body " + url + " ex=" + bodyEx.Message); } catch { } }
                 if (string.IsNullOrEmpty(text)) { try { System.Diagnostics.Debug.WriteLine("[FetchTextOptEmpty] url=" + url); } catch { } }
                 return text;
             }
@@ -722,7 +722,7 @@ namespace FenBrowser.Core
                     if (effectiveReferer != null) AddHeaderSafe(req, "Referer", effectiveReferer.AbsoluteUri);
                     var cts = new System.Threading.CancellationTokenSource();
                     try { cts.CancelAfter(System.TimeSpan.FromSeconds(30)); } catch { }
-                    resp = await SendRequestTrackedAsync(req, cts.Token);
+                    resp = await SendRequestTrackedAsync(req, cts.Token).ConfigureAwait(false);
                     
                     if (resp != null)
                     {
@@ -746,7 +746,7 @@ namespace FenBrowser.Core
                 }
                 // NoteHsts(resp, url); // Handled by HstsHandler
 
-                var buf = await HttpCache.Instance.GetBufferAsync(null, req) ?? await resp.Content.ReadAsByteArrayAsync();
+                var buf = await HttpCache.Instance.GetBufferAsync(null, req).ConfigureAwait(false) ?? await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
 
                 var entry = new ImgEntry { Buffer = buf, ContentType = resp.Content != null && resp.Content.Headers != null && resp.Content.Headers.ContentType != null ? resp.Content.Headers.ContentType.MediaType : null };
                 var pair = Tuple.Create(key, entry);
@@ -803,7 +803,7 @@ namespace FenBrowser.Core
                         cts.CancelAfter(System.TimeSpan.FromSeconds(sec));
                     }
                     catch { }
-                    resp = await SendRequestTrackedAsync(req, cts.Token);
+                    resp = await SendRequestTrackedAsync(req, cts.Token).ConfigureAwait(false);
                     if (resp != null)
                     {
                         var code = (int)resp.StatusCode;
@@ -823,7 +823,7 @@ namespace FenBrowser.Core
                 if (resp == null || !resp.IsSuccessStatusCode) return null;
                 // NoteHsts(resp, url); // Handled by HstsHandler
 
-                var buf = await HttpCache.Instance.GetBufferAsync(null, req) ?? await resp.Content.ReadAsByteArrayAsync();
+                var buf = await HttpCache.Instance.GetBufferAsync(null, req).ConfigureAwait(false) ?? await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
                 return buf;
             }
             catch { return null; }
@@ -838,7 +838,7 @@ namespace FenBrowser.Core
             {
                 NetworkRequestStarting?.Invoke(id, req);
                 
-                var resp = await _client.SendAsync(req, token);
+                var resp = await _client.SendAsync(req, token).ConfigureAwait(false);
                 
                 NetworkRequestCompleted?.Invoke(id, resp);
                 return resp;

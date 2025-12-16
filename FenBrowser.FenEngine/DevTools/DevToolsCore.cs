@@ -5,8 +5,11 @@ using System.Diagnostics;
 using System.Collections.Concurrent;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.Core.Network;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.FenEngine.DOM;
+using FenBrowser.FenEngine.Rendering;
 
 namespace FenBrowser.FenEngine.DevTools
 {
@@ -58,10 +61,58 @@ namespace FenBrowser.FenEngine.DevTools
         public event Action<NetworkRequest> OnNetworkRequest;
         public event Action<MemorySnapshot> OnMemorySnapshot;
 
+        private ManualResetEventSlim _evalSignal = new ManualResetEventSlim(false);
         private readonly ManualResetEventSlim _pauseSignal = new ManualResetEventSlim(true);
         private FenEnvironment _pausedScope;
         private IExecutionContext _pausedContext;
+        private IExecutionContext _globalContext; // Global context for console when running
         private Interpreter _interpreter; // Reference to interpreter
+
+        public Func<LiteElement, List<CssLoader.MatchedRule>> RuleMatcher;
+        public Func<LiteElement, CssComputed> ComputedStyleProvider;
+
+        // Console History
+        private readonly List<string> _consoleHistory = new();
+        public IReadOnlyList<string> ConsoleHistory => _consoleHistory;
+        
+        public void AddToHistory(string command)
+        {
+            if (!string.IsNullOrWhiteSpace(command) && (_consoleHistory.Count == 0 || _consoleHistory[^1] != command))
+            {
+                _consoleHistory.Add(command);
+            }
+        }
+        
+        /// <summary>
+        /// Get autocomplete suggestions based on prefix
+        /// </summary>
+        public List<string> GetCompletions(string prefix)
+        {
+            var suggestions = new List<string>();
+            if (string.IsNullOrEmpty(prefix)) return suggestions;
+            
+            // Add common global objects
+            var globals = new[] { "console", "document", "window", "navigator", "Math", "JSON", "Array", "Object", "String", "Number", "Boolean", "Date", "Promise", "fetch", "localStorage", "sessionStorage", "setTimeout", "setInterval", "alert", "confirm", "prompt" };
+            foreach (var g in globals)
+            {
+                if (g.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    suggestions.Add(g);
+            }
+            
+            // Add variables from global context
+            if (_globalContext?.Environment != null)
+            {
+                var vars = _globalContext.Environment.InspectVariables();
+                foreach (var kv in vars)
+                {
+                    if (kv.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) && !suggestions.Contains(kv.Key))
+                        suggestions.Add(kv.Key);
+                }
+            }
+            
+            return suggestions.OrderBy(s => s).Take(20).ToList();
+        }
+
 
         private DevToolsCore()
         {
@@ -72,6 +123,11 @@ namespace FenBrowser.FenEngine.DevTools
         public void SetInterpreter(Interpreter interpreter)
         {
             _interpreter = interpreter;
+        }
+
+        public void SetGlobalContext(IExecutionContext context)
+        {
+            _globalContext = context;
         }
 
         #region Debugger API
@@ -294,27 +350,36 @@ namespace FenBrowser.FenEngine.DevTools
 
             try
             {
-                // Parse the expression using a simplified approach or reusable parser
-                // For now, we'll try to use the interpreter's Eval if we can expose a method
-                // Or we can manually parse simple lookups 
-                
                 // Real implementation:
-                AstNode node = new Parser(new Lexer(expression)).ParseExpression(Precedence.Lowest); 
-                
+                var lexer = new Lexer(expression);
+                var parser = new Parser(lexer);
+                var node = parser.ParseExpression(Precedence.Lowest);
+
                 IValue result;
                 if (_isPaused && _pausedScope != null)
                 {
                     result = _interpreter.Eval(node, _pausedScope, _pausedContext);
                 }
+                else if (_globalContext != null)
+                {
+                     // Eval in global scope if not paused
+                     // We need the global env from context
+                     // Assuming Context.GlobalEnvironment or similar exists, or we use a clean Env?
+                     // Actually Interpret.Eval needs an Env.
+                     // On checking IExecutionContext, it usually has .GlobalScope or .Permissions etc.
+                     // If we don't have it, we can try to use a default or error out.
+                     if (_globalContext is FenBrowser.FenEngine.Core.ExecutionContext ec)
+                     {
+                         result = _interpreter.Eval(node, ec.Environment, _globalContext);
+                     }
+                     else
+                     {
+                         return "[Error: Global context not compatible]";
+                     }
+                }
                 else
                 {
-                    // Use global scope if available
-                    // We need access to Global environment. 
-                    // Assuming FenRuntime tracks it, or we rely on _interpreter having state?
-                    // Interpreter passed in Eval needs env.
-                    // We'll return a warning if not paused for now, or assume Global?
-                    
-                    return "[Evaluated (Only works when paused for now): " + expression + "]";
+                    return "[Error: Not paused and no global context available]";
                 }
 
                 return result?.ToString() ?? "undefined";
@@ -350,6 +415,11 @@ namespace FenBrowser.FenEngine.DevTools
         public string PauseReason => _pauseReason;
         public int CurrentLine => _currentLine;
         public string CurrentFile => _currentFile;
+
+        public CssComputed GetComputedStyles(LiteElement element)
+        {
+             return ComputedStyleProvider?.Invoke(element);
+        }
 
         #endregion
 
@@ -712,26 +782,22 @@ namespace FenBrowser.FenEngine.DevTools
         /// <summary>
         /// Get computed styles for an element
         /// </summary>
-        public Dictionary<string, string> GetComputedStyles(LiteElement element)
+        public Dictionary<string, string> GetComputedStyle(LiteElement element)
         {
-            // This would integrate with CssLoader/CssComputed
-            var result = new Dictionary<string, string>();
-            
-            // Add inline styles from element
-            if (element?.Attr != null && element.Attr.TryGetValue("style", out var style))
-            {
-                var declarations = style.Split(';');
-                foreach (var decl in declarations)
-                {
-                    var parts = decl.Split(':');
-                    if (parts.Length == 2)
-                    {
-                        result[parts[0].Trim().ToLowerInvariant()] = parts[1].Trim();
-                    }
-                }
-            }
-            
-            return result;
+            if (element == null) return new Dictionary<string, string>();
+            // If we have a connected renderer, we could get real computed styles
+            // But for now we might parse inline style
+             var dict = new Dictionary<string, string>();
+             if (element.Attr != null && element.Attr.TryGetValue("style", out var style))
+             {
+                 var parts = style.Split(';');
+                 foreach(var p in parts)
+                 {
+                     var kv = p.Split(':');
+                     if (kv.Length == 2) dict[kv[0].Trim()] = kv[1].Trim();
+                 }
+             }
+             return dict;
         }
 
         /// <summary>

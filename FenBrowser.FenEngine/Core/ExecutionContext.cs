@@ -94,6 +94,10 @@ namespace FenBrowser.FenEngine.Core
         /// Current script URL being executed (for debugging)
         /// </summary>
         string CurrentUrl { get; set; }
+        /// <summary>
+        /// Global variable environment (scope)
+        /// </summary>
+        FenEnvironment Environment { get; set; }
     }
 
     /// <summary>
@@ -127,6 +131,7 @@ namespace FenBrowser.FenEngine.Core
         public IModuleLoader ModuleLoader { get; set; }
         public Action<MutationRecord> OnMutation { get; set; }
         public string CurrentUrl { get; set; }
+        public FenEnvironment Environment { get; set; }
 
         public ExecutionContext(
             IPermissionManager permissions = null, 
