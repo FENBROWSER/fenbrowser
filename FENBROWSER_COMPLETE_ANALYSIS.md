@@ -20,14 +20,14 @@
 **Purpose:** User settings management with disk persistence  
 **Features Implemented:**
 
-- UserAgentType enum (FenBrowser, Firefox, Chrome)
+- UserAgentType enum (FenBrowser, Firefox, Chrome [Latest Stable 143.x])
 - EnableJavaScript toggle
 - EnableTrackingPrevention toggle
 - LogSettings nested class
 - JSON serialization to AppData/FenBrowser/settings.json
 - Singleton pattern with thread-safe lazy loading
 
-**Score:** 55/100 - Good settings, includes: privacy controls, third-party cookie blocking
+**Score:** 55/100 - Good settings, includes: privacy controls, third-party cookie blocking. Updated UA to Chrome 143 (Dec 2025).
 
 ---
 
@@ -267,7 +267,7 @@
 - Math object (all standard methods)
 - Date object (now, getTime, getFullYear, etc.)
 - JSON object (parse, stringify)
-- navigator object (userAgent, platform, language, languages, cookieEnabled, onLine, doNotTrack, hardwareConcurrency, deviceMemory, vendor, plugins, mimeTypes)
+- navigator object (userAgent, platform, language, languages, cookieEnabled, onLine, doNotTrack, hardwareConcurrency, deviceMemory, vendor, plugins, mimeTypes, javaEnabled)
 - screen object (width, height, availWidth, availHeight, colorDepth, pixelDepth, orientation)
 - window object (innerWidth, innerHeight, devicePixelRatio, scrollX, scrollY, self, top, parent)
 - localStorage object (getItem, setItem, removeItem, clear, key, length)
@@ -281,7 +281,7 @@
 - requestAnimationFrame, cancelAnimationFrame (✅ IMPLEMENTED Dec 7, 2024)
 - ExecuteFunction delegate for callback execution
 
-**Score:** 75/100 - Privacy-first implementations, Timers/Events/RAF fully functional
+**Score:** 80/100 - Privacy-first implementations, Timers/Events/RAF fully functional, +JS Detection APIs (Dec 2025)
 
 ---
 
@@ -346,7 +346,7 @@
 - XHR state management
 - Microtask queue
 
-**Score:** 55/100 - Basic DOM bridge, stable Event/Timer system, missing: WebSocket, IndexedDB
+**Score:** 60/100 - Basic DOM bridge, stable Event/Timer system, missing: WebSocket, IndexedDB. +SetupWindowEvents Fix (Dec 2025)
 
 ---
 
@@ -576,8 +576,10 @@
 - createElement()
 - createTextNode()
 - body, head, documentElement properties
+- addEventListener, removeEventListener, dispatchEvent (✅ IMPLEMENTED Dec 2025)
+- domain, cookie, implementation (✅ IMPLEMENTED Dec 2025)
 
-**Score:** 30/100 - Basic document API
+**Score:** 50/100 - Basic document API + Events
 
 ---
 
