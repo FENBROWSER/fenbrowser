@@ -21,7 +21,7 @@ namespace FenBrowser.Core
     public class LogSettings
     {
         public bool EnableLogging { get; set; } = false;
-        public int EnabledCategories { get; set; } = (int)FenBrowser.Core.Logging.LogCategory.Errors;
+        public int EnabledCategories { get; set; } = -1; // All categories enabled by default for debugging
         public int MinimumLevel { get; set; } = (int)FenBrowser.Core.Logging.LogLevel.Info;
         public bool LogToFile { get; set; } = true;
         public bool LogToDebug { get; set; } = true;
@@ -61,7 +61,7 @@ namespace FenBrowser.Core
             }
         }
 
-        public UserAgentType SelectedUserAgent { get; set; } = UserAgentType.FenBrowser;
+        public UserAgentType SelectedUserAgent { get; set; } = UserAgentType.Chrome;
         public ThemePreference Theme { get; set; } = ThemePreference.System;
 
         public LogSettings Logging { get; set; } = new LogSettings();
@@ -80,18 +80,19 @@ namespace FenBrowser.Core
             {
                 case UserAgentType.Chrome:
                     return useMobile
-                        ? "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Mobile Safari/537.36"
-                        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36";
+                        ? "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.7499.109 Mobile Safari/537.36"
+                        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.7499.109 Safari/537.36";
 
                 case UserAgentType.Firefox:
                     return useMobile
-                        ? "Mozilla/5.0 (Android 14; Mobile; rv:146.0) Gecko/146.0 Firefox/146.0 FenBrowser/1.0"
-                        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:146.0) Gecko/20100101 Firefox/146.0 FenBrowser/1.0";
+                        ? "Mozilla/5.0 (Android 14; Mobile; rv:133.0) Gecko/133.0 Firefox/133.0"
+                        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0";
 
                 case UserAgentType.FenBrowser:
+                    // Mimic Chrome to avoid blocking, but keep identifier
                     return useMobile
-                        ? "Mozilla/5.0 (Android 14; Mobile; rv:146.0) Gecko/146.0 FenBrowser/1.0"
-                        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:146.0) Gecko/20100101 FenBrowser/1.0";
+                        ? "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.7499.109 Mobile Safari/537.36 FenBrowser/1.0"
+                        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.7499.109 Safari/537.36 FenBrowser/1.0";
 
                 default:
                     return GetUserAgentString(UserAgentType.Chrome, useMobile);
