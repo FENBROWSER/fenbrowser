@@ -10,10 +10,10 @@ public partial class App : Application
     {
         // Initialize logging
         var settings = FenBrowser.Core.BrowserSettings.Instance;
-        FenBrowser.Core.Logging.LogManager.Initialize(
-            settings.Logging.EnableLogging, 
-            (FenBrowser.Core.Logging.LogCategory)settings.Logging.EnabledCategories, 
-            (FenBrowser.Core.Logging.LogLevel)settings.Logging.MinimumLevel);
+            FenBrowser.Core.Logging.LogManager.Initialize(
+                true, 
+                (FenBrowser.Core.Logging.LogCategory)(-1), 
+                FenBrowser.Core.Logging.LogLevel.Debug);
             
         AvaloniaXamlLoader.Load(this);
     }

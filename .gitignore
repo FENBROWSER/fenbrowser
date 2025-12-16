@@ -26,24 +26,11 @@ bld/
 
 # Test and debug files
 *.txt
-!README.txt
 *.html
 *.js
 *.ps1
 *.py
+*.log
 wpt/
-
-# Keep important test files
-!loops_test_v5.html
-!test_media.html
-!test_layout.html
-!test_css_features.html
-!debug_log.txt
-!test_selectors.html
-!build_log.txt
-!test_footer.html
-!test_css_all_features.html
-!test_canvas.html
-!canvas_debug.txt
-!test_js_benchmark.html
-!speedometer_debug.txt
+debug_log.txt
+build_log.txt
