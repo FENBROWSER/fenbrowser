@@ -111,7 +111,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
         /// </summary>
         public void BeginClip(SKCanvas canvas, SKRect clipRect, CssComputed style)
         {
-            var radius = style?.BorderRadius ?? new Avalonia.CornerRadius(0);
+            var radius = style?.BorderRadius ?? new CornerRadius(0);
             if (radius.TopLeft > 0 || radius.TopRight > 0 || radius.BottomRight > 0 || radius.BottomLeft > 0)
             {
                 using var path = new SKPath();

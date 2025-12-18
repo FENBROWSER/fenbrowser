@@ -1,9 +1,10 @@
 using SkiaSharp;
 using SkiaSharp.HarfBuzz;
 using FenBrowser.Core;
+// using FenBrowser.Core.Math; // Namespace moved to Core
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Rendering.Core;
-using FenBrowser.FenEngine.Rendering.Layout;
+// using FenBrowser.FenEngine.Rendering.Layout; // Deleted
 using FenBrowser.FenEngine.Rendering.Interaction;
 using FenBrowser.FenEngine.Rendering.UserAgent;
 using System.Collections.Generic;
@@ -12,6 +13,7 @@ using System;
 using System.Text.RegularExpressions;
 using System.Linq;
 using System.Globalization;
+// Removed Avalonia imports
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -34,9 +36,9 @@ namespace FenBrowser.FenEngine.Rendering
         public SKColor? TextColor { get; set; }
         public string FontFamily { get; set; }
         public float FontSize { get; set; }
-        public Avalonia.Thickness BorderThickness { get; set; }
+        public Thickness BorderThickness { get; set; }
         public SKColor? BorderColor { get; set; }
-        public Avalonia.CornerRadius BorderRadius { get; set; }
+        public CornerRadius BorderRadius { get; set; }
         public string TextAlign { get; set; } // left, center, right
 
         // Pseudo-elements styling
@@ -118,9 +120,9 @@ namespace FenBrowser.FenEngine.Rendering
             public SKRect BorderBox;
             public SKRect PaddingBox;
             public SKRect ContentBox;
-            public Avalonia.Thickness Margin;
-            public Avalonia.Thickness Border;
-            public Avalonia.Thickness Padding;
+            public Thickness Margin;
+            public Thickness Border;
+            public Thickness Padding;
             public float LineHeight; // Computed line height for text
             public float Ascent;     // Distance from baseline to top of content
             public float Descent;    // Distance from baseline to bottom of content
@@ -821,9 +823,24 @@ namespace FenBrowser.FenEngine.Rendering
                  style.FlexWrap = "wrap";
                  style.AlignItems = "baseline"; // align text baselines
                  style.JustifyContent = "center"; // FIX: Center the languages!
-                 style.TextAlign = Avalonia.Media.TextAlignment.Center;      // Extra insurance for text nodes
-                 style.Gap = 12.0;            // Space between languages (double)
-                 FenLogger.Debug("[Compat] Forced #SIvCob to flex-row center", LogCategory.Layout);
+                 style.TextAlign = SKTextAlign.Center;      // Extra insurance for text nodes
+                 style.Gap = 15.0;            // Increased space (was 12)
+                 style.LineHeight = 24.0f;    // Ensure vertical separation
+                 style.MinHeight = 40.0f;     // FIX: Prevent height collapse which hides content!
+                 FenLogger.Debug("[Compat] Forced #SIvCob to flex-row center with spacing + MinHeight", LogCategory.Layout);
+            }
+
+            // GOOGLE COMPATIBILITY FIX: Force Header (#gb) to Layout Horizontally
+            // Prevents links from stacking vertically
+            if (node.Attr != null && node.Attr.TryGetValue("id", out var idGb) && idGb.Equals("gb", StringComparison.OrdinalIgnoreCase))
+            {
+                if (style == null) style = new CssComputed();
+                style.Display = "flex";
+                style.FlexDirection = "row";
+                style.AlignItems = "center";
+                style.JustifyContent = "space-between"; 
+                style.WidthPercent = 100.0f; 
+                FenLogger.Debug("[Compat] Forced #gb to flex-row", LogCategory.Layout);
             }
 
             // Process CSS counters
@@ -888,9 +905,9 @@ namespace FenBrowser.FenEngine.Rendering
             var box = new BoxModel();
             
             // Extract CSS values (default to 0)
-            box.Margin = style?.Margin ?? new Avalonia.Thickness(0);
-            box.Border = style?.BorderThickness ?? new Avalonia.Thickness(0);
-            box.Padding = style?.Padding ?? new Avalonia.Thickness(0);
+            box.Margin = style?.Margin ?? new Thickness(0);
+            box.Border = style?.BorderThickness ?? new Thickness(0);
+            box.Padding = style?.Padding ?? new Thickness(0);
 
             // Width calculation
             float marginLeft = (float)box.Margin.Left;
@@ -1190,7 +1207,7 @@ namespace FenBrowser.FenEngine.Rendering
                 // Set text-align: center for proper content centering
                 if (style.TextAlign == null)
                 {
-                    style.TextAlign = Avalonia.Media.TextAlignment.Center;
+                    style.TextAlign = SKTextAlign.Center;
                 }
             }
 
@@ -4179,9 +4196,9 @@ namespace FenBrowser.FenEngine.Rendering
             bool hasTop = style?.Top.HasValue == true;
             bool hasBottom = style?.Bottom.HasValue == true;
             
-            var margin = style?.Margin ?? new Avalonia.Thickness(0);
-            var padding = style?.Padding ?? new Avalonia.Thickness(0);
-            var border = style?.BorderThickness ?? new Avalonia.Thickness(0);
+            var margin = style?.Margin ?? new Thickness(0);
+            var padding = style?.Padding ?? new Thickness(0);
+            var border = style?.BorderThickness ?? new Thickness(0);
 
             // 1. Horizontal Resolution
             float x = containerBox.Left;
@@ -4515,22 +4532,22 @@ namespace FenBrowser.FenEngine.Rendering
                          Placeholder = overlayPlaceholder,
                          
                          // Populate Styles
-                         BackgroundColor = layoutStyle?.BackgroundColor.HasValue == true ? new SKColor(layoutStyle.BackgroundColor.Value.R, layoutStyle.BackgroundColor.Value.G, layoutStyle.BackgroundColor.Value.B, layoutStyle.BackgroundColor.Value.A) : (SKColor?)null,
-                         TextColor = layoutStyle?.ForegroundColor.HasValue == true ? new SKColor(layoutStyle.ForegroundColor.Value.R, layoutStyle.ForegroundColor.Value.G, layoutStyle.ForegroundColor.Value.B, layoutStyle.ForegroundColor.Value.A) : (SKColor?)null,
-                         FontFamily = layoutStyle?.FontFamily?.Name,
+                         BackgroundColor = layoutStyle?.BackgroundColor.HasValue == true ? new SKColor(layoutStyle.BackgroundColor.Value.Red, layoutStyle.BackgroundColor.Value.Green, layoutStyle.BackgroundColor.Value.Blue, layoutStyle.BackgroundColor.Value.Alpha) : (SKColor?)null,
+                         TextColor = layoutStyle?.ForegroundColor.HasValue == true ? new SKColor(layoutStyle.ForegroundColor.Value.Red, layoutStyle.ForegroundColor.Value.Green, layoutStyle.ForegroundColor.Value.Blue, layoutStyle.ForegroundColor.Value.Alpha) : (SKColor?)null,
+                         FontFamily = layoutStyle?.FontFamily?.FamilyName,
                          FontSize = (float)(layoutStyle?.FontSize ?? 16.0),
-                         BorderThickness = layoutStyle?.BorderThickness ?? new Avalonia.Thickness(1),
-                         BorderColor = layoutStyle?.BorderBrushColor.HasValue == true ? new SKColor(layoutStyle.BorderBrushColor.Value.R, layoutStyle.BorderBrushColor.Value.G, layoutStyle.BorderBrushColor.Value.B, layoutStyle.BorderBrushColor.Value.A) : (SKColor?)null,
-                         BorderRadius = layoutStyle?.BorderRadius ?? new Avalonia.CornerRadius(0),
+                         BorderThickness = layoutStyle?.BorderThickness ?? new Thickness(1),
+                         BorderColor = layoutStyle?.BorderBrushColor.HasValue == true ? new SKColor(layoutStyle.BorderBrushColor.Value.Red, layoutStyle.BorderBrushColor.Value.Green, layoutStyle.BorderBrushColor.Value.Blue, layoutStyle.BorderBrushColor.Value.Alpha) : (SKColor?)null,
+                         BorderRadius = layoutStyle?.BorderRadius ?? new CornerRadius(0),
                          TextAlign = layoutStyle?.TextAlign?.ToString().ToLowerInvariant(),
                          
                          // Pseudo-element styles (::placeholder, ::selection)
-                         PlaceholderColor = layoutStyle?.Placeholder?.ForegroundColor.HasValue == true ? new SKColor(layoutStyle.Placeholder.ForegroundColor.Value.R, layoutStyle.Placeholder.ForegroundColor.Value.G, layoutStyle.Placeholder.ForegroundColor.Value.B, layoutStyle.Placeholder.ForegroundColor.Value.A) : (SKColor?)null,
-                         PlaceholderFontFamily = layoutStyle?.Placeholder?.FontFamily?.Name,
+                         PlaceholderColor = layoutStyle?.Placeholder?.ForegroundColor.HasValue == true ? new SKColor(layoutStyle.Placeholder.ForegroundColor.Value.Red, layoutStyle.Placeholder.ForegroundColor.Value.Green, layoutStyle.Placeholder.ForegroundColor.Value.Blue, layoutStyle.Placeholder.ForegroundColor.Value.Alpha) : (SKColor?)null,
+                         PlaceholderFontFamily = layoutStyle?.Placeholder?.FontFamily?.FamilyName,
                          PlaceholderFontSize = (float)(layoutStyle?.Placeholder?.FontSize ?? 0),
                          
-                         SelectionColor = layoutStyle?.Selection?.ForegroundColor.HasValue == true ? new SKColor(layoutStyle.Selection.ForegroundColor.Value.R, layoutStyle.Selection.ForegroundColor.Value.G, layoutStyle.Selection.ForegroundColor.Value.B, layoutStyle.Selection.ForegroundColor.Value.A) : (SKColor?)null,
-                         SelectionBackgroundColor = layoutStyle?.Selection?.BackgroundColor.HasValue == true ? new SKColor(layoutStyle.Selection.BackgroundColor.Value.R, layoutStyle.Selection.BackgroundColor.Value.G, layoutStyle.Selection.BackgroundColor.Value.B, layoutStyle.Selection.BackgroundColor.Value.A) : (SKColor?)null
+                         SelectionColor = layoutStyle?.Selection?.ForegroundColor.HasValue == true ? new SKColor(layoutStyle.Selection.ForegroundColor.Value.Red, layoutStyle.Selection.ForegroundColor.Value.Green, layoutStyle.Selection.ForegroundColor.Value.Blue, layoutStyle.Selection.ForegroundColor.Value.Alpha) : (SKColor?)null,
+                         SelectionBackgroundColor = layoutStyle?.Selection?.BackgroundColor.HasValue == true ? new SKColor(layoutStyle.Selection.BackgroundColor.Value.Red, layoutStyle.Selection.BackgroundColor.Value.Green, layoutStyle.Selection.BackgroundColor.Value.Blue, layoutStyle.Selection.BackgroundColor.Value.Alpha) : (SKColor?)null
                      };
 
                      // Extract Options for Select
@@ -4816,9 +4833,9 @@ namespace FenBrowser.FenEngine.Rendering
             // First try gradient brush, then fall back to solid color
             bool backgroundDrawn = false;
             
-            if (layoutStyle?.Background != null)
+            if (!string.IsNullOrEmpty(layoutStyle?.BackgroundImage))
             {
-                var shader = CreateShaderFromBrush(layoutStyle.Background, box.BorderBox, opacity);
+                var shader = CreateShaderFromCss(layoutStyle.BackgroundImage, box.BorderBox, opacity);
                 if (shader != null)
                 {
                     if (_useDisplayList)
@@ -4857,16 +4874,16 @@ namespace FenBrowser.FenEngine.Rendering
             if (!backgroundDrawn && layoutStyle?.BackgroundColor.HasValue == true)
             {
                 var c = layoutStyle.BackgroundColor.Value;
-                byte alpha = (byte)(c.A * opacity);
+                byte alpha = (byte)(c.Alpha * opacity);
                 
                 // Debug: Log white/light backgrounds that are large (potential issue indicators)
-                bool isLightBackground = c.R > 240 && c.G > 240 && c.B > 240;
+                bool isLightBackground = c.Red > 240 && c.Green > 240 && c.Blue > 240;
                 bool isLargeElement = box.BorderBox.Width > 300 && box.BorderBox.Height > 80;
                 if (isLightBackground && isLargeElement)
                 {
                     string nodeDbgTag = node.Tag ?? "TEXT";
                     string nodeDbgClass = node.Attr?.TryGetValue("class", out var nc) == true ? nc : "";
-                    FenLogger.Debug($"[DrawLayout] Large white background: tag={nodeDbgTag} class={nodeDbgClass} color=RGB({c.R},{c.G},{c.B}) box={box.BorderBox}", LogCategory.Layout);
+                    FenLogger.Debug($"[DrawLayout] Large white background: tag={nodeDbgTag} class={nodeDbgClass} color=RGB({c.Red},{c.Green},{c.Blue}) box={box.BorderBox}", LogCategory.Layout);
                 }
                 
                 // Use display list if enabled, otherwise draw directly
@@ -4879,7 +4896,7 @@ namespace FenBrowser.FenEngine.Rendering
                             Rect = box.BorderBox,
                             RadiusX = borderRadius,
                             RadiusY = borderRadius,
-                            Color = new SKColor(c.R, c.G, c.B, alpha),
+                            Color = new SKColor(c.Red, c.Green, c.Blue, alpha),
                             Bounds = box.BorderBox,
                             Opacity = 1f // Already applied to alpha
                         });
@@ -4889,7 +4906,7 @@ namespace FenBrowser.FenEngine.Rendering
                         AddCommand(new DrawRectCommand
                         {
                             Rect = box.BorderBox,
-                            Color = new SKColor(c.R, c.G, c.B, alpha),
+                            Color = new SKColor(c.Red, c.Green, c.Blue, alpha),
                             Bounds = box.BorderBox,
                             Opacity = 1f
                         });
@@ -4897,7 +4914,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 else
                 {
-                    using (var paint = new SKPaint { Color = new SKColor(c.R, c.G, c.B, alpha) })
+                    using (var paint = new SKPaint { Color = new SKColor(c.Red, c.Green, c.Blue, alpha) })
                     {
                         // Apply filter if present
                         if (!string.IsNullOrEmpty(filter))
@@ -5031,7 +5048,7 @@ namespace FenBrowser.FenEngine.Rendering
                     if (layoutStyle?.ForegroundColor.HasValue == true)
                     {
                         var c = layoutStyle.ForegroundColor.Value;
-                        textColor = new SKColor(c.R, c.G, c.B, c.A);
+                        textColor = new SKColor(c.Red, c.Green, c.Blue, c.Alpha);
                         paint.Color = textColor;
                     }
                     else
@@ -5280,6 +5297,15 @@ namespace FenBrowser.FenEngine.Rendering
                              if (size < 10) size = 10;
                              float x = box.ContentBox.Left + size/2 + 2;
                              float y = box.ContentBox.MidY;
+                             
+                             // DEBUG: Red Circle Probe
+                             if (paint.Color.Red >= 200 && paint.Color.Green < 50 && paint.Color.Blue < 50)
+                             {
+                                  string probeId = node?.GetAttribute("id") ?? "";
+                                  string probeClass = node?.GetAttribute("class") ?? "";
+                                  FenLogger.Debug($"[RedCircleProbe] RADIO detected RED! Id='{probeId}' Class='{probeClass}'", LogCategory.Rendering);
+                             }
+
                              canvas.DrawCircle(x, y, size/2, paint);
                              
                              // Draw Dot if checked
@@ -5666,7 +5692,7 @@ namespace FenBrowser.FenEngine.Rendering
                          if (markerStyle.ForegroundColor.HasValue)
                          {
                              var c = markerStyle.ForegroundColor.Value;
-                             markerColor = new SKColor(c.R, c.G, c.B, c.A);
+                             markerColor = new SKColor(c.Red, c.Green, c.Blue, c.Alpha);
                          }
                          
                          // Apply ::marker font-size
@@ -5690,7 +5716,7 @@ namespace FenBrowser.FenEngine.Rendering
                          if (markerStyle == null && layoutStyle?.ForegroundColor.HasValue == true)
                          {
                              var c = layoutStyle.ForegroundColor.Value;
-                             paint.Color = new SKColor(c.R, c.G, c.B, c.A);
+                             paint.Color = new SKColor(c.Red, c.Green, c.Blue, c.Alpha);
                          }
                          
                          // If custom content is set via ::marker, use it
@@ -5710,6 +5736,15 @@ namespace FenBrowser.FenEngine.Rendering
                              case "disc":
                                  // Filled circle (default for UL)
                                  paint.Style = SKPaintStyle.Fill;
+                                 
+                                 // DEBUG: Red Circle Probe
+                                 if (paint.Color.Red >= 200 && paint.Color.Green < 50 && paint.Color.Blue < 50)
+                                 {
+                                      string probeId = node?.GetAttribute("id") ?? "";
+                                      string probeClass = node?.GetAttribute("class") ?? "";
+                                      FenLogger.Debug($"[RedCircleProbe] LI Disc detected RED! Id='{probeId}' Class='{probeClass}'", LogCategory.Rendering);
+                                 }
+
                                  canvas.DrawCircle(markerX, markerY - 4, 3, paint);
                                  break;
                                  
@@ -6016,7 +6051,7 @@ namespace FenBrowser.FenEngine.Rendering
                 // Default browser margin is usually 8px
                 if (style.Margin.Left == 0 && style.Margin.Top == 0 && style.Margin.Right == 0 && style.Margin.Bottom == 0)
                 {
-                    style.Margin = new Avalonia.Thickness(8);
+                    style.Margin = new Thickness(8);
                 }
             }
 
@@ -6037,7 +6072,7 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                     style.FontSize = baseSize;
                 }
-                if (!style.FontWeight.HasValue) style.FontWeight = Avalonia.Media.FontWeight.Bold; // Bold
+                if (!style.FontWeight.HasValue) style.FontWeight = 700; // Bold
                 
                 // Add default margins if not present (simple em approximation)
                 if (style.Margin.Left == 0 && style.Margin.Top == 0 && style.Margin.Right == 0 && style.Margin.Bottom == 0)
@@ -6045,7 +6080,7 @@ namespace FenBrowser.FenEngine.Rendering
                     double marginEm = 1.0;
                     if (tag == "H1" || tag == "H2") marginEm = 0.67; 
                     float m = (float)(style.FontSize.Value * marginEm);
-                    style.Margin = new Avalonia.Thickness(0, m, 0, m);
+                    style.Margin = new Thickness(0, m, 0, m);
                 }
             }
 
@@ -6059,19 +6094,19 @@ namespace FenBrowser.FenEngine.Rendering
 
                 // 1. Force Background if missing or transparent
                 // Note: SkiaColor transparent is 0 (alpha 0)
-                bool hasBackground = style.BackgroundColor.HasValue && style.BackgroundColor.Value.A > 0;
+                bool hasBackground = style.BackgroundColor.HasValue && style.BackgroundColor.Value.Alpha > 0;
                 
                 if (!hasBackground && tag != "FIELDSET") // Fieldset transparent by default
                 {
                     if (isButtonType)
                     {
                         // Google-style button: light gray background (#f8f9fa)
-                        style.BackgroundColor = Avalonia.Media.Color.FromRgb(0xf8, 0xf9, 0xfa);
+                        style.BackgroundColor = new SKColor(0xf8, 0xf9, 0xfa);
                     }
                     else
                     {
                         // Text inputs: white background
-                        style.BackgroundColor = Avalonia.Media.Colors.White;
+                        style.BackgroundColor = SKColors.White;
                     }
                 }
 
@@ -6080,21 +6115,21 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     if (tag == "FIELDSET")
                     {
-                         style.BorderThickness = new Avalonia.Thickness(1); // Usually groove/etched
-                         style.BorderBrushColor = Avalonia.Media.Colors.DarkGray;
-                         style.Margin = new Avalonia.Thickness(2, 2, 2, 2); // Default margin
+                         style.BorderThickness = new Thickness(1); // Usually groove/etched
+                         style.BorderBrushColor = SKColors.DarkGray;
+                         style.Margin = new Thickness(2, 2, 2, 2); // Default margin
                     }
                     else if (isButtonType)
                     {
                         // Google-style button: border matches background (#f8f9fa)
-                        style.BorderThickness = new Avalonia.Thickness(1);
-                        style.BorderBrushColor = Avalonia.Media.Color.FromRgb(0xf8, 0xf9, 0xfa);
+                        style.BorderThickness = new Thickness(1);
+                        style.BorderBrushColor = new SKColor(0xf8, 0xf9, 0xfa);
                     }
                     else
                     {
                         // Text inputs: gray border
-                        style.BorderThickness = new Avalonia.Thickness(1);
-                        style.BorderBrushColor = Avalonia.Media.Colors.Gray;
+                        style.BorderThickness = new Thickness(1);
+                        style.BorderBrushColor = SKColors.Gray;
                     }
                 }
                 
@@ -6102,23 +6137,23 @@ namespace FenBrowser.FenEngine.Rendering
                 if (style.Padding.Top == 0 && style.Padding.Left == 0)
                 {
                     if (tag == "FIELDSET") 
-                         style.Padding = new Avalonia.Thickness(10, 10, 10, 10); // Give space for Legend
+                         style.Padding = new Thickness(10, 10, 10, 10); // Give space for Legend
                     else if (isButtonType)
-                         style.Padding = new Avalonia.Thickness(16, 8, 16, 8); // Google buttons have more horizontal padding
+                         style.Padding = new Thickness(16, 8, 16, 8); // Google buttons have more horizontal padding
                     else
-                         style.Padding = new Avalonia.Thickness(5, 2, 5, 2);
+                         style.Padding = new Thickness(5, 2, 5, 2);
                 }
                 
                 // 4. Add default border-radius for modern button appearance
                 if (isButtonType && style.BorderRadius.TopLeft == 0)
                 {
-                    style.BorderRadius = new Avalonia.CornerRadius(8); // Google uses 8px radius
+                    style.BorderRadius = new CornerRadius(8); // Google uses 8px radius
                 }
                 
                 // 5. Add border-radius for search inputs (rounded pill-style)
                 if (!isButtonType && (tag == "INPUT" || tag == "TEXTAREA") && style.BorderRadius.TopLeft == 0)
                 {
-                    style.BorderRadius = new Avalonia.CornerRadius(24); // Google search box uses 24px radius
+                    style.BorderRadius = new CornerRadius(24); // Google search box uses 24px radius
                 }
                 
                 // 6. Add height constraints for input elements to prevent oversized controls
@@ -6163,7 +6198,7 @@ namespace FenBrowser.FenEngine.Rendering
                  if (style.Padding.Top == 0 && style.Padding.Right == 0) 
                  {
                      // Add horizontal padding (space between links)
-                     style.Padding = new Avalonia.Thickness(4, 0, 4, 0);
+                     style.Padding = new Thickness(4, 0, 4, 0);
                  }
             }
 
@@ -6175,14 +6210,14 @@ namespace FenBrowser.FenEngine.Rendering
                 // Force Border if missing (emulates border="1")
                 if (style.BorderThickness.Top == 0 && style.BorderThickness.Left == 0)
                 {
-                    style.BorderThickness = new Avalonia.Thickness(1);
-                    style.BorderBrushColor = Avalonia.Media.Colors.Gray;
+                    style.BorderThickness = new Thickness(1);
+                    style.BorderBrushColor = SKColors.Gray;
                 }
                 
                 // Add padding for cells
                 if ((tag == "TD" || tag == "TH") && style.Padding.Top == 0 && style.Padding.Left == 0)
                 {
-                    style.Padding = new Avalonia.Thickness(5, 5, 5, 5);
+                    style.Padding = new Thickness(5, 5, 5, 5);
                 }
             }
         }
@@ -7153,95 +7188,105 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         /// <summary>
-        /// Create Skia shader from Avalonia IBrush
+        /// Create Skia shader from CSS background string (gradients, images)
         /// </summary>
-        private SKShader CreateShaderFromBrush(Avalonia.Media.IBrush brush, SKRect bounds, float opacity)
+        private SKShader CreateShaderFromCss(string cssBackground, SKRect bounds, float opacity)
         {
-            if (brush == null) return null;
+            if (string.IsNullOrWhiteSpace(cssBackground)) return null;
             
             try
             {
-                if (brush is Avalonia.Media.LinearGradientBrush lgb)
+                // Basic Linear Gradient Parsing
+                if (cssBackground.StartsWith("linear-gradient(", StringComparison.OrdinalIgnoreCase))
                 {
-                    // Convert relative points to absolute
-                    float startX = bounds.Left + (float)(lgb.StartPoint.Point.X * bounds.Width);
-                    float startY = bounds.Top + (float)(lgb.StartPoint.Point.Y * bounds.Height);
-                    float endX = bounds.Left + (float)(lgb.EndPoint.Point.X * bounds.Width);
-                    float endY = bounds.Top + (float)(lgb.EndPoint.Point.Y * bounds.Height);
+                    // Remove wrapping "linear-gradient(" and ")"
+                    var content = cssBackground.Substring(16).TrimEnd(')');
+                    var parts = SplitShadows(content); // Use existing splitter or simple split
+                    
+                    if (parts.Count < 2) return null;
+                    
+                    // Parse direction
+                    float startX = bounds.Left, startY = bounds.Top;
+                    float endX = bounds.Left, endY = bounds.Bottom; // Default to-bottom
+                    
+                    int colorStartIndex = 0;
+                    string firstPart = parts[0].Trim();
+                    
+                    if (firstPart.StartsWith("to "))
+                    {
+                        colorStartIndex = 1;
+                        if (firstPart == "to right") { endX = bounds.Right; endY = bounds.Top; }
+                        else if (firstPart == "to bottom") { endX = bounds.Left; endY = bounds.Bottom; }
+                        else if (firstPart == "to left") { startX = bounds.Right; endX = bounds.Left; endY = bounds.Top; }
+                        else if (firstPart == "to top") { startY = bounds.Bottom; endY = bounds.Top; }
+                        // TODO: Add corner support (to bottom right etc.)
+                    }
                     
                     var colors = new List<SKColor>();
                     var positions = new List<float>();
                     
-                    foreach (var stop in lgb.GradientStops)
+                    for (int i = colorStartIndex; i < parts.Count; i++)
                     {
-                        var c = stop.Color;
-                        byte a = (byte)(c.A * opacity);
-                        colors.Add(new SKColor(c.R, c.G, c.B, a));
-                        positions.Add((float)stop.Offset);
+                        // Stop can be "color" or "color offset"
+                        var stopStr = parts[i].Trim();
+                        var stopParts = stopStr.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                        
+                        SKColor color = SKColors.Transparent;
+                        if (stopParts.Length > 0)
+                        {
+                            color = ParseColorToSK(stopParts[0]); // Use existing helper
+                        }
+                        
+                        float pos = -1;
+                        if (stopParts.Length > 1)
+                        {
+                             pos = ParseCssLength(stopParts[1]); // Helper to parse px/%
+                             // Normalize % to 0-1
+                             if (stopParts[1].Contains("%")) pos /= 100f;
+                             // If px, normalize by bounds? Gradient stops usually % or length along gradient line.
+                             // For simplicity assuming % or 0-1 range for now or failing gracefully.
+                        }
+                        
+                        colors.Add(color.WithAlpha((byte)(color.Alpha * opacity)));
+                        if (pos >= 0) positions.Add(pos);
                     }
                     
-                    if (colors.Count < 2) return null;
-                    
-                    var mode = lgb.SpreadMethod == Avalonia.Media.GradientSpreadMethod.Repeat 
-                        ? SKShaderTileMode.Repeat 
-                        : (lgb.SpreadMethod == Avalonia.Media.GradientSpreadMethod.Reflect 
-                            ? SKShaderTileMode.Mirror 
-                            : SKShaderTileMode.Clamp);
+                    // Fill missing positions
+                    if (positions.Count < colors.Count)
+                    {
+                        // Simplified distribution
+                        if (positions.Count == 0)
+                        {
+                            positions.Add(0);
+                            if (colors.Count > 1)
+                            {
+                                float step = 1.0f / (colors.Count - 1);
+                                for (int j = 1; j < colors.Count; j++) positions.Add(j * step);
+                            }
+                            else positions.Add(1);
+                        }
+                        else
+                        {
+                            // Pad remaining
+                            while (positions.Count < colors.Count) positions.Add(1.0f);
+                        }
+                    }
                     
                     return SKShader.CreateLinearGradient(
                         new SKPoint(startX, startY),
                         new SKPoint(endX, endY),
                         colors.ToArray(),
                         positions.ToArray(),
-                        mode);
+                        SKShaderTileMode.Clamp);
                 }
-                else if (brush is Avalonia.Media.RadialGradientBrush rgb)
-                {
-                    // Convert relative center to absolute
-                    float cx = bounds.Left + (float)(rgb.Center.Point.X * bounds.Width);
-                    float cy = bounds.Top + (float)(rgb.Center.Point.Y * bounds.Height);
-                    
-                    // Get radius - use RadiusX/RadiusY or fall back to defaults
-                    float radiusX = (float)(rgb.RadiusX.Scalar * (rgb.RadiusX.Unit == Avalonia.RelativeUnit.Relative ? bounds.Width : 1));
-                    float radiusY = (float)(rgb.RadiusY.Scalar * (rgb.RadiusY.Unit == Avalonia.RelativeUnit.Relative ? bounds.Height : 1));
-                    float radius = Math.Max(radiusX, radiusY);
-                    
-                    var colors = new List<SKColor>();
-                    var positions = new List<float>();
-                    
-                    foreach (var stop in rgb.GradientStops)
-                    {
-                        var c = stop.Color;
-                        byte a = (byte)(c.A * opacity);
-                        colors.Add(new SKColor(c.R, c.G, c.B, a));
-                        positions.Add((float)stop.Offset);
-                    }
-                    
-                    if (colors.Count < 2) return null;
-                    
-                    var mode = rgb.SpreadMethod == Avalonia.Media.GradientSpreadMethod.Repeat 
-                        ? SKShaderTileMode.Repeat 
-                        : (rgb.SpreadMethod == Avalonia.Media.GradientSpreadMethod.Reflect 
-                            ? SKShaderTileMode.Mirror 
-                            : SKShaderTileMode.Clamp);
-                    
-                    return SKShader.CreateRadialGradient(
-                        new SKPoint(cx, cy),
-                        radius,
-                        colors.ToArray(),
-                        positions.ToArray(),
-                        mode);
-                }
-                else if (brush is Avalonia.Media.SolidColorBrush scb)
-                {
-                    var c = scb.Color;
-                    byte a = (byte)(c.A * opacity);
-                    return SKShader.CreateColor(new SKColor(c.R, c.G, c.B, a));
-                }
+                
+                // TODO: Radial Gradient
+                
+                // TODO: Url (Image)
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"CreateShaderFromBrush error: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"CreateShaderFromCss error: {ex.Message}");
             }
             
             return null;
@@ -7259,7 +7304,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (style.ForegroundColor.HasValue)
             {
                 var c = style.ForegroundColor.Value;
-                paint.Color = new SKColor(c.R, c.G, c.B, (byte)(c.A * parentOpacity));
+                paint.Color = new SKColor(c.Red, c.Green, c.Blue, (byte)(c.Alpha * parentOpacity));
             }
             
             // 2. Font Size
@@ -7285,10 +7330,10 @@ namespace FenBrowser.FenEngine.Rendering
                     if (style.FontWeight.HasValue)
                         weight = (SKFontStyleWeight)style.FontWeight.Value;
                         
-                    if (style.FontStyle.HasValue && style.FontStyle.Value == Avalonia.Media.FontStyle.Italic)
+                    if (style.FontStyle.HasValue && style.FontStyle.Value == SKFontStyleSlant.Italic)
                         slant = SKFontStyleSlant.Italic;
                         
-                    string familyName = style.FontFamily.Name;
+                    string familyName = style.FontFamily.FamilyName;
                     
                     // Use existing typeface family if name matches, just update style
                     if (paint.Typeface != null && paint.Typeface.FamilyName == familyName)
@@ -7637,7 +7682,7 @@ namespace FenBrowser.FenEngine.Rendering
                          if (style.ForegroundColor.HasValue)
                          {
                              var ac = style.ForegroundColor.Value;
-                             textPaint.Color = new SKColor(ac.R, ac.G, ac.B, ac.A);
+                             textPaint.Color = new SKColor(ac.Red, ac.Green, ac.Blue, ac.Alpha);
                          }
                          else
                          {
@@ -7648,7 +7693,7 @@ namespace FenBrowser.FenEngine.Rendering
                          textPaint.TextSize = (float)(style.FontSize ?? DefaultFontSize);
 
                          // Fix FontWeight: Compare Avalonia FontWeight
-                         if (style.FontWeight.HasValue && style.FontWeight.Value == Avalonia.Media.FontWeight.Bold)
+                         if (style.FontWeight.HasValue && style.FontWeight.Value == 700)
                          {
                              textPaint.FakeBoldText = true;
                          }
@@ -7880,8 +7925,8 @@ namespace FenBrowser.FenEngine.Rendering
             if (layoutStyle?.BorderBrushColor.HasValue == true)
             {
                 var c = layoutStyle.BorderBrushColor.Value;
-                byte alpha = (byte)(c.A * opacity);
-                borderColor = new SKColor(c.R, c.G, c.B, alpha);
+                byte alpha = (byte)(c.Alpha * opacity);
+                borderColor = new SKColor(c.Red, c.Green, c.Blue, alpha);
             }
             
             // Get border styles

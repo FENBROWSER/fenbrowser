@@ -1,7 +1,5 @@
 using System;
-using Avalonia;
-using Avalonia.Controls;
-using Avalonia.Media;
+using SkiaSharp;
 using System.Collections.Generic;
 using FenBrowser.Core;
 
@@ -23,12 +21,20 @@ namespace FenBrowser.FenEngine.Rendering
 
         // Layout Results (Calculated by Layout Engine)
         // X, Y are relative to the Page (Absolute Positioning)
-        public Rect Bounds { get; set; }
+        public SKRect Bounds { get; set; }
         
         // Box Model (Calculated)
         public Thickness Margin { get; set; }
         public Thickness Padding { get; set; }
         public Thickness Border { get; set; }
+        
+        // Computed Box Rects for HitTesting
+        public SKRect BorderBox => Bounds;
+        public SKRect MarginBox => new SKRect(
+            Bounds.Left - (float)Margin.Left,
+            Bounds.Top - (float)Margin.Top,
+            Bounds.Right + (float)Margin.Right,
+            Bounds.Bottom + (float)Margin.Bottom);
 
         public void AddChild(RenderObject child)
         {
@@ -40,6 +46,6 @@ namespace FenBrowser.FenEngine.Rendering
         /// Calculates the size and position of this object and its children.
         /// </summary>
         /// <param name="availableSize">The space given by the parent.</param>
-        public abstract void Layout(Size availableSize);
+        public abstract void Layout(SKSize availableSize);
     }
 }

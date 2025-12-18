@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using FenBrowser.Core.Logging;
 using SkiaSharp;
-using Avalonia;
+using FenBrowser.Core;
 
 namespace FenBrowser.FenEngine.Rendering.Painting
 {
@@ -24,7 +24,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                 var color = style.BackgroundColor.Value;
                 using var paint = new SKPaint
                 {
-                    Color = new SKColor(color.R, color.G, color.B, (byte)(color.A * opacity / 255)),
+                    Color = new SKColor(color.Red, color.Green, color.Blue, (byte)(color.Alpha * opacity / 255)),
                     IsAntialias = true,
                     Style = SKPaintStyle.Fill
                 };
@@ -32,123 +32,18 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                 DrawWithRadius(canvas, box, style.BorderRadius, paint);
             }
 
-            // Background from brush (gradients, etc.)
+            // [MIGRATION] Gradient brushes temporarily disabled or need custom Brush implementation
+            /*
             if (style.Background != null)
             {
-                var shader = CreateShaderFromBrush(style.Background, box, opacity / 255f);
-                if (shader != null)
-                {
-                    using var paint = new SKPaint
-                    {
-                        Shader = shader,
-                        IsAntialias = true,
-                        Style = SKPaintStyle.Fill
-                    };
-                    DrawWithRadius(canvas, box, style.BorderRadius, paint);
-                    shader.Dispose();
-                }
+                // ...
             }
+            */
         }
 
-        /// <summary>
-        /// Create Skia shader from Avalonia IBrush for gradient rendering.
-        /// </summary>
-        private SKShader CreateShaderFromBrush(Avalonia.Media.IBrush brush, SKRect bounds, float opacity)
+        private SKShader CreateShaderFromBrush(object brush, SKRect bounds, float opacity)
         {
-            if (brush == null) return null;
-
-            try
-            {
-                if (brush is Avalonia.Media.LinearGradientBrush lgb)
-                {
-                    // Convert relative points to absolute
-                    float startX = bounds.Left + (float)(lgb.StartPoint.Point.X * bounds.Width);
-                    float startY = bounds.Top + (float)(lgb.StartPoint.Point.Y * bounds.Height);
-                    float endX = bounds.Left + (float)(lgb.EndPoint.Point.X * bounds.Width);
-                    float endY = bounds.Top + (float)(lgb.EndPoint.Point.Y * bounds.Height);
-
-                    var colors = new List<SKColor>();
-                    var positions = new List<float>();
-
-                    foreach (var stop in lgb.GradientStops)
-                    {
-                        var c = stop.Color;
-                        byte a = (byte)(c.A * opacity);
-                        colors.Add(new SKColor(c.R, c.G, c.B, a));
-                        positions.Add((float)stop.Offset);
-                    }
-
-                    if (colors.Count < 2)
-                    {
-                        // Need at least 2 colors for gradient
-                        colors.Add(colors.Count > 0 ? colors[0] : SKColors.Transparent);
-                        positions.Add(1f);
-                    }
-
-                    var mode = lgb.SpreadMethod switch
-                    {
-                        Avalonia.Media.GradientSpreadMethod.Reflect => SKShaderTileMode.Mirror,
-                        Avalonia.Media.GradientSpreadMethod.Repeat => SKShaderTileMode.Repeat,
-                        _ => SKShaderTileMode.Clamp
-                    };
-
-                    return SKShader.CreateLinearGradient(
-                        new SKPoint(startX, startY),
-                        new SKPoint(endX, endY),
-                        colors.ToArray(),
-                        positions.ToArray(),
-                        mode);
-                }
-                else if (brush is Avalonia.Media.RadialGradientBrush rgb)
-                {
-                    float cx = bounds.Left + (float)(rgb.Center.Point.X * bounds.Width);
-                    float cy = bounds.Top + (float)(rgb.Center.Point.Y * bounds.Height);
-                    float radius = (float)(Math.Max(bounds.Width, bounds.Height) * 0.5);
-
-                    var colors = new List<SKColor>();
-                    var positions = new List<float>();
-
-                    foreach (var stop in rgb.GradientStops)
-                    {
-                        var c = stop.Color;
-                        byte a = (byte)(c.A * opacity);
-                        colors.Add(new SKColor(c.R, c.G, c.B, a));
-                        positions.Add((float)stop.Offset);
-                    }
-
-                    if (colors.Count < 2)
-                    {
-                        colors.Add(colors.Count > 0 ? colors[0] : SKColors.Transparent);
-                        positions.Add(1f);
-                    }
-
-                    var mode = rgb.SpreadMethod switch
-                    {
-                        Avalonia.Media.GradientSpreadMethod.Reflect => SKShaderTileMode.Mirror,
-                        Avalonia.Media.GradientSpreadMethod.Repeat => SKShaderTileMode.Repeat,
-                        _ => SKShaderTileMode.Clamp
-                    };
-
-                    return SKShader.CreateRadialGradient(
-                        new SKPoint(cx, cy),
-                        radius,
-                        colors.ToArray(),
-                        positions.ToArray(),
-                        mode);
-                }
-                else if (brush is Avalonia.Media.SolidColorBrush scb)
-                {
-                    var c = scb.Color;
-                    byte a = (byte)(c.A * opacity);
-                    return SKShader.CreateColor(new SKColor(c.R, c.G, c.B, a));
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"CreateShaderFromBrush error: {ex.Message}");
-            }
-
-            return null;
+            return null; 
         }
 
         /// <summary>
@@ -200,7 +95,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             if (style.BorderBrushColor.HasValue)
             {
                 var c = style.BorderBrushColor.Value;
-                borderColor = new SKColor(c.R, c.G, c.B, (byte)(c.A * opacity / 255));
+                borderColor = new SKColor(c.Red, c.Green, c.Blue, (byte)(c.Alpha * opacity / 255));
             }
 
             // Draw each side

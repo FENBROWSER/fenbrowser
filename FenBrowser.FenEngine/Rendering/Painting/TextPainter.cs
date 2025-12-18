@@ -33,10 +33,10 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                 float textWidth = paint.MeasureText(text);
                 switch (textAlign.Value)
                 {
-                    case Avalonia.Media.TextAlignment.Center:
+                    case SKTextAlign.Center:
                         x = box.Left + (box.Width - textWidth) / 2;
                         break;
-                    case Avalonia.Media.TextAlignment.Right:
+                    case SKTextAlign.Right:
                         x = box.Right - textWidth;
                         break;
                 }
@@ -134,7 +134,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             if (style?.ForegroundColor.HasValue == true)
             {
                 var c = style.ForegroundColor.Value;
-                paint.Color = new SKColor(c.R, c.G, c.B, c.A);
+                paint.Color = new SKColor(c.Red, c.Green, c.Blue, c.Alpha);
             }
             else
             {
@@ -150,7 +150,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
 
             // Font style
             var slant = SKFontStyleSlant.Upright;
-            if (style?.FontStyle == Avalonia.Media.FontStyle.Italic)
+            if (style?.FontStyle == SKFontStyleSlant.Italic)
             {
                 slant = SKFontStyleSlant.Italic;
             }

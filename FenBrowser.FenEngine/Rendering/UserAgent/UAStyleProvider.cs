@@ -1,6 +1,7 @@
 using SkiaSharp;
 using System;
 using FenBrowser.Core;
+// using FenBrowser.Core.Math; // Namespace moved to Core
 
 namespace FenBrowser.FenEngine.Rendering.UserAgent
 {
@@ -42,7 +43,7 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
                 if (style.Margin.Left == 0 && style.Margin.Top == 0 && 
                     style.Margin.Right == 0 && style.Margin.Bottom == 0)
                 {
-                    style.Margin = new Avalonia.Thickness(8);
+                    style.Margin = new Thickness(8);
                 }
             }
 
@@ -88,13 +89,13 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
                     style.FontSize = baseSize;
                 }
                 if (!style.FontWeight.HasValue) 
-                    style.FontWeight = Avalonia.Media.FontWeight.Bold;
+                    style.FontWeight = 700;
                 
                 if (style.Margin.Left == 0 && style.Margin.Top == 0)
                 {
                     double marginEm = (tag == "H1" || tag == "H2") ? 0.67 : 1.0;
                     float m = (float)(style.FontSize.Value * marginEm);
-                    style.Margin = new Avalonia.Thickness(0, m, 0, m);
+                    style.Margin = new Thickness(0, m, 0, m);
                 }
             }
 
@@ -111,7 +112,7 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
                 if (style == null) style = new CssComputed();
                 if (style.Margin.Top == 0 && style.Margin.Bottom == 0)
                 {
-                    style.Margin = new Avalonia.Thickness(0, 16, 0, 16); // 1em default
+                    style.Margin = new Thickness(0, 16, 0, 16); // 1em default
                 }
             }
 
@@ -119,8 +120,8 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
             if (tag == "UL" || tag == "OL")
             {
                 if (style == null) style = new CssComputed();
-                if (style.Padding.Left == 0) style.Padding = new Avalonia.Thickness(40, 0, 0, 0);
-                if (style.Margin.Top == 0) style.Margin = new Avalonia.Thickness(0, 16, 0, 16);
+                if (style.Padding.Left == 0) style.Padding = new Thickness(40, 0, 0, 0);
+                if (style.Margin.Top == 0) style.Margin = new Thickness(0, 16, 0, 16);
             }
 
             // Links
@@ -135,9 +136,9 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
             if (tag == "PRE" || tag == "CODE")
             {
                 if (style == null) style = new CssComputed();
-                if (style.FontFamily == null)
+                if (style.FontFamilyName == null)
                 {
-                    style.FontFamily = new Avalonia.Media.FontFamily("monospace");
+                    style.FontFamilyName = "monospace";
                 }
             }
 
@@ -147,7 +148,7 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
                 if (style == null) style = new CssComputed();
                 if (style.Margin.Left == 0)
                 {
-                    style.Margin = new Avalonia.Thickness(40, 16, 40, 16);
+                    style.Margin = new Thickness(40, 16, 40, 16);
                 }
             }
 
@@ -157,9 +158,9 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
                 if (style == null) style = new CssComputed();
                 if (!style.Height.HasValue) style.Height = 1;
                 if (!style.BackgroundColor.HasValue) 
-                    style.BackgroundColor = Avalonia.Media.Colors.Gray;
+                    style.BackgroundColor = SKColors.Gray;
                 if (style.Margin.Top == 0)
-                    style.Margin = new Avalonia.Thickness(0, 8, 0, 8);
+                    style.Margin = new Thickness(0, 8, 0, 8);
             }
 
             // Strong/B
@@ -167,7 +168,7 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
             {
                 if (style == null) style = new CssComputed();
                 if (!style.FontWeight.HasValue)
-                    style.FontWeight = Avalonia.Media.FontWeight.Bold;
+                    style.FontWeight = 700;
             }
 
             // Em/I
@@ -175,7 +176,7 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
             {
                 if (style == null) style = new CssComputed();
                 if (!style.FontStyle.HasValue)
-                    style.FontStyle = Avalonia.Media.FontStyle.Italic;
+                    style.FontStyle = SKFontStyleSlant.Italic;
             }
             
             // CRITICAL: Ensure display is NEVER null
@@ -231,38 +232,38 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
             // Check both BackgroundColor and the raw Map for explicit "background" or "background-color"
             bool cssSpecifiedBackground = style.Map != null && 
                 (style.Map.ContainsKey("background") || style.Map.ContainsKey("background-color"));
-            bool hasBackground = (style.BackgroundColor.HasValue && style.BackgroundColor.Value.A > 0) || cssSpecifiedBackground;
+            bool hasBackground = (style.BackgroundColor.HasValue && style.BackgroundColor.Value.Alpha > 0) || cssSpecifiedBackground;
             if (!hasBackground && tag != "FIELDSET")
             {
                 style.BackgroundColor = isButtonType 
-                    ? Avalonia.Media.Color.FromRgb(0xf8, 0xf9, 0xfa)  // Light gray
-                    : Avalonia.Media.Colors.White;
+                    ? new SKColor(0xf8, 0xf9, 0xfa)  // Light gray
+                    : SKColors.White;
             }
 
             // Border
             if (style.BorderThickness.Top == 0 && style.BorderThickness.Left == 0)
             {
-                style.BorderThickness = new Avalonia.Thickness(1);
+                style.BorderThickness = new Thickness(1);
                 style.BorderBrushColor = isButtonType 
-                    ? Avalonia.Media.Color.FromRgb(0xf8, 0xf9, 0xfa)
-                    : Avalonia.Media.Colors.Gray;
+                    ? new SKColor(0xf8, 0xf9, 0xfa)
+                    : SKColors.Gray;
             }
 
             // Padding
             if (style.Padding.Top == 0 && style.Padding.Left == 0)
             {
                 style.Padding = isButtonType 
-                    ? new Avalonia.Thickness(16, 8, 16, 8)
-                    : new Avalonia.Thickness(5, 2, 5, 2);
+                    ? new Thickness(16, 8, 16, 8)
+                    : new Thickness(5, 2, 5, 2);
             }
 
             // Border radius
             if (style.BorderRadius.TopLeft == 0)
             {
                 if (isButtonType)
-                    style.BorderRadius = new Avalonia.CornerRadius(8);
+                    style.BorderRadius = new CornerRadius(8);
                 else if (tag == "INPUT" || tag == "TEXTAREA")
-                    style.BorderRadius = new Avalonia.CornerRadius(4);
+                    style.BorderRadius = new CornerRadius(4);
             }
         }
     }

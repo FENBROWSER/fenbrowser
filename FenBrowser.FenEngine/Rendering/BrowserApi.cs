@@ -9,6 +9,7 @@ using FenBrowser.Core.Security;
 using FenBrowser.FenEngine.Security; // Added
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.DevTools;
+using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -34,7 +35,7 @@ namespace FenBrowser.FenEngine.Rendering
         event EventHandler<string> TitleChanged;
         event EventHandler<object> RepaintReady;
         event Action<string> ConsoleMessage;
-        event Action<Avalonia.Rect?> HighlightRectChanged;
+        event Action<SKRect?> HighlightRectChanged;
         event Func<string, JsPermissions, Task<bool>> PermissionRequested;
 
         // Navigation
@@ -192,7 +193,7 @@ namespace FenBrowser.FenEngine.Rendering
         public event EventHandler<string> TitleChanged;
         public event EventHandler<object> RepaintReady;
         public event Action<string> ConsoleMessage;
-        public event Action<Avalonia.Rect?> HighlightRectChanged;
+        public event Action<SKRect?> HighlightRectChanged;
         public event Func<string, JsPermissions, Task<bool>> PermissionRequested;
 
         public Uri CurrentUri => _current;

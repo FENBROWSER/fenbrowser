@@ -1,8 +1,6 @@
 using System;
-using Avalonia;
-using Avalonia.Controls;
-using Avalonia.Media;
-using Avalonia.Layout;
+using SkiaSharp;
+using FenBrowser.Core;
 using System.Collections.Generic;
 
 namespace FenBrowser.FenEngine.Rendering
@@ -12,7 +10,7 @@ namespace FenBrowser.FenEngine.Rendering
     /// </summary>
     public class RenderBox : RenderObject
     {
-        public override void Layout(Size availableSize)
+        public override void Layout(SKSize availableSize)
         {
             if (Style == null) Style = new CssComputed(); // Ensure Style is never null
 
@@ -36,7 +34,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                 if (!forceShow)
                 {
-                    Bounds = Rect.Empty;
+                    Bounds = SKRect.Empty;
                     return;
                 }
             }
@@ -203,7 +201,7 @@ namespace FenBrowser.FenEngine.Rendering
                         if (child.Style != null && (child.Style.Position == "absolute" || child.Style.Position == "fixed")) continue;
 
                         var childMargin = child.Style?.Margin ?? new Thickness(0);
-                        double right = child.Bounds.X + child.Bounds.Width + childMargin.Right;
+                        double right = child.Bounds.Left + child.Bounds.Width + childMargin.Right;
                         if (right > maxRight) maxRight = right;
                     }
                 }
@@ -234,13 +232,12 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             // 6. Set Final Bounds
-            // Sanitize values to prevent Rect constructor crashes
             targetWidth = EnsureValid(targetWidth);
             targetHeight = EnsureValid(targetHeight);
-            Bounds = new Rect(0, 0, targetWidth, targetHeight);
+            Bounds = SKRect.Create(0, 0, (float)targetWidth, (float)targetHeight);
 
             // 7. Layout Absolute Children
-            LayoutAbsoluteChildren(new Size(targetWidth, targetHeight));
+            LayoutAbsoluteChildren(new SKSize((float)targetWidth, (float)targetHeight));
         }
 
         private bool HasInlineChildren()
@@ -260,14 +257,13 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 if (child.Style != null && (child.Style.Position == "absolute" || child.Style.Position == "fixed")) continue;
 
-                child.Layout(new Size(contentWidth, double.PositiveInfinity));
+                child.Layout(new SKSize((float)contentWidth, float.PositiveInfinity));
                 var childMargin = child.Style?.Margin ?? new Thickness(0);
                 
                 currentY += childMargin.Top;
                 
                 var childBounds = child.Bounds;
-                childBounds = childBounds.WithX(Style.Padding.Left + Style.BorderThickness.Left + childMargin.Left);
-                childBounds = childBounds.WithY(currentY);
+                childBounds.Location = new SKPoint((float)(Style.Padding.Left + Style.BorderThickness.Left + childMargin.Left), (float)currentY);
                 child.Bounds = childBounds;
 
                 currentY += childBounds.Height + childMargin.Bottom;
@@ -289,7 +285,7 @@ namespace FenBrowser.FenEngine.Rendering
                 if (child.Style != null && (child.Style.Position == "absolute" || child.Style.Position == "fixed")) continue;
 
                 // Measure child
-                child.Layout(new Size(contentWidth, double.PositiveInfinity));
+                child.Layout(new SKSize((float)contentWidth, float.PositiveInfinity));
                 
                 var childMargin = child.Style?.Margin ?? new Thickness(0);
                 double childTotalWidth = child.Bounds.Width + childMargin.Left + childMargin.Right;
@@ -306,8 +302,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                 // Position child
                 var childBounds = child.Bounds;
-                childBounds = childBounds.WithX(currentX + childMargin.Left);
-                childBounds = childBounds.WithY(currentY + childMargin.Top);
+                childBounds.Location = new SKPoint((float)(currentX + childMargin.Left), (float)(currentY + childMargin.Top));
                 child.Bounds = childBounds;
 
                 // Advance
@@ -345,7 +340,7 @@ namespace FenBrowser.FenEngine.Rendering
                 // For flex items, we might need to constrain them differently, but for now, let them size naturally
                 // If row, height is infinite. If column, width is contentWidth (maybe?)
                 // Simplified: Measure with available space
-                child.Layout(new Size(isRow ? double.PositiveInfinity : contentWidth, double.PositiveInfinity));
+                child.Layout(new SKSize(isRow ? float.PositiveInfinity : (float)contentWidth, float.PositiveInfinity));
             }
 
             // 2. Position children (Simplified: Single line or simple wrap, no shrinking/growing yet)
@@ -425,7 +420,7 @@ namespace FenBrowser.FenEngine.Rendering
                                 child.Style.Width = newWidth;
 
                                 // Re-layout with fixed width
-                                child.Layout(new Size(newWidth, double.PositiveInfinity));
+                                child.Layout(new SKSize((float)newWidth, float.PositiveInfinity));
 
                                 // Restore width style
                                 child.Style.Width = oldWidth;
@@ -491,8 +486,8 @@ namespace FenBrowser.FenEngine.Rendering
                     // Stretch?
                     if (align == "stretch")
                     {
-                        if (isRow) bounds = bounds.WithHeight(Math.Max(bounds.Height, lineCrossSize - childMargin.Top - childMargin.Bottom));
-                        else bounds = bounds.WithWidth(Math.Max(bounds.Width, lineCrossSize - childMargin.Left - childMargin.Right));
+                        if (isRow) bounds = new SKRect(bounds.Left, bounds.Top, bounds.Right, (float)(bounds.Top + Math.Max(bounds.Height, lineCrossSize - childMargin.Top - childMargin.Bottom)));
+                        else bounds = new SKRect(bounds.Left, bounds.Top, (float)(bounds.Left + Math.Max(bounds.Width, lineCrossSize - childMargin.Left - childMargin.Right)), bounds.Bottom);
                     }
                     else if (align == "center")
                     {
@@ -509,15 +504,11 @@ namespace FenBrowser.FenEngine.Rendering
 
                     if (isRow)
                     {
-                        bounds = bounds.WithX(itemMainPos + childMargin.Left);
-                        bounds = bounds.WithY(itemCrossPos + childMargin.Top);
-                        itemMainPos += bounds.Width + childMargin.Left + childMargin.Right + gapMain;
+                         bounds.Location = new SKPoint((float)(itemMainPos + childMargin.Left), (float)(itemCrossPos + childMargin.Top));
                     }
                     else
                     {
-                        bounds = bounds.WithX(itemCrossPos + childMargin.Left);
-                        bounds = bounds.WithY(itemMainPos + childMargin.Top);
-                        itemMainPos += bounds.Height + childMargin.Top + childMargin.Bottom + gapMain;
+                         bounds.Location = new SKPoint((float)(itemCrossPos + childMargin.Left), (float)(itemMainPos + childMargin.Top));
                     }
                     
                     child.Bounds = bounds;
@@ -530,7 +521,7 @@ namespace FenBrowser.FenEngine.Rendering
             return totalCrossSize;
         }
 
-        private void LayoutAbsoluteChildren(Size availableSize)
+        private void LayoutAbsoluteChildren(SKSize availableSize)
         {
             foreach (var child in Children)
             {
@@ -554,8 +545,7 @@ namespace FenBrowser.FenEngine.Rendering
                     if (child.Style.Top.HasValue) y = child.Style.Top.Value;
                     else if (child.Style.Bottom.HasValue) y = availableSize.Height - child.Style.Bottom.Value - bounds.Height;
 
-                    bounds = bounds.WithX(x);
-                    bounds = bounds.WithY(y);
+                    bounds.Location = new SKPoint((float)x, (float)y);
                     child.Bounds = bounds;
                 }
             }
