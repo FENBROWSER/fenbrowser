@@ -22,6 +22,7 @@ namespace FenBrowser.UI
 
         public void AttachBrowser(IBrowser browser)
         {
+            _browser = browser;
             if (CookiesView != null) CookiesView.Configure(browser);
         }
 
@@ -29,16 +30,30 @@ namespace FenBrowser.UI
         {
             GeneralPanel.IsVisible = true;
             PrivacyPanel.IsVisible = false;
+            DeveloperPanel.IsVisible = false;
             NavGeneral.Background = Application.Current.FindResource("HoverColor") as IBrush;
             NavPrivacy.Background = Brushes.Transparent;
+            NavDeveloper.Background = Brushes.Transparent;
         }
 
         private void OnNavPrivacyClick(object sender, PointerPressedEventArgs e)
         {
             GeneralPanel.IsVisible = false;
             PrivacyPanel.IsVisible = true;
+            DeveloperPanel.IsVisible = false;
             NavPrivacy.Background = Application.Current.FindResource("HoverColor") as IBrush;
             NavGeneral.Background = Brushes.Transparent;
+            NavDeveloper.Background = Brushes.Transparent;
+        }
+
+        private void OnNavDeveloperClick(object sender, PointerPressedEventArgs e)
+        {
+            GeneralPanel.IsVisible = false;
+            PrivacyPanel.IsVisible = false;
+            DeveloperPanel.IsVisible = true;
+            NavDeveloper.Background = Application.Current.FindResource("HoverColor") as IBrush;
+            NavGeneral.Background = Brushes.Transparent;
+            NavPrivacy.Background = Brushes.Transparent;
         }
 
         private void LoadSettings()
@@ -165,5 +180,45 @@ namespace FenBrowser.UI
         {
             LogManager.ClearLogs(deleteFile: true);
         }
+
+        private void OnCompareDomClick(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                // Get DOM from browser
+                var domRoot = _browser?.GetDomRoot();
+                if (domRoot == null)
+                {
+                    DomStatsText.Text = "No page loaded. Navigate to a webpage first.";
+                    DomStatsPanel.IsVisible = true;
+                    ComparisonGrid.IsVisible = false;
+                    return;
+                }
+
+                // Serialize DOM
+                var serialized = DomSerializer.Serialize(domRoot, prettyPrint: true);
+                var stats = DomSerializer.GetStats(domRoot);
+
+                // Get raw HTML (if available from browser)
+                var rawHtml = _browser?.GetRawHtml() ?? "(Raw HTML not available)";
+
+                // Display stats
+                DomStatsText.Text = stats.ToString();
+                DomStatsPanel.IsVisible = true;
+
+                // Display comparison
+                ParsedDomOutput.Text = serialized;
+                RawHtmlOutput.Text = rawHtml.Length > 50000 ? rawHtml.Substring(0, 50000) + "\n... (truncated)" : rawHtml;
+                ComparisonGrid.IsVisible = true;
+            }
+            catch (Exception ex)
+            {
+                DomStatsText.Text = $"Error: {ex.Message}";
+                DomStatsPanel.IsVisible = true;
+                ComparisonGrid.IsVisible = false;
+            }
+        }
+
+        private IBrowser _browser;
     }
 }
