@@ -1,7 +1,8 @@
 # 📊 FenBrowser System Analysis
 
 > **Target Version:** Alpha/Dev  
-> **Last Updated:** 2025-12-17
+> **Last Updated:** 2025-12-18
+> **Total Lines of Code:** 70,535
 
 ---
 
@@ -129,21 +130,25 @@
 
 ## 🖥️ 5. Browser Shell & UI
 
-| Feature Category | Specific Feature | Status         | Score             | Implementation Notes            |
-| :--------------- | :--------------- | :------------- | :---------------- | :------------------------------ |
-| **Navigation**   | Address Bar      | ✅ **Active**  | ▓▓▓▓▓▓▓▓▓░ **9**  | URL input, search redirect.     |
-|                  | History Stack    | ✅ **Active**  | ▓▓▓▓▓▓▓▓▓░ **9**  | Back/Forward navigation.        |
-| **Tabs**         | Management       | ✅ **Active**  | ▓▓▓▓▓▓▓▓▓░ **9**  | Add/Remove/Switch tabs.         |
-|                  | Favicons         | ✅ **Active**  | ▓▓▓▓▓▓▓░░░ **7**  | Fetched, no complex fallbacks.  |
-| **DevTools**     | DOM Inspector    | ✅ **Active**  | ▓▓▓▓▓▓▓▓░░ **8**  | Tree view functional.           |
-|                  | Console          | ✅ **Active**  | ▓▓▓▓▓▓▓▓░░ **8**  | Log output & JS input.          |
-|                  | DOM Comparison   | ✅ **Active**  | ▓▓▓▓▓▓▓▓░░ **8**  | Parsed DOM vs Raw HTML compare. |
-| **Settings**     | UA Switcher      | ✅ **Active**  | ▓▓▓▓▓▓▓▓▓▓ **10** | Dynamic switching instantly.    |
-|                  | JS Toggle        | ✅ **Active**  | ▓▓▓▓▓▓▓▓▓▓ **10** | Global enable/disable.          |
-| **Managers**     | History UI       | ❌ **Missing** | ▓▓░░░░░░░░ **2**  | Recorded but no UI view.        |
-|                  | Bookmarks        | ❌ **Missing** | ▓░░░░░░░░░ **1**  | No manager/UI.                  |
-|                  | Downloads        | ❌ **Missing** | ▓▓░░░░░░░░ **2**  | No UI to track progress.        |
-|                  | Extensions       | ❌ **Missing** | ▓░░░░░░░░░ **1**  | WebExtensions API missing.      |
+| Feature Category | Specific Feature | Status         | Score             | Implementation Notes                            |
+| :--------------- | :--------------- | :------------- | :---------------- | :---------------------------------------------- |
+| **Navigation**   | Address Bar      | ✅ **Active**  | ▓▓▓▓▓▓▓▓▓░ **9**  | URL input, search redirect.                     |
+|                  | History Stack    | ✅ **Active**  | ▓▓▓▓▓▓▓▓▓░ **9**  | Back/Forward navigation.                        |
+| **Tabs**         | Management       | ✅ **Active**  | ▓▓▓▓▓▓▓▓▓▓ **10** | Isolated tab instances, robust lifecycle.       |
+|                  | Favicons         | ✅ **Active**  | ▓▓▓▓▓▓▓░░░ **7**  | Fetched, no complex fallbacks.                  |
+| **Input**        | Focus Management | ✅ **Active**  | ▓▓▓▓▓▓▓▓▓▓ **10** | Single focus owner, keyboard support.           |
+|                  | Shortcuts        | ✅ **Active**  | ▓▓▓▓▓▓▓▓▓▓ **10** | Global dispatcher, configurable.                |
+|                  | Context Menus    | ✅ **Active**  | ▓▓▓▓▓▓▓▓▓▓ **10** | Capability-driven, no DOM access, keyboard nav. |
+| **Feedback**     | Status Bar       | ✅ **Active**  | ▓▓▓▓▓▓▓▓▓▓ **10** | Hover URL, load state, zoom level.              |
+| **DevTools**     | DOM Inspector    | ✅ **Active**  | ▓▓▓▓▓▓▓▓░░ **8**  | Tree view functional.                           |
+|                  | Console          | ✅ **Active**  | ▓▓▓▓▓▓▓▓░░ **8**  | Log output & JS input.                          |
+|                  | DOM Comparison   | ✅ **Active**  | ▓▓▓▓▓▓▓▓░░ **8**  | Parsed DOM vs Raw HTML compare.                 |
+| **Settings**     | UA Switcher      | ✅ **Active**  | ▓▓▓▓▓▓▓▓▓▓ **10** | Dynamic switching instantly.                    |
+|                  | JS Toggle        | ✅ **Active**  | ▓▓▓▓▓▓▓▓▓▓ **10** | Global enable/disable.                          |
+| **Managers**     | History UI       | ❌ **Missing** | ▓▓░░░░░░░░ **2**  | Recorded but no UI view.                        |
+|                  | Bookmarks        | ❌ **Missing** | ▓░░░░░░░░░ **1**  | No manager/UI.                                  |
+|                  | Downloads        | ❌ **Missing** | ▓▓░░░░░░░░ **2**  | No UI to track progress.                        |
+|                  | Extensions       | ❌ **Missing** | ▓░░░░░░░░░ **1**  | WebExtensions API missing.                      |
 
 ---
 
