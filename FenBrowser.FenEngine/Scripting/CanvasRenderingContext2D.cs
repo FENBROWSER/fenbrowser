@@ -1,11 +1,6 @@
 using System;
 using System.Collections.Generic;
-using Avalonia;
-using Avalonia.Controls;
-using Avalonia.Media;
-using Avalonia.Media.Imaging;
-using Avalonia.Platform;
-using Avalonia.Threading;
+// Avalonia imports removed for Skia/Silk migration
 using SkiaSharp;
 using FenBrowser.Core;
 using FenBrowser.FenEngine.Core;
@@ -21,8 +16,8 @@ namespace FenBrowser.FenEngine.Scripting
     {
         private readonly LiteElement _element;
         private readonly JavaScriptEngine _engine;
-        private Image _imageControl;
-        private WriteableBitmap _bitmap;
+        // private object _imageControl; // Removed legacy control ref
+        private SKBitmap _bitmap;
         private IObject _prototype;
 
         // Current drawing state
@@ -406,36 +401,20 @@ namespace FenBrowser.FenEngine.Scripting
         {
             try
             {
-                var currentVisual = JavaScriptEngine.GetVisual(_element) as Image;
-                
-                if (currentVisual != null && currentVisual != _imageControl)
-                {
-                    _imageControl = currentVisual;
-                    if (_bitmap != null)
-                    {
-                        _imageControl.Source = _bitmap;
-                        _imageControl.InvalidateVisual();
-                    }
-                }
-
-                if (_imageControl == null) return;
-
                 if (_bitmap == null)
                 {
                     _bitmap = JavaScriptEngine.GetCanvasBitmap(_element);
                     
                     if (_bitmap == null)
                     {
-                        var w = (int)_imageControl.Width;
-                        var h = (int)_imageControl.Height;
-                        if (w <= 0) w = 300;
-                        if (h <= 0) h = 150;
+                        var wStr = _element.Attr.ContainsKey("width") ? _element.Attr["width"] : "300";
+                        var hStr = _element.Attr.ContainsKey("height") ? _element.Attr["height"] : "150";
+                        if (!int.TryParse(wStr, out int w)) w = 300;
+                        if (!int.TryParse(hStr, out int h)) h = 150;
                         
-                        _bitmap = new WriteableBitmap(new PixelSize(w, h), new Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Premul);
+                        _bitmap = new SKBitmap(w, h, SKColorType.Bgra8888, SKAlphaType.Premul);
                         JavaScriptEngine.RegisterCanvasBitmap(_element, _bitmap);
                     }
-                    
-                    _imageControl.Source = _bitmap;
                 }
             }
             catch { }
@@ -443,29 +422,21 @@ namespace FenBrowser.FenEngine.Scripting
 
         private void Draw(Action<SKCanvas> drawAction)
         {
-            Dispatcher.UIThread.Post(() =>
-            {
-                EnsureSurface();
-                if (_bitmap == null) return;
+            // [MIGRATION] Removed Dispatcher.UIThread.Post. Executing synchronously on current thread (JS thread).
+            // This is generally safe for offscreen canvas.
+            EnsureSurface();
+            if (_bitmap == null) return;
 
-                using (var buf = _bitmap.Lock())
-                {
-                    var info = new SKImageInfo(buf.Size.Width, buf.Size.Height, SKColorType.Bgra8888, SKAlphaType.Premul);
-                    using (var surface = SKSurface.Create(info, buf.Address, buf.RowBytes))
-                    {
-                        if (surface != null)
-                        {
-                            var canvas = surface.Canvas;
-                            
-                            // Apply current transform
-                            canvas.SetMatrix(_state.Transform);
-                            
-                            drawAction(canvas);
-                        }
-                    }
-                }
-                _imageControl?.InvalidateVisual();
-            });
+            // Just draw to the bitmap
+            using (var canvas = new SKCanvas(_bitmap))
+            {
+                // Apply current transform
+                canvas.SetMatrix(_state.Transform);
+                drawAction(canvas);
+            }
+            
+            // Notify engine of repaint if needed
+            _engine.RequestRender?.Invoke();
         }
         
         #endregion

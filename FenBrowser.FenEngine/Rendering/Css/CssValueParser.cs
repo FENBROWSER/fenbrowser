@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text.RegularExpressions;
-using Avalonia;
+// using Avalonia; // Removed
+// using FenBrowser.Core.Math;
+using FenBrowser.Core; // Namespace moved to Core
 
 namespace FenBrowser.FenEngine.Rendering.Css
 {

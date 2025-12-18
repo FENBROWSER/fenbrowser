@@ -18,8 +18,7 @@ using System.Globalization;
 using Math = System.Math;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Security;
-using Avalonia;
-using Avalonia.VisualTree;
+using SkiaSharp;
 using FenBrowser.FenEngine.DOM;
 
 namespace FenBrowser.FenEngine.Scripting
@@ -96,15 +95,17 @@ namespace FenBrowser.FenEngine.Scripting
                         FenLogger.Debug("[ScheduleCallback] Woke up. Dispatching to UI thread...", LogCategory.JavaScript);
                         
                         // Ensure the callback runs on the UI thread as JS expects single-threaded access to DOM
-                        await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() => 
-                        {
+                        // [MIGRATION] Avalonia Dispatcher removed. Host must provide UI thread synchronization.
+                        // For now, executing directly (unsafe if multithreaded) or TODO: Use explicit UI sync context.
+                        // await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() => 
+                        // {
                             FenLogger.Debug("[ScheduleCallback] Executing action on UI thread.", LogCategory.JavaScript);
                             try { action(); }
                             catch (Exception ex) 
                             { 
                                 FenLogger.Error($"[Timer Action Error] {ex.Message}", LogCategory.JavaScript, ex);
                             }
-                        });
+                        // });
                     }
                     catch (Exception ex)
                     {
@@ -438,10 +439,10 @@ namespace FenBrowser.FenEngine.Scripting
         public Func<Uri, string, bool> SubresourceAllowed { get; set; }
 
         // Canvas persistence
-        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<LiteElement, Avalonia.Media.Imaging.WriteableBitmap> _canvasBitmaps 
-            = new System.Runtime.CompilerServices.ConditionalWeakTable<LiteElement, Avalonia.Media.Imaging.WriteableBitmap>();
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<LiteElement, SKBitmap> _canvasBitmaps 
+            = new System.Runtime.CompilerServices.ConditionalWeakTable<LiteElement, SKBitmap>();
 
-        public static void RegisterCanvasBitmap(LiteElement element, Avalonia.Media.Imaging.WriteableBitmap bitmap)
+        public static void RegisterCanvasBitmap(LiteElement element, SKBitmap bitmap)
         {
             if (element == null || bitmap == null) return;
             // ConditionalWeakTable doesn't have indexer setter, use Remove/Add or GetValue to set
@@ -449,7 +450,7 @@ namespace FenBrowser.FenEngine.Scripting
             _canvasBitmaps.Add(element, bitmap);
         }
 
-        public static Avalonia.Media.Imaging.WriteableBitmap GetCanvasBitmap(LiteElement element)
+        public static SKBitmap GetCanvasBitmap(LiteElement element)
         {
             if (element == null) return null;
             _canvasBitmaps.TryGetValue(element, out var bitmap);
@@ -593,75 +594,32 @@ namespace FenBrowser.FenEngine.Scripting
         private readonly object _mutationLock = new object();
         
         // --- DOM visual registry for approximate layout metrics ---
+        // [MIGRATION] Avalonia Visual Registry removed. Layout metrics should be retrieved from SkiaDomRenderer.
         
-        public static void RegisterDomVisual(LiteElement node, Avalonia.Controls.Control fe)
+        public static void RegisterDomVisual(LiteElement node, object fe)
         {
-            try { if (node == null || fe == null) return; lock (_visualMap) _visualMap[node] = new System.WeakReference(fe); }
-            catch { }
+            // No-op
         }
 
-        public static Avalonia.Controls.Control GetControlForElement(LiteElement node)
+        public static object GetControlForElement(LiteElement node)
         {
-            try
-            {
-                System.WeakReference wr;
-                lock (_visualMap)
-                {
-                    if (!_visualMap.TryGetValue(node, out wr)) return null;
-                    return wr != null ? wr.Target as Avalonia.Controls.Control : null;
-                }
-            }
-            catch { return null; }
+            return null;
         }
 
         public static bool TryGetVisualRect(LiteElement node, out double x, out double y, out double w, out double h)
         {
-            x = y = 0; w = h = 0;
-            try
-            {
-                System.WeakReference wr; Avalonia.Controls.Control fe = null;
-                lock (_visualMap)
-                {
-                    if (!_visualMap.TryGetValue(node, out wr)) return false;
-                    fe = wr != null ? wr.Target as Avalonia.Controls.Control : null;
-                }
-                if (fe == null) return false;
-                w = fe.Bounds.Width; h = fe.Bounds.Height;
-                Avalonia.Visual root = null;
-                try { var wrs = _visualRoot; if (wrs != null) root = wrs.Target as Avalonia.Visual; } catch { }
-                if (root == null)
-                    root = (Avalonia.Application.Current?.ApplicationLifetime as Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime)?.MainWindow;
-                
-                if (root != null && fe.IsVisible)
-                {
-                    var p = fe.TranslatePoint(new Avalonia.Point(0, 0), root);
-                    if (p.HasValue)
-                    {
-                        x = p.Value.X; y = p.Value.Y; return true;
-                    }
-                }
-            }
-            catch { }
+            x = y = w = h = 0;
+            // TODO: Query SkiaDomRenderer for layout box
             return false;
         }
 
-        internal static Avalonia.Controls.Control GetVisual(LiteElement node)
+        internal static object GetVisual(LiteElement node)
         {
-            try
-            {
-                System.WeakReference wr;
-                lock (_visualMap)
-                {
-                    if (_visualMap.TryGetValue(node, out wr))
-                        return wr?.Target as Avalonia.Controls.Control;
-                }
-            }
-            catch { }
             return null;
         }
-        public static void RegisterVisualRoot(Avalonia.Visual root)
+        public static void RegisterVisualRoot(object root)
         {
-            try { _visualRoot = (root != null ? new System.WeakReference(root) : null); } catch { }
+            // No-op
         }
         
         // ---- Phase 1/2/3 state ----

@@ -134,7 +134,8 @@ namespace FenBrowser.UI
             _skiaScrollViewer = this.FindControl<ScrollViewer>("SkiaScrollViewer");
             _specialPageContainer = this.FindControl<ContentControl>("SpecialPageContainer");
             
-            // Wire up SkiaView interaction
+            // [MIGRATION] SkiaBrowserView removed pending FenBrowser.Host integration
+            #if ENABLE_SKIAVIEW
             var skiaView = this.FindControl<SkiaBrowserView>("SkiaView");
             if (skiaView != null)
             {
@@ -176,6 +177,7 @@ namespace FenBrowser.UI
                      });
                 };
             }
+            #endif
 
             // Register with WebDriverIntegration for real window/tab/screenshot operations
             WebDriverIntegration.RegisterMainWindow(
@@ -249,6 +251,7 @@ namespace FenBrowser.UI
 
         private void BindSkiaViewport()
         {
+            #if ENABLE_SKIAVIEW
             if (_skiaScrollViewer != null && this.FindControl<SkiaBrowserView>("SkiaView") is SkiaBrowserView skiaView)
             {
                 void UpdateLayoutViewport()
@@ -273,6 +276,7 @@ namespace FenBrowser.UI
                 _skiaScrollViewer.GetObservable(ScrollViewer.ViewportProperty).Subscribe(new Avalonia.Reactive.AnonymousObserver<Size>(_ => UpdateLayoutViewport()));
                 _skiaScrollViewer.SizeChanged += (s, e) => UpdateLayoutViewport();
             }
+            #endif
         }
 
         private void OnWindowKeyDown(object sender, Avalonia.Input.KeyEventArgs e)
@@ -335,6 +339,7 @@ namespace FenBrowser.UI
                     {
                         // TEMPORARY SKIA VERIFICATION WITH BOX MODEL
                         var root = browser.GetDomRoot();
+                        #if ENABLE_SKIAVIEW
                         var skiaView = this.FindControl<SkiaBrowserView>("SkiaView");
                         
                         try { FenLogger.Debug($"[MainWindow] UI Thread. Root: {root?.Tag}, SkiaView: {skiaView}", LogCategory.General); } catch {}
@@ -367,6 +372,7 @@ namespace FenBrowser.UI
                                return; // Skip old renderer logic
                            }
                         }
+                        #endif
 
                         if (element is Avalonia.Controls.Control ctrl)
                             SetBrowserContainerContent(ctrl);
@@ -436,7 +442,11 @@ namespace FenBrowser.UI
                 {
                     if (tab.IsActive)
                     {
-                        UpdateHighlight(rect);
+                        // Convert SKRect? to Avalonia.Rect?
+                        Avalonia.Rect? avRect = rect.HasValue 
+                            ? new Avalonia.Rect(rect.Value.Left, rect.Value.Top, rect.Value.Width, rect.Value.Height)
+                            : null;
+                        UpdateHighlight(avRect);
                     }
                 });
             };
@@ -463,8 +473,8 @@ namespace FenBrowser.UI
                     var border = new Border 
                     { 
                         BorderBrush = Avalonia.Media.Brushes.Gray, 
-                        BorderThickness = new Thickness(1),
-                        Padding = new Thickness(20)
+                        BorderThickness = new Avalonia.Thickness(1),
+                        Padding = new Avalonia.Thickness(20)
                     };
 
                     var mainPanel = new StackPanel { Spacing = 15 };
@@ -503,7 +513,7 @@ namespace FenBrowser.UI
             };
         }
 
-        private void UpdateHighlight(Rect? rect)
+        private void UpdateHighlight(Avalonia.Rect? rect)
         {
             if (_highlightOverlay == null) return;
             _highlightOverlay.Children.Clear();
@@ -516,7 +526,7 @@ namespace FenBrowser.UI
                     Width = r.Width,
                     Height = r.Height,
                     BorderBrush = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Colors.Blue, 0.5),
-                    BorderThickness = new Thickness(2),
+                    BorderThickness = new Avalonia.Thickness(2),
                     Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Colors.Blue, 0.2)
                 };
                 Canvas.SetLeft(border, r.X);
@@ -645,11 +655,13 @@ namespace FenBrowser.UI
                             // Update when Viewport changes (e.g. scrollbars appear/disappear)
                             sv.GetObservable(ScrollViewer.ViewportProperty).Subscribe(new Avalonia.Reactive.AnonymousObserver<Size>(_ => UpdateContentSize()));
                         }
+                        #if ENABLE_SKIAVIEW
                         else if (content is FenBrowser.FenEngine.Rendering.SkiaBrowserView skiaView)
                         {
                             // This path is likely unused if SkiaView is in XAML, but kept for dynamic injection support
                             // Logic moved to BindSkiaViewport() for XAML instance, but good to have here too as backup
                         }
+                        #endif
                         decorator.Child = sv;
                     }
                     break;
@@ -934,6 +946,7 @@ namespace FenBrowser.UI
                 percentage.Text = $"{(int)(_currentZoom * 100)}%";
             }
             
+            #if ENABLE_SKIAVIEW
             // Apply zoom to SkiaView
             var skiaView = this.FindControl<SkiaBrowserView>("SkiaView");
             if (skiaView != null)
@@ -941,6 +954,7 @@ namespace FenBrowser.UI
                 skiaView.ZoomLevel = (float)_currentZoom;
                 skiaView.InvalidateVisual();
             }
+            #endif
         }
 
         private async void OnGoClick(object sender, RoutedEventArgs e)

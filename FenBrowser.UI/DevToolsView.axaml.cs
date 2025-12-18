@@ -414,7 +414,7 @@ namespace FenBrowser.UI
                 Foreground = new SolidColorBrush(Color.Parse("#569CD6")),
                 FontFamily = new FontFamily("Consolas"),
                 FontSize = 14,
-                Margin = new Thickness(0, 0, 0, 8)
+                Margin = new Avalonia.Thickness(0, 0, 0, 8)
             });
             
             // Computed styles
@@ -427,7 +427,7 @@ namespace FenBrowser.UI
                     Text = "Computed Styles",
                     Foreground = new SolidColorBrush(Color.Parse("#9D9D9D")),
                     FontSize = 11,
-                    Margin = new Thickness(0, 8, 0, 4)
+                    Margin = new Avalonia.Thickness(0, 8, 0, 4)
                 });
                 
                 if (computed != null)
@@ -520,7 +520,7 @@ namespace FenBrowser.UI
                         Width = 10,
                         Height = 10,
                         Fill = new SolidColorBrush(Color.Parse("#F14C4C")),
-                        Margin = new Thickness(2),
+                        Margin = new Avalonia.Thickness(2),
                         [Grid.ColumnProperty] = 0
                     });
                 }
@@ -533,7 +533,7 @@ namespace FenBrowser.UI
                     FontFamily = new FontFamily("Consolas"),
                     FontSize = 12,
                     TextAlignment = TextAlignment.Right,
-                    Margin = new Thickness(0, 0, 8, 0),
+                    Margin = new Avalonia.Thickness(0, 0, 8, 0),
                     [Grid.ColumnProperty] = 1
                 });
                 

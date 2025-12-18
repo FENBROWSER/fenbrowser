@@ -2,7 +2,7 @@ using System;
 using System.Globalization;
 using System.Reflection;
 using System.Collections.Generic;
-using Avalonia.Media;
+using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -20,46 +20,46 @@ namespace FenBrowser.FenEngine.Rendering
         public static double? MediaDppx { get; set; }
         public static string MediaPrefersColorScheme { get; set; }
 
-        private static readonly Dictionary<string, Color> _namedColors 
-            = new Dictionary<string, Color>(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<string, SKColor> _namedColors 
+            = new Dictionary<string, SKColor>(StringComparer.OrdinalIgnoreCase);
 
         static CssParser()
         {
             // Pre-populate common colors to ensure they work even if reflection fails
-            _namedColors["black"] = Colors.Black;
-            _namedColors["white"] = Colors.White;
-            _namedColors["gray"] = Colors.Gray;
-            _namedColors["grey"] = Colors.Gray;
-            _namedColors["red"] = Colors.Red;
-            _namedColors["green"] = Colors.Green;
-            _namedColors["blue"] = Colors.Blue;
-            _namedColors["yellow"] = Colors.Yellow;
-            _namedColors["cyan"] = Colors.Cyan;
-            _namedColors["magenta"] = Colors.Magenta;
-            _namedColors["transparent"] = Colors.Transparent;
-            _namedColors["lightcoral"] = Colors.LightCoral;
-            _namedColors["purple"] = Colors.Purple;
-            _namedColors["orange"] = Colors.Orange;
-            _namedColors["gold"] = Colors.Gold;
-            _namedColors["brown"] = Colors.Brown;
-            _namedColors["pink"] = Colors.Pink;
-            _namedColors["teal"] = Colors.Teal;
-            _namedColors["lime"] = Colors.Lime;
-            _namedColors["maroon"] = Colors.Maroon;
-            _namedColors["navy"] = Colors.Navy;
-            _namedColors["olive"] = Colors.Olive;
-            _namedColors["silver"] = Colors.Silver;
+            _namedColors["black"] = SKColors.Black;
+            _namedColors["white"] = SKColors.White;
+            _namedColors["gray"] = SKColors.Gray;
+            _namedColors["grey"] = SKColors.Gray;
+            _namedColors["red"] = SKColors.Red;
+            _namedColors["green"] = SKColors.Green;
+            _namedColors["blue"] = SKColors.Blue;
+            _namedColors["yellow"] = SKColors.Yellow;
+            _namedColors["cyan"] = SKColors.Cyan;
+            _namedColors["magenta"] = SKColors.Magenta;
+            _namedColors["transparent"] = SKColors.Transparent;
+            _namedColors["lightcoral"] = SKColors.LightCoral;
+            _namedColors["purple"] = SKColors.Purple;
+            _namedColors["orange"] = SKColors.Orange;
+            _namedColors["gold"] = SKColors.Gold;
+            _namedColors["brown"] = SKColors.Brown;
+            _namedColors["pink"] = SKColors.Pink;
+            _namedColors["teal"] = SKColors.Teal;
+            _namedColors["lime"] = SKColors.Lime;
+            _namedColors["maroon"] = SKColors.Maroon;
+            _namedColors["navy"] = SKColors.Navy;
+            _namedColors["olive"] = SKColors.Olive;
+            _namedColors["silver"] = SKColors.Silver;
 
             try
             {
-                var props = typeof(Colors).GetRuntimeProperties();
+                var props = typeof(SKColors).GetRuntimeProperties();
                 foreach (var p in props)
                 {
-                    if (p.PropertyType == typeof(Color))
+                    if (p.PropertyType == typeof(SKColor))
                     {
                         try 
                         { 
-                            var c = (Color)p.GetValue(null);
+                            var c = (SKColor)p.GetValue(null);
                             _namedColors[p.Name] = c;
                         } 
                         catch { }
@@ -73,7 +73,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// Parse a CSS color value (#hex, rgb/rgba(), or a small set of named colors).
         /// Returns null if unsupported. Alpha defaults to 255 when omitted.
         /// </summary>
-        public static Color? ParseColor(string s)
+        public static SKColor? ParseColor(string s)
         {
             if (string.IsNullOrWhiteSpace(s)) return null;
             s = s.Trim();
@@ -85,12 +85,12 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 // Return a special sentinel color (unique ARGB) that CssLoader can detect
                 // Using ARGB 1, 255, 0, 255 as sentinel (nearly transparent magenta)
-                return Color.FromArgb(1, 255, 0, 255);
+                return new SKColor(255, 0, 255, 1);
             }
 
             // transparent keyword
             if (string.Equals(s, "transparent", StringComparison.OrdinalIgnoreCase))
-                return Color.FromArgb(0, 0, 0, 0);
+                return SKColors.Transparent;
 
             var named = GetNamedColor(s);
             if (named.HasValue) return named.Value;
@@ -110,7 +110,7 @@ namespace FenBrowser.FenEngine.Rendering
                         byte g = byte.Parse(hex.Substring(2, 2), NumberStyles.HexNumber);
                         byte b = byte.Parse(hex.Substring(4, 2), NumberStyles.HexNumber);
                         byte a = byte.Parse(hex.Substring(6, 2), NumberStyles.HexNumber);
-                        return Color.FromArgb(a, r, g, b);
+                        return new SKColor(r, g, b, a);
                     }
                     catch { return null; }
                 }
@@ -153,7 +153,7 @@ namespace FenBrowser.FenEngine.Rendering
                                 }
                             }
                         }
-                        return Color.FromArgb(a, (byte)r, (byte)g, (byte)b);
+                        return new SKColor((byte)r, (byte)g, (byte)b, a);
                     }
                 }
                 return null;
@@ -215,7 +215,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                         // Convert HSL to RGB
                         var (r, g, b) = HslToRgb(h, sat, lit);
-                        return Color.FromArgb(alpha, r, g, b);
+                        return new SKColor(r, g, b, alpha);
                     }
                 }
                 return null;
@@ -253,7 +253,7 @@ namespace FenBrowser.FenEngine.Rendering
                         
                         // Convert HWB to RGB
                         var (r, g, b) = HwbToRgb(h, w, bVal);
-                        return Color.FromArgb(alpha, r, g, b);
+                        return new SKColor(r, g, b, alpha);
                     }
                 }
                 return null;
@@ -298,7 +298,7 @@ namespace FenBrowser.FenEngine.Rendering
                         
                         // Convert OKLCH to RGB
                         var (r, g, b) = OklchToRgb(l, c, h);
-                        return Color.FromArgb(alpha, r, g, b);
+                        return new SKColor(r, g, b, alpha);
                     }
                 }
                 return null;
@@ -329,7 +329,7 @@ namespace FenBrowser.FenEngine.Rendering
                         
                         // Convert OKLAB to RGB
                         var (r, g, b) = OklabToRgb(l, a, bVal);
-                        return Color.FromArgb(alpha, r, g, b);
+                        return new SKColor(r, g, b, alpha);
                     }
                 }
                 return null;
@@ -362,7 +362,7 @@ namespace FenBrowser.FenEngine.Rendering
                         
                         // Convert CIE LCH to RGB via Lab
                         var (r, g, b) = LchToRgb(l, c, h);
-                        return Color.FromArgb(alpha, r, g, b);
+                        return new SKColor(r, g, b, alpha);
                     }
                 }
                 return null;
@@ -393,7 +393,7 @@ namespace FenBrowser.FenEngine.Rendering
                         
                         // Convert CIE Lab to RGB
                         var (r, g, b) = LabToRgb(l, a, bVal);
-                        return Color.FromArgb(alpha, r, g, b);
+                        return new SKColor(r, g, b, alpha);
                     }
                 }
                 return null;
@@ -446,10 +446,11 @@ namespace FenBrowser.FenEngine.Rendering
                                 break;
                         }
                         
-                        return Color.FromArgb(alpha,
+                        return new SKColor(
                             (byte)Math.Max(0, Math.Min(255, (int)Math.Round(r * 255))),
                             (byte)Math.Max(0, Math.Min(255, (int)Math.Round(g * 255))),
-                            (byte)Math.Max(0, Math.Min(255, (int)Math.Round(b * 255))));
+                            (byte)Math.Max(0, Math.Min(255, (int)Math.Round(b * 255))),
+                            alpha);
                     }
                 }
                 return null;
@@ -497,12 +498,13 @@ namespace FenBrowser.FenEngine.Rendering
                             // Blend colors
                             var c1 = color1.Value;
                             var c2 = color2.Value;
-                            byte r = (byte)(c1.R * p1 + c2.R * p2);
-                            byte g = (byte)(c1.G * p1 + c2.G * p2);
-                            byte b = (byte)(c1.B * p1 + c2.B * p2);
-                            byte a = (byte)(c1.A * p1 + c2.A * p2);
+                            // SKColor stores as byte Red, Green, Blue, Alpha
+                            byte r = (byte)(c1.Red * p1 + c2.Red * p2);
+                            byte g = (byte)(c1.Green * p1 + c2.Green * p2);
+                            byte b = (byte)(c1.Blue * p1 + c2.Blue * p2);
+                            byte a = (byte)(c1.Alpha * p1 + c2.Alpha * p2);
                             
-                            return Color.FromArgb(a, r, g, b);
+                            return new SKColor(r, g, b, a);
                         }
                     }
                 }
@@ -574,7 +576,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Parse a color value that may have a percentage suffix (e.g., "red 30%")
         /// </summary>
-        private static (Color? color, double? percentage) ParseColorWithPercentage(string value)
+        private static (SKColor? color, double? percentage) ParseColorWithPercentage(string value)
         {
             value = value.Trim();
             
@@ -659,9 +661,9 @@ namespace FenBrowser.FenEngine.Rendering
             return 0;
         }
 
-        private static Color? GetNamedColor(string name)
+        private static SKColor? GetNamedColor(string name)
         {
-            Color c;
+            SKColor c;
             if (_namedColors.TryGetValue(name, out c)) return c;
             return null;
         }

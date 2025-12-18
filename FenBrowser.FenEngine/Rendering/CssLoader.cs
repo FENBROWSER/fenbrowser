@@ -1,17 +1,15 @@
-using Avalonia.Controls;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using Avalonia;
-using Avalonia.Media;
-using Avalonia.Media.Imaging;
 using System.IO;
+using System.Globalization;
+using SkiaSharp;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
-using System.Globalization;
+// using FenBrowser.Core.Math; // Namespace moved to Core
 namespace FenBrowser.FenEngine.Rendering
 {
     public static class CssLoader
@@ -2162,7 +2160,6 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
             if (bgColor.HasValue) 
             {
                 css.BackgroundColor = bgColor;
-                css.Background = new SolidColorBrush(bgColor.Value);
             }
 
             string bgImage = DictGet(css.Map, "background-image");
@@ -2180,7 +2177,7 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
                 var grad = ParseGradient(bgImage);
                 if (grad != null) 
                 {
-                    css.Background = grad;
+                    css.BackgroundImage = grad;
                     try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_gradient.txt", $"[CSS] Gradient parsed successfully! Type={grad.GetType().Name}\r\n"); } catch { }
                 }
                 else if (containsGradient)
@@ -2227,15 +2224,15 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
             {
                 if (string.Equals(fsRaw, "italic", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(fsRaw, "oblique", StringComparison.OrdinalIgnoreCase))
-                    css.FontStyle = FontStyle.Italic;
+                    css.FontStyle = SKFontStyleSlant.Italic;
                 else if (string.Equals(fsRaw, "normal", StringComparison.OrdinalIgnoreCase))
-                    css.FontStyle = FontStyle.Normal;
+                    css.FontStyle = SKFontStyleSlant.Upright;
             }
 
             var ta = Safe(DictGet(css.Map, "text-align"));
-            if (ta == "center") css.TextAlign = TextAlignment.Center;
-            else if (ta == "right") css.TextAlign = TextAlignment.Right;
-            else if (ta == "justify") css.TextAlign = TextAlignment.Justify;
+            if (ta == "center") css.TextAlign = SKTextAlign.Center;
+            else if (ta == "right") css.TextAlign = SKTextAlign.Right;
+            else if (ta == "justify") css.TextAlign = SKTextAlign.Left; // Skia doesn't support justify natively
 
             css.TextDecoration = Safe(DictGet(css.Map, "text-decoration"));
 
@@ -2344,7 +2341,7 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
             
             var bt = css.BorderThickness;
             double bLeft = bt.Left, bTop = bt.Top, bRight = bt.Right, bBottom = bt.Bottom;
-            Avalonia.Media.Color? borderSideColor = null;
+            SKColor? borderSideColor = null;
             
             var borderBottomRaw = Safe(DictGet(css.Map, "border-bottom"));
             if (!string.IsNullOrEmpty(borderBottomRaw))
@@ -2599,7 +2596,7 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
                 else if (string.Equals(bgValue, "none", StringComparison.OrdinalIgnoreCase))
                 {
                     css.Background = null;
-                    css.BackgroundColor = Avalonia.Media.Colors.Transparent;
+                    css.BackgroundColor = SKColors.Transparent;
                 }
                 else if (!string.IsNullOrEmpty(bgValue))
                 {
@@ -2607,7 +2604,7 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
                     if (col.HasValue)
                     {
                         css.BackgroundColor = col.Value;
-                        css.Background = new SolidColorBrush(col.Value);
+                       // css.Background = new SolidColorBrush(col.Value);
                     }
                 }
             }
@@ -2618,7 +2615,7 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
                 if (col.HasValue)
                 {
                     css.BackgroundColor = col.Value;
-                    css.Background = new SolidColorBrush(col.Value);
+                    // css.Background = new SolidColorBrush(col.Value);
                 }
             }
 
@@ -2629,7 +2626,7 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
                 if (col.HasValue)
                 {
                     css.ForegroundColor = col.Value;
-                    css.Foreground = new SolidColorBrush(col.Value);
+                    // css.Foreground = new SolidColorBrush(col.Value); // Legacy removed
                 }
             }
 
@@ -2663,23 +2660,23 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
             return css;
         }
 
-        private static Avalonia.Media.FontWeight MakeFontWeight(int openTypeWeight)
+        private static int MakeFontWeight(int openTypeWeight)
         {
             // Clamp to valid range
             if (openTypeWeight < 1) openTypeWeight = 1;
             if (openTypeWeight > 999) openTypeWeight = 999;
 
-            // Map OpenType weight to FontWeight enum
-            if (openTypeWeight <= 150) return Avalonia.Media.FontWeight.Thin;
-            if (openTypeWeight <= 250) return Avalonia.Media.FontWeight.ExtraLight;
-            if (openTypeWeight <= 350) return Avalonia.Media.FontWeight.Light;
-            if (openTypeWeight <= 450) return Avalonia.Media.FontWeight.Normal;
-            if (openTypeWeight <= 550) return Avalonia.Media.FontWeight.Medium;
-            if (openTypeWeight <= 650) return Avalonia.Media.FontWeight.SemiBold;
-            if (openTypeWeight <= 750) return Avalonia.Media.FontWeight.Bold;
-            if (openTypeWeight <= 850) return Avalonia.Media.FontWeight.ExtraBold;
-            if (openTypeWeight <= 950) return Avalonia.Media.FontWeight.Black;
-            return Avalonia.Media.FontWeight.ExtraBlack;
+            // Map OpenType weight to integer
+            if (openTypeWeight <= 150) return 100; // Thin
+            if (openTypeWeight <= 250) return 200; // ExtraLight
+            if (openTypeWeight <= 350) return 300; // Light
+            if (openTypeWeight <= 450) return 400; // Normal
+            if (openTypeWeight <= 550) return 500; // Medium
+            if (openTypeWeight <= 650) return 600; // SemiBold
+            if (openTypeWeight <= 750) return 700; // Bold
+            if (openTypeWeight <= 850) return 800; // ExtraBold
+            if (openTypeWeight <= 950) return 900; // Black
+            return 950; // ExtraBlack
         }
 
         // ===========================
@@ -3597,22 +3594,22 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
                 // Check style
                 if (p == "italic" || p == "oblique")
                 {
-                    css.FontStyle = FontStyle.Italic;
+                    css.FontStyle = SKFontStyleSlant.Italic;
                 }
                 else if (p == "normal")
                 {
-                    css.FontStyle = FontStyle.Normal;
-                    css.FontWeight = Avalonia.Media.FontWeight.Normal;
+                    css.FontStyle = SKFontStyleSlant.Upright;
+                    css.FontWeight = 400;
                 }
                 // Check weight
                 else if (p == "bold")
                 {
-                    css.FontWeight = Avalonia.Media.FontWeight.Bold;
+                    css.FontWeight = 700;
                 }
                 else if (p == "bolder" || p == "lighter")
                 {
                     // simplified
-                    css.FontWeight = p == "bolder" ? Avalonia.Media.FontWeight.Bold : Avalonia.Media.FontWeight.Light;
+                    css.FontWeight = p == "bolder" ? 700 : 300;
                 }
                 else if (int.TryParse(p, out int w))
                 {
@@ -5016,7 +5013,7 @@ private static bool TryParseHypot(string value, out double result, double emBase
             th = new Thickness(d, a, b, c); return true;
         }
 
-        private static Avalonia.Media.Color FromHex(string hex)
+        private static SKColor FromHex(string hex)
         {
             hex = (hex ?? "").Trim().TrimStart('#');
             if (hex.Length == 3) // #abc -> #aabbcc
@@ -5024,14 +5021,14 @@ private static bool TryParseHypot(string value, out double result, double emBase
                 var r = Convert.ToByte(new string(hex[0], 2), 16);
                 var g = Convert.ToByte(new string(hex[1], 2), 16);
                 var b = Convert.ToByte(new string(hex[2], 2), 16);
-                return Avalonia.Media.Color.FromArgb(255, r, g, b);
+                return new SKColor(r, g, b, 255);
             }
             if (hex.Length == 6)
             {
                 byte r = Convert.ToByte(hex.Substring(0, 2), 16);
                 byte g = Convert.ToByte(hex.Substring(2, 2), 16);
                 byte b = Convert.ToByte(hex.Substring(4, 2), 16);
-                return Avalonia.Media.Color.FromArgb(255, r, g, b);
+                return new SKColor(r, g, b, 255);
             }
             if (hex.Length == 8)
             {
@@ -5039,25 +5036,14 @@ private static bool TryParseHypot(string value, out double result, double emBase
                 byte r = Convert.ToByte(hex.Substring(2, 2), 16);
                 byte g = Convert.ToByte(hex.Substring(4, 2), 16);
                 byte b = Convert.ToByte(hex.Substring(6, 2), 16);
-                return Avalonia.Media.Color.FromArgb(a, r, g, b);
+                return new SKColor(r, g, b, a);
             }
-            return Avalonia.Media.Colors.Black;
+            return SKColors.Black;
         }
 
-        private static Avalonia.Media.Color? TryColor(string css)
+        private static SKColor? TryColor(string css)
         {
-            try
-            {
-                var color = CssParser.ParseColor(css);
-                if (color.HasValue)
-                {
-                    // Map Avalonia.Media.Color to Avalonia.Media.Color
-                    var c = color.Value;
-                    return Avalonia.Media.Color.FromArgb(c.A, c.R, c.G, c.B);
-                }
-                return null;
-            }
-            catch { return null; }
+            return CssParser.ParseColor(css);
         }
 
 
@@ -5181,7 +5167,7 @@ private static bool TryParseHypot(string value, out double result, double emBase
         /// <summary>
         /// Extract color from a border-side shorthand (e.g., "2px solid #eee")
         /// </summary>
-        private static Avalonia.Media.Color? ExtractBorderSideColor(string borderSide)
+        private static SKColor? ExtractBorderSideColor(string borderSide)
         {
             if (string.IsNullOrWhiteSpace(borderSide)) return null;
             var parts = borderSide.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
@@ -5199,6 +5185,38 @@ private static bool TryParseHypot(string value, out double result, double emBase
                 var col = TryColor(part);
                 if (col.HasValue) return col;
             }
+            return null;
+        }
+
+        // ... existing methods ...
+
+        private static string ParseBackgroundImage(string value)
+        {
+            // Just return the raw value if it looks like a URL
+            if (string.IsNullOrWhiteSpace(value)) return null;
+            if (value.IndexOf("url(", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                 // Simplify: return the whole string or just the url part? 
+                 // For now, return the whole property value so the renderer can parse it.
+                 return value;
+            }
+            return null;
+        }
+
+        private static string ParseGradient(string css)
+        {
+            if (string.IsNullOrWhiteSpace(css)) return null;
+            css = css.Trim();
+
+            if (css.StartsWith("linear-gradient(", StringComparison.OrdinalIgnoreCase) ||
+                css.StartsWith("radial-gradient(", StringComparison.OrdinalIgnoreCase) ||
+                css.StartsWith("conic-gradient(", StringComparison.OrdinalIgnoreCase) ||
+                css.StartsWith("repeating-linear-gradient(", StringComparison.OrdinalIgnoreCase) ||
+                css.StartsWith("repeating-radial-gradient(", StringComparison.OrdinalIgnoreCase))
+            {
+                return css;
+            }
+
             return null;
         }
 
@@ -5376,284 +5394,9 @@ private static bool TryParseHypot(string value, out double result, double emBase
             }
         }
 
-        private static IBrush ParseBackgroundImage(string value)
-        {
-            // Extract url(...)
-            var match = Regex.Match(value, @"url\(['""]?(.*?)['""]?\)", RegexOptions.IgnoreCase);
-            if (match.Success)
-            {
-                var url = match.Groups[1].Value;
-                if (url.StartsWith("data:image"))
-                {
-                    try
-                    {
-                        // Parse data URI
-                        var base64Data = url.Substring(url.IndexOf(",") + 1);
-                        // Fix: URL-decode before base64 decode
-                        var decodedData = Uri.UnescapeDataString(base64Data);
-                        var bytes = Convert.FromBase64String(decodedData);
-                        using (var stream = new MemoryStream(bytes))
-                        {
-                            var bitmap = new Avalonia.Media.Imaging.Bitmap(stream);
-                            var brush = new ImageBrush(bitmap);
-                            
-                            // Check for repeat/no-repeat
-                            if (value.Contains("no-repeat"))
-                            {
-                                brush.TileMode = TileMode.None;
-                                brush.Stretch = Stretch.None;
-                            }
-                            else if (value.Contains("repeat-x"))
-                            {
-                                brush.TileMode = TileMode.Tile; 
-                            }
-                            else if (value.Contains("repeat-y"))
-                            {
-                                brush.TileMode = TileMode.Tile;
-                            }
-                            else
-                            {
-                                brush.TileMode = TileMode.Tile; // Default repeat
-                            }
-                            
-                            return brush;
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"Failed to load data URI: {ex.Message}");
-                    }
-                }
-            }
-            return null;
-        }
 
-        private static IBrush ParseGradient(string css)
-        {
-            if (string.IsNullOrWhiteSpace(css)) return null;
-            css = css.Trim();
 
-            if (css.StartsWith("linear-gradient(", StringComparison.OrdinalIgnoreCase))
-            {
-                var content = ExtractPseudoArg(css); // re-use this helper as it extracts (...) content
-                var parts = SplitByComma(content);
-                if (parts.Count < 2) return null;
 
-                var brush = new LinearGradientBrush();
-                int startIdx = 0;
-                
-                // Parse direction
-                var first = parts[0].Trim().ToLowerInvariant();
-                bool isDirection = false;
-                
-                // Default to bottom
-                brush.StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative);
-                brush.EndPoint = new RelativePoint(0, 1, RelativeUnit.Relative);
-
-                if (first.StartsWith("to "))
-                {
-                    isDirection = true;
-                    if (first == "to right") { brush.StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative); brush.EndPoint = new RelativePoint(1, 0, RelativeUnit.Relative); }
-                    else if (first == "to left") { brush.StartPoint = new RelativePoint(1, 0, RelativeUnit.Relative); brush.EndPoint = new RelativePoint(0, 0, RelativeUnit.Relative); }
-                    else if (first == "to bottom") { brush.StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative); brush.EndPoint = new RelativePoint(0, 1, RelativeUnit.Relative); }
-                    else if (first == "to top") { brush.StartPoint = new RelativePoint(0, 1, RelativeUnit.Relative); brush.EndPoint = new RelativePoint(0, 0, RelativeUnit.Relative); }
-                    else if (first == "to bottom right") { brush.StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative); brush.EndPoint = new RelativePoint(1, 1, RelativeUnit.Relative); }
-                    // ... other corners
-                }
-                else if (first.EndsWith("deg"))
-                {
-                    isDirection = true;
-                    // Angle parsing is complex for exact mapping to Start/End points without size context.
-                    // For now, approximate 45deg to bottom-right, etc. or ignore.
-                    // TODO: Implement proper angle-to-point math
-                    if (first.Contains("45deg")) { brush.StartPoint = new RelativePoint(0, 1, RelativeUnit.Relative); brush.EndPoint = new RelativePoint(1, 0, RelativeUnit.Relative); } // approx
-                }
-
-                if (isDirection) startIdx = 1;
-
-                var stops = ParseGradientStops(parts, startIdx);
-                brush.GradientStops.AddRange(stops);
-                return brush;
-            }
-            else if (css.StartsWith("radial-gradient(", StringComparison.OrdinalIgnoreCase))
-            {
-                var content = ExtractPseudoArg(css);
-                var parts = SplitByComma(content);
-                if (parts.Count < 2) return null;
-
-                var brush = new RadialGradientBrush();
-                brush.Center = new RelativePoint(0.5, 0.5, RelativeUnit.Relative);
-                brush.GradientOrigin = new RelativePoint(0.5, 0.5, RelativeUnit.Relative);
-                brush.RadiusX = new RelativeScalar(0.5, RelativeUnit.Relative);
-                brush.RadiusY = new RelativeScalar(0.5, RelativeUnit.Relative);
-
-                // Check for shape/size/position in first arg
-                int startIdx = 0;
-                var firstPart = parts[0].ToLowerInvariant();
-                if (firstPart.Contains("circle") || firstPart.Contains("ellipse") || firstPart.Contains("at "))
-                {
-                    startIdx = 1;
-                    
-                    // Parse "at X Y" position
-                    if (firstPart.Contains("at "))
-                    {
-                        var atIdx = firstPart.IndexOf("at ");
-                        var posStr = firstPart.Substring(atIdx + 3).Trim();
-                        var posParts = posStr.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                        double cx = 0.5, cy = 0.5;
-                        
-                        if (posParts.Length >= 1)
-                        {
-                            if (posParts[0] == "left") cx = 0;
-                            else if (posParts[0] == "right") cx = 1;
-                            else if (posParts[0] == "center") cx = 0.5;
-                            else if (posParts[0].EndsWith("%") && TryDouble(posParts[0].TrimEnd('%'), out double px)) cx = px / 100;
-                        }
-                        if (posParts.Length >= 2)
-                        {
-                            if (posParts[1] == "top") cy = 0;
-                            else if (posParts[1] == "bottom") cy = 1;
-                            else if (posParts[1] == "center") cy = 0.5;
-                            else if (posParts[1].EndsWith("%") && TryDouble(posParts[1].TrimEnd('%'), out double py)) cy = py / 100;
-                        }
-                        
-                        brush.Center = new RelativePoint(cx, cy, RelativeUnit.Relative);
-                        brush.GradientOrigin = new RelativePoint(cx, cy, RelativeUnit.Relative);
-                    }
-                    
-                    // Parse "closest-side", "farthest-corner", etc.
-                    if (firstPart.Contains("closest-side"))
-                    {
-                        brush.RadiusX = new RelativeScalar(0.3, RelativeUnit.Relative);
-                        brush.RadiusY = new RelativeScalar(0.3, RelativeUnit.Relative);
-                    }
-                    else if (firstPart.Contains("farthest-corner"))
-                    {
-                        brush.RadiusX = new RelativeScalar(0.71, RelativeUnit.Relative); // sqrt(0.5)
-                        brush.RadiusY = new RelativeScalar(0.71, RelativeUnit.Relative);
-                    }
-                }
-
-                var stops = ParseGradientStops(parts, startIdx);
-                brush.GradientStops.AddRange(stops);
-                return brush;
-            }
-            else if (css.StartsWith("conic-gradient(", StringComparison.OrdinalIgnoreCase))
-            {
-                // Avalonia doesn't have native conic-gradient, approximate with radial
-                var content = ExtractPseudoArg(css);
-                var parts = SplitByComma(content);
-                if (parts.Count < 2) return null;
-
-                var brush = new RadialGradientBrush();
-                brush.Center = new RelativePoint(0.5, 0.5, RelativeUnit.Relative);
-                brush.GradientOrigin = new RelativePoint(0.5, 0.5, RelativeUnit.Relative);
-                brush.RadiusX = new RelativeScalar(0.5, RelativeUnit.Relative);
-                brush.RadiusY = new RelativeScalar(0.5, RelativeUnit.Relative);
-                
-                int startIdx = 0;
-                var firstPart = parts[0].ToLowerInvariant();
-                if (firstPart.Contains("from ") || firstPart.Contains("at "))
-                    startIdx = 1;
-
-                var stops = ParseGradientStops(parts, startIdx);
-                brush.GradientStops.AddRange(stops);
-                return brush;
-            }
-            else if (css.StartsWith("repeating-linear-gradient(", StringComparison.OrdinalIgnoreCase))
-            {
-                var content = ExtractPseudoArg(css);
-                var parts = SplitByComma(content);
-                if (parts.Count < 2) return null;
-
-                var brush = new LinearGradientBrush();
-                brush.SpreadMethod = GradientSpreadMethod.Repeat;
-                int startIdx = 0;
-                
-                var first = parts[0].Trim().ToLowerInvariant();
-                brush.StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative);
-                brush.EndPoint = new RelativePoint(0, 1, RelativeUnit.Relative);
-
-                if (first.StartsWith("to "))
-                {
-                    startIdx = 1;
-                    if (first == "to right") { brush.StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative); brush.EndPoint = new RelativePoint(1, 0, RelativeUnit.Relative); }
-                    else if (first == "to left") { brush.StartPoint = new RelativePoint(1, 0, RelativeUnit.Relative); brush.EndPoint = new RelativePoint(0, 0, RelativeUnit.Relative); }
-                    else if (first == "to bottom") { brush.StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative); brush.EndPoint = new RelativePoint(0, 1, RelativeUnit.Relative); }
-                    else if (first == "to top") { brush.StartPoint = new RelativePoint(0, 1, RelativeUnit.Relative); brush.EndPoint = new RelativePoint(0, 0, RelativeUnit.Relative); }
-                }
-                else if (first.EndsWith("deg"))
-                {
-                    startIdx = 1;
-                    if (first.Contains("45deg")) { brush.StartPoint = new RelativePoint(0, 1, RelativeUnit.Relative); brush.EndPoint = new RelativePoint(1, 0, RelativeUnit.Relative); }
-                }
-
-                var stops = ParseGradientStops(parts, startIdx);
-                brush.GradientStops.AddRange(stops);
-                return brush;
-            }
-            else if (css.StartsWith("repeating-radial-gradient(", StringComparison.OrdinalIgnoreCase))
-            {
-                var content = ExtractPseudoArg(css);
-                var parts = SplitByComma(content);
-                if (parts.Count < 2) return null;
-
-                var brush = new RadialGradientBrush();
-                brush.SpreadMethod = GradientSpreadMethod.Repeat;
-                brush.Center = new RelativePoint(0.5, 0.5, RelativeUnit.Relative);
-                brush.GradientOrigin = new RelativePoint(0.5, 0.5, RelativeUnit.Relative);
-                brush.RadiusX = new RelativeScalar(0.5, RelativeUnit.Relative);
-                brush.RadiusY = new RelativeScalar(0.5, RelativeUnit.Relative);
-
-                int startIdx = 0;
-                if (parts[0].ToLowerInvariant().Contains("circle") || parts[0].ToLowerInvariant().Contains("ellipse") || parts[0].ToLowerInvariant().Contains("at "))
-                    startIdx = 1;
-
-                var stops = ParseGradientStops(parts, startIdx);
-                brush.GradientStops.AddRange(stops);
-                return brush;
-            }
-
-            return null;
-        }
-
-        private static List<GradientStop> ParseGradientStops(List<string> parts, int startIdx)
-        {
-            var stops = new List<GradientStop>();
-            int count = parts.Count - startIdx;
-            if (count <= 0) return stops;
-
-            for (int i = 0; i < count; i++)
-            {
-                var raw = parts[startIdx + i].Trim();
-                // "red" or "red 50%" or "#fff 0%"
-                // Split by space, but careful about "rgb(0, 0, 0) 50%"
-                
-                // Hacky parse: find last space
-                int lastSpace = raw.LastIndexOf(' ');
-                string colorStr = raw;
-                double offset = (double)i / (Math.Max(1, count - 1));
-
-                if (lastSpace > 0)
-                {
-                    var tail = raw.Substring(lastSpace + 1);
-                    if (tail.EndsWith("%") && TryDouble(tail.TrimEnd('%'), out double pct))
-                    {
-                        offset = pct / 100.0;
-                        colorStr = raw.Substring(0, lastSpace);
-                    }
-                    else if (tail.EndsWith("px")) 
-                    {
-                        // px not supported in relative brush easily without bounds
-                        colorStr = raw.Substring(0, lastSpace);
-                    }
-                }
-
-                var col = TryColor(colorStr) ?? Avalonia.Media.Colors.Transparent;
-                stops.Add(new GradientStop(col, offset));
-            }
-            return stops;
-        }
 
         private static List<string> SplitByComma(string content)
         {

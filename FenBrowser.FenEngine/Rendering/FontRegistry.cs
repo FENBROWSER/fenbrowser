@@ -1,7 +1,6 @@
-using System;
-using System.Collections.Generic;
 using System.Text.RegularExpressions;
-using Avalonia.Media;
+using SkiaSharp;
+// using Avalonia.Media;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -14,8 +13,8 @@ namespace FenBrowser.FenEngine.Rendering
         private static readonly Dictionary<string, List<FontFaceDescriptor>> _fontFaces 
             = new Dictionary<string, List<FontFaceDescriptor>>(StringComparer.OrdinalIgnoreCase);
 
-        private static readonly Dictionary<string, FontFamily> _loadedFonts 
-            = new Dictionary<string, FontFamily>(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<string, SKTypeface> _loadedFonts 
+            = new Dictionary<string, SKTypeface>(StringComparer.OrdinalIgnoreCase);
 
         private static readonly object _lock = new object();
 
@@ -28,7 +27,7 @@ namespace FenBrowser.FenEngine.Rendering
             public string Source { get; set; }          // url() or local() value
             public string Format { get; set; }          // woff2, woff, truetype, etc.
             public int Weight { get; set; } = 400;      // 100-900
-            public FontStyle Style { get; set; } = FontStyle.Normal;
+            public SKFontStyleSlant Style { get; set; } = SKFontStyleSlant.Upright;
             public string UnicodeRange { get; set; }    // Optional unicode-range
             public string Display { get; set; } = "auto"; // auto, block, swap, fallback, optional
             public string Stretch { get; set; }         // normal, condensed, expanded, etc.
@@ -46,7 +45,7 @@ namespace FenBrowser.FenEngine.Rendering
             { 
                 lock (_lock)
                 {
-                    _loadedFonts[familyName.Trim().Trim('"', '\'')] = new FontFamily(uri); 
+                    _loadedFonts[familyName.Trim().Trim('"', '\'')] = SKTypeface.FromFamilyName(uri); 
                 }
             } 
             catch { }
@@ -122,9 +121,9 @@ namespace FenBrowser.FenEngine.Rendering
                 if (styleMatch.Success)
                 {
                     var styleVal = styleMatch.Groups[1].Value.ToLowerInvariant();
-                    if (styleVal == "italic") descriptor.Style = FontStyle.Italic;
-                    else if (styleVal == "oblique") descriptor.Style = FontStyle.Oblique;
-                    else descriptor.Style = FontStyle.Normal;
+                    if (styleVal == "italic") descriptor.Style = SKFontStyleSlant.Italic;
+                    else if (styleVal == "oblique") descriptor.Style = SKFontStyleSlant.Oblique;
+                    else descriptor.Style = SKFontStyleSlant.Upright;
                 }
 
                 // Parse unicode-range (optional)
@@ -166,7 +165,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Try to resolve a font-family name to a FontFamily object.
         /// </summary>
-        public static FontFamily TryResolve(string familyName, int weight = 400, FontStyle style = FontStyle.Normal)
+        public static SKTypeface TryResolve(string familyName, int weight = 400, SKFontStyleSlant style = SKFontStyleSlant.Upright)
         {
             if (string.IsNullOrEmpty(familyName))
                 return null;
@@ -221,19 +220,20 @@ namespace FenBrowser.FenEngine.Rendering
                 // Try to create FontFamily
                 try
                 {
-                    FontFamily fontFamily = null;
+                    SKTypeface fontFamily = null;
 
                     // Check for local font reference
                     if (best.Source.StartsWith("local(", StringComparison.OrdinalIgnoreCase))
                     {
+                        // Handle local font (mock logic for Skia)
                         var localName = Regex.Match(best.Source, @"local\s*\(\s*([""']?)([^)""']+)\1\s*\)", RegexOptions.IgnoreCase);
                         if (localName.Success)
-                            fontFamily = new FontFamily(localName.Groups[2].Value);
+                            fontFamily = SKTypeface.FromFamilyName(localName.Groups[2].Value);
                     }
                     else
                     {
                         // For URL fonts, use family name (works if installed on system)
-                        fontFamily = new FontFamily(familyName);
+                        fontFamily = SKTypeface.FromFamilyName(familyName);
                     }
 
                     if (fontFamily != null)
@@ -248,9 +248,9 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Legacy single-argument resolve (uses default weight/style)
         /// </summary>
-        public static FontFamily TryResolve(string familyName)
+        public static SKTypeface TryResolve(string familyName)
         {
-            return TryResolve(familyName, 400, FontStyle.Normal);
+            return TryResolve(familyName, 400, SKFontStyleSlant.Upright);
         }
 
         /// <summary>

@@ -1,7 +1,7 @@
-using System.Collections.Generic;
-using Avalonia;
-using Avalonia.Media;
-using Avalonia.Media.TextFormatting;
+using SkiaSharp;
+using FenBrowser.Core;
+// using FenBrowser.Core.Math; // Namespace moved to Core
+// using Avalonia; // Removed
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -51,12 +51,13 @@ namespace FenBrowser.FenEngine.Rendering
         public string BackgroundClip { get; set; }    // border-box, padding-box, content-box
         public string BackgroundOrigin { get; set; }  // border-box, padding-box, content-box
         public string BackgroundRepeat { get; set; }  // repeat, no-repeat, repeat-x, repeat-y
+        public string BackgroundImage { get; set; }   // url, gradient, etc.
 
         // Box model
         public Thickness Margin { get; set; }
         public Thickness Padding { get; set; }
         public Thickness BorderThickness { get; set; }
-        public IBrush BorderBrush { get; set; }
+        public SKColor? BorderBrush { get; set; }
         public CornerRadius BorderRadius { get; set; }
         
         // Border styles - solid, dashed, dotted, double, groove, ridge, inset, outset, none, hidden
@@ -122,30 +123,32 @@ namespace FenBrowser.FenEngine.Rendering
         public string ImageRendering { get; set; }   // auto, crisp-edges, pixelated, smooth
 
         // Typography & Visuals
-        public IBrush Background { get; set; }
-        public Color? BackgroundColor { get; set; }
-        public IBrush Foreground { get; set; }
-        public Color? ForegroundColor { get; set; }
+        // Typography & Visuals
+        public object Background { get; set; } // Legacy brush/gradient holder
+        public object Foreground { get; set; } // Legacy brush holder
+        // public object BorderBrush { get; set; } // Duplicate removed
+        public SKColor? BackgroundColor { get; set; }
+        public SKColor? ForegroundColor { get; set; }
         public double? FontSize { get; set; }
-        public FontWeight? FontWeight { get; set; }
-        public FontStyle? FontStyle { get; set; }
+        public int? FontWeight { get; set; } // Changed to int (100-900)
+        public SKFontStyleSlant? FontStyle { get; set; }
 
         public string FontFamilyName { get; set; }
-        private FontFamily _fontFamily;
-        public FontFamily FontFamily
+        private SKTypeface _fontFamily; // Changed to SKTypeface
+        public SKTypeface FontFamily
         {
             get
             {
                 if (_fontFamily == null && !string.IsNullOrEmpty(FontFamilyName))
                 {
-                    try { _fontFamily = new FontFamily(FontFamilyName); } catch { }
+                    try { _fontFamily = SKTypeface.FromFamilyName(FontFamilyName); } catch { }
                 }
                 return _fontFamily;
             }
             set { _fontFamily = value; }
         }
 
-        public TextAlignment? TextAlign { get; set; }
+        public SKTextAlign? TextAlign { get; set; }
         public string Hyphens { get; set; }
         public string TextDecoration { get; set; }
         public string ListStyleType { get; set; }
@@ -155,7 +158,7 @@ namespace FenBrowser.FenEngine.Rendering
         public double? LetterSpacing { get; set; }    // px offset for spaces between letters
 
         // Extra color for border
-        public Color? BorderBrushColor { get; set; }
+        public SKColor? BorderBrushColor { get; set; }
 
         // Visual effects
         public string Transform { get; set; }

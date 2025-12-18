@@ -208,7 +208,7 @@ namespace FenBrowser.Core.Logging
                 if (retryCount < MaxRetries)
                 {
                     // Exponential backoff: 1s, 2s, 4s, ...
-                    await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, retryCount - 1)), ct);
+                    await Task.Delay(TimeSpan.FromSeconds(System.Math.Pow(2, retryCount - 1)), ct);
                 }
             }
 

@@ -577,7 +577,7 @@ namespace FenBrowser.Core
                  }
                  _i++;
              }
-             var s = _html.Substring(st, Math.Max(0, _i - st));
+             var s = _html.Substring(st, System.Math.Max(0, _i - st));
              rawValue = s;
              if (!Eof() && Peek() == q) _i++; // Only consume quote if we actually found it
             return DecodeEntities(s);

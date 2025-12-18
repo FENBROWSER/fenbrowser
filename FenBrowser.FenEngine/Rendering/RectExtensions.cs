@@ -1,33 +1,33 @@
 using System;
-using Avalonia;
+using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Rendering
 {
     internal static class RectExtensions
     {
-        public static Rect WithX(this Rect r, double x)
+        public static SKRect WithX(this SKRect r, float x)
         {
-            return new Rect(x, r.Y, r.Width, r.Height);
+            return new SKRect(x, r.Top, x + r.Width, r.Bottom); // SKRect(left, top, right, bottom)
         }
 
-        public static Rect WithY(this Rect r, double y)
+        public static SKRect WithY(this SKRect r, float y)
         {
-            return new Rect(r.X, y, r.Width, r.Height);
+            return new SKRect(r.Left, y, r.Right, y + r.Height);
         }
 
-        public static Rect WithWidth(this Rect r, double w)
+        public static SKRect WithWidth(this SKRect r, float w)
         {
-            return new Rect(r.X, r.Y, w, r.Height);
+            return new SKRect(r.Left, r.Top, r.Left + w, r.Bottom);
         }
 
-        public static Rect WithHeight(this Rect r, double h)
+        public static SKRect WithHeight(this SKRect r, float h)
         {
-            return new Rect(r.X, r.Y, r.Width, h);
+            return new SKRect(r.Left, r.Top, r.Right, r.Top + h);
         }
 
-        public static bool Intersects(this Rect r, Rect other)
+        public static bool Intersects(this SKRect r, SKRect other)
         {
-            return !(r.Right < other.Left || r.Left > other.Right || r.Bottom < other.Top || r.Top > other.Bottom);
+            return r.IntersectsWith(other);
         }
     }
 }

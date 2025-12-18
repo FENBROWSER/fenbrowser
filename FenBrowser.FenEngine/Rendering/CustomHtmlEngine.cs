@@ -1,11 +1,11 @@
-﻿using Avalonia;
-using Avalonia.Controls;
-using Avalonia.Controls.Documents;
-using Avalonia.Media;
-using Avalonia.Media.Imaging;
-using Avalonia.Layout;
-using Avalonia.Controls.ApplicationLifetimes;
-using Control = Avalonia.Controls.Control;
+﻿// using Avalonia;
+// using Avalonia.Controls;
+// using Avalonia.Controls.Documents;
+// using Avalonia.Media;
+// using Avalonia.Media.Imaging;
+// using Avalonia.Layout;
+// using Avalonia.Controls.ApplicationLifetimes;
+// using Control = Avalonia.Controls.Control;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -19,6 +19,7 @@ using FenBrowser.FenEngine.Security; // Added
 using FenBrowser.FenEngine.Scripting;
 using static FenBrowser.FenEngine.Rendering.CssLoader;
 using FenBrowser.FenEngine.Rendering;
+using SkiaSharp;
 
 
 namespace FenBrowser.FenEngine.Rendering
@@ -38,8 +39,8 @@ namespace FenBrowser.FenEngine.Rendering
         public Dictionary<LiteElement, CssComputed> LastComputedStyles { get; private set; }
         public List<CssLoader.CssSource> LastCssSources { get; private set; }
 
-        public event Action<Control> RepaintReady;
-        private void OnRepaintReady(Control control)
+        public event Action<object> RepaintReady;
+        private void OnRepaintReady(object control)
         {
             _lastRenderedControl = control;
             RepaintReady?.Invoke(control);
@@ -49,7 +50,7 @@ namespace FenBrowser.FenEngine.Rendering
         public event EventHandler<LiteElement> DomReady;
         public event Action<string> AlertTriggered;
         public event Action<string> ConsoleMessage; // New event for console logs
-        public event Action<Rect?> HighlightRectChanged;
+        public event Action<SKRect?> HighlightRectChanged;
         public event Func<string, JsPermissions, Task<bool>> PermissionRequested; // Permission API event
         public bool EnableJavaScript { get; set; } = true;
 
@@ -63,7 +64,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (JavaScriptEngine.TryGetVisualRect(element, out double x, out double y, out double w, out double h))
             {
-                HighlightRectChanged?.Invoke(new Rect(x, y, w, h));
+                HighlightRectChanged?.Invoke(new SKRect((float)x, (float)y, (float)(x+w), (float)(y+h)));
             }
             else
             {
@@ -97,13 +98,13 @@ namespace FenBrowser.FenEngine.Rendering
         public JavaScriptEngine JsEngine => _activeJs;
         private LiteElement _activeDom;
         private string _lastRawHtml;
-        private Control _lastRenderedControl;
+        private object _lastRenderedControl;
         private Uri _activeBaseUri;
         private Func<Uri, Task<string>> _activeFetchCss;
         private Func<Uri, Task<Stream>> _activeImageLoader;
         private Action<Uri> _activeOnNavigate;
         private double? _activeViewportWidth;
-        private Action<IBrush> _activeFixedBackground;
+        private Action<object> _activeFixedBackground;
         private JavaScriptEngine _activeJs;
         private CookieContainer _jsCookieJar = new CookieContainer();
         private readonly System.Threading.SemaphoreSlim _repaintGate = new System.Threading.SemaphoreSlim(1, 1);
@@ -111,7 +112,7 @@ namespace FenBrowser.FenEngine.Rendering
         private readonly object _uiDispatcher;
         
         // Cache view/renderer to avoid full recreation
-        private SkiaBrowserView _cachedView;
+        // private SkiaBrowserView _cachedView;
         private SkiaDomRenderer _cachedRenderer;
         
         public CustomHtmlEngine()
@@ -121,22 +122,14 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static double GetPrimaryWindowWidth()
         {
-            try
-            {
-                try { if (/* Window.Current */ (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow != null) return (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow?.Bounds.Width ?? 0; } catch { }
-            }
-            catch { }
-            return 0;
+            // [MIGRATION] Window logic removed
+            return 800;
         }
 
         private static double GetPrimaryWindowHeight()
         {
-            try
-            {
-                try { if (/* Window.Current */ (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow != null) return (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow?.Bounds.Height ?? 0; } catch { }
-            }
-            catch { }
-            return 0;
+             // [MIGRATION] Window logic removed
+            return 600;
         }
 
         private static readonly System.Collections.Generic.HashSet<string> _loadingTokens =
@@ -177,7 +170,7 @@ namespace FenBrowser.FenEngine.Rendering
                 // _activeJs does not implement IDisposable, just clear ref
                 _activeJs = null;
                 _activeDom = null;
-                _cachedView = null;
+                // _cachedView = null;
                 _cachedRenderer = null;
             }
             catch { }
@@ -466,7 +459,7 @@ namespace FenBrowser.FenEngine.Rendering
             Func<Uri, Task<Stream>> imageLoader,
             Action<Uri> onNavigate,
             double? viewportWidth,
-            Action<IBrush> onFixedBackground,
+            Action<object> onFixedBackground,
             JavaScriptEngine js)
         {
             _activeDom = dom;
@@ -529,7 +522,7 @@ namespace FenBrowser.FenEngine.Rendering
             catch { }
         }
 
-        private async Task<Control> BuildVisualTreeAsync(
+        private async Task<object> BuildVisualTreeAsync(
             LiteElement dom,
             Uri baseUri,
             Func<Uri, Task<string>> fetchExternalCssAsync,
@@ -537,7 +530,7 @@ namespace FenBrowser.FenEngine.Rendering
             Action<Uri> onNavigate,
             JavaScriptEngine js,
             double? viewportWidth,
-            Action<IBrush> onFixedBackground,
+            Action<object> onFixedBackground,
             bool includeDiagnosticsBanner)
         {
             if (dom == null) return null;
@@ -550,232 +543,38 @@ namespace FenBrowser.FenEngine.Rendering
             LastCssSources = result.Sources;
             var computed = result.Computed;
 
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[BuildVisualTree] Computed styles ready. Checking background...\r\n"); } catch { }
-            try
-            {
-                if (onFixedBackground != null && computed != null)
-                {
-                    IBrush fixedBg = null;
-                    bool bgFixed = false;
-                    Func<string, string[]> splitLayers = (raw) =>
-                    {
-                        if (string.IsNullOrWhiteSpace(raw)) return new string[0];
-                        var list = new System.Collections.Generic.List<string>();
-                        var sb = new System.Text.StringBuilder(); int depth = 0; bool inQ = false; char qc = '\0';
-                        foreach (var ch in raw)
-                        {
-                            if ((ch == '\'' || ch == '"')) { if (!inQ) { inQ = true; qc = ch; } else if (qc == ch) inQ = false; }
-                            else if (!inQ && ch == '(') depth++; else if (!inQ && ch == ')') depth = Math.Max(0, depth - 1);
-                            if (!inQ && depth == 0 && ch == ',') { list.Add(sb.ToString()); sb.Clear(); }
-                            else sb.Append(ch);
-                        }
-                        if (sb.Length > 0) list.Add(sb.ToString());
-                        return list.ToArray();
-                    };
-                    Func<LiteElement, bool> check = (el) =>
-                    {
-                        if (el == null) return false;
-                        CssComputed c; if (!computed.TryGetValue(el, out c) || c == null) return false;
-                        if (c.Background != null)
-                        {
-                            string att; if (c.Map != null && c.Map.TryGetValue("background-attachment", out att))
-                            {
-                                var atts = splitLayers(att);
-                                foreach (var a in atts)
-                                {
-                                    if ((a ?? string.Empty).IndexOf("fixed", StringComparison.OrdinalIgnoreCase) >= 0)
-                                    { fixedBg = c.Background; return true; }
-                                }
-                            }
-                            string bg; if (c.Map != null && c.Map.TryGetValue("background", out bg))
-                            {
-                                if (!string.IsNullOrWhiteSpace(bg))
-                                {
-                                    var layers = splitLayers(bg);
-                                    foreach (var raw in layers)
-                                    {
-                                        var layer = (raw ?? string.Empty).Trim();
-                                        if (layer.IndexOf("fixed", StringComparison.OrdinalIgnoreCase) >= 0)
-                                        {
-                                            fixedBg = c.Background; return true;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        return false;
-                    };
-                    var htmlNode = dom.Descendants().FirstOrDefault(n => n.Tag == "html");
-                    var bodyNode = dom.Descendants().FirstOrDefault(n => n.Tag == "body");
-                    bgFixed = check(bodyNode) || check(htmlNode);
-                    
-                    if (onFixedBackground != null)
-                    {
-                        var disps = UiThreadHelper.TryGetDispatcher();
-                        if (disps != null)
-                        {
-                            await UiThreadHelper.RunAsyncAwaitable(disps, null, () =>
-                            {
-                                try { onFixedBackground((IBrush)(bgFixed ? fixedBg : null)); } catch { }
-                                return System.Threading.Tasks.Task.CompletedTask;
-                            });
-                        }
-                    }
-                }
-            }
-            catch (Exception bgEx) 
-            {
-                 try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[BuildVisualTree] Background check error: {bgEx}\r\n"); } catch { }
-            }
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[BuildVisualTree] Background check done. Invoking DomReady...\r\n"); } catch { }
+            // [MIGRATION] Background check logic removed or simplified (Avalonia Brush removed)
+            // Just invoking DomReady
             
             try { DomReady?.Invoke(this, dom); } catch (Exception drEx) { try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[BuildVisualTree] DomReady error: {drEx}\r\n"); } catch { } }
 
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[BuildVisualTree] Creating renderer/view...\r\n"); } catch { }
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[BuildVisualTree] Creating renderer...\r\n"); } catch { }
 
-            if (_cachedView == null || _cachedRenderer == null)
+            if (_cachedRenderer == null)
             {
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[BuildVisualTree] Creating NEW renderer/view...\r\n"); } catch { }
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[BuildVisualTree] Creating NEW renderer...\r\n"); } catch { }
                 _cachedRenderer = new SkiaDomRenderer();
-                _cachedView = new SkiaBrowserView(_cachedRenderer);
-                
-                // Wire events (only once)
-                _cachedView.LinkInternalClicked += (sender, href) => 
-                {
-                    if (onNavigate != null && !string.IsNullOrWhiteSpace(href))
-                    {
-                        try
-                        {
-                            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[LinkClick] href='{href}' base='{baseUri}'\r\n"); } catch {}
-                            var target = new Uri(baseUri, href);
-                            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[LinkClick] Resolved target='{target}'\r\n"); } catch {}
-                            onNavigate(target);
-                        }
-                        catch (Exception navEx)
-                        {
-                            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[LinkClick] Error: {navEx.Message}\r\n"); } catch {}
-                        }
-                    }
-                };
-
-                _cachedView.FormSubmitted += (sender, formEl) =>
-                {
-                    try
-                    {
-                        // TODO: Implement full form submission (POST/GET)
-                        // For now, log it so we know it works
-                        var action = formEl.Attr.ContainsKey("action") ? formEl.Attr["action"] : "";
-                        var method = formEl.Attr.ContainsKey("method") ? formEl.Attr["method"] : "GET";
-                        System.Diagnostics.Debug.WriteLine($"[FormSubmit] action='{action}' method='{method}'");
-                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[FormSubmit] action='{action}' method='{method}'\r\n"); } catch {}
-                        AlertTriggered?.Invoke($"Form submission detected: {method} {action}");
-                    }
-                    catch {}
-                };
-
-                _cachedView.SizeChanged += (sender, e) =>
-                {
-                     if (_activeJs != null)
-                     {
-                         var w = e.NewSize.Width;
-                         var h = e.NewSize.Height;
-                         try { 
-                             _activeJs.Evaluate($"window.innerWidth = {w}; window.innerHeight = {h}; window.dispatchEvent(new Event('resize'));"); 
-                         } catch {}
-                     }
-                };
-
-                _cachedView.InputChanged += (sender, el) =>
-                {
-                    if (_activeJs != null && el != null)
-                    {
-                        try
-                        {
-                            string id = el.Attr.ContainsKey("id") ? el.Attr["id"] : null;
-                            if (string.IsNullOrEmpty(id))
-                            {
-                                id = "fen_auto_" + Guid.NewGuid().ToString("N");
-                                el.Attr["id"] = id;
-                            }
-                            string val = el.Attr.ContainsKey("value") ? el.Attr["value"] : "";
-                            // Serialize value to safe JS string
-                            string jsonVal = System.Text.Json.JsonSerializer.Serialize(val);
-                            
-                            _activeJs.Evaluate($@"
-var el = document.getElementById('{id}'); 
-if(el) {{ 
-    el.value = {jsonVal}; 
-    el.dispatchEvent(new Event('input', {{bubbles:true}})); 
-    el.dispatchEvent(new Event('change', {{bubbles:true}})); 
-}}");
-                        }
-                        catch {}
-                    }
-                };
-
-                _cachedView.ElementClicked += (sender, el) =>
-                {
-                    if (_activeJs != null && el != null)
-                    {
-                        try
-                        {
-                            // If element is a link, we might not want to double-fire if handled by LinkInternalClicked?
-                            // But ElementClicked usually comes from Buttons. 
-                            string id = el.Attr.ContainsKey("id") ? el.Attr["id"] : null;
-                            if (string.IsNullOrEmpty(id))
-                            {
-                                id = "fen_auto_" + Guid.NewGuid().ToString("N");
-                                el.Attr["id"] = id;
-                            }
-                            
-                            _activeJs.Evaluate($@"
-var el = document.getElementById('{id}'); 
-if(el) {{ 
-    el.click(); 
-}}");
-                        }
-                        catch {}
-                    }
-                };
-            }
-            else
-            {
-                 try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[BuildVisualTree] Reusing existing view...\r\n"); } catch { }
             }
 
-            var view = _cachedView;
-            if (baseUri == null) FenLogger.Debug("[BuildVisualTree] BaseUrl is NULL!", LogCategory.General);
-            else FenLogger.Debug($"[BuildVisualTree] Setting BaseUrl to: {baseUri}", LogCategory.General);
-            view.BaseUrl = baseUri?.ToString();
+            // [MIGRATION] View logic removed. Host is responsible for rendering.
             
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[BuildVisualTree] Calling view.Render...\r\n"); } catch { }
-            
-            // Trigger initial render/layout (updates content in existing view)
-            view.Render(dom, computed);
-            
-            _lastRenderedControl = view;
-            var control = view;
-
-            // If we have a diagnostics banner request or debug flags, wrapping might happen inside renderer
-            // But here we return the root control (usually a ScrollViewer or Panel)
-            
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[RenderAsync] Visual tree built successfully\r\n"); } catch { }
-            return control;
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[RenderAsync] Visual tree built properly (Headless)\r\n"); } catch { }
+            return _cachedRenderer;
         }
 
-        private async Task<Control> RefreshAsyncInternal(bool includeDiagnosticsBanner)
+        private async Task<object> RefreshAsyncInternal(bool includeDiagnosticsBanner)
         {
             // Ensure we are on the UI thread. If not, marshal the call.
             var uiDisp = _uiDispatcher ?? UiThreadHelper.TryGetDispatcher();
             if (uiDisp != null && !UiThreadHelper.HasThreadAccess(uiDisp))
             {
-                var tcs = new TaskCompletionSource<Control>();
+                var tcs = new TaskCompletionSource<object>();
                 await UiThreadHelper.RunAsyncAwaitable(uiDisp, null, async () =>
                 {
                     try
                     {
-                        var result = await RefreshAsyncInternal(includeDiagnosticsBanner);
-                        tcs.SetResult(result);
+                        await RefreshAsyncInternal(includeDiagnosticsBanner);
+                        tcs.SetResult(null);
                     }
                     catch (Exception ex)
                     {
@@ -804,7 +603,7 @@ if(el) {{
                 includeDiagnosticsBanner).ConfigureAwait(false);
         }
 
-        private async Task DispatchRepaintAsync(Control element)
+        private async Task DispatchRepaintAsync(object element)
         {
             if (element == null) return;
             var handler = RepaintReady;
@@ -878,7 +677,7 @@ if(el) {{
             });
         }
 
-        public async Task<Control> RefreshAsync(bool includeDiagnosticsBanner = false)
+        public async Task<object> RefreshAsync(bool includeDiagnosticsBanner = false)
         {
             await _repaintGate.WaitAsync().ConfigureAwait(false);
             try
@@ -893,14 +692,14 @@ if(el) {{
 
                 /// Render HTML into a XAML element using the managed engine pipeline.
         /// </summary>
-        public async Task<Control> RenderAsync(
+        public async Task<object> RenderAsync(
             string html,
             Uri baseUri,
             Func<Uri, Task<string>> fetchExternalCssAsync,
             Func<Uri, Task<Stream>> imageLoader,
             Action<Uri> onNavigate,
             double? viewportWidth = null,
-            Action<IBrush> onFixedBackground = null,
+            Action<object> onFixedBackground = null,
             bool? forceJavascript = null,
             bool disableAutoFallback = false)
         {
@@ -908,7 +707,7 @@ if(el) {{
             var uiDisp = _uiDispatcher ?? UiThreadHelper.TryGetDispatcher();
             if (uiDisp != null && !UiThreadHelper.HasThreadAccess(uiDisp))
             {
-                var tcs = new TaskCompletionSource<Control>();
+                var tcs = new TaskCompletionSource<object>();
                 await UiThreadHelper.RunAsyncAwaitable(uiDisp, null, async () =>
                 {
                     try
@@ -1119,7 +918,8 @@ if(el) {{
                                 // Fix: Never block threads with .Wait() in WP8.1
                                 if (disp != null && !UiThreadHelper.HasThreadAccess(disp))
                                 {
-                                    var _ = disp?.InvokeAsync(() => { try { action(); } catch { } });
+                                    // [MIGRATION] Headless/Custom host - just run action or assume thread safety
+                                    action();
                                 }
                                 else action();
                             }
@@ -1136,22 +936,8 @@ if(el) {{
                         {
                             try
                             {
-                                var disp = UiThreadHelper.TryGetDispatcher();
-                                if (disp != null)
-                                {
-                                    var _ = disp.InvokeAsync(() =>
-                                    {
-                                        try
-                                        {
-                                            var ctrl = JavaScriptEngine.GetControlForElement(el);
-                                            if (ctrl != null)
-                                            {
-                                                ctrl.BringIntoView();
-                                            }
-                                        }
-                                        catch { }
-                                    });
-                                }
+                                    // [MIGRATION] Dispatcher removed, and BringIntoView removed.
+                                    // if (JavaScriptEngine.GetControlForElement(el) != null) ...
                             }
                             catch { }
                         }))
@@ -1330,7 +1116,7 @@ if(el) {{
                 }
 
                 try { System.IO.File.AppendAllText("debug_log.txt", "[RenderAsync] Building visual tree...\r\n"); } catch { }
-                Control element = null;
+                object element = null;
                 try
                 {
                     element = await BuildVisualTreeAsync(dom, baseUri, cssFetcher, imageLoader, onNavigate, js, viewportWidth, onFixedBackground, includeDiagnosticsBanner: false).ConfigureAwait(false);
@@ -1349,7 +1135,7 @@ if(el) {{
                 if (allowJs && !disableAutoFallback && !IsJsHeavyAppShell(baseUri))
                 {
                     bool isEmpty;
-                    try { isEmpty = element == null || IsEffectivelyEmpty(element); }
+                    try { isEmpty = element == null; /* IsEffectivelyEmpty(element); // Legacy removed */ }
                     catch { isEmpty = element == null; }
 
                     if (isEmpty)
@@ -1360,7 +1146,7 @@ if(el) {{
                     }
                 }
 
-                try { System.Diagnostics.Debug.WriteLine("[RENDER] Final element null=" + (element == null) + " empty=" + (element != null && IsEffectivelyEmpty(element))); } catch { }
+                try { System.Diagnostics.Debug.WriteLine("[RENDER] Final element null=" + (element == null)); } catch { }
                 return element;
             }
             finally
@@ -1379,7 +1165,7 @@ if(el) {{
             Func<Uri, Task<Stream>> imageLoader,
             Action<Uri> onNavigate,
             double? viewportWidth = null,
-            Action<IBrush> onFixedBackground = null)
+            Action<object> onFixedBackground = null)
         {
             try { var _ = RenderAsync(html, baseUri, fetchExternalCssAsync, imageLoader, onNavigate, viewportWidth, onFixedBackground); }
             catch { }
@@ -1440,212 +1226,16 @@ if(el) {{
             catch { }
         }
 
-        private static bool IsEffectivelyEmpty(Control fe)
-        {
-            try
-            {
-                if (fe == null) return true;
-                // Deep inspect: if only canvases with no children or no text/images, treat as empty
-                return !HasMeaningfulContent(fe);
-            }
-            catch { return false; }
-        }
 
-        private static string NormalizeLoadingKey(string value)
-        {
-            try
-            {
-                if (string.IsNullOrWhiteSpace(value)) return string.Empty;
-                var trimmed = value.Trim();
-                if (trimmed.Length == 0) return string.Empty;
-                var filtered = new string(trimmed.Where(char.IsLetterOrDigit).ToArray());
-                return filtered.ToLowerInvariant();
-            }
-            catch { return string.Empty; }
-        }
 
-        private static bool HasMeaningfulContent(object node)
-        {
-            try
-            {
-                if (node == null) return false;
-                var progressIndicatorType = node.GetType().Name;
-                if (progressIndicatorType.IndexOf("Progress", StringComparison.OrdinalIgnoreCase) >= 0 && !progressIndicatorType.Equals("Button", StringComparison.OrdinalIgnoreCase))
-                    return false;
-                var tb = node as TextBlock;
-                if (tb != null)
-                {
-                    var candidate = tb.Text ?? string.Empty;
-                    if (tb.Inlines != null && tb.Inlines.Count > 0)
-                    {
-                        var sb = new System.Text.StringBuilder();
-                        foreach (var inline in tb.Inlines.OfType<Run>())
-                        {
-                            if (!string.IsNullOrWhiteSpace(inline.Text)) sb.Append(inline.Text);
-                        }
-                        if (sb.Length > 0) candidate = sb.ToString();
-                    }
-                    if (string.IsNullOrWhiteSpace(candidate)) return false;
-                    return !_loadingTokens.Contains(NormalizeLoadingKey(candidate));
-                }
-                if (node is Image || node is Button) return true;
-                var border = node as Border; if (border != null) return HasMeaningfulContent(border.Child);
-                var sv = node as ScrollViewer; if (sv != null) return HasMeaningfulContent(sv.Content as object);
-                var panel = node as Panel;
-                if (panel != null)
-                {
-                    bool any = false;
-                    for (int i = 0; i < panel.Children.Count; i++)
-                    {
-                        var ch = panel.Children[i];
-                        var c = ch as Canvas; if (c != null && c.Children != null && c.Children.Count == 0) continue;
-                        if (HasMeaningfulContent(ch)) { any = true; break; }
-                    }
-                    return any;
-                }
-                int count = VisualChildCount(node);
-                if (count == 0) return false;
-                for (int i = 0; i < count; i++)
-                {
-                    if (HasMeaningfulContent(VisualGetChild(node, i))) return true;
-                }
-                return false;
-            }
-            catch { return true; }
-        }
 
-        private static void TryApplyContrastForeground(Control container, IBrush background)
-        {
-            try
-            {
-                var scb = background as SolidColorBrush;
-                if (scb == null) return;
-                var c = scb.Color;
-                double lum = (0.2126 * c.R + 0.7152 * c.G + 0.0722 * c.B) / 255.0;
-                var desired = (lum < 0.5) ? new SolidColorBrush(Colors.White) : new SolidColorBrush(Colors.Black);
-                ApplyReadableForeground(container, desired, scb);
-            }
-            catch { }
-        }
 
-        private static bool NeedsOverride(IBrush fgIBrush, SolidColorBrush bg)
-        {
-            var fg = fgIBrush as SolidColorBrush;
-            if (fg == null) return true;
-            double lumFg = (0.2126 * fg.Color.R + 0.7152 * fg.Color.G + 0.0722 * fg.Color.B) / 255.0;
-            double lumBg = (0.2126 * bg.Color.R + 0.7152 * bg.Color.G + 0.0722 * bg.Color.B) / 255.0;
-            double L1 = (lumFg > lumBg ? lumFg : lumBg) + 0.05;
-            double L2 = (lumFg > lumBg ? lumBg : lumFg) + 0.05;
-            double contrast = L1 / L2;
-            return contrast < 2.0;
-        }
 
-        private static void ApplyReadableForeground(object node, SolidColorBrush desired, SolidColorBrush bg)
-        {
-            try
-            {
-                if (node == null || desired == null || bg == null) return;
-                var tb = node as TextBlock;
-                if (tb != null)
-                {
-                    if (tb.Foreground == null || NeedsOverride(tb.Foreground, bg))
-                        tb.Foreground = desired;
-                    return;
-                }
-                var border = node as Border;
-                if (border != null)
-                {
-                    if (border.Child != null) ApplyReadableForeground(border.Child, desired, bg);
-                    return;
-                }
-                var panel = node as Panel;
-                if (panel != null)
-                {
-                    if (panel.Children != null)
-                        foreach (var ch in panel.Children) ApplyReadableForeground(ch as object, desired, bg);
-                    return;
-                }
-                var contentCtrl = node as ContentControl;
-                if (contentCtrl != null)
-                {
-                    var d = contentCtrl.Content as object;
-                    if (d != null) ApplyReadableForeground(d, desired, bg);
-                    return;
-                }
-                int count = VisualChildCount(node);
-                for (int i = 0; i < count; i++)
-                    ApplyReadableForeground(VisualGetChild(node, i), desired, bg);
-            }
-            catch { }
-        }
 
-        private static void ApplyDefaultForeground(object node, SolidColorBrush desired)
-        {
-            try
-            {
-                if (node == null || desired == null) return;
-                var tb = node as TextBlock; if (tb != null) { if (tb.Foreground == null) tb.Foreground = desired; }
-                // For other text types (e.g., Windows RichTextBlock), attempt to set 'Foreground' via reflection when available
-                try
-                {
-                    var fgProp = node?.GetType().GetProperty("Foreground");
-                    if (fgProp != null && fgProp.CanWrite)
-                    {
-                        var cur = fgProp.GetValue(node) as IBrush;
-                        if (cur == null) fgProp.SetValue(node, desired);
-                    }
-                }
-                catch { }
-                var border = node as Border; if (border != null) { if (border.Child != null) ApplyDefaultForeground(border.Child, desired); return; }
-                var panel = node as Panel; if (panel != null && panel.Children != null)
-                {
-                    for (int i = 0; i < panel.Children.Count; i++) ApplyDefaultForeground(panel.Children[i], desired);
-                    return;
-                }
-                var contentCtrl = node as ContentControl;
-                if (contentCtrl != null)
-                {
-                    var d = contentCtrl.Content as object;
-                    if (d != null) ApplyDefaultForeground(d, desired);
-                    return;
-                }
-                // Fallback: walk visual children when possible
-                int count = VisualChildCount(node);
-                for (int i = 0; i < count; i++) ApplyDefaultForeground(VisualGetChild(node, i), desired);
-            }
-            catch { }
-        }
-        public async Task<string> MakeImageAsync()
-        {
-            if (_lastRenderedControl == null) return null;
-            return await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(async () =>
-            {
-                await Task.CompletedTask;
-                try
-                {
-                    // Ensure layout is updated
-                    if (_lastRenderedControl.IsMeasureValid == false || _lastRenderedControl.IsArrangeValid == false)
-                    {
-                        _lastRenderedControl.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-                        _lastRenderedControl.Arrange(new Rect(_lastRenderedControl.DesiredSize));
-                    }
 
-                    var rtb = new RenderTargetBitmap(new PixelSize((int)_lastRenderedControl.Bounds.Width, (int)_lastRenderedControl.Bounds.Height), new Vector(96, 96));
-                    rtb.Render(_lastRenderedControl);
-
-                    using (var stream = new MemoryStream())
-                    {
-                        rtb.Save(stream);
-                        return Convert.ToBase64String(stream.ToArray());
-                    }
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[MakeImageAsync] Error: {ex}");
-                    System.Diagnostics.Debug.WriteLine($"[MakeImageAsync] Error: {ex}");
-                    return null;
-                }
-            });
+        public Task<string> MakeImageAsync()
+        {
+            return Task.FromResult<string>(null);
         }
 
 
