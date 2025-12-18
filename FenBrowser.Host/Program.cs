@@ -30,6 +30,9 @@ public class Program
     private static ToolbarWidget _toolbar;
     private static Widget _focusedWidget;
     
+    // Browser integration
+    private static BrowserIntegration _browser;
+    
     // Content area (below toolbar)
     private static SKRect _contentArea;
     
@@ -104,11 +107,17 @@ public class Program
         _toolbar = new ToolbarWidget();
         _toolbar.SetUrl(_currentUrl);
         
+        // Initialize browser integration
+        _browser = new BrowserIntegration();
+        _browser.UrlChanged += url => _toolbar.SetUrl(url);
+        _browser.LoadingChanged += loading => _window.Title = loading ? "Loading..." : $"FenBrowser - {_browser.CurrentUrl}";
+        _browser.NeedsRepaint += () => { }; // Will trigger natural render cycle
+        
         // Wire navigation events
         _toolbar.NavigateRequested += OnNavigate;
-        _toolbar.BackClicked += () => FenLogger.Info("[Host] Back clicked", LogCategory.General);
-        _toolbar.ForwardClicked += () => FenLogger.Info("[Host] Forward clicked", LogCategory.General);
-        _toolbar.RefreshClicked += () => OnNavigate(_currentUrl);
+        _toolbar.BackClicked += async () => await _browser.GoBackAsync();
+        _toolbar.ForwardClicked += async () => await _browser.GoForwardAsync();
+        _toolbar.RefreshClicked += async () => await _browser.RefreshAsync();
         _toolbar.HomeClicked += () => OnNavigate("https://example.com");
         
         // Wire focus handling
@@ -116,6 +125,9 @@ public class Program
         
         // Initial layout
         LayoutWidgets();
+        
+        // Navigate to initial URL
+        _ = _browser.NavigateAsync(_currentUrl);
     }
     
     private static void LayoutWidgets()
@@ -144,19 +156,11 @@ public class Program
     {
         if (string.IsNullOrWhiteSpace(url)) return;
         
-        // Add protocol if missing
-        if (!url.StartsWith("http://") && !url.StartsWith("https://") && !url.StartsWith("file://"))
-        {
-            url = "https://" + url;
-        }
-        
         _currentUrl = url;
-        _toolbar.SetUrl(_currentUrl);
-        _window.Title = $"FenBrowser - {_currentUrl}";
+        _toolbar.SetUrl(url);
+        _window.Title = "Loading...";
         
-        FenLogger.Info($"[Host] Navigating to: {_currentUrl}", LogCategory.General);
-        
-        // TODO: Integrate BrowserHost to actually load content
+        _ = _browser.NavigateAsync(url);
     }
     
     private static void InitializeSkia()
@@ -212,29 +216,19 @@ public class Program
         // Draw toolbar
         _toolbar.PaintAll(canvas);
         
-        // Draw content area placeholder
+        // Update toolbar state
+        _toolbar.SetCanGoBack(_browser?.CanGoBack ?? false);
+        _toolbar.SetCanGoForward(_browser?.CanGoForward ?? false);
+        
+        // Draw browser content area
         canvas.Save();
         canvas.ClipRect(_contentArea);
         
-        using var contentBgPaint = new SKPaint { Color = SKColors.White };
-        canvas.DrawRect(_contentArea, contentBgPaint);
+        // Translate to content area origin
+        canvas.Translate(_contentArea.Left, _contentArea.Top);
         
-        using var textPaint = new SKPaint
-        {
-            Color = SKColors.DarkBlue,
-            IsAntialias = true,
-            TextSize = 20,
-            TextAlign = SKTextAlign.Center
-        };
-        
-        float centerX = _contentArea.MidX;
-        float centerY = _contentArea.MidY;
-        
-        canvas.DrawText("FenBrowser.Host - Phase 3", centerX, centerY - 30, textPaint);
-        canvas.DrawText($"URL: {_currentUrl}", centerX, centerY + 10, textPaint);
-        textPaint.TextSize = 14;
-        textPaint.Color = SKColors.Gray;
-        canvas.DrawText("Type a URL in the address bar and press Enter", centerX, centerY + 50, textPaint);
+        var contentViewport = new SKRect(0, 0, _contentArea.Width, _contentArea.Height);
+        _browser?.Render(canvas, contentViewport);
         
         canvas.Restore();
         
