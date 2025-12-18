@@ -46,6 +46,29 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
                 }
             }
 
+            // Hidden Metadata Elements
+            if (tag == "HEAD" || tag == "TITLE" || tag == "SCRIPT" || tag == "STYLE" || 
+                tag == "META" || tag == "LINK" || tag == "BASE" || tag == "NOSCRIPT" || tag == "TEMPLATE")
+            {
+                if (style == null) style = new CssComputed();
+                style.Display = "none";
+            }
+
+            // Generic Block Elements
+            if (tag == "DIV" || tag == "NAV" || tag == "SECTION" || tag == "ARTICLE" || 
+                tag == "HEADER" || tag == "FOOTER" || tag == "ASIDE" || tag == "MAIN" || tag == "FIGURE")
+            {
+                if (style == null) style = new CssComputed();
+                if (string.IsNullOrEmpty(style.Display)) style.Display = "block";
+            }
+            
+            // SVG
+            if (tag == "SVG")
+            {
+                if (style == null) style = new CssComputed();
+                if (string.IsNullOrEmpty(style.Display)) style.Display = "inline";
+            }
+
             // Headings (H1-H6)
             if (tag.Length == 2 && tag[0] == 'H' && char.IsDigit(tag[1]))
             {
@@ -154,6 +177,42 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
                 if (!style.FontStyle.HasValue)
                     style.FontStyle = Avalonia.Media.FontStyle.Italic;
             }
+            
+            // CRITICAL: Ensure display is NEVER null
+            // This removes undefined layout states that cause calculation errors
+            if (string.IsNullOrEmpty(style?.Display))
+            {
+                if (style == null) style = new CssComputed();
+                style.Display = IsInlineElement(tag) ? "inline" : "block";
+            }
+        }
+        
+        /// <summary>
+        /// Determines if an element is inline by default per HTML5 spec.
+        /// </summary>
+        private static bool IsInlineElement(string tag)
+        {
+            if (string.IsNullOrEmpty(tag)) return false;
+            
+            return tag switch
+            {
+                // Phrasing content / inline elements
+                "A" or "ABBR" or "ACRONYM" or "B" or "BDI" or "BDO" or "BIG" or 
+                "BR" or "CITE" or "CODE" or "DATA" or "DEL" or "DFN" or "EM" or 
+                "I" or "IMG" or "INS" or "KBD" or "LABEL" or "MAP" or "MARK" or 
+                "METER" or "OUTPUT" or "PICTURE" or "PROGRESS" or "Q" or "RUBY" or 
+                "S" or "SAMP" or "SMALL" or "SPAN" or "STRONG" or "SUB" or "SUP" or 
+                "TIME" or "TT" or "U" or "VAR" or "WBR" => true,
+                
+                // Form elements that are inline-block by nature
+                "INPUT" or "SELECT" or "TEXTAREA" or "BUTTON" => true,
+                
+                // SVG is inline by default
+                "SVG" => true,
+                
+                // Everything else is block
+                _ => false
+            };
         }
 
         /// <summary>
@@ -168,8 +227,11 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
             bool isButtonType = tag == "BUTTON" || inputType == "submit" || 
                                inputType == "button" || inputType == "reset";
 
-            // Background
-            bool hasBackground = style.BackgroundColor.HasValue && style.BackgroundColor.Value.A > 0;
+            // Background - only apply default if CSS hasn't specified any background
+            // Check both BackgroundColor and the raw Map for explicit "background" or "background-color"
+            bool cssSpecifiedBackground = style.Map != null && 
+                (style.Map.ContainsKey("background") || style.Map.ContainsKey("background-color"));
+            bool hasBackground = (style.BackgroundColor.HasValue && style.BackgroundColor.Value.A > 0) || cssSpecifiedBackground;
             if (!hasBackground && tag != "FIELDSET")
             {
                 style.BackgroundColor = isButtonType 

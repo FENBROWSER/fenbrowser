@@ -17,6 +17,10 @@ namespace FenBrowser.FenEngine.Rendering
         public CssComputed Before { get; set; }
         public CssComputed After { get; set; }
         public CssComputed Marker { get; set; }  // ::marker pseudo-element styles
+        public CssComputed Placeholder { get; set; }  // ::placeholder pseudo-element styles
+        public CssComputed Selection { get; set; }  // ::selection pseudo-element styles
+        public CssComputed FirstLine { get; set; }  // ::first-line pseudo-element styles
+        public CssComputed FirstLetter { get; set; }  // ::first-letter pseudo-element styles
         
         // Cache for virtual DOM node used in Rendering
         public object PseudoElementInstance { get; set; }
@@ -72,6 +76,14 @@ namespace FenBrowser.FenEngine.Rendering
         public double? HeightPercent { get; set; }
         public double? AspectRatio { get; set; }  // width/height ratio
 
+        // Expression storage for complex functions (calc, min, max, clamp)
+        public string WidthExpression { get; set; }
+        public string HeightExpression { get; set; }
+        public string MinWidthExpression { get; set; }
+        public string MinHeightExpression { get; set; }
+        public string MaxWidthExpression { get; set; }
+        public string MaxHeightExpression { get; set; }
+
         // Flexbox / Grid gaps
         public double? ColumnGap { get; set; }
         public double? RowGap { get; set; }
@@ -85,6 +97,11 @@ namespace FenBrowser.FenEngine.Rendering
         public string GridColumnEnd { get; set; }
         public string GridRowStart { get; set; }
         public string GridRowEnd { get; set; }
+        
+        // Grid Auto Placement & Implicit Tracks
+        public string GridAutoFlow { get; set; }      // "row", "column", "row dense", "column dense"
+        public string GridAutoColumns { get; set; }   // Track sizing for implicit cols
+        public string GridAutoRows { get; set; }      // Track sizing for implicit rows
         public string GridArea { get; set; } // Shorthand storage
 
         // Flexbox
@@ -102,6 +119,7 @@ namespace FenBrowser.FenEngine.Rendering
         // Image object-fit and object-position (for img, video, etc.)
         public string ObjectFit { get; set; }        // fill, contain, cover, none, scale-down
         public string ObjectPosition { get; set; }   // CSS position value (e.g., "center", "top left")
+        public string ImageRendering { get; set; }   // auto, crisp-edges, pixelated, smooth
 
         // Typography & Visuals
         public IBrush Background { get; set; }
@@ -141,6 +159,11 @@ namespace FenBrowser.FenEngine.Rendering
 
         // Visual effects
         public string Transform { get; set; }
+        public string TransformOrigin { get; set; }      // transform-origin (e.g., "center", "50% 50%")
+        public string TransformStyle { get; set; }       // flat, preserve-3d
+        public string BackfaceVisibility { get; set; }   // visible, hidden
+        public string Perspective { get; set; }          // perspective value (e.g., "1000px")
+        public string PerspectiveOrigin { get; set; }    // perspective-origin (e.g., "50% 50%")
         public string Float { get; set; }
         public double? Opacity { get; set; }        // 0.0 to 1.0
         public string TextShadow { get; set; }      // CSS text-shadow value
@@ -193,5 +216,77 @@ namespace FenBrowser.FenEngine.Rendering
 
         // @layer tracking
         public string CascadeLayer { get; set; }            // which @layer this rule belongs to
+        
+        // Modern CSS Properties
+        public string Contain { get; set; }                  // none, strict, content, size, layout, style, paint
+        public string ColorScheme { get; set; }              // light, dark, normal
+        public string AccentColor { get; set; }              // auto or color value for form controls
+        public string CaretColor { get; set; }               // auto or color value for text cursor
+        public string WillChange { get; set; }               // auto, transform, opacity, etc.
+        public string Isolation { get; set; }                // auto, isolate
+        public string MixBlendMode { get; set; }             // normal, multiply, screen, overlay, etc.
+        
+        // Interaction Properties
+        public string PointerEvents { get; set; }            // auto, none, visiblePainted, etc.
+        public string UserSelect { get; set; }               // auto, text, none, contain, all
+        public string TouchAction { get; set; }              // auto, none, pan-x, pan-y, manipulation
+        public string Resize { get; set; }                   // none, both, horizontal, vertical
+        public string ScrollBehavior { get; set; }           // auto, smooth
+        
+        // Print and Page
+        public string PageBreakBefore { get; set; }          // auto, always, avoid
+        public string PageBreakAfter { get; set; }           // auto, always, avoid
+        public string PageBreakInside { get; set; }          // auto, avoid
+        
+        // Additional Text Properties
+        public string WritingMode { get; set; }              // horizontal-tb, vertical-rl, vertical-lr
+        public string TextTransform { get; set; }            // none, capitalize, uppercase, lowercase
+        public string TextRendering { get; set; }            // auto, optimizeSpeed, optimizeLegibility, geometricPrecision
+        public string FontVariant { get; set; }              // normal, small-caps
+        public string FontFeatureSettings { get; set; }      // OpenType features
+        public double? TextIndent { get; set; }              // First line indentation in pixels
+        public string WordBreak { get; set; }                // normal, break-all, keep-all, break-word
+        public string OverflowWrap { get; set; }             // normal, break-word, anywhere
+        public string TabSize { get; set; }                  // Number or length for tab character width
+        public string TextUnderlineOffset { get; set; }      // auto or length value
+        public string TextDecorationStyle { get; set; }      // solid, double, dotted, dashed, wavy
+        public string TextDecorationThickness { get; set; }  // auto, from-font, or length
+        
+        // List Properties
+        public string ListStylePosition { get; set; }        // inside, outside
+        public string ListStyleImage { get; set; }           // none or url()
+        
+        // Table Properties
+        public string TableLayout { get; set; }              // auto, fixed
+        public string BorderCollapse { get; set; }           // separate, collapse
+        public string BorderSpacing { get; set; }            // length value(s)
+        public string CaptionSide { get; set; }              // top, bottom
+        public string EmptyCells { get; set; }               // show, hide
+        
+        // Visibility & Display
+        public string Visibility { get; set; }               // visible, hidden, collapse
+        public string BackfaceVisibilityVal { get; set; }    // visible, hidden (for 3D)
+        public string Appearance { get; set; }               // none, auto, button, textfield, etc.
+        
+        // Columns (Multi-column layout)
+        public string Columns { get; set; }                  // column-width column-count shorthand
+        public string ColumnCount { get; set; }              // auto or number
+        public string ColumnWidth { get; set; }              // auto or length
+        public string ColumnGapValue { get; set; }           // normal or length
+        public string ColumnRuleWidth { get; set; }          // thin, medium, thick, or length
+        public string ColumnRuleStyle { get; set; }          // none, solid, dotted, etc.
+        public string ColumnRuleColor { get; set; }          // color value
+        public string ColumnSpan { get; set; }               // none, all
+        
+        // Outline (distinct from border)
+        public string OutlineWidth { get; set; }             // thin, medium, thick, or length
+        public string OutlineStyle { get; set; }             // none, solid, dotted, dashed, etc.
+        public string OutlineColor { get; set; }             // color value
+        public string OutlineOffset { get; set; }            // length value
+        
+        // Inset (logical shorthand for top/right/bottom/left)
+        public string Inset { get; set; }                    // Shorthand for positioning
+        public string InsetBlock { get; set; }               // top + bottom in logical terms
+        public string InsetInline { get; set; }              // left + right in logical terms
     }
 }

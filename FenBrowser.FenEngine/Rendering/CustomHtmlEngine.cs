@@ -96,6 +96,7 @@ namespace FenBrowser.FenEngine.Rendering
         public LiteElement ActiveDom => _activeDom;
         public JavaScriptEngine JsEngine => _activeJs;
         private LiteElement _activeDom;
+        private string _lastRawHtml;
         private Control _lastRenderedControl;
         private Uri _activeBaseUri;
         private Func<Uri, Task<string>> _activeFetchCss;
@@ -483,7 +484,9 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 try 
                 { 
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[CaptureActiveContext] Calling SetDomAsync...\r\n"); } catch {}
                     await _activeJs.SetDomAsync(dom, baseUri).ConfigureAwait(false);
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[CaptureActiveContext] SetDomAsync returned.\r\n"); } catch {}
                     try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CaptureActiveContext] Synced JS DOM to _activeDom hash={dom.GetHashCode()}\r\n"); } catch {}
                 }
                 catch { }
@@ -922,9 +925,13 @@ if(el) {{
             }
 
             await RaiseLoadingChangedAsync(true);
+            
+            // Store raw HTML for DOM comparison feature
+            _lastRawHtml = html;
 
             try
             {
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", $"[CustomHtmlEngine] RenderAsync Start. HTML Length: {html?.Length ?? 0}\r\n"); } catch { }
                 try { System.IO.File.AppendAllText("debug_log.txt", $"[RenderAsync] Start. HTML Length: {html?.Length ?? 0}\r\n"); } catch { }
                 Console.WriteLine($"[RenderAsync] Start. HTML Length: {html?.Length ?? 0}");
                 
@@ -939,7 +946,7 @@ if(el) {{
                 try { System.IO.File.AppendAllText("debug_log.txt", $"[RenderAsync] HTML size: {html?.Length ?? 0} chars\r\n"); } catch { }
                 
                 // 1) Parse DOM (background)
-                var parser = new HtmlLiteParser(html ?? string.Empty);
+                var parser = new FenBrowser.Core.Parsing.HtmlParser(html ?? string.Empty);
                 LiteElement dom = null;
                 try
                 {
@@ -1041,6 +1048,7 @@ if(el) {{
                 catch { }
 
                 // 1.25) Prewarm images in the background so first paint can swap in sooner
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[CustomHtmlEngine] Prewarming images...\r\n"); } catch { }
                 try { PrewarmImages(dom, baseUri, imageLoader, viewportWidth); } catch { }
 
                 bool allowJs = EnableJavaScript;
@@ -1097,6 +1105,7 @@ if(el) {{
                 JavaScriptEngine js = null;
                 if (allowJs)
                 {
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[CustomHtmlEngine] Creating JavaScriptEngine...\r\n"); } catch { }
                     js = new JavaScriptEngine(new JsHostAdapter(
                         navigate: onNavigate,
                         post: (_, __) => { },
@@ -1183,6 +1192,7 @@ if(el) {{
                     };
 
                     _activeJs = js;
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[CustomHtmlEngine] JavaScriptEngine Created.\r\n"); } catch { }
                 }
 
                 if (js != null)
@@ -1241,6 +1251,7 @@ if(el) {{
                 await CaptureActiveContextAsync(dom, baseUri, cssFetcher, imageLoader, onNavigate, viewportWidth, onFixedBackground, js).ConfigureAwait(false);
 
                 // 6. Build visual tree
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[CustomHtmlEngine] Calling BuildVisualTreeAsync...\r\n"); } catch { }
                 Console.WriteLine("[RenderAsync] Building Visual Tree");
                 
                 // Fetch CSS is handled inside BuildVisualTreeAsync or passed as delegate
@@ -1253,6 +1264,7 @@ if(el) {{
                     Console.WriteLine("[RenderAsync] Running Scripts");
                     
                     // STEP 1: Inject JS detection helper (runs first to ensure sites detect JS is enabled)
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[CustomHtmlEngine] Running JS...\r\n"); } catch { }
                     // STEP 1: Enable JS classes on HTML/BODY immediately
                     try
                     {
@@ -1377,6 +1389,12 @@ if(el) {{
         public LiteElement GetActiveDom()
         {
             return _activeDom;
+        }
+
+        /// <summary>Get the raw HTML source that was last rendered.</summary>
+        public string GetRawHtml()
+        {
+            return _lastRawHtml;
         }
 
         // ---------------- Cookie helpers for host APIs ----------------

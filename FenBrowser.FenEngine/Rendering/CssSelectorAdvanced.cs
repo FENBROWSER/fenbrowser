@@ -390,14 +390,38 @@ namespace FenBrowser.FenEngine.Rendering
                 return MatchesNthChild(element, pseudoClass, true, true);
             }
 
-            // State pseudo-classes (these would need runtime state tracking)
-            if (pseudoClass == ":hover" || pseudoClass == ":active" || 
-                pseudoClass == ":focus" || pseudoClass == ":visited" ||
-                pseudoClass == ":link" || pseudoClass == ":checked" ||
-                pseudoClass == ":disabled" || pseudoClass == ":enabled")
+            // State pseudo-classes - query ElementStateManager for dynamic state
+            if (pseudoClass == ":hover")
             {
-                // These require interaction state - return false for static matching
-                // In real usage, these would be tracked by the rendering engine
+                return ElementStateManager.Instance.IsHovered(element);
+            }
+            if (pseudoClass == ":active")
+            {
+                return ElementStateManager.Instance.IsActive(element);
+            }
+            if (pseudoClass == ":focus")
+            {
+                return ElementStateManager.Instance.IsFocused(element);
+            }
+            if (pseudoClass == ":focus-within")
+            {
+                return ElementStateManager.Instance.IsFocusWithin(element);
+            }
+            if (pseudoClass == ":focus-visible")
+            {
+                // For now, treat same as :focus (simplified)
+                return ElementStateManager.Instance.IsFocused(element);
+            }
+            // Other state pseudo-classes that still need attribute checking
+            if (pseudoClass == ":visited" || pseudoClass == ":link")
+            {
+                // :visited - we don't track history, so never match
+                // :link - handled via attribute check elsewhere
+                return false;
+            }
+            if (pseudoClass == ":checked" || pseudoClass == ":disabled" || pseudoClass == ":enabled")
+            {
+                // These require attribute checking - return false here, handled in CssLoader
                 return false;
             }
 
