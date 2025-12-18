@@ -145,4 +145,20 @@ public abstract class Widget
     public virtual void OnKeyDown(Key key) { }
     public virtual void OnKeyUp(Key key) { }
     public virtual void OnTextInput(char c) { }
+    
+    /// <summary>
+    /// Whether this widget can receive keyboard focus.
+    /// Override to return true for focusable widgets.
+    /// </summary>
+    public virtual bool CanFocus => false;
+    
+    /// <summary>
+    /// Called when this widget receives focus.
+    /// </summary>
+    public virtual void OnFocus() { }
+    
+    /// <summary>
+    /// Called when this widget loses focus.
+    /// </summary>
+    public virtual void OnBlur() { }
 }
