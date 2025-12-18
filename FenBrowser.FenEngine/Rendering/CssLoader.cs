@@ -984,7 +984,32 @@ namespace FenBrowser.FenEngine.Rendering
                 // List styles
                 "list-style", "list-style-type", "list-style-position", "list-style-image",
                 // Table
-                "border-collapse", "border-spacing", "table-layout", "caption-side", "empty-cells"
+                "border-collapse", "border-spacing", "table-layout", "caption-side", "empty-cells",
+                // Modern CSS properties (new)
+                "accent-color", "caret-color", "color-scheme", "contain", "appearance",
+                "image-rendering", "rendering-intent", "image-orientation",
+                // 3D Transforms
+                "transform-origin", "transform-style", "backface-visibility", "perspective", "perspective-origin",
+                // Multi-column layout
+                "columns", "column-count", "column-width", "column-gap", "column-rule",
+                "column-rule-width", "column-rule-style", "column-rule-color", "column-span",
+                // Text decoration
+                "text-decoration-line", "text-decoration-style", "text-decoration-color", "text-decoration-thickness",
+                "text-underline-offset", "text-emphasis", "text-emphasis-style", "text-emphasis-color",
+                // Tab and line
+                "tab-size", "text-rendering",
+                // Transitions
+                "transition-property", "transition-duration", "transition-timing-function", "transition-delay",
+                // Will-change and containment
+                "will-change", "contain-intrinsic-size",
+                // Print/page
+                "page-break-before", "page-break-after", "page-break-inside", "orphans", "widows",
+                // Object fit
+                "object-position",
+                // Additional flex/grid
+                "place-self", "justify-items", "justify-self",
+                // Shapes
+                "shape-outside", "shape-margin", "shape-image-threshold"
             };
             
             bool isSupported = supported.Contains(property);
@@ -1166,47 +1191,114 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         private static string FlattenBasicMedia(string text, double? viewportWidth, Action<string> log)
+{
+    if (string.IsNullOrEmpty(text)) return "";
+    if (text.IndexOf("@media", StringComparison.OrdinalIgnoreCase) < 0) return text;
+
+    // Enhanced media query support: min/max-width, prefers-color-scheme, prefers-reduced-motion, orientation
+    var sb = new StringBuilder();
+    int i = 0;
+    while (i < text.Length)
+    {
+        if (StartsWithAt(text, i, "@media"))
         {
-            if (string.IsNullOrEmpty(text)) return "";
-            if (text.IndexOf("@media", StringComparison.OrdinalIgnoreCase) < 0) return text;
+            int open = text.IndexOf('{', i);
+            if (open < 0) break;
+            int close = FindMatchingBrace(text, open);
+            if (close < 0) break;
 
-            // Extremely conservative: we only pass through blocks like @media screen and (min-width: Xpx)/(max-width: Xpx)
-            // and we do a trivial check against viewportWidth when provided.
-            var sb = new StringBuilder();
-            int i = 0;
-            while (i < text.Length)
-            {
-                if (StartsWithAt(text, i, "@media"))
-                {
-                    int open = text.IndexOf('{', i);
-                    if (open < 0) break;
-                    int close = FindMatchingBrace(text, open);
-                    if (close < 0) break;
+            var header = text.Substring(i, open - i).ToLowerInvariant();
+            var body = text.Substring(open + 1, close - open - 1);
 
-                    var header = text.Substring(i, open - i).ToLowerInvariant();
-                    var body = text.Substring(open + 1, close - open - 1);
+            bool keep = EvaluateMediaQuery(header, viewportWidth);
 
-                    bool keep = true;
-                    if (viewportWidth.HasValue)
-                    {
-                        // check simple min/max-width conditions if present
-                        var mw = ExtractPx(header, "min-width");
-                        var xw = ExtractPx(header, "max-width");
-                        if (mw.HasValue && viewportWidth.Value < mw.Value) keep = false;
-                        if (xw.HasValue && viewportWidth.Value > xw.Value) keep = false;
-                    }
-
-                    if (keep) sb.Append(body);
-                    i = close + 1;
-                }
-                else
-                {
-                    sb.Append(text[i]);
-                    i++;
-                }
-            }
-            return sb.ToString();
+            if (keep) sb.Append(body);
+            i = close + 1;
         }
+        else
+        {
+            sb.Append(text[i]);
+            i++;
+        }
+    }
+    return sb.ToString();
+}
+
+/// <summary>
+/// Evaluate a media query condition string
+/// </summary>
+private static bool EvaluateMediaQuery(string header, double? viewportWidth)
+{
+    bool keep = true;
+    
+    // Check min/max-width
+    if (viewportWidth.HasValue)
+    {
+        var mw = ExtractPx(header, "min-width");
+        var xw = ExtractPx(header, "max-width");
+        if (mw.HasValue && viewportWidth.Value < mw.Value) keep = false;
+        if (xw.HasValue && viewportWidth.Value > xw.Value) keep = false;
+    }
+    
+    // Check prefers-color-scheme
+    if (header.Contains("prefers-color-scheme"))
+    {
+        string scheme = CssParser.MediaPrefersColorScheme ?? "light";
+        bool isDark = string.Equals(scheme, "dark", StringComparison.OrdinalIgnoreCase);
+        
+        // Update CssParser.PrefersDarkMode to match
+        CssParser.PrefersDarkMode = isDark;
+        
+        if (header.Contains("prefers-color-scheme: dark") || header.Contains("prefers-color-scheme:dark"))
+        {
+            if (!isDark) keep = false;
+        }
+        else if (header.Contains("prefers-color-scheme: light") || header.Contains("prefers-color-scheme:light"))
+        {
+            if (isDark) keep = false;
+        }
+    }
+    
+    // Check prefers-reduced-motion
+    if (header.Contains("prefers-reduced-motion"))
+    {
+        bool reducedMotion = false; // Default to false (allow motion)
+        
+        if (header.Contains("prefers-reduced-motion: reduce") || header.Contains("prefers-reduced-motion:reduce"))
+        {
+            if (!reducedMotion) keep = false;
+        }
+        else if (header.Contains("prefers-reduced-motion: no-preference") || header.Contains("prefers-reduced-motion:no-preference"))
+        {
+            if (reducedMotion) keep = false;
+        }
+    }
+    
+    // Check orientation
+    if (header.Contains("orientation"))
+    {
+        double w = viewportWidth ?? CssParser.MediaViewportWidth ?? 1920;
+        double h = CssParser.MediaViewportHeight ?? 1080;
+        bool isPortrait = h > w;
+        
+        if (header.Contains("orientation: portrait") || header.Contains("orientation:portrait"))
+        {
+            if (!isPortrait) keep = false;
+        }
+        else if (header.Contains("orientation: landscape") || header.Contains("orientation:landscape"))
+        {
+            if (isPortrait) keep = false;
+        }
+    }
+    
+    // Check screen/print media type
+    if (header.Contains("print") && !header.Contains("screen"))
+    {
+        keep = false; // We're not printing
+    }
+    
+    return keep;
+}
 
         private static double? ExtractPx(string text, string prop)
         {
@@ -1596,6 +1688,10 @@ namespace FenBrowser.FenEngine.Rendering
             var perNodeBefore = new Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>>();
             var perNodeAfter = new Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>>();
             var perNodeMarker = new Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>>();
+            var perNodePlaceholder = new Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>>();
+            var perNodeSelection = new Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>>();
+            var perNodeFirstLine = new Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>>();
+            var perNodeFirstLetter = new Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>>();
             int matchedNodes = 0;
             foreach (var n in nodes)
             {
@@ -1615,6 +1711,10 @@ namespace FenBrowser.FenEngine.Rendering
                             if (pe == "before") targetDict = perNodeBefore;
                             else if (pe == "after") targetDict = perNodeAfter;
                             else if (pe == "marker") targetDict = perNodeMarker;
+                            else if (pe == "placeholder") targetDict = perNodePlaceholder;
+                            else if (pe == "selection") targetDict = perNodeSelection;
+                            else if (pe == "first-line") targetDict = perNodeFirstLine;
+                            else if (pe == "first-letter") targetDict = perNodeFirstLetter;
                             else if (!string.IsNullOrEmpty(pe)) continue; // Unknown pseudo-element
 
                             nodeHasMatches = true;
@@ -1710,8 +1810,12 @@ namespace FenBrowser.FenEngine.Rendering
                 bool hasBefore = perNodeBefore.ContainsKey(n) && perNodeBefore[n].Count > 0;
                 bool hasAfter = perNodeAfter.ContainsKey(n) && perNodeAfter[n].Count > 0;
                 bool hasMarker = perNodeMarker.ContainsKey(n) && perNodeMarker[n].Count > 0;
+                bool hasPlaceholder = perNodePlaceholder.ContainsKey(n) && perNodePlaceholder[n].Count > 0;
+                bool hasSelection = perNodeSelection.ContainsKey(n) && perNodeSelection[n].Count > 0;
+                bool hasFirstLine = perNodeFirstLine.ContainsKey(n) && perNodeFirstLine[n].Count > 0;
+                bool hasFirstLetter = perNodeFirstLetter.ContainsKey(n) && perNodeFirstLetter[n].Count > 0;
 
-                if (!hasMain && !hasBefore && !hasAfter && !hasMarker) continue;
+                if (!hasMain && !hasBefore && !hasAfter && !hasMarker && !hasPlaceholder && !hasSelection && !hasFirstLine && !hasFirstLetter) continue;
 
                 var css = ResolveStyle(n, parentCss, items ?? new List<Tuple<CssDecl, SelectorChain, int>>());
 
@@ -1729,6 +1833,11 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     css.Marker = ResolveStyle(n, css, perNodeMarker[n]);
                 }
+                
+                if (hasPlaceholder) css.Placeholder = ResolveStyle(n, css, perNodePlaceholder[n]);
+                if (hasSelection) css.Selection = ResolveStyle(n, css, perNodeSelection[n]);
+                if (hasFirstLine) css.FirstLine = ResolveStyle(n, css, perNodeFirstLine[n]);
+                if (hasFirstLetter) css.FirstLetter = ResolveStyle(n, css, perNodeFirstLetter[n]);
 
                 result[n] = css;
             }
@@ -1837,6 +1946,33 @@ namespace FenBrowser.FenEngine.Rendering
             css.GridRowStart = Safe(DictGet(css.Map, "grid-row-start"));
             css.GridRowEnd = Safe(DictGet(css.Map, "grid-row-end"));
             
+            // Parse grid-column shorthand: grid-column: start / end
+            string gridColumn = DictGet(css.Map, "grid-column");
+            if (!string.IsNullOrWhiteSpace(gridColumn))
+            {
+                var parts = gridColumn.Split('/');
+                if (parts.Length >= 1 && string.IsNullOrEmpty(css.GridColumnStart))
+                    css.GridColumnStart = parts[0].Trim();
+                if (parts.Length >= 2 && string.IsNullOrEmpty(css.GridColumnEnd))
+                    css.GridColumnEnd = parts[1].Trim();
+            }
+            
+            // Parse grid-row shorthand: grid-row: start / end
+            string gridRow = DictGet(css.Map, "grid-row");
+            if (!string.IsNullOrWhiteSpace(gridRow))
+            {
+                var parts = gridRow.Split('/');
+                if (parts.Length >= 1 && string.IsNullOrEmpty(css.GridRowStart))
+                    css.GridRowStart = parts[0].Trim();
+                if (parts.Length >= 2 && string.IsNullOrEmpty(css.GridRowEnd))
+                    css.GridRowEnd = parts[1].Trim();
+            }
+            
+            // Grid Auto Flow & Implicit Tracks
+            css.GridAutoFlow = Safe(DictGet(css.Map, "grid-auto-flow"))?.ToLowerInvariant();
+            css.GridAutoColumns = Safe(DictGet(css.Map, "grid-auto-columns"));
+            css.GridAutoRows = Safe(DictGet(css.Map, "grid-auto-rows"));
+            
             // Overflow properties
             css.Overflow = Safe(DictGet(css.Map, "overflow"))?.ToLowerInvariant();
             css.OverflowX = Safe(DictGet(css.Map, "overflow-x"))?.ToLowerInvariant() ?? css.Overflow;
@@ -1922,26 +2058,49 @@ namespace FenBrowser.FenEngine.Rendering
 
             double sizeVal;
             
-            string dbgCls = "";
-            if (n != null && n.Attr != null) n.Attr.TryGetValue("class", out dbgCls);
-            if (dbgCls != null && dbgCls.Contains("picture"))
-            {
-                 string rawW = DictGet(css.Map, "width");
-                 try { 
-                    bool success = TryPx(rawW, out sizeVal);
-                    System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[WIDTH_TRACE] .picture raw width: '{rawW}' -> TryPx success: {success}, val: {sizeVal}\r\n");
-                 } catch {}
-            }
 
-            if (TryPx(DictGet(css.Map, "width"), out sizeVal, currentEmBase)) css.Width = sizeVal;
-            else if (TryPercent(DictGet(css.Map, "width"), out sizeVal)) css.WidthPercent = sizeVal;
 
-            if (TryPx(DictGet(css.Map, "height"), out sizeVal, currentEmBase)) css.Height = sizeVal;
-            else if (TryPercent(DictGet(css.Map, "height"), out sizeVal)) css.HeightPercent = sizeVal;
-            if (TryPx(DictGet(css.Map, "min-width"), out sizeVal, currentEmBase)) css.MinWidth = sizeVal;
-            if (TryPx(DictGet(css.Map, "min-height"), out sizeVal, currentEmBase)) css.MinHeight = sizeVal;
-            if (TryPx(DictGet(css.Map, "max-width"), out sizeVal, currentEmBase)) css.MaxWidth = sizeVal;
-            if (TryPx(DictGet(css.Map, "max-height"), out sizeVal, currentEmBase)) css.MaxHeight = sizeVal;
+            string wStr = DictGet(css.Map, "width");
+            if (TryPx(wStr, out sizeVal, currentEmBase)) css.Width = sizeVal;
+            else if (TryPercent(wStr, out sizeVal)) css.WidthPercent = sizeVal;
+            else if (IsCssFunction(wStr)) css.WidthExpression = wStr;
+
+            string hStr = DictGet(css.Map, "height");
+            if (TryPx(hStr, out sizeVal, currentEmBase)) css.Height = sizeVal;
+            else if (TryPercent(hStr, out sizeVal)) css.HeightPercent = sizeVal;
+            else if (IsCssFunction(hStr)) css.HeightExpression = hStr;
+
+            string minWStr = DictGet(css.Map, "min-width");
+            if (TryPx(minWStr, out sizeVal, currentEmBase)) css.MinWidth = sizeVal;
+            else if (IsCssFunction(minWStr)) css.MinWidthExpression = minWStr;
+            
+            string minHStr = DictGet(css.Map, "min-height");
+            if (TryPx(minHStr, out sizeVal, currentEmBase)) css.MinHeight = sizeVal;
+            else if (IsCssFunction(minHStr)) css.MinHeightExpression = minHStr;
+            
+            string maxWStr = DictGet(css.Map, "max-width");
+            if (TryPx(maxWStr, out sizeVal, currentEmBase)) css.MaxWidth = sizeVal;
+            else if (IsCssFunction(maxWStr)) css.MaxWidthExpression = maxWStr;
+
+            string maxHStr = DictGet(css.Map, "max-height");
+            if (TryPx(maxHStr, out sizeVal, currentEmBase)) css.MaxHeight = sizeVal;
+            else if (IsCssFunction(maxHStr)) css.MaxHeightExpression = maxHStr;
+            
+            // Logical properties: inline-size, block-size
+            string isVal = DictGet(css.Map, "inline-size");
+            if (TryPx(isVal, out sizeVal, currentEmBase)) css.Width = sizeVal;
+            else if (TryPercent(isVal, out sizeVal)) css.WidthPercent = sizeVal;
+            else if (IsCssFunction(isVal)) css.WidthExpression = isVal;
+            
+            string bsVal = DictGet(css.Map, "block-size");
+            if (TryPx(bsVal, out sizeVal, currentEmBase)) css.Height = sizeVal;
+            else if (TryPercent(bsVal, out sizeVal)) css.HeightPercent = sizeVal;
+            else if (IsCssFunction(bsVal)) css.HeightExpression = bsVal;
+            
+            if (TryPx(DictGet(css.Map, "min-inline-size"), out sizeVal, currentEmBase)) css.MinWidth = sizeVal;
+            if (TryPx(DictGet(css.Map, "min-block-size"), out sizeVal, currentEmBase)) css.MinHeight = sizeVal;
+            if (TryPx(DictGet(css.Map, "max-inline-size"), out sizeVal, currentEmBase)) css.MaxWidth = sizeVal;
+            if (TryPx(DictGet(css.Map, "max-block-size"), out sizeVal, currentEmBase)) css.MaxHeight = sizeVal;
             
             // DEBUG: Log sizing properties for important elements
             string tag = n?.Tag?.ToUpperInvariant() ?? "";
@@ -2011,8 +2170,23 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (!string.IsNullOrWhiteSpace(bgImage))
             {
+                // Debug: Log gradient parsing attempt
+                bool containsGradient = bgImage.Contains("gradient");
+                if (containsGradient)
+                {
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_gradient.txt", $"[CSS] Parsing gradient: {bgImage.Substring(0, Math.Min(100, bgImage.Length))}...\r\n"); } catch { }
+                }
+                
                 var grad = ParseGradient(bgImage);
-                if (grad != null) css.Background = grad;
+                if (grad != null) 
+                {
+                    css.Background = grad;
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_gradient.txt", $"[CSS] Gradient parsed successfully! Type={grad.GetType().Name}\r\n"); } catch { }
+                }
+                else if (containsGradient)
+                {
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_gradient.txt", $"[CSS] Gradient parsing FAILED for: {bgImage.Substring(0, Math.Min(100, bgImage.Length))}...\r\n"); } catch { }
+                }
             }
 
             var fontShorthand = Safe(DictGet(css.Map, "font"));
@@ -2217,6 +2391,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
             
             // Parse individual border-style-* properties (override shorthand)
+            // Parse individual border-style-* properties (override shorthand)
             var bsTopVal = Safe(DictGet(css.Map, "border-top-style"));
             if (!string.IsNullOrEmpty(bsTopVal)) css.BorderStyleTop = bsTopVal.ToLowerInvariant();
             var bsRightVal = Safe(DictGet(css.Map, "border-right-style"));
@@ -2225,6 +2400,30 @@ namespace FenBrowser.FenEngine.Rendering
             if (!string.IsNullOrEmpty(bsBottomVal)) css.BorderStyleBottom = bsBottomVal.ToLowerInvariant();
             var bsLeftVal = Safe(DictGet(css.Map, "border-left-style"));
             if (!string.IsNullOrEmpty(bsLeftVal)) css.BorderStyleLeft = bsLeftVal.ToLowerInvariant();
+            
+            // Logical Properties: border-block/border-inline (horizontal-tb)
+            // border-block -> top/bottom
+            var borderBlockRaw = Safe(DictGet(css.Map, "border-block"));
+            if (!string.IsNullOrEmpty(borderBlockRaw))
+            {
+                var sideWidth = ExtractBorderSideWidth(borderBlockRaw, currentEmBase);
+                if (sideWidth > 0) { bTop = sideWidth; bBottom = sideWidth; }
+                var sideCol = ExtractBorderSideColor(borderBlockRaw);
+                if (sideCol.HasValue) borderSideColor = sideCol;
+                var sideStyle = ExtractBorderSideStyle(borderBlockRaw);
+                if (sideStyle != "none") { css.BorderStyleTop = sideStyle; css.BorderStyleBottom = sideStyle; }
+            }
+            
+            var borderInlineRaw = Safe(DictGet(css.Map, "border-inline"));
+            if (!string.IsNullOrEmpty(borderInlineRaw))
+            {
+                var sideWidth = ExtractBorderSideWidth(borderInlineRaw, currentEmBase);
+                if (sideWidth > 0) { bLeft = sideWidth; bRight = sideWidth; }
+                var sideCol = ExtractBorderSideColor(borderInlineRaw);
+                if (sideCol.HasValue) borderSideColor = sideCol;
+                var sideStyle = ExtractBorderSideStyle(borderInlineRaw);
+                if (sideStyle != "none") { css.BorderStyleLeft = sideStyle; css.BorderStyleRight = sideStyle; }
+            }
             
             css.BorderThickness = new Thickness(bLeft, bTop, bRight, bBottom);
             if (borderSideColor.HasValue && (!css.BorderBrushColor.HasValue || css.BorderBrushColor.Value == default))
@@ -2358,7 +2557,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             css.CounterReset = Safe(DictGet(css.Map, "counter-reset"));
             css.CounterIncrement = Safe(DictGet(css.Map, "counter-increment"));
-            css.Content = Safe(DictGet(css.Map, "content"));
+            css.Content = ResolveAttr(Safe(DictGet(css.Map, "content")), n);
 
             css.MaskImage = Safe(DictGet(css.Map, "mask-image"));
             if (string.IsNullOrEmpty(css.MaskImage))
@@ -2487,16 +2686,72 @@ namespace FenBrowser.FenEngine.Rendering
         // Matching
         // ===========================
 
+        private static bool HasDebugText(LiteElement n)
+        {
+            if (n == null) return false;
+            // Quick shallow check for debug text
+            var stack = new System.Collections.Generic.Stack<LiteElement>();
+            stack.Push(n);
+            int count = 0;
+            while (stack.Count > 0 && count < 50)
+            {
+                var cur = stack.Pop();
+                if (cur.IsText && cur.Text != null && (cur.Text.Contains("Guides") || cur.Text.Contains("Detect my settings")))
+                    return true;
+                
+                if (cur.Children != null)
+                {
+                    foreach (var c in cur.Children) stack.Push(c); // Depth-first
+                }
+                count++;
+            }
+            return false;
+        }
+
         private static bool Matches(LiteElement n, SelectorChain chain)
         {
             if (n == null || chain == null || chain.Segments.Count == 0) return false;
+
+            // PROBE: Check for the failing UL in nav
+            bool debug = false;
+            if (n.Tag == "ul" && HasDebugText(n))
+            {
+                debug = true;
+                // reconstruct selector string for log
+                var sb = new StringBuilder();
+                foreach(var s in chain.Segments) {
+                    sb.Append(s.Tag ?? "");
+                    if(s.Id!=null) sb.Append("#" + s.Id);
+                    if(s.Classes!=null) foreach(var c in s.Classes) sb.Append("." + c);
+                    sb.Append(" ");
+                }
+                FenLogger.Debug($"[SelectorProbe] Checking UL against rule: {sb}", LogCategory.Layout);
+
+                // Log Ancestor Chain EXACTLY ONCE per element (cache key?)
+                // Actually, just log it. It's spammy but needed.
+                var p = n.Parent;
+                var chainLog = new StringBuilder("Ancestors: ");
+                int depth = 0;
+                while (p != null && depth < 10)
+                {
+                    string cls = "";
+                    if (p.Attr != null) p.Attr.TryGetValue("class", out cls);
+                    chainLog.Append($"{p.Tag}.{cls?.Replace(" ", ".")} > ");
+                    p = p.Parent;
+                    depth++;
+                }
+                FenLogger.Debug($"[SelectorProbe] {chainLog}", LogCategory.Layout);
+            }
 
             // We match from the last segment back to the first, walking up the DOM for ancestor/parent checks.
             int segIndex = chain.Segments.Count - 1;
             LiteElement cur = n;
 
             // Match the right-most segment first
-            if (!MatchesSingle(cur, chain.Segments[segIndex])) return false;
+            bool keyMatch = MatchesSingle(cur, chain.Segments[segIndex]);
+            if (debug) FenLogger.Debug($"[SelectorProbe] Key segment ({segIndex}) match? {keyMatch}", LogCategory.Layout);
+
+            if (!keyMatch) return false;
 
             // Walk up the chain
             while (segIndex > 0)
@@ -2506,11 +2761,15 @@ namespace FenBrowser.FenEngine.Rendering
                 var comb = prevSeg.Next;
 
                 segIndex--; // Move to the previous segment (the one we want to find now)
+                
+                if (debug) FenLogger.Debug($"[SelectorProbe] Looking for segment {segIndex} via {comb}", LogCategory.Layout);
 
                 if (comb == Combinator.Child)
                 {
                     cur = cur.Parent;
-                    if (cur == null || !MatchesSingle(cur, chain.Segments[segIndex])) return false;
+                    bool m = MatchesSingle(cur, chain.Segments[segIndex]);
+                    if (debug) FenLogger.Debug($"[SelectorProbe]   Parent check: match? {m} (Tag={cur?.Tag})", LogCategory.Layout);
+                    if (cur == null || !m) return false;
                 }
                 else if (comb == Combinator.AdjacentSibling)
                 {
@@ -2520,7 +2779,9 @@ namespace FenBrowser.FenEngine.Rendering
                     var idx = parent.Children.IndexOf(cur);
                     if (idx <= 0) return false;
                     cur = parent.Children[idx - 1];
-                    if (!MatchesSingle(cur, chain.Segments[segIndex])) return false;
+                    bool m = MatchesSingle(cur, chain.Segments[segIndex]);
+                    if (debug) FenLogger.Debug($"[SelectorProbe]   Adjacent sibling check: match? {m}", LogCategory.Layout);
+                    if (!m) return false;
                 }
                 else if (comb == Combinator.GeneralSibling)
                 {
@@ -2541,14 +2802,17 @@ namespace FenBrowser.FenEngine.Rendering
                             break;
                         }
                     }
+                    if (debug) FenLogger.Debug($"[SelectorProbe]   General sibling check: found? {found}", LogCategory.Layout);
                     if (!found) return false;
                 }
                 else // Descendant
                 {
                     cur = FindAncestorMatching(cur, chain.Segments[segIndex]);
+                    if (debug) FenLogger.Debug($"[SelectorProbe]   Ancestor check: found? {cur != null} (Tag={cur?.Tag})", LogCategory.Layout);
                     if (cur == null) return false;
                 }
             }
+            if (debug) FenLogger.Debug($"[SelectorProbe] MATCH SUCCESS", LogCategory.Layout);
             return true;
         }
 
@@ -2983,31 +3247,32 @@ namespace FenBrowser.FenEngine.Rendering
                         // :empty matches elements with no children (including text nodes)
                         if (n.Children != null && n.Children.Count > 0) return false;
                     }
-                    // === Interactive state pseudo-classes (don't match at render time) ===
+                    // === Interactive state pseudo-classes (query ElementStateManager) ===
                     else if (string.Equals(ps, "hover", StringComparison.OrdinalIgnoreCase))
                     {
-                        // :hover requires runtime interaction - don't match during initial render
-                        return false;
+                        // :hover - query ElementStateManager for hover state
+                        if (!ElementStateManager.Instance.IsHovered(n)) return false;
                     }
                     else if (string.Equals(ps, "active", StringComparison.OrdinalIgnoreCase))
                     {
-                        // :active requires runtime interaction - don't match during initial render
-                        return false;
+                        // :active - query ElementStateManager for active (mouse down) state
+                        if (!ElementStateManager.Instance.IsActive(n)) return false;
                     }
                     else if (string.Equals(ps, "focus", StringComparison.OrdinalIgnoreCase))
                     {
-                        // :focus requires runtime interaction - don't match during initial render
-                        return false;
+                        // :focus - query ElementStateManager for focus state
+                        if (!ElementStateManager.Instance.IsFocused(n)) return false;
                     }
                     else if (string.Equals(ps, "focus-within", StringComparison.OrdinalIgnoreCase))
                     {
-                        // :focus-within requires runtime interaction
-                        return false;
+                        // :focus-within - query ElementStateManager for focus-within state
+                        if (!ElementStateManager.Instance.IsFocusWithin(n)) return false;
                     }
                     else if (string.Equals(ps, "focus-visible", StringComparison.OrdinalIgnoreCase))
                     {
-                        // :focus-visible requires runtime interaction
-                        return false;
+                        // :focus-visible - match focused element if focus was keyboard-triggered
+                        // For now, treat same as :focus (simplified implementation)
+                        if (!ElementStateManager.Instance.IsFocused(n)) return false;
                     }
                     // === Link state pseudo-classes ===
                     else if (string.Equals(ps, "link", StringComparison.OrdinalIgnoreCase))
@@ -3104,6 +3369,32 @@ namespace FenBrowser.FenEngine.Rendering
                         if (!IsFormElement(n.Tag)) return false;
                         if (n.Attr != null && n.Attr.ContainsKey("required")) return false;
                     }
+                    else if (string.Equals(ps, "valid", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // :valid matches form elements that pass validation
+                        if (!ElementStateManager.IsValid(n)) return false;
+                    }
+                    else if (string.Equals(ps, "invalid", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // :invalid matches form elements that fail validation
+                        if (!ElementStateManager.IsInvalid(n)) return false;
+                    }
+                    else if (string.Equals(ps, "in-range", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // :in-range matches number inputs within min/max range
+                        if (!ElementStateManager.IsValid(n)) return false;
+                        // Must be a ranged input type
+                        if (!string.Equals(n.Tag, "input", StringComparison.OrdinalIgnoreCase)) return false;
+                        string type = null;
+                        n.Attr?.TryGetValue("type", out type);
+                        if (type != "number" && type != "range" && type != "date" && type != "datetime-local")
+                            return false;
+                    }
+                    else if (string.Equals(ps, "out-of-range", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // :out-of-range matches number inputs outside min/max range
+                        if (!ElementStateManager.IsInvalid(n)) return false;
+                    }
                     else if (string.Equals(ps, "placeholder-shown", StringComparison.OrdinalIgnoreCase))
                     {
                         // :placeholder-shown - for now, match if has placeholder and value is empty/missing
@@ -3121,8 +3412,8 @@ namespace FenBrowser.FenEngine.Rendering
                     // === Target pseudo-class ===
                     else if (string.Equals(ps, "target", StringComparison.OrdinalIgnoreCase))
                     {
-                        // :target matches element whose ID matches URL fragment - we don't track this
-                        return false;
+                        // :target matches element whose ID matches URL fragment
+                        if (!ElementStateManager.Instance.IsTarget(n)) return false;
                     }
                     // === Language pseudo-class ===
                     else if (ps.StartsWith("lang(", StringComparison.OrdinalIgnoreCase))
@@ -3866,6 +4157,20 @@ namespace FenBrowser.FenEngine.Rendering
 
         // ---- CSS value parsing used for typed properties ----
 
+        private static bool IsCssFunction(string s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return false;
+            s = s.Trim().ToLowerInvariant();
+            return s.StartsWith("calc(") || 
+                   s.StartsWith("min(") || 
+                   s.StartsWith("max(") || 
+                   s.StartsWith("clamp(") || 
+                   s.StartsWith("env(") || 
+                   s.StartsWith("var(");
+        }
+
+
+
         private static bool TryDouble(string s, out double v)
         {
             return double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v);
@@ -3951,6 +4256,69 @@ namespace FenBrowser.FenEngine.Rendering
                 return false;
             }
 
+            // ch (width of '0' character, approximate as 0.5em)
+            if (sl.EndsWith("ch"))
+            {
+                var num = s.Substring(0, s.Length - 2).Trim();
+                double v;
+                if (TryDouble(num, out v)) { px = v * emBase * 0.5; return true; }
+                return false;
+            }
+
+            // ex (x-height, approximate as 0.5em)
+            if (sl.EndsWith("ex"))
+            {
+                var num = s.Substring(0, s.Length - 2).Trim();
+                double v;
+                if (TryDouble(num, out v)) { px = v * emBase * 0.5; return true; }
+                return false;
+            }
+
+            // pt (points: 1pt = 1/72 inch at 96 DPI = 96/72 = 1.333... px)
+            if (sl.EndsWith("pt"))
+            {
+                var num = s.Substring(0, s.Length - 2).Trim();
+                double v;
+                if (TryDouble(num, out v)) { px = v * (96.0 / 72.0); return true; }
+                return false;
+            }
+
+            // pc (picas: 1pc = 12pt = 16px)
+            if (sl.EndsWith("pc"))
+            {
+                var num = s.Substring(0, s.Length - 2).Trim();
+                double v;
+                if (TryDouble(num, out v)) { px = v * 16.0; return true; }
+                return false;
+            }
+
+            // in (inches: 1in = 96px at 96 DPI)
+            if (sl.EndsWith("in"))
+            {
+                var num = s.Substring(0, s.Length - 2).Trim();
+                double v;
+                if (TryDouble(num, out v)) { px = v * 96.0; return true; }
+                return false;
+            }
+
+            // cm (centimeters: 1cm = 96/2.54 px)
+            if (sl.EndsWith("cm"))
+            {
+                var num = s.Substring(0, s.Length - 2).Trim();
+                double v;
+                if (TryDouble(num, out v)) { px = v * (96.0 / 2.54); return true; }
+                return false;
+            }
+
+            // mm (millimeters: 1mm = 96/25.4 px)
+            if (sl.EndsWith("mm"))
+            {
+                var num = s.Substring(0, s.Length - 2).Trim();
+                double v;
+                if (TryDouble(num, out v)) { px = v * (96.0 / 25.4); return true; }
+                return false;
+            }
+
             // raw number -> px
             {
                 double v;
@@ -3985,7 +4353,454 @@ namespace FenBrowser.FenEngine.Rendering
                 return false;
             }
         }
+        
+        /// <summary>
+        /// Parse CSS min() function: min(value1, value2, ...)
+        /// Returns the smallest of the provided values
+        /// </summary>
+        private static bool TryParseMin(string s, out double px, double emBase = 16.0, double percentBase = 0)
+        {
+            px = 0;
+            if (string.IsNullOrWhiteSpace(s)) return false;
 
+            var sl = s.Trim().ToLowerInvariant();
+            if (!sl.StartsWith("min(") || !sl.EndsWith(")")) return false;
+            
+            var inner = s.Substring(4, s.Length - 5).Trim();
+            if (string.IsNullOrWhiteSpace(inner)) return false;
+
+            try
+            {
+                var args = SplitCssFunctionArgs(inner);
+                if (args.Count == 0) return false;
+                
+                double minVal = double.MaxValue;
+                foreach (var arg in args)
+                {
+                    double val = EvaluateCssValue(arg.Trim(), emBase, percentBase);
+                    if (val < minVal) minVal = val;
+                }
+                px = minVal;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+        
+        /// <summary>
+        /// Parse CSS max() function: max(value1, value2, ...)
+        /// Returns the largest of the provided values
+        /// </summary>
+        private static bool TryParseMax(string s, out double px, double emBase = 16.0, double percentBase = 0)
+        {
+            px = 0;
+            if (string.IsNullOrWhiteSpace(s)) return false;
+
+            var sl = s.Trim().ToLowerInvariant();
+            if (!sl.StartsWith("max(") || !sl.EndsWith(")")) return false;
+            
+            var inner = s.Substring(4, s.Length - 5).Trim();
+            if (string.IsNullOrWhiteSpace(inner)) return false;
+
+            try
+            {
+                var args = SplitCssFunctionArgs(inner);
+                if (args.Count == 0) return false;
+                
+                double maxVal = double.MinValue;
+                foreach (var arg in args)
+                {
+                    double val = EvaluateCssValue(arg.Trim(), emBase, percentBase);
+                    if (val > maxVal) maxVal = val;
+                }
+                px = maxVal;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+        
+        /// <summary>
+        /// Parse CSS clamp() function: clamp(min, preferred, max)
+        /// Clamps the preferred value between min and max
+        /// </summary>
+        private static bool TryParseClamp(string s, out double px, double emBase = 16.0, double percentBase = 0)
+        {
+            px = 0;
+            if (string.IsNullOrWhiteSpace(s)) return false;
+
+            var sl = s.Trim().ToLowerInvariant();
+            if (!sl.StartsWith("clamp(") || !sl.EndsWith(")")) return false;
+            
+            var inner = s.Substring(6, s.Length - 7).Trim();
+            if (string.IsNullOrWhiteSpace(inner)) return false;
+
+            try
+            {
+                var args = SplitCssFunctionArgs(inner);
+                if (args.Count != 3) return false;
+                
+                double minVal = EvaluateCssValue(args[0].Trim(), emBase, percentBase);
+                double preferred = EvaluateCssValue(args[1].Trim(), emBase, percentBase);
+                double maxVal = EvaluateCssValue(args[2].Trim(), emBase, percentBase);
+                
+                // clamp(min, preferred, max) = max(min, min(preferred, max))
+                px = Math.Max(minVal, Math.Min(preferred, maxVal));
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+        
+        /// <summary>
+        /// Split CSS function arguments, handling nested functions
+        /// </summary>
+        private static List<string> SplitCssFunctionArgs(string inner)
+        {
+            var args = new List<string>();
+            var current = new StringBuilder();
+            int depth = 0;
+            
+            foreach (char c in inner)
+            {
+                if (c == '(') depth++;
+                else if (c == ')') depth--;
+                
+                if (c == ',' && depth == 0)
+                {
+                    args.Add(current.ToString());
+                    current.Clear();
+                }
+                else
+                {
+                    current.Append(c);
+                }
+            }
+            
+            if (current.Length > 0)
+                args.Add(current.ToString());
+                
+            return args;
+        }
+        
+        /// <summary>
+        /// Evaluate a CSS value that may contain functions like calc(), min(), max(), clamp(), env()
+        /// </summary>
+        private static double EvaluateCssValue(string value, double emBase = 16.0, double percentBase = 0)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return 0;
+            
+            value = value.Trim();
+            var lower = value.ToLowerInvariant();
+            
+            // Try CSS math functions
+            if (lower.StartsWith("calc(") && TryParseCalc(value, out double calcVal, emBase, percentBase))
+                return calcVal;
+            if (lower.StartsWith("min(") && TryParseMin(value, out double minVal, emBase, percentBase))
+                return minVal;
+            if (lower.StartsWith("max(") && TryParseMax(value, out double maxVal, emBase, percentBase))
+                return maxVal;
+            if (lower.StartsWith("clamp(") && TryParseClamp(value, out double clampVal, emBase, percentBase))
+                return clampVal;
+            
+            // env() function - environment variables
+            if (lower.StartsWith("env(") && TryParseEnv(value, out double envVal))
+                return envVal;
+            
+            // CSS Values Level 4 math functions
+            if (lower.StartsWith("abs(") && TryParseMathFunc(value, "abs", out double absVal, emBase, percentBase))
+                return Math.Abs(absVal);
+            if (lower.StartsWith("sign(") && TryParseMathFunc(value, "sign", out double signVal, emBase, percentBase))
+                return Math.Sign(signVal);
+            if (lower.StartsWith("round(") && TryParseRound(value, out double roundVal, emBase, percentBase))
+                return roundVal;
+            if (lower.StartsWith("mod(") && TryParseMod(value, out double modVal, emBase, percentBase))
+                return modVal;
+            if (lower.StartsWith("rem(") && TryParseRem(value, out double remVal, emBase, percentBase))
+                return remVal;
+            if (lower.StartsWith("pow(") && TryParsePow(value, out double powVal, emBase, percentBase))
+                return powVal;
+            if (lower.StartsWith("sqrt(") && TryParseMathFunc(value, "sqrt", out double sqrtVal, emBase, percentBase))
+                return Math.Sqrt(sqrtVal);
+            if (lower.StartsWith("log(") && TryParseMathFunc(value, "log", out double logVal, emBase, percentBase))
+                return Math.Log(logVal);
+            if (lower.StartsWith("exp(") && TryParseMathFunc(value, "exp", out double expVal, emBase, percentBase))
+                return Math.Exp(expVal);
+            
+            // CSS Trigonometric functions (input in degrees, output unitless)
+            if (lower.StartsWith("sin(") && TryParseMathFunc(value, "sin", out double sinVal, emBase, percentBase))
+                return Math.Sin(sinVal * Math.PI / 180.0);
+            if (lower.StartsWith("cos(") && TryParseMathFunc(value, "cos", out double cosVal, emBase, percentBase))
+                return Math.Cos(cosVal * Math.PI / 180.0);
+            if (lower.StartsWith("tan(") && TryParseMathFunc(value, "tan", out double tanVal, emBase, percentBase))
+                return Math.Tan(tanVal * Math.PI / 180.0);
+            if (lower.StartsWith("asin(") && TryParseMathFunc(value, "asin", out double asinVal, emBase, percentBase))
+                return Math.Asin(asinVal) * 180.0 / Math.PI; // Output in degrees
+            if (lower.StartsWith("acos(") && TryParseMathFunc(value, "acos", out double acosVal, emBase, percentBase))
+                return Math.Acos(acosVal) * 180.0 / Math.PI;
+            if (lower.StartsWith("atan(") && TryParseMathFunc(value, "atan", out double atanVal, emBase, percentBase))
+                return Math.Atan(atanVal) * 180.0 / Math.PI;
+            if (lower.StartsWith("atan2(") && TryParseAtan2(value, out double atan2Val, emBase, percentBase))
+                return atan2Val;
+            if (lower.StartsWith("hypot(") && TryParseHypot(value, out double hypotVal, emBase, percentBase))
+                return hypotVal;
+            
+            // Try simple value with units
+            return ParseCalcValue(value, emBase, percentBase);
+        }
+
+/// <summary>
+/// Parse a single-argument math function like abs(), sign(), sqrt(), etc.
+/// </summary>
+private static bool TryParseMathFunc(string value, string funcName, out double result, double emBase = 16.0, double percentBase = 0)
+{
+    result = 0;
+    int open = value.IndexOf('(');
+    int close = value.LastIndexOf(')');
+    if (open < 0 || close <= open) return false;
+    
+    var inner = value.Substring(open + 1, close - open - 1).Trim();
+    result = EvaluateCssValue(inner, emBase, percentBase);
+    return true;
+}
+
+/// <summary>
+/// Parse round() function: round(strategy?, value, interval?)
+/// Strategies: nearest (default), up, down, to-zero
+/// </summary>
+private static bool TryParseRound(string value, out double result, double emBase = 16.0, double percentBase = 0)
+{
+    result = 0;
+    int open = value.IndexOf('(');
+    int close = value.LastIndexOf(')');
+    if (open < 0 || close <= open) return false;
+    
+    var inner = value.Substring(open + 1, close - open - 1).Trim();
+    var parts = SplitCssFunctionArgs(inner);
+    
+    if (parts.Count == 0) return false;
+    
+    string strategy = "nearest";
+    double val, interval = 1;
+    
+    if (parts.Count >= 3)
+    {
+        strategy = parts[0].Trim().ToLowerInvariant();
+        val = EvaluateCssValue(parts[1].Trim(), emBase, percentBase);
+        interval = EvaluateCssValue(parts[2].Trim(), emBase, percentBase);
+    }
+    else if (parts.Count == 2)
+    {
+        val = EvaluateCssValue(parts[0].Trim(), emBase, percentBase);
+        interval = EvaluateCssValue(parts[1].Trim(), emBase, percentBase);
+    }
+    else
+    {
+        val = EvaluateCssValue(parts[0].Trim(), emBase, percentBase);
+    }
+    
+    if (interval == 0) interval = 1;
+    
+    switch (strategy)
+    {
+        case "up":
+            result = Math.Ceiling(val / interval) * interval;
+            break;
+        case "down":
+            result = Math.Floor(val / interval) * interval;
+            break;
+        case "to-zero":
+            result = Math.Truncate(val / interval) * interval;
+            break;
+        default: // nearest
+            result = Math.Round(val / interval) * interval;
+            break;
+    }
+    return true;
+}
+
+/// <summary>
+/// Parse mod() function: mod(dividend, divisor) - like % but always positive
+/// </summary>
+private static bool TryParseMod(string value, out double result, double emBase = 16.0, double percentBase = 0)
+{
+    result = 0;
+    int open = value.IndexOf('(');
+    int close = value.LastIndexOf(')');
+    if (open < 0 || close <= open) return false;
+    
+    var inner = value.Substring(open + 1, close - open - 1).Trim();
+    var parts = SplitCssFunctionArgs(inner);
+    
+    if (parts.Count < 2) return false;
+    
+    double dividend = EvaluateCssValue(parts[0].Trim(), emBase, percentBase);
+    double divisor = EvaluateCssValue(parts[1].Trim(), emBase, percentBase);
+    
+    if (divisor == 0) return false;
+    
+    // CSS mod() uses floored division (always towards -infinity)
+    result = dividend - divisor * Math.Floor(dividend / divisor);
+    return true;
+}
+
+/// <summary>
+/// Parse rem() function: rem(dividend, divisor) - like % with sign of dividend
+/// </summary>
+private static bool TryParseRem(string value, out double result, double emBase = 16.0, double percentBase = 0)
+{
+    result = 0;
+    int open = value.IndexOf('(');
+    int close = value.LastIndexOf(')');
+    if (open < 0 || close <= open) return false;
+    
+    var inner = value.Substring(open + 1, close - open - 1).Trim();
+    var parts = SplitCssFunctionArgs(inner);
+    
+    if (parts.Count < 2) return false;
+    
+    double dividend = EvaluateCssValue(parts[0].Trim(), emBase, percentBase);
+    double divisor = EvaluateCssValue(parts[1].Trim(), emBase, percentBase);
+    
+    if (divisor == 0) return false;
+    
+    // CSS rem() uses truncated division (sign of dividend)
+    result = dividend % divisor;
+    return true;
+}
+
+/// <summary>
+/// Parse pow() function: pow(base, exponent)
+/// </summary>
+private static bool TryParsePow(string value, out double result, double emBase = 16.0, double percentBase = 0)
+{
+    result = 0;
+    int open = value.IndexOf('(');
+    int close = value.LastIndexOf(')');
+    if (open < 0 || close <= open) return false;
+    
+    var inner = value.Substring(open + 1, close - open - 1).Trim();
+    var parts = SplitCssFunctionArgs(inner);
+    
+    if (parts.Count < 2) return false;
+    
+    double baseVal = EvaluateCssValue(parts[0].Trim(), emBase, percentBase);
+    double exponent = EvaluateCssValue(parts[1].Trim(), emBase, percentBase);
+    
+    result = Math.Pow(baseVal, exponent);
+    return true;
+}
+
+/// <summary>
+/// Parse atan2() function: atan2(y, x) - returns angle in degrees
+/// </summary>
+private static bool TryParseAtan2(string value, out double result, double emBase = 16.0, double percentBase = 0)
+{
+    result = 0;
+    int open = value.IndexOf('(');
+    int close = value.LastIndexOf(')');
+    if (open < 0 || close <= open) return false;
+    
+    var inner = value.Substring(open + 1, close - open - 1).Trim();
+    var parts = SplitCssFunctionArgs(inner);
+    
+    if (parts.Count < 2) return false;
+    
+    double y = EvaluateCssValue(parts[0].Trim(), emBase, percentBase);
+    double x = EvaluateCssValue(parts[1].Trim(), emBase, percentBase);
+    
+    result = Math.Atan2(y, x) * 180.0 / Math.PI; // Output in degrees
+    return true;
+}
+
+/// <summary>
+/// Parse hypot() function: hypot(value1, value2, ...) - hypotenuse of values
+/// </summary>
+private static bool TryParseHypot(string value, out double result, double emBase = 16.0, double percentBase = 0)
+{
+    result = 0;
+    int open = value.IndexOf('(');
+    int close = value.LastIndexOf(')');
+    if (open < 0 || close <= open) return false;
+    
+    var inner = value.Substring(open + 1, close - open - 1).Trim();
+    var parts = SplitCssFunctionArgs(inner);
+    
+    if (parts.Count == 0) return false;
+    
+    double sumOfSquares = 0;
+    foreach (var part in parts)
+    {
+        double v = EvaluateCssValue(part.Trim(), emBase, percentBase);
+        sumOfSquares += v * v;
+    }
+    
+    result = Math.Sqrt(sumOfSquares);
+    return true;
+}
+
+        /// <summary>
+        /// Parse env() function for environment variables like safe-area-inset-*
+        /// </summary>
+        private static bool TryParseEnv(string value, out double result)
+        {
+            result = 0;
+            
+            int open = value.IndexOf('(');
+            int close = value.LastIndexOf(')');
+            if (open < 0 || close <= open) return false;
+            
+            var inner = value.Substring(open + 1, close - open - 1).Trim();
+            
+            // Split by comma to get variable name and optional fallback
+            var parts = SplitCssFunctionArgs(inner);
+            if (parts.Count == 0) return false;
+            
+            string varName = parts[0].Trim().ToLowerInvariant();
+            
+            // Environment variable values (0 for now, could be made configurable)
+            switch (varName)
+            {
+                case "safe-area-inset-top":
+                case "safe-area-inset-bottom":
+                case "safe-area-inset-left":
+                case "safe-area-inset-right":
+                    result = 0; // Default to 0 (no notch/safe area)
+                    return true;
+                    
+                case "titlebar-area-x":
+                case "titlebar-area-y":
+                case "titlebar-area-width":
+                case "titlebar-area-height":
+                    result = 0; // PWA titlebar area
+                    return true;
+                    
+                case "keyboard-inset-top":
+                case "keyboard-inset-bottom":
+                case "keyboard-inset-left":
+                case "keyboard-inset-right":
+                case "keyboard-inset-width":
+                case "keyboard-inset-height":
+                    result = 0; // Virtual keyboard dimensions
+                    return true;
+                    
+                default:
+                    // Unknown env variable - try fallback if provided
+                    if (parts.Count > 1)
+                    {
+                        if (TryPx(parts[1].Trim(), out result))
+                            return true;
+                    }
+                    return false;
+            }
+        }
+        
         /// <summary>
         /// Evaluate a calc expression supporting +, -, *, / with proper operator precedence
         /// </summary>
@@ -4955,5 +5770,22 @@ namespace FenBrowser.FenEngine.Rendering
     {
         return char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '*' || c >= 128;
     }
+
+    /// <summary>
+    /// Resolve attr() function in CSS value.
+    /// </summary>
+    private static string ResolveAttr(string value, LiteElement n)
+    {
+        if (string.IsNullOrEmpty(value) || n == null || !value.Contains("attr(")) return value;
+        
+        // Replaces attr(name) with attribute value
+        return System.Text.RegularExpressions.Regex.Replace(value, @"attr\s*\(\s*([a-zA-Z0-9-]+)\s*\)", m => 
+        {
+            string attrName = m.Groups[1].Value.Trim();
+            string attrVal = "";
+            if (n.Attr != null) n.Attr.TryGetValue(attrName, out attrVal);
+            return attrVal ?? "";
+        });
+}
 }
 }
