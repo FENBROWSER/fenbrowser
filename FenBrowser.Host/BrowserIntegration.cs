@@ -30,6 +30,7 @@ public class BrowserIntegration
     public event Action<string> UrlChanged;
     public event Action<bool> LoadingChanged;
     public event Action NeedsRepaint;
+    public event Action<string> LinkClicked;
     
     public BrowserIntegration()
     {
@@ -206,17 +207,103 @@ public class BrowserIntegration
     
     /// <summary>
     /// Handle mouse click at the given position.
+    /// Returns true if a link was clicked.
     /// </summary>
-    public void HandleClick(float x, float y)
+    public bool HandleClick(float x, float y, float viewportHeight)
     {
+        if (_root == null || _styles == null) return false;
+        
         // Adjust for scroll
         float adjustedY = y + _scrollY;
         
-        // Find element at position and handle click
-        // This would involve hit testing using the renderer's box model
-        // For now, log the click
-        FenLogger.Debug($"[BrowserIntegration] Click at ({x}, {adjustedY})", LogCategory.General);
+        // Find element at position using hit testing
+        var element = HitTestElement(_root, x, adjustedY);
+        
+        if (element != null)
+        {
+            // Check if it's a link
+            var href = GetLinkHref(element);
+            if (!string.IsNullOrEmpty(href))
+            {
+                FenLogger.Info($"[BrowserIntegration] Link clicked: {href}", LogCategory.General);
+                LinkClicked?.Invoke(href);
+                _ = NavigateAsync(href);
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    /// <summary>
+    /// Hit test to find element at position.
+    /// </summary>
+    private LiteElement HitTestElement(LiteElement element, float x, float y)
+    {
+        if (element == null) return null;
+        
+        // Get element's box if available in styles
+        if (_styles.TryGetValue(element, out var computed))
+        {
+            // Check if point is within element bounds
+            // Use box model from renderer if available
+        }
+        
+        // Check children (in reverse order for z-index)
+        for (int i = element.Children.Count - 1; i >= 0; i--)
+        {
+            var child = element.Children[i];
+            var hit = HitTestElement(child, x, y);
+            if (hit != null) return hit;
+        }
+        
+        // For now, return null - proper hit testing requires box model integration
+        return null;
+    }
+    
+    /// <summary>
+    /// Get href from link element or its ancestors.
+    /// </summary>
+    private string GetLinkHref(LiteElement element)
+    {
+        var current = element;
+        while (current != null)
+        {
+            if (current.Tag?.ToLowerInvariant() == "a")
+            {
+                string href = null;
+                if (current.Attr != null && current.Attr.TryGetValue("href", out href) && !string.IsNullOrWhiteSpace(href))
+                {
+                    // Resolve relative URLs
+                    if (_browser.CurrentUri != null && !href.StartsWith("http") && !href.StartsWith("data:"))
+                    {
+                        try
+                        {
+                            Uri resolved;
+                            if (Uri.TryCreate(_browser.CurrentUri, href, out resolved))
+                            {
+                                return resolved.AbsoluteUri;
+                            }
+                        }
+                        catch { }
+                    }
+                    return href;
+                }
+            }
+            current = current.Parent;
+        }
+        return null;
     }
     
     public bool NeedsRender => _needsRepaint;
+    
+    /// <summary>
+    /// Get the current scroll position.
+    /// </summary>
+    public float ScrollY => _scrollY;
+    
+    /// <summary>
+    /// Get the content height for scroll calculation.
+    /// </summary>
+    public float ContentHeight => _contentHeight;
 }
