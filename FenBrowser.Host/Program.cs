@@ -290,15 +290,22 @@ public class Program
         float x = mouse.Position.X;
         float y = mouse.Position.Y;
         
-        // Hit test toolbar
+        // Hit test toolbar first
         var hit = _toolbar.HitTestDeep(x, y);
         if (hit != null)
         {
             hit.OnMouseDown(x, y, button);
         }
+        else if (_contentArea.Contains(x, y))
+        {
+            // Click in content area - check for links
+            float contentX = x - _contentArea.Left;
+            float contentY = y - _contentArea.Top;
+            _browser?.HandleClick(contentX, contentY, _contentArea.Height);
+        }
         else
         {
-            // Click on content area - clear focus
+            // Click outside - clear focus
             SetFocus(null);
         }
     }
@@ -326,6 +333,13 @@ public class Program
     
     private static void OnScroll(IMouse mouse, ScrollWheel wheel)
     {
-        // TODO: Scroll content area
+        float x = mouse.Position.X;
+        float y = mouse.Position.Y;
+        
+        // Only scroll if mouse is in content area
+        if (_contentArea.Contains(x, y))
+        {
+            _browser?.Scroll(wheel.Y);
+        }
     }
 }
