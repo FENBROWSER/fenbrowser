@@ -45,6 +45,7 @@ namespace FenBrowser.FenEngine.DevTools
 
         // ===== Network Monitoring =====
         private readonly List<NetworkRequest> _networkRequests = new();
+        private readonly object _networkLock = new object();
         private int _requestIdCounter = 0;
 
         // ===== Storage =====
@@ -623,18 +624,21 @@ namespace FenBrowser.FenEngine.DevTools
         /// </summary>
         public NetworkRequest RecordRequest(string url, string method, Dictionary<string, string> headers, string explicitId = null)
         {
-            var request = new NetworkRequest
+            lock (_networkLock)
             {
-                Id = explicitId ?? (++_requestIdCounter).ToString(),
-                Url = url,
-                Method = method,
-                RequestHeaders = headers ?? new Dictionary<string, string>(),
-                StartTime = DateTime.Now,
-                Status = "pending"
-            };
-            _networkRequests.Add(request);
-            OnNetworkRequest?.Invoke(request);
-            return request;
+                var request = new NetworkRequest
+                {
+                    Id = explicitId ?? (++_requestIdCounter).ToString(),
+                    Url = url,
+                    Method = method,
+                    RequestHeaders = headers ?? new Dictionary<string, string>(),
+                    StartTime = DateTime.Now,
+                    Status = "pending"
+                };
+                _networkRequests.Add(request);
+                OnNetworkRequest?.Invoke(request);
+                return request;
+            }
         }
 
         /// <summary>
@@ -642,32 +646,44 @@ namespace FenBrowser.FenEngine.DevTools
         /// </summary>
         public void CompleteRequest(string requestId, int statusCode, Dictionary<string, string> responseHeaders, long size, string mimeType)
         {
-            var request = _networkRequests.FirstOrDefault(r => r.Id == requestId);
-            if (request != null)
+            lock (_networkLock)
             {
-                request.StatusCode = statusCode;
-                request.ResponseHeaders = responseHeaders ?? new Dictionary<string, string>();
-                request.Size = size;
-                request.MimeType = mimeType;
-                request.EndTime = DateTime.Now;
-                request.Duration = (request.EndTime - request.StartTime).TotalMilliseconds;
-                request.Status = statusCode >= 200 && statusCode < 300 ? "success" : 
-                                 statusCode >= 400 ? "error" : "redirect";
-                OnNetworkRequest?.Invoke(request);
+                var request = _networkRequests.FirstOrDefault(r => r.Id == requestId);
+                if (request != null)
+                {
+                    request.StatusCode = statusCode;
+                    request.ResponseHeaders = responseHeaders ?? new Dictionary<string, string>();
+                    request.Size = size;
+                    request.MimeType = mimeType;
+                    request.EndTime = DateTime.Now;
+                    request.Duration = (request.EndTime - request.StartTime).TotalMilliseconds;
+                    request.Status = statusCode >= 200 && statusCode < 300 ? "success" : 
+                                     statusCode >= 400 ? "error" : "redirect";
+                    OnNetworkRequest?.Invoke(request);
+                }
             }
         }
 
         /// <summary>
         /// Get all network requests
         /// </summary>
-        public IEnumerable<NetworkRequest> GetNetworkRequests() => _networkRequests;
+        public IEnumerable<NetworkRequest> GetNetworkRequests() 
+        {
+            lock (_networkLock)
+            {
+                return _networkRequests.ToList();
+            }
+        }
 
         /// <summary>
         /// Clear network log
         /// </summary>
         public void ClearNetwork()
         {
-            _networkRequests.Clear();
+            lock (_networkLock)
+            {
+                _networkRequests.Clear();
+            }
         }
 
         #endregion

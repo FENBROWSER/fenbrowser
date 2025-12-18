@@ -444,6 +444,8 @@ namespace FenBrowser.Core
         public async Task<FetchResult> FetchTextDetailedAsync(Uri url, Uri referer = null, string accept = null, string secFetchDest = null)
         {
             if (url == null) return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = "URL is null" };
+            
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ResourceManager] FetchTextDetailedAsync called for: {url}\r\n"); } catch {}
 
             // Handle file scheme locally
             if (string.Equals(url.Scheme, "file", StringComparison.OrdinalIgnoreCase))
@@ -479,12 +481,14 @@ namespace FenBrowser.Core
                 Uri current = url; HttpResponseMessage resp = null; int hops = 0; HttpRequestMessage req = null;
                 while (hops < 5)
                 {
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ResourceManager] Loop {hops} starting. current={current}\r\n"); } catch {}
                     req = new HttpRequestMessage(HttpMethod.Get, current);
                     AddHeaderSafe(req, "Accept", string.IsNullOrWhiteSpace(accept) ? "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7" : accept);
                     
                     var destLower = (secFetchDest ?? "").ToLowerInvariant();
                     var useMobile = (destLower == "document" || destLower == "iframe");
                     var selectedUserAgent = BrowserSettings.Instance.SelectedUserAgent;
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ResourceManager] Loop {hops}: Got settings. UA Type: {selectedUserAgent}\r\n"); } catch {}
                     var ua = BrowserSettings.GetUserAgentString(selectedUserAgent, useMobile);
                     
                     AddHeaderSafe(req, "User-Agent", ua);
@@ -505,6 +509,7 @@ namespace FenBrowser.Core
 
                     try 
                     { 
+                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ResourceManager] Sending request {current}...\r\n"); } catch {}
                         resp = await SendRequestTrackedAsync(req, cts.Token).ConfigureAwait(false); 
                     }
                     catch (TaskCanceledException)
@@ -537,6 +542,7 @@ namespace FenBrowser.Core
                             // current = UpgradeIfHsts(loc); // Handled by HstsHandler
                             current = loc;
                             hops++;
+                            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ResourceManager] Redirecting to {current}. Hops={hops}\r\n"); } catch {}
                             continue;
                         }
                     }
@@ -836,15 +842,25 @@ namespace FenBrowser.Core
             
             try
             {
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ResourceManager] Starting request {id} {req.RequestUri}\r\n"); } catch {}
                 NetworkRequestStarting?.Invoke(id, req);
                 
                 var resp = await _client.SendAsync(req, token).ConfigureAwait(false);
                 
-                NetworkRequestCompleted?.Invoke(id, resp);
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ResourceManager] Finished request {id} {req.RequestUri} Status: {resp.StatusCode}\r\n"); } catch {}
+                try
+                {
+                    NetworkRequestCompleted?.Invoke(id, resp);
+                }
+                catch (Exception invokeEx) 
+                {
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ResourceManager] CRITICAL: NetworkRequestCompleted listener FAILED: {invokeEx}\r\n"); } catch {}
+                }
                 return resp;
             }
             catch (Exception ex)
             {
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ResourceManager] Failed request {id} {req.RequestUri} Ex: {ex.Message}\r\n"); } catch {}
                 NetworkRequestFailed?.Invoke(id, ex);
                 throw;
             }

@@ -6,8 +6,25 @@ using System.Text;
 
 namespace FenBrowser.Core
 {
+    public enum NodeType
+    {
+        Element = 1,
+        Attribute = 2,
+        Text = 3,
+        CDATA = 4,
+        EntityReference = 5,
+        Entity = 6,
+        ProcessingInstruction = 7,
+        Comment = 8,
+        Document = 9,
+        DocumentType = 10,
+        DocumentFragment = 11,
+        Notation = 12
+    }
+
     public class LiteElement
     {
+        public NodeType NodeType { get; set; } = NodeType.Element;
         public string Tag { get; set; }
         public string Text { get; set; }
 
@@ -61,6 +78,15 @@ namespace FenBrowser.Core
         public LiteElement(string tag)
         {
             Tag = (tag ?? "#document").ToLowerInvariant();
+            
+            // Deduce NodeType from Tag for backward compatibility
+            if (Tag == "#text") NodeType = NodeType.Text;
+            else if (Tag == "#comment") NodeType = NodeType.Comment;
+            else if (Tag == "#document") NodeType = NodeType.Document;
+            else if (Tag == "#document-fragment") NodeType = NodeType.DocumentFragment;
+            else if (Tag == "#doctype") NodeType = NodeType.DocumentType; // Custom internal tag for doctype
+            else NodeType = NodeType.Element;
+
             Attr = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             AttrRaw = new Dictionary<string, string>(StringComparer.Ordinal);
             _attrOriginalNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -71,7 +97,7 @@ namespace FenBrowser.Core
             }
         }
 
-        public bool IsText { get { return Tag == "#text"; } }
+        public bool IsText { get { return NodeType == NodeType.Text; } }
 
 
         public string Id
@@ -513,6 +539,22 @@ namespace FenBrowser.Core
             var t = new LiteElement("#text");
             t.Text = text;
             return t;
+        }
+
+        public static LiteElement CreateComment(string data)
+        {
+            var c = new LiteElement("#comment");
+            c.Text = data;
+            return c;
+        }
+
+        public static LiteElement CreateDoctype(string name, string publicId, string systemId)
+        {
+            var d = new LiteElement("#doctype");
+            d.SetAttribute("name", name);
+            d.SetAttribute("publicId", publicId);
+            d.SetAttribute("systemId", systemId);
+            return d;
         }
 
         // ---- Diagnostics -----------------------------------------------------
