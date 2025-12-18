@@ -8,6 +8,8 @@ using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.Host.Widgets;
 using FenBrowser.Host.Input;
+using FenBrowser.Host.Tabs;
+using FenBrowser.Host.Context;
 using FenBrowser.FenEngine.Interaction;
 
 namespace FenBrowser.Host;
@@ -29,13 +31,13 @@ public class Program
     private static string _currentUrl = "https://example.com";
     
     // UI Widgets
+    private static TabBarWidget _tabBar;
     private static ToolbarWidget _toolbar;
+    private static StatusBarWidget _statusBar;
+    private static ContextMenuWidget _contextMenu;
     private static Widget _focusedWidget;
     
-    // Browser integration
-    private static BrowserIntegration _browser;
-    
-    // Content area (below toolbar)
+    // Content area (below toolbar, above status bar)
     private static SKRect _contentArea;
     
     // Input reference for cursor management
@@ -110,39 +112,130 @@ public class Program
     
     private static void InitializeWidgets()
     {
+        // Initialize TabBar
+        _tabBar = new TabBarWidget();
+        _tabBar.NewTabRequested += () => TabManager.Instance.CreateTab("https://example.com");
+        _tabBar.TabActivated += tab => TabManager.Instance.SwitchToTab(TabManager.Instance.Tabs.ToList().IndexOf(tab));
+        _tabBar.TabCloseRequested += tab =>
+        {
+            int index = TabManager.Instance.Tabs.ToList().IndexOf(tab);
+            TabManager.Instance.CloseTab(index);
+        };
+        
+        // Initialize Toolbar
         _toolbar = new ToolbarWidget();
         _toolbar.SetUrl(_currentUrl);
-        
-        // Initialize browser integration
-        _browser = new BrowserIntegration();
-        _browser.UrlChanged += url => _toolbar.SetUrl(url);
-        _browser.LoadingChanged += loading => _window.Title = loading ? "Loading..." : $"FenBrowser - {_browser.CurrentUrl}";
-        _browser.NeedsRepaint += () => { }; // Will trigger natural render cycle
-        
-        // Wire navigation events
         _toolbar.NavigateRequested += OnNavigate;
-        _toolbar.BackClicked += async () => await _browser.GoBackAsync();
-        _toolbar.ForwardClicked += async () => await _browser.GoForwardAsync();
-        _toolbar.RefreshClicked += async () => await _browser.RefreshAsync();
+        _toolbar.BackClicked += async () => 
+        {
+            var tab = TabManager.Instance.ActiveTab;
+            if (tab != null) await tab.Browser.GoBackAsync();
+        };
+        _toolbar.ForwardClicked += async () =>
+        {
+            var tab = TabManager.Instance.ActiveTab;
+            if (tab != null) await tab.Browser.GoForwardAsync();
+        };
+        _toolbar.RefreshClicked += async () =>
+        {
+            var tab = TabManager.Instance.ActiveTab;
+            if (tab != null) await tab.Browser.RefreshAsync();
+        };
         _toolbar.HomeClicked += () => OnNavigate("https://example.com");
+        _toolbar.AddressBar.FocusRequested += w => FocusManager.Instance.RequestFocus(w);
         
-        // Wire focus handling
-        _toolbar.AddressBar.FocusRequested += (w) => SetFocus(w);
+        // Initialize StatusBar
+        _statusBar = new StatusBarWidget();
+        
+        // Wire TabManager events
+        TabManager.Instance.ActiveTabChanged += tab =>
+        {
+            if (tab != null)
+            {
+                _toolbar.SetUrl(tab.Url);
+                _toolbar.SetCanGoBack(tab.Browser.CanGoBack);
+                _toolbar.SetCanGoForward(tab.Browser.CanGoForward);
+                _window.Title = $"FenBrowser - {tab.Title}";
+            }
+        };
+        
+        // Register keyboard shortcuts
+        RegisterKeyboardShortcuts();
         
         // Initial layout
         LayoutWidgets();
         
-        // Navigate to initial URL
-        _ = _browser.NavigateAsync(_currentUrl);
+        // Create first tab with initial URL
+        TabManager.Instance.CreateTab(_currentUrl);
+    }
+    
+    private static void RegisterKeyboardShortcuts()
+    {
+        var kbd = KeyboardDispatcher.Instance;
+        
+        // Tab shortcuts
+        kbd.RegisterCtrl(Key.T, () => TabManager.Instance.CreateTab("https://example.com"));
+        kbd.RegisterCtrl(Key.W, () => TabManager.Instance.CloseActiveTab());
+        kbd.RegisterGlobal(Key.Tab, true, false, false, () => TabManager.Instance.NextTab()); // Ctrl+Tab
+        kbd.RegisterGlobal(Key.Tab, true, true, false, () => TabManager.Instance.PreviousTab()); // Ctrl+Shift+Tab
+        kbd.RegisterGlobal(Key.T, true, true, false, () => TabManager.Instance.ReopenClosedTab()); // Ctrl+Shift+T
+        
+        // Navigation shortcuts
+        kbd.RegisterCtrl(Key.L, () => FocusManager.Instance.RequestFocus(_toolbar.AddressBar));
+        kbd.RegisterCtrl(Key.R, async () =>
+        {
+            var tab = TabManager.Instance.ActiveTab;
+            if (tab != null) await tab.Browser.RefreshAsync();
+        });
+        kbd.Register(Key.F5, async () =>
+        {
+            var tab = TabManager.Instance.ActiveTab;
+            if (tab != null) await tab.Browser.RefreshAsync();
+        });
+        
+        // History navigation
+        kbd.RegisterGlobal(Key.Left, false, false, true, async () =>
+        {
+            var tab = TabManager.Instance.ActiveTab;
+            if (tab != null) await tab.Browser.GoBackAsync();
+        }); // Alt+Left
+        kbd.RegisterGlobal(Key.Right, false, false, true, async () =>
+        {
+            var tab = TabManager.Instance.ActiveTab;
+            if (tab != null) await tab.Browser.GoForwardAsync();
+        }); // Alt+Right
+        
+        // Focus navigation
+        kbd.Register(Key.Escape, () =>
+        {
+            if (_contextMenu?.IsOpen == true)
+            {
+                _contextMenu.Hide();
+            }
+            else
+            {
+                FocusManager.Instance.ClearFocus();
+            }
+        });
     }
     
     private static void LayoutWidgets()
     {
-        var fullBounds = new SKRect(0, 0, _width, _height);
-        _toolbar.Layout(fullBounds);
+        float tabBarHeight = 32;
+        float toolbarHeight = 40;
+        float statusBarHeight = StatusBarWidget.PreferredHeight;
         
-        // Content area is below toolbar
-        _contentArea = new SKRect(0, _toolbar.Bounds.Bottom, _width, _height);
+        // TabBar at top
+        _tabBar?.Layout(new SKRect(0, 0, _width, tabBarHeight));
+        
+        // Toolbar below tab bar
+        _toolbar?.Layout(new SKRect(0, tabBarHeight, _width, tabBarHeight + toolbarHeight));
+        
+        // StatusBar at bottom
+        _statusBar?.Layout(new SKRect(0, _height - statusBarHeight, _width, _height));
+        
+        // Content area between toolbar and status bar
+        _contentArea = new SKRect(0, tabBarHeight + toolbarHeight, _width, _height - statusBarHeight);
     }
     
     private static void SetFocus(Widget widget)
@@ -163,10 +256,14 @@ public class Program
         if (string.IsNullOrWhiteSpace(url)) return;
         
         _currentUrl = url;
-        _toolbar.SetUrl(url);
+        _toolbar?.SetUrl(url);
         _window.Title = "Loading...";
         
-        _ = _browser.NavigateAsync(url);
+        var activeTab = TabManager.Instance.ActiveTab;
+        if (activeTab != null)
+        {
+            _ = activeTab.NavigateAsync(url);
+        }
     }
     
     private static void InitializeSkia()
@@ -219,12 +316,19 @@ public class Program
         // Clear with background color
         canvas.Clear(new SKColor(250, 250, 250));
         
-        // Draw toolbar
-        _toolbar.PaintAll(canvas);
+        // Draw tab bar
+        _tabBar?.Paint(canvas);
         
-        // Update toolbar state
-        _toolbar.SetCanGoBack(_browser?.CanGoBack ?? false);
-        _toolbar.SetCanGoForward(_browser?.CanGoForward ?? false);
+        // Draw toolbar
+        _toolbar?.PaintAll(canvas);
+        
+        // Update toolbar state from active tab
+        var activeTab = TabManager.Instance.ActiveTab;
+        if (activeTab != null)
+        {
+            _toolbar?.SetCanGoBack(activeTab.Browser.CanGoBack);
+            _toolbar?.SetCanGoForward(activeTab.Browser.CanGoForward);
+        }
         
         // Draw browser content area
         canvas.Save();
@@ -234,9 +338,18 @@ public class Program
         canvas.Translate(_contentArea.Left, _contentArea.Top);
         
         var contentViewport = new SKRect(0, 0, _contentArea.Width, _contentArea.Height);
-        _browser?.Render(canvas, contentViewport);
+        TabManager.Instance.RenderActiveTab(canvas, contentViewport);
         
         canvas.Restore();
+        
+        // Draw status bar
+        _statusBar?.Paint(canvas);
+        
+        // Draw context menu on top if open
+        if (_contextMenu?.IsOpen == true)
+        {
+            _contextMenu.Paint(canvas);
+        }
         
         // Flush and swap
         canvas.Flush();
@@ -274,21 +387,37 @@ public class Program
     // Input handlers
     private static void OnKeyDown(IKeyboard keyboard, Key key, int scancode)
     {
-        // ESC to close
-        if (key == Key.Escape)
+        // Check context menu first
+        if (_contextMenu?.IsOpen == true)
         {
-            _window.Close();
+            _contextMenu.OnKeyDown(key);
+            // If still open, don't bubble
+            if (_contextMenu?.IsOpen == true) return;
+        }
+        
+        // Get modifier states
+        bool ctrl = keyboard.IsKeyPressed(Key.ControlLeft) || keyboard.IsKeyPressed(Key.ControlRight);
+        bool shift = keyboard.IsKeyPressed(Key.ShiftLeft) || keyboard.IsKeyPressed(Key.ShiftRight);
+        bool alt = keyboard.IsKeyPressed(Key.AltLeft) || keyboard.IsKeyPressed(Key.AltRight);
+        
+        // Dispatch to KeyboardDispatcher (Global -> Focused Widget -> Active Tab)
+        if (KeyboardDispatcher.Instance.Dispatch(key, ctrl, shift, alt))
+        {
             return;
         }
         
-        // Forward to focused widget
-        _focusedWidget?.OnKeyDown(key);
+        // Fallback: Escape closes window if nothing else handled it and no focus
+        if (key == Key.Escape && _focusedWidget == null && _contextMenu?.IsOpen != true)
+        {
+           // Optional: confirm before closing? For now just keep open or minimize? 
+           // Better not to close whole app on Esc unless explicitly requested.
+        }
     }
     
     private static void OnKeyChar(IKeyboard keyboard, char character)
     {
-        // Forward to focused widget
-        _focusedWidget?.OnTextInput(character);
+        // Use KeyboardDispatcher
+        KeyboardDispatcher.Instance.DispatchChar(character);
     }
     
     private static void OnMouseDown(IMouse mouse, MouseButton button)
@@ -296,22 +425,82 @@ public class Program
         float x = mouse.Position.X;
         float y = mouse.Position.Y;
         
-        // Hit test toolbar first
-        var hit = _toolbar.HitTestDeep(x, y);
-        if (hit != null)
+        // Close context menu on any click
+        if (_contextMenu?.IsOpen == true && !_contextMenu.Bounds.Contains(x, y))
         {
-            hit.OnMouseDown(x, y, button);
+            _contextMenu.Hide();
+            return;
         }
-        else if (_contentArea.Contains(x, y))
+        
+        // Context menu click
+        if (_contextMenu?.IsOpen == true)
         {
-            // Click in content area - use hit testing for link navigation
-            _browser?.HandleClick(x, y, _contentArea.Left, _contentArea.Top);
+            _contextMenu.OnMouseDown(x, y, button);
+            return;
+        }
+        
+        // Right-click context menu
+        if (button == MouseButton.Right && _contentArea.Contains(x, y))
+        {
+            ShowContextMenu(x, y);
+            return;
+        }
+        
+        // Hit test tab bar
+        if (_tabBar != null && _tabBar.Bounds.Contains(x, y))
+        {
+            _tabBar.OnMouseDown(x, y, button);
+            return;
+        }
+        
+        // Hit test toolbar
+        if (_toolbar != null)
+        {
+            var hit = _toolbar.HitTestDeep(x, y);
+            if (hit != null)
+            {
+                hit.OnMouseDown(x, y, button);
+                return;
+            }
+        }
+        
+        // Content area click
+        if (_contentArea.Contains(x, y))
+        {
+            var activeTab = TabManager.Instance.ActiveTab;
+            activeTab?.Browser.HandleClick(x, y, _contentArea.Left, _contentArea.Top);
         }
         else
         {
             // Click outside - clear focus
-            SetFocus(null);
+            FocusManager.Instance.ClearFocus();
         }
+    }
+    
+    private static void ShowContextMenu(float x, float y)
+    {
+        var activeTab = TabManager.Instance.ActiveTab;
+        if (activeTab == null) return;
+        
+        var result = activeTab.Browser.PerformHitTest(x, y, _contentArea.Left, _contentArea.Top);
+        
+        var items = ContextMenuBuilder.Build(
+            result,
+            hasSelection: false, // TODO: wire selection state
+            canPaste: true,
+            onNavigate: url => OnNavigate(url),
+            onCopy: () => { /* TODO */ },
+            onPaste: () => { /* TODO */ },
+            onSelectAll: () => { /* TODO */ },
+            onReload: async () => await activeTab.Browser.RefreshAsync(),
+            onBack: async () => await activeTab.Browser.GoBackAsync(),
+            onForward: async () => await activeTab.Browser.GoForwardAsync(),
+            onOpenInNewTab: url => TabManager.Instance.CreateTab(url),
+            onCopyLink: url => { /* TODO: copy to clipboard */ }
+        );
+        
+        _contextMenu = new ContextMenuWidget(items);
+        _contextMenu.Show(x, y, _width, _height);
     }
     
     private static void OnMouseUp(IMouse mouse, MouseButton button)
@@ -320,37 +509,60 @@ public class Program
         float y = mouse.Position.Y;
         
         // Forward to all toolbar children (they track their own pressed state)
-        foreach (var child in _toolbar.Children)
+        if (_toolbar != null)
         {
-            child.OnMouseUp(x, y, button);
+            foreach (var child in _toolbar.Children)
+            {
+                child.OnMouseUp(x, y, button);
+            }
         }
     }
     
     private static void OnMouseMove(IMouse mouse, System.Numerics.Vector2 position)
     {
+        // Forward to tab bar for hover effects
+        _tabBar?.OnMouseMove(position.X, position.Y);
+        
         // Forward to toolbar children for hover effects
-        foreach (var child in _toolbar.Children)
+        if (_toolbar != null)
         {
-            child.OnMouseMove(position.X, position.Y);
+            foreach (var child in _toolbar.Children)
+            {
+                child.OnMouseMove(position.X, position.Y);
+            }
         }
         
-        // Hit test content area for cursor updates
-        if (_contentArea.Contains(position.X, position.Y) && _browser != null)
+        // Forward to context menu if open
+        if (_contextMenu?.IsOpen == true)
         {
-            var result = _browser.HandleMouseMove(
-                position.X, 
-                position.Y, 
-                _contentArea.Left, 
-                _contentArea.Top
-            );
-            
-            // Update cursor based on hit test
-            CursorManager.UpdateFromHitTest(mouse, result);
+            _contextMenu.OnMouseMove(position.X, position.Y);
+        }
+        
+        // Hit test content area for cursor and status bar updates
+        if (_contentArea.Contains(position.X, position.Y))
+        {
+            var activeTab = TabManager.Instance.ActiveTab;
+            if (activeTab != null)
+            {
+                var result = activeTab.Browser.HandleMouseMove(
+                    position.X, 
+                    position.Y, 
+                    _contentArea.Left, 
+                    _contentArea.Top
+                );
+                
+                // Update cursor based on hit test
+                CursorManager.UpdateFromHitTest(mouse, result);
+                
+                // Update status bar with hover URL
+                _statusBar?.UpdateFromHitTest(result);
+            }
         }
         else
         {
             // Reset cursor when not over content
             CursorManager.ResetCursor(mouse);
+            _statusBar?.ClearHoverUrl();
         }
     }
     
@@ -359,10 +571,19 @@ public class Program
         float x = mouse.Position.X;
         float y = mouse.Position.Y;
         
+        // Tab bar scroll for tab overflow
+        if (_tabBar != null && _tabBar.Bounds.Contains(x, y))
+        {
+            _tabBar.HandleScroll(wheel.Y);
+            return;
+        }
+        
         // Only scroll if mouse is in content area
         if (_contentArea.Contains(x, y))
         {
-            _browser?.Scroll(wheel.Y);
+            var activeTab = TabManager.Instance.ActiveTab;
+            activeTab?.Browser.Scroll(wheel.Y);
         }
     }
 }
+

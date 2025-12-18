@@ -384,6 +384,8 @@ public class BrowserIntegration
     {
         var result = PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
         
+        FenLogger.Info($"[Debug] Click at {windowX},{windowY} hit: {result.TagName ?? "None"} (ID: {result.ElementId ?? "None"}) Link: {result.IsLink}", LogCategory.General);
+        
         if (result.IsLink && !string.IsNullOrEmpty(result.Href))
         {
             FenLogger.Info($"[BrowserIntegration] Link clicked: {result.Href}", LogCategory.General);
