@@ -107,6 +107,7 @@ namespace FenBrowser.FenEngine.Rendering
         IList<string> GetAllLinks();
         string GetTextContent();
         LiteElement GetDomRoot();
+        string GetRawHtml();
         void HighlightElement(LiteElement element);
         void RemoveHighlight();
     }
@@ -375,6 +376,11 @@ namespace FenBrowser.FenEngine.Rendering
             return _engine.GetActiveDom();
         }
 
+        public string GetRawHtml()
+        {
+            return _engine.GetRawHtml();
+        }
+
         public async Task<bool> GoBackAsync()
         {
             if (!CanGoBack) return false;
@@ -499,6 +505,7 @@ namespace FenBrowser.FenEngine.Rendering
                 _current = uri;
                 try { FenLogger.Debug($"[BrowserApi] _current updated early to: {_current?.AbsoluteUri}", LogCategory.General); } catch {}
                 
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", $"[BrowserApi] Calling RenderAsync for {uri}\r\n"); } catch {}
                 var elem = await _engine.RenderAsync(htmlToRender, uri, u => _resources.FetchTextAsync(u), u => _resources.FetchImageAsync(u), u => { _ = NavigateAsync(u.AbsoluteUri); });
                 
                 // _current already set above

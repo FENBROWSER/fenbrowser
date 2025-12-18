@@ -1,5 +1,8 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
+using Avalonia.Controls.Presenters;
+using Avalonia.Input;
 using Avalonia.Media;
 using Avalonia.Platform;
 using Avalonia.Rendering.SceneGraph;
@@ -9,6 +12,7 @@ using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using System;
 using System.Collections.Generic;
+using Avalonia.Styling; // Added for Style/Setter
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -404,8 +408,32 @@ namespace FenBrowser.FenEngine.Rendering
                          
                          // Set placeholder text (watermark)
                          if (!string.IsNullOrEmpty(overlay.Placeholder))
-                         {
                              tb.Watermark = overlay.Placeholder;
+
+                         // Selection Styles (::selection)
+                         if (overlay.SelectionBackgroundColor.HasValue)
+                         {
+                             var c = overlay.SelectionBackgroundColor.Value;
+                             tb.SelectionBrush = new SolidColorBrush(Color.FromUInt32((uint)c));
+                         }
+                         if (overlay.SelectionColor.HasValue)
+                         {
+                             var c = overlay.SelectionColor.Value;
+                             tb.SelectionForegroundBrush = new SolidColorBrush(Color.FromUInt32((uint)c));
+                         }
+
+                         // Placeholder Styles (::placeholder)
+                         // We use a local style to target the PART_Watermark element (usually a TextBlock or ContentPresenter)
+                         if (overlay.PlaceholderColor.HasValue)
+                         {
+                             var c = overlay.PlaceholderColor.Value;
+                             var brush = new SolidColorBrush(Color.FromUInt32((uint)c));
+                             
+                             // Style targeting PART_Watermark
+                             var style = new Style(x => x.Name("PART_Watermark"));
+                             style.Setters.Add(new Setter(TextBlock.ForegroundProperty, brush)); // For TextBlock
+                             style.Setters.Add(new Setter(ContentPresenter.ForegroundProperty, brush)); // For ContentPresenter fallback
+                             tb.Styles.Add(style);
                          }
                          
                          // Apply CSS Styles to Avalonia Control

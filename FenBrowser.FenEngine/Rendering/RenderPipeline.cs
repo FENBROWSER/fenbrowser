@@ -15,7 +15,7 @@ namespace FenBrowser.FenEngine.Rendering
         public static async Task<Control> RenderHtmlAsync(string html, Uri baseUri, Size viewportSize)
         {
             // 1. Parse HTML
-            var parser = new HtmlLiteParser(html);
+            var parser = new FenBrowser.Core.Parsing.HtmlParser(html);
             var domRoot = parser.Parse();
 
             // 2. Load CSS

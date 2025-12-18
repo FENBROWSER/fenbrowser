@@ -30,6 +30,10 @@ namespace FenBrowser.FenEngine.Rendering
             public int Weight { get; set; } = 400;      // 100-900
             public FontStyle Style { get; set; } = FontStyle.Normal;
             public string UnicodeRange { get; set; }    // Optional unicode-range
+            public string Display { get; set; } = "auto"; // auto, block, swap, fallback, optional
+            public string Stretch { get; set; }         // normal, condensed, expanded, etc.
+            public string FeatureSettings { get; set; } // font-feature-settings
+            public string VariationSettings { get; set; } // font-variation-settings (for variable fonts)
         }
 
         /// <summary>
@@ -127,6 +131,26 @@ namespace FenBrowser.FenEngine.Rendering
                 var rangeMatch = Regex.Match(fontFaceBlock, @"unicode-range\s*:\s*([^;]+)", RegexOptions.IgnoreCase);
                 if (rangeMatch.Success)
                     descriptor.UnicodeRange = rangeMatch.Groups[1].Value.Trim();
+
+                // Parse font-display (auto, block, swap, fallback, optional)
+                var displayMatch = Regex.Match(fontFaceBlock, @"font-display\s*:\s*(auto|block|swap|fallback|optional)", RegexOptions.IgnoreCase);
+                if (displayMatch.Success)
+                    descriptor.Display = displayMatch.Groups[1].Value.ToLowerInvariant();
+
+                // Parse font-stretch (normal, condensed, expanded, etc.)
+                var stretchMatch = Regex.Match(fontFaceBlock, @"font-stretch\s*:\s*([^;]+)", RegexOptions.IgnoreCase);
+                if (stretchMatch.Success)
+                    descriptor.Stretch = stretchMatch.Groups[1].Value.Trim();
+
+                // Parse font-feature-settings
+                var featureMatch = Regex.Match(fontFaceBlock, @"font-feature-settings\s*:\s*([^;]+)", RegexOptions.IgnoreCase);
+                if (featureMatch.Success)
+                    descriptor.FeatureSettings = featureMatch.Groups[1].Value.Trim();
+
+                // Parse font-variation-settings (for variable fonts)
+                var variationMatch = Regex.Match(fontFaceBlock, @"font-variation-settings\s*:\s*([^;]+)", RegexOptions.IgnoreCase);
+                if (variationMatch.Success)
+                    descriptor.VariationSettings = variationMatch.Groups[1].Value.Trim();
 
                 if (!string.IsNullOrEmpty(descriptor.Family) && !string.IsNullOrEmpty(descriptor.Source))
                 {
