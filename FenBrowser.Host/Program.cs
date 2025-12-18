@@ -6,6 +6,7 @@ using Silk.NET.Input;
 using SkiaSharp;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.Host.Widgets;
 
 namespace FenBrowser.Host;
 
@@ -23,17 +24,24 @@ public class Program
     
     private static int _width = 1280;
     private static int _height = 800;
-    private static string _initialUrl = "https://example.com";
+    private static string _currentUrl = "https://example.com";
+    
+    // UI Widgets
+    private static ToolbarWidget _toolbar;
+    private static Widget _focusedWidget;
+    
+    // Content area (below toolbar)
+    private static SKRect _contentArea;
     
     public static void Main(string[] args)
     {
         // Parse command line for initial URL
         if (args.Length > 0)
         {
-            _initialUrl = args[0];
+            _currentUrl = args[0];
         }
         
-        FenLogger.Info($"[Host] Starting FenBrowser.Host with URL: {_initialUrl}", LogCategory.General);
+        FenLogger.Info($"[Host] Starting FenBrowser.Host with URL: {_currentUrl}", LogCategory.General);
         
         // Create window options
         var options = WindowOptions.Default;
@@ -85,7 +93,70 @@ public class Program
         // Initialize SkiaSharp with OpenGL
         InitializeSkia();
         
+        // Initialize UI widgets
+        InitializeWidgets();
+        
         FenLogger.Info("[Host] Initialization complete!", LogCategory.General);
+    }
+    
+    private static void InitializeWidgets()
+    {
+        _toolbar = new ToolbarWidget();
+        _toolbar.SetUrl(_currentUrl);
+        
+        // Wire navigation events
+        _toolbar.NavigateRequested += OnNavigate;
+        _toolbar.BackClicked += () => FenLogger.Info("[Host] Back clicked", LogCategory.General);
+        _toolbar.ForwardClicked += () => FenLogger.Info("[Host] Forward clicked", LogCategory.General);
+        _toolbar.RefreshClicked += () => OnNavigate(_currentUrl);
+        _toolbar.HomeClicked += () => OnNavigate("https://example.com");
+        
+        // Wire focus handling
+        _toolbar.AddressBar.FocusRequested += (w) => SetFocus(w);
+        
+        // Initial layout
+        LayoutWidgets();
+    }
+    
+    private static void LayoutWidgets()
+    {
+        var fullBounds = new SKRect(0, 0, _width, _height);
+        _toolbar.Layout(fullBounds);
+        
+        // Content area is below toolbar
+        _contentArea = new SKRect(0, _toolbar.Bounds.Bottom, _width, _height);
+    }
+    
+    private static void SetFocus(Widget widget)
+    {
+        if (_focusedWidget != null)
+        {
+            _focusedWidget.IsFocused = false;
+        }
+        _focusedWidget = widget;
+        if (_focusedWidget != null)
+        {
+            _focusedWidget.IsFocused = true;
+        }
+    }
+    
+    private static void OnNavigate(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return;
+        
+        // Add protocol if missing
+        if (!url.StartsWith("http://") && !url.StartsWith("https://") && !url.StartsWith("file://"))
+        {
+            url = "https://" + url;
+        }
+        
+        _currentUrl = url;
+        _toolbar.SetUrl(_currentUrl);
+        _window.Title = $"FenBrowser - {_currentUrl}";
+        
+        FenLogger.Info($"[Host] Navigating to: {_currentUrl}", LogCategory.General);
+        
+        // TODO: Integrate BrowserHost to actually load content
     }
     
     private static void InitializeSkia()
@@ -136,35 +207,36 @@ public class Program
         var canvas = _surface.Canvas;
         
         // Clear with background color
-        canvas.Clear(SKColors.White);
+        canvas.Clear(new SKColor(250, 250, 250));
         
-        // Draw test content (placeholder for FenEngine integration)
-        using var paint = new SKPaint
+        // Draw toolbar
+        _toolbar.PaintAll(canvas);
+        
+        // Draw content area placeholder
+        canvas.Save();
+        canvas.ClipRect(_contentArea);
+        
+        using var contentBgPaint = new SKPaint { Color = SKColors.White };
+        canvas.DrawRect(_contentArea, contentBgPaint);
+        
+        using var textPaint = new SKPaint
         {
             Color = SKColors.DarkBlue,
             IsAntialias = true,
-            TextSize = 24
+            TextSize = 20,
+            TextAlign = SKTextAlign.Center
         };
         
-        canvas.DrawText($"FenBrowser.Host - {_initialUrl}", 20, 40, paint);
-        canvas.DrawText($"Window: {_width}x{_height}", 20, 70, paint);
-        canvas.DrawText("Phase 2: Silk.NET + SkiaSharp", 20, 100, paint);
+        float centerX = _contentArea.MidX;
+        float centerY = _contentArea.MidY;
         
-        // Draw a colored rectangle as visual test
-        using var rectPaint = new SKPaint
-        {
-            Color = new SKColor(66, 133, 244), // Google blue
-            IsAntialias = true
-        };
-        canvas.DrawRoundRect(new SKRoundRect(new SKRect(20, 120, 300, 200), 8), rectPaint);
+        canvas.DrawText("FenBrowser.Host - Phase 3", centerX, centerY - 30, textPaint);
+        canvas.DrawText($"URL: {_currentUrl}", centerX, centerY + 10, textPaint);
+        textPaint.TextSize = 14;
+        textPaint.Color = SKColors.Gray;
+        canvas.DrawText("Type a URL in the address bar and press Enter", centerX, centerY + 50, textPaint);
         
-        using var whitePaint = new SKPaint
-        {
-            Color = SKColors.White,
-            IsAntialias = true,
-            TextSize = 18
-        };
-        canvas.DrawText("OpenGL + SkiaSharp Working!", 40, 165, whitePaint);
+        canvas.Restore();
         
         // Flush and swap
         canvas.Flush();
@@ -184,6 +256,9 @@ public class Program
         
         _gl.Viewport(0, 0, (uint)_width, (uint)_height);
         CreateRenderTarget();
+        
+        // Re-layout widgets
+        LayoutWidgets();
     }
     
     private static void OnClosing()
@@ -199,36 +274,64 @@ public class Program
     // Input handlers
     private static void OnKeyDown(IKeyboard keyboard, Key key, int scancode)
     {
-        FenLogger.Debug($"[Host] KeyDown: {key}", LogCategory.General);
-        
+        // ESC to close
         if (key == Key.Escape)
         {
             _window.Close();
+            return;
         }
+        
+        // Forward to focused widget
+        _focusedWidget?.OnKeyDown(key);
     }
     
     private static void OnKeyChar(IKeyboard keyboard, char character)
     {
-        // Handle text input for address bar, etc.
+        // Forward to focused widget
+        _focusedWidget?.OnTextInput(character);
     }
     
     private static void OnMouseDown(IMouse mouse, MouseButton button)
     {
-        FenLogger.Debug($"[Host] MouseDown: {button} at ({mouse.Position.X}, {mouse.Position.Y})", LogCategory.General);
+        float x = mouse.Position.X;
+        float y = mouse.Position.Y;
+        
+        // Hit test toolbar
+        var hit = _toolbar.HitTestDeep(x, y);
+        if (hit != null)
+        {
+            hit.OnMouseDown(x, y, button);
+        }
+        else
+        {
+            // Click on content area - clear focus
+            SetFocus(null);
+        }
     }
     
     private static void OnMouseUp(IMouse mouse, MouseButton button)
     {
-        // Handle click release
+        float x = mouse.Position.X;
+        float y = mouse.Position.Y;
+        
+        // Forward to all toolbar children (they track their own pressed state)
+        foreach (var child in _toolbar.Children)
+        {
+            child.OnMouseUp(x, y, button);
+        }
     }
     
     private static void OnMouseMove(IMouse mouse, System.Numerics.Vector2 position)
     {
-        // Handle hover effects
+        // Forward to toolbar children for hover effects
+        foreach (var child in _toolbar.Children)
+        {
+            child.OnMouseMove(position.X, position.Y);
+        }
     }
     
     private static void OnScroll(IMouse mouse, ScrollWheel wheel)
     {
-        FenLogger.Debug($"[Host] Scroll: {wheel.Y}", LogCategory.General);
+        // TODO: Scroll content area
     }
 }
