@@ -7,6 +7,8 @@ using SkiaSharp;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.Host.Widgets;
+using FenBrowser.Host.Input;
+using FenBrowser.FenEngine.Interaction;
 
 namespace FenBrowser.Host;
 
@@ -35,6 +37,9 @@ public class Program
     
     // Content area (below toolbar)
     private static SKRect _contentArea;
+    
+    // Input reference for cursor management
+    private static IMouse _mouse;
     
     public static void Main(string[] args)
     {
@@ -91,6 +96,7 @@ public class Program
             mouse.MouseUp += OnMouseUp;
             mouse.MouseMove += OnMouseMove;
             mouse.Scroll += OnScroll;
+            _mouse = mouse; // Store for cursor management
         }
         
         // Initialize SkiaSharp with OpenGL
@@ -298,10 +304,8 @@ public class Program
         }
         else if (_contentArea.Contains(x, y))
         {
-            // Click in content area - check for links
-            float contentX = x - _contentArea.Left;
-            float contentY = y - _contentArea.Top;
-            _browser?.HandleClick(contentX, contentY, _contentArea.Height);
+            // Click in content area - use hit testing for link navigation
+            _browser?.HandleClick(x, y, _contentArea.Left, _contentArea.Top);
         }
         else
         {
@@ -328,6 +332,25 @@ public class Program
         foreach (var child in _toolbar.Children)
         {
             child.OnMouseMove(position.X, position.Y);
+        }
+        
+        // Hit test content area for cursor updates
+        if (_contentArea.Contains(position.X, position.Y) && _browser != null)
+        {
+            var result = _browser.HandleMouseMove(
+                position.X, 
+                position.Y, 
+                _contentArea.Left, 
+                _contentArea.Top
+            );
+            
+            // Update cursor based on hit test
+            CursorManager.UpdateFromHitTest(mouse, result);
+        }
+        else
+        {
+            // Reset cursor when not over content
+            CursorManager.ResetCursor(mouse);
         }
     }
     

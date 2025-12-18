@@ -1,0 +1,76 @@
+using Silk.NET.Input;
+using FenCursorType = FenBrowser.FenEngine.Interaction.CursorType;
+using FenBrowser.FenEngine.Interaction;
+
+namespace FenBrowser.Host.Input;
+
+/// <summary>
+/// Maps interaction roles to system cursors.
+/// Stateless, throttled updates, no DOM access.
+/// </summary>
+public static class CursorManager
+{
+    private static FenCursorType _currentCursor = FenCursorType.Default;
+    private static DateTime _lastUpdate = DateTime.MinValue;
+    private static readonly TimeSpan _throttleInterval = TimeSpan.FromMilliseconds(16); // ~60fps
+    
+    /// <summary>
+    /// Update the cursor based on hit test result.
+    /// Throttled to prevent excessive system calls.
+    /// </summary>
+    public static void UpdateCursor(IMouse mouse, FenCursorType cursor)
+    {
+        // Throttle cursor updates
+        var now = DateTime.UtcNow;
+        if (cursor == _currentCursor && (now - _lastUpdate) < _throttleInterval)
+            return;
+        
+        _currentCursor = cursor;
+        _lastUpdate = now;
+        
+        // Map to Silk.NET cursor and set
+        var silkCursor = MapToSilkCursor(cursor);
+        mouse.Cursor.StandardCursor = silkCursor;
+    }
+    
+    /// <summary>
+    /// Update cursor from hit test result.
+    /// </summary>
+    public static void UpdateFromHitTest(IMouse mouse, HitTestResult result)
+    {
+        UpdateCursor(mouse, result.Cursor);
+    }
+    
+    /// <summary>
+    /// Reset to default cursor.
+    /// </summary>
+    public static void ResetCursor(IMouse mouse)
+    {
+        UpdateCursor(mouse, FenCursorType.Default);
+    }
+    
+    /// <summary>
+    /// Map our CursorType to Silk.NET StandardCursor.
+    /// </summary>
+    private static StandardCursor MapToSilkCursor(FenCursorType cursor)
+    {
+        return cursor switch
+        {
+            FenCursorType.Default => StandardCursor.Default,
+            FenCursorType.Pointer => StandardCursor.Hand,
+            FenCursorType.Text => StandardCursor.IBeam,
+            FenCursorType.Wait => StandardCursor.Default, // Silk.NET lacks wait cursor
+            FenCursorType.NotAllowed => StandardCursor.Default, // Silk.NET lacks this
+            FenCursorType.Move => StandardCursor.Default,
+            FenCursorType.ResizeNS => StandardCursor.VResize,
+            FenCursorType.ResizeEW => StandardCursor.HResize,
+            FenCursorType.ResizeNESW => StandardCursor.Default,
+            FenCursorType.ResizeNWSE => StandardCursor.Default,
+            FenCursorType.Crosshair => StandardCursor.Crosshair,
+            FenCursorType.Grab => StandardCursor.Default,
+            FenCursorType.Grabbing => StandardCursor.Default,
+            _ => StandardCursor.Default
+        };
+    }
+}
+
