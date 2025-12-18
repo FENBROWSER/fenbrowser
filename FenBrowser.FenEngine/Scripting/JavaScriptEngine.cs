@@ -49,8 +49,10 @@ namespace FenBrowser.FenEngine.Scripting
 
         public JavaScriptEngine(IJsHost host)
         {
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[JavaScriptEngine] Constructor Start\r\n"); } catch { }
             _host = host;
             InitRuntime();
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[JavaScriptEngine] Constructor: InitRuntime Done\r\n"); } catch { }
             SetupMutationObserver();
             // _mini = new MiniJs.Engine();
         }
@@ -111,7 +113,9 @@ namespace FenBrowser.FenEngine.Scripting
                 });
             };
 
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[JavaScriptEngine] InitRuntime: Creating FenRuntime...\r\n"); } catch { }
             _fenRuntime = new FenRuntime(context);
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[JavaScriptEngine] InitRuntime: FenRuntime Created\r\n"); } catch { }
             // Connect console messages to BrowserHost
             _fenRuntime.OnConsoleMessage = msg => 
             {
@@ -2212,6 +2216,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         /// <summary>Expose current DOM to the engine (for document.* bridge).</summary>
         public async Task SetDomAsync(LiteElement domRoot, Uri baseUri = null)
         {
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[JavaScriptEngine] SetDomAsync Start\r\n"); } catch { }
             _domRoot = domRoot;
             
             // Initialize FenEngine with DOM
@@ -2219,8 +2224,11 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             {
                 try
                 {
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[JavaScriptEngine] Calling _fenRuntime.SetDom...\r\n"); } catch { }
                     _fenRuntime.SetDom(domRoot, baseUri);
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[JavaScriptEngine] Calling SetupPermissions...\r\n"); } catch { }
                     SetupPermissions(); // Re-apply permissions to new context if needed
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[JavaScriptEngine] Calling SetupWindowEvents...\r\n"); } catch { }
                     SetupWindowEvents(); // Re-apply addEventListener to new document
                     try { System.IO.File.AppendAllText("debug_log.txt", "[JavaScriptEngine] SetDomAsync called on FenRuntime\r\n"); } catch { }
                 }
