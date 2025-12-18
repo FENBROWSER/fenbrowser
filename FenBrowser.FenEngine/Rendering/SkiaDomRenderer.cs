@@ -790,6 +790,178 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
         
+        /// <summary>
+        /// Perform hit testing at the given document coordinates.
+        /// Returns an immutable projection of the hit element (no DOM references).
+        /// Uses reverse paint-order traversal for correct Z-order resolution.
+        /// </summary>
+        /// <param name="documentX">X coordinate in document space</param>
+        /// <param name="documentY">Y coordinate in document space</param>
+        /// <param name="result">Hit test result (immutable, safe to pass across boundaries)</param>
+        /// <returns>True if an element was hit</returns>
+        public bool HitTest(float documentX, float documentY, out FenBrowser.FenEngine.Interaction.HitTestResult result)
+        {
+            result = FenBrowser.FenEngine.Interaction.HitTestResult.None;
+            
+            if (_boxes.IsEmpty) return false;
+            
+            LiteElement hitElement = null;
+            float highestZ = float.MinValue;
+            
+            // Reverse paint-order traversal: later elements in DOM are on top
+            // We iterate all boxes and find the topmost one containing the point
+            foreach (var kvp in _boxes)
+            {
+                var element = kvp.Key;
+                var box = kvp.Value;
+                
+                if (box.BorderBox.Contains(documentX, documentY))
+                {
+                    // Get z-index (0 if not set)
+                    float zIndex = 0;
+                    if (_styles != null && _styles.TryGetValue(element, out var style))
+                    {
+                        zIndex = style.ZIndex ?? 0;
+                    }
+                    
+                    // Check if this element is "on top" (higher z-index or later in render order)
+                    // For same z-index, later elements win
+                    if (zIndex >= highestZ)
+                    {
+                        highestZ = zIndex;
+                        hitElement = element;
+                    }
+                }
+            }
+            
+            if (hitElement == null) return false;
+            
+            // Build immutable result projection
+            result = BuildHitTestResult(hitElement);
+            return true;
+        }
+        
+        /// <summary>
+        /// Build an immutable HitTestResult from an element.
+        /// Extracts only the data needed for UI interaction.
+        /// </summary>
+        private FenBrowser.FenEngine.Interaction.HitTestResult BuildHitTestResult(LiteElement element)
+        {
+            if (element == null) return FenBrowser.FenEngine.Interaction.HitTestResult.None;
+            
+            var tagName = element.Tag?.ToLowerInvariant() ?? "";
+            
+            // Find href (from this element or ancestor link)
+            string href = null;
+            var current = element;
+            while (current != null && href == null)
+            {
+                if (current.Tag?.ToLowerInvariant() == "a" && 
+                    current.Attr != null && 
+                    current.Attr.TryGetValue("href", out var h))
+                {
+                    href = h;
+                }
+                current = current.Parent;
+            }
+            
+            // Determine cursor type
+            var cursor = DetermineCursor(element, tagName, href);
+            
+            // Determine interactivity
+            bool isClickable = !string.IsNullOrEmpty(href) || 
+                               tagName == "button" || 
+                               tagName == "a" ||
+                               (tagName == "input" && GetInputType(element) is "submit" or "button" or "reset");
+            
+            bool isFocusable = tagName is "input" or "textarea" or "select" or "button" or "a" ||
+                               (element.Attr?.ContainsKey("tabindex") ?? false);
+            
+            bool isEditable = tagName == "textarea" ||
+                              (tagName == "input" && GetInputType(element) is "text" or "password" or "email" or "search" or "url" or "tel" or "number");
+            
+            // Element ID for debugging
+            string elementId = null;
+            element.Attr?.TryGetValue("id", out elementId);
+            
+            // Text preview for status bar
+            string textPreview = null;
+            if (!string.IsNullOrEmpty(element.Text))
+            {
+                textPreview = element.Text.Length > 50 
+                    ? element.Text.Substring(0, 50) + "..." 
+                    : element.Text;
+            }
+            
+            return new FenBrowser.FenEngine.Interaction.HitTestResult(
+                TagName: tagName,
+                Href: href,
+                Cursor: cursor,
+                IsClickable: isClickable,
+                IsFocusable: isFocusable,
+                IsEditable: isEditable,
+                ElementId: elementId,
+                TextPreview: textPreview
+            );
+        }
+        
+        /// <summary>
+        /// Determine the appropriate cursor for an element.
+        /// </summary>
+        private FenBrowser.FenEngine.Interaction.CursorType DetermineCursor(LiteElement element, string tagName, string href)
+        {
+            // Links get pointer cursor
+            if (!string.IsNullOrEmpty(href))
+                return FenBrowser.FenEngine.Interaction.CursorType.Pointer;
+            
+            // Text inputs get text cursor
+            if (tagName is "textarea" || 
+                (tagName == "input" && GetInputType(element) is "text" or "password" or "email" or "search" or "url" or "tel" or "number"))
+                return FenBrowser.FenEngine.Interaction.CursorType.Text;
+            
+            // Buttons get pointer
+            if (tagName is "button" || 
+                (tagName == "input" && GetInputType(element) is "submit" or "button" or "reset"))
+                return FenBrowser.FenEngine.Interaction.CursorType.Pointer;
+            
+            // Check CSS cursor property
+            if (_styles != null && _styles.TryGetValue(element, out var style))
+            {
+                var cssCursor = style.Cursor;
+                if (!string.IsNullOrEmpty(cssCursor))
+                {
+                    return cssCursor.ToLowerInvariant() switch
+                    {
+                        "pointer" => FenBrowser.FenEngine.Interaction.CursorType.Pointer,
+                        "text" => FenBrowser.FenEngine.Interaction.CursorType.Text,
+                        "wait" => FenBrowser.FenEngine.Interaction.CursorType.Wait,
+                        "not-allowed" => FenBrowser.FenEngine.Interaction.CursorType.NotAllowed,
+                        "move" => FenBrowser.FenEngine.Interaction.CursorType.Move,
+                        "grab" => FenBrowser.FenEngine.Interaction.CursorType.Grab,
+                        "grabbing" => FenBrowser.FenEngine.Interaction.CursorType.Grabbing,
+                        "crosshair" => FenBrowser.FenEngine.Interaction.CursorType.Crosshair,
+                        "ns-resize" or "row-resize" => FenBrowser.FenEngine.Interaction.CursorType.ResizeNS,
+                        "ew-resize" or "col-resize" => FenBrowser.FenEngine.Interaction.CursorType.ResizeEW,
+                        "nesw-resize" => FenBrowser.FenEngine.Interaction.CursorType.ResizeNESW,
+                        "nwse-resize" => FenBrowser.FenEngine.Interaction.CursorType.ResizeNWSE,
+                        _ => FenBrowser.FenEngine.Interaction.CursorType.Default
+                    };
+                }
+            }
+            
+            return FenBrowser.FenEngine.Interaction.CursorType.Default;
+        }
+        
+        /// <summary>
+        /// Get the input type attribute value.
+        /// </summary>
+        private string GetInputType(LiteElement element)
+        {
+            if (element.Attr != null && element.Attr.TryGetValue("type", out var t))
+                return t.ToLowerInvariant();
+            return "text"; // Default input type
+        }
+        
         #endregion
 
         public void ComputeLayout(LiteElement node, float x, float y, float availableWidth, bool shrinkToContent = false, float availableHeight = 0)

@@ -4,12 +4,14 @@ using SkiaSharp;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Rendering;
+using FenBrowser.FenEngine.Interaction;
 
 namespace FenBrowser.Host;
 
 /// <summary>
 /// Integration layer connecting BrowserHost to the Host render loop.
 /// Manages page loading, rendering, and input coordination.
+/// Handles Window → UI → Document coordinate translation.
 /// </summary>
 public class BrowserIntegration
 {
@@ -20,17 +22,23 @@ public class BrowserIntegration
     private bool _needsRepaint = true;
     private float _scrollY = 0;
     private float _contentHeight = 0;
+    private float _dpiScale = 1.0f;
+    
+    // Last hit test result (for status bar display)
+    private HitTestResult _lastHitTest = HitTestResult.None;
     
     public string CurrentUrl => _browser.CurrentUri?.AbsoluteUri ?? "";
     public bool IsLoading { get; private set; }
     public bool CanGoBack => _browser.CanGoBack;
     public bool CanGoForward => _browser.CanGoForward;
+    public HitTestResult LastHitTest => _lastHitTest;
     
     public event Action<string> TitleChanged;
     public event Action<string> UrlChanged;
     public event Action<bool> LoadingChanged;
     public event Action NeedsRepaint;
     public event Action<string> LinkClicked;
+    public event Action<HitTestResult> HitTestChanged;
     
     public BrowserIntegration()
     {
@@ -306,4 +314,100 @@ public class BrowserIntegration
     /// Get the content height for scroll calculation.
     /// </summary>
     public float ContentHeight => _contentHeight;
+    
+    /// <summary>
+    /// Set DPI scale for coordinate translation.
+    /// </summary>
+    public void SetDpiScale(float scale)
+    {
+        _dpiScale = Math.Max(0.1f, scale);
+    }
+    
+    /// <summary>
+    /// Perform hit test at window coordinates (handles coordinate translation).
+    /// Window → UI → Document space with scroll offset and DPI scaling.
+    /// </summary>
+    /// <param name="windowX">X in window/screen coordinates</param>
+    /// <param name="windowY">Y in window/screen coordinates</param>
+    /// <param name="viewportOffsetX">Content area X offset from window origin</param>
+    /// <param name="viewportOffsetY">Content area Y offset from window origin</param>
+    /// <returns>Immutable hit test result</returns>
+    public HitTestResult PerformHitTest(float windowX, float windowY, float viewportOffsetX = 0, float viewportOffsetY = 0)
+    {
+        // Window → UI coordinates (subtract viewport offset)
+        float uiX = windowX - viewportOffsetX;
+        float uiY = windowY - viewportOffsetY;
+        
+        // Apply DPI scaling (if needed)
+        float scaledX = uiX / _dpiScale;
+        float scaledY = uiY / _dpiScale;
+        
+        // UI → Document coordinates (add scroll offset)
+        float docX = scaledX;
+        float docY = scaledY + _scrollY;
+        
+        // Perform hit test in document space
+        if (_renderer.HitTest(docX, docY, out var result))
+        {
+            // Update last hit test (for status bar)
+            if (!result.Equals(_lastHitTest))
+            {
+                _lastHitTest = result;
+                HitTestChanged?.Invoke(result);
+            }
+            return result;
+        }
+        
+        // No hit - reset if changed
+        if (_lastHitTest.HasHit)
+        {
+            _lastHitTest = HitTestResult.None;
+            HitTestChanged?.Invoke(_lastHitTest);
+        }
+        
+        return HitTestResult.None;
+    }
+    
+    /// <summary>
+    /// Handle mouse move for cursor updates and status bar.
+    /// </summary>
+    public HitTestResult HandleMouseMove(float windowX, float windowY, float viewportOffsetX = 0, float viewportOffsetY = 0)
+    {
+        return PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
+    }
+    
+    /// <summary>
+    /// Handle mouse click at window coordinates.
+    /// Returns true if a navigable link was clicked.
+    /// </summary>
+    public bool HandleClick(float windowX, float windowY, float viewportOffsetX = 0, float viewportOffsetY = 0)
+    {
+        var result = PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
+        
+        if (result.IsLink && !string.IsNullOrEmpty(result.Href))
+        {
+            FenLogger.Info($"[BrowserIntegration] Link clicked: {result.Href}", LogCategory.General);
+            
+            // Resolve relative URL
+            string href = result.Href;
+            if (_browser.CurrentUri != null && !href.StartsWith("http") && !href.StartsWith("data:") && !href.StartsWith("javascript:"))
+            {
+                try
+                {
+                    if (Uri.TryCreate(_browser.CurrentUri, href, out var resolved))
+                    {
+                        href = resolved.AbsoluteUri;
+                    }
+                }
+                catch { }
+            }
+            
+            LinkClicked?.Invoke(href);
+            _ = NavigateAsync(href);
+            return true;
+        }
+        
+        return false;
+    }
 }
+
