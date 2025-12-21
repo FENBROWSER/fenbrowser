@@ -134,8 +134,7 @@ namespace FenBrowser.UI
             _skiaScrollViewer = this.FindControl<ScrollViewer>("SkiaScrollViewer");
             _specialPageContainer = this.FindControl<ContentControl>("SpecialPageContainer");
             
-            // [MIGRATION] SkiaBrowserView removed pending FenBrowser.Host integration
-            #if ENABLE_SKIAVIEW
+            // [MIGRATION] SkiaBrowserView restored
             var skiaView = this.FindControl<SkiaBrowserView>("SkiaView");
             if (skiaView != null)
             {
@@ -177,7 +176,6 @@ namespace FenBrowser.UI
                      });
                 };
             }
-            #endif
 
             // Register with WebDriverIntegration for real window/tab/screenshot operations
             WebDriverIntegration.RegisterMainWindow(
@@ -251,7 +249,6 @@ namespace FenBrowser.UI
 
         private void BindSkiaViewport()
         {
-            #if ENABLE_SKIAVIEW
             if (_skiaScrollViewer != null && this.FindControl<SkiaBrowserView>("SkiaView") is SkiaBrowserView skiaView)
             {
                 void UpdateLayoutViewport()
@@ -276,7 +273,6 @@ namespace FenBrowser.UI
                 _skiaScrollViewer.GetObservable(ScrollViewer.ViewportProperty).Subscribe(new Avalonia.Reactive.AnonymousObserver<Size>(_ => UpdateLayoutViewport()));
                 _skiaScrollViewer.SizeChanged += (s, e) => UpdateLayoutViewport();
             }
-            #endif
         }
 
         private void OnWindowKeyDown(object sender, Avalonia.Input.KeyEventArgs e)
@@ -339,7 +335,6 @@ namespace FenBrowser.UI
                     {
                         // TEMPORARY SKIA VERIFICATION WITH BOX MODEL
                         var root = browser.GetDomRoot();
-                        #if ENABLE_SKIAVIEW
                         var skiaView = this.FindControl<SkiaBrowserView>("SkiaView");
                         
                         try { FenLogger.Debug($"[MainWindow] UI Thread. Root: {root?.Tag}, SkiaView: {skiaView}", LogCategory.General); } catch {}
@@ -372,7 +367,7 @@ namespace FenBrowser.UI
                                return; // Skip old renderer logic
                            }
                         }
-                        #endif
+
 
                         if (element is Avalonia.Controls.Control ctrl)
                             SetBrowserContainerContent(ctrl);
@@ -655,13 +650,12 @@ namespace FenBrowser.UI
                             // Update when Viewport changes (e.g. scrollbars appear/disappear)
                             sv.GetObservable(ScrollViewer.ViewportProperty).Subscribe(new Avalonia.Reactive.AnonymousObserver<Size>(_ => UpdateContentSize()));
                         }
-                        #if ENABLE_SKIAVIEW
-                        else if (content is FenBrowser.FenEngine.Rendering.SkiaBrowserView skiaView)
+                        else if (content is FenBrowser.UI.SkiaBrowserView skiaView)
                         {
                             // This path is likely unused if SkiaView is in XAML, but kept for dynamic injection support
                             // Logic moved to BindSkiaViewport() for XAML instance, but good to have here too as backup
                         }
-                        #endif
+
                         decorator.Child = sv;
                     }
                     break;
