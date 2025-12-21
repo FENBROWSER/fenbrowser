@@ -261,6 +261,12 @@ namespace FenBrowser.Core
                     // Start tag
                     _i++; // consume '<'
                     var tag = ReadTagNameLower();
+                    
+                    // DEBUG: Heartbeat (Info level)
+                    if (stack.Count < 50 && _i < 2000) 
+                    {
+                         FenLogger.Info($"[HtmlLiteParser_HEARTBEAT] Parsed TAG: '{tag}'", LogCategory.General);
+                    }
                     var elem = new LiteElement(tag);
 
                     // Read attributes
@@ -376,6 +382,20 @@ namespace FenBrowser.Core
                             stack.Peek().Append(elem);
                         }
                     }
+
+                    // FIX: Force SVG shapes to be self-closing to prevent incorrect nesting
+                    if (!selfClosing && (tag == "path" || tag == "rect" || tag == "circle" || tag == "line" || tag == "polyline" || tag == "polygon" || tag == "ellipse" || tag == "stop" || tag == "image"))
+                    {
+                         FenLogger.Debug($"[HtmlLiteParser] Force-closing SVG tag: '{tag}'", LogCategory.Rendering);
+                         selfClosing = true;
+                    }
+                     else
+                     {
+                          if (tag.ToLowerInvariant().Contains("path"))
+                          {
+                              FenLogger.Debug($"[HtmlLiteParser] Saw tag suspect 'path': '{tag}'. selfClosing={selfClosing}", LogCategory.Rendering);
+                          }
+                     }
 
                     // Push if container
                     if (!selfClosing && !IsVoid(tag))
@@ -631,8 +651,13 @@ namespace FenBrowser.Core
                 case "area": case "base": case "br": case "col": case "embed":
                 case "hr": case "img": case "input": case "link": case "meta":
                 case "param": case "source": case "track": case "wbr":
+                // FIX: Treat SVG common shapes as void to prevent nesting if not self-closed
+                case "path": case "rect": case "circle": case "line": case "polyline": 
+                case "polygon": case "ellipse": case "stop": case "use": case "image":
+                    FenLogger.Debug($"[IsVoid] Check '{tag}' -> TRUE", LogCategory.Rendering);
                     return true;
                 default:
+                    if (tag == "path") FenLogger.Debug($"[IsVoid] Check '{tag}' -> FALSE (Oops!)", LogCategory.Rendering);
                     return false;
             }
         }
