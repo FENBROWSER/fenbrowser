@@ -489,7 +489,9 @@ namespace FenBrowser.Core.Parsing
                     return true;
                 }
 
-                if (st.TagName == "img" || st.TagName == "br" || st.TagName == "embed" || st.TagName == "hr" || st.TagName == "input" || st.TagName == "source" || st.TagName == "area")
+                if (st.TagName == "img" || st.TagName == "br" || st.TagName == "embed" || st.TagName == "hr" || st.TagName == "input" || st.TagName == "source" || st.TagName == "area" ||
+                    // FIX: Treat SVG common shapes as void to prevent incorrect nesting
+                    st.TagName == "path" || st.TagName == "rect" || st.TagName == "circle" || st.TagName == "line" || st.TagName == "polyline" || st.TagName == "polygon" || st.TagName == "ellipse" || st.TagName == "stop" || st.TagName == "use" || st.TagName == "image")
                 {
                      // Void elements
                      if (st.TagName == "hr" && CurrentNode.Tag == "p") ClosePElement();

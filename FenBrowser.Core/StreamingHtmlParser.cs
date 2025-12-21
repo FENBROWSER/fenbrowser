@@ -372,6 +372,13 @@ namespace FenBrowser.Core
                 {
                     _stack.Peek().Append(element);
                 }
+
+                // FIX: Force SVG shapes to be self-closing to prevent incorrect nesting in streaming parser
+                if (!selfClosing && (tagName == "path" || tagName == "rect" || tagName == "circle" || tagName == "line" || tagName == "polyline" || tagName == "polygon" || tagName == "ellipse" || tagName == "stop" || tagName == "image"))
+                {
+                     FenLogger.Info($"[StreamingHtmlParser] Force-closing SVG tag: '{tagName}'", LogCategory.General);
+                     selfClosing = true;
+                }
                 
                 // Push if not self-closing and not void
                 if (!selfClosing && !HtmlLiteParser.IsVoid(tagName))
