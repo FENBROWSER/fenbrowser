@@ -1984,6 +1984,8 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
             css.BackgroundClip = Safe(DictGet(css.Map, "background-clip"))?.ToLowerInvariant();
             css.BackgroundOrigin = Safe(DictGet(css.Map, "background-origin"))?.ToLowerInvariant();
             css.BackgroundRepeat = Safe(DictGet(css.Map, "background-repeat"))?.ToLowerInvariant();
+            css.BackgroundSize = Safe(DictGet(css.Map, "background-size"))?.ToLowerInvariant();
+            css.BackgroundPosition = Safe(DictGet(css.Map, "background-position"))?.ToLowerInvariant();
 
             double cssFlexVal;
             if (TryDouble(DictGet(css.Map, "flex-grow"), out cssFlexVal)) css.FlexGrow = cssFlexVal;
@@ -2070,18 +2072,22 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
 
             string minWStr = DictGet(css.Map, "min-width");
             if (TryPx(minWStr, out sizeVal, currentEmBase)) css.MinWidth = sizeVal;
+            else if (TryPercent(minWStr, out sizeVal)) css.MinWidthExpression = sizeVal + "%";
             else if (IsCssFunction(minWStr)) css.MinWidthExpression = minWStr;
             
             string minHStr = DictGet(css.Map, "min-height");
             if (TryPx(minHStr, out sizeVal, currentEmBase)) css.MinHeight = sizeVal;
+            else if (TryPercent(minHStr, out sizeVal)) css.MinHeightExpression = sizeVal + "%";
             else if (IsCssFunction(minHStr)) css.MinHeightExpression = minHStr;
             
             string maxWStr = DictGet(css.Map, "max-width");
             if (TryPx(maxWStr, out sizeVal, currentEmBase)) css.MaxWidth = sizeVal;
+            else if (TryPercent(maxWStr, out sizeVal)) css.MaxWidthExpression = sizeVal + "%";
             else if (IsCssFunction(maxWStr)) css.MaxWidthExpression = maxWStr;
 
             string maxHStr = DictGet(css.Map, "max-height");
             if (TryPx(maxHStr, out sizeVal, currentEmBase)) css.MaxHeight = sizeVal;
+            else if (TryPercent(maxHStr, out sizeVal)) css.MaxHeightExpression = sizeVal + "%";
             else if (IsCssFunction(maxHStr)) css.MaxHeightExpression = maxHStr;
             
             // Logical properties: inline-size, block-size
@@ -2167,22 +2173,31 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
 
             if (!string.IsNullOrWhiteSpace(bgImage))
             {
-                // Debug: Log gradient parsing attempt
+                // Check for url() - store directly for image rendering
+                bool containsUrl = bgImage.IndexOf("url(", StringComparison.OrdinalIgnoreCase) >= 0;
                 bool containsGradient = bgImage.Contains("gradient");
-                if (containsGradient)
-                {
-                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_gradient.txt", $"[CSS] Parsing gradient: {bgImage.Substring(0, Math.Min(100, bgImage.Length))}...\r\n"); } catch { }
-                }
                 
-                var grad = ParseGradient(bgImage);
-                if (grad != null) 
+                if (containsUrl && !containsGradient)
                 {
-                    css.BackgroundImage = grad;
-                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_gradient.txt", $"[CSS] Gradient parsed successfully! Type={grad.GetType().Name}\r\n"); } catch { }
+                    // Store the url() value directly for ImageLoader to process
+                    css.BackgroundImage = bgImage;
+                    FenLogger.Debug($"[CSS] BackgroundImage URL stored: {bgImage.Substring(0, Math.Min(80, bgImage.Length))}...", LogCategory.CSS);
                 }
                 else if (containsGradient)
                 {
-                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_gradient.txt", $"[CSS] Gradient parsing FAILED for: {bgImage.Substring(0, Math.Min(100, bgImage.Length))}...\r\n"); } catch { }
+                    // Parse gradient
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_gradient.txt", $"[CSS] Parsing gradient: {bgImage.Substring(0, Math.Min(100, bgImage.Length))}...\r\n"); } catch { }
+                    
+                    var grad = ParseGradient(bgImage);
+                    if (grad != null) 
+                    {
+                        css.BackgroundImage = grad;
+                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_gradient.txt", $"[CSS] Gradient parsed successfully! Type={grad.GetType().Name}\r\n"); } catch { }
+                    }
+                    else
+                    {
+                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_gradient.txt", $"[CSS] Gradient parsing FAILED for: {bgImage.Substring(0, Math.Min(100, bgImage.Length))}...\r\n"); } catch { }
+                    }
                 }
             }
 

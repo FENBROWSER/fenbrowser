@@ -52,6 +52,8 @@ namespace FenBrowser.FenEngine.Rendering
         public string BackgroundOrigin { get; set; }  // border-box, padding-box, content-box
         public string BackgroundRepeat { get; set; }  // repeat, no-repeat, repeat-x, repeat-y
         public string BackgroundImage { get; set; }   // url, gradient, etc.
+        public string BackgroundSize { get; set; }    // cover, contain, auto, px, %
+        public string BackgroundPosition { get; set; } // center, top left, 50% 50%, etc.
 
         // Box model
         public Thickness Margin { get; set; }
