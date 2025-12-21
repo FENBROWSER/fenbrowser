@@ -365,6 +365,17 @@ namespace FenBrowser.FenEngine.Rendering
             Console.WriteLine($"[BrowserHost] CWD: {Environment.CurrentDirectory}");
             _engine.ScriptFetcher = (u) => _resources.FetchTextAsync(u);
             _navManager = new NavigationManager(_resources);
+            
+            // Wire up ImageLoader to trigger RepaintReady when images finish loading
+            ImageLoader.RequestRepaint = () =>
+            {
+                try
+                {
+                    System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ImageLoader-Repaint] Triggering repaint after image load\r\n");
+                    RepaintReady?.Invoke(this, null);
+                }
+                catch { }
+            };
         }
 
         private CertificateInfo _lastCertificate;

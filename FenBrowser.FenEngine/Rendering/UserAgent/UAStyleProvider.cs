@@ -253,7 +253,7 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
             if (style.Padding.Top == 0 && style.Padding.Left == 0)
             {
                 style.Padding = isButtonType 
-                    ? new Thickness(16, 8, 16, 8)
+                    ? new Thickness(12, 6, 12, 6) // Reduced from 16,8 for tighter buttons
                     : new Thickness(5, 2, 5, 2);
             }
 
@@ -261,7 +261,7 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
             if (style.BorderRadius.TopLeft == 0)
             {
                 if (isButtonType)
-                    style.BorderRadius = new CornerRadius(8);
+                    style.BorderRadius = new CornerRadius(4); // Reduced from 8 to match Google/Standard
                 else if (tag == "INPUT" || tag == "TEXTAREA")
                     style.BorderRadius = new CornerRadius(4);
             }

@@ -57,10 +57,11 @@ namespace FenBrowser.FenEngine.Rendering
 
             // Handle images
             var path = uri.AbsolutePath.ToLowerInvariant();
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[NavigationManager] Checking image: path='{path}' endsWithJpg={path.EndsWith(".jpg")}\r\n"); } catch {}
             if (path.EndsWith(".png") || path.EndsWith(".jpg") || path.EndsWith(".jpeg") || 
                 path.EndsWith(".gif") || path.EndsWith(".bmp") || path.EndsWith(".webp") || path.EndsWith(".svg"))
             {
-                var syntheticHtml = $"<html style='height: 100%;'><head><meta name='viewport' content='width=device-width, minimum-scale=0.1'><title>{System.IO.Path.GetFileName(uri.LocalPath)}</title></head><body style='margin: 0px; height: 100vh; background-color: rgb(14, 14, 14); display: flex; justify-content: center; align-items: center;'><img class='fen-image-view' style='display: block; margin: auto; background-color: hsl(0, 0%, 90%); transition: background-color 300ms; max-width: 100%; max-height: 100%;' src='{uri.AbsoluteUri}'></body></html>";
+                var syntheticHtml = $"<!DOCTYPE html><html style=\"width: 100%; height: 100%; background-color: rgb(14, 14, 14);\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"><title>{System.IO.Path.GetFileName(uri.LocalPath)}</title></head><body style=\"margin: 0; padding: 0; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background-color: rgb(14, 14, 14); overflow: hidden;\"><img style=\"display: block; position: absolute; top: 0; bottom: 0; left: 0; right: 0; margin: auto; max-width: 100%; max-height: 100%; object-fit: contain; -webkit-user-select: none;\" src=\"{uri.AbsoluteUri}\" alt=\"{System.IO.Path.GetFileName(uri.LocalPath)}\"></body></html>";
                 return new FetchResult { Status = FetchStatus.Success, Content = syntheticHtml, FinalUri = uri, ContentType = "text/html" };
             }
 
