@@ -26,6 +26,7 @@ namespace FenBrowser.Tests.Engine
         public ResizeObserverTests()
         {
             // Clear coordinator state to ensure test isolation
+            EngineContext.Reset();
             ObserverCoordinator.Instance.Clear();
             EnginePhaseManager.EnterPhase(EnginePhase.JSExecution);
         }
