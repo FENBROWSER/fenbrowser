@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.Core.Engine; // Phase enum
 
 namespace FenBrowser.FenEngine.Core
 {
@@ -13,17 +14,20 @@ namespace FenBrowser.FenEngine.Core
         private IObject _prototype;
         public object NativeObject { get; set; } // Holds underlying .NET object (Regex, Date, etc.)
 
-        public IValue Get(string key)
+        public IValue Get(string key, IExecutionContext context = null)
         {
             // PROXY TRAP: Get
             if (_properties.TryGetValue("__isProxy__", out var isProxy) && isProxy.ToBoolean())
             {
+                // Phase D spec 2.3: Proxy traps MUST NOT execute during Measure, Layout, or Paint
+                EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
+                
                 if (_properties.TryGetValue("__proxyGet__", out var proxyGet) && proxyGet is FenValue fnVal && fnVal.IsFunction)
                 {
                     // Invoke proxy getter: (target, prop, receiver)
-                    // Note: Receiver is 'this' (the proxy itself)
+                    _properties.TryGetValue("__proxyTarget__", out var target);
                     var fn = fnVal.AsFunction();
-                    return fn.Invoke(new IValue[] { FenValue.FromString(key), FenValue.FromObject(this) }, null);
+                    return fn.Invoke(new IValue[] { target ?? FenValue.Undefined, FenValue.FromString(key), FenValue.FromObject(this) }, context);
                 }
             }
 
@@ -32,24 +36,25 @@ namespace FenBrowser.FenEngine.Core
             
             // Prototype chain lookup
             if (_prototype != null)
-                return _prototype.Get(key);
+                return _prototype.Get(key, context);
 
             return FenValue.Undefined;
         }
 
-        public void Set(string key, IValue value)
+        public void Set(string key, IValue value, IExecutionContext context = null)
         {
             // PROXY TRAP: Set
             if (_properties.TryGetValue("__isProxy__", out var isProxy) && isProxy.ToBoolean())
             {
+                // Phase D spec 2.3: Proxy traps MUST NOT execute during Measure, Layout, or Paint
+                EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
+                
                 if (_properties.TryGetValue("__proxySet__", out var proxySet) && proxySet is FenValue fnVal && fnVal.IsFunction)
                 {
                     // Invoke proxy setter: (target, prop, value, receiver)
-                    // Note: We don't have easy access to original target here unless stored, 
-                    // but the closure in FenRuntime likely handles the target binding.
-                    // We just pass the key and value and let the runtime-bound function handle it.
+                    _properties.TryGetValue("__proxyTarget__", out var target);
                     var fn = fnVal.AsFunction();
-                    fn.Invoke(new IValue[] { FenValue.FromString(key), value, FenValue.FromObject(this) }, null);
+                    fn.Invoke(new IValue[] { target ?? FenValue.Undefined, FenValue.FromString(key), value, FenValue.FromObject(this) }, context);
                     return;
                 }
             }
@@ -57,25 +62,26 @@ namespace FenBrowser.FenEngine.Core
             _properties[key] = value;
         }
 
-        public bool Has(string key)
+        public bool Has(string key, IExecutionContext context = null)
         {
             // PROXY TRAP: Has
             if (_properties.TryGetValue("__isProxy__", out var isProxy) && isProxy.ToBoolean())
             {
                 if (_properties.TryGetValue("__proxyHas__", out var proxyHas) && proxyHas is FenValue fnVal && fnVal.IsFunction)
                 {
+                    _properties.TryGetValue("__proxyTarget__", out var target);
                     var fn = fnVal.AsFunction();
-                    var res = fn.Invoke(new IValue[] { FenValue.FromString(key) }, null);
+                    var res = fn.Invoke(new IValue[] { target ?? FenValue.Undefined, FenValue.FromString(key) }, context);
                     return res.ToBoolean();
                 }
             }
 
             if (_properties.TryGetValue(key, out var value)) return true;
-            if (_prototype != null) return _prototype.Has(key);
+            if (_prototype != null) return _prototype.Has(key, context);
             return false;
         }
 
-        public bool Delete(string key)
+        public bool Delete(string key, IExecutionContext context = null)
         {
              // PROXY TRAP: DeleteProperty
             if (_properties.TryGetValue("__isProxy__", out var isProxy) && isProxy.ToBoolean())
@@ -85,7 +91,7 @@ namespace FenBrowser.FenEngine.Core
             return _properties.Remove(key);
         }
 
-        public IEnumerable<string> Keys()
+        public IEnumerable<string> Keys(IExecutionContext context = null)
         {
              // PROXY TRAP: OwnKeys
             if (_properties.TryGetValue("__isProxy__", out var isProxy) && isProxy.ToBoolean())
@@ -93,7 +99,7 @@ namespace FenBrowser.FenEngine.Core
                 if (_properties.TryGetValue("__proxyOwnKeys__", out var proxyKeys) && proxyKeys is FenValue fnVal && fnVal.IsFunction)
                 {
                     var fn = fnVal.AsFunction();
-                    var res = fn.Invoke(new IValue[0], null);
+                    var res = fn.Invoke(new IValue[0], context);
                     // Convert result to enumerable string
                     // Assuming result is Array-like
                     var list = new List<string>();

@@ -1,9 +1,11 @@
+using FenBrowser.Core.Dom;
 using System;
 using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core.Logging;
+using FenBrowser.Core.Parsing;
 
 namespace FenBrowser.Core
 {
@@ -27,7 +29,7 @@ namespace FenBrowser.Core
         /// <summary>
         /// Event fired when an element is fully parsed
         /// </summary>
-        public event Action<LiteElement> OnElementParsed;
+        public event Action<Element> OnElementParsed;
 
         /// <summary>
         /// Event fired when a text node is parsed
@@ -37,7 +39,7 @@ namespace FenBrowser.Core
         /// <summary>
         /// Event fired when document parsing is complete
         /// </summary>
-        public event Action<LiteElement> OnDocumentComplete;
+        public event Action<Document> OnDocumentComplete;
 
         /// <summary>
         /// Create streaming parser from TextReader
@@ -69,9 +71,9 @@ namespace FenBrowser.Core
         /// <summary>
         /// Parse the entire document asynchronously
         /// </summary>
-        public async Task<LiteElement> ParseAsync(CancellationToken ct = default)
+        public async Task<Document> ParseAsync(CancellationToken ct = default)
         {
-            var doc = new LiteElement("#document");
+            var doc = new Document();
             var parser = new IncrementalParseState(doc);
             
             try
@@ -121,22 +123,22 @@ namespace FenBrowser.Core
         /// <summary>
         /// Parse synchronously (for backward compatibility)
         /// </summary>
-        public LiteElement Parse()
+        public Document Parse()
         {
             // Read all content first
             var content = _reader.ReadToEnd();
             
             // Use the regular parser for full content
-            var parser = new HtmlLiteParser(content);
+            var parser = new HtmlParser(content);
             return parser.Parse();
         }
 
         /// <summary>
         /// Parse incrementally, processing data as it becomes available
         /// </summary>
-        public async Task ParseIncrementallyAsync(Action<LiteElement> onProgress = null, CancellationToken ct = default)
+        public async Task ParseIncrementallyAsync(Action<Document> onProgress = null, CancellationToken ct = default)
         {
-            var doc = new LiteElement("#document");
+            var doc = new Document();
             var parser = new IncrementalParseState(doc);
             int lastElementCount = 0;
             
@@ -286,7 +288,7 @@ namespace FenBrowser.Core
             }
         }
 
-        private static int CountElements(LiteElement root)
+        private static int CountElements(Node root)
         {
             int count = 1;
             foreach (var child in root.Children)
@@ -313,13 +315,13 @@ namespace FenBrowser.Core
         /// </summary>
         private class IncrementalParseState
         {
-            private readonly LiteElement _document;
-            private readonly System.Collections.Generic.Stack<LiteElement> _stack;
+            private readonly Document _document;
+            private readonly System.Collections.Generic.Stack<Node> _stack;
             
-            public IncrementalParseState(LiteElement document)
+            public IncrementalParseState(Document document)
             {
                 _document = document;
-                _stack = new System.Collections.Generic.Stack<LiteElement>();
+                _stack = new System.Collections.Generic.Stack<Node>();
                 _stack.Push(document);
             }
 
@@ -342,7 +344,7 @@ namespace FenBrowser.Core
                 {
                     var endTag = token.Substring(1).Trim().ToLowerInvariant();
                     while (_stack.Count > 1 && 
-                           !string.Equals(_stack.Peek().Tag, endTag, StringComparison.OrdinalIgnoreCase))
+                           !string.Equals((_stack.Peek() as Element)?.TagName, endTag, StringComparison.OrdinalIgnoreCase))
                     {
                         _stack.Pop();
                     }
@@ -359,7 +361,7 @@ namespace FenBrowser.Core
                 int spaceIdx = token.IndexOfAny(new[] { ' ', '\t', '\r', '\n' });
                 string tagName = (spaceIdx > 0 ? token.Substring(0, spaceIdx) : token).ToLowerInvariant();
                 
-                var element = new LiteElement(tagName);
+                var element = new Element(tagName);
                 
                 // Parse attributes (simplified)
                 if (spaceIdx > 0)
@@ -370,7 +372,7 @@ namespace FenBrowser.Core
                 // Add to parent
                 if (_stack.Count > 0)
                 {
-                    _stack.Peek().Append(element);
+                    _stack.Peek().AppendChild(element);
                 }
 
                 // FIX: Force SVG shapes to be self-closing to prevent incorrect nesting in streaming parser
@@ -381,7 +383,7 @@ namespace FenBrowser.Core
                 }
                 
                 // Push if not self-closing and not void
-                if (!selfClosing && !HtmlLiteParser.IsVoid(tagName))
+                if (!selfClosing && !Parsing.HtmlParser.IsVoid(tagName))
                 {
                     _stack.Push(element);
                 }
@@ -399,13 +401,13 @@ namespace FenBrowser.Core
                         ? parent.Children[parent.Children.Count - 1] 
                         : null;
                     
-                    if (lastChild != null && lastChild.IsText)
+                    if (lastChild != null && lastChild.NodeType == NodeType.Text)
                     {
-                        lastChild.Text += decoded;
+                        lastChild.NodeValue += decoded;
                     }
                     else
                     {
-                        parent.Append(new LiteElement("#text") { Text = decoded });
+                        parent.AppendChild(new Text(decoded));
                     }
                 }
             }
@@ -419,7 +421,7 @@ namespace FenBrowser.Core
                 }
             }
 
-            private static void ParseAttributes(LiteElement element, string attrString)
+            private static void ParseAttributes(Element element, string attrString)
             {
                 // Simplified attribute parsing
                 int i = 0;
@@ -487,3 +489,4 @@ namespace FenBrowser.Core
         }
     }
 }
+

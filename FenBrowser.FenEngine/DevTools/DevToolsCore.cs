@@ -1,3 +1,5 @@
+using FenBrowser.Core.Css;
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -69,8 +71,8 @@ namespace FenBrowser.FenEngine.DevTools
         private IExecutionContext _globalContext; // Global context for console when running
         private Interpreter _interpreter; // Reference to interpreter
 
-        public Func<LiteElement, List<CssLoader.MatchedRule>> RuleMatcher;
-        public Func<LiteElement, CssComputed> ComputedStyleProvider;
+        public Func<Element, List<CssLoader.MatchedRule>> RuleMatcher;
+        public Func<Element, FenBrowser.Core.Css.CssComputed> ComputedStyleProvider;
 
         // Console History
         private readonly List<string> _consoleHistory = new();
@@ -417,7 +419,7 @@ namespace FenBrowser.FenEngine.DevTools
         public int CurrentLine => _currentLine;
         public string CurrentFile => _currentFile;
 
-        public CssComputed GetComputedStyles(LiteElement element)
+        public FenBrowser.Core.Css.CssComputed GetComputedStyles(Element element)
         {
              return ComputedStyleProvider?.Invoke(element);
         }
@@ -798,7 +800,7 @@ namespace FenBrowser.FenEngine.DevTools
         /// <summary>
         /// Get computed styles for an element
         /// </summary>
-        public Dictionary<string, string> GetComputedStyle(LiteElement element)
+        public Dictionary<string, string> GetComputedStyle(Element element)
         {
             if (element == null) return new Dictionary<string, string>();
             // If we have a connected renderer, we could get real computed styles
@@ -819,7 +821,7 @@ namespace FenBrowser.FenEngine.DevTools
         /// <summary>
         /// Get matched CSS rules for an element
         /// </summary>
-        public List<MatchedRule> GetMatchedRules(LiteElement element)
+        public List<MatchedRule> GetMatchedRules(Element element)
         {
             // Would integrate with CssLoader cascade
             return new List<MatchedRule>();
@@ -828,7 +830,7 @@ namespace FenBrowser.FenEngine.DevTools
         /// <summary>
         /// Modify an element's style
         /// </summary>
-        public void SetElementStyle(LiteElement element, string property, string value)
+        public void SetElementStyle(Element element, string property, string value)
         {
             if (element == null) return;
             
@@ -976,3 +978,5 @@ namespace FenBrowser.FenEngine.DevTools
 
     #endregion
 }
+
+

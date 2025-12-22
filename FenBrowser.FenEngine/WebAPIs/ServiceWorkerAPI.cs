@@ -184,4 +184,182 @@ namespace FenBrowser.FenEngine.WebAPIs
     {
         public ServiceWorkerRegistration Controller { get; set; }
     }
+
+    /// <summary>
+    /// FetchEvent - dispatched when a controlled page makes a network request
+    /// </summary>
+    public class FetchEvent : FenObject
+    {
+        public FenObject Request { get; }
+        public bool DefaultPrevented { get; private set; }
+        public IValue ResponseValue { get; private set; }
+        private readonly TaskCompletionSource<IValue> _responseSource = new();
+
+        public FetchEvent(string url, string method = "GET")
+        {
+            // Build Request object
+            Request = new FenObject();
+            Request.Set("url", FenValue.FromString(url));
+            Request.Set("method", FenValue.FromString(method));
+            Request.Set("headers", FenValue.FromObject(new FenObject())); // Empty headers
+
+            // Expose request property
+            Set("request", FenValue.FromObject(Request));
+
+            // respondWith(response) - allows SW to provide custom response
+            Set("respondWith", FenValue.FromFunction(new FenFunction("respondWith", (args, thisVal) =>
+            {
+                if (args.Length > 0)
+                {
+                    DefaultPrevented = true;
+                    ResponseValue = args[0];
+                    _responseSource.TrySetResult(args[0]);
+                    FenLogger.Debug($"[ServiceWorker] FetchEvent.respondWith called", LogCategory.JavaScript);
+                }
+                return FenValue.Undefined;
+            })));
+
+            // waitUntil(promise) - extend lifetime (stub for now)
+            Set("waitUntil", FenValue.FromFunction(new FenFunction("waitUntil", (args, thisVal) =>
+            {
+                // No-op for now, just log
+                FenLogger.Debug("[ServiceWorker] FetchEvent.waitUntil called", LogCategory.JavaScript);
+                return FenValue.Undefined;
+            })));
+        }
+
+        /// <summary>
+        /// Wait for respondWith to be called (with timeout)
+        /// </summary>
+        public async Task<IValue> WaitForResponseAsync(int timeoutMs = 5000)
+        {
+            var timeoutTask = Task.Delay(timeoutMs);
+            var completedTask = await Task.WhenAny(_responseSource.Task, timeoutTask);
+            if (completedTask == timeoutTask)
+            {
+                return null; // Timeout, proceed to network
+            }
+            return await _responseSource.Task;
+        }
+    }
+
+    /// <summary>
+    /// ServiceWorkerGlobalScope - the execution context for a Service Worker script
+    /// </summary>
+    public class ServiceWorkerGlobalScope
+    {
+        private readonly ServiceWorkerRegistration _registration;
+        private readonly List<FenFunction> _fetchListeners = new();
+        private FenObject _self;
+
+        public ServiceWorkerGlobalScope(ServiceWorkerRegistration registration)
+        {
+            _registration = registration;
+            _self = new FenObject();
+
+            // self.addEventListener('fetch', handler)
+            _self.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (args, thisVal) =>
+            {
+                if (args.Length >= 2 && args[0].ToString() == "fetch" && args[1].IsFunction)
+                {
+                    _fetchListeners.Add(args[1].AsFunction());
+                    FenLogger.Debug("[ServiceWorker] Registered 'fetch' event listener", LogCategory.JavaScript);
+                }
+                return FenValue.Undefined;
+            })));
+
+            // self.registration
+            _self.Set("registration", FenValue.FromObject(registration.ToFenObject()));
+
+            // self.skipWaiting()
+            _self.Set("skipWaiting", FenValue.FromFunction(new FenFunction("skipWaiting", (args, thisVal) =>
+            {
+                FenLogger.Debug("[ServiceWorker] skipWaiting() called", LogCategory.JavaScript);
+                return FenValue.Undefined;
+            })));
+
+            // self.clients
+            var clients = new FenObject();
+            clients.Set("claim", FenValue.FromFunction(new FenFunction("claim", (args, thisVal) =>
+            {
+                FenLogger.Debug("[ServiceWorker] clients.claim() called", LogCategory.JavaScript);
+                return FenValue.Undefined;
+            })));
+            _self.Set("clients", FenValue.FromObject(clients));
+        }
+
+        public FenObject Self => _self;
+
+        /// <summary>
+        /// Dispatch a FetchEvent to all registered listeners
+        /// </summary>
+        public async Task<IValue> DispatchFetchEventAsync(FetchEvent evt)
+        {
+            foreach (var listener in _fetchListeners)
+            {
+                try
+                {
+                    listener.Invoke(new IValue[] { FenValue.FromObject(evt) }, null);
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Debug($"[ServiceWorker] Fetch listener error: {ex.Message}", LogCategory.Errors);
+                }
+            }
+
+            // Wait for respondWith
+            if (_fetchListeners.Count > 0)
+            {
+                return await evt.WaitForResponseAsync(100); // Short timeout for read-only
+            }
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// ServiceWorkerInterceptor - hooks into network layer
+    /// </summary>
+    public static class ServiceWorkerInterceptor
+    {
+        private static readonly Dictionary<string, ServiceWorkerGlobalScope> _activeScopes = new();
+
+        /// <summary>
+        /// Register an active scope for a given origin/scope path
+        /// </summary>
+        public static void RegisterScope(string scope, ServiceWorkerGlobalScope globalScope)
+        {
+            _activeScopes[scope] = globalScope;
+            FenLogger.Debug($"[ServiceWorker] Scope registered: {scope}", LogCategory.JavaScript);
+        }
+
+        /// <summary>
+        /// Check if URL is controlled by a ServiceWorker and dispatch FetchEvent
+        /// </summary>
+        public static async Task<IValue> InterceptAsync(string url)
+        {
+            // Find matching scope (simple prefix match)
+            foreach (var kvp in _activeScopes)
+            {
+                if (url.StartsWith(kvp.Key) || kvp.Key == "/")
+                {
+                    var evt = new FetchEvent(url);
+                    var response = await kvp.Value.DispatchFetchEventAsync(evt);
+                    if (response != null)
+                    {
+                        FenLogger.Debug($"[ServiceWorker] Intercepted: {url}", LogCategory.JavaScript);
+                        return response;
+                    }
+                }
+            }
+            return null; // No interception, proceed to network
+        }
+
+        /// <summary>
+        /// Clear all registered scopes (for testing)
+        /// </summary>
+        public static void ClearScopes()
+        {
+            _activeScopes.Clear();
+        }
+    }
 }

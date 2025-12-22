@@ -1,3 +1,4 @@
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using FenBrowser.Core;
@@ -35,6 +36,7 @@ namespace FenBrowser.FenEngine.Core
             _context = context ?? new ExecutionContext();
             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[FenRuntime] Creating FenEnvironment...\r\n"); } catch { }
             _globalEnv = new FenEnvironment();
+            _context.Environment = _globalEnv;
             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[FenRuntime] FenEnvironment Created. Creating ModuleLoader...\r\n"); } catch { }
             
             // Initialize module loader
@@ -54,6 +56,13 @@ namespace FenBrowser.FenEngine.Core
         public IExecutionContext Context => _context;
 
         public Action<string> OnConsoleMessage; // Delegate for console output
+        public Uri BaseUri { get; set; }
+
+        private string GetCurrentOrigin()
+        {
+             if (BaseUri == null) return "null";
+             return $"{BaseUri.Scheme}://{BaseUri.Host}:{BaseUri.Port}";
+        }
 
         public IValue ExecuteFunction(FenFunction func, IValue[] args)
         {
@@ -336,12 +345,12 @@ namespace FenBrowser.FenEngine.Core
             screen.Set("orientation", FenValue.FromObject(CreateScreenOrientation()));
             SetGlobal("screen", FenValue.FromObject(screen));
 
-            // localStorage - Modular storage implementation
-            var localStorage = CreateStorageObject("localStorage");
+            // localStorage - Partitioned using StorageApi
+            var localStorage = FenBrowser.FenEngine.WebAPIs.StorageApi.CreateLocalStorage(GetCurrentOrigin);
             SetGlobal("localStorage", FenValue.FromObject(localStorage));
 
-            // sessionStorage - Modular storage implementation
-            var sessionStorage = CreateStorageObject("sessionStorage");
+            // sessionStorage - Partitioned using StorageApi (per instance)
+            var sessionStorage = FenBrowser.FenEngine.WebAPIs.StorageApi.CreateSessionStorage();
             SetGlobal("sessionStorage", FenValue.FromObject(sessionStorage));
 
             // window object - Comprehensive with all standard properties
@@ -2993,9 +3002,10 @@ namespace FenBrowser.FenEngine.Core
         /// Sets the DOM root for this runtime.
         /// Creates the 'document' global object.
         /// </summary>
-        public void SetDom(LiteElement root, Uri baseUri = null)
+        public void SetDom(Element root, Uri baseUri = null)
         {
             if (root == null) return;
+            this.BaseUri = baseUri;
 
             var documentWrapper = new DocumentWrapper(root, _context, baseUri);
             var docValue = FenValue.FromObject(documentWrapper);
@@ -3313,71 +3323,12 @@ namespace FenBrowser.FenEngine.Core
         }
 
         // In-memory storage (Secure: not persisted, Privacy: cleared on restart)
-        private readonly Dictionary<string, Dictionary<string, string>> _storageData = new Dictionary<string, Dictionary<string, string>>()
-        {
-            { "localStorage", new Dictionary<string, string>() },
-            { "sessionStorage", new Dictionary<string, string>() }
-        };
+
 
         /// <summary>
         /// Create Storage object (localStorage/sessionStorage) - Secure: in-memory only
         /// </summary>
-        private FenObject CreateStorageObject(string storageType)
-        {
-            var storage = new FenObject();
-            
-            // getItem(key) - Returns value or null
-            storage.Set("getItem", FenValue.FromFunction(new FenFunction("getItem", (args, thisVal) =>
-            {
-                if (args.Length == 0) return FenValue.Null;
-                var key = args[0].ToString();
-                if (_storageData[storageType].TryGetValue(key, out var value))
-                    return FenValue.FromString(value);
-                return FenValue.Null;
-            })));
 
-            // setItem(key, value) - Stores value
-            storage.Set("setItem", FenValue.FromFunction(new FenFunction("setItem", (args, thisVal) =>
-            {
-                if (args.Length < 2) return FenValue.Undefined;
-                var key = args[0].ToString();
-                var value = args[1].ToString();
-                _storageData[storageType][key] = value;
-                return FenValue.Undefined;
-            })));
-
-            // removeItem(key) - Removes item
-            storage.Set("removeItem", FenValue.FromFunction(new FenFunction("removeItem", (args, thisVal) =>
-            {
-                if (args.Length == 0) return FenValue.Undefined;
-                var key = args[0].ToString();
-                _storageData[storageType].Remove(key);
-                return FenValue.Undefined;
-            })));
-
-            // clear() - Clears all items
-            storage.Set("clear", FenValue.FromFunction(new FenFunction("clear", (args, thisVal) =>
-            {
-                _storageData[storageType].Clear();
-                return FenValue.Undefined;
-            })));
-
-            // key(index) - Returns key at index
-            storage.Set("key", FenValue.FromFunction(new FenFunction("key", (args, thisVal) =>
-            {
-                if (args.Length == 0) return FenValue.Null;
-                var index = (int)args[0].ToNumber();
-                var keys = _storageData[storageType].Keys.ToList();
-                if (index >= 0 && index < keys.Count)
-                    return FenValue.FromString(keys[index]);
-                return FenValue.Null;
-            })));
-
-            // length property (getter-like behavior through initial value)
-            storage.Set("length", FenValue.FromNumber(_storageData[storageType].Count));
-
-            return storage;
-        }
 
         #endregion
 
@@ -5043,3 +4994,4 @@ namespace FenBrowser.FenEngine.Core
         #endregion
     }
 }
+
