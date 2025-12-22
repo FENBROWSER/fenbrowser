@@ -28,6 +28,7 @@ namespace FenBrowser.Tests.Engine
         public PlatformInvariantTests()
         {
             // Reset all static state for test isolation
+            EngineContext.Reset();
             ObserverCoordinator.Instance.Clear();
             DomMutationQueue.Instance.Clear();
             EnginePhaseManager.EnterPhase(EnginePhase.Idle);

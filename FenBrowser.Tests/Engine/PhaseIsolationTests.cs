@@ -16,6 +16,11 @@ namespace FenBrowser.Tests.Engine
     [Collection("Engine Tests")]
     public class PhaseIsolationTests
     {
+        public PhaseIsolationTests()
+        {
+            EngineContext.Reset();
+        }
+
         [Fact]
         public void EnginePhaseManager_StartsInIdlePhase()
         {
