@@ -383,7 +383,9 @@ namespace FenBrowser.FenEngine.Scripting
             navObj.Set("languages", FenValue.FromObject(new FenBrowser.FenEngine.Core.FenObject())); // Empty array-like
 
             // Service Workers API - navigator.serviceWorker
-            navObj.Set("serviceWorker", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.ServiceWorkerAPI.CreateServiceWorkerContainer()));
+            // Service Workers API - navigator.serviceWorker
+            var swOrigin = OriginKey(_ctx?.BaseUri);
+            navObj.Set("serviceWorker", FenValue.FromObject(new FenBrowser.FenEngine.Workers.ServiceWorkerContainer(swOrigin)));
             
             // Clipboard API - navigator.clipboard
             navObj.Set("clipboard", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.ClipboardAPI.CreateClipboardObject()));
