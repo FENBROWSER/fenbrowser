@@ -68,19 +68,9 @@ namespace FenBrowser.FenEngine.DOM
                 evt.EventPhase = DomEvent.AT_TARGET;
                 evt.CurrentTarget = target;
                 evt.UpdateJsProperties(context);
-                InvokeListeners(target, evt, context, false); // Spec says "at target" listeners run in order of registration, 
-                                                              // but typically registered as "capture=false" or "catpure=true". 
-                                                              // Listeners with capture=false run here? 
-                                                              // Actually, distinct Listeners. 
-                                                              // Both capture and bubble listeners run at target.
-                                                              // We simply invoke all that match. 
-                                                              // Our registry separates capture/bubble.
-                
-                // Invoke Capture listeners at target? No, usually Capture stops *before* target.
-                // Re-reading spec: "Listeners registered for the capturing phase... but not on the event target itself."
-                // Wait, "Any event listeners registered on the eventTarget... are triggered."
-                // They run during the "At Target" phase.
-                // For "At Target", we verify we run both? 
+                // Spec: "Any event listeners registered on the eventTarget... are triggered."
+                // In practice, browsers usually fire capture listeners then bubble listeners (or insertion order).
+                // We will fire Capture first, then Bubble. 
                 InvokeListeners(target, evt, context, true);  // Capture listeners at target
                 InvokeListeners(target, evt, context, false); // Bubble listeners at target
             }
