@@ -1,3 +1,5 @@
+using FenBrowser.Core.Css;
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -232,7 +234,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Register a sticky element
         /// </summary>
-        public void Register(LiteElement element, SKRect originalRect, StickyOffsets offsets, SKRect containingBlock)
+        public void Register(Element element, SKRect originalRect, StickyOffsets offsets, SKRect containingBlock)
         {
             _stickyElements.Add(new StickyElement
             {
@@ -255,7 +257,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Get the current position for a sticky element
         /// </summary>
-        public SKRect GetCurrentRect(LiteElement element)
+        public SKRect GetCurrentRect(Element element)
         {
             var sticky = _stickyElements.FirstOrDefault(s => s.Element == element);
             if (sticky.Element == null) return SKRect.Empty;
@@ -324,7 +326,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         private struct StickyElement
         {
-            public LiteElement Element;
+            public Element Element;
             public SKRect OriginalRect;
             public StickyOffsets Offsets;
             public SKRect ContainingBlock;
@@ -406,3 +408,5 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
+
+

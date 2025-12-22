@@ -1,3 +1,5 @@
+using FenBrowser.Core.Css;
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -16,7 +18,7 @@ namespace FenBrowser.FenEngine.Rendering
     {
         public class CssLoadResult
         {
-            public Dictionary<LiteElement, CssComputed> Computed { get; set; } = new Dictionary<LiteElement, CssComputed>();
+            public Dictionary<Node, CssComputed> Computed { get; set; } = new Dictionary<Node, CssComputed>();
             public List<CssSource> Sources { get; set; } = new List<CssSource>();
         }
 
@@ -29,7 +31,7 @@ namespace FenBrowser.FenEngine.Rendering
             public CssSource Source;
         }
 
-        public static List<MatchedRule> GetMatchedRules(LiteElement element, List<CssSource> sources)
+        public static List<MatchedRule> GetMatchedRules(Element element, List<CssSource> sources)
         {
              var matched = new List<MatchedRule>();
              if (element == null || sources == null) return matched;
@@ -80,8 +82,8 @@ namespace FenBrowser.FenEngine.Rendering
         /// </param>
         /// <param name="viewportWidth">Optional viewport width for simple media checks.</param>
         /// <param name="log">Optional logger for warnings/notes.</param>
-        public static async Task<Dictionary<LiteElement, CssComputed>> ComputeAsync(
-            LiteElement root,
+        public static async Task<Dictionary<Node, CssComputed>> ComputeAsync(
+            Element root,
             Uri baseUri,
             Func<Uri, Task<string>> fetchExternalCssAsync,
             double? viewportWidth = null,
@@ -92,7 +94,7 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         public static async Task<CssLoadResult> ComputeWithResultAsync(
-            LiteElement root,
+            Element root,
             Uri baseUri,
             Func<Uri, Task<string>> fetchExternalCssAsync,
             double? viewportWidth = null,
@@ -120,7 +122,7 @@ namespace FenBrowser.FenEngine.Rendering
                     img{border:0;max-width:100%;height:auto;}
                     input,button,select,textarea{font:inherit;}
                     /* Block semantics */
-                    article,aside,nav,section,header,footer,main,figure{display:block;}
+                    div,article,aside,nav,section,header,footer,main,figure,form,pre,blockquote,hr{display:block;}
                     center{display:flex;flex-direction:column;align-items:center;text-align:center;}
                     h1{font-size:2em;margin:0.67em 0;font-weight:600;}
                     h2{font-size:1.5em;margin:0.83em 0;font-weight:600;}
@@ -145,15 +147,16 @@ namespace FenBrowser.FenEngine.Rendering
             catch { /* Ignore UA style errors */ }
 
             // 1) Inline <style> tags first (DOM order)
-            foreach (var n in root.Descendants().Where(n => !n.IsText && n.Tag == "style"))
+            foreach (var n in root.Descendants().OfType<Element>().Where(n => !n.IsText && string.Equals(n.Tag, "style", StringComparison.OrdinalIgnoreCase)))
             {
                 var text = SafeGatherText(n);
                 if (!string.IsNullOrWhiteSpace(text))
                 {
                     try {
                     try {
-                        var msg = $"[{DateTime.Now:HH:mm:ss}] [CssLoader] Found style block: {text.Length} chars. Content start: {text.Substring(0, Math.Min(text.Length, 50))}\r\n";
-                        if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", msg);
+                        var msg = $"[{DateTime.Now:HH:mm:ss}] [CssLoader] Found style block: {text.Length} chars. Content start: {text.Substring(0, Math.Min(text.Length, 200))}\r\n";
+                        // ALWAYS log style block content for debugging
+                        System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", msg);
                     } catch {}
                     } catch {}
                     
@@ -277,8 +280,8 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Overload without viewport/log parameters.
         /// </summary>
-        public static Task<Dictionary<LiteElement, CssComputed>> ComputeAsync(
-            LiteElement root,
+        public static Task<Dictionary<Node, CssComputed>> ComputeAsync(
+            Element root,
             Uri baseUri,
             Func<Uri, Task<string>> fetchExternalCssAsync)
         {
@@ -1029,7 +1032,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// Public method to check if an element matches a CSS selector string.
         /// Used by DOM API methods like matches() and closest().
         /// </summary>
-        public static bool MatchesSelector(LiteElement element, string selectorString)
+        public static bool MatchesSelector(Element element, string selectorString)
         {
             if (element == null || string.IsNullOrWhiteSpace(selectorString))
                 return false;
@@ -1660,17 +1663,17 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
         // Stage 3: Cascade
         // ===========================
 
-        private static Dictionary<LiteElement, CssComputed> CascadeIntoComputedStyles(LiteElement root, List<CssRule> rules, Action<string> log)
+        private static Dictionary<Node, CssComputed> CascadeIntoComputedStyles(Element root, List<CssRule> rules, Action<string> log)
         {
-            var result = new Dictionary<LiteElement, CssComputed>();
+            var result = new Dictionary<Node, CssComputed>();
             if (root == null) return result;
             
             // Debug: Log root hash to compare with DocumentWrapper._root
             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CssLoader] CascadeIntoComputedStyles: root_hash={root.GetHashCode()}\r\n"); } catch {}
 
             // Pre-flatten the DOM into a list to avoid repeated Descendants() enumerations
-            var nodes = new List<LiteElement>();
-            var stack = new Stack<LiteElement>();
+            var nodes = new List<Element>();
+            var stack = new Stack<Element>();
             stack.Push(root);
             while (stack.Count > 0)
             {
@@ -1678,18 +1681,21 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
                 nodes.Add(n);
                 // Push children in reverse so natural order remains pre-order in 'nodes'
                 for (int i = n.Children.Count - 1; i >= 0; i--)
-                    stack.Push(n.Children[i]);
+                {
+                    if (n.Children[i] is Element childEl)
+                        stack.Push(childEl);
+                }
             }
 
             // Prepare per-element candidate declarations+weights
-            var perNode = new Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>>();
-            var perNodeBefore = new Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>>();
-            var perNodeAfter = new Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>>();
-            var perNodeMarker = new Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>>();
-            var perNodePlaceholder = new Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>>();
-            var perNodeSelection = new Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>>();
-            var perNodeFirstLine = new Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>>();
-            var perNodeFirstLetter = new Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>>();
+            var perNode = new Dictionary<Element, List<Tuple<CssDecl, SelectorChain, int>>>();
+            var perNodeBefore = new Dictionary<Element, List<Tuple<CssDecl, SelectorChain, int>>>();
+            var perNodeAfter = new Dictionary<Element, List<Tuple<CssDecl, SelectorChain, int>>>();
+            var perNodeMarker = new Dictionary<Element, List<Tuple<CssDecl, SelectorChain, int>>>();
+            var perNodePlaceholder = new Dictionary<Element, List<Tuple<CssDecl, SelectorChain, int>>>();
+            var perNodeSelection = new Dictionary<Element, List<Tuple<CssDecl, SelectorChain, int>>>();
+            var perNodeFirstLine = new Dictionary<Element, List<Tuple<CssDecl, SelectorChain, int>>>();
+            var perNodeFirstLetter = new Dictionary<Element, List<Tuple<CssDecl, SelectorChain, int>>>();
             int matchedNodes = 0;
             foreach (var n in nodes)
             {
@@ -1700,12 +1706,20 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
                 {
                     foreach (var chain in rule.Selectors)
                     {
+                        // DIAGNOSTIC: Trace DIV element matching against rules
+                        bool isDivElement = string.Equals(n.Tag, "DIV", StringComparison.OrdinalIgnoreCase);
+                        if (isDivElement && chain.Segments.Count == 1 && chain.Segments[0].Tag?.ToLowerInvariant() == "div")
+                        {
+                            var decls = string.Join(", ", rule.Declarations.Select(kv => $"{kv.Key}={kv.Value.Value}"));
+                            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
+                                $"[CSS-TRACE] Testing DIV against rule 'div': ALL_props=[{decls}]\r\n"); } catch {}
+                        }
                         if (Matches(n, chain))
                         {
                             var lastSeg = chain.Segments[chain.Segments.Count - 1];
                             string pe = lastSeg.PseudoElement;
                             
-                            Dictionary<LiteElement, List<Tuple<CssDecl, SelectorChain, int>>> targetDict = perNode;
+                            Dictionary<Element, List<Tuple<CssDecl, SelectorChain, int>>> targetDict = perNode;
                             if (pe == "before") targetDict = perNodeBefore;
                             else if (pe == "after") targetDict = perNodeAfter;
                             else if (pe == "marker") targetDict = perNodeMarker;
@@ -1858,7 +1872,7 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
             return result;
         }
 
-        private static CssComputed ResolveStyle(LiteElement n, CssComputed parentCss, List<Tuple<CssDecl, SelectorChain, int>> items)
+        private static CssComputed ResolveStyle(Element n, CssComputed parentCss, List<Tuple<CssDecl, SelectorChain, int>> items)
         {
             var css = new CssComputed();
 
@@ -2262,13 +2276,67 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
 
             Thickness th;
             if (TryThickness(DictGet(css.Map, "margin"), out th, currentEmBase)) css.Margin = th;
+            
+            // Detect margin: auto for horizontal centering
+            string marginRaw = DictGet(css.Map, "margin")?.Trim().ToLowerInvariant() ?? "";
+            string marginLeftRaw = DictGet(css.Map, "margin-left")?.Trim().ToLowerInvariant() ?? "";
+            string marginRightRaw = DictGet(css.Map, "margin-right")?.Trim().ToLowerInvariant() ?? "";
+            
+            // Parse margin shorthand for auto: "auto", "0 auto", "0 auto 0 auto", etc.
+            // DIAGNOSTIC: Log css.Map contents for DIV elements to check what properties were matched
+            if (tag == "DIV")
+            {
+                string mapDump = css.Map != null ? string.Join(", ", css.Map.Take(10).Select(kv => $"{kv.Key}={kv.Value}")) : "(null)";
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
+                    $"[CSS-DEBUG] DIV css.Map: {mapDump}\r\n"); } catch {}
+            }
+            if (!string.IsNullOrEmpty(marginRaw))
+            {
+                var parts = marginRaw.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 1 && parts[0] == "auto")
+                {
+                    // margin: auto - all sides auto (horizontal centering)
+                    css.MarginLeftAuto = true;
+                    css.MarginRightAuto = true;
+                }
+                else if (parts.Length == 2 && parts[1] == "auto")
+                {
+                    // margin: X auto - left and right are auto (common centering pattern)
+                    css.MarginLeftAuto = true;
+                    css.MarginRightAuto = true;
+                }
+                else if (parts.Length == 3 && parts[1] == "auto")
+                {
+                    // margin: X auto X - left and right are auto
+                    css.MarginLeftAuto = true;
+                    css.MarginRightAuto = true;
+                }
+                else if (parts.Length == 4)
+                {
+                    // margin: top right bottom left
+                    if (parts[1] == "auto") css.MarginRightAuto = true;
+                    if (parts[3] == "auto") css.MarginLeftAuto = true;
+                }
+            }
+            
+            // Individual margin-left/margin-right: auto
+            if (marginLeftRaw == "auto") css.MarginLeftAuto = true;
+            if (marginRightRaw == "auto") css.MarginRightAuto = true;
+
+            // DEBUG: Log margin auto detection for DIV elements
+            if (tag == "DIV" && (!string.IsNullOrEmpty(marginRaw) || !string.IsNullOrEmpty(marginLeftRaw) || !string.IsNullOrEmpty(marginRightRaw)))
+            {
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
+                    $"[CSS-MARGIN-AUTO] DIV margin='{marginRaw}' marginLeft='{marginLeftRaw}' marginRight='{marginRightRaw}' " +
+                    $"MarginLeftAuto={css.MarginLeftAuto} MarginRightAuto={css.MarginRightAuto}\r\n"); } catch {}
+            }
 
             double mVal;
             var m = css.Margin;
             double mLeft = m.Left, mTop = m.Top, mRight = m.Right, mBottom = m.Bottom;
-            if (TryPx(DictGet(css.Map, "margin-left"), out mVal, currentEmBase)) mLeft = mVal;
+            if (!css.MarginLeftAuto && TryPx(DictGet(css.Map, "margin-left"), out mVal, currentEmBase)) mLeft = mVal;
             if (TryPx(DictGet(css.Map, "margin-top"), out mVal, currentEmBase)) mTop = mVal;
-            if (TryPx(DictGet(css.Map, "margin-right"), out mVal, currentEmBase)) mRight = mVal;
+            if (!css.MarginRightAuto && TryPx(DictGet(css.Map, "margin-right"), out mVal, currentEmBase)) mRight = mVal;
             if (TryPx(DictGet(css.Map, "margin-bottom"), out mVal, currentEmBase)) mBottom = mVal;
             
             // Logical Properties: margin-block/margin-inline (horizontal-tb writing mode)
@@ -2698,11 +2766,11 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
         // Matching
         // ===========================
 
-        private static bool HasDebugText(LiteElement n)
+        private static bool HasDebugText(Element n)
         {
             if (n == null) return false;
             // Quick shallow check for debug text
-            var stack = new System.Collections.Generic.Stack<LiteElement>();
+            var stack = new System.Collections.Generic.Stack<Element>();
             stack.Push(n);
             int count = 0;
             while (stack.Count > 0 && count < 50)
@@ -2713,14 +2781,14 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
                 
                 if (cur.Children != null)
                 {
-                    foreach (var c in cur.Children) stack.Push(c); // Depth-first
+                    foreach (var c in cur.Children.OfType<Element>()) stack.Push(c); // Depth-first
                 }
                 count++;
             }
             return false;
         }
 
-        private static bool Matches(LiteElement n, SelectorChain chain)
+        private static bool Matches(Element n, SelectorChain chain)
         {
             if (n == null || chain == null || chain.Segments.Count == 0) return false;
 
@@ -2757,7 +2825,7 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
 
             // We match from the last segment back to the first, walking up the DOM for ancestor/parent checks.
             int segIndex = chain.Segments.Count - 1;
-            LiteElement cur = n;
+            Element cur = n;
 
             // Match the right-most segment first
             bool keyMatch = MatchesSingle(cur, chain.Segments[segIndex]);
@@ -2778,7 +2846,7 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
 
                 if (comb == Combinator.Child)
                 {
-                    cur = cur.Parent;
+                    cur = cur.Parent as Element;
                     bool m = MatchesSingle(cur, chain.Segments[segIndex]);
                     if (debug) FenLogger.Debug($"[SelectorProbe]   Parent check: match? {m} (Tag={cur?.Tag})", LogCategory.Layout);
                     if (cur == null || !m) return false;
@@ -2790,7 +2858,7 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
                     if (parent == null) return false;
                     var idx = parent.Children.IndexOf(cur);
                     if (idx <= 0) return false;
-                    cur = parent.Children[idx - 1];
+                    cur = parent.Children[idx - 1] as Element;
                     bool m = MatchesSingle(cur, chain.Segments[segIndex]);
                     if (debug) FenLogger.Debug($"[SelectorProbe]   Adjacent sibling check: match? {m}", LogCategory.Layout);
                     if (!m) return false;
@@ -2807,9 +2875,9 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
                     for (int k = idx - 1; k >= 0; k--)
                     {
                         var sib = parent.Children[k];
-                        if (MatchesSingle(sib, chain.Segments[segIndex]))
+                        if (sib is Element indexElement && MatchesSingle(indexElement, chain.Segments[segIndex]))
                         {
-                            cur = sib;
+                            cur = indexElement;
                             found = true;
                             break;
                         }
@@ -2890,12 +2958,13 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
 
         }
 
-        private static LiteElement FindAncestorMatching(LiteElement n, SelectorSegment seg)
+        private static Element FindAncestorMatching(Element n, SelectorSegment seg)
         {
             var p = n.Parent;
             while (p != null)
             {
-                if (MatchesSingle(p, seg)) return p;
+                var el = p as Element;
+                if (el != null && MatchesSingle(el, seg)) return el;
                 p = p.Parent;
             }
             return null;
@@ -2919,7 +2988,7 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
         /// <summary>
         /// Get the 1-based child index of element n within its parent's children.
         /// </summary>
-        private static int GetChildIndex(LiteElement n)
+        private static int GetChildIndex(Element n)
         {
             if (n == null || n.Parent == null || n.Parent.Children == null)
                 return 0;
@@ -2935,16 +3004,17 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
         /// <summary>
         /// Get the 1-based index of element n among siblings of the same tag type.
         /// </summary>
-        private static int GetTypeIndex(LiteElement n)
+        private static int GetTypeIndex(Element n)
         {
             if (n == null || n.Parent == null || n.Parent.Children == null || string.IsNullOrEmpty(n.Tag))
                 return 0;
 
             int index = 0;
-            foreach (var child in n.Parent.Children)
+            foreach (var childNode in n.Parent.Children)
             {
-                if (child.IsText) continue;
-                if (string.Equals(child.Tag, n.Tag, StringComparison.OrdinalIgnoreCase))
+                if (childNode.IsText) continue;
+                var child = childNode as Element;
+                if (child != null && string.Equals(child.Tag, n.Tag, StringComparison.OrdinalIgnoreCase))
                 {
                     index++;
                     if (child == n) return index; // 1-based
@@ -2956,7 +3026,7 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
         /// <summary>
         /// Get the 1-based index from the end (last child = 1) within parent's children.
         /// </summary>
-        private static int GetLastChildIndex(LiteElement n)
+        private static int GetLastChildIndex(Element n)
         {
             if (n == null || n.Parent == null || n.Parent.Children == null)
                 return 0;
@@ -2973,15 +3043,16 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
         /// <summary>
         /// Get the 1-based index from the end among siblings of the same tag type.
         /// </summary>
-        private static int GetLastTypeIndex(LiteElement n)
+        private static int GetLastTypeIndex(Element n)
         {
             if (n == null || n.Parent == null || n.Parent.Children == null || string.IsNullOrEmpty(n.Tag))
                 return 0;
 
-            var sameTypeElements = new System.Collections.Generic.List<LiteElement>();
-            foreach (var child in n.Parent.Children)
+            var sameTypeElements = new System.Collections.Generic.List<Element>();
+            foreach (var childNode in n.Parent.Children)
             {
-                if (!child.IsText && string.Equals(child.Tag, n.Tag, StringComparison.OrdinalIgnoreCase))
+                var child = childNode as Element;
+                if (child != null && !child.IsText && string.Equals(child.Tag, n.Tag, StringComparison.OrdinalIgnoreCase))
                     sameTypeElements.Add(child);
             }
 
@@ -3022,7 +3093,7 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
                    string.Equals(tag, "fieldset", StringComparison.OrdinalIgnoreCase);
         }
 
-        private static bool MatchesSingle(LiteElement n, SelectorSegment seg)
+        private static bool MatchesSingle(Element n, SelectorSegment seg)
         {
             if (n == null || seg == null) return false;
             if (n.IsText) return false;
@@ -3234,10 +3305,11 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
                         if (n == null || n.Parent == null || n.Parent.Children == null || string.IsNullOrEmpty(n.Tag)) return false;
 
                         // Find the last element of this type among siblings
-                        LiteElement lastOfType = null;
-                        foreach (var child in n.Parent.Children)
+                        Element lastOfType = null;
+                        foreach (var childNode in n.Parent.Children)
                         {
-                            if (!child.IsText && string.Equals(child.Tag, n.Tag, StringComparison.OrdinalIgnoreCase))
+                            var child = childNode as Element;
+                            if (child != null && !child.IsText && string.Equals(child.Tag, n.Tag, StringComparison.OrdinalIgnoreCase))
                                 lastOfType = child;
                         }
                         if (lastOfType != n) return false;
@@ -3247,9 +3319,10 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
                         if (n == null || n.Parent == null || n.Parent.Children == null || string.IsNullOrEmpty(n.Tag)) return false;
 
                         int typeCount = 0;
-                        foreach (var child in n.Parent.Children)
+                        foreach (var childNode in n.Parent.Children)
                         {
-                            if (!child.IsText && string.Equals(child.Tag, n.Tag, StringComparison.OrdinalIgnoreCase))
+                            var child = childNode as Element;
+                            if (child != null && !child.IsText && string.Equals(child.Tag, n.Tag, StringComparison.OrdinalIgnoreCase))
                                 typeCount++;
                         }
                         if (typeCount != 1) return false;
@@ -3438,7 +3511,7 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
                         {
                             if (current.Attr != null && current.Attr.TryGetValue("lang", out elemLang))
                                 break;
-                            current = current.Parent;
+                            current = current.Parent as Element;
                         }
                         if (elemLang == null || !elemLang.StartsWith(lang, StringComparison.OrdinalIgnoreCase))
                             return false;
@@ -3503,7 +3576,7 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
         /// Basic matching for :not() argument - checks tag, id, classes, attributes only
         /// (no pseudo-classes to avoid recursion complexity)
         /// </summary>
-        private static bool MatchesSingleBasic(LiteElement n, SelectorSegment seg)
+        private static bool MatchesSingleBasic(Element n, SelectorSegment seg)
         {
             if (n == null || seg == null) return false;
             if (n.IsText) return false;
@@ -4114,13 +4187,14 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
             }
         }
 
-        private static string SafeGatherText(LiteElement n)
+        private static string SafeGatherText(Node n)
         {
             if (n == null) return null;
             var sb = new StringBuilder();
             
             // Gather text from this node itself (e.g. #text, #cdata, or comments)
-            if (!string.IsNullOrEmpty(n.Text)) sb.Append(n.Text);
+            if (n is Element e && !string.IsNullOrEmpty(e.Text)) sb.Append(e.Text);
+            else if (n.IsText && !string.IsNullOrEmpty(n.Text)) sb.Append(n.Text);
             
             // Recurse children (if any)
             foreach (var ch in n.Children)
@@ -5443,7 +5517,7 @@ private static bool TryParseHypot(string value, out double result, double emBase
     /// <summary>
     /// Matches a SelectorChain against an element (for compound :not() support)
     /// </summary>
-    private static bool MatchesSelectorChain(SelectorChain chain, LiteElement n)
+    private static bool MatchesSelectorChain(SelectorChain chain, Element n)
     {
         return Matches(n, chain);
     }
@@ -5475,7 +5549,7 @@ private static bool TryParseHypot(string value, out double result, double emBase
     // Selector Helpers for :is, :where, :has
     // ==========================================
 
-    private static bool MatchesSelectorList(LiteElement n, string selectorList)
+    private static bool MatchesSelectorList(Element n, string selectorList)
     {
         if (string.IsNullOrWhiteSpace(selectorList)) return false;
         
@@ -5488,7 +5562,7 @@ private static bool TryParseHypot(string value, out double result, double emBase
         return false;
     }
 
-    private static bool MatchesHas(LiteElement n, string selectorList)
+    private static bool MatchesHas(Element n, string selectorList)
     {
         if (string.IsNullOrWhiteSpace(selectorList)) return false;
         
@@ -5502,10 +5576,10 @@ private static bool TryParseHypot(string value, out double result, double emBase
         
         if (chains.Count == 0) return false;
 
-        var queue = new Queue<LiteElement>();
+        var queue = new Queue<Element>();
         if (n.Children != null)
         {
-            foreach(var c in n.Children) queue.Enqueue(c);
+            foreach(var c in n.Children.OfType<Element>()) queue.Enqueue(c);
         }
         
         while (queue.Count > 0)
@@ -5518,7 +5592,7 @@ private static bool TryParseHypot(string value, out double result, double emBase
             
             if (curr.Children != null)
             {
-                foreach (var c in curr.Children) queue.Enqueue(c);
+                foreach (var c in curr.Children.OfType<Element>()) queue.Enqueue(c);
             }
         }
         return false;
@@ -5532,7 +5606,7 @@ private static bool TryParseHypot(string value, out double result, double emBase
     /// <summary>
     /// Resolve attr() function in CSS value.
     /// </summary>
-    private static string ResolveAttr(string value, LiteElement n)
+    private static string ResolveAttr(string value, Element n)
     {
         if (string.IsNullOrEmpty(value) || n == null || !value.Contains("attr(")) return value;
         
@@ -5547,3 +5621,5 @@ private static bool TryParseHypot(string value, out double result, double emBase
 }
 }
 }
+
+
