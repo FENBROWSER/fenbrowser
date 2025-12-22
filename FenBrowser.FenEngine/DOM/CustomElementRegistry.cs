@@ -1,3 +1,4 @@
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -144,7 +145,7 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Upgrade an element to its custom element definition
         /// </summary>
-        public void Upgrade(LiteElement element)
+        public void Upgrade(Element element)
         {
             if (element == null) return;
 
@@ -179,14 +180,15 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Upgrade all elements in a subtree
         /// </summary>
-        public void UpgradeSubtree(LiteElement root)
+        public void UpgradeSubtree(Element root)
         {
             if (root == null) return;
 
             Upgrade(root);
             foreach (var child in root.Descendants())
             {
-                Upgrade(child);
+                if (child is Element el)
+                    Upgrade(el);
             }
         }
 
@@ -341,3 +343,4 @@ namespace FenBrowser.FenEngine.DOM
         public string Extends { get; set; }
     }
 }
+

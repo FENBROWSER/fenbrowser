@@ -1,3 +1,4 @@
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using FenBrowser.Core;
@@ -16,8 +17,8 @@ namespace FenBrowser.FenEngine.DOM
     public class MutationObserverWrapper
     {
         public FenFunction Callback { get; }
-        private readonly List<(LiteElement target, MutationObserverOptions options)> _observed = 
-            new List<(LiteElement, MutationObserverOptions)>();
+        private readonly List<(Element target, MutationObserverOptions options)> _observed = 
+            new List<(Element, MutationObserverOptions)>();
         private readonly List<MutationRecordEntry> _pendingRecords = new List<MutationRecordEntry>();
         
         public MutationObserverWrapper(FenFunction callback)
@@ -27,7 +28,7 @@ namespace FenBrowser.FenEngine.DOM
         
         public bool HasPendingRecords => _pendingRecords.Count > 0;
 
-        public void Observe(LiteElement target, MutationObserverOptions options)
+        public void Observe(Element target, MutationObserverOptions options)
         {
             if (target == null) return;
             // Remove existing observation for this target
@@ -55,8 +56,8 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Record a mutation (called by DOM mutation methods)
         /// </summary>
-        public void RecordMutation(LiteElement target, string type, string attributeName = null, 
-            string oldValue = null, List<LiteElement> addedNodes = null, List<LiteElement> removedNodes = null)
+        public void RecordMutation(Element target, string type, string attributeName = null, 
+            string oldValue = null, List<Element> addedNodes = null, List<Element> removedNodes = null)
         {
             foreach (var (observedTarget, options) in _observed)
             {
@@ -99,8 +100,8 @@ namespace FenBrowser.FenEngine.DOM
                     Target = target,
                     AttributeName = attributeName,
                     OldValue = oldValue,
-                    AddedNodes = addedNodes ?? new List<LiteElement>(),
-                    RemovedNodes = removedNodes ?? new List<LiteElement>()
+                    AddedNodes = addedNodes ?? new List<Element>(),
+                    RemovedNodes = removedNodes ?? new List<Element>()
                 };
                 
                 _pendingRecords.Add(record);
@@ -197,11 +198,11 @@ namespace FenBrowser.FenEngine.DOM
     public class MutationRecordEntry
     {
         public string Type { get; set; }
-        public LiteElement Target { get; set; }
+        public Element Target { get; set; }
         public string AttributeName { get; set; }
         public string OldValue { get; set; }
-        public List<LiteElement> AddedNodes { get; set; } = new List<LiteElement>();
-        public List<LiteElement> RemovedNodes { get; set; } = new List<LiteElement>();
+        public List<Element> AddedNodes { get; set; } = new List<Element>();
+        public List<Element> RemovedNodes { get; set; } = new List<Element>();
         
         public FenObject ToFenObject(IExecutionContext context)
         {
@@ -235,3 +236,4 @@ namespace FenBrowser.FenEngine.DOM
         }
     }
 }
+

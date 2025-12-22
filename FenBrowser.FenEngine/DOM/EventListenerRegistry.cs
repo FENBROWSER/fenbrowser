@@ -1,3 +1,4 @@
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using FenBrowser.Core;
@@ -63,15 +64,15 @@ namespace FenBrowser.FenEngine.DOM
     public class EventListenerRegistry
     {
         // Element → EventType → List<EventListener>
-        private readonly Dictionary<LiteElement, Dictionary<string, List<EventListener>>> _listeners
-            = new Dictionary<LiteElement, Dictionary<string, List<EventListener>>>();
+        private readonly Dictionary<Element, Dictionary<string, List<EventListener>>> _listeners
+            = new Dictionary<Element, Dictionary<string, List<EventListener>>>();
 
         private readonly object _lock = new object();
 
         /// <summary>
         /// Add an event listener to an element
         /// </summary>
-        public void Add(LiteElement element, string type, IValue callback, bool capture = false, bool once = false, bool passive = false)
+        public void Add(Element element, string type, IValue callback, bool capture = false, bool once = false, bool passive = false)
         {
             if (element == null || string.IsNullOrEmpty(type) || callback == null)
                 return;
@@ -105,7 +106,7 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Remove an event listener from an element
         /// </summary>
-        public void Remove(LiteElement element, string type, IValue callback, bool capture = false)
+        public void Remove(Element element, string type, IValue callback, bool capture = false)
         {
             if (element == null || string.IsNullOrEmpty(type) || callback == null)
                 return;
@@ -145,7 +146,7 @@ namespace FenBrowser.FenEngine.DOM
         /// <param name="type">Event type</param>
         /// <param name="capture">If true, return capture-phase listeners; if false, bubble-phase</param>
         /// <returns>List of matching listeners (copy to allow modification during iteration)</returns>
-        public List<EventListener> Get(LiteElement element, string type, bool capture)
+        public List<EventListener> Get(Element element, string type, bool capture)
         {
             var result = new List<EventListener>();
 
@@ -174,7 +175,7 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Get all listeners for an element and event type (both phases)
         /// </summary>
-        public List<EventListener> GetAll(LiteElement element, string type)
+        public List<EventListener> GetAll(Element element, string type)
         {
             var result = new List<EventListener>();
 
@@ -199,7 +200,7 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Remove a listener that was marked with 'once' option
         /// </summary>
-        public void RemoveOnce(LiteElement element, string type, EventListener listener)
+        public void RemoveOnce(Element element, string type, EventListener listener)
         {
             if (element == null || string.IsNullOrEmpty(type) || listener == null)
                 return;
@@ -221,7 +222,7 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Clear all listeners for an element (e.g., when element is removed from DOM)
         /// </summary>
-        public void ClearElement(LiteElement element)
+        public void ClearElement(Element element)
         {
             if (element == null) return;
 
@@ -243,3 +244,4 @@ namespace FenBrowser.FenEngine.DOM
         }
     }
 }
+

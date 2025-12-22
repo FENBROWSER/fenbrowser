@@ -1,3 +1,4 @@
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using FenBrowser.Core;
@@ -13,15 +14,15 @@ namespace FenBrowser.FenEngine.DOM
     public class ResizeObserverWrapper
     {
         private readonly FenFunction _callback;
-        private readonly List<LiteElement> _observedElements = new List<LiteElement>();
-        private readonly Dictionary<LiteElement, (float width, float height)> _lastSizes = new Dictionary<LiteElement, (float, float)>();
+        private readonly List<Element> _observedElements = new List<Element>();
+        private readonly Dictionary<Element, (float width, float height)> _lastSizes = new Dictionary<Element, (float, float)>();
         
         public ResizeObserverWrapper(FenFunction callback)
         {
             _callback = callback ?? throw new ArgumentNullException(nameof(callback));
         }
         
-        public void Observe(LiteElement target)
+        public void Observe(Element target)
         {
             if (target == null) return;
             if (!_observedElements.Contains(target))
@@ -31,7 +32,7 @@ namespace FenBrowser.FenEngine.DOM
             }
         }
         
-        public void Unobserve(LiteElement target)
+        public void Unobserve(Element target)
         {
             if (target != null)
             {
@@ -57,7 +58,7 @@ namespace FenBrowser.FenEngine.DOM
             return arr;
         }
         
-        public void CheckForChanges(Dictionary<LiteElement, (float width, float height)> currentSizes, IExecutionContext context)
+        public void CheckForChanges(Dictionary<Element, (float width, float height)> currentSizes, IExecutionContext context)
         {
             if (_observedElements.Count == 0) return;
             
@@ -146,15 +147,15 @@ namespace FenBrowser.FenEngine.DOM
     public class IntersectionObserverWrapper
     {
         private readonly FenFunction _callback;
-        private readonly List<LiteElement> _observedElements = new List<LiteElement>();
-        private readonly Dictionary<LiteElement, bool> _lastIntersecting = new Dictionary<LiteElement, bool>();
+        private readonly List<Element> _observedElements = new List<Element>();
+        private readonly Dictionary<Element, bool> _lastIntersecting = new Dictionary<Element, bool>();
         
         public IntersectionObserverWrapper(FenFunction callback, FenObject options = null)
         {
             _callback = callback ?? throw new ArgumentNullException(nameof(callback));
         }
         
-        public void Observe(LiteElement target)
+        public void Observe(Element target)
         {
             if (target == null) return;
             if (!_observedElements.Contains(target))
@@ -164,7 +165,7 @@ namespace FenBrowser.FenEngine.DOM
             }
         }
         
-        public void Unobserve(LiteElement target)
+        public void Unobserve(Element target)
         {
             if (target != null)
             {
@@ -190,7 +191,7 @@ namespace FenBrowser.FenEngine.DOM
             return arr;
         }
         
-        public void CheckForChanges(Dictionary<LiteElement, (float x, float y, float width, float height)> elementRects, 
+        public void CheckForChanges(Dictionary<Element, (float x, float y, float width, float height)> elementRects, 
                                     float viewportWidth, float viewportHeight, float scrollY, IExecutionContext context)
         {
             if (_observedElements.Count == 0) return;
@@ -264,3 +265,4 @@ namespace FenBrowser.FenEngine.DOM
         }
     }
 }
+
