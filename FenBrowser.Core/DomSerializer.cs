@@ -1,3 +1,4 @@
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -5,7 +6,7 @@ using System.Text;
 namespace FenBrowser.Core
 {
     /// <summary>
-    /// Utility to serialize LiteElement trees back to HTML strings.
+    /// Utility to serialize Element trees back to HTML strings.
     /// Used for DOM comparison and debugging.
     /// </summary>
     public static class DomSerializer
@@ -17,9 +18,9 @@ namespace FenBrowser.Core
         };
 
         /// <summary>
-        /// Serialize a LiteElement tree to an HTML string.
+        /// Serialize a Element tree to an HTML string.
         /// </summary>
-        public static string Serialize(LiteElement root, bool prettyPrint = true)
+        public static string Serialize(Node root, bool prettyPrint = true)
         {
             if (root == null) return "";
             
@@ -28,7 +29,7 @@ namespace FenBrowser.Core
             return sb.ToString();
         }
 
-        private static void SerializeNode(LiteElement node, StringBuilder sb, int depth, bool prettyPrint)
+        private static void SerializeNode(Node node, StringBuilder sb, int depth, bool prettyPrint)
         {
             if (node == null) return;
 
@@ -38,7 +39,7 @@ namespace FenBrowser.Core
             // Handle special node types
             if (node.NodeType == NodeType.Text)
             {
-                var text = node.Text?.Trim();
+                var text = node.NodeValue?.Trim();
                 if (!string.IsNullOrEmpty(text))
                 {
                     sb.Append(indent);
@@ -52,7 +53,7 @@ namespace FenBrowser.Core
             {
                 sb.Append(indent);
                 sb.Append("<!-- ");
-                sb.Append(node.Text ?? "");
+                sb.Append(node.NodeValue ?? "");
                 sb.Append(" -->");
                 sb.Append(newline);
                 return;
@@ -66,9 +67,9 @@ namespace FenBrowser.Core
             }
 
             // Skip document root tag itself, just process children
-            if (node.Tag == "#document" || node.Tag == "#document-fragment")
+            if (node.NodeName == "#document" || node.NodeName == "#document-fragment")
             {
-                foreach (var child in node.Children ?? new List<LiteElement>())
+                foreach (var child in node.Children ?? new List<Node>())
                 {
                     SerializeNode(child, sb, depth, prettyPrint);
                 }
@@ -78,12 +79,12 @@ namespace FenBrowser.Core
             // Regular element
             sb.Append(indent);
             sb.Append("<");
-            sb.Append(node.Tag ?? "unknown");
+            sb.Append(node.NodeName ?? "unknown");
 
             // Serialize attributes
-            if (node.AttrRaw != null && node.AttrRaw.Count > 0)
+            if ((node as Element)?.AttributesRaw != null && (node as Element)?.AttributesRaw.Count > 0)
             {
-                foreach (var kvp in node.AttrRaw)
+                foreach (var kvp in (node as Element)?.AttributesRaw)
                 {
                     sb.Append(" ");
                     sb.Append(kvp.Key);
@@ -94,7 +95,7 @@ namespace FenBrowser.Core
             }
 
             // Void elements (self-closing)
-            if (VoidElements.Contains(node.Tag ?? ""))
+            if (VoidElements.Contains(node.NodeName ?? ""))
             {
                 sb.Append(" />");
                 sb.Append(newline);
@@ -120,7 +121,7 @@ namespace FenBrowser.Core
             if (hasElementChildren)
             {
                 sb.Append(newline);
-                foreach (var child in node.Children ?? new List<LiteElement>())
+                foreach (var child in node.Children ?? new List<Node>())
                 {
                     SerializeNode(child, sb, depth + 1, prettyPrint);
                 }
@@ -131,15 +132,15 @@ namespace FenBrowser.Core
                 // Inline text content
                 foreach (var child in node.Children)
                 {
-                    if (child.NodeType == NodeType.Text && !string.IsNullOrEmpty(child.Text))
+                    if (child.NodeType == NodeType.Text && !string.IsNullOrEmpty(child.NodeValue))
                     {
-                        sb.Append(EscapeHtml(child.Text.Trim()));
+                        sb.Append(EscapeHtml(child.NodeValue.Trim()));
                     }
                 }
             }
 
             sb.Append("</");
-            sb.Append(node.Tag ?? "unknown");
+            sb.Append(node.NodeName ?? "unknown");
             sb.Append(">");
             sb.Append(newline);
         }
@@ -157,14 +158,14 @@ namespace FenBrowser.Core
         /// <summary>
         /// Get statistics about a DOM tree.
         /// </summary>
-        public static DomStats GetStats(LiteElement root)
+        public static DomStats GetStats(Element root)
         {
             var stats = new DomStats();
             CountNodes(root, stats);
             return stats;
         }
 
-        private static void CountNodes(LiteElement node, DomStats stats)
+        private static void CountNodes(Node node, DomStats stats)
         {
             if (node == null) return;
 
@@ -172,11 +173,11 @@ namespace FenBrowser.Core
             {
                 case NodeType.Element:
                     stats.ElementCount++;
-                    if (node.AttrRaw != null)
-                        stats.AttributeCount += node.AttrRaw.Count;
+                    if ((node as Element)?.AttributesRaw != null)
+                        stats.AttributeCount += ((Element)node).AttributesRaw.Count;
                     break;
                 case NodeType.Text:
-                    if (!string.IsNullOrWhiteSpace(node.Text))
+                    if (!string.IsNullOrWhiteSpace(node.NodeValue))
                         stats.TextNodeCount++;
                     break;
             }
@@ -206,3 +207,4 @@ namespace FenBrowser.Core
         }
     }
 }
+

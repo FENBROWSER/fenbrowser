@@ -1,3 +1,4 @@
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 // Avalonia imports removed for Skia/Silk migration
@@ -14,18 +15,19 @@ namespace FenBrowser.FenEngine.Scripting
     /// </summary>
     public class CanvasRenderingContext2D : IObject
     {
-        private readonly LiteElement _element;
+        private readonly Element _element;
         private readonly JavaScriptEngine _engine;
         // private object _imageControl; // Removed legacy control ref
         private SKBitmap _bitmap;
         private IObject _prototype;
+        public object NativeObject { get; set; }
 
         // Current drawing state
         private CanvasState _state;
         private Stack<CanvasState> _stateStack;
         private SKPath _currentPath;
 
-        public CanvasRenderingContext2D(LiteElement element, JavaScriptEngine engine)
+        public CanvasRenderingContext2D(Element element, JavaScriptEngine engine)
         {
             _element = element;
             _engine = engine;
@@ -130,7 +132,7 @@ namespace FenBrowser.FenEngine.Scripting
 
         #region IObject Implementation
         
-        public IValue Get(string key)
+        public IValue Get(string key, IExecutionContext context = null)
         {
             switch (key)
             {
@@ -355,7 +357,7 @@ namespace FenBrowser.FenEngine.Scripting
             }));
         }
 
-        public void Set(string key, IValue value)
+        public void Set(string key, IValue value, IExecutionContext context = null)
         {
             switch (key)
             {
@@ -377,9 +379,9 @@ namespace FenBrowser.FenEngine.Scripting
             }
         }
 
-        public bool Has(string key) => !Get(key).IsUndefined;
-        public bool Delete(string key) => false;
-        public IEnumerable<string> Keys() => new[] { 
+        public bool Has(string key, IExecutionContext context = null) => !Get(key, context).IsUndefined;
+        public bool Delete(string key, IExecutionContext context = null) => false;
+        public IEnumerable<string> Keys(IExecutionContext context = null) => new[] { 
             "fillStyle", "strokeStyle", "lineWidth", "lineCap", "lineJoin", "miterLimit",
             "globalAlpha", "globalCompositeOperation", "font", "textAlign", "textBaseline",
             "shadowBlur", "shadowColor", "shadowOffsetX", "shadowOffsetY",
@@ -916,6 +918,7 @@ namespace FenBrowser.FenEngine.Scripting
         private readonly float _x0, _y0, _r0, _x1, _y1, _r1;
         private readonly List<(float offset, SKColor color)> _stops = new();
         private IObject _prototype;
+        public object NativeObject { get; set; }
         
         public CanvasGradient(GradientType type, float x0, float y0, float r0, float x1, float y1, float r1)
         {
@@ -946,7 +949,7 @@ namespace FenBrowser.FenEngine.Scripting
                 : SKShader.CreateRadialGradient(new SKPoint(_x0, _y0), _r1, colors, positions, SKShaderTileMode.Clamp);
         }
         
-        public IValue Get(string key)
+        public IValue Get(string key, IExecutionContext context = null)
         {
             if (key == "addColorStop")
             {
@@ -959,10 +962,10 @@ namespace FenBrowser.FenEngine.Scripting
             return FenValue.Undefined;
         }
         
-        public void Set(string key, IValue value) { }
-        public bool Has(string key) => key == "addColorStop";
-        public bool Delete(string key) => false;
-        public IEnumerable<string> Keys() => new[] { "addColorStop" };
+        public void Set(string key, IValue value, IExecutionContext context = null) { }
+        public bool Has(string key, IExecutionContext context = null) => key == "addColorStop";
+        public bool Delete(string key, IExecutionContext context = null) => false;
+        public IEnumerable<string> Keys(IExecutionContext context = null) => new[] { "addColorStop" };
         public IObject GetPrototype() => _prototype;
         public void SetPrototype(IObject prototype) => _prototype = prototype;
     }
@@ -976,6 +979,7 @@ namespace FenBrowser.FenEngine.Scripting
         public int Height { get; }
         public byte[] Data { get; }
         private IObject _prototype;
+        public object NativeObject { get; set; }
         
         public ImageData(int width, int height)
         {
@@ -984,7 +988,7 @@ namespace FenBrowser.FenEngine.Scripting
             Data = new byte[width * height * 4]; // RGBA
         }
         
-        public IValue Get(string key)
+        public IValue Get(string key, IExecutionContext context = null)
         {
             switch (key)
             {
@@ -1000,12 +1004,13 @@ namespace FenBrowser.FenEngine.Scripting
             }
         }
         
-        public void Set(string key, IValue value) { }
-        public bool Has(string key) => key == "width" || key == "height" || key == "data";
-        public bool Delete(string key) => false;
-        public IEnumerable<string> Keys() => new[] { "width", "height", "data" };
+        public void Set(string key, IValue value, IExecutionContext context = null) { }
+        public bool Has(string key, IExecutionContext context = null) => key == "width" || key == "height" || key == "data";
+        public bool Delete(string key, IExecutionContext context = null) => false;
+        public IEnumerable<string> Keys(IExecutionContext context = null) => new[] { "width", "height", "data" };
         public IObject GetPrototype() => _prototype;
         public void SetPrototype(IObject prototype) => _prototype = prototype;
     }
 }
+
 

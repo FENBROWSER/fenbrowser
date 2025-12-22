@@ -1,3 +1,4 @@
+using FenBrowser.Core.Dom;
 using System;
 using System.Linq;
 using System.Collections.Generic;
@@ -16,20 +17,21 @@ namespace FenBrowser.FenEngine.DOM
     /// </summary>
     public class DocumentWrapper : IObject
     {
-        private readonly LiteElement _root;
+        private readonly Element _root;
         private readonly IExecutionContext _context;
         private readonly Uri _baseUri;
         private IObject _prototype;
         private string _readyState = "complete"; // Default, managed by SetReadyState
+        public object NativeObject { get; set; }
 
-        public DocumentWrapper(LiteElement root, IExecutionContext context, Uri baseUri = null)
+        public DocumentWrapper(Element root, IExecutionContext context, Uri baseUri = null)
         {
             _root = root ?? throw new ArgumentNullException(nameof(root));
             _context = context ?? throw new ArgumentNullException(nameof(context));
             _baseUri = baseUri;
         }
 
-        public IValue Get(string key)
+        public IValue Get(string key, IExecutionContext context = null)
         {
             _context?.CheckExecutionTimeLimit();
 
@@ -116,12 +118,12 @@ namespace FenBrowser.FenEngine.DOM
                     impl.Set("hasFeature", FenValue.FromFunction(new FenFunction("hasFeature", (args, _) => FenValue.FromBoolean(true))));
                     impl.Set("createHTMLDocument", FenValue.FromFunction(new FenFunction("createHTMLDocument", (args, _) => {
                          var title = args.Length > 0 ? args[0].ToString() : "";
-                         var newLite = new LiteElement("html"); 
+                         var newLite = new Element("html"); 
                          // Minimal structure
-                         var head = new LiteElement("head");
-                         if (!string.IsNullOrEmpty(title)) { var t = new LiteElement("title") { Text = title }; head.Append(t); }
+                         var head = new Element("head");
+                         if (!string.IsNullOrEmpty(title)) { var t = new Element("title") { Text = title }; head.Append(t); }
                          newLite.Append(head);
-                         newLite.Append(new LiteElement("body"));
+                         newLite.Append(new Element("body"));
                          return FenValue.FromObject(new DocumentWrapper(newLite, _context));
                     })));
                     return FenValue.FromObject(impl);
@@ -131,7 +133,7 @@ namespace FenBrowser.FenEngine.DOM
             }
         }
 
-        public void Set(string key, IValue value)
+        public void Set(string key, IValue value, IExecutionContext context = null)
         {
             if (key.ToLowerInvariant() == "cookie")
             {
@@ -144,9 +146,9 @@ namespace FenBrowser.FenEngine.DOM
             // Could add support for document.title setter
         }
 
-        public bool Has(string key) => !Get(key).IsUndefined;
-        public bool Delete(string key) => false;
-        public IEnumerable<string> Keys() 
+        public bool Has(string key, IExecutionContext context = null) => !Get(key, context).IsUndefined;
+        public bool Delete(string key, IExecutionContext context = null) => false;
+        public IEnumerable<string> Keys(IExecutionContext context = null) 
             => new[] { "getElementById", "querySelector", "querySelectorAll", "createElement", "createDocumentFragment", "createTextNode", "createComment", "createEvent", "getElementsByClassName", "getElementsByTagName", "body", "head", "title", "documentElement", "readyState", "addEventListener", "removeEventListener", "dispatchEvent", "cookie", "domain", "implementation" };
         public IObject GetPrototype() => _prototype;
         public void SetPrototype(IObject prototype) => _prototype = prototype;
@@ -156,7 +158,7 @@ namespace FenBrowser.FenEngine.DOM
             if (args.Length == 0) return FenValue.Null;
             var tagName = args[0].ToString();
             
-            var element = new LiteElement(tagName);
+            var element = new Element(tagName);
             return FenValue.FromObject(new ElementWrapper(element, _context));
         }
 
@@ -205,21 +207,21 @@ namespace FenBrowser.FenEngine.DOM
 
         private IValue CreateDocumentFragment(IValue[] args, IValue thisVal)
         {
-            var frag = new LiteElement("#document-fragment");
+            var frag = new Element("#document-fragment");
             return FenValue.FromObject(new ElementWrapper(frag, _context));
         }
 
         private IValue CreateTextNode(IValue[] args, IValue thisVal)
         {
             var text = args.Length > 0 ? args[0].ToString() : "";
-            var node = new LiteElement("#text") { Text = text };
+            var node = new Element("#text") { Text = text };
             return FenValue.FromObject(new ElementWrapper(node, _context));
         }
 
         private IValue CreateComment(IValue[] args, IValue thisVal)
         {
             var text = args.Length > 0 ? args[0].ToString() : "";
-            var node = new LiteElement("#comment") { Text = text };
+            var node = new Element("#comment") { Text = text };
             return FenValue.FromObject(new ElementWrapper(node, _context));
         }
 
@@ -233,7 +235,7 @@ namespace FenBrowser.FenEngine.DOM
         {
             if (args.Length == 0) return FenValue.Null;
             var selector = args[0].ToString();
-            var results = new List<LiteElement>();
+            var results = new List<Element>();
             RecursiveQuerySelector(_root, selector, results);
             
             var list = new FenObject();
@@ -246,7 +248,7 @@ namespace FenBrowser.FenEngine.DOM
         {
             if (args.Length == 0) return FenValue.Null;
             var classNames = args[0].ToString().Split(new[]{' '}, StringSplitOptions.RemoveEmptyEntries);
-            var results = new List<LiteElement>();
+            var results = new List<Element>();
             RecursiveClassName(_root, classNames, results);
             
             var list = new FenObject();
@@ -259,7 +261,7 @@ namespace FenBrowser.FenEngine.DOM
         {
             if (args.Length == 0) return FenValue.Null;
             var tagName = args[0].ToString();
-            var results = new List<LiteElement>();
+            var results = new List<Element>();
             RecursiveTagName(_root, tagName, results);
             
             var list = new FenObject();
@@ -268,11 +270,11 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.FromObject(list);
         }
 
-        private LiteElement FindFirstSelector(LiteElement el, string selector)
+        private Element FindFirstSelector(Element el, string selector)
         {
             if (CssLoader.MatchesSelector(el, selector)) return el;
             if (el.Children != null) {
-                foreach(var c in el.Children) {
+                foreach(var c in el.Children.OfType<Element>()) {
                     var f = FindFirstSelector(c, selector);
                     if (f != null) return f;
                 }
@@ -280,13 +282,13 @@ namespace FenBrowser.FenEngine.DOM
             return null;
         }
 
-        private void RecursiveQuerySelector(LiteElement el, string selector, List<LiteElement> results)
+        private void RecursiveQuerySelector(Element el, string selector, List<Element> results)
         {
             if (CssLoader.MatchesSelector(el, selector)) results.Add(el);
-            if (el.Children != null) foreach(var c in el.Children) RecursiveQuerySelector(c, selector, results);
+            if (el.Children != null) foreach(var c in el.Children.OfType<Element>()) RecursiveQuerySelector(c, selector, results);
         }
 
-        private void RecursiveClassName(LiteElement el, string[] classes, List<LiteElement> results)
+        private void RecursiveClassName(Element el, string[] classes, List<Element> results)
         {
             var elClasses = el.Classes;
             bool match = true;
@@ -295,16 +297,16 @@ namespace FenBrowser.FenEngine.DOM
             }
             if (match && classes.Length > 0) results.Add(el);
             
-            if (el.Children != null) foreach(var c in el.Children) RecursiveClassName(c, classes, results);
+            if (el.Children != null) foreach(var c in el.Children.OfType<Element>()) RecursiveClassName(c, classes, results);
         }
 
-        private void RecursiveTagName(LiteElement el, string tagName, List<LiteElement> results)
+        private void RecursiveTagName(Element el, string tagName, List<Element> results)
         {
             if (string.Equals(el.Tag, tagName, StringComparison.OrdinalIgnoreCase) || tagName == "*") results.Add(el);
-            if (el.Children != null) foreach(var c in el.Children) RecursiveTagName(c, tagName, results);
+            if (el.Children != null) foreach(var c in el.Children.OfType<Element>()) RecursiveTagName(c, tagName, results);
         }
 
-        private LiteElement FindElementById(LiteElement element, string id)
+        private Element FindElementById(Element element, string id)
         {
             if (element == null) return null;
 
@@ -319,7 +321,7 @@ namespace FenBrowser.FenEngine.DOM
             // Search children recursively
             if (element.Children != null)
             {
-                foreach (var child in element.Children)
+                foreach (var child in element.Children.OfType<Element>())
                 {
                     var found = FindElementById(child, id);
                     if (found != null) return found;
@@ -329,7 +331,7 @@ namespace FenBrowser.FenEngine.DOM
             return null;
         }
 
-        private LiteElement FindElementByTag(LiteElement element, string tagName)
+        private Element FindElementByTag(Element element, string tagName)
         {
             if (element == null) return null;
 
@@ -342,7 +344,7 @@ namespace FenBrowser.FenEngine.DOM
             // Search children recursively
             if (element.Children != null)
             {
-                foreach (var child in element.Children)
+                foreach (var child in element.Children.OfType<Element>())
                 {
                     var found = FindElementByTag(child, tagName);
                     if (found != null) return found;
@@ -448,3 +450,4 @@ namespace FenBrowser.FenEngine.DOM
         }
     }
 }
+

@@ -71,6 +71,12 @@ namespace FenBrowser.FenEngine.Core
         Action<Action, int> ScheduleCallback { get; set; }
 
         /// <summary>
+        /// Schedule a microtask (Promise resolution).
+        /// Executed at the end of the current task.
+        /// </summary>
+        Action<Action> ScheduleMicrotask { get; set; }
+
+        /// <summary>
         /// Current 'this' binding for function execution
         /// </summary>
         IValue ThisBinding { get; set; }
@@ -124,7 +130,15 @@ namespace FenBrowser.FenEngine.Core
             {
                 await Task.Delay(delay);
                 action();
+                action();
             });
+        };
+
+        public Action<Action> ScheduleMicrotask { get; set; } = (action) => 
+        {
+            // Default: Run immediately or Task.Run (unsafe order without EventLoop)
+            // Ideally should be overridden by Host to use EventLoopCoordinator
+            Task.Run(() => action());
         };
         public IValue ThisBinding { get; set; }
         public Func<IValue, IValue[], IValue> ExecuteFunction { get; set; }

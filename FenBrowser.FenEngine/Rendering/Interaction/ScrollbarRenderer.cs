@@ -1,3 +1,5 @@
+using FenBrowser.Core.Css;
+using FenBrowser.Core.Dom;
 using System;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
@@ -65,7 +67,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// </summary>
         public void DrawScrollbars(
             SKCanvas canvas, 
-            LiteElement element, 
+            Element element, 
             SKRect contentBox, 
             CssComputed style,
             ScrollbarState state = null)
@@ -234,7 +236,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// Returns: 0 = not on scrollbar, 1 = vertical thumb, 2 = horizontal thumb
         /// </summary>
         public int HitTestScrollbar(
-            LiteElement element, 
+            Element element, 
             SKRect contentBox, 
             CssComputed style, 
             float x, float y)
@@ -287,7 +289,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// <summary>
         /// Handle scrollbar drag - converts a Y position to scroll position.
         /// </summary>
-        public void HandleVerticalDrag(LiteElement element, SKRect contentBox, float y, bool hasHorizontal)
+        public void HandleVerticalDrag(Element element, SKRect contentBox, float y, bool hasHorizontal)
         {
             var scrollState = _scrollManager.GetScrollState(element);
             
@@ -308,7 +310,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// <summary>
         /// Handle horizontal scrollbar drag.
         /// </summary>
-        public void HandleHorizontalDrag(LiteElement element, SKRect contentBox, float x, bool hasVertical)
+        public void HandleHorizontalDrag(Element element, SKRect contentBox, float x, bool hasVertical)
         {
             var scrollState = _scrollManager.GetScrollState(element);
             
@@ -327,3 +329,5 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         }
     }
 }
+
+

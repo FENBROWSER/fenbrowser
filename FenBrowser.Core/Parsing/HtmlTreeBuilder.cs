@@ -1,3 +1,5 @@
+using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -13,35 +15,35 @@ namespace FenBrowser.Core.Parsing
     public class HtmlTreeBuilder
     {
         private readonly HtmlTokenizer _tokenizer;
-        private readonly LiteElement _document;
+        private readonly Document _document;
         
         // Stack of Open Elements
-        private readonly Stack<LiteElement> _openElements = new Stack<LiteElement>();
+        private readonly Stack<Element> _openElements = new Stack<Element>();
         
         // List of Active Formatting Elements (for Adoption Agency Algorithm)
-        private readonly List<LiteElement> _activeFormattingElements = new List<LiteElement>();
+        private readonly List<Element> _activeFormattingElements = new List<Element>();
         
         // Current insertion mode
         private InsertionMode _insertionMode = InsertionMode.Initial;
         private InsertionMode _originalInsertionMode; // For "In Text" etc
         
         // Pointers
-        private LiteElement _headElement;
-        private LiteElement _formElement;
+        private Element _headElement;
+        private Element _formElement;
         
         private bool _framesetOk = true;
 
         public HtmlTreeBuilder(string html)
         {
             _tokenizer = new HtmlTokenizer(html);
-            _document = new LiteElement("#document");
+            _document = new Document();
             // stack is initially empty? No, usually Document is root? 
             // Spec says stack of open elements is initially empty.
             // But usually we append to Document.
             // Actually, "Process Initial" handles this.
         }
 
-        public LiteElement Build()
+        public Document Build()
         {
             foreach (var token in _tokenizer.Tokenize())
             {
@@ -135,15 +137,15 @@ namespace FenBrowser.Core.Parsing
             
             if (token is CommentToken comment)
             {
-                _document.Append(LiteElement.CreateComment(comment.Data));
+                _document.AppendChild(new Comment(comment.Data));
                 return true;
             }
             
             if (token is DoctypeToken dt)
             {
                 // Emit DOCTYPE
-                var doctypeNode = LiteElement.CreateDoctype(dt.Name, dt.PublicIdentifier, dt.SystemIdentifier);
-                _document.Append(doctypeNode);
+                var doctypeNode = new DocumentType(dt.Name, dt.PublicIdentifier, dt.SystemIdentifier);
+                _document.AppendChild(doctypeNode);
                 
                 // TODO: Quirks mode detection logic
                 SwitchTo(InsertionMode.BeforeHtml);
@@ -167,7 +169,7 @@ namespace FenBrowser.Core.Parsing
             
             if (token is CommentToken comment)
             {
-                _document.Append(LiteElement.CreateComment(comment.Data));
+                _document.AppendChild(new Comment(comment.Data));
                 return true;
             }
             
@@ -177,15 +179,15 @@ namespace FenBrowser.Core.Parsing
             if (token is StartTagToken st && st.TagName == "html")
             {
                 var html = CreateElement(st);
-                _document.Append(html);
+                _document.AppendChild(html);
                 _openElements.Push(html);
                 SwitchTo(InsertionMode.BeforeHead);
                 return true;
             }
             
             // Anything else? Create <html> and reprocess
-            var artificialHtml = new LiteElement("html");
-            _document.Append(artificialHtml);
+            var artificialHtml = new Element("html");
+            _document.AppendChild(artificialHtml);
             _openElements.Push(artificialHtml);
             SwitchTo(InsertionMode.BeforeHead);
             return false; // Reprocess
@@ -198,7 +200,7 @@ namespace FenBrowser.Core.Parsing
                 
             if (token is CommentToken comment)
             {
-                CurrentNode.Append(LiteElement.CreateComment(comment.Data));
+                CurrentNode.AppendChild(new Comment(comment.Data));
                 return true;
             }
             
@@ -234,7 +236,7 @@ namespace FenBrowser.Core.Parsing
              
              if (token is CommentToken comment)
             {
-                CurrentNode.Append(LiteElement.CreateComment(comment.Data));
+                CurrentNode.AppendChild(new Comment(comment.Data));
                 return true;
             }
             
@@ -331,7 +333,7 @@ namespace FenBrowser.Core.Parsing
              
              if (token is CommentToken comment)
             {
-                CurrentNode.Append(LiteElement.CreateComment(comment.Data));
+                CurrentNode.AppendChild(new Comment(comment.Data));
                 return true;
             }
             
@@ -359,7 +361,7 @@ namespace FenBrowser.Core.Parsing
                      // Append TO HEAD
                      // This requires we keep reference to head (we do: _headElement)
                      var node = CreateElement(st);
-                     _headElement.Append(node);
+                     _headElement.AppendChild(node);
                      // If it has content (script/style/title), we are in trouble because we aren't switching modes correctly to parse their content.
                      // But wait, "Process token ... in InHead mode".
                      // So specific logic needed. 
@@ -389,7 +391,7 @@ namespace FenBrowser.Core.Parsing
              
               if (token is CommentToken comment)
             {
-                CurrentNode.Append(LiteElement.CreateComment(comment.Data));
+                CurrentNode.AppendChild(new Comment(comment.Data));
                 return true;
             }
             
@@ -414,13 +416,13 @@ namespace FenBrowser.Core.Parsing
                 
                 if (st.TagName == "div" || st.TagName == "p" || st.TagName == "ul" || st.TagName == "ol" || st.TagName == "dl" || st.TagName == "blockquote" || st.TagName == "article" || st.TagName == "section" || st.TagName == "nav" || st.TagName == "header" || st.TagName == "footer" || st.TagName == "main")
                 {
-                    if (CurrentNode.Tag == "p" && st.TagName != "p") // Simplified p-closing
+                    if ((CurrentNode as Element)?.TagName == "p" && st.TagName != "p") // Simplified p-closing
                     {
                          ClosePElement();
                     }
                     if (st.TagName == "p")
                     {
-                         if (CurrentNode.Tag == "p") ClosePElement();
+                         if ((CurrentNode as Element)?.TagName == "p") ClosePElement();
                     }
                     InsertHtmlElement(st);
                     return true;
@@ -428,24 +430,24 @@ namespace FenBrowser.Core.Parsing
                 
                 if (st.TagName == "li")
                 {
-                    if (CurrentNode.Tag == "li") PopUntil("li");
-                    if (CurrentNode.Tag == "p") ClosePElement();
+                    if ((CurrentNode as Element)?.TagName == "li") PopUntil("li");
+                    if ((CurrentNode as Element)?.TagName == "p") ClosePElement();
                     InsertHtmlElement(st);
                     return true;
                 }
                 
                 if (st.TagName == "dd" || st.TagName == "dt")
                 {
-                     if (CurrentNode.Tag == "dd") PopUntil("dd");
-                     if (CurrentNode.Tag == "dt") PopUntil("dt");
-                     if (CurrentNode.Tag == "p") ClosePElement();
+                     if ((CurrentNode as Element)?.TagName == "dd") PopUntil("dd");
+                     if ((CurrentNode as Element)?.TagName == "dt") PopUntil("dt");
+                     if ((CurrentNode as Element)?.TagName == "p") ClosePElement();
                      InsertHtmlElement(st);
                      return true;
                 }
 
                 if (st.TagName == "h1" || st.TagName == "h2" || st.TagName == "h3" || st.TagName == "h4" || st.TagName == "h5" || st.TagName == "h6")
                 {
-                    if (CurrentNode.Tag == "p") ClosePElement();
+                    if ((CurrentNode as Element)?.TagName == "p") ClosePElement();
                     InsertHtmlElement(st);
                     return true;
                 }
@@ -465,7 +467,7 @@ namespace FenBrowser.Core.Parsing
                     }
                     InsertHtmlElement(st);
                     // Push to active formatting elements
-                    _activeFormattingElements.Add(CurrentNode);
+                    _activeFormattingElements.Add((Element)CurrentNode);
                     return true;
                 }
                 
@@ -473,7 +475,7 @@ namespace FenBrowser.Core.Parsing
                 {
                      // Reconstruct active formatting
                      InsertHtmlElement(st);
-                     _activeFormattingElements.Add(CurrentNode);
+                     _activeFormattingElements.Add((Element)CurrentNode);
                      return true;
                 }
                 
@@ -494,7 +496,7 @@ namespace FenBrowser.Core.Parsing
                     st.TagName == "path" || st.TagName == "rect" || st.TagName == "circle" || st.TagName == "line" || st.TagName == "polyline" || st.TagName == "polygon" || st.TagName == "ellipse" || st.TagName == "stop" || st.TagName == "use" || st.TagName == "image")
                 {
                      // Void elements
-                     if (st.TagName == "hr" && CurrentNode.Tag == "p") ClosePElement();
+                     if (st.TagName == "hr" && (CurrentNode as Element)?.TagName == "p") ClosePElement();
                      
                      var el = InsertHtmlElement(st);
                      _openElements.Pop(); // Immediately close
@@ -505,14 +507,14 @@ namespace FenBrowser.Core.Parsing
                 if (st.TagName == "form")
                 {
                     if (_formElement != null) return true; // Ignore nested forms
-                    if (CurrentNode.Tag == "p") ClosePElement();
+                    if ((CurrentNode as Element)?.TagName == "p") ClosePElement();
                     _formElement = InsertHtmlElement(st);
                     return true;
                 }
                 
                 if (st.TagName == "table")
                 {
-                    if (CurrentNode.Tag == "p") ClosePElement();
+                    if ((CurrentNode as Element)?.TagName == "p") ClosePElement();
                     InsertHtmlElement(st);
                     SwitchTo(InsertionMode.InTable);
                     return true;
@@ -569,7 +571,7 @@ namespace FenBrowser.Core.Parsing
                     // Simplified Adoption Agency: Just close if on stack
                     if (StackHas(et.TagName)) PopUntil(et.TagName);
                     // Also remove from active formatting list
-                    _activeFormattingElements.RemoveAll(e => e.Tag == et.TagName);
+                    _activeFormattingElements.RemoveAll(e => e.TagName == et.TagName);
                     return true;
                 }
                 
@@ -599,7 +601,7 @@ namespace FenBrowser.Core.Parsing
              if (token is CommentToken)
              {
                  // Append to html element
-                 _openElements.First().Append(LiteElement.CreateComment(((CommentToken)token).Data)); // _openElements bottom is html
+                 _openElements.First().AppendChild(new Comment(((CommentToken)token).Data)); // _openElements bottom is html
                  return true;
              }
              
@@ -620,7 +622,7 @@ namespace FenBrowser.Core.Parsing
         {
              if (token is CommentToken)
              {
-                 _document.Append(LiteElement.CreateComment(((CommentToken)token).Data));
+                 _document.AppendChild(new Comment(((CommentToken)token).Data));
                  return true;
              }
              if (token is EofToken) return true;
@@ -654,7 +656,7 @@ namespace FenBrowser.Core.Parsing
                       // ... huge switch case ...
                       // For now, if table structure, append to current (which is table)
                       // BUT 'tr' inside 'table' implies 'tbody'.
-                      if (tag == "tr" && CurrentNode.Tag == "table" && token is StartTagToken)
+                      if (tag == "tr" && (CurrentNode as Element)?.TagName == "table" && token is StartTagToken)
                       {
                           InsertHtmlElement(new StartTagToken() { TagName = "tbody" });
                           // Reprocess
@@ -731,23 +733,23 @@ namespace FenBrowser.Core.Parsing
 
         // --- Helpers ---
         
-        private LiteElement CurrentNode => _openElements.Count > 0 ? _openElements.Peek() : _document;
+        private Node CurrentNode => _openElements.Count > 0 ? _openElements.Peek() : _document;
         
         private void SwitchTo(InsertionMode mode)
         {
             _insertionMode = mode;
         }
         
-        private LiteElement CreateElement(StartTagToken token)
+        private Element CreateElement(StartTagToken token)
         {
-            var el = new LiteElement(token.TagName);
+            var el = new Element(token.TagName);
             
             // Foreign Content Adjustments
             // Apply if:
             // 1. We are creating an svg or math element itself, OR
             // 2. We are already inside an svg or math element
             bool isForeignContent = token.TagName == "svg" || token.TagName == "math" ||
-                                    CurrentNode.Tag == "svg" || CurrentNode.Tag == "math" || 
+                                    (CurrentNode as Element)?.TagName == "svg" || (CurrentNode as Element)?.TagName == "math" || 
                                     IsSvgOrMathDescendant(CurrentNode);
             if (isForeignContent)
             {
@@ -763,12 +765,12 @@ namespace FenBrowser.Core.Parsing
             return el;
         }
         
-        private bool IsSvgOrMathDescendant(LiteElement node)
+        private bool IsSvgOrMathDescendant(Node node)
         {
              // Simplified check up the stack
              foreach (var el in _openElements)
              {
-                 if (el.Tag == "svg" || el.Tag == "math") return true;
+                 if (el.TagName == "svg" || el.TagName == "math") return true;
              }
              return false;
         }
@@ -830,10 +832,10 @@ namespace FenBrowser.Core.Parsing
             // Add more as needed
         };
         
-        private LiteElement InsertHtmlElement(StartTagToken token)
+        private Element InsertHtmlElement(StartTagToken token)
         {
             var el = CreateElement(token);
-            CurrentNode.Append(el);
+            CurrentNode.AppendChild(el);
             _openElements.Push(el);
             return el;
         }
@@ -844,15 +846,15 @@ namespace FenBrowser.Core.Parsing
             var last = CurrentNode.Children.LastOrDefault();
             if (last != null &&UnsafeIsText(last))
             {
-                last.Text += token.Data;
+                last.NodeValue += token.Data;
             }
             else
             {
-                CurrentNode.Append(LiteElement.TextNode(token.Data));
+                CurrentNode.AppendChild(new Text(token.Data));
             }
         }
 
-        private bool UnsafeIsText(LiteElement e) => e.NodeType == NodeType.Text; // Avoid property implementation details
+        private bool UnsafeIsText(Node e) => e.NodeType == NodeType.Text; // Avoid property implementation details
 
         private void ClosePElement()
         {
@@ -861,7 +863,7 @@ namespace FenBrowser.Core.Parsing
         
         private void GenerateImpliedEndTags(string except = null)
         {
-            while (CurrentNode.Tag != except && IsImpliedEndTag(CurrentNode.Tag))
+            while ((CurrentNode as Element)?.TagName != except && IsImpliedEndTag((CurrentNode as Element)?.TagName))
             {
                 _openElements.Pop();
             }
@@ -876,7 +878,7 @@ namespace FenBrowser.Core.Parsing
         {
             foreach (var el in _openElements)
             {
-                if (el.Tag == tag) return true;
+                if (el.TagName == tag) return true;
             }
             return false;
         }
@@ -886,7 +888,7 @@ namespace FenBrowser.Core.Parsing
             while (_openElements.Count > 0)
             {
                 var popped = _openElements.Pop();
-                if (popped.Tag == tag) break;
+                if (popped.TagName == tag) break;
             }
         }
         
@@ -910,3 +912,4 @@ namespace FenBrowser.Core.Parsing
         }
     }
 }
+

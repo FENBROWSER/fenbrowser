@@ -4,6 +4,8 @@ using SkiaSharp;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Rendering;
+using FenBrowser.Core.Dom;
+using FenBrowser.Core.Css;
 using FenBrowser.FenEngine.Interaction;
 
 namespace FenBrowser.Host;
@@ -17,8 +19,8 @@ public class BrowserIntegration
 {
     private readonly BrowserHost _browser;
     private readonly SkiaDomRenderer _renderer;
-    private LiteElement _root;
-    private Dictionary<LiteElement, CssComputed> _styles;
+    private Element _root;
+    private Dictionary<Node, CssComputed> _styles;
     private bool _needsRepaint = true;
     private float _scrollY = 0;
     private float _contentHeight = 0;
@@ -143,6 +145,17 @@ public class BrowserIntegration
         
         try
         {
+            FenLogger.Info($"[BrowserIntegration] Render called. Root type: {_root?.GetType().Name}, Styles count: {_styles?.Count}", LogCategory.General);
+            
+            if (_root == null)
+            {
+                 FenLogger.Error("[BrowserIntegration] Root is null!", LogCategory.General);
+            }
+            if (_styles == null || _styles.Count == 0)
+            {
+                 FenLogger.Error("[BrowserIntegration] Styles dict is empty or null!", LogCategory.General);
+            }
+
             _renderer.Render(
                 _root, 
                 canvas, 
@@ -246,7 +259,7 @@ public class BrowserIntegration
     /// <summary>
     /// Hit test to find element at position.
     /// </summary>
-    private LiteElement HitTestElement(LiteElement element, float x, float y)
+    private Element HitTestElement(Element element, float x, float y)
     {
         if (element == null) return null;
         
@@ -261,7 +274,7 @@ public class BrowserIntegration
         for (int i = element.Children.Count - 1; i >= 0; i--)
         {
             var child = element.Children[i];
-            var hit = HitTestElement(child, x, y);
+                var hit = HitTestElement(child as Element, x, y);
             if (hit != null) return hit;
         }
         
@@ -272,7 +285,7 @@ public class BrowserIntegration
     /// <summary>
     /// Get href from link element or its ancestors.
     /// </summary>
-    private string GetLinkHref(LiteElement element)
+    private string GetLinkHref(Element element)
     {
         var current = element;
         while (current != null)
@@ -298,7 +311,7 @@ public class BrowserIntegration
                     return href;
                 }
             }
-            current = current.Parent;
+            current = current.Parent as Element;
         }
         return null;
     }

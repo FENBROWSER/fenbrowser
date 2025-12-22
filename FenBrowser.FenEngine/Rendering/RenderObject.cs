@@ -1,3 +1,5 @@
+using FenBrowser.Core.Css;
+using FenBrowser.Core.Dom;
 using System;
 using SkiaSharp;
 using System.Collections.Generic;
@@ -16,7 +18,7 @@ namespace FenBrowser.FenEngine.Rendering
         public List<RenderObject> Children { get; } = new List<RenderObject>();
 
         // Data Source
-        public LiteElement Node { get; set; }
+        public Element Node { get; set; }
         public CssComputed Style { get; set; }
 
         // Layout Results (Calculated by Layout Engine)
@@ -49,3 +51,5 @@ namespace FenBrowser.FenEngine.Rendering
         public abstract void Layout(SKSize availableSize);
     }
 }
+
+

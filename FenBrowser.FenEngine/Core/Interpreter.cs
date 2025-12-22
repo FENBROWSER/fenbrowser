@@ -168,13 +168,40 @@ namespace FenBrowser.FenEngine.Core
                             var targetObjVal = targetObj.AsObject();
                             if (targetObjVal != null)
                             {
-                                targetObjVal.Set(leftMember.Property, value);
+                            targetObjVal.Set(leftMember.Property, value, context);
                                 return value;
                             }
                         }
                         else
                         {
                             try { System.IO.File.AppendAllText("debug_log.txt", $"[Interpreter] Cannot assign to non-object: {targetObj.Type}\r\n"); } catch { }
+                        }
+                    }
+                    
+                    // Handle assignment to index expression (obj[key] = ...)
+                    if (assignExpr.Left is IndexExpression leftIndex)
+                    {
+                        var targetObj = Eval(leftIndex.Left, env, context);
+                        if (IsError(targetObj)) return targetObj;
+                        
+                        var indexVal = Eval(leftIndex.Index, env, context);
+                        if (IsError(indexVal)) return indexVal;
+                        
+                        var key = indexVal.ToString();
+                        
+                        if (targetObj.IsObject)
+                        {
+                            var targetObjVal = targetObj.AsObject();
+                            if (targetObjVal != null)
+                            {
+                                targetObjVal.Set(key, value, context);
+                                return value;
+                            }
+                        }
+                        else if (targetObj.IsString)
+                        {
+                            // Strings are immutable, assignment to index is a no-op
+                            return value;
                         }
                     }
                     
@@ -230,11 +257,11 @@ namespace FenBrowser.FenEngine.Core
                                 if (fnArgs.Count > 1 && fnArgs[1].IsObject)
                                 {
                                     var argsArray = fnArgs[1].AsObject();
-                                    var lenVal = argsArray?.Get("length");
+                                    var lenVal = argsArray?.Get("length", context);
                                     int len = lenVal != null && lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                                     for (int i = 0; i < len; i++)
                                     {
-                                        var argVal = argsArray.Get(i.ToString());
+                                        var argVal = argsArray.Get(i.ToString(), context);
                                         applyArgs.Add(argVal ?? FenValue.Undefined);
                                     }
                                 }
@@ -251,19 +278,19 @@ namespace FenBrowser.FenEngine.Core
                             if (obj.IsObject)
                             {
                                 var o = obj.AsObject();
-                                if (o != null) function = o.Get(me.Property);
+                                if (o != null) function = o.Get(me.Property, context);
                             }
                             else if (obj.IsString)
                             {
                                 // String methods lookup (not length, as it is a property, but methods like substring if we had them)
                                 var proto = GetStringPrototype();
-                                function = proto?.Get(me.Property);
+                                function = proto?.Get(me.Property, context);
                             }
                             else if (obj.IsNumber)
                             {
                                 // Number methods lookup (toFixed, toPrecision, toExponential, toString)
                                 var proto = GetNumberPrototype();
-                                function = proto?.Get(me.Property);
+                                function = proto?.Get(me.Property, context);
                             }
 
                             if (function == null) function = FenValue.Undefined;
@@ -381,9 +408,9 @@ namespace FenBrowser.FenEngine.Core
             var arrayObj = new FenObject();
             for (int i = 0; i < elements.Count; i++)
             {
-                arrayObj.Set(i.ToString(), elements[i]);
+                arrayObj.Set(i.ToString(), elements[i], context);
             }
-            arrayObj.Set("length", FenValue.FromNumber(elements.Count));
+            arrayObj.Set("length", FenValue.FromNumber(elements.Count), context);
             arrayObj.SetPrototype(GetArrayPrototype());
             
             return FenValue.FromObject(arrayObj);
@@ -405,18 +432,18 @@ namespace FenBrowser.FenEngine.Core
                     return FenValue.FromNumber(0);
                 }
                 
-                var lenVal = obj.Get("length");
+                var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
                 try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Array.push] Initial length: {len}, Args count: {args.Length}\r\n"); } catch { }
 
                 foreach (var arg in args)
                 {
-                    obj.Set(len.ToString(), arg);
+                    obj.Set(len.ToString(), arg, null);
                     len++;
                 }
                 
-                obj.Set("length", FenValue.FromNumber(len));
+                obj.Set("length", FenValue.FromNumber(len), null);
                 return FenValue.FromNumber(len);
             })));
 
@@ -427,14 +454,14 @@ namespace FenBrowser.FenEngine.Core
                 if (obj == null) return FenValue.FromString("");
                 
                 var separator = args.Length > 0 ? args[0].ToString() : ",";
-                var lenVal = obj.Get("length");
+                var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
                 var sb = new StringBuilder();
                 for (int i = 0; i < len; i++)
                 {
                     if (i > 0) sb.Append(separator);
-                    var val = obj.Get(i.ToString());
+                    var val = obj.Get(i.ToString(), null);
                     if (val != null && !val.IsUndefined && !val.IsNull)
                     {
                         sb.Append(val.ToString());
@@ -449,13 +476,13 @@ namespace FenBrowser.FenEngine.Core
             {
                 var obj = thisVal.AsObject();
                 if (obj == null) return FenValue.Undefined;
-                var lenVal = obj.Get("length");
+                var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 if (len == 0) return FenValue.Undefined;
                 var lastIdx = (len - 1).ToString();
-                var val = obj.Get(lastIdx);
-                obj.Delete(lastIdx);
-                obj.Set("length", FenValue.FromNumber(len - 1));
+                var val = obj.Get(lastIdx, null);
+                obj.Delete(lastIdx, null);
+                obj.Set("length", FenValue.FromNumber(len - 1), null);
                 return val ?? FenValue.Undefined;
             })));
 
@@ -464,17 +491,17 @@ namespace FenBrowser.FenEngine.Core
             {
                 var obj = thisVal.AsObject();
                 if (obj == null) return FenValue.Undefined;
-                var lenVal = obj.Get("length");
+                var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 if (len == 0) return FenValue.Undefined;
-                var first = obj.Get("0");
+                var first = obj.Get("0", null);
                 for (int i = 1; i < len; i++)
                 {
-                    var val = obj.Get(i.ToString());
-                    obj.Set((i - 1).ToString(), val ?? FenValue.Undefined);
+                    var val = obj.Get(i.ToString(), null);
+                    obj.Set((i - 1).ToString(), val ?? FenValue.Undefined, null);
                 }
-                obj.Delete((len - 1).ToString());
-                obj.Set("length", FenValue.FromNumber(len - 1));
+                obj.Delete((len - 1).ToString(), null);
+                obj.Set("length", FenValue.FromNumber(len - 1), null);
                 return first ?? FenValue.Undefined;
             })));
 
@@ -483,21 +510,21 @@ namespace FenBrowser.FenEngine.Core
             {
                 var obj = thisVal.AsObject();
                 if (obj == null) return FenValue.FromNumber(0);
-                var lenVal = obj.Get("length");
+                var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 int argCount = args.Length;
                 // Shift existing elements
                 for (int i = len - 1; i >= 0; i--)
                 {
-                    var val = obj.Get(i.ToString());
-                    obj.Set((i + argCount).ToString(), val ?? FenValue.Undefined);
+                    var val = obj.Get(i.ToString(), null);
+                    obj.Set((i + argCount).ToString(), val ?? FenValue.Undefined, null);
                 }
                 // Insert new elements
                 for (int i = 0; i < argCount; i++)
                 {
-                    obj.Set(i.ToString(), args[i]);
+                    obj.Set(i.ToString(), args[i], null);
                 }
-                obj.Set("length", FenValue.FromNumber(len + argCount));
+                obj.Set("length", FenValue.FromNumber(len + argCount), null);
                 return FenValue.FromNumber(len + argCount);
             })));
 
@@ -506,7 +533,7 @@ namespace FenBrowser.FenEngine.Core
             {
                 var obj = thisVal.AsObject();
                 if (obj == null) return FenValue.FromObject(new FenObject());
-                var lenVal = obj.Get("length");
+                var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
                 int start = args.Length > 0 ? (int)args[0].ToNumber() : 0;
@@ -520,11 +547,11 @@ namespace FenBrowser.FenEngine.Core
                 int idx = 0;
                 for (int i = start; i < end; i++)
                 {
-                    var val = obj.Get(i.ToString());
-                    result.Set(idx.ToString(), val ?? FenValue.Undefined);
+                    var val = obj.Get(i.ToString(), null);
+                    result.Set(idx.ToString(), val ?? FenValue.Undefined, null);
                     idx++;
                 }
-                result.Set("length", FenValue.FromNumber(idx));
+                result.Set("length", FenValue.FromNumber(idx), null);
                 return FenValue.FromObject(result);
             })));
 
@@ -533,7 +560,7 @@ namespace FenBrowser.FenEngine.Core
             {
                 var obj = thisVal.AsObject();
                 if (obj == null) return FenValue.FromObject(new FenObject());
-                var lenVal = obj.Get("length");
+                var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
                 int start = args.Length > 0 ? (int)args[0].ToNumber() : 0;
@@ -546,10 +573,10 @@ namespace FenBrowser.FenEngine.Core
                 var deleted = new FenObject();
                 for (int i = 0; i < deleteCount; i++)
                 {
-                    var val = obj.Get((start + i).ToString());
-                    deleted.Set(i.ToString(), val ?? FenValue.Undefined);
+                    var val = obj.Get((start + i).ToString(), null);
+                    deleted.Set(i.ToString(), val ?? FenValue.Undefined, null);
                 }
-                deleted.Set("length", FenValue.FromNumber(deleteCount));
+                deleted.Set("length", FenValue.FromNumber(deleteCount), null);
                 
                 var insertItems = args.Skip(2).ToArray();
                 int insertCount = insertItems.Length;
@@ -559,28 +586,28 @@ namespace FenBrowser.FenEngine.Core
                 {
                     for (int i = len - 1; i >= start + deleteCount; i--)
                     {
-                        var val = obj.Get(i.ToString());
-                        obj.Set((i + shift).ToString(), val ?? FenValue.Undefined);
+                        var val = obj.Get(i.ToString(), null);
+                        obj.Set((i + shift).ToString(), val ?? FenValue.Undefined, null);
                     }
                 }
                 else if (shift < 0)
                 {
                     for (int i = start + deleteCount; i < len; i++)
                     {
-                        var val = obj.Get(i.ToString());
-                        obj.Set((i + shift).ToString(), val ?? FenValue.Undefined);
+                        var val = obj.Get(i.ToString(), null);
+                        obj.Set((i + shift).ToString(), val ?? FenValue.Undefined, null);
                     }
                     for (int i = len + shift; i < len; i++)
                     {
-                        obj.Delete(i.ToString());
+                        obj.Delete(i.ToString(), null);
                     }
                 }
                 
                 for (int i = 0; i < insertCount; i++)
                 {
-                    obj.Set((start + i).ToString(), insertItems[i]);
+                    obj.Set((start + i).ToString(), insertItems[i], null);
                 }
-                obj.Set("length", FenValue.FromNumber(len + shift));
+                obj.Set("length", FenValue.FromNumber(len + shift), null);
                 
                 return FenValue.FromObject(deleted);
             })));
@@ -594,11 +621,11 @@ namespace FenBrowser.FenEngine.Core
                 var obj = thisVal.AsObject();
                 if (obj != null)
                 {
-                    var lenVal = obj.Get("length");
+                    var lenVal = obj.Get("length", null);
                     var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                     for (int i = 0; i < len; i++)
                     {
-                        result.Set(idx.ToString(), obj.Get(i.ToString()) ?? FenValue.Undefined);
+                        result.Set(idx.ToString(), obj.Get(i.ToString(), null) ?? FenValue.Undefined, null);
                         idx++;
                     }
                 }
@@ -608,30 +635,30 @@ namespace FenBrowser.FenEngine.Core
                     if (arg.IsObject)
                     {
                         var arrObj = arg.AsObject();
-                        var arrLen = arrObj.Get("length");
+                        var arrLen = arrObj.Get("length", null);
                         if (arrLen != null && arrLen.IsNumber)
                         {
                             int len = (int)arrLen.ToNumber();
                             for (int i = 0; i < len; i++)
                             {
-                                result.Set(idx.ToString(), arrObj.Get(i.ToString()) ?? FenValue.Undefined);
+                                result.Set(idx.ToString(), arrObj.Get(i.ToString(), null) ?? FenValue.Undefined, null);
                                 idx++;
                             }
                         }
                         else
                         {
-                            result.Set(idx.ToString(), arg);
+                            result.Set(idx.ToString(), arg, null);
                             idx++;
                         }
                     }
                     else
                     {
-                        result.Set(idx.ToString(), arg);
+                        result.Set(idx.ToString(), arg, null);
                         idx++;
                     }
                 }
                 
-                result.Set("length", FenValue.FromNumber(idx));
+                result.Set("length", FenValue.FromNumber(idx), null);
                 return FenValue.FromObject(result);
             })));
 
@@ -640,7 +667,7 @@ namespace FenBrowser.FenEngine.Core
             {
                 var obj = thisVal.AsObject();
                 if (obj == null || args.Length == 0) return FenValue.FromNumber(-1);
-                var lenVal = obj.Get("length");
+                var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 var search = args[0];
                 int from = args.Length > 1 ? (int)args[1].ToNumber() : 0;
@@ -648,7 +675,7 @@ namespace FenBrowser.FenEngine.Core
                 
                 for (int i = from; i < len; i++)
                 {
-                    var val = obj.Get(i.ToString());
+                    var val = obj.Get(i.ToString(), null);
                     if (val != null && val.StrictEquals(search)) return FenValue.FromNumber(i);
                 }
                 return FenValue.FromNumber(-1);
@@ -659,7 +686,7 @@ namespace FenBrowser.FenEngine.Core
             {
                 var obj = thisVal.AsObject();
                 if (obj == null || args.Length == 0) return FenValue.FromNumber(-1);
-                var lenVal = obj.Get("length");
+                var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 var search = args[0];
                 int from = args.Length > 1 ? (int)args[1].ToNumber() : len - 1;
@@ -668,7 +695,7 @@ namespace FenBrowser.FenEngine.Core
                 
                 for (int i = from; i >= 0; i--)
                 {
-                    var val = obj.Get(i.ToString());
+                    var val = obj.Get(i.ToString(), null);
                     if (val != null && val.StrictEquals(search)) return FenValue.FromNumber(i);
                 }
                 return FenValue.FromNumber(-1);
@@ -679,7 +706,7 @@ namespace FenBrowser.FenEngine.Core
             {
                 var obj = thisVal.AsObject();
                 if (obj == null || args.Length == 0) return FenValue.FromBoolean(false);
-                var lenVal = obj.Get("length");
+                var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 var search = args[0];
                 int from = args.Length > 1 ? (int)args[1].ToNumber() : 0;
@@ -687,7 +714,7 @@ namespace FenBrowser.FenEngine.Core
                 
                 for (int i = from; i < len; i++)
                 {
-                    var val = obj.Get(i.ToString());
+                    var val = obj.Get(i.ToString(), null);
                     if (val != null && (val.StrictEquals(search) || (search.IsNumber && double.IsNaN(search.ToNumber()) && val.IsNumber && double.IsNaN(val.ToNumber()))))
                         return FenValue.FromBoolean(true);
                 }
@@ -699,15 +726,15 @@ namespace FenBrowser.FenEngine.Core
             {
                 var obj = thisVal.AsObject();
                 if (obj == null) return thisVal;
-                var lenVal = obj.Get("length");
+                var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
                 for (int i = 0; i < len / 2; i++)
                 {
-                    var left = obj.Get(i.ToString());
-                    var right = obj.Get((len - 1 - i).ToString());
-                    obj.Set(i.ToString(), right ?? FenValue.Undefined);
-                    obj.Set((len - 1 - i).ToString(), left ?? FenValue.Undefined);
+                    var left = obj.Get(i.ToString(), null);
+                    var right = obj.Get((len - 1 - i).ToString(), null);
+                    obj.Set(i.ToString(), right ?? FenValue.Undefined, null);
+                    obj.Set((len - 1 - i).ToString(), left ?? FenValue.Undefined, null);
                 }
                 return thisVal;
             })));
@@ -717,14 +744,14 @@ namespace FenBrowser.FenEngine.Core
             {
                 var obj = thisVal.AsObject();
                 if (obj == null) return thisVal;
-                var lenVal = obj.Get("length");
+                var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 if (len <= 1) return thisVal;
                 
                 var items = new List<IValue>();
                 for (int i = 0; i < len; i++)
                 {
-                    items.Add(obj.Get(i.ToString()) ?? FenValue.Undefined);
+                    items.Add(obj.Get(i.ToString(), null) ?? FenValue.Undefined);
                 }
                 
                 FenFunction compareFn = args.Length > 0 ? args[0].AsFunction() : null;
@@ -741,7 +768,7 @@ namespace FenBrowser.FenEngine.Core
                 
                 for (int i = 0; i < len; i++)
                 {
-                    obj.Set(i.ToString(), items[i]);
+                    obj.Set(i.ToString(), items[i], null);
                 }
                 return thisVal;
             })));
@@ -753,13 +780,13 @@ namespace FenBrowser.FenEngine.Core
                 if (obj == null || args.Length == 0) return FenValue.Undefined;
                 var callback = args[0].AsFunction();
                 if (callback == null) return FenValue.Undefined;
-                var lenVal = obj.Get("length");
+                var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 var thisArg = args.Length > 1 ? args[1] : FenValue.Undefined;
                 
                 for (int i = 0; i < len; i++)
                 {
-                    var val = obj.Get(i.ToString());
+                    var val = obj.Get(i.ToString(), null);
                     callback.Invoke(new IValue[] { val ?? FenValue.Undefined, FenValue.FromNumber(i), thisVal }, null);
                 }
                 return FenValue.Undefined;
@@ -772,25 +799,25 @@ namespace FenBrowser.FenEngine.Core
                 var result = new FenObject();
                 if (obj == null || args.Length == 0)
                 {
-                    result.Set("length", FenValue.FromNumber(0));
+                    result.Set("length", FenValue.FromNumber(0), null);
                     return FenValue.FromObject(result);
                 }
                 var callback = args[0].AsFunction();
                 if (callback == null)
                 {
-                    result.Set("length", FenValue.FromNumber(0));
+                    result.Set("length", FenValue.FromNumber(0), null);
                     return FenValue.FromObject(result);
                 }
-                var lenVal = obj.Get("length");
+                var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
                 for (int i = 0; i < len; i++)
                 {
-                    var val = obj.Get(i.ToString());
+                    var val = obj.Get(i.ToString(), null);
                     var mapped = callback.Invoke(new IValue[] { val ?? FenValue.Undefined, FenValue.FromNumber(i), thisVal }, null);
-                    result.Set(i.ToString(), mapped);
+                    result.Set(i.ToString(), mapped, null);
                 }
-                result.Set("length", FenValue.FromNumber(len));
+                result.Set("length", FenValue.FromNumber(len), null);
                 return FenValue.FromObject(result);
             })));
 
@@ -802,29 +829,29 @@ namespace FenBrowser.FenEngine.Core
                 int idx = 0;
                 if (obj == null || args.Length == 0)
                 {
-                    result.Set("length", FenValue.FromNumber(0));
+                    result.Set("length", FenValue.FromNumber(0), null);
                     return FenValue.FromObject(result);
                 }
                 var callback = args[0].AsFunction();
                 if (callback == null)
                 {
-                    result.Set("length", FenValue.FromNumber(0));
+                    result.Set("length", FenValue.FromNumber(0), null);
                     return FenValue.FromObject(result);
                 }
-                var lenVal = obj.Get("length");
+                var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
                 for (int i = 0; i < len; i++)
                 {
-                    var val = obj.Get(i.ToString());
+                    var val = obj.Get(i.ToString(), null);
                     var keep = callback.Invoke(new IValue[] { val ?? FenValue.Undefined, FenValue.FromNumber(i), thisVal }, null);
                     if (keep.ToBoolean())
                     {
-                        result.Set(idx.ToString(), val ?? FenValue.Undefined);
+                        result.Set(idx.ToString(), val ?? FenValue.Undefined, null);
                         idx++;
                     }
                 }
-                result.Set("length", FenValue.FromNumber(idx));
+                result.Set("length", FenValue.FromNumber(idx), null);
                 return FenValue.FromObject(result);
             })));
 
@@ -835,7 +862,7 @@ namespace FenBrowser.FenEngine.Core
                 if (obj == null || args.Length == 0) return FenValue.Undefined;
                 var callback = args[0].AsFunction();
                 if (callback == null) return FenValue.Undefined;
-                var lenVal = obj.Get("length");
+                var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
                 int start = 0;
@@ -847,13 +874,13 @@ namespace FenBrowser.FenEngine.Core
                 else
                 {
                     if (len == 0) return new ErrorValue("Reduce of empty array with no initial value");
-                    accumulator = obj.Get("0") ?? FenValue.Undefined;
+                    accumulator = obj.Get("0", null) ?? FenValue.Undefined;
                     start = 1;
                 }
                 
                 for (int i = start; i < len; i++)
                 {
-                    var val = obj.Get(i.ToString());
+                    var val = obj.Get(i.ToString(), null);
                     accumulator = callback.Invoke(new IValue[] { accumulator, val ?? FenValue.Undefined, FenValue.FromNumber(i), thisVal }, null);
                 }
                 return accumulator;
@@ -866,7 +893,7 @@ namespace FenBrowser.FenEngine.Core
                 if (obj == null || args.Length == 0) return FenValue.Undefined;
                 var callback = args[0].AsFunction();
                 if (callback == null) return FenValue.Undefined;
-                var lenVal = obj.Get("length");
+                var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
                 int start = len - 1;
@@ -878,13 +905,13 @@ namespace FenBrowser.FenEngine.Core
                 else
                 {
                     if (len == 0) return new ErrorValue("Reduce of empty array with no initial value");
-                    accumulator = obj.Get((len - 1).ToString()) ?? FenValue.Undefined;
+                    accumulator = obj.Get((len - 1).ToString(), null) ?? FenValue.Undefined;
                     start = len - 2;
                 }
                 
                 for (int i = start; i >= 0; i--)
                 {
-                    var val = obj.Get(i.ToString());
+                    var val = obj.Get(i.ToString(), null);
                     accumulator = callback.Invoke(new IValue[] { accumulator, val ?? FenValue.Undefined, FenValue.FromNumber(i), thisVal }, null);
                 }
                 return accumulator;
@@ -897,12 +924,12 @@ namespace FenBrowser.FenEngine.Core
                 if (obj == null || args.Length == 0) return FenValue.Undefined;
                 var callback = args[0].AsFunction();
                 if (callback == null) return FenValue.Undefined;
-                var lenVal = obj.Get("length");
+                var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
                 for (int i = 0; i < len; i++)
                 {
-                    var val = obj.Get(i.ToString()) ?? FenValue.Undefined;
+                    var val = obj.Get(i.ToString(), null) ?? FenValue.Undefined;
                     var result = callback.Invoke(new IValue[] { val, FenValue.FromNumber(i), thisVal }, null);
                     if (result.ToBoolean()) return val;
                 }
@@ -916,12 +943,12 @@ namespace FenBrowser.FenEngine.Core
                 if (obj == null || args.Length == 0) return FenValue.FromNumber(-1);
                 var callback = args[0].AsFunction();
                 if (callback == null) return FenValue.FromNumber(-1);
-                var lenVal = obj.Get("length");
+                var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
                 for (int i = 0; i < len; i++)
                 {
-                    var val = obj.Get(i.ToString()) ?? FenValue.Undefined;
+                    var val = obj.Get(i.ToString(), null) ?? FenValue.Undefined;
                     var result = callback.Invoke(new IValue[] { val, FenValue.FromNumber(i), thisVal }, null);
                     if (result.ToBoolean()) return FenValue.FromNumber(i);
                 }
@@ -935,12 +962,12 @@ namespace FenBrowser.FenEngine.Core
                 if (obj == null || args.Length == 0) return FenValue.FromBoolean(false);
                 var callback = args[0].AsFunction();
                 if (callback == null) return FenValue.FromBoolean(false);
-                var lenVal = obj.Get("length");
+                var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
                 for (int i = 0; i < len; i++)
                 {
-                    var val = obj.Get(i.ToString()) ?? FenValue.Undefined;
+                    var val = obj.Get(i.ToString(), null) ?? FenValue.Undefined;
                     var result = callback.Invoke(new IValue[] { val, FenValue.FromNumber(i), thisVal }, null);
                     if (result.ToBoolean()) return FenValue.FromBoolean(true);
                 }
@@ -954,12 +981,12 @@ namespace FenBrowser.FenEngine.Core
                 if (obj == null || args.Length == 0) return FenValue.FromBoolean(true);
                 var callback = args[0].AsFunction();
                 if (callback == null) return FenValue.FromBoolean(true);
-                var lenVal = obj.Get("length");
+                var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
                 for (int i = 0; i < len; i++)
                 {
-                    var val = obj.Get(i.ToString()) ?? FenValue.Undefined;
+                    var val = obj.Get(i.ToString(), null) ?? FenValue.Undefined;
                     var result = callback.Invoke(new IValue[] { val, FenValue.FromNumber(i), thisVal }, null);
                     if (!result.ToBoolean()) return FenValue.FromBoolean(false);
                 }
@@ -972,7 +999,7 @@ namespace FenBrowser.FenEngine.Core
                 var obj = thisVal.AsObject();
                 if (obj == null) return thisVal;
                 var value = args.Length > 0 ? args[0] : FenValue.Undefined;
-                var lenVal = obj.Get("length");
+                var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
                 int start = args.Length > 1 ? (int)args[1].ToNumber() : 0;
@@ -984,7 +1011,7 @@ namespace FenBrowser.FenEngine.Core
                 
                 for (int i = start; i < end; i++)
                 {
-                    obj.Set(i.ToString(), value);
+                    obj.Set(i.ToString(), value, null);
                 }
                 return thisVal;
             })));
@@ -996,36 +1023,36 @@ namespace FenBrowser.FenEngine.Core
                 var result = new FenObject();
                 if (obj == null)
                 {
-                    result.Set("length", FenValue.FromNumber(0));
+                    result.Set("length", FenValue.FromNumber(0), null);
                     return FenValue.FromObject(result);
                 }
                 int depth = args.Length > 0 ? (int)args[0].ToNumber() : 1;
-                var lenVal = obj.Get("length");
+                var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
                 int idx = 0;
                 void Flatten(IObject arr, int currentDepth)
                 {
-                    var arrLen = arr.Get("length");
+                    var arrLen = arr.Get("length", null);
                     int l = arrLen != null && arrLen.IsNumber ? (int)arrLen.ToNumber() : 0;
                     for (int i = 0; i < l; i++)
                     {
-                        var val = arr.Get(i.ToString());
+                        var val = arr.Get(i.ToString(), null);
                         if (currentDepth > 0 && val != null && val.IsObject)
                         {
-                            var innerLen = val.AsObject()?.Get("length");
+                            var innerLen = val.AsObject()?.Get("length", null);
                             if (innerLen != null && innerLen.IsNumber)
                             {
                                 Flatten(val.AsObject(), currentDepth - 1);
                                 continue;
                             }
                         }
-                        result.Set(idx.ToString(), val ?? FenValue.Undefined);
+                        result.Set(idx.ToString(), val ?? FenValue.Undefined, null);
                         idx++;
                     }
                 }
                 Flatten(obj, depth);
-                result.Set("length", FenValue.FromNumber(idx));
+                result.Set("length", FenValue.FromNumber(idx), null);
                 return FenValue.FromObject(result);
             })));
 
@@ -1037,9 +1064,9 @@ namespace FenBrowser.FenEngine.Core
             var obj = new FenObject();
             foreach (var pair in node.Pairs)
             {
-                var val = Eval(pair.Value, env, context);
+                var val = Eval(pair.Value, env, null);
                 if (IsError(val)) return val;
-                obj.Set(pair.Key, val);
+                obj.Set(pair.Key, val, null);
             }
             return FenValue.FromObject(obj);
         }
@@ -1484,9 +1511,9 @@ namespace FenBrowser.FenEngine.Core
                 var argumentsObj = new FenObject();
                 for (int i = 0; i < args.Count; i++)
                 {
-                    argumentsObj.Set(i.ToString(), args[i]);
+                    argumentsObj.Set(i.ToString(), args[i], context);
                 }
-                argumentsObj.Set("length", FenValue.FromNumber(args.Count));
+                argumentsObj.Set("length", FenValue.FromNumber(args.Count), context);
                 env.Set("arguments", FenValue.FromObject(argumentsObj));
             }
 
@@ -1500,10 +1527,10 @@ namespace FenBrowser.FenEngine.Core
                     int restIndex = 0;
                     for (int j = i; j < args.Count; j++)
                     {
-                        restArray.Set(restIndex.ToString(), args[j]);
+                        restArray.Set(restIndex.ToString(), args[j], context);
                         restIndex++;
                     }
-                    restArray.Set("length", FenValue.FromNumber(restIndex));
+                    restArray.Set("length", FenValue.FromNumber(restIndex), context);
                     env.Set(param.Value, FenValue.FromObject(restArray));
                     break; // Rest parameter must be last
                 }
@@ -1567,18 +1594,18 @@ namespace FenBrowser.FenEngine.Core
             var stringsArray = new FenObject();
             for (int i = 0; i < taggedExpr.Strings.Count; i++)
             {
-                stringsArray.Set(i.ToString(), FenValue.FromString(taggedExpr.Strings[i]));
+                stringsArray.Set(i.ToString(), FenValue.FromString(taggedExpr.Strings[i]), context);
             }
-            stringsArray.Set("length", FenValue.FromNumber(taggedExpr.Strings.Count));
+            stringsArray.Set("length", FenValue.FromNumber(taggedExpr.Strings.Count), context);
             
             // Add the 'raw' property (same as strings for now, could handle escapes differently)
             var rawArray = new FenObject();
             for (int i = 0; i < taggedExpr.Strings.Count; i++)
             {
-                rawArray.Set(i.ToString(), FenValue.FromString(taggedExpr.Strings[i]));
+                rawArray.Set(i.ToString(), FenValue.FromString(taggedExpr.Strings[i]), context);
             }
-            rawArray.Set("length", FenValue.FromNumber(taggedExpr.Strings.Count));
-            stringsArray.Set("raw", FenValue.FromObject(rawArray));
+            rawArray.Set("length", FenValue.FromNumber(taggedExpr.Strings.Count), context);
+            stringsArray.Set("raw", FenValue.FromObject(rawArray), context);
             
             // Build the arguments list: [stringsArray, ...evaluatedExpressions]
             var args = new List<IValue>();
@@ -1610,7 +1637,7 @@ namespace FenBrowser.FenEngine.Core
                 
                 // Lookup in StringPrototype
                 var proto = GetStringPrototype();
-                var val = proto.Get(me.Property);
+                var val = proto.Get(me.Property, context);
                 if (val != null) return val;
             }
             else if (left.IsObject)
@@ -1618,7 +1645,7 @@ namespace FenBrowser.FenEngine.Core
                 var obj = left.AsObject();
                 if (obj != null)
                 {
-                    var val = obj.Get(me.Property);
+                    var val = obj.Get(me.Property, context);
                     if (val != null) return val;
                 }
             }
@@ -1639,7 +1666,7 @@ namespace FenBrowser.FenEngine.Core
                 var obj = left.AsObject();
                 if (obj != null)
                 {
-                    var val = obj.Get(index.ToString());
+                    var val = obj.Get(index.ToString(), context);
                     if (val != null) return val;
                 }
             }
@@ -1666,6 +1693,20 @@ namespace FenBrowser.FenEngine.Core
             if (fn.Prototype != null)
             {
                 instance.SetPrototype(fn.Prototype);
+            }
+
+            if (fn.IsNative)
+            {
+               try
+               {
+                   var res = fn.NativeImplementation(args.ToArray(), FenValue.FromObject(instance));
+                   if (res.IsObject || res.IsFunction) return res;  // Return object or function from native constructor
+                   return FenValue.FromObject(instance);
+               }
+               catch (Exception ex)
+               {
+                   return new ErrorValue(ex.Message);
+               }
             }
             
             // Create new environment for the constructor call
@@ -1712,9 +1753,10 @@ namespace FenBrowser.FenEngine.Core
 
             if (IsError(result)) return result;
 
-            // If constructor returns an object, return it. Otherwise return 'this' (instance)
+            // If constructor returns an object OR function, return it. Otherwise return 'this' (instance)
+            // This is important for Proxy constructor which may return a function when target is a function
             var returnValue = UnwrapReturnValue(result);
-            if (returnValue.IsObject)
+            if (returnValue.IsObject || returnValue.IsFunction)
             {
                 return returnValue;
             }

@@ -1,3 +1,5 @@
+using FenBrowser.Core.Css;
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -26,7 +28,7 @@ namespace FenBrowser.FenEngine.Rendering
         bool CanGoForward { get; }
         SecurityState SecurityState { get; }
         CertificateInfo CurrentCertificate { get; }
-        Dictionary<LiteElement, CssComputed> ComputedStyles { get; }
+        Dictionary<Node, CssComputed> ComputedStyles { get; }
 
         // Events
         event EventHandler<Uri> Navigated;
@@ -107,9 +109,9 @@ namespace FenBrowser.FenEngine.Rendering
         // Legacy/Utility
         IList<string> GetAllLinks();
         string GetTextContent();
-        LiteElement GetDomRoot();
+        Element GetDomRoot();
         string GetRawHtml();
-        void HighlightElement(LiteElement element);
+        void HighlightElement(Element element);
         void RemoveHighlight();
     }
 
@@ -185,7 +187,7 @@ namespace FenBrowser.FenEngine.Rendering
         private bool _isNavigatingHistory;
         
         // Map WebDriver Element IDs to LiteElements
-        private readonly Dictionary<string, LiteElement> _elementMap = new Dictionary<string, LiteElement>();
+        private readonly Dictionary<string, Element> _elementMap = new Dictionary<string, Element>();
 
         public event EventHandler<Uri> Navigated;
         public event EventHandler<string> NavigationFailed;
@@ -208,7 +210,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         public SecurityState SecurityState { get; private set; } = SecurityState.None;
         public CspPolicy CurrentPolicy { get; private set; }
-        public Dictionary<LiteElement, CssComputed> ComputedStyles => _engine.LastComputedStyles;
+        public Dictionary<Node, CssComputed> ComputedStyles => _engine.LastComputedStyles;
         public CustomHtmlEngine Engine => _engine;
 
         // ========== INJECTABLE DELEGATES FOR WEBDRIVER ==========
@@ -383,7 +385,7 @@ namespace FenBrowser.FenEngine.Rendering
         public CertificateInfo CurrentCertificate => _lastCertificate;
 
 
-        public LiteElement GetDomRoot()
+        public Element GetDomRoot()
         {
             return _engine.GetActiveDom();
         }
@@ -516,8 +518,6 @@ namespace FenBrowser.FenEngine.Rendering
                 // FIX: Set _current BEFORE rendering so UI has access to correct BaseUrl during render events
                 _current = uri;
                 try { FenLogger.Debug($"[BrowserApi] _current updated early to: {_current?.AbsoluteUri}", LogCategory.General); } catch {}
-                
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", $"[BrowserApi] Calling RenderAsync for {uri}\r\n"); } catch {}
                 var elem = await _engine.RenderAsync(htmlToRender, uri, u => _resources.FetchTextAsync(u), u => _resources.FetchImageAsync(u), u => { _ = NavigateAsync(u.AbsoluteUri); });
                 
                 // _current already set above
@@ -651,22 +651,22 @@ namespace FenBrowser.FenEngine.Rendering
             var dom = _engine.GetActiveDom();
             if (dom == null) throw new Exception("No active DOM");
 
-            LiteElement found = null;
+            Element found = null;
             if (strategy == "css selector")
             {
                 if (value.StartsWith("#"))
                 {
                     var id = value.Substring(1);
-                    found = dom.Descendants().FirstOrDefault(n => n.Attr != null && n.Attr.ContainsKey("id") && n.Attr["id"] == id);
+                    found = dom.Descendants().OfType<Element>().FirstOrDefault(n => n.Attr != null && n.Attr.ContainsKey("id") && n.Attr["id"] == id);
                 }
                 else if (value.StartsWith("."))
                 {
                     var cls = value.Substring(1);
-                    found = dom.Descendants().FirstOrDefault(n => n.Attr != null && n.Attr.ContainsKey("class") && n.Attr["class"].Contains(cls));
+                    found = dom.Descendants().OfType<Element>().FirstOrDefault(n => n.Attr != null && n.Attr.ContainsKey("class") && n.Attr["class"].Contains(cls));
                 }
                 else
                 {
-                    found = dom.Descendants().FirstOrDefault(n => n.Tag == value);
+                    found = dom.Descendants().OfType<Element>().FirstOrDefault(n => n.Tag == value);
                 }
             }
             else if (strategy == "xpath")
@@ -674,7 +674,7 @@ namespace FenBrowser.FenEngine.Rendering
                 if (value.StartsWith("//"))
                 {
                     var tag = value.Substring(2);
-                    found = dom.Descendants().FirstOrDefault(n => n.Tag == tag);
+                    found = dom.Descendants().OfType<Element>().FirstOrDefault(n => n.Tag == tag);
                 }
             }
 
@@ -702,7 +702,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         private void RaiseNavigationFailed(string msg) => NavigationFailed?.Invoke(this, msg);
 
-        public void HighlightElement(LiteElement element)
+        public void HighlightElement(Element element)
         {
             _engine.HighlightElement(element);
         }
@@ -710,6 +710,18 @@ namespace FenBrowser.FenEngine.Rendering
         public void RemoveHighlight()
         {
             _engine.RemoveHighlight();
+        }
+
+        /// <summary>
+        /// Drive the Event Loop (Tasks and Microtasks).
+        /// Should be called repeatedly from the Main Thread (e.g. UI timer).
+        /// </summary>
+        public void Pulse()
+        {
+            // Process one task (macro-task)
+            FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance.ProcessNextTask();
+            // Then drain all microtasks (checkpoint)
+            FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance.PerformMicrotaskCheckpoint();
         }
 
         // ========== NEW WEBDRIVER METHODS ==========
@@ -785,11 +797,11 @@ namespace FenBrowser.FenEngine.Rendering
             var dom = _engine.GetActiveDom();
             if (dom == null) return null;
 
-            LiteElement searchRoot = dom;
+            Element searchRoot = dom;
             if (!string.IsNullOrEmpty(parentId) && _elementMap.TryGetValue(parentId, out var parent))
                 searchRoot = parent;
 
-            LiteElement found = FindElementByStrategy(searchRoot, strategy, value);
+            Element found = FindElementByStrategy(searchRoot, strategy, value);
             if (found != null)
             {
                 var id = Guid.NewGuid().ToString();
@@ -799,13 +811,131 @@ namespace FenBrowser.FenEngine.Rendering
             return null;
         }
 
+        // ========== INPUT HANDLING ==========
+
+        public void OnMouseDown(float x, float y, int button)
+        {
+            QueueInputTask("mousedown", x, y, button);
+        }
+
+        public void OnMouseUp(float x, float y, int button)
+        {
+            QueueInputTask("mouseup", x, y, button);
+        }
+
+        public void OnMouseMove(float x, float y)
+        {
+             // TODO: Throttle mousemove?
+             // For now, queue it.
+             // QueueInputTask("mousemove", x, y, 0); 
+        }
+
+        public void OnClick(float x, float y, int button)
+        {
+             QueueInputTask("click", x, y, button);
+        }
+
+        private void QueueInputTask(string type, float x, float y, int button)
+        {
+             FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance.EnqueueTask(() =>
+             {
+                 DispatchInputEvent(type, x, y, button);
+             });
+        }
+
+        private void DispatchInputEvent(string type, float x, float y, int button)
+        {
+             var layout = _engine.LastLayout;
+             if (layout == null && _engine.ActiveDom == null) return;
+
+             // Hit Test
+             Element target = _engine.ActiveDom; // Default to root
+             
+             if (layout != null)
+             {
+                 Element bestHit = null;
+                 float bestArea = float.MaxValue;
+                 int bestDepth = -1;
+
+                 // Naive hit test against all known rects
+                 foreach (var kvp in layout.ElementRects)
+                 {
+                     var el = kvp.Key;
+                     var rect = kvp.Value;
+                     if (x >= rect.X && x <= rect.Right && y >= rect.Y && y <= rect.Bottom)
+                     {
+                         // Hit!
+                         // Calculate depth or use area as proxy (smaller area = usually deeper)
+                         float area = rect.Width * rect.Height;
+                         
+                         // Rough depth calc
+                         int depth = 0;
+                         var p = el.Parent;
+                         while (p != null) { depth++; p = p.Parent; }
+
+                         if (depth > bestDepth)
+                         {
+                             bestDepth = depth;
+                             bestHit = el;
+                             bestArea = area;
+                         }
+                         else if (depth == bestDepth && area < bestArea)
+                         {
+                             bestHit = el;
+                             bestArea = area;
+                         }
+                     }
+                 }
+                 if (bestHit != null) target = bestHit;
+             }
+
+             if (target != null)
+             {
+                 var evt = new DOM.DomEvent(type, bubbles: true, cancelable: true);
+                 // TODO: MouseEvent subclass with coordinates (x, y) attached to event
+                 
+                 // Dispatch logic
+                 var context = _engine.Context;
+                 
+                 // If using FenEngine.DOM.EventTarget, we need to call DispatchEvent
+                 // Note: EventTarget is in FenBrowser.FenEngine.DOM namespace
+                 bool notCancelled = FenBrowser.FenEngine.DOM.EventTarget.DispatchEvent(target, evt, context);
+
+                 // Default Actions
+                 if (notCancelled)
+                 {
+                     if (type == "click")
+                     {
+                         HandleClickDefaultAction(target);
+                     }
+                 }
+             }
+        }
+
+        private void HandleClickDefaultAction(Element target)
+        {
+            // Traverse up to find 'a' tag
+            var current = target;
+            while (current != null)
+            {
+                if (current.Tag == "a" && current.Attr != null && current.Attr.TryGetValue("href", out var href))
+                {
+                    Task.Run(async () => await NavigateAsync(href));
+                    return;
+                }
+                current = current.Parent as Element;
+            }
+        }
+
+
+
         public async Task<string[]> FindElementsAsync(string strategy, string value, string parentId = null)
         {
             await Task.CompletedTask;
             var dom = _engine.GetActiveDom();
             if (dom == null) return Array.Empty<string>();
 
-            LiteElement searchRoot = dom;
+            Element searchRoot = dom;
             if (!string.IsNullOrEmpty(parentId) && _elementMap.TryGetValue(parentId, out var parent))
                 searchRoot = parent;
 
@@ -820,69 +950,69 @@ namespace FenBrowser.FenEngine.Rendering
             return ids.ToArray();
         }
 
-        private LiteElement FindElementByStrategy(LiteElement root, string strategy, string value)
+        private Element FindElementByStrategy(Element root, string strategy, string value)
         {
             if (strategy == "css selector")
             {
                 if (value.StartsWith("#"))
                 {
                     var id = value.Substring(1);
-                    return root.Descendants().FirstOrDefault(n => n.Attr != null && n.Attr.ContainsKey("id") && n.Attr["id"] == id);
+                    return root.Descendants().OfType<Element>().FirstOrDefault(n => n.Attr != null && n.Attr.ContainsKey("id") && n.Attr["id"] == id);
                 }
                 else if (value.StartsWith("."))
                 {
                     var cls = value.Substring(1);
-                    return root.Descendants().FirstOrDefault(n => n.Attr != null && n.Attr.ContainsKey("class") && n.Attr["class"].Contains(cls));
+                    return root.Descendants().OfType<Element>().FirstOrDefault(n => n.Attr != null && n.Attr.ContainsKey("class") && n.Attr["class"].Contains(cls));
                 }
                 else
                 {
-                    return root.Descendants().FirstOrDefault(n => n.Tag == value);
+                    return root.Descendants().OfType<Element>().FirstOrDefault(n => n.Tag == value);
                 }
             }
             else if (strategy == "xpath" && value.StartsWith("//"))
             {
                 var tag = value.Substring(2);
-                return root.Descendants().FirstOrDefault(n => n.Tag == tag);
+                return root.Descendants().OfType<Element>().FirstOrDefault(n => n.Tag == tag);
             }
             else if (strategy == "tag name")
             {
-                return root.Descendants().FirstOrDefault(n => n.Tag == value);
+                return root.Descendants().OfType<Element>().FirstOrDefault(n => n.Tag == value);
             }
             else if (strategy == "link text")
             {
-                return root.Descendants().FirstOrDefault(n => n.Tag == "a" && n.Text?.Trim() == value);
+                return root.Descendants().OfType<Element>().FirstOrDefault(n => n.Tag == "a" && n.Text?.Trim() == value);
             }
             else if (strategy == "partial link text")
             {
-                return root.Descendants().FirstOrDefault(n => n.Tag == "a" && n.Text?.Contains(value) == true);
+                return root.Descendants().OfType<Element>().FirstOrDefault(n => n.Tag == "a" && n.Text?.Contains(value) == true);
             }
             return null;
         }
 
-        private IEnumerable<LiteElement> FindElementsByStrategy(LiteElement root, string strategy, string value)
+        private IEnumerable<Element> FindElementsByStrategy(Element root, string strategy, string value)
         {
             if (strategy == "css selector")
             {
                 if (value.StartsWith("#"))
                 {
                     var id = value.Substring(1);
-                    return root.Descendants().Where(n => n.Attr != null && n.Attr.ContainsKey("id") && n.Attr["id"] == id);
+                    return root.Descendants().OfType<Element>().Where(n => n.Attr != null && n.Attr.ContainsKey("id") && n.Attr["id"] == id);
                 }
                 else if (value.StartsWith("."))
                 {
                     var cls = value.Substring(1);
-                    return root.Descendants().Where(n => n.Attr != null && n.Attr.ContainsKey("class") && n.Attr["class"].Contains(cls));
+                    return root.Descendants().OfType<Element>().Where(n => n.Attr != null && n.Attr.ContainsKey("class") && n.Attr["class"].Contains(cls));
                 }
                 else
                 {
-                    return root.Descendants().Where(n => n.Tag == value);
+                    return root.Descendants().OfType<Element>().Where(n => n.Tag == value);
                 }
             }
             else if (strategy == "tag name")
             {
-                return root.Descendants().Where(n => n.Tag == value);
+                return root.Descendants().OfType<Element>().Where(n => n.Tag == value);
             }
-            return Enumerable.Empty<LiteElement>();
+            return Enumerable.Empty<Element>();
         }
 
         public Task<string> GetActiveElementAsync()
@@ -1033,7 +1163,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         public Task<string> GetPageSourceAsync()
         {
-            // Serialize DOM back to HTML using LiteElement.ToHtml()
+            // Serialize DOM back to HTML using Element.ToHtml()
             var dom = _engine.GetActiveDom();
             if (dom != null)
             {
@@ -1483,14 +1613,14 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        private LiteElement FindElementAtPoint(double x, double y)
+        private Element FindElementAtPoint(double x, double y)
         {
             // Find element at given coordinates (simplified - would need layout info)
             // For now, return null as hit testing requires layout information
             return null;
         }
 
-        private async Task SimulateClickOnElementAsync(LiteElement element)
+        private async Task SimulateClickOnElementAsync(Element element)
         {
             if (element == null) return;
             
@@ -1584,3 +1714,4 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
+

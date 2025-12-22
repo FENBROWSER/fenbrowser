@@ -1,3 +1,4 @@
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using FenBrowser.Core;
@@ -25,9 +26,14 @@ namespace FenBrowser.FenEngine.DOM
         public bool Composed { get; protected set; }
         public double TimeStamp { get; }
 
+        // Public methods for internal use
+        public void StopPropagation() => PropagationStopped = true;
+        public void StopImmediatePropagation() { PropagationStopped = true; ImmediatePropagationStopped = true; }
+        public void PreventDefault() { if (Cancelable) DefaultPrevented = true; }
+
         // Dynamic properties (set during dispatch)
-        public LiteElement Target { get; set; }
-        public LiteElement CurrentTarget { get; set; }
+        public Element Target { get; set; }
+        public Element CurrentTarget { get; set; }
         public int EventPhase { get; set; } = NONE;
 
         // State flags
@@ -37,7 +43,7 @@ namespace FenBrowser.FenEngine.DOM
         public bool IsTrusted { get; set; }
 
         // Propagation path
-        public List<LiteElement> Path { get; set; } = new List<LiteElement>();
+        public List<Element> Path { get; set; } = new List<Element>();
 
         /// <summary>
         /// Create a new DOM Event
@@ -180,3 +186,4 @@ namespace FenBrowser.FenEngine.DOM
         }
     }
 }
+

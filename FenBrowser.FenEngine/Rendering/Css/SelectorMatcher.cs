@@ -1,3 +1,4 @@
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -16,7 +17,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
         /// <summary>
         /// Check if an element matches a selector string.
         /// </summary>
-        public static bool Matches(LiteElement element, string selector)
+        public static bool Matches(Element element, string selector)
         {
             if (element == null || string.IsNullOrWhiteSpace(selector)) return false;
             
@@ -272,7 +273,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
         #region Matching
 
-        private static bool MatchesChain(LiteElement element, SelectorChain chain)
+        private static bool MatchesChain(Element element, SelectorChain chain)
         {
             if (chain.Segments.Count == 0) return false;
 
@@ -296,26 +297,28 @@ namespace FenBrowser.FenEngine.Rendering.Css
             return true;
         }
 
-        private static LiteElement FindMatchingAncestor(LiteElement el, char combinator)
+        private static Element FindMatchingAncestor(Element el, char combinator)
         {
             return combinator switch
             {
-                ' ' => el.Parent,  // Descendant - next segment can match any ancestor
-                '>' => el.Parent,  // Child - next segment must match parent
+                ' ' => el.Parent as Element,  // Descendant - next segment can match any ancestor
+                '>' => el.Parent as Element,  // Child - next segment must match parent
                 '+' => GetPreviousSibling(el), // Adjacent sibling
                 '~' => GetPreviousSibling(el), // General sibling
-                _ => el.Parent
+                _ => el.Parent as Element
             };
         }
 
-        private static LiteElement GetPreviousSibling(LiteElement el)
+        private static Element GetPreviousSibling(Element el)
         {
-            if (el.Parent?.Children == null) return null;
-            int idx = el.Parent.Children.IndexOf(el);
-            return idx > 0 ? el.Parent.Children[idx - 1] : null;
+            var parent = el.Parent as Element;
+            if (parent?.Children == null) return null;
+            var siblings = parent.Children.OfType<Element>().ToList();
+            int idx = siblings.IndexOf(el);
+            return idx > 0 ? siblings[idx - 1] : null;
         }
 
-        private static bool MatchesSegment(LiteElement el, SelectorSegment seg)
+        private static bool MatchesSegment(Element el, SelectorSegment seg)
         {
             if (el == null) return false;
 
@@ -363,7 +366,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
             return true;
         }
 
-        private static bool MatchesAttribute(LiteElement el, AttributeSelector attr)
+        private static bool MatchesAttribute(Element el, AttributeSelector attr)
         {
             string val = el.Attr?.ContainsKey(attr.Name) == true ? el.Attr[attr.Name] : null;
 
@@ -386,7 +389,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
             };
         }
 
-        private static bool MatchesPseudoClass(LiteElement el, string name, string args)
+        private static bool MatchesPseudoClass(Element el, string name, string args)
         {
             return name.ToLowerInvariant() switch
             {
@@ -397,7 +400,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 "root" => el.Parent == null || el.Tag?.ToUpperInvariant() == "HTML",
                 "not" => !Matches(el, args),
                 "is" or "where" => ParseSelectorList(args).Any(chain => MatchesChain(el, chain)),
-                "has" => el.Children?.Any(c => Matches(c, args)) == true,
+                "has" => el.Children?.OfType<Element>().Any(c => Matches(c, args)) == true,
                 "nth-child" => MatchesNthChild(el, args),
                 "nth-last-child" => MatchesNthLastChild(el, args),
                 "checked" => el.Attr?.ContainsKey("checked") == true,
@@ -408,32 +411,32 @@ namespace FenBrowser.FenEngine.Rendering.Css
             };
         }
 
-        private static bool IsFirstChild(LiteElement el)
+        private static bool IsFirstChild(Element el)
         {
             if (el.Parent?.Children == null) return true;
             return el.Parent.Children.FirstOrDefault(c => !c.IsText) == el;
         }
 
-        private static bool IsLastChild(LiteElement el)
+        private static bool IsLastChild(Element el)
         {
             if (el.Parent?.Children == null) return true;
             return el.Parent.Children.LastOrDefault(c => !c.IsText) == el;
         }
 
-        private static bool IsOnlyChild(LiteElement el)
+        private static bool IsOnlyChild(Element el)
         {
             if (el.Parent?.Children == null) return true;
             return el.Parent.Children.Count(c => !c.IsText) == 1;
         }
 
-        private static bool MatchesNthChild(LiteElement el, string args)
+        private static bool MatchesNthChild(Element el, string args)
         {
             if (el.Parent?.Children == null) return false;
             int index = el.Parent.Children.Where(c => !c.IsText).ToList().IndexOf(el) + 1;
             return MatchesNthFormula(index, args);
         }
 
-        private static bool MatchesNthLastChild(LiteElement el, string args)
+        private static bool MatchesNthLastChild(Element el, string args)
         {
             if (el.Parent?.Children == null) return false;
             var siblings = el.Parent.Children.Where(c => !c.IsText).ToList();
@@ -535,3 +538,4 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
     #endregion
 }
+

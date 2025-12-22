@@ -1,3 +1,5 @@
+using FenBrowser.Core.Css;
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using FenBrowser.Core;
@@ -12,12 +14,12 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
     /// </summary>
     public class ScrollManager
     {
-        private readonly Dictionary<LiteElement, ScrollState> _scrollStates;
+        private readonly Dictionary<Element, ScrollState> _scrollStates;
         private readonly object _lock = new();
 
         public ScrollManager()
         {
-            _scrollStates = new Dictionary<LiteElement, ScrollState>();
+            _scrollStates = new Dictionary<Element, ScrollState>();
         }
 
         #region Scroll State Management
@@ -25,7 +27,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// <summary>
         /// Get or create scroll state for an element.
         /// </summary>
-        public ScrollState GetScrollState(LiteElement element)
+        public ScrollState GetScrollState(Element element)
         {
             lock (_lock)
             {
@@ -41,7 +43,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// <summary>
         /// Update scroll position for an element.
         /// </summary>
-        public void SetScrollPosition(LiteElement element, float scrollX, float scrollY)
+        public void SetScrollPosition(Element element, float scrollX, float scrollY)
         {
             var state = GetScrollState(element);
             state.ScrollX = Math.Max(0, Math.Min(scrollX, state.MaxScrollX));
@@ -53,7 +55,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// <summary>
         /// Update scroll bounds based on content size.
         /// </summary>
-        public void SetScrollBounds(LiteElement element, float contentWidth, float contentHeight, float viewportWidth, float viewportHeight)
+        public void SetScrollBounds(Element element, float contentWidth, float contentHeight, float viewportWidth, float viewportHeight)
         {
             var state = GetScrollState(element);
             state.ContentWidth = contentWidth;
@@ -71,7 +73,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// <summary>
         /// Apply scroll delta (e.g., from mouse wheel).
         /// </summary>
-        public void Scroll(LiteElement element, float deltaX, float deltaY)
+        public void Scroll(Element element, float deltaX, float deltaY)
         {
             var state = GetScrollState(element);
             SetScrollPosition(element, state.ScrollX + deltaX, state.ScrollY + deltaY);
@@ -80,7 +82,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// <summary>
         /// Clear scroll state for an element.
         /// </summary>
-        public void ClearScrollState(LiteElement element)
+        public void ClearScrollState(Element element)
         {
             lock (_lock)
             {
@@ -106,7 +108,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// <summary>
         /// Check if element is scrollable.
         /// </summary>
-        public bool IsScrollable(LiteElement element, CssComputed style)
+        public bool IsScrollable(Element element, CssComputed style)
         {
             if (style == null) return false;
 
@@ -120,7 +122,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// <summary>
         /// Check if element has vertical scrollbar.
         /// </summary>
-        public bool HasVerticalScrollbar(LiteElement element)
+        public bool HasVerticalScrollbar(Element element)
         {
             var state = GetScrollState(element);
             return state.ContentHeight > state.ViewportHeight;
@@ -129,7 +131,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// <summary>
         /// Check if element has horizontal scrollbar.
         /// </summary>
-        public bool HasHorizontalScrollbar(LiteElement element)
+        public bool HasHorizontalScrollbar(Element element)
         {
             var state = GetScrollState(element);
             return state.ContentWidth > state.ViewportWidth;
@@ -138,7 +140,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// <summary>
         /// Get scroll offset for rendering.
         /// </summary>
-        public (float x, float y) GetScrollOffset(LiteElement element)
+        public (float x, float y) GetScrollOffset(Element element)
         {
             var state = GetScrollState(element);
             return (state.ScrollX, state.ScrollY);
@@ -151,7 +153,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// <summary>
         /// Start smooth scroll animation to target position.
         /// </summary>
-        public void SmoothScrollTo(LiteElement element, float targetX, float targetY, int durationMs = 300)
+        public void SmoothScrollTo(Element element, float targetX, float targetY, int durationMs = 300)
         {
             var state = GetScrollState(element);
             state.SmoothScrollTarget = (targetX, targetY);
@@ -163,7 +165,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// <summary>
         /// Update smooth scroll animation. Call each frame.
         /// </summary>
-        public bool UpdateSmoothScroll(LiteElement element)
+        public bool UpdateSmoothScroll(Element element)
         {
             var state = GetScrollState(element);
             if (!state.SmoothScrollStartTime.HasValue) return false;
@@ -196,7 +198,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// <summary>
         /// Apply scroll snap if configured.
         /// </summary>
-        public void ApplyScrollSnap(LiteElement element, CssComputed style, List<float> snapPoints)
+        public void ApplyScrollSnap(Element element, CssComputed style, List<float> snapPoints)
         {
             if (style?.ScrollSnapType == null || snapPoints == null || snapPoints.Count == 0)
                 return;
@@ -256,3 +258,5 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         public bool IsAnimating => SmoothScrollStartTime.HasValue;
     }
 }
+
+

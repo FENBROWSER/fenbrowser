@@ -1,3 +1,5 @@
+using FenBrowser.Core.Css;
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
@@ -13,17 +15,17 @@ namespace FenBrowser.FenEngine.Rendering.Performance
     /// </summary>
     public class IncrementalLayoutManager
     {
-        private readonly ConcurrentDictionary<LiteElement, LayoutCache> _layoutCache;
-        private readonly ConcurrentDictionary<LiteElement, CssComputed> _styleCache;
-        private readonly HashSet<LiteElement> _dirtyElements;
+        private readonly ConcurrentDictionary<Element, LayoutCache> _layoutCache;
+        private readonly ConcurrentDictionary<Element, CssComputed> _styleCache;
+        private readonly HashSet<Element> _dirtyElements;
         private readonly object _dirtyLock = new();
         private bool _fullLayoutRequired = true;
 
         public IncrementalLayoutManager()
         {
-            _layoutCache = new ConcurrentDictionary<LiteElement, LayoutCache>();
-            _styleCache = new ConcurrentDictionary<LiteElement, CssComputed>();
-            _dirtyElements = new HashSet<LiteElement>();
+            _layoutCache = new ConcurrentDictionary<Element, LayoutCache>();
+            _styleCache = new ConcurrentDictionary<Element, CssComputed>();
+            _dirtyElements = new HashSet<Element>();
         }
 
         #region Dirty Tracking
@@ -31,7 +33,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         /// <summary>
         /// Mark an element as needing re-layout.
         /// </summary>
-        public void MarkDirty(LiteElement element)
+        public void MarkDirty(Element element)
         {
             if (element == null) return;
 
@@ -39,11 +41,11 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             {
                 _dirtyElements.Add(element);
                 // Also mark ancestors as needing partial re-layout
-                var parent = element.Parent;
+                var parent = element.Parent as Element;
                 while (parent != null)
                 {
                     _dirtyElements.Add(parent);
-                    parent = parent.Parent;
+                    parent = parent.Parent as Element;
                 }
             }
 
@@ -65,7 +67,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         /// <summary>
         /// Check if element needs re-layout.
         /// </summary>
-        public bool IsDirty(LiteElement element)
+        public bool IsDirty(Element element)
         {
             if (_fullLayoutRequired) return true;
             lock (_dirtyLock)
@@ -98,7 +100,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         /// <summary>
         /// Get cached layout for an element.
         /// </summary>
-        public LayoutCache GetCachedLayout(LiteElement element)
+        public LayoutCache GetCachedLayout(Element element)
         {
             return _layoutCache.TryGetValue(element, out var cache) ? cache : null;
         }
@@ -106,7 +108,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         /// <summary>
         /// Cache layout result for an element.
         /// </summary>
-        public void CacheLayout(LiteElement element, SKRect box, float contentHeight)
+        public void CacheLayout(Element element, SKRect box, float contentHeight)
         {
             var cache = new LayoutCache
             {
@@ -120,14 +122,14 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         /// <summary>
         /// Invalidate cached layout for element and descendants.
         /// </summary>
-        public void InvalidateLayout(LiteElement element)
+        public void InvalidateLayout(Element element)
         {
             if (element == null) return;
 
             _layoutCache.TryRemove(element, out _);
             if (element.Children != null)
             {
-                foreach (var child in element.Children)
+                foreach (var child in element.Children.OfType<Element>())
                 {
                     InvalidateLayout(child);
                 }
@@ -141,7 +143,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         /// <summary>
         /// Get cached computed style.
         /// </summary>
-        public CssComputed GetCachedStyle(LiteElement element)
+        public CssComputed GetCachedStyle(Element element)
         {
             return _styleCache.TryGetValue(element, out var style) ? style : null;
         }
@@ -149,7 +151,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         /// <summary>
         /// Cache computed style.
         /// </summary>
-        public void CacheStyle(LiteElement element, CssComputed style)
+        public void CacheStyle(Element element, CssComputed style)
         {
             _styleCache[element] = style;
         }
@@ -157,14 +159,14 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         /// <summary>
         /// Invalidate style cache for element and descendants.
         /// </summary>
-        public void InvalidateStyle(LiteElement element)
+        public void InvalidateStyle(Element element)
         {
             if (element == null) return;
 
             _styleCache.TryRemove(element, out _);
             if (element.Children != null)
             {
-                foreach (var child in element.Children)
+                foreach (var child in element.Children.OfType<Element>())
                 {
                     InvalidateStyle(child);
                 }
@@ -227,3 +229,5 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             $"Layout: {LayoutCacheSize}, Style: {StyleCacheSize}, Dirty: {DirtyElementCount}, Full: {FullLayoutRequired}";
     }
 }
+
+

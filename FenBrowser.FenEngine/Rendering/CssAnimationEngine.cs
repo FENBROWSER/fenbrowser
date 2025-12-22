@@ -1,3 +1,5 @@
+using FenBrowser.Core.Css;
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -50,7 +52,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public class ActiveAnimation
         {
-            public LiteElement Element { get; set; }
+            public Element Element { get; set; }
             public string AnimationName { get; set; }
             public CssLoader.CssKeyframes Keyframes { get; set; }
             
@@ -79,7 +81,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public class ActiveTransition
         {
-            public LiteElement Element { get; set; }
+            public Element Element { get; set; }
             public string Property { get; set; }
             public string FromValue { get; set; }
             public string ToValue { get; set; }
@@ -90,9 +92,9 @@ namespace FenBrowser.FenEngine.Rendering
             public bool IsComplete { get; set; }
         }
         
-        private readonly Dictionary<LiteElement, List<ActiveAnimation>> _activeAnimations = new();
-        private readonly Dictionary<LiteElement, List<ActiveTransition>> _activeTransitions = new();
-        private readonly Dictionary<LiteElement, Dictionary<string, string>> _previousValues = new();
+        private readonly Dictionary<Element, List<ActiveAnimation>> _activeAnimations = new();
+        private readonly Dictionary<Element, List<ActiveTransition>> _activeTransitions = new();
+        private readonly Dictionary<Element, Dictionary<string, string>> _previousValues = new();
         private bool _isRunning = false;
         private System.Threading.Timer _timer;
         private const int FrameIntervalMs = 16; // ~60fps
@@ -100,17 +102,17 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Event raised when animation frame updates require repaint
         /// </summary>
-        public event Action<LiteElement> OnAnimationFrame;
+        public event Action<Element> OnAnimationFrame;
         
         /// <summary>
         /// Event raised when animation completes
         /// </summary>
-        public event Action<LiteElement, string> OnAnimationEnd;
+        public event Action<Element, string> OnAnimationEnd;
         
         /// <summary>
         /// Event raised when transition completes
         /// </summary>
-        public event Action<LiteElement, string> OnTransitionEnd;
+        public event Action<Element, string> OnTransitionEnd;
         
         #endregion
         
@@ -119,7 +121,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Check for property changes and start transitions
         /// </summary>
-        public void CheckTransitions(LiteElement element, CssComputed newStyle)
+        public void CheckTransitions(Element element, CssComputed newStyle)
         {
             if (element == null || newStyle?.Map == null) return;
             
@@ -180,7 +182,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Start a transition for a specific property
         /// </summary>
-        private void StartTransition(LiteElement element, string property, string from, string to,
+        private void StartTransition(Element element, string property, string from, string to,
             double durationMs, double delayMs, string timingFunction)
         {
             var transition = new ActiveTransition
@@ -212,7 +214,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Get transitioned property values for an element
         /// </summary>
-        public Dictionary<string, string> GetTransitionedProperties(LiteElement element)
+        public Dictionary<string, string> GetTransitionedProperties(Element element)
         {
             var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             
@@ -289,7 +291,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Start an animation on an element
         /// </summary>
-        public void StartAnimation(LiteElement element, CssComputed style)
+        public void StartAnimation(Element element, CssComputed style)
         {
             if (element == null || style?.Map == null) return;
             
@@ -341,7 +343,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Stop all animations on an element
         /// </summary>
-        public void StopAnimations(LiteElement element)
+        public void StopAnimations(Element element)
         {
             lock (_activeAnimations)
             {
@@ -352,7 +354,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Stop a specific animation on an element
         /// </summary>
-        public void StopAnimation(LiteElement element, string animationName)
+        public void StopAnimation(Element element, string animationName)
         {
             lock (_activeAnimations)
             {
@@ -368,7 +370,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Pause/resume animations on an element
         /// </summary>
-        public void SetPlayState(LiteElement element, string state)
+        public void SetPlayState(Element element, string state)
         {
             lock (_activeAnimations)
             {
@@ -396,7 +398,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Get computed animation properties for an element at current time
         /// </summary>
-        public Dictionary<string, string> GetAnimatedProperties(LiteElement element)
+        public Dictionary<string, string> GetAnimatedProperties(Element element)
         {
             var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             
@@ -420,7 +422,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Check if element has active animations
         /// </summary>
-        public bool HasActiveAnimations(LiteElement element)
+        public bool HasActiveAnimations(Element element)
         {
             lock (_activeAnimations)
             {
@@ -453,8 +455,8 @@ namespace FenBrowser.FenEngine.Rendering
             if (!_isRunning) return;
             
             var now = DateTime.UtcNow;
-            var toRemove = new List<(LiteElement element, ActiveAnimation anim)>();
-            var toNotify = new HashSet<LiteElement>();
+            var toRemove = new List<(Element element, ActiveAnimation anim)>();
+            var toNotify = new HashSet<Element>();
             
             lock (_activeAnimations)
             {
@@ -986,3 +988,5 @@ namespace FenBrowser.FenEngine.Rendering
         #endregion
     }
 }
+
+

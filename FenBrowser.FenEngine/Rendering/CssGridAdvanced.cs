@@ -1,3 +1,5 @@
+using FenBrowser.Core.Css;
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -92,7 +94,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Add a grid item
         /// </summary>
-        public void AddItem(LiteElement element, CssComputed style)
+        public void AddItem(Element element, CssComputed style)
         {
             var item = new GridItem
             {
@@ -158,7 +160,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Calculate layout and return item positions
         /// </summary>
-        public IEnumerable<(LiteElement element, SKRect rect)> ComputeLayout(float startX, float startY)
+        public IEnumerable<(Element element, SKRect rect)> ComputeLayout(float startX, float startY)
         {
             // Ensure we have tracks
             if (_columnTracks.Count == 0) _columnTracks.Add(ContainerWidth);
@@ -463,7 +465,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         private class GridItem
         {
-            public LiteElement Element;
+            public Element Element;
             public CssComputed Style;
             public int RowStart = 0;
             public int RowEnd = 1;
@@ -488,12 +490,12 @@ namespace FenBrowser.FenEngine.Rendering
     /// </summary>
     public class CssContainerQueries
     {
-        private readonly Dictionary<LiteElement, ContainerInfo> _containers = new();
+        private readonly Dictionary<Element, ContainerInfo> _containers = new();
 
         /// <summary>
         /// Register an element as a container
         /// </summary>
-        public void RegisterContainer(LiteElement element, CssComputed style)
+        public void RegisterContainer(Element element, CssComputed style)
         {
             if (style?.Map == null) return;
 
@@ -513,7 +515,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Update container dimensions
         /// </summary>
-        public void UpdateContainerSize(LiteElement element, float width, float height)
+        public void UpdateContainerSize(Element element, float width, float height)
         {
             if (_containers.TryGetValue(element, out var info))
             {
@@ -525,7 +527,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Evaluate a container query
         /// </summary>
-        public bool EvaluateQuery(string query, LiteElement context)
+        public bool EvaluateQuery(string query, Element context)
         {
             // Parse @container query
             // Format: @container (min-width: 400px) or @container name (width > 500px)
@@ -543,9 +545,9 @@ namespace FenBrowser.FenEngine.Rendering
             return EvaluateConditions(conditions, container.Width, container.Height);
         }
 
-        private ContainerInfo FindContainer(LiteElement element, string name)
+        private ContainerInfo FindContainer(Element element, string name)
         {
-            var current = element?.Parent;
+            var current = element?.Parent as Element;
             while (current != null)
             {
                 if (_containers.TryGetValue(current, out var info))
@@ -553,7 +555,7 @@ namespace FenBrowser.FenEngine.Rendering
                     if (string.IsNullOrEmpty(name) || info.Name == name)
                         return info;
                 }
-                current = current.Parent;
+                current = current.Parent as Element;
             }
             return null;
         }
@@ -596,7 +598,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         private class ContainerInfo
         {
-            public LiteElement Element;
+            public Element Element;
             public string Name;
             public string Type;
             public float Width;
@@ -604,3 +606,5 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
+
+

@@ -1,3 +1,4 @@
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -16,7 +17,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// Match an element against a complex selector string that may contain
         /// :has(), :is(), :where(), :not() pseudo-classes.
         /// </summary>
-        public static bool Matches(LiteElement element, string selector, LiteElement root = null)
+        public static bool Matches(Element element, string selector, Element root = null)
         {
             if (element == null || string.IsNullOrWhiteSpace(selector))
                 return false;
@@ -77,7 +78,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// Check if element matches a selector containing :has()
         /// :has() matches if the element has descendants matching the relative selector
         /// </summary>
-        private static bool MatchesWithHas(LiteElement element, string selector, LiteElement root)
+        private static bool MatchesWithHas(Element element, string selector, Element root)
         {
             // Parse out the :has() part
             var hasMatch = Regex.Match(selector, @":has\(([^)]+)\)");
@@ -98,7 +99,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// Check for matching relative elements within :has()
         /// Supports: > (child), + (adjacent sibling), ~ (general sibling), space (descendant)
         /// </summary>
-        private static bool HasMatchingRelativeElements(LiteElement element, string relativeSelector)
+        private static bool HasMatchingRelativeElements(Element element, string relativeSelector)
         {
             relativeSelector = relativeSelector.Trim();
 
@@ -107,7 +108,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 // Direct children only
                 string childSelector = relativeSelector.Substring(1).Trim();
-                return element.Children?.Any(c => BasicMatch(c, childSelector)) ?? false;
+                return element.Children?.OfType<Element>().Any(c => BasicMatch(c, childSelector)) ?? false;
             }
             else if (relativeSelector.StartsWith("+"))
             {
@@ -133,11 +134,11 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Check if element has any descendant matching the selector
         /// </summary>
-        private static bool HasDescendantMatching(LiteElement element, string selector)
+        private static bool HasDescendantMatching(Element element, string selector)
         {
             if (element.Children == null) return false;
 
-            foreach (var child in element.Children)
+            foreach (var child in element.Children.OfType<Element>())
             {
                 if (BasicMatch(child, selector))
                     return true;
@@ -151,7 +152,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// Check if element matches a selector containing :not()
         /// Supports complex selectors inside :not()
         /// </summary>
-        private static bool MatchesWithNot(LiteElement element, string selector, LiteElement root)
+        private static bool MatchesWithNot(Element element, string selector, Element root)
         {
             // Parse out all :not() parts
             var notPattern = @":not\(([^)]+)\)";
@@ -180,7 +181,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Basic selector matching (type, class, id, attributes, structural pseudo-classes)
         /// </summary>
-        public static bool BasicMatch(LiteElement element, string selector)
+        public static bool BasicMatch(Element element, string selector)
         {
             if (element == null || string.IsNullOrWhiteSpace(selector))
                 return false;
@@ -244,7 +245,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Match a single selector part against an element
         /// </summary>
-        private static bool MatchesSelectorPart(LiteElement element, string part)
+        private static bool MatchesSelectorPart(Element element, string part)
         {
             if (string.IsNullOrEmpty(part)) return true;
 
@@ -287,7 +288,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Match attribute selectors: [attr], [attr=value], [attr^=value], etc.
         /// </summary>
-        private static bool MatchesAttributeSelector(LiteElement element, string selector)
+        private static bool MatchesAttributeSelector(Element element, string selector)
         {
             // Remove brackets
             var inner = selector.Trim('[', ']');
@@ -333,7 +334,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Match pseudo-classes: :first-child, :last-child, :nth-child(), :hover, :focus, etc.
         /// </summary>
-        private static bool MatchesPseudoClass(LiteElement element, string pseudoClass)
+        private static bool MatchesPseudoClass(Element element, string pseudoClass)
         {
             pseudoClass = pseudoClass.ToLowerInvariant();
 
@@ -431,7 +432,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Match :nth-child(), :nth-last-child(), :nth-of-type(), :nth-last-of-type()
         /// </summary>
-        private static bool MatchesNthChild(LiteElement element, string pseudo, bool fromEnd, bool ofType)
+        private static bool MatchesNthChild(Element element, string pseudo, bool fromEnd, bool ofType)
         {
             // Extract argument
             var match = Regex.Match(pseudo, @"\(([^)]+)\)");
@@ -440,12 +441,12 @@ namespace FenBrowser.FenEngine.Rendering
             string arg = match.Groups[1].Value.Trim().ToLowerInvariant();
 
             // Get siblings
-            var parent = element.Parent;
-            if (parent == null) return false;
+            var parentEl = element.Parent as Element;
+            if (parentEl == null) return false;
 
             var siblings = ofType
-                ? parent.Children.Where(c => string.Equals(c.Tag, element.Tag, StringComparison.OrdinalIgnoreCase)).ToList()
-                : parent.Children.ToList();
+                ? parentEl.Children.OfType<Element>().Where(c => string.Equals(c.Tag, element.Tag, StringComparison.OrdinalIgnoreCase)).ToList()
+                : parentEl.Children.OfType<Element>().ToList();
 
             int index = siblings.IndexOf(element);
             if (index < 0) return false;
@@ -498,52 +499,56 @@ namespace FenBrowser.FenEngine.Rendering
 
         #region Helper Methods
 
-        private static bool IsFirstChild(LiteElement element)
+        private static bool IsFirstChild(Element element)
         {
-            var parent = element.Parent;
+            var parent = element.Parent as Element;
             if (parent?.Children == null) return true;
-            return parent.Children.IndexOf(element) == 0;
+            var siblings = parent.Children.OfType<Element>().ToList();
+            return siblings.Count > 0 && siblings[0] == element;
         }
 
-        private static bool IsLastChild(LiteElement element)
+        private static bool IsLastChild(Element element)
         {
-            var parent = element.Parent;
+            var parent = element.Parent as Element;
             if (parent?.Children == null) return true;
-            return parent.Children.IndexOf(element) == parent.Children.Count - 1;
+            var siblings = parent.Children.OfType<Element>().ToList();
+            return siblings.Count > 0 && siblings[siblings.Count - 1] == element;
         }
 
-        private static bool IsFirstOfType(LiteElement element)
+        private static bool IsFirstOfType(Element element)
         {
-            var parent = element.Parent;
+            var parent = element.Parent as Element;
             if (parent?.Children == null) return true;
-            return parent.Children.FirstOrDefault(c => 
+            return parent.Children.OfType<Element>().FirstOrDefault(c => 
                 string.Equals(c.Tag, element.Tag, StringComparison.OrdinalIgnoreCase)) == element;
         }
 
-        private static bool IsLastOfType(LiteElement element)
+        private static bool IsLastOfType(Element element)
         {
-            var parent = element.Parent;
+            var parent = element.Parent as Element;
             if (parent?.Children == null) return true;
-            return parent.Children.LastOrDefault(c => 
+            return parent.Children.OfType<Element>().LastOrDefault(c => 
                 string.Equals(c.Tag, element.Tag, StringComparison.OrdinalIgnoreCase)) == element;
         }
 
-        private static LiteElement GetNextElementSibling(LiteElement element)
+        private static Element GetNextElementSibling(Element element)
         {
-            var parent = element.Parent;
+            var parent = element.Parent as Element;
             if (parent?.Children == null) return null;
-            int index = parent.Children.IndexOf(element);
-            if (index < 0 || index >= parent.Children.Count - 1) return null;
-            return parent.Children[index + 1];
+            var siblings = parent.Children.OfType<Element>().ToList();
+            int index = siblings.IndexOf(element);
+            if (index < 0 || index >= siblings.Count - 1) return null;
+            return siblings[index + 1];
         }
 
-        private static List<LiteElement> GetFollowingSiblings(LiteElement element)
+        private static List<Element> GetFollowingSiblings(Element element)
         {
-            var parent = element.Parent;
-            if (parent?.Children == null) return new List<LiteElement>();
-            int index = parent.Children.IndexOf(element);
-            if (index < 0) return new List<LiteElement>();
-            return parent.Children.Skip(index + 1).ToList();
+            var parent = element.Parent as Element;
+            if (parent?.Children == null) return new List<Element>();
+            var siblings = parent.Children.OfType<Element>().ToList();
+            int index = siblings.IndexOf(element);
+            if (index < 0) return new List<Element>();
+            return siblings.Skip(index + 1).ToList();
         }
 
         private static List<string> SplitSelectorList(string list)
@@ -576,3 +581,4 @@ namespace FenBrowser.FenEngine.Rendering
         #endregion
     }
 }
+

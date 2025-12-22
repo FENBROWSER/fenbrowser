@@ -1,3 +1,4 @@
+using FenBrowser.Core.Dom;
 using SkiaSharp;
 using System;
 using System.Collections.Generic;
@@ -21,11 +22,11 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// <param name="x">X coordinate</param>
         /// <param name="y">Y coordinate</param>
         /// <returns>The element at the point, or null if none</returns>
-        public static LiteElement HitTest(RenderContext ctx, float x, float y)
+        public static Element HitTest(RenderContext ctx, float x, float y)
         {
             if (ctx?.Boxes == null) return null;
             
-            LiteElement bestMatch = null;
+            Element bestMatch = null;
             float minArea = float.MaxValue;
 
             // Take a snapshot for thread safety
@@ -33,7 +34,8 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
 
             foreach (var kvp in boxSnapshot)
             {
-                var element = kvp.Key;
+                // Skip non-Element nodes
+                if (!(kvp.Key is Element element)) continue;
                 var box = kvp.Value;
 
                 // Skip invisible elements
@@ -63,16 +65,17 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// <param name="x">X coordinate</param>
         /// <param name="y">Y coordinate</param>
         /// <returns>List of elements containing the point, smallest area first</returns>
-        public static List<LiteElement> HitTestAll(RenderContext ctx, float x, float y)
+        public static List<Element> HitTestAll(RenderContext ctx, float x, float y)
         {
-            if (ctx?.Boxes == null) return new List<LiteElement>();
+            if (ctx?.Boxes == null) return new List<Element>();
 
-            var hits = new List<(LiteElement element, float area)>();
+            var hits = new List<(Element element, float area)>();
             var boxSnapshot = ctx.Boxes.ToArray();
 
             foreach (var kvp in boxSnapshot)
             {
-                var element = kvp.Key;
+                // Skip non-Element nodes
+                if (!(kvp.Key is Element element)) continue;
                 var box = kvp.Value;
 
                 if (box.MarginBox.Width <= 0 || box.MarginBox.Height <= 0) continue;
@@ -95,7 +98,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// <param name="x">X coordinate</param>
         /// <param name="y">Y coordinate</param>
         /// <returns>The nearest clickable element, or null if none</returns>
-        public static LiteElement HitTestClickable(RenderContext ctx, float x, float y)
+        public static Element HitTestClickable(RenderContext ctx, float x, float y)
         {
             var hits = HitTestAll(ctx, x, y);
 
@@ -124,3 +127,4 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         }
     }
 }
+

@@ -1,3 +1,4 @@
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 
@@ -12,7 +13,7 @@ namespace FenBrowser.Core.Parsing
             _html = html;
         }
 
-        public LiteElement Parse()
+        public Document Parse()
         {
             var builder = new HtmlTreeBuilder(_html);
             var doc = builder.Build();
@@ -34,3 +35,4 @@ namespace FenBrowser.Core.Parsing
         }
     }
 }
+

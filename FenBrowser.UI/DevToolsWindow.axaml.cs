@@ -6,6 +6,7 @@ using Avalonia.Input;
 using Avalonia.Threading;
 using FenBrowser.FenEngine.Rendering;
 using FenBrowser.Core;
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -119,14 +120,14 @@ namespace FenBrowser.UI
 
     public class DomNodeViewModel
     {
-        public LiteElement Element { get; }
+        public Element Element { get; }
         public string Tag => Element.Tag;
         public string TextPreview { get; }
         public string AttrString { get; }
         public IEnumerable<DomNodeViewModel> Children { get; }
         public bool HasChildren => Children != null && Children.Any();
 
-        public DomNodeViewModel(LiteElement element)
+        public DomNodeViewModel(Element element)
         {
             Element = element;
             TextPreview = element.IsText ? element.Text : "";
@@ -142,7 +143,7 @@ namespace FenBrowser.UI
 
             if (element.Children != null)
             {
-                Children = element.Children.Select(c => new DomNodeViewModel(c)).ToList();
+                Children = element.Children.OfType<Element>().Select(c => new DomNodeViewModel(c)).ToList();
             }
             else
             {

@@ -1,3 +1,4 @@
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -104,13 +105,13 @@ namespace FenBrowser.Core.Network
         /// Parse and queue prefetch hints from HTML document.
         /// Looks for: <link rel="prefetch|preload|preconnect|dns-prefetch">
         /// </summary>
-        public async Task PrefetchFromDomAsync(LiteElement document, Uri baseUri)
+        public async Task PrefetchFromDomAsync(Element document, Uri baseUri)
         {
             if (document == null || baseUri == null) return;
 
             try
             {
-                var linkElements = new List<LiteElement>();
+                var linkElements = new List<Element>();
                 CollectLinkElements(document, linkElements);
 
                 foreach (var link in linkElements)
@@ -376,16 +377,16 @@ namespace FenBrowser.Core.Network
         /// <summary>
         /// Collect all link elements from document
         /// </summary>
-        private void CollectLinkElements(LiteElement element, List<LiteElement> links)
+        private void CollectLinkElements(Element element, List<Element> links)
         {
-            if (element.Tag?.Equals("link", StringComparison.OrdinalIgnoreCase) == true)
+            if (element.TagName?.Equals("link", StringComparison.OrdinalIgnoreCase) == true)
             {
                 links.Add(element);
             }
 
             foreach (var child in element.Children)
             {
-                CollectLinkElements(child, links);
+                if (child is Element el) CollectLinkElements(el, links);
             }
         }
 
@@ -498,3 +499,4 @@ namespace FenBrowser.Core.Network
         }
     }
 }
+

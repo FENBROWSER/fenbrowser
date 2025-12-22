@@ -1,13 +1,12 @@
 using SkiaSharp;
 using FenBrowser.Core;
-// using FenBrowser.Core.Math; // Namespace moved to Core
-// using Avalonia; // Removed
+using System.Collections.Generic;
 
-namespace FenBrowser.FenEngine.Rendering
+namespace FenBrowser.Core.Css
 {
     /// <summary>
-    /// Computed CSS values for a DOM element. Contains a raw property map plus common typed projections
-    /// used by DomBasicRenderer and RendererStyles.
+    /// Computed CSS values for a DOM element. Contains a raw property map plus common typed projections.
+    /// Moved from FenEngine to Core.
     /// </summary>
     public sealed class CssComputed
     {
@@ -57,6 +56,8 @@ namespace FenBrowser.FenEngine.Rendering
 
         // Box model
         public Thickness Margin { get; set; }
+        public bool MarginLeftAuto { get; set; }   // For margin: auto centering
+        public bool MarginRightAuto { get; set; }  // For margin: auto centering
         public Thickness Padding { get; set; }
         public Thickness BorderThickness { get; set; }
         public SKColor? BorderBrush { get; set; }
@@ -124,7 +125,6 @@ namespace FenBrowser.FenEngine.Rendering
         public string ObjectPosition { get; set; }   // CSS position value (e.g., "center", "top left")
         public string ImageRendering { get; set; }   // auto, crisp-edges, pixelated, smooth
 
-        // Typography & Visuals
         // Typography & Visuals
         public object Background { get; set; } // Legacy brush/gradient holder
         public object Foreground { get; set; } // Legacy brush holder

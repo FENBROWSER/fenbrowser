@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.Core.Engine; // Phase enum
 
 namespace FenBrowser.FenEngine.Core
 {
@@ -25,6 +26,10 @@ namespace FenBrowser.FenEngine.Core
         // Class field definitions for initialization during `new`
         // (fieldName, isPrivate, isStatic, initializer)
         public List<(string name, bool isPrivate, bool isStatic, Expression initializer)> FieldDefinitions { get; set; }
+
+        // Proxy Support
+        public IValue ProxyHandler { get; set; }
+        public IValue ProxyTarget { get; set; }
 
         public FenFunction(string name, Func<IValue[], IValue, IValue> nativeImplementation)
         {
@@ -54,6 +59,35 @@ namespace FenBrowser.FenEngine.Core
 
         public IValue Invoke(IValue[] args, IExecutionContext context)
         {
+            // PROXY TRAP: Apply
+            if (ProxyHandler != null && ProxyHandler.IsObject)
+            {
+                // Phase D spec 2.3: Proxy traps MUST NOT execute during Measure, Layout, or Paint
+                EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
+                
+                var handlerObj = ProxyHandler.AsObject();
+                if (handlerObj.Has("apply"))
+                {
+                    var trap = handlerObj.Get("apply");
+                    if (trap.IsFunction)
+                    {
+                        var thisVal = context?.ThisBinding ?? FenValue.Undefined;
+                        var argsArray = new FenObject(); 
+                        for(int i=0; i<args.Length; i++) argsArray.Set(i.ToString(), args[i]);
+                        argsArray.Set("length", FenValue.FromNumber(args.Length));
+
+                        // trap(target, thisArg, argumentsList)
+                        return trap.AsFunction().Invoke(new IValue[] 
+                        { 
+                            ProxyTarget ?? FenValue.FromFunction(this), 
+                            thisVal, 
+                            FenValue.FromObject(argsArray) 
+                        }, context);
+                    }
+                }
+            }
+
+
             if (IsNative)
             {
                 try
