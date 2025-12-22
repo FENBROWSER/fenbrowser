@@ -350,16 +350,17 @@
 | **Host**                | 17    | 8.6/10    | ✅ Solid     |
 | **Tests**               | 19    | All Pass  | ✅ 106/106   |
 
-### Known Gaps
+### Corrected Status (After Code Verification)
 
-| Component  | Issue            | Priority |
-| ---------- | ---------------- | -------- |
-| WebGL      | Stub only (2/10) | Low      |
-| WebAudio   | Mock only (2/10) | Medium   |
-| WebRTC     | Mock only (2/10) | Medium   |
-| ES Modules | Partial (6/10)   | Medium   |
-| IndexedDB  | Not implemented  | High     |
-| WebWorkers | Not implemented  | High     |
+| Component      | Claimed        | Actual         | Notes                                              |
+| -------------- | -------------- | -------------- | -------------------------------------------------- |
+| WebGL          | Stub (2/10)    | Stub (2/10)    | ✅ Correct                                         |
+| WebAudio       | Mock (2/10)    | Mock (2/10)    | ✅ Correct                                         |
+| WebRTC         | Mock (2/10)    | Mock (2/10)    | ✅ Correct                                         |
+| ES Modules     | Partial (6/10) | Partial (6/10) | ✅ Correct                                         |
+| **IndexedDB**  | Not impl       | **7/10**       | ❌ ERROR - Full CRUD in FenRuntime.cs:3770-4024    |
+| **WebWorkers** | Not impl       | **4/10**       | ❌ ERROR - Basic impl in FenRuntime.cs:4611-4657   |
+| TypedArrays    | Not mentioned  | **8/10**       | ❌ MISSING - ArrayBuffer/TypedArrays in FenRuntime |
 
 ---
 
