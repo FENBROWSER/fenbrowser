@@ -17,7 +17,6 @@ namespace FenBrowser.FenEngine.WebAPIs
             var global = context.Environment;
             
             // Register 'fetch' global function
-            // Use closure to capture context
             global.Set("fetch", FenValue.FromFunction(new FenFunction("fetch", (args, thisVal) => Fetch(args, thisVal, context))));
 
             // Register 'Headers' class
@@ -40,85 +39,124 @@ namespace FenBrowser.FenEngine.WebAPIs
             // Return a Promise-like object (Thenable)
             var promise = new FenObject();
             
-            // We need to store state to handle .then() calls that happen AFTER resolution
-            // But for a simple implementation, we can just assume the user calls .then() immediately
-            // or we use a proper Promise polyfill structure.
-            // Given the pattern in ServiceWorkerAPI, let's make a simple async bridge.
-            
             Task.Run(async () => 
             {
                 try
                 {
-                    // Use factory to allow tests to inject mock
+                    // SERVICE WORKER INTERCEPTION
+                    var sw = FenBrowser.FenEngine.Workers.ServiceWorkerManager.Instance.GetController(url);
+                    if (sw != null)
+                    {
+                         // Create Request object
+                         var req = new FenObject();
+                         req.Set("url", FenValue.FromString(url));
+                         req.Set("method", FenValue.FromString("GET"));
+                         
+                         // Create FetchEvent
+                         var fetchEvt = new FetchEvent("fetch", req, context);
+                         
+                         // Dispatch to worker
+                         var handled = await FenBrowser.FenEngine.Workers.ServiceWorkerManager.Instance.DispatchFetchEvent(sw, fetchEvt);
+                         
+                         if (handled && fetchEvt.RespondWithPromise != null)
+                         {
+                              var responseVal = await AwaitPromise(fetchEvt.RespondWithPromise);
+                              ResolvePromise(promise, responseVal);
+                              return;
+                         }
+                    }
+
+                    // Network Fallback
                     using (var client = ClientFactory())
                     {
                         var response = await client.GetAsync(url);
                         var jsResponse = new JsResponse(response, context);
-                        
-                        // If callbacks are registered, invoke them
-                        if (promise.Has("onFulfilled"))
-                        {
-                            var cb = promise.Get("onFulfilled")?.AsFunction();
-                            // We need to invoke on the main thread/context? 
-                            // Verify thread safety. For now, invoke directly, but in real engine this needs output queue.
-                            context.ScheduleCallback(() => cb?.Invoke(new IValue[] { FenValue.FromObject(jsResponse) }, context), 0);
-                        }
-                        else
-                        {
-                            // Stash result?
-                            promise.Set("__result", FenValue.FromObject(jsResponse));
-                            promise.Set("__state", FenValue.FromString("fulfilled"));
-                        }
+                        ResolvePromise(promise, FenValue.FromObject(jsResponse));
                     }
                 }
                 catch (Exception ex)
                 {
-                    if (promise.Has("onRejected"))
-                    {
-                        var cb = promise.Get("onRejected")?.AsFunction();
-                        context.ScheduleCallback(() => cb?.Invoke(new IValue[] { FenValue.FromString(ex.Message) }, context), 0);
-                    }
-                    else
-                    {
-                         promise.Set("__error", FenValue.FromString(ex.Message));
-                         promise.Set("__state", FenValue.FromString("rejected"));
-                    }
+                    RejectPromise(promise, ex.Message);
                 }
             });
-
-            // Define .then(onFulfilled, onRejected)
-            promise.Set("then", FenValue.FromFunction(new FenFunction("then", (thenArgs, thenThis) =>
-            {
-                if (thenArgs.Length > 0 && thenArgs[0].IsFunction)
-                {
-                    promise.Set("onFulfilled", thenArgs[0]);
-                    
-                    // If already finished (race condition check)
-                    if (promise.Get("__state")?.ToString() == "fulfilled")
-                    {
-                         var res = promise.Get("__result");
-                         thenArgs[0].AsFunction().Invoke(new IValue[] { res }, context);
-                    }
-                }
-                if (thenArgs.Length > 1 && thenArgs[1].IsFunction)
-                {
-                    promise.Set("onRejected", thenArgs[1]);
-                     if (promise.Get("__state")?.ToString() == "rejected")
-                    {
-                         var err = promise.Get("__error");
-                         thenArgs[1].AsFunction().Invoke(new IValue[] { err }, context);
-                    }
-                }
-                return FenValue.FromObject(promise); // Return same promise for chaining (simplified)
-            })));
-
+            
+            // Basic 'then' implementation
+            SetupPromiseThen(promise, context);
+            
             return FenValue.FromObject(promise);
+        }
+
+        // --- Promise Helpers ---
+
+        private static async Task<IValue> AwaitPromise(FenObject promise)
+        {
+             // Simple poll
+             for(int i=0; i<100; i++) 
+             {
+                 var state = promise.Get("__state")?.ToString();
+                 if (state == "fulfilled") return promise.Get("__result");
+                 if (state == "rejected") throw new Exception(promise.Get("__reason")?.ToString() ?? "Rejected");
+                 await Task.Delay(10);
+             }
+             throw new TimeoutException("Promise timed out");
+        }
+
+        private static void ResolvePromise(FenObject promise, IValue result)
+        {
+             if (promise.Has("onFulfilled"))
+             {
+                 var cb = promise.Get("onFulfilled").AsFunction();
+                 // TODO: Schedule on main thread
+                 cb?.Invoke(new[] { result }, null);
+             }
+             else
+             {
+                 promise.Set("__result", result);
+                 promise.Set("__state", FenValue.FromString("fulfilled"));
+             }
+        }
+
+        private static void RejectPromise(FenObject promise, string error)
+        {
+             if (promise.Has("onRejected"))
+             {
+                 var cb = promise.Get("onRejected").AsFunction();
+                 cb?.Invoke(new[] { FenValue.FromString(error) }, null);
+             }
+             else
+             {
+                 promise.Set("__reason", FenValue.FromString(error));
+                 promise.Set("__state", FenValue.FromString("rejected"));
+             }
+        }
+
+        private static void SetupPromiseThen(FenObject promise, IExecutionContext context)
+        {
+            promise.Set("then", FenValue.FromFunction(new FenFunction("then", (args, _) =>
+            {
+                if (args.Length > 0) promise.Set("onFulfilled", args[0]);
+                if (args.Length > 1) promise.Set("onRejected", args[1]);
+
+                var state = promise.Get("__state")?.ToString();
+                if (state == "fulfilled")
+                {
+                    var res = promise.Get("__result");
+                    args[0]?.AsFunction()?.Invoke(new[] { res }, context);
+                }
+                else if (state == "rejected")
+                {
+                     var reason = promise.Get("__reason");
+                     args[1]?.AsFunction()?.Invoke(new[] { reason }, context);
+                }
+
+                return FenValue.FromObject(promise); 
+            })));
         }
     }
 
     public class JsHeaders : FenObject
     {
-        private readonly Dictionary<string, string> _headers = new();
+        private readonly Dictionary<string, string> _headers = new Dictionary<string, string>();
 
         public JsHeaders()
         {
@@ -130,7 +168,7 @@ namespace FenBrowser.FenEngine.WebAPIs
 
         public static IValue Constructor(IValue[] args, IValue thisVal)
         {
-             return FenValue.FromObject(new JsHeaders());
+              return FenValue.FromObject(new JsHeaders());
         }
 
         private IValue Append(IValue[] args, IValue thisVal)
@@ -180,13 +218,11 @@ namespace FenBrowser.FenEngine.WebAPIs
             _response = response;
             _context = context;
             
-            // Properties
             Set("ok", FenValue.FromBoolean(response.IsSuccessStatusCode));
             Set("status", FenValue.FromNumber((int)response.StatusCode));
             Set("statusText", FenValue.FromString(response.ReasonPhrase));
-            Set("headers", FenValue.FromObject(new JsHeaders())); // TODO: Populate headers
+            Set("headers", FenValue.FromObject(new JsHeaders())); 
             
-            // Methods
             Set("text", FenValue.FromFunction(new FenFunction("text", Text)));
             Set("json", FenValue.FromFunction(new FenFunction("json", Json)));
         }
@@ -204,53 +240,75 @@ namespace FenBrowser.FenEngine.WebAPIs
                  try 
                  {
                      var content = await _response.Content.ReadAsStringAsync();
-                     if (promise.Has("onFulfilled"))
-                     {
-                         var cb = promise.Get("onFulfilled").AsFunction();
-                         if (_context != null)
-                            _context.ScheduleCallback(() => cb.Invoke(new IValue[] { FenValue.FromString(content) }, _context), 0);
-                         else
-                            cb.Invoke(new IValue[] { FenValue.FromString(content) }, null);
-                     }
-                     else {
-                         promise.Set("__result", FenValue.FromString(content));
-                         promise.Set("__state", FenValue.FromString("fulfilled"));
-                     }
+                     ResolvePromise(promise, FenValue.FromString(content));
                  }
                  catch (Exception ex)
                  {
-                      if (promise.Has("onRejected"))
-                      {
-                         var cb = promise.Get("onRejected").AsFunction();
-                         if (_context != null)
-                             _context.ScheduleCallback(() => cb.Invoke(new IValue[] { FenValue.FromString(ex.Message) }, _context), 0);
-                         else
-                             cb.Invoke(new IValue[] { FenValue.FromString(ex.Message) }, null);
-                      }
+                      RejectPromise(promise, ex.Message);
                  }
              });
 
-             promise.Set("then", FenValue.FromFunction(new FenFunction("then", (thenArgs, thenThis) =>
-             {
-                 if (thenArgs.Length > 0 && thenArgs[0].IsFunction)
-                 {
-                     promise.Set("onFulfilled", thenArgs[0]);
-                     if (promise.Get("__state")?.ToString() == "fulfilled")
-                     {
-                        var res = promise.Get("__result");
-                        thenArgs[0].AsFunction().Invoke(new IValue[] { res }, _context);
-                     }
-                 }
-                 return FenValue.FromObject(promise);
-             })));
+             SetupPromiseThen(promise);
 
              return FenValue.FromObject(promise);
         }
 
         private IValue Json(IValue[] args, IValue thisVal)
         {
-             // Same pattern as Text but returning string for now as JSON parsing is complex
              return Text(args, thisVal);
+        }
+
+        // --- Duplicated Helpers for JsResponse (simplified) ---
+        // Ideally refactor into PromiseUtil class
+        
+        private void ResolvePromise(FenObject promise, IValue result)
+        {
+             if (promise.Has("onFulfilled"))
+             {
+                 var cb = promise.Get("onFulfilled").AsFunction();
+                 cb?.Invoke(new[] { result }, null);
+             }
+             else
+             {
+                 promise.Set("__result", result);
+                 promise.Set("__state", FenValue.FromString("fulfilled"));
+             }
+        }
+
+        private void RejectPromise(FenObject promise, string error)
+        {
+             if (promise.Has("onRejected"))
+             {
+                 var cb = promise.Get("onRejected").AsFunction();
+                 cb?.Invoke(new[] { FenValue.FromString(error) }, null);
+             }
+             else
+             {
+                 promise.Set("__reason", FenValue.FromString(error));
+                 promise.Set("__state", FenValue.FromString("rejected"));
+             }
+        }
+
+        private void SetupPromiseThen(FenObject promise)
+        {
+            promise.Set("then", FenValue.FromFunction(new FenFunction("then", (thenArgs, thenThis) =>
+            {
+                if (thenArgs.Length > 0) promise.Set("onFulfilled", thenArgs[0]);
+                if (thenArgs.Length > 1) promise.Set("onRejected", thenArgs[1]);
+
+                var state = promise.Get("__state")?.ToString();
+                if (state == "fulfilled")
+                {
+                    var res = promise.Get("__result");
+                    thenArgs[0]?.AsFunction()?.Invoke(new[] { res }, _context);
+                }
+                else if (state == "rejected")
+                {
+                     var reason = promise.Get("__reason");
+                     thenArgs[1]?.AsFunction()?.Invoke(new[] { reason }, _context);
+                }
+                return FenValue.FromObject(promise);
+            })));
         }
     }
 }

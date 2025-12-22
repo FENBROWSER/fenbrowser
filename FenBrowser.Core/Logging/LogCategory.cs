@@ -27,6 +27,7 @@ namespace FenBrowser.Core.Logging
         CssParsing   = 1 << 14,  // CSS property parsing, unsupported properties
         JsExecution  = 1 << 15,  // JS execution details, API calls, failures
         FeatureGaps  = 1 << 16,  // Unsupported features summary reporting
+        ServiceWorker= 1 << 17,  // ServiceWorker lifecycle and fetch events
         All          = int.MaxValue
     }
 

@@ -3,7 +3,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.FenEngine.Core; // Added for IExecutionContext
 using FenBrowser.FenEngine.Core.EventLoop;
+using FenBrowser.FenEngine.Core.Interfaces; // Added for IExecutionContext
 
 namespace FenBrowser.FenEngine.Workers
 {
@@ -36,6 +38,8 @@ namespace FenBrowser.FenEngine.Workers
         /// </summary>
         public event Action<Exception> OnError;
 
+        public IExecutionContext Context { get; private set; } // Added for Phase G
+
         /// <summary>
         /// Creates a new worker runtime with isolated execution context
         /// </summary>
@@ -48,6 +52,7 @@ namespace FenBrowser.FenEngine.Workers
             _taskQueue = new TaskQueue();
             _microtaskQueue = new MicrotaskQueue();
             _cts = new CancellationTokenSource();
+            Context = new FenBrowser.FenEngine.Core.ExecutionContext(null); // Basic context for worker
             _isRunning = true;
 
             // Start worker thread
