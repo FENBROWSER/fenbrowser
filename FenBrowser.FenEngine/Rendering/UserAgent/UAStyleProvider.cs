@@ -1,3 +1,5 @@
+using FenBrowser.Core.Css;
+using FenBrowser.Core.Dom;
 using SkiaSharp;
 using System;
 using FenBrowser.Core;
@@ -17,7 +19,7 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
         /// </summary>
         /// <param name="node">The element</param>
         /// <param name="style">The computed style (ref, can be created if null)</param>
-        public static void Apply(LiteElement node, ref CssComputed style)
+        public static void Apply(Element node, ref CssComputed style)
         {
             if (node == null) return;
             string tag = node.Tag?.ToUpperInvariant();
@@ -219,7 +221,7 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
         /// <summary>
         /// Apply styles specific to form elements.
         /// </summary>
-        private static void ApplyFormElementStyles(LiteElement node, ref CssComputed style, string tag)
+        private static void ApplyFormElementStyles(Element node, ref CssComputed style, string tag)
         {
             if (style == null) style = new CssComputed();
 
@@ -268,3 +270,5 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
         }
     }
 }
+
+

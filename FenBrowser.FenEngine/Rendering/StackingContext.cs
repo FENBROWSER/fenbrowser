@@ -1,266 +1,140 @@
-using System;
+using FenBrowser.Core.Css;
+using FenBrowser.Core.Dom;
 using System.Collections.Generic;
 using System.Linq;
-using FenBrowser.Core;
 
 namespace FenBrowser.FenEngine.Rendering
 {
     /// <summary>
-    /// Represents a stacking context in the CSS paint order.
-    /// 
-    /// Key CSS properties that create new stacking contexts:
-    /// - position: absolute/relative/fixed with z-index != auto
-    /// - opacity < 1
-    /// - transform (any value except none)
-    /// - filter (any value except none)
-    /// - will-change (certain values)
-    /// - contain: layout/paint/strict/content
-    /// - isolation: isolate
-    /// - mix-blend-mode (any value except normal)
-    /// - clip-path (any value except none)
-    /// - mask (any value except none)
+    /// Represents a CSS Stacking Context (CSS 2.1 Appendix E).
     /// </summary>
     public class StackingContext
     {
-        /// <summary>
-        /// The DOM element that created this stacking context
-        /// </summary>
-        public LiteElement Element { get; set; }
-        
-        /// <summary>
-        /// Z-index of this stacking context (0 for auto)
-        /// </summary>
+        public Node Node { get; set; }
         public int ZIndex { get; set; }
-        
-        /// <summary>
-        /// Whether this is the root stacking context (document root)
-        /// </summary>
         public bool IsRoot { get; set; }
+
+        // Phase 2: Negative Z-Index Child Contexts
+        public List<StackingContext> NegativeZContexts { get; } = new List<StackingContext>();
+
+        // Phase 3-5: Normal Flow Descendants (Blocks, Floats, Inlines)
+        // These are painted in tree order (DOM order), interleaved.
+        // We store them as a linear list of "Layers" that are NOT Stacking Contexts.
+        public List<Node> NormalFlowLayers { get; } = new List<Node>();
+
+        // Phase 6: Positioned Descendants (Z-Index: auto) and Z-Index: 0 Contexts
+        public List<Node> PositionedLayers { get; } = new List<Node>();
+        public List<StackingContext> ZeroZContexts { get; } = new List<StackingContext>();
+
+        // Phase 7: Positive Z-Index Child Contexts
+        public List<StackingContext> PositiveZContexts { get; } = new List<StackingContext>();
         
-        /// <summary>
-        /// Child stacking contexts (elements that create new contexts)
-        /// </summary>
-        public List<StackingContext> Children { get; } = new List<StackingContext>();
-        
-        /// <summary>
-        /// Render commands that belong to this stacking context
-        /// Commands are drawn within this context's isolation boundary
-        /// </summary>
-        public List<RenderCommand> Commands { get; } = new List<RenderCommand>();
-        
-        /// <summary>
-        /// Non-positioned block-level descendants (paint between negative z-index and positioned)
-        /// </summary>
-        public List<RenderCommand> BlockCommands { get; } = new List<RenderCommand>();
-        
-        /// <summary>
-        /// Float descendants
-        /// </summary>
-        public List<RenderCommand> FloatCommands { get; } = new List<RenderCommand>();
-        
-        /// <summary>
-        /// Inline-level descendants
-        /// </summary>
-        public List<RenderCommand> InlineCommands { get; } = new List<RenderCommand>();
-        
-        /// <summary>
-        /// Flattens this stacking context tree into correct paint order.
-        /// 
-        /// CSS 2.1 Appendix E - Painting Order:
-        /// 1. Background and borders of the stacking context root
-        /// 2. Child stacking contexts with negative z-index (in z-index order)
-        /// 3. Block-level descendants in tree order
-        /// 4. Float descendants in tree order
-        /// 5. Inline-level descendants in tree order
-        /// 6. Positioned descendants with z-index: auto (tree order)
-        /// 7. Child stacking contexts with z-index >= 0 (in z-index order)
-        /// </summary>
-        public IEnumerable<RenderCommand> Flatten()
+        public StackingContext(Node node, int zIndex)
         {
-            var result = new List<RenderCommand>();
-            
-            // 1. Background and borders of this context (Commands list)
-            result.AddRange(Commands);
-            
-            // 2. Child contexts with negative z-index
-            var negativeZChildren = Children.Where(c => c.ZIndex < 0).OrderBy(c => c.ZIndex);
-            foreach (var child in negativeZChildren)
-            {
-                result.AddRange(child.Flatten());
-            }
-            
-            // 3. Block-level descendants
-            result.AddRange(BlockCommands);
-            
-            // 4. Float descendants
-            result.AddRange(FloatCommands);
-            
-            // 5. Inline-level descendants
-            result.AddRange(InlineCommands);
-            
-            // 6-7. Child contexts with z-index >= 0 (includes auto = 0)
-            var positiveZChildren = Children.Where(c => c.ZIndex >= 0).OrderBy(c => c.ZIndex);
-            foreach (var child in positiveZChildren)
-            {
-                result.AddRange(child.Flatten());
-            }
-            
-            return result;
-        }
-        
-        /// <summary>
-        /// Add a command to the appropriate list based on element type
-        /// </summary>
-        public void AddCommand(RenderCommand command, CommandType type)
-        {
-            switch (type)
-            {
-                case CommandType.Background:
-                    Commands.Add(command);
-                    break;
-                case CommandType.Block:
-                    BlockCommands.Add(command);
-                    break;
-                case CommandType.Float:
-                    FloatCommands.Add(command);
-                    break;
-                case CommandType.Inline:
-                    InlineCommands.Add(command);
-                    break;
-            }
+            Node = node;
+            ZIndex = zIndex;
         }
     }
-    
-    /// <summary>
-    /// Type of command for proper paint order placement
-    /// </summary>
-    public enum CommandType
-    {
-        Background,  // Background/border of element
-        Block,       // Non-positioned block-level
-        Float,       // Floated elements
-        Inline       // Inline-level elements
-    }
-    
-    /// <summary>
-    /// Builder class for constructing the stacking context tree
-    /// </summary>
+
     public class StackingContextBuilder
     {
-        private readonly Dictionary<LiteElement, CssComputed> _styles;
-        
-        public StackingContextBuilder(Dictionary<LiteElement, CssComputed> styles)
+        private readonly Dictionary<Node, CssComputed> _styles;
+        private readonly HashSet<Node> _handledAsLayerRoot = new HashSet<Node>();
+
+        public StackingContextBuilder(Dictionary<Node, CssComputed> styles)
         {
             _styles = styles;
         }
-        
-        /// <summary>
-        /// Build the complete stacking context tree from the DOM root
-        /// </summary>
-        public StackingContext BuildTree(LiteElement root)
+
+        public StackingContext BuildTree(Node root)
         {
-            var rootContext = new StackingContext
-            {
-                Element = root,
-                IsRoot = true,
-                ZIndex = 0
-            };
-            
-            BuildRecursive(root, rootContext);
+            _handledAsLayerRoot.Clear();
+            var rootContext = new StackingContext(root, 0) { IsRoot = true };
+            _handledAsLayerRoot.Add(root);
+
+            ProcessChildren(root, rootContext);
             return rootContext;
         }
-        
-        /// <summary>
-        /// Recursively build the stacking context tree
-        /// </summary>
-        private void BuildRecursive(LiteElement node, StackingContext parentContext)
+
+        private void ProcessChildren(Node parent, StackingContext currentSC)
         {
-            if (node.Children == null) return;
-            
-            foreach (var child in node.Children)
+            if (parent.Children == null) return;
+
+            foreach (var child in parent.Children)
             {
-                CssComputed style = null;
-                _styles?.TryGetValue(child, out style);
-                
-                if (CreatesStackingContext(style))
+                if (child is Element element)
                 {
-                    // This element creates a new stacking context
-                    var childContext = new StackingContext
+                    bool createsSC = false;
+                    bool isPositioned = false;
+                    int zIndex = 0;
+
+                    if (_styles != null && _styles.TryGetValue(element, out var style))
                     {
-                        Element = child,
-                        ZIndex = style?.ZIndex ?? 0,
-                        IsRoot = false
-                    };
-                    
-                    parentContext.Children.Add(childContext);
-                    BuildRecursive(child, childContext);
-                }
-                else
-                {
-                    // Element belongs to parent's stacking context
-                    BuildRecursive(child, parentContext);
+                        string pos = style.Position?.ToLowerInvariant() ?? "static";
+                        isPositioned = pos == "absolute" || pos == "relative" || pos == "fixed" || pos == "sticky";
+
+                        if (style.ZIndex != null && int.TryParse(style.ZIndex.ToString(), out int z))
+                        {
+                            zIndex = z;
+                        }
+
+                        // Stacking Context Criteria
+                        bool hasZIndex = style.ZIndex != null && style.ZIndex.ToString() != "auto";
+
+                        if (isPositioned && hasZIndex) createsSC = true;
+                        else if ((style.Opacity ?? 1.0f) < 1.0f) createsSC = true;
+                        else if (!string.IsNullOrEmpty(style.Transform) && style.Transform != "none") createsSC = true;
+                        else if (!string.IsNullOrEmpty(style.Filter) && style.Filter != "none") createsSC = true;
+                        else if (style.Map != null)
+                        {
+                             if (style.Map.TryGetValue("isolation", out var iso) && iso == "isolate") createsSC = true;
+                        }
+                    }
+
+                    if (createsSC)
+                    {
+                        var newSC = new StackingContext(element, zIndex);
+                        _handledAsLayerRoot.Add(element);
+
+                        if (zIndex < 0) currentSC.NegativeZContexts.Add(newSC);
+                        else if (zIndex > 0) currentSC.PositiveZContexts.Add(newSC);
+                        else currentSC.ZeroZContexts.Add(newSC);
+
+                        ProcessChildren(element, newSC);
+                    }
+                    else if (isPositioned)
+                    {
+                        // Positioned (z-index: auto) -> Phase 6 Layer
+                        currentSC.PositionedLayers.Add(element);
+                        _handledAsLayerRoot.Add(element);
+                        ProcessChildren(element, currentSC); // Children belong to current SC
+                    }
+                    else
+                    {
+                        // Normal Flow -> Phase 3-5
+                        // We check if it HAS children that are layers.
+                        // We do NOT add the element itself as a 'Layer' unless it needs atomic painting?
+                        // 'DrawElement' loop naturally paints normal flow children recursively.
+                        // BUT, if we rely on 'DrawStackingContext' to call 'DrawElementChildren',
+                        // it iterates SC.Node.Children.
+                        // So we don't need to add normal flow elements to a list,
+                        // UNLESS we want to separate them from Stacking Context children?
+                        // DrawElementChildren iterates DOM children.
+                        // If it encounters a generic child, it recurses.
+                        // If it encounters a child that IS a Layer Root (in _handledAsLayerRoot), it SKIPS.
+                        // So we just need to populate _handledAsLayerRoot correctly.
+                        
+                        // We recurse into Normal Flow children to find nested Layers.
+                        ProcessChildren(element, currentSC);
+                    }
                 }
             }
         }
         
-        /// <summary>
-        /// Determines if an element creates a new stacking context based on CSS specs.
-        /// </summary>
-        private bool CreatesStackingContext(CssComputed style)
-        {
-            if (style == null) return false;
-            
-            // Position with z-index
-            bool isPositioned = style.Position != null && style.Position != "static";
-            if (isPositioned && style.ZIndex.HasValue && style.ZIndex.Value != 0)
-                return true;
-            
-            // Opacity < 1
-            if (style.Opacity.HasValue && style.Opacity.Value < 1)
-                return true;
-            
-            // Transform
-            if (!string.IsNullOrEmpty(style.Transform) && style.Transform != "none")
-                return true;
-            
-            // Filter
-            if (!string.IsNullOrEmpty(style.Filter) && style.Filter != "none")
-                return true;
-            
-            // Will-change
-            string willChange = style.Map?.TryGetValue("will-change", out var wc) == true ? wc : null;
-            if (!string.IsNullOrEmpty(willChange) && 
-                (willChange.Contains("opacity") || willChange.Contains("transform")))
-                return true;
-            
-            // Contain
-            string contain = style.Map?.TryGetValue("contain", out var cn) == true ? cn : null;
-            if (!string.IsNullOrEmpty(contain) && contain != "none" && 
-                (contain.Contains("layout") || contain.Contains("paint") || 
-                 contain.Contains("strict") || contain.Contains("content")))
-                return true;
-            
-            // Isolation
-            string isolation = style.Map?.TryGetValue("isolation", out var iso) == true ? iso : null;
-            if (isolation == "isolate")
-                return true;
-            
-            // Mix-blend-mode
-            string blendMode = style.Map?.TryGetValue("mix-blend-mode", out var mbm) == true ? mbm : null;
-            if (!string.IsNullOrEmpty(blendMode) && blendMode != "normal")
-                return true;
-            
-            // Clip-path
-            if (!string.IsNullOrEmpty(style.ClipPath) && style.ClipPath != "none")
-                return true;
-            
-            // Flex/Grid container items with z-index
-            if ((style.Display == "flex" || style.Display == "grid" || 
-                 style.Display == "inline-flex" || style.Display == "inline-grid") && 
-                style.ZIndex.HasValue)
-                return true;
-            
-            return false;
-        }
+        // Helper to expose handled roots if needed (or we just rely on SkiaDomRenderer recalculating or checking sc tree?)
+        // Better: SkiaDomRenderer can check 'IsLayerRoot'?
+        // Actually, SkiaDomRenderer iterates DOM. It needs to know "Skip this child".
+        // We can expose the Set.
+        public HashSet<Node> GetLayerRoots() => _handledAsLayerRoot;
     }
 }

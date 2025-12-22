@@ -1,3 +1,5 @@
+using FenBrowser.Core.Css;
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Concurrent;
 using System.IO;
@@ -22,7 +24,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
         /// <summary>
         /// Paint an image element.
         /// </summary>
-        public void PaintImage(SKCanvas canvas, LiteElement element, SKRect box, CssComputed style, SKBitmap bitmap = null)
+        public void PaintImage(SKCanvas canvas, Element element, SKRect box, CssComputed style, SKBitmap bitmap = null)
         {
             // Get image source
             string src = null;
@@ -147,7 +149,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
         /// <summary>
         /// Paint placeholder when image is not available.
         /// </summary>
-        private void PaintImagePlaceholder(SKCanvas canvas, SKRect box, LiteElement element)
+        private void PaintImagePlaceholder(SKCanvas canvas, SKRect box, Element element)
         {
             using var bgPaint = new SKPaint
             {
@@ -236,3 +238,5 @@ namespace FenBrowser.FenEngine.Rendering.Painting
         }
     }
 }
+
+

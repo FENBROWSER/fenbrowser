@@ -1,3 +1,4 @@
+using FenBrowser.Core.Css;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -418,3 +419,4 @@ namespace FenBrowser.FenEngine.Rendering
         SidewaysLr     // Like vertical-lr but rotated
     }
 }
+

@@ -1,3 +1,4 @@
+using FenBrowser.Core.Css;
 using System;
 using System.Globalization;
 using FenBrowser.Core.Logging;
@@ -217,3 +218,4 @@ namespace FenBrowser.FenEngine.Rendering.Painting
         }
     }
 }
+

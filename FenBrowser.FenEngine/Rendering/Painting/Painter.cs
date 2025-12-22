@@ -1,3 +1,5 @@
+using FenBrowser.Core.Css;
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using FenBrowser.Core;
@@ -28,10 +30,10 @@ namespace FenBrowser.FenEngine.Rendering.Painting
         /// </summary>
         public void PaintElement(
             SKCanvas canvas,
-            LiteElement element,
+            Element element,
             SKRect box,
             CssComputed style,
-            Dictionary<LiteElement, SKRect> boxes)
+            Dictionary<Element, SKRect> boxes)
         {
             if (style?.Display?.ToLowerInvariant() == "none") return;
 
@@ -80,7 +82,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
         /// <summary>
         /// Paint image content.
         /// </summary>
-        public void PaintImage(SKCanvas canvas, LiteElement element, SKRect box, CssComputed style, SKBitmap bitmap = null)
+        public void PaintImage(SKCanvas canvas, Element element, SKRect box, CssComputed style, SKBitmap bitmap = null)
         {
             _imagePainter.PaintImage(canvas, element, box, style, bitmap);
         }
@@ -133,3 +135,5 @@ namespace FenBrowser.FenEngine.Rendering.Painting
         public ImagePainter ImagePainter => _imagePainter;
     }
 }
+
+

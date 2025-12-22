@@ -1,3 +1,4 @@
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using FenBrowser.Core;
@@ -46,32 +47,32 @@ namespace FenBrowser.FenEngine.Rendering
         
         #region State Storage
         // Current hovered element (only one at a time - deepest in tree)
-        private LiteElement _hoveredElement;
+        private Element _hoveredElement;
         
         // Currently focused element (only one at a time)
-        private LiteElement _focusedElement;
+        private Element _focusedElement;
         
         // Currently active (mouse down) element
-        private LiteElement _activeElement;
+        private Element _activeElement;
         
         // All elements in hover chain (from hovered to root)
-        private readonly HashSet<LiteElement> _hoverChain = new HashSet<LiteElement>();
+        private readonly HashSet<Element> _hoverChain = new HashSet<Element>();
         
         // All elements in focus-within chain (from focused to root)
-        private readonly HashSet<LiteElement> _focusWithinChain = new HashSet<LiteElement>();
+        private readonly HashSet<Element> _focusWithinChain = new HashSet<Element>();
         
         // Track checked state for checkboxes/radios (synced with DOM attribute)
-        private readonly HashSet<LiteElement> _checkedElements = new HashSet<LiteElement>();
+        private readonly HashSet<Element> _checkedElements = new HashSet<Element>();
         
         // Callback for when styles need to be recomputed
-        public event Action<LiteElement> OnStateChanged;
+        public event Action<Element> OnStateChanged;
         #endregion
         
         #region Hover State
         /// <summary>
         /// Set the currently hovered element. Builds the hover chain.
         /// </summary>
-        public void SetHoveredElement(LiteElement element)
+        public void SetHoveredElement(Element element)
         {
             if (_hoveredElement == element)
                 return;
@@ -79,7 +80,7 @@ namespace FenBrowser.FenEngine.Rendering
             FenLogger.Debug($"[ElementState] Hover changed: {_hoveredElement?.Tag ?? "null"} -> {element?.Tag ?? "null"}", LogCategory.Layout);
             
             // Build list of elements that need style update
-            var toUpdate = new List<LiteElement>();
+            var toUpdate = new List<Element>();
             
             // Clear old hover chain
             foreach (var el in _hoverChain)
@@ -101,7 +102,7 @@ namespace FenBrowser.FenEngine.Rendering
                     _hoverChain.Add(current);
                     if (!toUpdate.Contains(current))
                         toUpdate.Add(current);
-                    current = current.Parent;
+                    current = current.Parent as Element;
                 }
             }
             
@@ -115,7 +116,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Check if an element is currently hovered (or an ancestor of hovered element)
         /// </summary>
-        public bool IsHovered(LiteElement element)
+        public bool IsHovered(Element element)
         {
             if (element == null)
                 return false;
@@ -125,14 +126,14 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Get the currently hovered element
         /// </summary>
-        public LiteElement HoveredElement => _hoveredElement;
+        public Element HoveredElement => _hoveredElement;
         #endregion
         
         #region Focus State
         /// <summary>
         /// Set the currently focused element. Builds the focus-within chain.
         /// </summary>
-        public void SetFocusedElement(LiteElement element)
+        public void SetFocusedElement(Element element)
         {
             if (_focusedElement == element)
                 return;
@@ -140,7 +141,7 @@ namespace FenBrowser.FenEngine.Rendering
             FenLogger.Debug($"[ElementState] Focus changed: {_focusedElement?.Tag ?? "null"} -> {element?.Tag ?? "null"}", LogCategory.Layout);
             
             // Build list of elements that need style update
-            var toUpdate = new List<LiteElement>();
+            var toUpdate = new List<Element>();
             
             // Clear old focus-within chain
             foreach (var el in _focusWithinChain)
@@ -165,7 +166,7 @@ namespace FenBrowser.FenEngine.Rendering
                     _focusWithinChain.Add(current);
                     if (!toUpdate.Contains(current))
                         toUpdate.Add(current);
-                    current = current.Parent;
+                    current = current.Parent as Element;
                 }
             }
             
@@ -179,7 +180,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Check if an element is currently focused
         /// </summary>
-        public bool IsFocused(LiteElement element)
+        public bool IsFocused(Element element)
         {
             if (element == null)
                 return false;
@@ -189,7 +190,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Check if an element has a focused descendant (:focus-within)
         /// </summary>
-        public bool IsFocusWithin(LiteElement element)
+        public bool IsFocusWithin(Element element)
         {
             if (element == null)
                 return false;
@@ -199,14 +200,14 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Get the currently focused element
         /// </summary>
-        public LiteElement FocusedElement => _focusedElement;
+        public Element FocusedElement => _focusedElement;
         #endregion
         
         #region Active State
         /// <summary>
         /// Set the currently active (mouse down) element
         /// </summary>
-        public void SetActiveElement(LiteElement element)
+        public void SetActiveElement(Element element)
         {
             if (_activeElement == element)
                 return;
@@ -227,7 +228,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// Check if an element is currently active (mouse down on it)
         /// Active also propagates to ancestors like :hover
         /// </summary>
-        public bool IsActive(LiteElement element)
+        public bool IsActive(Element element)
         {
             if (element == null || _activeElement == null)
                 return false;
@@ -238,7 +239,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 if (current == element)
                     return true;
-                current = current.Parent;
+                current = current.Parent as Element;
             }
             return false;
         }
@@ -246,14 +247,14 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Get the currently active element
         /// </summary>
-        public LiteElement ActiveElement => _activeElement;
+        public Element ActiveElement => _activeElement;
         #endregion
         
         #region Checked State
         /// <summary>
         /// Set checked state for a checkbox/radio
         /// </summary>
-        public void SetChecked(LiteElement element, bool isChecked)
+        public void SetChecked(Element element, bool isChecked)
         {
             if (element == null)
                 return;
@@ -273,7 +274,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Check if an element is checked
         /// </summary>
-        public bool IsChecked(LiteElement element)
+        public bool IsChecked(Element element)
         {
             if (element == null)
                 return false;
@@ -305,7 +306,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Check if an element is the :target (its ID matches URL fragment)
         /// </summary>
-        public bool IsTarget(LiteElement element)
+        public bool IsTarget(Element element)
         {
             if (element == null || string.IsNullOrEmpty(_targetFragment))
                 return false;
@@ -323,7 +324,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Check if an element is a form element
         /// </summary>
-        public static bool IsFormElement(LiteElement element)
+        public static bool IsFormElement(Element element)
         {
             if (element == null) return false;
             var tag = element.Tag?.ToLowerInvariant();
@@ -334,7 +335,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Check if a form element is valid (basic validation)
         /// </summary>
-        public static bool IsValid(LiteElement element)
+        public static bool IsValid(Element element)
         {
             if (element == null || !IsFormElement(element)) return false;
             
@@ -417,7 +418,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Check if a form element is invalid
         /// </summary>
-        public static bool IsInvalid(LiteElement element)
+        public static bool IsInvalid(Element element)
         {
             if (!IsFormElement(element)) return false;
             return !IsValid(element);
@@ -426,7 +427,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Check if a form element has the required attribute
         /// </summary>
-        public static bool IsRequired(LiteElement element)
+        public static bool IsRequired(Element element)
         {
             return element?.Attr?.ContainsKey("required") == true;
         }
@@ -434,7 +435,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Check if a form element is optional (not required)
         /// </summary>
-        public static bool IsOptional(LiteElement element)
+        public static bool IsOptional(Element element)
         {
             if (!IsFormElement(element)) return false;
             return !IsRequired(element);
@@ -459,7 +460,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// Check if an element matches a specific pseudo-class state.
         /// This is the main query method used by CSS selector matching.
         /// </summary>
-        public bool MatchesPseudoClassState(LiteElement element, string pseudoClass)
+        public bool MatchesPseudoClassState(Element element, string pseudoClass)
         {
             if (element == null || string.IsNullOrEmpty(pseudoClass))
                 return false;
@@ -482,3 +483,4 @@ namespace FenBrowser.FenEngine.Rendering
         #endregion
     }
 }
+

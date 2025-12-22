@@ -1,4 +1,6 @@
 using Avalonia;
+using FenBrowser.Core.Dom;
+using FenBrowser.Core.Css;
 using Avalonia.Controls;
 using Avalonia.Media;
 using Avalonia.Platform;
@@ -16,8 +18,8 @@ namespace FenBrowser.UI
 {
     public class SkiaBrowserView : Control
     {
-        private LiteElement _root;
-        private Dictionary<LiteElement, CssComputed> _styles;
+        private Element _root;
+        private Dictionary<Node, CssComputed> _styles;
         private SkiaDomRenderer _renderer;
         
         // Properties
@@ -45,7 +47,7 @@ namespace FenBrowser.UI
             ClipToBounds = true;
         }
 
-        public void Render(LiteElement root, Dictionary<LiteElement, CssComputed> styles)
+        public void Render(Element root, Dictionary<Node, CssComputed> styles)
         {
             _root = root;
             _styles = styles;
@@ -126,14 +128,14 @@ namespace FenBrowser.UI
         class BrowserDrawCheckOperation : ICustomDrawOperation
         {
             private readonly SkiaDomRenderer _renderer;
-            private readonly LiteElement _root;
-            private readonly Dictionary<LiteElement, CssComputed> _styles;
+            private readonly Node _root;
+            private readonly Dictionary<Node, CssComputed> _styles;
             private readonly string _baseUrl;
             private readonly SKSize _layoutViewport;
 
             public Rect Bounds { get; }
 
-            public BrowserDrawCheckOperation(Rect bounds, SkiaDomRenderer renderer, LiteElement root, Dictionary<LiteElement, CssComputed> styles, string baseUrl, SKSize layoutViewport)
+            public BrowserDrawCheckOperation(Rect bounds, SkiaDomRenderer renderer, Node root, Dictionary<Node, CssComputed> styles, string baseUrl, SKSize layoutViewport)
             {
                 Bounds = bounds;
                 _renderer = renderer;
@@ -163,6 +165,7 @@ namespace FenBrowser.UI
                  SKRect paintViewport = new SKRect(0, 0, (float)Bounds.Width, (float)Bounds.Height);
                  SKSize? layoutSize = _layoutViewport.Width > 0 ? _layoutViewport : (SKSize?)null;
 
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[BrowserDrawCheckOperation] Invoking _renderer.Render. Viewport={paintViewport} LayoutSize={layoutSize}\r\n"); } catch {}
                 _renderer.Render(_root, canvas, _styles, paintViewport, _baseUrl, null, layoutSize);
             }
         }

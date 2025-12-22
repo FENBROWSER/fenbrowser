@@ -1,4 +1,6 @@
-﻿// using Avalonia;
+using FenBrowser.Core.Css;
+using FenBrowser.Core.Dom;
+// using Avalonia;
 // using Avalonia.Controls;
 // using Avalonia.Controls.Documents;
 // using Avalonia.Media;
@@ -14,9 +16,12 @@ using System.Threading.Tasks;
 using System.IO;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.Core.Parsing;
 using FenBrowser.Core.Security;
 using FenBrowser.FenEngine.Security; // Added
-using FenBrowser.FenEngine.Scripting;
+using FenBrowser.FenEngine.Scripting; // For IJsHost
+using FenBrowser.FenEngine.Core; // Corrected namespace
+using FenBrowser.FenEngine.Layout; // Added for LayoutResult
 using static FenBrowser.FenEngine.Rendering.CssLoader;
 using FenBrowser.FenEngine.Rendering;
 using SkiaSharp;
@@ -36,8 +41,11 @@ namespace FenBrowser.FenEngine.Rendering
         public CspPolicy ActivePolicy { get; set; }
 
         // EXPOSED STYLES FOR SKIA RENDERER
-        public Dictionary<LiteElement, CssComputed> LastComputedStyles { get; private set; }
+        public Dictionary<Node, CssComputed> LastComputedStyles { get; private set; }
         public List<CssLoader.CssSource> LastCssSources { get; private set; }
+
+        public LayoutResult LastLayout => _cachedRenderer?.LastLayout;
+        public IExecutionContext Context => _activeJs?.GlobalContext;
 
         public event Action<object> RepaintReady;
         private void OnRepaintReady(object control)
@@ -47,14 +55,14 @@ namespace FenBrowser.FenEngine.Rendering
         }
         public event EventHandler<bool> LoadingChanged;
         public event EventHandler<string> TitleChanged;
-        public event EventHandler<LiteElement> DomReady;
+        public event EventHandler<Element> DomReady;
         public event Action<string> AlertTriggered;
         public event Action<string> ConsoleMessage; // New event for console logs
         public event Action<SKRect?> HighlightRectChanged;
         public event Func<string, JsPermissions, Task<bool>> PermissionRequested; // Permission API event
         public bool EnableJavaScript { get; set; } = true;
 
-        public void HighlightElement(LiteElement element)
+        public void HighlightElement(Element element)
         {
             if (element == null)
             {
@@ -94,9 +102,9 @@ namespace FenBrowser.FenEngine.Rendering
             return null;
         }
 
-        public LiteElement ActiveDom => _activeDom;
+        public Element ActiveDom => _activeDom;
         public JavaScriptEngine JsEngine => _activeJs;
-        private LiteElement _activeDom;
+        private Element _activeDom;
         private string _lastRawHtml;
         private object _lastRenderedControl;
         private Uri _activeBaseUri;
@@ -290,7 +298,7 @@ namespace FenBrowser.FenEngine.Rendering
         // ---------------------------------------------------------
 
         // Kick off background image fetches early (img/srcset/background-image)
-        private static void PrewarmImages(LiteElement root, Uri baseUri, Func<Uri, Task<Stream>> imageLoader, double? viewportWidth)
+        private static void PrewarmImages(Element root, Uri baseUri, Func<Uri, Task<Stream>> imageLoader, double? viewportWidth)
         {
             if (root == null || imageLoader == null) return;
             try
@@ -425,18 +433,22 @@ namespace FenBrowser.FenEngine.Rendering
             return null;
         }
 
-        private static string GatherPlainText(LiteElement n)
+        private static string GatherPlainText(Element n)
         {
             if (n == null) return string.Empty;
             var sb = new System.Text.StringBuilder();
-            Action<LiteElement> walk = null;
+            Action<Element> walk = null;
             walk = (el) =>
             {
                 if (el == null) return;
                 if (el.IsText) { var t = el.Text ?? string.Empty; sb.Append(t); return; }
                 if (el.Children != null)
                 {
-                    for (int i = 0; i < el.Children.Count; i++) walk(el.Children[i]);
+                    for (int i = 0; i < el.Children.Count; i++)
+                    {
+                        if (el.Children[i] is Element childEl)
+                            walk(childEl);
+                    }
                 }
             };
             walk(n);
@@ -453,7 +465,7 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         private async Task CaptureActiveContextAsync(
-            LiteElement dom,
+            Element dom,
             Uri baseUri,
             Func<Uri, Task<string>> fetchExternalCssAsync,
             Func<Uri, Task<Stream>> imageLoader,
@@ -523,7 +535,7 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         private async Task<object> BuildVisualTreeAsync(
-            LiteElement dom,
+            Element dom,
             Uri baseUri,
             Func<Uri, Task<string>> fetchExternalCssAsync,
             Func<Uri, Task<Stream>> imageLoader,
@@ -746,7 +758,7 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 // 1) Parse DOM (background)
                 var parser = new FenBrowser.Core.Parsing.HtmlParser(html ?? string.Empty);
-                LiteElement dom = null;
+                Element dom = null;
                 try
                 {
                     try { System.IO.File.AppendAllText("debug_log.txt", "[RenderAsync] Starting parse...\r\n"); } catch { }
@@ -808,13 +820,15 @@ namespace FenBrowser.FenEngine.Rendering
                     var templates = dom.Descendants().Where(n => n.Tag == "template" && n.Attr != null && n.Attr.ContainsKey("shadowrootmode")).ToList();
                     foreach (var template in templates)
                     {
-                        var parent = template.Parent;
+                        var parent = template.Parent as Element;
                         if (parent != null)
                         {
-                            // The template content becomes the shadow root
-                            parent.ShadowRoot = template.Children; 
+                            // The template content becomes the shadow root (first child element)
+                            var firstElementChild = template.Children?.OfType<Element>().FirstOrDefault();
+                            if (firstElementChild != null)
+                                parent.ShadowRoot = firstElementChild;
                             // Detach the template itself from the main DOM
-                            parent.Children.Remove(template);
+                            parent.Children?.Remove(template);
                         }
                     }
                 }
@@ -1172,7 +1186,7 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         /// <summary>Expose the current active Lite DOM (last parsed).</summary>
-        public LiteElement GetActiveDom()
+        public Element GetActiveDom()
         {
             return _activeDom;
         }
@@ -1260,3 +1274,5 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
+
+

@@ -1,3 +1,4 @@
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
@@ -69,10 +70,10 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         /// <summary>
         /// Sort boxes by z-index in parallel for large collections.
         /// </summary>
-        public List<(LiteElement element, SKRect box)> SortByZIndex(
-            IEnumerable<(LiteElement element, SKRect box, int zIndex)> boxes)
+        public List<(Element element, SKRect box)> SortByZIndex(
+            IEnumerable<(Element element, SKRect box, int zIndex)> boxes)
         {
-            var list = new List<(LiteElement element, SKRect box, int zIndex)>(boxes);
+            var list = new List<(Element element, SKRect box, int zIndex)>(boxes);
             
             if (list.Count > 1000)
             {
@@ -84,7 +85,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                 list.Sort((a, b) => a.zIndex.CompareTo(b.zIndex));
             }
 
-            var result = new List<(LiteElement, SKRect)>(list.Count);
+            var result = new List<(Element, SKRect)>(list.Count);
             foreach (var item in list)
             {
                 result.Add((item.element, item.box));
@@ -331,3 +332,4 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         }
     }
 }
+
