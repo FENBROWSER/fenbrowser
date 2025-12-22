@@ -25,7 +25,8 @@ namespace FenBrowser.FenEngine.Workers
     /// </summary>
     public class WorkerGlobalScope : FenObject
     {
-        private readonly WorkerRuntime _runtime;
+        protected readonly WorkerRuntime _runtime;
+        public WorkerRuntime Runtime => _runtime;
         private readonly string _origin;
         private readonly string _name;
 
