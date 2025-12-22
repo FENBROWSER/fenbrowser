@@ -69,6 +69,14 @@ namespace FenBrowser.Core.Engine
         }
         
         /// <summary>
+        /// Reset context to initial state (for testing).
+        /// </summary>
+        public static void Reset()
+        {
+            _instance = new EngineContext();
+        }
+        
+        /// <summary>
         /// Increment pass index (for layout convergence loops).
         /// </summary>
         /// <exception cref="LayoutConvergenceException">Thrown if max passes exceeded.</exception>
@@ -121,7 +129,7 @@ namespace FenBrowser.Core.Engine
             if (to == EnginePhase.Idle)
                 return;
             
-            // Normal forward transition
+            // Normal forward transition (+1)
             if ((int)to == (int)from + 1)
                 return;
             
@@ -129,6 +137,34 @@ namespace FenBrowser.Core.Engine
             if (to == from)
                 return;
             
+            // JSExecution can jump to Microtasks (after task completes)
+            if (from == EnginePhase.JSExecution && to == EnginePhase.Microtasks)
+                return;
+            
+            // Microtasks can return to JSExecution (for callbacks)
+            if (from == EnginePhase.Microtasks && to == EnginePhase.JSExecution)
+                return;
+            
+            // Layout can jump to Observers (after paint)
+            if (from == EnginePhase.Layout && to == EnginePhase.Observers)
+                return;
+            
+            // Observers can jump to Animation
+            if (from == EnginePhase.Observers && to == EnginePhase.Animation)
+                return;
+            
+            // Animation can return to JSExecution (for RAF callbacks)
+            if (from == EnginePhase.Animation && to == EnginePhase.JSExecution)
+                return;
+            
+            // Microtasks can jump directly to Layout (for render update)
+            if (from == EnginePhase.Microtasks && to == EnginePhase.Layout)
+                return;
+            
+            // Observers/Animation can go to Microtasks (for callbacks)
+            if ((from == EnginePhase.Observers || from == EnginePhase.Animation) && to == EnginePhase.Microtasks)
+                return;
+
             #if DEBUG
             // Strict validation disabled for tests to allow jumping states
             // throw new EngineInvariantException($"Invalid phase transition: {from} → {to}. Phases must be linear.");

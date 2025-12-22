@@ -2,7 +2,7 @@ namespace FenBrowser.Core.Engine
 {
     /// <summary>
     /// Defines render engine phases for invariant enforcement and diagnostics.
-    /// Phases MUST transition linearly: Idle → Style → Measure → Layout → Paint → Idle
+    /// Phases MUST transition linearly per EventLoopSemantics.md
     /// </summary>
     public enum EnginePhase
     {
@@ -22,6 +22,16 @@ namespace FenBrowser.Core.Engine
         Paint = 4,
 
         /// <summary>JavaScript execution window (Observer callbacks, events).</summary>
-        JSExecution = 5
+        JSExecution = 5,
+        
+        /// <summary>Draining microtask queue (Promise.then, queueMicrotask).</summary>
+        Microtasks = 6,
+        
+        /// <summary>Observer callback execution (ResizeObserver, IntersectionObserver).</summary>
+        Observers = 7,
+        
+        /// <summary>requestAnimationFrame callbacks.</summary>
+        Animation = 8
     }
 }
+
