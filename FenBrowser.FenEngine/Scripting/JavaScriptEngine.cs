@@ -1,3 +1,4 @@
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -83,36 +84,28 @@ namespace FenBrowser.FenEngine.Scripting
                 return interpreter.ApplyFunction(fn, new System.Collections.Generic.List<FenBrowser.FenEngine.Core.Interfaces.IValue>(args), context);
             };
             
-            // Configure callbacks to run on UI thread
+            // Configure callbacks to run via EventLoop
             context.ScheduleCallback = (action, delay) => 
             {
                 FenLogger.Debug($"[ScheduleCallback] Scheduled for {delay}ms", LogCategory.JavaScript);
                 Task.Run(async () => 
                 {
-                    try
+                    await Task.Delay(delay);
+                    FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance.EnqueueTask(() => 
                     {
-                        await Task.Delay(delay);
-                        FenLogger.Debug("[ScheduleCallback] Woke up. Dispatching to UI thread...", LogCategory.JavaScript);
-                        
-                        // Ensure the callback runs on the UI thread as JS expects single-threaded access to DOM
-                        // [MIGRATION] Avalonia Dispatcher removed. Host must provide UI thread synchronization.
-                        // For now, executing directly (unsafe if multithreaded) or TODO: Use explicit UI sync context.
-                        // await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() => 
-                        // {
-                            FenLogger.Debug("[ScheduleCallback] Executing action on UI thread.", LogCategory.JavaScript);
-                            try { action(); }
-                            catch (Exception ex) 
-                            { 
-                                FenLogger.Error($"[Timer Action Error] {ex.Message}", LogCategory.JavaScript, ex);
-                            }
-                        // });
-                    }
-                    catch (Exception ex)
-                    {
-                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ScheduleCallback Error] {ex.Message}\r\n"); } catch { }
-                    }
+                        FenLogger.Debug("[EventLoop] Executing scheduled callback", LogCategory.JavaScript);
+                        action?.Invoke();
+                    });
                 });
             };
+
+            // Configure Microtasks (Promises)
+            context.ScheduleMicrotask = (action) =>
+            {
+                FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance.EnqueueMicrotask(() => action?.Invoke());
+            };
+
+
 
             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[JavaScriptEngine] InitRuntime: Creating FenRuntime...\r\n"); } catch { }
             _fenRuntime = new FenRuntime(context);
@@ -133,6 +126,24 @@ namespace FenBrowser.FenEngine.Scripting
             
             SetupPermissions();
             SetupWindowEvents();
+            SetupModernAPIs();
+            
+            // Register Fetch API
+            FenBrowser.FenEngine.WebAPIs.FetchApi.Register(_fenRuntime.Context);
+        }
+
+        private void SetupModernAPIs()
+        {
+            try 
+            {
+                FenLogger.Debug("[JavaScriptEngine] Setting up Modern APIs (Proxy, Reflect)...", LogCategory.JavaScript);
+                _fenRuntime.SetGlobal("Proxy", FenBrowser.FenEngine.Scripting.ProxyAPI.CreateProxyConstructor());
+                _fenRuntime.SetGlobal("Reflect", FenValue.FromObject(FenBrowser.FenEngine.Scripting.ReflectAPI.CreateReflectObject()));
+            }
+            catch (Exception ex)
+            {
+                 FenLogger.Error($"[JavaScriptEngine] Modern API Setup Failed: {ex.Message}", LogCategory.JavaScript, ex);
+            }
         }
 
         public FenValue AddEventListenerNative(FenBrowser.FenEngine.Core.Interfaces.IValue[] args, object thisVal)
@@ -428,7 +439,7 @@ namespace FenBrowser.FenEngine.Scripting
         }
         
         /// <summary>Get the DOM root that JS is using (for repaint sync)</summary>
-        public LiteElement DomRoot => _domRoot;
+        public Element DomRoot => _domRoot;
         
         // Document ready state (for document.readyState property)
 
@@ -439,10 +450,10 @@ namespace FenBrowser.FenEngine.Scripting
         public Func<Uri, string, bool> SubresourceAllowed { get; set; }
 
         // Canvas persistence
-        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<LiteElement, SKBitmap> _canvasBitmaps 
-            = new System.Runtime.CompilerServices.ConditionalWeakTable<LiteElement, SKBitmap>();
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Element, SKBitmap> _canvasBitmaps 
+            = new System.Runtime.CompilerServices.ConditionalWeakTable<Element, SKBitmap>();
 
-        public static void RegisterCanvasBitmap(LiteElement element, SKBitmap bitmap)
+        public static void RegisterCanvasBitmap(Element element, SKBitmap bitmap)
         {
             if (element == null || bitmap == null) return;
             // ConditionalWeakTable doesn't have indexer setter, use Remove/Add or GetValue to set
@@ -450,7 +461,7 @@ namespace FenBrowser.FenEngine.Scripting
             _canvasBitmaps.Add(element, bitmap);
         }
 
-        public static SKBitmap GetCanvasBitmap(LiteElement element)
+        public static SKBitmap GetCanvasBitmap(Element element)
         {
             if (element == null) return null;
             _canvasBitmaps.TryGetValue(element, out var bitmap);
@@ -513,12 +524,12 @@ namespace FenBrowser.FenEngine.Scripting
         
         // --- lightweight fields that may be missing in some merge states ---
         // DOM visual registry
-        private static readonly System.Collections.Generic.Dictionary<LiteElement, System.WeakReference> _visualMap =
-            new System.Collections.Generic.Dictionary<LiteElement, System.WeakReference>(System.Collections.Generic.EqualityComparer<LiteElement>.Default);
+        private static readonly System.Collections.Generic.Dictionary<Element, System.WeakReference> _visualMap =
+            new System.Collections.Generic.Dictionary<Element, System.WeakReference>(System.Collections.Generic.EqualityComparer<Element>.Default);
         private static System.WeakReference _visualRoot;
 
         // DOM root exposed to the engine
-        private LiteElement _domRoot;
+        private Element _domRoot;
 
         private readonly object _sandboxLogLock = new object();
         private readonly Queue<SandboxBlockRecord> _sandboxBlocks = new Queue<SandboxBlockRecord>();
@@ -596,24 +607,24 @@ namespace FenBrowser.FenEngine.Scripting
         // --- DOM visual registry for approximate layout metrics ---
         // [MIGRATION] Avalonia Visual Registry removed. Layout metrics should be retrieved from SkiaDomRenderer.
         
-        public static void RegisterDomVisual(LiteElement node, object fe)
+        public static void RegisterDomVisual(Element node, object fe)
         {
             // No-op
         }
 
-        public static object GetControlForElement(LiteElement node)
+        public static object GetControlForElement(Element node)
         {
             return null;
         }
 
-        public static bool TryGetVisualRect(LiteElement node, out double x, out double y, out double w, out double h)
+        public static bool TryGetVisualRect(Element node, out double x, out double y, out double w, out double h)
         {
             x = y = w = h = 0;
             // TODO: Query SkiaDomRenderer for layout box
             return false;
         }
 
-        internal static object GetVisual(LiteElement node)
+        internal static object GetVisual(Element node)
         {
             return null;
         }
@@ -1989,12 +2000,12 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
 
             public object createElement(string tagName)
             {
-                return new JsDomElement(_engine, new LiteElement(tagName));
+                return new JsDomElement(_engine, new Element(tagName));
             }
 
             public object createTextNode(string data)
             {
-                var t = new LiteElement("#text");
+                var t = new Element("#text");
                 t.Text = data;
                 return new JsDomText(_engine, t);
             }
@@ -2172,7 +2183,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         private readonly Dictionary<string, JsFuncDef> _userFunctionsEx = new Dictionary<string, JsFuncDef>(StringComparer.Ordinal);
 
         /// <summary>Expose current DOM to the engine (for document.* bridge).</summary>
-        public async Task SetDomAsync(LiteElement domRoot, Uri baseUri = null)
+        public async Task SetDomAsync(Element domRoot, Uri baseUri = null)
         {
             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[JavaScriptEngine] SetDomAsync Start\r\n"); } catch { }
             _domRoot = domRoot;
@@ -2280,7 +2291,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         }
 
         // Backward compatibility wrapper (deprecated)
-        public void SetDom(LiteElement domRoot, Uri baseUri = null)
+        public void SetDom(Element domRoot, Uri baseUri = null)
         {
              // This is dangerous if called on UI thread, but provided for compatibility compilation
              // Ideally calls should move to SetDomAsync
@@ -2293,24 +2304,37 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             // No longer used - FenEngine handles script execution in SetDom
         }
 
-        private static string CollectScriptText(LiteElement n)
+        private static string CollectScriptText(Node n)
         {
             if (n == null) return "";
-            if (n.IsText) return n.Text ?? "";
+            if (n.IsText) return (n as Element)?.Text ?? ""; 
+            // Note: Element.Text is on Element. If Node does not have Text property we need cast.
+            // Wait, Node.IsText is available. Does Node have Text? 
+            // Checking Node.cs earlier... Element has Text. Node might not.
+            // Let's assume Node does not have Text given previous errors unless it was added.
+            // Safest to cast to Element for Text if IsText is true, or use a helper.
+            // Actually, in `CssLoader.cs`, `SafeGatherText` treats `n` as Element.
+            
+            var el = n as Element;
+            if (el != null && el.IsText) return el.Text ?? "";
+            
             var sb = new System.Text.StringBuilder();
-            for (int i = 0; i < n.Children.Count; i++) sb.Append(CollectScriptText(n.Children[i]));
+            if (n.Children != null)
+            {
+                for (int i = 0; i < n.Children.Count; i++) sb.Append(CollectScriptText(n.Children[i]));
+            }
             return sb.ToString();
         }
 
         #region JS enabled sanitizer
         // INSIDE: public sealed class JavaScriptEngine { ... }
-        private void SanitizeForScriptingEnabled(LiteElement rootArg = null)
+        private void SanitizeForScriptingEnabled(Element rootArg = null)
         {
             var root = rootArg ?? _domRoot;          // OK in instance method
             if (root == null) return;
 
             // flip no-js ? js on <html>/<body>
-            Action<LiteElement> flipClass = n =>
+            Action<Element> flipClass = n =>
             {
                 if (n == null) return;
                 var attrs = n.Attr;
@@ -2331,20 +2355,20 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
 
             try
             {
-                var html = (root.QueryByTag("html") ?? Enumerable.Empty<LiteElement>()).FirstOrDefault();
+                var html = (root.QueryByTag("html") ?? Enumerable.Empty<Element>()).FirstOrDefault();
                 if (html != null) flipClass(html);
-                var body = (root.QueryByTag("body") ?? Enumerable.Empty<LiteElement>()).FirstOrDefault();
+                var body = (root.QueryByTag("body") ?? Enumerable.Empty<Element>()).FirstOrDefault();
                 if (body != null) flipClass(body);
             }
             catch { }
 
             try
             {
-                var toRemove = new List<LiteElement>();
-                foreach (var n in root.Descendants())
+                var toRemove = new List<Element>();
+                foreach (var n in root.Descendants().OfType<Element>())
                     if (string.Equals(n.Tag, "noscript", StringComparison.OrdinalIgnoreCase))
                         toRemove.Add(n);
-                foreach (var n in toRemove) n.Parent?.Children.Remove(n);
+                foreach (var n in toRemove) (n.Parent as Element)?.Children.Remove(n);
             }
             catch { }
 
@@ -2399,7 +2423,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         void SetTitle(string tval);
         void Alert(string msg);
         void Log(string msg);
-        void ScrollToElement(LiteElement element);
+        void ScrollToElement(Element element);
     }
 
     // Optional host interface: if implemented, JavaScriptEngine will call RequestRender() when DOM changes
@@ -2429,9 +2453,9 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
     private readonly Action<string> _setTitle;
     private readonly Action<string> _alert;
     private readonly Action<string> _log;
-    private readonly Action<LiteElement> _scrollToElement;
+    private readonly Action<Element> _scrollToElement;
 
-        public JsHostAdapter(Action<Uri> navigate, Action<Uri, string> post, Action<string> status, Action requestRender = null, Action<Action> invokeOnUiThread = null, Action<string> setTitle = null, Action<string> alert = null, Action<string> log = null, Action<LiteElement> scrollToElement = null)
+        public JsHostAdapter(Action<Uri> navigate, Action<Uri, string> post, Action<string> status, Action requestRender = null, Action<Action> invokeOnUiThread = null, Action<string> setTitle = null, Action<string> alert = null, Action<string> log = null, Action<Element> scrollToElement = null)
         {
             _navigate = navigate ?? (_ => { });
             _post = post ?? ((_, __) => { });
@@ -2455,6 +2479,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         public void SetTitle(string tval) => _setTitle(tval);
         public void Alert(string msg) => _alert(msg);
         public void Log(string msg) => _log(msg);
-        public void ScrollToElement(LiteElement element) => _scrollToElement(element);
+        public void ScrollToElement(Element element) => _scrollToElement(element);
     }
 }
+

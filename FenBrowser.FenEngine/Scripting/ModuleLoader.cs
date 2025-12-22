@@ -1,3 +1,4 @@
+using FenBrowser.Core.Dom;
 using FenBrowser.Core;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -20,7 +21,7 @@ namespace FenBrowser.FenEngine.Scripting
             _engine = engine ?? throw new ArgumentNullException(nameof(engine));
         }
 
-        public Task ExecuteModuleTagAsync(LiteElement node, Uri sourceUri, Uri baseUri)
+        public Task ExecuteModuleTagAsync(Element node, Uri sourceUri, Uri baseUri)
         {
             if (node == null) return Task.Delay(0);
             if (sourceUri != null)
@@ -211,3 +212,4 @@ namespace FenBrowser.FenEngine.Scripting
         }
     }
 }
+

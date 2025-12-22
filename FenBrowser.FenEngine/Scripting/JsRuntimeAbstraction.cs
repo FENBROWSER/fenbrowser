@@ -1,3 +1,4 @@
+using FenBrowser.Core.Dom;
 using System;
 using FenBrowser.Core;
 
@@ -11,7 +12,7 @@ namespace FenBrowser.FenEngine.Scripting
     public interface IJsRuntime
     {
         void Initialize(IJsHost host);
-        void SetDom(LiteElement root);
+        void SetDom(Element root);
         void Reset(JsContext ctx);
         bool RunInline(string code, JsContext ctx);
         bool AllowExternalScripts { get; set; }
@@ -45,7 +46,7 @@ namespace FenBrowser.FenEngine.Scripting
             // JavaScriptEngine is constructed with a host; nothing to do here.
         }
 
-        public void SetDom(LiteElement root)
+        public void SetDom(Element root)
         {
             try { _inner.SetDom(root); } catch { }
         }
@@ -106,7 +107,7 @@ namespace FenBrowser.FenEngine.Scripting
         }
 
         public void Initialize(IJsHost host) { }
-        public void SetDom(LiteElement root) { }
+        public void SetDom(Element root) { }
         public void Reset(JsContext ctx) { }
         public bool RunInline(string code, JsContext ctx) { return false; }
         public bool AllowExternalScripts { get; set; }

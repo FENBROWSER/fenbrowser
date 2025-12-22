@@ -1,3 +1,4 @@
+using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -15,10 +16,11 @@ namespace FenBrowser.FenEngine.Scripting
         internal sealed class JsDocument : IObject
         {
             private readonly JavaScriptEngine _e;
-            private LiteElement _root;
+            private Element _root;
             private IObject _prototype = null;
             private JsDomElement _bodyCache = null;
-            public JsDocument(JavaScriptEngine e, LiteElement root) { _e = e; _root = root; }
+            public object NativeObject { get; set; }
+            public JsDocument(JavaScriptEngine e, Element root) { _e = e; _root = root; }
 
             public object getElementById(string id)
             {
@@ -27,7 +29,7 @@ namespace FenBrowser.FenEngine.Scripting
                 {
                     if (n.Attr != null)
                     {
-                        string v; if (n.Attr.TryGetValue("id", out v) && string.Equals(v, id, StringComparison.Ordinal)) return new JsDomElement(_e, n);
+                        string v; if (n.Attr.TryGetValue("id", out v) && string.Equals(v, id, StringComparison.Ordinal) && n is Element el) return new JsDomElement(_e, el);
                     }
                 }
                 return null;
@@ -37,7 +39,7 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 if (string.IsNullOrEmpty(tag) || _root == null) return new object[0];
                 var list = new List<object>();
-                foreach (var n in _root.Descendants())
+                foreach (var n in _root.Descendants().OfType<Element>())
                     if (!n.IsText && string.Equals(n.Tag, tag, StringComparison.OrdinalIgnoreCase))
                         list.Add(new JsDomElement(_e, n));
                 return list.ToArray();
@@ -50,7 +52,7 @@ namespace FenBrowser.FenEngine.Scripting
                 if (targetClasses.Length == 0) return new object[0];
 
                 var list = new List<object>();
-                foreach (var n in _root.Descendants())
+                foreach (var n in _root.Descendants().OfType<Element>())
                 {
                     if (n.Attr != null && n.Attr.TryGetValue("class", out var cls) && !string.IsNullOrWhiteSpace(cls))
                     {
@@ -91,7 +93,7 @@ namespace FenBrowser.FenEngine.Scripting
                 else if (sel.StartsWith("."))
                 {
                     var cls = sel.Substring(1);
-                    foreach (var n in _root.Descendants())
+                    foreach (var n in _root.Descendants().OfType<Element>())
                     {
                         string v;
                         if (n.Attr != null && n.Attr.TryGetValue("class", out v) && !string.IsNullOrWhiteSpace(v))
@@ -107,12 +109,12 @@ namespace FenBrowser.FenEngine.Scripting
                     if (sel.Contains(" "))
                     {
                         var parts = sel.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                        var current = new List<LiteElement> { _root };
+                        var current = new List<Element> { _root };
                         foreach (var p in parts)
                         {
-                            var next = new List<LiteElement>();
+                            var next = new List<Element>();
                             foreach (var c in current)
-                                foreach (var d in c.Descendants())
+                                foreach (var d in c.Descendants().OfType<Element>())
                                     if (MatchesSimpleSelector(d, p)) next.Add(d);
                             current = next;
                         }
@@ -120,13 +122,13 @@ namespace FenBrowser.FenEngine.Scripting
                     }
                     else
                     {
-                        foreach (var n in _root.Descendants()) if (MatchesSimpleSelector(n, sel)) list.Add(new JsDomElement(_e, n));
+                        foreach (var n in _root.Descendants().OfType<Element>()) if (MatchesSimpleSelector(n, sel)) list.Add(new JsDomElement(_e, n));
                     }
                 }
                 return list.ToArray();
             }
 
-            internal static bool MatchesSimpleSelector(LiteElement n, string sel)
+            internal static bool MatchesSimpleSelector(Element n, string sel)
             {
                 if (string.IsNullOrWhiteSpace(sel)) return false;
                 if (sel.Contains("+") || sel.Contains("~"))
@@ -138,19 +140,19 @@ namespace FenBrowser.FenEngine.Scripting
                         var op = parts[1];
                         var b = parts[2];
                         if (!MatchesSimpleSelector(n, b)) return false;
-                        var parent = n.Parent;
+                        var parent = n.Parent as Element;
                         if (parent == null) return false;
                         var siblings = parent.Children;
-                        int idx = siblings.IndexOf(n);
+                        int idx = siblings.IndexOf(n); // Note: siblings is List<Node>, n is Element. Valid check.
                         if (idx <= 0) return false;
                         if (op == "+")
                         {
-                            var prev = siblings[idx - 1];
-                            return MatchesSimpleSelector(prev, a);
+                            var prev = siblings[idx - 1] as Element;
+                            return prev != null && MatchesSimpleSelector(prev, a);
                         }
                         else
                         {
-                            for (int i = 0; i < idx; i++) if (MatchesSimpleSelector(siblings[i], a)) return true;
+                            for (int i = 0; i < idx; i++) if (siblings[i] is Element el && MatchesSimpleSelector(el, a)) return true;
                             return false;
                         }
                     }
@@ -198,13 +200,13 @@ namespace FenBrowser.FenEngine.Scripting
             public JsDomElement createElement(string tag)
             {
                 if (string.IsNullOrWhiteSpace(tag)) return null;
-                var el = new LiteElement(tag.ToLowerInvariant());
+                var el = new Element(tag.ToLowerInvariant());
                 return new JsDomElement(_e, el);
             }
 
             public JsDomText createTextNode(string text)
             {
-                var t = new LiteElement("#text");
+                var t = new Element("#text");
                 t.Text = text ?? "";
                 return new JsDomText(_e, t);
             }
@@ -213,7 +215,7 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 get
                 {
-                    foreach (var n in _root.Children) if (n.Tag == "body") return new JsDomElement(_e, n);
+                    foreach (var n in _root.Children.OfType<Element>()) if (n.Tag == "body") return new JsDomElement(_e, n);
                     return new JsDomElement(_e, _root);
                 }
             }
@@ -231,7 +233,7 @@ namespace FenBrowser.FenEngine.Scripting
                     var name = j._node.Tag == "#text" ? (j._node.Text ?? "") : (j._node.Attr != null && j._node.Attr.TryGetValue("id", out __tmpId) ? "#" + __tmpId : j._node.Tag);
                     lock (_e._mutationLock)
                     {
-                        _e._pendingMutations.Add(new MutationRecord { Type = "childList", AddedNodes = new System.Collections.Generic.List<LiteElement> { j._node }, RemovedNodes = new System.Collections.Generic.List<LiteElement>() });
+                        _e._pendingMutations.Add(new MutationRecord { Type = "childList", AddedNodes = new System.Collections.Generic.List<Element> { j._node }, RemovedNodes = new System.Collections.Generic.List<Element>() });
                     }
                 }
                 catch { }
@@ -253,7 +255,7 @@ namespace FenBrowser.FenEngine.Scripting
                         {
                             string __tmpId3 = null;
                             var name = j._node.Tag == "#text" ? (j._node.Text ?? "") : (j._node.Attr != null && j._node.Attr.TryGetValue("id", out __tmpId3) ? "#" + __tmpId3 : j._node.Tag);
-                            _e._pendingMutations.Add(new MutationRecord { Type = "childList", AddedNodes = new System.Collections.Generic.List<LiteElement>(), RemovedNodes = new System.Collections.Generic.List<LiteElement> { j._node } });
+                            _e._pendingMutations.Add(new MutationRecord { Type = "childList", AddedNodes = new System.Collections.Generic.List<Element>(), RemovedNodes = new System.Collections.Generic.List<Element> { j._node } });
                         }
                         _e.RequestRepaint();
                     }
@@ -262,7 +264,8 @@ namespace FenBrowser.FenEngine.Scripting
             }
 
             // IObject implementation for interpreter property access
-            public IValue Get(string key)
+            // IObject implementation for interpreter property access
+            public IValue Get(string key, IExecutionContext context = null)
             {
                 switch (key)
                 {
@@ -272,7 +275,7 @@ namespace FenBrowser.FenEngine.Scripting
                     case "body":
                         if (_bodyCache == null)
                         {
-                            foreach (var n in _root.Children)
+                            foreach (var n in _root.Children.OfType<Element>())
                             {
                                 if (n.Tag == "body") { _bodyCache = new JsDomElement(_e, n); break; }
                             }
@@ -318,10 +321,10 @@ namespace FenBrowser.FenEngine.Scripting
                 }
             }
 
-            public void Set(string key, IValue value) { /* Most document properties are read-only */ }
-            public bool Has(string key) => key == "body" || key == "getElementById" || key == "querySelector" || key == "querySelectorAll" || key == "addEventListener";
-            public bool Delete(string key) => false;
-            public IEnumerable<string> Keys() => new[] { "body", "getElementById", "getElementsByTagName", "querySelector", "querySelectorAll", "createElement", "createTextNode", "addEventListener" };
+            public void Set(string key, IValue value, IExecutionContext context = null) { /* Most document properties are read-only */ }
+            public bool Has(string key, IExecutionContext context = null) => key == "body" || key == "getElementById" || key == "querySelector" || key == "querySelectorAll" || key == "addEventListener";
+            public bool Delete(string key, IExecutionContext context = null) => false;
+            public IEnumerable<string> Keys(IExecutionContext context = null) => new[] { "body", "getElementById", "getElementsByTagName", "querySelector", "querySelectorAll", "createElement", "createTextNode", "addEventListener" };
             public IObject GetPrototype() => _prototype;
             public void SetPrototype(IObject prototype) { _prototype = prototype; }
         }
@@ -329,13 +332,13 @@ namespace FenBrowser.FenEngine.Scripting
         internal abstract class JsDomNodeBase
         {
             internal readonly JavaScriptEngine _e;
-            internal readonly LiteElement _node;
-            protected JsDomNodeBase(JavaScriptEngine e, LiteElement n) { _e = e; _node = n; }
+            internal readonly Element _node;
+            protected JsDomNodeBase(JavaScriptEngine e, Element n) { _e = e; _node = n; }
         }
 
         internal sealed class JsDomText : JsDomNodeBase
         {
-            public JsDomText(JavaScriptEngine e, LiteElement n) : base(e, n) { }
+            public JsDomText(JavaScriptEngine e, Element n) : base(e, n) { }
             public string nodeType => "text";
             public string data { get { return _node.Text ?? ""; } set { _node.Text = value ?? ""; } }
         }
@@ -344,7 +347,8 @@ namespace FenBrowser.FenEngine.Scripting
         {
             private IObject _prototype = null;
             private JsCssDeclaration _styleCache = null;
-            public JsDomElement(JavaScriptEngine e, LiteElement n) : base(e, n) { }
+            public object NativeObject { get; set; }
+            public JsDomElement(JavaScriptEngine e, Element n) : base(e, n) { }
             public string tagName => (_node.Tag ?? "").ToUpperInvariant();
 
             public string id
@@ -369,7 +373,7 @@ namespace FenBrowser.FenEngine.Scripting
                 set
                 {
                     _node.Children.Clear();
-                    var textNode = new LiteElement("#text") { Text = value ?? "" };
+                    var textNode = new Element("#text") { Text = value ?? "" };
                     _node.Children.Add(textNode);
                     try
                     {
@@ -378,8 +382,8 @@ namespace FenBrowser.FenEngine.Scripting
                             _e._pendingMutations.Add(new MutationRecord
                             {
                                 Type = "childList",
-                                AddedNodes = new System.Collections.Generic.List<LiteElement> { textNode },
-                                RemovedNodes = new System.Collections.Generic.List<LiteElement>()
+                                AddedNodes = new System.Collections.Generic.List<Element> { textNode },
+                                RemovedNodes = new System.Collections.Generic.List<Element>()
                             });
                         }
                     }
@@ -402,10 +406,10 @@ namespace FenBrowser.FenEngine.Scripting
                         var html = value ?? string.Empty;
                         var parser = new HtmlLiteParser(html);
                         var doc = parser.Parse();
-                        LiteElement container = null;
+                        Element container = null;
                         try
                         {
-                            container = (doc.QueryByTag("body") ?? System.Linq.Enumerable.Empty<LiteElement>()).FirstOrDefault();
+                            container = (doc.QueryByTag("body") ?? System.Linq.Enumerable.Empty<Element>()).FirstOrDefault();
                             if (container == null) container = doc;
                         }
                         catch { container = doc; }
@@ -413,14 +417,17 @@ namespace FenBrowser.FenEngine.Scripting
                         _node.RemoveAllChildren();
                         foreach (var ch in container.Children)
                         {
-                            var clone = CloneTree(ch);
-                            _node.Append(clone);
+                            if (ch is Element chElement)
+                            {
+                                var clone = CloneTree(chElement);
+                                _node.Append(clone);
+                            }
                         }
                         if (_e.ExecuteInlineScriptsOnInnerHTML)
                         {
                             try
                             {
-                                foreach (var s in _node.SelfAndDescendants())
+                                foreach (var s in _node.SelfAndDescendants().OfType<Element>())
                                 {
                                     if (!string.Equals(s.Tag, "script", StringComparison.OrdinalIgnoreCase)) continue;
                                     if (s.Attr != null && s.Attr.ContainsKey("src")) continue;
@@ -457,28 +464,28 @@ namespace FenBrowser.FenEngine.Scripting
                     var pos = (position ?? "").Trim().ToLowerInvariant();
                     var parser = new HtmlLiteParser(html ?? string.Empty);
                     var frag = parser.Parse();
-                    LiteElement container = null;
+                    Element container = null;
                     try
                     {
-                        container = (frag.QueryByTag("body") ?? System.Linq.Enumerable.Empty<LiteElement>()).FirstOrDefault();
+                        container = (frag.QueryByTag("body") ?? System.Linq.Enumerable.Empty<Element>()).FirstOrDefault();
                         if (container == null) container = frag;
                     }
                     catch { container = frag; }
 
                     if (pos == "afterbegin")
                     {
-                        for (int i = container.Children.Count - 1; i >= 0; i--) _node.Children.Insert(0, CloneTree(container.Children[i]));
+                        for (int i = container.Children.Count - 1; i >= 0; i--) if (container.Children[i] is Element el) _node.Children.Insert(0, CloneTree(el));
                     }
                     else if (pos == "beforeend")
                     {
-                        for (int i = 0; i < container.Children.Count; i++) _node.Children.Add(CloneTree(container.Children[i]));
+                        for (int i = 0; i < container.Children.Count; i++) if (container.Children[i] is Element el) _node.Children.Add(CloneTree(el));
                     }
                     else if (pos == "beforebegin")
                     {
                         var parent = _node.Parent; if (parent != null)
                         {
                             var idx = parent.Children.IndexOf(_node);
-                            for (int i = 0; i < container.Children.Count; i++) parent.Children.Insert(idx++, CloneTree(container.Children[i]));
+                            for (int i = 0; i < container.Children.Count; i++) if (container.Children[i] is Element el) parent.Children.Insert(idx++, CloneTree(el));
                         }
                     }
                     else if (pos == "afterend")
@@ -486,12 +493,12 @@ namespace FenBrowser.FenEngine.Scripting
                         var parent = _node.Parent; if (parent != null)
                         {
                             var idx = parent.Children.IndexOf(_node) + 1;
-                            for (int i = 0; i < container.Children.Count; i++) parent.Children.Insert(idx++, CloneTree(container.Children[i]));
+                            for (int i = 0; i < container.Children.Count; i++) if (container.Children[i] is Element el) parent.Children.Insert(idx++, CloneTree(el));
                         }
                     }
                     else
                     {
-                        for (int i = 0; i < container.Children.Count; i++) _node.Children.Add(CloneTree(container.Children[i]));
+                        for (int i = 0; i < container.Children.Count; i++) if (container.Children[i] is Element el) _node.Children.Add(CloneTree(el));
                     }
                     _e.RequestRepaint();
                 }
@@ -530,7 +537,7 @@ namespace FenBrowser.FenEngine.Scripting
                 {
                     string __tmpId2 = null;
                     var name = j._node.Tag == "#text" ? (j._node.Text ?? "") : (j._node.Attr != null && j._node.Attr.TryGetValue("id", out __tmpId2) ? "#" + __tmpId2 : j._node.Tag);
-                    lock (_e._mutationLock) { _e._pendingMutations.Add(new MutationRecord { Type = "childList", AddedNodes = new System.Collections.Generic.List<LiteElement> { j._node }, RemovedNodes = new System.Collections.Generic.List<LiteElement>() }); }
+                    lock (_e._mutationLock) { _e._pendingMutations.Add(new MutationRecord { Type = "childList", AddedNodes = new System.Collections.Generic.List<Element> { j._node }, RemovedNodes = new System.Collections.Generic.List<Element>() }); }
                 }
                 catch { }
                 _e.RequestRepaint();
@@ -565,7 +572,7 @@ namespace FenBrowser.FenEngine.Scripting
                     _node.Children.Remove(j._node);
                     string __tmpId4 = null;
                     var name = j._node.Tag == "#text" ? (j._node.Text ?? "") : (j._node.Attr != null && j._node.Attr.TryGetValue("id", out __tmpId4) ? "#" + __tmpId4 : j._node.Tag);
-                    lock (_e._mutationLock) { _e._pendingMutations.Add(new MutationRecord { Type = "childList", AddedNodes = new System.Collections.Generic.List<LiteElement>(), RemovedNodes = new System.Collections.Generic.List<LiteElement> { j._node } }); }
+                    lock (_e._mutationLock) { _e._pendingMutations.Add(new MutationRecord { Type = "childList", AddedNodes = new System.Collections.Generic.List<Element>(), RemovedNodes = new System.Collections.Generic.List<Element> { j._node } }); }
                 }
                 catch { }
                 _e.RequestRepaint();
@@ -593,18 +600,18 @@ namespace FenBrowser.FenEngine.Scripting
                 return null;
             }
 
-            private static string CollectText(LiteElement n)
+            private static string CollectText(Element n)
             {
                 if (n == null) return "";
                 if (n.IsText) return n.Text ?? "";
                 var sb = new System.Text.StringBuilder();
-                for (int i = 0; i < n.Children.Count; i++) sb.Append(CollectText(n.Children[i]));
+                for (int i = 0; i < n.Children.Count; i++) if (n.Children[i] is Element el) sb.Append(CollectText(el));
                 return sb.ToString();
             }
-            private static LiteElement CloneTree(LiteElement n)
+            private static Element CloneTree(Element n)
             {
                 if (n == null) return null;
-                var c = new LiteElement(n.Tag);
+                var c = new Element(n.Tag);
                 c.Text = n.Text;
                 try
                 {
@@ -618,7 +625,7 @@ namespace FenBrowser.FenEngine.Scripting
                 {
                     for (int i = 0; i < n.Children.Count; i++)
                     {
-                        var childClone = CloneTree(n.Children[i]);
+                        var childClone = CloneTree(n.Children[i] as Element);
                         if (childClone != null) c.Append(childClone);
                     }
                 }
@@ -626,18 +633,18 @@ namespace FenBrowser.FenEngine.Scripting
                 return c;
             }
 
-            private static string SerializeChildren(LiteElement n)
+            private static string SerializeChildren(Element n)
             {
                 var sb = new System.Text.StringBuilder();
                 try
                 {
-                    for (int i = 0; i < n.Children.Count; i++) SerializeNode(n.Children[i], sb);
+                    for (int i = 0; i < n.Children.Count; i++) if (n.Children[i] is Element el) SerializeNode(el, sb);
                 }
                 catch { }
                 return sb.ToString();
             }
 
-            private static void SerializeNode(LiteElement n, System.Text.StringBuilder sb)
+            private static void SerializeNode(Element n, System.Text.StringBuilder sb)
             {
                 if (n == null || sb == null) return;
                 if (n.IsText) { sb.Append(EscapeHtml(n.Text ?? "")); return; }
@@ -668,7 +675,7 @@ namespace FenBrowser.FenEngine.Scripting
                         {
                             var ch = n.Children[i];
                             if (ch != null && ch.IsText) sb.Append(ch.Text ?? "");
-                            else SerializeNode(ch, sb);
+                            else if (ch is Element el) SerializeNode(el, sb);
                         }
                     }
                     catch { }
@@ -678,7 +685,7 @@ namespace FenBrowser.FenEngine.Scripting
 
                 if (n.Children != null)
                 {
-                    for (int i = 0; i < n.Children.Count; i++) SerializeNode(n.Children[i], sb);
+                    for (int i = 0; i < n.Children.Count; i++) if (n.Children[i] is Element el) SerializeNode(el, sb);
                 }
                 sb.Append('<').Append('/').Append(tag).Append('>');
             }
@@ -699,13 +706,13 @@ namespace FenBrowser.FenEngine.Scripting
                 if (string.IsNullOrEmpty(s)) return string.Empty;
                 return s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;");
             }
-            private static void SanitizeForScriptingEnabled(JavaScriptEngine self, LiteElement rootArg = null)
+            private static void SanitizeForScriptingEnabled(JavaScriptEngine self, Element rootArg = null)
             {
                 if (self == null) return;
                 var root = rootArg ?? self._domRoot;
                 if (root == null) return;
 
-                Action<LiteElement> flipClass = n =>
+                Action<Element> flipClass = n =>
                 {
                     if (n == null) return;
                     var attrs = n.Attr;
@@ -726,9 +733,9 @@ namespace FenBrowser.FenEngine.Scripting
 
                 try
                 {
-                    var html = (root.QueryByTag("html") ?? Enumerable.Empty<LiteElement>()).FirstOrDefault();
+                    var html = (root.QueryByTag("html") ?? Enumerable.Empty<Element>()).FirstOrDefault();
                     if (html != null) flipClass(html);
-                    var body = (root.QueryByTag("body") ?? Enumerable.Empty<LiteElement>()).FirstOrDefault();
+                    var body = (root.QueryByTag("body") ?? Enumerable.Empty<Element>()).FirstOrDefault();
                     if (body != null) flipClass(body);
                 }
                 catch { }
@@ -746,7 +753,7 @@ namespace FenBrowser.FenEngine.Scripting
             public JsDomTokenList classList => new JsDomTokenList(this);
 
             // IObject implementation for interpreter property access
-            public IValue Get(string key)
+            public IValue Get(string key, IExecutionContext context = null)
             {
                 switch (key)
                 {
@@ -800,7 +807,7 @@ namespace FenBrowser.FenEngine.Scripting
                 }
             }
 
-            public void Set(string key, IValue value)
+            public void Set(string key, IValue value, IExecutionContext context = null)
             {
                 switch (key)
                 {
@@ -816,9 +823,9 @@ namespace FenBrowser.FenEngine.Scripting
                 }
             }
 
-            public bool Has(string key) => true;
-            public bool Delete(string key) => false;
-            public IEnumerable<string> Keys() => new[] { "style", "tagName", "id", "className", "innerHTML", "innerText", "textContent", "classList" };
+            public bool Has(string key, IExecutionContext context = null) => true;
+            public bool Delete(string key, IExecutionContext context = null) => false;
+            public IEnumerable<string> Keys(IExecutionContext context = null) => new[] { "style", "tagName", "id", "className", "innerHTML", "innerText", "textContent", "classList" };
             public IObject GetPrototype() => _prototype;
             public void SetPrototype(IObject prototype) { _prototype = prototype; }
         }
@@ -827,6 +834,7 @@ namespace FenBrowser.FenEngine.Scripting
         {
             private readonly JsDomElement _el;
             private IObject _prototype = null;
+            public object NativeObject { get; set; }
             public JsCssDeclaration(JsDomElement el) { _el = el; }
 
             public string cssText
@@ -868,7 +876,8 @@ namespace FenBrowser.FenEngine.Scripting
             }
 
             // IObject implementation for interpreter property access
-            public IValue Get(string key)
+            // IObject implementation for interpreter property access
+            public IValue Get(string key, IExecutionContext context = null)
             {
                 // Handle method calls
                 if (key == "setProperty") return FenValue.FromFunction(new FenFunction("setProperty", (args, _) => { 
@@ -889,7 +898,7 @@ namespace FenBrowser.FenEngine.Scripting
                 return FenValue.FromString(value);
             }
 
-            public void Set(string key, IValue value)
+            public void Set(string key, IValue value, IExecutionContext context = null)
             {
                 if (key == "cssText") { cssText = value?.ToString() ?? ""; return; }
                 var cssKey = ConvertToCssProperty(key);
@@ -897,9 +906,9 @@ namespace FenBrowser.FenEngine.Scripting
                 _el._e.RequestRepaint();
             }
 
-            public bool Has(string key) => true; // All CSS properties are valid
-            public bool Delete(string key) => false; // CSS properties can't be deleted this way
-            public IEnumerable<string> Keys() => new[] { "cssText", "display", "width", "height", "background", "color", "margin", "padding", "border", "position", "top", "left", "opacity", "transform" };
+            public bool Has(string key, IExecutionContext context = null) => true; // All CSS properties are valid
+            public bool Delete(string key, IExecutionContext context = null) => false; // CSS properties can't be deleted this way
+            public IEnumerable<string> Keys(IExecutionContext context = null) => new[] { "cssText", "display", "width", "height", "background", "color", "margin", "padding", "border", "position", "top", "left", "opacity", "transform" };
             public IObject GetPrototype() => _prototype;
             public void SetPrototype(IObject prototype) { _prototype = prototype; }
 
@@ -1008,3 +1017,4 @@ namespace FenBrowser.FenEngine.Scripting
         }
     }
 }
+
