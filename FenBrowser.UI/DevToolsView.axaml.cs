@@ -9,6 +9,7 @@ using Avalonia.Media;
 using FenBrowser.FenEngine.Rendering;
 using FenBrowser.FenEngine.DevTools;
 using FenBrowser.Core;
+using FenBrowser.Core.Dom;
 using FenBrowser.Core.Logging;
 using System;
 using System.Collections.Generic;
@@ -34,7 +35,7 @@ namespace FenBrowser.UI
         
         // Attached browser
         private IBrowser _browser;
-        private LiteElement _rootElement;
+        private Element _rootElement;
         
         // Console - use existing ConsoleLogItem class with constructor
         private readonly ObservableCollection<ConsoleLogItem> _consoleLogs = new();
@@ -387,7 +388,7 @@ namespace FenBrowser.UI
             var tree = this.FindControl<TreeView>("DomTree");
             if (tree == null || _rootElement == null) return;
             
-            var rootModel = DomElementModel.FromLiteElement(_rootElement);
+            var rootModel = DomElementModel.FromElement(_rootElement);
             tree.ItemsSource = rootModel != null ? new[] { rootModel } : null;
         }
 
@@ -862,9 +863,9 @@ namespace FenBrowser.UI
         public string TextPreview { get; set; }
         public bool HasChildren { get; set; }
         public List<DomElementModel> Children { get; set; } = new();
-        public LiteElement Element { get; set; }
+        public Element Element { get; set; }
 
-        public static DomElementModel FromLiteElement(LiteElement el)
+        public static DomElementModel FromElement(Element el)
         {
             if (el == null) return null;
             if (el.IsText) return null;
@@ -880,9 +881,9 @@ namespace FenBrowser.UI
             
             if (el.Children != null)
             {
-                foreach (var child in el.Children.Where(c => !c.IsText))
+                foreach (var child in el.Children.OfType<Element>().Where(c => !c.IsText))
                 {
-                    var childModel = FromLiteElement(child);
+                    var childModel = FromElement(child);
                     if (childModel != null) model.Children.Add(childModel);
                 }
             }
@@ -890,7 +891,7 @@ namespace FenBrowser.UI
             return model;
         }
 
-        private static string FormatAttributes(LiteElement el)
+        private static string FormatAttributes(Element el)
         {
             if (el.Attr == null || el.Attr.Count == 0) return "";
             
@@ -903,7 +904,7 @@ namespace FenBrowser.UI
             return string.Join(" ", parts);
         }
 
-        private static string GetTextPreview(LiteElement el)
+        private static string GetTextPreview(Element el)
         {
             var textChild = el.Children?.FirstOrDefault(c => c.IsText && !string.IsNullOrWhiteSpace(c.Text));
             if (textChild != null)

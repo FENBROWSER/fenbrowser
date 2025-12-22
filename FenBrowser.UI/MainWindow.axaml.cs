@@ -245,6 +245,19 @@ namespace FenBrowser.UI
             BindSkiaViewport();
             
             this.KeyDown += OnWindowKeyDown;
+
+            // Start Event Loop Driver
+            var loopTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(4) }; // ~250Hz check
+            loopTimer.Tick += (s, e) => 
+            {
+                // Drive the global event loop via the active browser (or any browser instance)
+                // Since the loop is currently a singleton at the Engine level, pulsing one instance pulses the shared loop.
+                if (_activeBrowser is BrowserHost host)
+                {
+                    host.Pulse();
+                }
+            };
+            loopTimer.Start();
         }
 
         private void BindSkiaViewport()
@@ -304,6 +317,7 @@ namespace FenBrowser.UI
 
             if (!string.IsNullOrEmpty(initialUrl))
             {
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[MainWindow] Ctor Navigating to {initialUrl}\r\n"); } catch {}
                 _activeBrowser.NavigateAsync(initialUrl);
             }
 
@@ -327,10 +341,12 @@ namespace FenBrowser.UI
 
             browser.RepaintReady += (s, element) =>
             {
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[MainWindow] RepaintReady Handler Entered. Element={(element != null ? "Present" : "Null")}\r\n"); } catch {}
                 try { FenLogger.Debug($"[MainWindow] RepaintReady fired. Element: {element}", LogCategory.General); } catch {}
                 tab.LastRenderedContent = element;
                 Dispatcher.UIThread.Post(() =>
                 {
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[MainWindow] RepaintReady Dispatcher Lambda Running. TabActive={tab.IsActive}\r\n"); } catch {}
                     if (tab.IsActive)
                     {
                         // TEMPORARY SKIA VERIFICATION WITH BOX MODEL
@@ -338,6 +354,8 @@ namespace FenBrowser.UI
                         var skiaView = this.FindControl<SkiaBrowserView>("SkiaView");
                         
                         try { FenLogger.Debug($"[MainWindow] UI Thread. Root: {root?.Tag}, SkiaView: {skiaView}", LogCategory.General); } catch {}
+
+                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[MainWindow] Checks: Root={(root != null ? root.Tag : "null")} SkiaView={(skiaView != null ? "Found" : "Null")}\r\n"); } catch {}
 
                         if (root != null)
                         {
@@ -363,6 +381,7 @@ namespace FenBrowser.UI
                                skiaView.BaseUrl = newBaseUrl;
                                
                                // 2. Render
+                               try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[MainWindow] Calling SkiaView.Render(root, styles). Root={root.Tag}\r\n"); } catch {}
                                skiaView.Render(root, browser.ComputedStyles);
                                return; // Skip old renderer logic
                            }
