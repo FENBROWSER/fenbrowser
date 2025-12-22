@@ -57,8 +57,9 @@
 | **Network**    | `fetch()`              | ✅ **Done**     | 8/10  | `FetchApi.cs` - GET requests, Headers, Response.text()/json(). |
 | **Storage**    | `localStorage`         | ✅ **Done**     | 9/10  | `StorageApi.cs` - Origin-partitioned, JSON persistence.        |
 |                | `sessionStorage`       | ✅ **Done**     | 9/10  | Instance-isolated per tab/runtime.                             |
-|                | `IndexedDB`            | 🔴 **Stub**     | 2/10  | API throws errors. Not implemented.                            |
+|                | `IndexedDB`            | ✅ **Done**     | 7/10  | In-memory: open/transaction/CRUD. No persistence.              |
 | **Workers**    | `ServiceWorker`        | 🟡 **Enhanced** | 5/10  | `FetchEvent`, `respondWith`, `ServiceWorkerInterceptor` added. |
+|                | `Web Worker`           | ⚠️ **Partial**  | 4/10  | Basic postMessage/onmessage. No real thread isolation.         |
 | **Realtime**   | `WebRTC`               | 🟠 **Mock**     | 2/10  | Generates fake SDP (127.0.0.1). No media interaction.          |
 | **Animation**  | `CssAnimationEngine`   | 🟢 **Full**     | 9/10  | Robust 60fps timer-based engine. Keyframes, Transitions.       |
 | **Device**     | `Geolocation`          | 🟠 **Mock**     | 2/10  | Hardcoded values. Permission prompts work.                     |
