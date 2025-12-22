@@ -46,23 +46,23 @@
 
 ## ⚙️ 3. JavaScript & Web APIs
 
-| API Family     | Feature                | Status          | Score | Implementation Notes                                           |
-| :------------- | :--------------------- | :-------------- | :---- | :------------------------------------------------------------- |
-| **ECMAScript** | `Proxy`                | ✅ **Done**     | 9/10  | `ProxyAPI.cs` - Get/Set/Apply traps implemented.               |
-|                | `Reflect`              | ✅ **Done**     | 9/10  | `ReflectAPI.cs` - get/set/has/ownKeys/apply.                   |
-| **DOM**        | `IntersectionObserver` | ✅ **Done**     | 8/10  | `IntersectionObserverAPI.cs` - Threshold, rootMargin support.  |
-|                | `ResizeObserver`       | ✅ **Done**     | 10/10 | Deterministic callbacks, phase assertions verified.            |
-|                | `MutationObserver`     | ✅ **Done**     | 9/10  | `DomMutationQueue` batching, attribute/childList tracking.     |
-|                | `Events`               | ✅ **Done**     | 10/10 | Capture/Target/Bubble phases. `EventTarget` compliant.         |
-| **Network**    | `fetch()`              | ✅ **Done**     | 8/10  | `FetchApi.cs` - GET requests, Headers, Response.text()/json(). |
-| **Storage**    | `localStorage`         | ✅ **Done**     | 9/10  | `StorageApi.cs` - Origin-partitioned, JSON persistence.        |
-|                | `sessionStorage`       | ✅ **Done**     | 9/10  | Instance-isolated per tab/runtime.                             |
-|                | `IndexedDB`            | ✅ **Done**     | 7/10  | In-memory: open/transaction/CRUD. No persistence.              |
-| **Workers**    | `ServiceWorker`        | 🟡 **Enhanced** | 5/10  | `FetchEvent`, `respondWith`, `ServiceWorkerInterceptor` added. |
-|                | `Web Worker`           | ⚠️ **Partial**  | 4/10  | Basic postMessage/onmessage. No real thread isolation.         |
-| **Realtime**   | `WebRTC`               | 🟠 **Mock**     | 2/10  | Generates fake SDP (127.0.0.1). No media interaction.          |
-| **Animation**  | `CssAnimationEngine`   | 🟢 **Full**     | 9/10  | Robust 60fps timer-based engine. Keyframes, Transitions.       |
-| **Device**     | `Geolocation`          | 🟠 **Mock**     | 2/10  | Hardcoded values. Permission prompts work.                     |
+| API Family     | Feature                | Status        | Score | Implementation Notes                                           |
+| :------------- | :--------------------- | :------------ | :---- | :------------------------------------------------------------- |
+| **ECMAScript** | `Proxy`                | ✅ **Done**   | 9/10  | `ProxyAPI.cs` - Get/Set/Apply traps implemented.               |
+|                | `Reflect`              | ✅ **Done**   | 9/10  | `ReflectAPI.cs` - get/set/has/ownKeys/apply.                   |
+| **DOM**        | `IntersectionObserver` | ✅ **Done**   | 8/10  | `IntersectionObserverAPI.cs` - Threshold, rootMargin support.  |
+|                | `ResizeObserver`       | ✅ **Done**   | 10/10 | Deterministic callbacks, phase assertions verified.            |
+|                | `MutationObserver`     | ✅ **Done**   | 9/10  | `DomMutationQueue` batching, attribute/childList tracking.     |
+|                | `Events`               | ✅ **Done**   | 10/10 | Capture/Target/Bubble phases. `EventTarget` compliant.         |
+| **Network**    | `fetch()`              | ✅ **Done**   | 8/10  | `FetchApi.cs` - GET requests, Headers, Response.text()/json(). |
+| **Storage**    | `localStorage`         | ✅ **Done**   | 9/10  | `StorageApi.cs` - Origin-partitioned, JSON persistence.        |
+|                | `sessionStorage`       | ✅ **Done**   | 9/10  | Instance-isolated per tab/runtime.                             |
+|                | `IndexedDB`            | ✅ **Done**   | 7/10  | In-memory: open/transaction/CRUD. No persistence.              |
+| **Workers**    | `ServiceWorker`        | 🟢 **Full**   | 9/10  | Registration, Install/Activate Events, Fetch Interception.     |
+|                | `Web Worker`           | ✅ **Robust** | 8/10  | Dedicated threads, isolated Runtime, `postMessage` support.    |
+| **Realtime**   | `WebRTC`               | 🟠 **Mock**   | 2/10  | Generates fake SDP (127.0.0.1). No media interaction.          |
+| **Animation**  | `CssAnimationEngine`   | 🟢 **Full**   | 9/10  | Robust 60fps timer-based engine. Keyframes, Transitions.       |
+| **Device**     | `Geolocation`          | 🟠 **Mock**   | 2/10  | Hardcoded values. Permission prompts work.                     |
 
 ---
 
