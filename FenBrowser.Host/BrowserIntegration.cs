@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Concurrent;
+using System.Threading;
 using System.Threading.Tasks;
 using SkiaSharp;
 using FenBrowser.Core;
@@ -7,6 +9,7 @@ using FenBrowser.FenEngine.Rendering;
 using FenBrowser.Core.Dom;
 using FenBrowser.Core.Css;
 using FenBrowser.FenEngine.Interaction;
+using FenBrowser.FenEngine.DevTools; // Added this using statement
 
 namespace FenBrowser.Host;
 
@@ -25,22 +28,41 @@ public class BrowserIntegration
     private float _scrollY = 0;
     private float _contentHeight = 0;
     private float _dpiScale = 1.0f;
+    private SKSize _lastViewportSize;
+    
+    // Threading & Event Queue
+    private readonly ConcurrentQueue<Action> _eventQueue = new ConcurrentQueue<Action>();
+    private readonly Thread _engineThread;
+    private readonly AutoResetEvent _wakeEvent = new AutoResetEvent(false);
+    private bool _running = true;
+    // Rendering Buffers (Double-Buffered Display List)
+    private SKPicture _currentFrame;
+    private readonly object _frameLock = new object();
+    private readonly SKPictureRecorder _recorder = new SKPictureRecorder();
     
     // Last hit test result (for status bar display)
     private HitTestResult _lastHitTest = HitTestResult.None;
     
-    public string CurrentUrl => _browser.CurrentUri?.AbsoluteUri ?? "";
+    private string _overrideUrl;
+    private Element? _highlightedElement;
+    
+    public string CurrentUrl => _overrideUrl ?? _browser.CurrentUri?.AbsoluteUri ?? "";
     public bool IsLoading { get; private set; }
     public bool CanGoBack => _browser.CanGoBack;
     public bool CanGoForward => _browser.CanGoForward;
     public HitTestResult LastHitTest => _lastHitTest;
+    public Element Document => _root;
+    public Dictionary<Node, CssComputed> ComputedStyles => _styles;
+    public List<CssLoader.CssSource> CssSources => _browser.Engine.LastCssSources;
     
     public event Action<string> TitleChanged;
     public event Action<string> UrlChanged;
     public event Action<bool> LoadingChanged;
     public event Action NeedsRepaint;
     public event Action<string> LinkClicked;
+    public event Action<string> ConsoleMessage;
     public event Action<HitTestResult> HitTestChanged;
+    public event Action<float, float> ScrollChanged;
     
     public BrowserIntegration()
     {
@@ -50,7 +72,10 @@ public class BrowserIntegration
         // Wire browser events
         _browser.Navigated += (s, e) => 
         {
-            UrlChanged?.Invoke(CurrentUrl);
+            if (_overrideUrl == null)
+            {
+                UrlChanged?.Invoke(CurrentUrl);
+            }
         };
         
         _browser.LoadingChanged += (s, loading) =>
@@ -61,12 +86,75 @@ public class BrowserIntegration
         
         _browser.RepaintReady += (s, e) =>
         {
-            // Update DOM and styles on repaint
-            _root = _browser.GetDomRoot();
-            _styles = _browser.ComputedStyles;
             _needsRepaint = true;
-            NeedsRepaint?.Invoke();
+            _wakeEvent.Set(); // Wake engine thread to record new frame
+            NeedsRepaint?.Invoke(); // Signal UI to redraw using last frame
         };
+        
+        _browser.ConsoleMessage += msg => ConsoleMessage?.Invoke(msg);
+        
+        // Start Engine Thread
+        _engineThread = new Thread(EngineLoop) { IsBackground = true, Name = "FenEngine-Render" };
+        _engineThread.Start();
+    }
+
+    public void HighlightElement(Element? element)
+    {
+        if (_highlightedElement != element)
+        {
+            _highlightedElement = element;
+            _needsRepaint = true;
+            _wakeEvent.Set();
+            NeedsRepaint?.Invoke();
+        }
+    }
+    
+    public object EvaluateScript(string script)
+    {
+        try
+        {
+            // For now, run sync to satisfy legacy DevTools API
+            var task = _browser.ExecuteScriptAsync(script);
+            task.Wait(2000);
+            return task.IsCompletedSuccessfully ? task.Result : "Error: Script execution failed or timed out.";
+        }
+        catch (Exception ex)
+        {
+            return $"Error: {ex.Message}";
+        }
+    }
+    
+    private void EngineLoop()
+    {
+        while (_running)
+        {
+            // 1. Process Input Events
+            while (_eventQueue.TryDequeue(out var action))
+            {
+                try { action(); }
+                catch (Exception ex) { FenLogger.Error($"[EngineLoop] Action error: {ex.Message}", LogCategory.General); }
+            }
+            
+            // 2. Perform Layout & Record Frame if needed
+            if (_needsRepaint && _lastViewportSize.Width > 0)
+            {
+                FenLogger.Info($"[EngineLoop] Repainting. Viewport: {_lastViewportSize}", LogCategory.General);
+                // Sync latest state from browser host
+                _root = _browser.GetDomRoot();
+                _styles = _browser.ComputedStyles;
+                
+                RecordFrame(_lastViewportSize);
+            }
+            
+            // 3. Wait for work
+            _wakeEvent.WaitOne(16); // ~60fps poll or event-driven
+        }
+    }
+    
+    private void PostToEngine(Action action)
+    {
+        _eventQueue.Enqueue(action);
+        _wakeEvent.Set();
     }
     
     /// <summary>
@@ -78,12 +166,24 @@ public class BrowserIntegration
         
         // Add protocol if missing
         if (!url.StartsWith("http://") && !url.StartsWith("https://") && 
-            !url.StartsWith("file://") && !url.StartsWith("data:"))
+            !url.StartsWith("file://") && !url.StartsWith("data:") && 
+            !url.StartsWith("fen://") && !url.StartsWith("view-source:"))
         {
             url = "https://" + url;
         }
+
         
         FenLogger.Info($"[BrowserIntegration] Navigating to: {url}", LogCategory.General);
+        
+        if (url.StartsWith("fen://", StringComparison.OrdinalIgnoreCase))
+        {
+            _overrideUrl = url;
+            UrlChanged?.Invoke(url);
+            NeedsRepaint?.Invoke();
+            return;
+        }
+        
+        _overrideUrl = null;
         
         try
         {
@@ -120,42 +220,61 @@ public class BrowserIntegration
     }
     
     /// <summary>
-    /// Render the current page to the canvas.
+    /// Render the current display list (picture) to the UI canvas.
+    /// This is called on the UI thread and is extremely fast.
     /// </summary>
     public void Render(SKCanvas canvas, SKRect viewport)
     {
-        if (_root == null || _styles == null)
+        lock (_frameLock)
         {
-            // Draw loading or placeholder
-            DrawPlaceholder(canvas, viewport);
+            if (_currentFrame != null)
+            {
+                canvas.DrawPicture(_currentFrame);
+                return;
+            }
+            else 
+            {
+                 // Trace once per second to avoid spam?
+                 if (DateTime.Now.Second % 5 == 0) 
+                     FenLogger.Warn("[BrowserIntegration] Render: _currentFrame is null! Drawing Placeholder.", LogCategory.Rendering);
+            }
+        }
+        
+        // If no frame exists, draw placeholder
+        DrawPlaceholder(canvas, viewport);
+    }
+    
+    /// <summary>
+    /// Update the display list by recording a new frame.
+    /// This can be called on a background thread.
+    /// </summary>
+    public void RecordFrame(SKSize viewportSize)
+    {
+        if (_root == null || _styles == null) 
+        {
+            FenLogger.Warn($"[BrowserIntegration] RecordFrame skipped: Root={_root != null}, Styles={_styles != null}", LogCategory.General);
+            _needsRepaint = false; // Stop the loop!
             return;
         }
         
-        // Adjust viewport for scroll
-        var scrolledViewport = new SKRect(
-            viewport.Left,
-            viewport.Top + _scrollY,
-            viewport.Right,
-            viewport.Bottom + _scrollY
-        );
-        
-        // Apply scroll transform
-        canvas.Save();
-        canvas.Translate(0, -_scrollY);
-        
         try
         {
-            FenLogger.Info($"[BrowserIntegration] Render called. Root type: {_root?.GetType().Name}, Styles count: {_styles?.Count}", LogCategory.General);
+            var viewport = new SKRect(0, 0, viewportSize.Width, viewportSize.Height);
             
-            if (_root == null)
-            {
-                 FenLogger.Error("[BrowserIntegration] Root is null!", LogCategory.General);
-            }
-            if (_styles == null || _styles.Count == 0)
-            {
-                 FenLogger.Error("[BrowserIntegration] Styles dict is empty or null!", LogCategory.General);
-            }
-
+            // Start recording
+            var canvas = _recorder.BeginRecording(viewport);
+            
+            // Adjust for scroll
+            var scrolledViewport = new SKRect(
+                viewport.Left,
+                viewport.Top + _scrollY,
+                viewport.Right,
+                viewport.Bottom + _scrollY
+            );
+            
+            canvas.Save();
+            canvas.Translate(0, -_scrollY);
+            
             _renderer.Render(
                 _root, 
                 canvas, 
@@ -166,16 +285,99 @@ public class BrowserIntegration
                 {
                     _contentHeight = contentSize.Height;
                 },
-                new SKSize(viewport.Width, viewport.Height)
+                viewportSize
             );
+            
+            // Draw highlight overlay
+            if (_highlightedElement != null)
+            {
+                DrawHighlight(canvas, _highlightedElement);
+            }
+            
+            canvas.Restore();
+            
+            // Finish recording and swap buffers
+            var newFrame = _recorder.EndRecording();
+            
+            lock (_frameLock)
+            {
+                _currentFrame?.Dispose();
+                _currentFrame = newFrame;
+            }
+            
+            FenLogger.Info($"[BrowserIntegration] Frame Recorded. Size: {viewportSize}", LogCategory.Rendering); // Log success
+            
+            _needsRepaint = false; // Set to false HERE        
+            // Signal UI to redraw with new frame
+            NeedsRepaint?.Invoke();
         }
         catch (Exception ex)
         {
-            FenLogger.Error($"[BrowserIntegration] Render error: {ex.Message}", LogCategory.General);
+            FenLogger.Error($"[BrowserIntegration] Recording error: {ex.Message}", LogCategory.General);
         }
+    }
+    
+    private void DrawHighlight(SKCanvas canvas, Element element)
+    {
+        // Get bounds from layout computer via renderer
+        var box = _renderer.GetElementBox(element);
+        if (box == null) return;
         
-        canvas.Restore();
-        _needsRepaint = false;
+        var rect = box.BorderBox;
+        float x = rect.Left;
+        float y = rect.Top;
+        float w = rect.Width;
+        float h = rect.Height;
+        
+        if (w >= 0 && h >= 0)
+        {
+            using var paint = new SKPaint
+            {
+                Color = new SKColor(111, 168, 220, 120),
+                Style = SKPaintStyle.Fill,
+                IsAntialias = true
+            };
+            
+            using var borderPaint = new SKPaint
+            {
+                Color = new SKColor(111, 168, 220, 200),
+                Style = SKPaintStyle.Stroke,
+                StrokeWidth = 2,
+                IsAntialias = true
+            };
+            
+            canvas.DrawRect(rect, paint);
+            canvas.DrawRect(rect, borderPaint);
+            
+            // Draw label
+            string label = $"{element.TagName} | {w:F0}x{h:F0}";
+            using var labelPaint = new SKPaint
+            {
+                Color = SKColors.White,
+                TextSize = 12,
+                IsAntialias = true,
+                Typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold)
+            };
+            
+            using var labelBgPaint = new SKPaint
+            {
+                Color = new SKColor(111, 168, 220, 255),
+                Style = SKPaintStyle.Fill
+            };
+            
+            float labelWidth = labelPaint.MeasureText(label);
+            float labelHeight = 18;
+            var labelRect = new SKRect(x, y - labelHeight, x + labelWidth + 8, y);
+            
+            // Adjust if too close to top
+            if (y < labelHeight)
+            {
+                labelRect = new SKRect(x, y + h, x + labelWidth + 8, y + h + labelHeight);
+            }
+            
+            canvas.DrawRect(labelRect, labelBgPaint);
+            canvas.DrawText(label, labelRect.Left + 4, labelRect.Bottom - 4, labelPaint);
+        }
     }
     
     private void DrawPlaceholder(SKCanvas canvas, SKRect viewport)
@@ -212,19 +414,30 @@ public class BrowserIntegration
     /// </summary>
     public void Scroll(float deltaY)
     {
-        float scrollSpeed = 40f;
-        _scrollY -= deltaY * scrollSpeed;
-        
-        // Clamp scroll
-        _scrollY = Math.Max(0, _scrollY);
-        if (_contentHeight > 0)
+        PostToEngine(() => 
         {
-            _scrollY = Math.Min(_scrollY, _contentHeight - 600); // Leave some visible
-        }
+            float scrollSpeed = 40f;
+            _scrollY -= deltaY * scrollSpeed;
+            
+            // Clamp scroll - use actual viewport height instead of hardcoded 600
+            _scrollY = Math.Max(0, _scrollY);
+            float viewportHeight = _lastViewportSize.Height > 0 ? _lastViewportSize.Height : 600;
+            if (_contentHeight > viewportHeight)
+            {
+                _scrollY = Math.Min(_scrollY, _contentHeight - viewportHeight);
+            }
+            else
+            {
+                _scrollY = 0; // No scrolling needed if content fits
+            }
+            
+            _needsRepaint = true;
+        });
         
-        _needsRepaint = true;
+        // Immediate UI feedback (optional, we wait for engine to re-record)
         NeedsRepaint?.Invoke();
     }
+
     
     /// <summary>
     /// Handle mouse click at the given position.
@@ -336,6 +549,17 @@ public class BrowserIntegration
         _dpiScale = Math.Max(0.1f, scale);
     }
     
+    public void UpdateViewport(SKSize size)
+    {
+        FenLogger.Info($"[BrowserIntegration] UpdateViewport: {size}", LogCategory.General);
+        if (_lastViewportSize != size)
+        {
+            _lastViewportSize = size;
+            _needsRepaint = true;
+            _wakeEvent.Set();
+        }
+    }
+    
     /// <summary>
     /// Perform hit test at window coordinates (handles coordinate translation).
     /// Window → UI → Document space with scroll offset and DPI scaling.
@@ -389,6 +613,31 @@ public class BrowserIntegration
         return PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
     }
     
+    /// <summary>
+    /// Handle right-click for context menu.
+    /// </summary>
+    public void HandleRightClick(float windowX, float windowY, float viewportOffsetX = 0, float viewportOffsetY = 0)
+    {
+        var result = PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
+        ContextMenuRequested?.Invoke(new ContextMenuRequest(windowX, windowY, result));
+    }
+
+    public event Action<ContextMenuRequest> ContextMenuRequested;
+    
+    public class ContextMenuRequest
+    {
+        public float X { get; }
+        public float Y { get; }
+        public HitTestResult Hit { get; }
+        
+        public ContextMenuRequest(float x, float y, HitTestResult hit)
+        {
+            X = x;
+            Y = y;
+            Hit = hit;
+        }
+    }
+
     /// <summary>
     /// Handle mouse click at window coordinates.
     /// Returns true if a navigable link was clicked.
