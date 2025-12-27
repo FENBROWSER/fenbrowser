@@ -42,12 +42,21 @@ namespace FenBrowser.Core.Logging
             }
             catch { }
             
-            // Enable default modules
+            // Enable default modules and set files
             EnableModule("Layout");
+            SetModuleFile("Layout", "layout.log");
+            
             EnableModule("CSS");
+            SetModuleFile("CSS", "css.log");
+            
             EnableModule("Rendering");
+            SetModuleFile("Rendering", "rendering.log");
+            
             EnableModule("JavaScript");
+            SetModuleFile("JavaScript", "javascript.log");
+            
             EnableModule("Network");
+            SetModuleFile("Network", "network.log");
         }
         
         /// <summary>
@@ -215,6 +224,60 @@ namespace FenBrowser.Core.Logging
                 File.AppendAllText(filePath, line + Environment.NewLine);
             }
             catch { }
+        }
+        
+        /// <summary>
+        /// Dump raw HTML source to a file for debugging.
+        /// </summary>
+        public static void DumpRawSource(string url, string htmlContent)
+        {
+            if (!_globalEnabled) return;
+            
+            try
+            {
+                var fileName = $"raw_source_{DateTime.Now:yyyyMMdd_HHmmss}.html";
+                var filePath = Path.Combine(_basePath, fileName);
+                File.WriteAllText(filePath, $"<!-- URL: {url} -->\n<!-- Dumped: {DateTime.Now:yyyy-MM-dd HH:mm:ss} -->\n{htmlContent}");
+                Info("Network", $"Raw source dumped to: {filePath}");
+            }
+            catch (Exception ex)
+            {
+                Error("Network", "Failed to dump raw source", ex);
+            }
+        }
+        
+        /// <summary>
+        /// Dump computed styles for an element to JSON format.
+        /// </summary>
+        public static void LogComputedStyle(string selector, string tag, string display, 
+            double? fontSize, double? width, double? height, 
+            string padding, string margin, string boxInfo)
+        {
+            if (!IsModuleEnabled("CSS")) return;
+            
+            var log = $"[CSS-DIAG] {selector} <{tag}> Display={display ?? "null"} " +
+                      $"FontSize={fontSize?.ToString("F1") ?? "null"} " +
+                      $"W={width?.ToString("F0") ?? "auto"} H={height?.ToString("F0") ?? "auto"} " +
+                      $"Padding={padding} Margin={margin} Box={boxInfo}";
+            
+            Debug("CSS", log);
+        }
+        
+        /// <summary>
+        /// Log element box model calculation.
+        /// </summary>
+        public static void LogBoxModel(string elementId, string tag, 
+            float contentW, float contentH, 
+            float paddingTop, float paddingRight, float paddingBottom, float paddingLeft,
+            float marginTop, float marginRight, float marginBottom, float marginLeft)
+        {
+            if (!IsModuleEnabled("Layout")) return;
+            
+            var log = $"[BOX] {elementId}#{tag} Content={contentW:F0}x{contentH:F0} " +
+                      $"Padding=[{paddingTop:F0},{paddingRight:F0},{paddingBottom:F0},{paddingLeft:F0}] " +
+                      $"Margin=[{marginTop:F0},{marginRight:F0},{marginBottom:F0},{marginLeft:F0}]";
+            
+            Debug("Layout", log);
         }
     }
     

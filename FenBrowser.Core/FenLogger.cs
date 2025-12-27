@@ -18,8 +18,11 @@ namespace FenBrowser.Core
 
         public static void Initialize(string logFilePath)
         {
-            // LogManager handles its own path, but we can log the attempt
-            LogManager.Log(LogCategory.General, LogLevel.Info, $"Legacy FenLogger.Initialize called with: {logFilePath}");
+            // Forward path to LogManager
+            LogManager.Instance.SetLogFilePath(logFilePath);
+            // Enable logging: LogManager.Initialize(enabled: true, categories: All, minLevel: Info)
+            LogManager.Initialize(true, LogCategory.General | LogCategory.Errors | LogCategory.Layout | LogCategory.Rendering, LogLevel.Debug);
+            LogManager.Log(LogCategory.General, LogLevel.Info, $"FenLogger initialized with path: {logFilePath}");
         }
 
         public static void Log(string message, LogCategory category = LogCategory.General, LogLevel level = LogLevel.Info)

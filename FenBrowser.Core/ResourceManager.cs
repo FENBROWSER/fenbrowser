@@ -335,6 +335,15 @@ namespace FenBrowser.Core
                     var ua = BrowserSettings.GetUserAgentString(selectedUserAgent, useMobile);
                     
                     AddHeaderSafe(req, "User-Agent", ua);
+                    
+                    // Add Client Hints for modern detection
+                    if (selectedUserAgent == UserAgentType.Chrome || selectedUserAgent == UserAgentType.FenBrowser)
+                    {
+                        AddHeaderSafe(req, "Sec-CH-UA", "\"Not A(Brand\";v=\"8\", \"Chromium\";v=\"145\", \"Google Chrome\";v=\"145\"");
+                        AddHeaderSafe(req, "Sec-CH-UA-Mobile", useMobile ? "?1" : "?0");
+                        AddHeaderSafe(req, "Sec-CH-UA-Platform", "\"Windows\"");
+                    }
+                    
                     AddHeaderSafe(req, "Accept-Language", "en-US,en;q=0.9");
                     
                     var effectiveReferer = refererOriginal ?? previousRequest;
@@ -492,6 +501,15 @@ namespace FenBrowser.Core
                     var ua = BrowserSettings.GetUserAgentString(selectedUserAgent, useMobile);
                     
                     AddHeaderSafe(req, "User-Agent", ua);
+
+                    // Add Client Hints
+                    if (selectedUserAgent == UserAgentType.Chrome || selectedUserAgent == UserAgentType.FenBrowser)
+                    {
+                        AddHeaderSafe(req, "Sec-CH-UA", "\"Not A(Brand\";v=\"8\", \"Chromium\";v=\"145\", \"Google Chrome\";v=\"145\"");
+                        AddHeaderSafe(req, "Sec-CH-UA-Mobile", useMobile ? "?1" : "?0");
+                        AddHeaderSafe(req, "Sec-CH-UA-Platform", "\"Windows\"");
+                    }
+
                     AddHeaderSafe(req, "Accept-Language", "en-US,en;q=0.9");
                     
                     var effectiveReferer = refererOriginal ?? previousRequest;

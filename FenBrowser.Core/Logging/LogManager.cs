@@ -60,6 +60,26 @@ namespace FenBrowser.Core.Logging
             _minimumLevel = minLevel;
         }
 
+        public void SetLogFilePath(string path)
+        {
+            lock (_fileLock)
+            {
+                try
+                {
+                    var dir = Path.GetDirectoryName(path);
+                    if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                        Directory.CreateDirectory(dir);
+                        
+                    _logFilePath = path;
+                    File.AppendAllText(_logFilePath, $"\n[LogManager] Log path switched to: {path}\n");
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Failed to set log path: {ex}");
+                }
+            }
+        }
+
         /// <summary>
         /// Check if a category and level combination is enabled.
         /// </summary>
