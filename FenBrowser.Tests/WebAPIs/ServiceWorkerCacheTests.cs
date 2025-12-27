@@ -19,7 +19,7 @@ namespace FenBrowser.Tests.WebAPIs
         public ServiceWorkerCacheTests()
         {
             _storage = new InMemoryStorageBackend();
-            _cacheStorage = new CacheStorage(_origin, _storage);
+            _cacheStorage = new CacheStorage(() => _origin, _storage);
         }
 
         public void Dispose()

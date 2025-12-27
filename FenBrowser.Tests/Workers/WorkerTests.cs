@@ -6,6 +6,7 @@ using FenBrowser.Core.Engine;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.EventLoop;
 using FenBrowser.FenEngine.Workers;
+using FenBrowser.FenEngine.Storage;
 using Xunit;
 
 namespace FenBrowser.Tests.Workers
@@ -180,7 +181,7 @@ namespace FenBrowser.Tests.Workers
         [Fact]
         public void WorkerConstructor_CreatesWorkerFunction()
         {
-            var constructor = new WorkerConstructor("https://example.com");
+            var constructor = new WorkerConstructor("https://example.com", new InMemoryStorageBackend());
             var fn = constructor.GetConstructorFunction();
 
             Assert.NotNull(fn);
@@ -191,7 +192,7 @@ namespace FenBrowser.Tests.Workers
         [Fact]
         public void WorkerConstructor_TerminateAll_CleansUp()
         {
-            var constructor = new WorkerConstructor("https://example.com");
+            var constructor = new WorkerConstructor("https://example.com", new InMemoryStorageBackend());
 
             // Create some workers (they'll fail to load script but that's ok for cleanup test)
             var fn = constructor.GetConstructorFunction();
