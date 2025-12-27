@@ -1,5 +1,4 @@
 using FenBrowser.Core.Dom;
-using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -242,10 +241,24 @@ namespace FenBrowser.Core.Parsing
             
             if (token is StartTagToken st)
             {
-                if (st.TagName == "html") return HandleInBody(token);
+                if (string.Equals(st.TagName, "html", StringComparison.OrdinalIgnoreCase)) return HandleInBody(token);
                 
-                if (st.TagName == "base" || st.TagName == "basefont" || st.TagName == "bgsound" || st.TagName == "link")
+                // FIX: Use case-insensitive comparison for tag names
+                var tagLower = st.TagName?.ToLowerInvariant() ?? "";
+                if (tagLower == "base" || tagLower == "basefont" || tagLower == "bgsound" || tagLower == "link")
                 {
+                    // DEBUG: Log LINK token attributes
+                    if (tagLower == "link")
+                    {
+                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
+                            $"[HtmlTreeBuilder] LINK token has {st.Attributes?.Count ?? -1} attributes\r\n"); } catch {}
+                        if (st.Attributes != null)
+                        {
+                            foreach (var attr in st.Attributes)
+                                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
+                                    $"[HtmlTreeBuilder]   Attr: {attr.Name}='{attr.Value}'\r\n"); } catch {}
+                        }
+                    }
                     InsertHtmlElement(st);
                     _openElements.Pop(); // Immediately pop (void elements)
                     return true;
@@ -455,15 +468,11 @@ namespace FenBrowser.Core.Parsing
                 if (st.TagName == "a")
                 {
                     // Adoption Agency Algorithm - Active Formatting Elements
-                    // Simplified: if stack has 'a', reconstruct/close
+                    // Strict non-nesting: if stack has 'a', pop until it's closed
                     if (StackHas("a"))
                     {
-                         // Close 'a'
-                         GenerateImpliedEndTags();
-                         // Remove 'a' from stack and active list
-                         // This is complex. 
-                         // Fallback for strict impl: just close it.
-                         _openElements.Pop(); // Assume it's on top or simple nesting
+                        FenLogger.Debug("[Parser] Closing nested <a>");
+                        PopUntil("a");
                     }
                     InsertHtmlElement(st);
                     // Push to active formatting elements
@@ -517,6 +526,15 @@ namespace FenBrowser.Core.Parsing
                     if ((CurrentNode as Element)?.TagName == "p") ClosePElement();
                     InsertHtmlElement(st);
                     SwitchTo(InsertionMode.InTable);
+                    return true;
+                }
+                
+                if (st.TagName == "p" || st.TagName == "div" || st.TagName == "ul" || st.TagName == "ol" || st.TagName == "li" || 
+                    st.TagName == "h1" || st.TagName == "h2" || st.TagName == "h3" || st.TagName == "h4" || st.TagName == "h5" || st.TagName == "h6" ||
+                    st.TagName == "section" || st.TagName == "article" || st.TagName == "aside" || st.TagName == "header" || st.TagName == "footer" || st.TagName == "nav")
+                {
+                    if (StackHas("p")) ClosePElement();
+                    InsertHtmlElement(st);
                     return true;
                 }
                 
@@ -761,6 +779,10 @@ namespace FenBrowser.Core.Parsing
             foreach (var attr in token.Attributes)
             {
                 el.SetAttribute(attr.Name, attr.Value);
+                if (token.TagName.Equals("svg", StringComparison.OrdinalIgnoreCase))
+                {
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[TreeBuilder] SVG Attr: {attr.Name}='{attr.Value}'\r\n"); } catch {}
+                }
             }
             return el;
         }
@@ -836,6 +858,7 @@ namespace FenBrowser.Core.Parsing
         {
             var el = CreateElement(token);
             CurrentNode.AppendChild(el);
+            FenLogger.Debug($"[Parser] Pushing {el.TagName}_{el.GetHashCode()} to stack (Depth: {_openElements.Count})");
             _openElements.Push(el);
             return el;
         }
@@ -874,21 +897,24 @@ namespace FenBrowser.Core.Parsing
              return tag == "dd" || tag == "dt" || tag == "li" || tag == "optgroup" || tag == "option" || tag == "p" || tag == "rb" || tag == "rp" || tag == "rt" || tag == "rtc";
         }
         
-        private bool StackHas(string tag)
+        private bool StackHas(string tagName)
         {
-            foreach (var el in _openElements)
-            {
-                if (el.TagName == tag) return true;
-            }
-            return false;
+            return _openElements.Any(e => string.Equals(e.TagName, tagName, StringComparison.OrdinalIgnoreCase));
         }
         
-        private void PopUntil(string tag)
+        private void PopUntil(string tagName)
         {
-            while (_openElements.Count > 0)
+            var targetFound = _openElements.Any(e => string.Equals(e.TagName, tagName, StringComparison.OrdinalIgnoreCase));
+            FenLogger.Debug($"[Parser] PopUntil({tagName}). Target in stack: {targetFound}. Current top: {(_openElements.Count > 0 ? _openElements.Peek().TagName : "NULL")}");
+            
+            if (targetFound)
             {
-                var popped = _openElements.Pop();
-                if (popped.TagName == tag) break;
+                while (_openElements.Count > 1)
+                {
+                    var popped = _openElements.Pop();
+                    FenLogger.Debug($"[Parser] Popped {popped.TagName}_{popped.GetHashCode()}");
+                    if (string.Equals(popped.TagName, tagName, StringComparison.OrdinalIgnoreCase)) break;
+                }
             }
         }
         

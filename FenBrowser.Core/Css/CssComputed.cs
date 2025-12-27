@@ -30,6 +30,14 @@ namespace FenBrowser.Core.Css
             CustomProperties = new Dictionary<string, string>(System.StringComparer.Ordinal);
         }
 
+        public CssComputed Clone()
+        {
+            var c = (CssComputed)this.MemberwiseClone();
+            c.Map = new Dictionary<string, string>(this.Map, System.StringComparer.OrdinalIgnoreCase);
+            c.CustomProperties = new Dictionary<string, string>(this.CustomProperties, System.StringComparer.Ordinal);
+            return c;
+        }
+
         // Display & positioning
         public string Display { get; set; }
         public string Position { get; set; }
@@ -113,9 +121,9 @@ namespace FenBrowser.Core.Css
         public string FlexWrap { get; set; }
         public string JustifyContent { get; set; }
         public string AlignItems { get; set; }
+        public string AlignSelf { get; set; }
         public string AlignContent { get; set; }
-        public string AlignSelf { get; set; }  // Individual flex item alignment override
-        public double? FlexGrow { get; set; }
+        public double? FlexGrow { get; set; }  // Individual flex item alignment override
         public double? FlexShrink { get; set; }
         public double? FlexBasis { get; set; }
         public int? Order { get; set; }  // Flex item ordering
@@ -158,6 +166,11 @@ namespace FenBrowser.Core.Css
         // Text spacing properties
         public double? WordSpacing { get; set; }      // px offset for spaces between words
         public double? LetterSpacing { get; set; }    // px offset for spaces between letters
+        // public double? LineHeight { get; set; }       // Removed duplicate
+        
+        // Interaction (Moved to lower section to avoid duplicate)
+        // public string PointerEvents { get; set; } 
+
 
         // Extra color for border
         public SKColor? BorderBrushColor { get; set; }
