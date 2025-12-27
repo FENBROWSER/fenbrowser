@@ -97,6 +97,9 @@ namespace FenBrowser.UI
         private Button _siteInfoButton;
         private ScrollViewer _skiaScrollViewer;
         private ContentControl _specialPageContainer;
+        
+        // Element that was right-clicked (used for "Inspect" context menu)
+        private FenBrowser.Core.Dom.Element _lastRightClickedElement;
 
         public ObservableCollection<TabItemModel> Tabs { get; } = new ObservableCollection<TabItemModel>();
         public ObservableCollection<ExtensionModel> Extensions { get; } = new ObservableCollection<ExtensionModel>();
@@ -156,7 +159,7 @@ namespace FenBrowser.UI
                               // Let's resolve against current URI if relative.
                               
                               var current = _activeBrowser.CurrentUri;
-                              try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[MainWindow] LinkInternalClicked received: '{url}'. CurrentUri: '{current}'\r\n"); } catch {}
+                              try { FenLogger.Debug($"[MainWindow] LinkInternalClicked received: '{url}'. CurrentUri: '{current}'", LogCategory.General); } catch {}
 
                      if (current != null && !url.StartsWith("http") && !url.StartsWith("data:") && !url.StartsWith("about:") && !url.StartsWith("file:"))
                      {
@@ -245,6 +248,8 @@ namespace FenBrowser.UI
             BindSkiaViewport();
             
             this.KeyDown += OnWindowKeyDown;
+            
+
 
             // Start Event Loop Driver
             var loopTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(4) }; // ~250Hz check
@@ -262,8 +267,11 @@ namespace FenBrowser.UI
 
         private void BindSkiaViewport()
         {
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[MainWindow] BindSkiaViewport called. _skiaScrollViewer={(_skiaScrollViewer != null ? "Found" : "Null")}\r\n"); } catch {}
+            
             if (_skiaScrollViewer != null && this.FindControl<SkiaBrowserView>("SkiaView") is SkiaBrowserView skiaView)
             {
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[MainWindow] BindSkiaViewport - Registering event handlers for ScrollViewer and SkiaView\r\n"); } catch {}
                 void UpdateLayoutViewport()
                 {
                     Dispatcher.UIThread.Post(() => {
@@ -285,6 +293,8 @@ namespace FenBrowser.UI
                 // Subscribe
                 _skiaScrollViewer.GetObservable(ScrollViewer.ViewportProperty).Subscribe(new Avalonia.Reactive.AnonymousObserver<Size>(_ => UpdateLayoutViewport()));
                 _skiaScrollViewer.SizeChanged += (s, e) => UpdateLayoutViewport();
+                
+
             }
         }
 
@@ -295,6 +305,8 @@ namespace FenBrowser.UI
                 ToggleDevTools();
             }
         }
+        
+
 
         private void InitializeBrowser(int? port, TabItemModel initialTab, string initialUrl)
         {
@@ -368,6 +380,24 @@ namespace FenBrowser.UI
                                if (skiaView.ContextMenu == null)
                                {
                                    skiaView.ContextMenu = CreateBrowserContextMenu();
+                                   
+                                   // Add PointerReleased handler to capture right-clicked element
+                                   skiaView.PointerReleased += (sender, args) =>
+                                   {
+                                       if (args.InitialPressMouseButton == Avalonia.Input.MouseButton.Right)
+                                       {
+                                           var point = args.GetPosition(skiaView);
+                                           // Use the SkiaDomRenderer to hit test and get the element
+                                           var renderer = typeof(SkiaBrowserView).GetField("_renderer", 
+                                               System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)?
+                                               .GetValue(skiaView) as FenBrowser.FenEngine.Rendering.SkiaDomRenderer;
+                                           if (renderer != null && renderer.HitTest((float)point.X, (float)point.Y, out var result))
+                                           {
+                                               _lastRightClickedElement = result.NativeElement as FenBrowser.Core.Dom.Element;
+                                               FenLogger.Debug($"[MainWindow] Right-click captured element: {_lastRightClickedElement?.TagName ?? "null"}", LogCategory.General);
+                                           }
+                                       }
+                                   };
                                }
                                
                                // 1. Set BaseUrl for relative image resolution
@@ -530,18 +560,31 @@ namespace FenBrowser.UI
         private void UpdateHighlight(Avalonia.Rect? rect)
         {
             if (_highlightOverlay == null) return;
+            
+            // Clear previous highlight
             _highlightOverlay.Children.Clear();
 
             if (rect.HasValue)
             {
                 var r = rect.Value;
+                
+                // Defensive check: Ignore zero-sized or nearly zero-sized highlights
+                if (r.Width < 1 || r.Height < 1)
+                {
+                    try { FenLogger.Debug($"[UpdateHighlight] Suppressing near-zero highlight: {r}", LogCategory.General); } catch {}
+                    return;
+                }
+
+                try { FenLogger.Debug($"[UpdateHighlight] Drawing highlight: {r}", LogCategory.General); } catch {}
+
                 var border = new Border
                 {
                     Width = r.Width,
                     Height = r.Height,
                     BorderBrush = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Colors.Blue, 0.5),
                     BorderThickness = new Avalonia.Thickness(2),
-                    Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Colors.Blue, 0.2)
+                    Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Colors.Blue, 0.2),
+                    IsHitTestVisible = false // Ensure highlight itself doesn't eat clicks
                 };
                 Canvas.SetLeft(border, r.X);
                 Canvas.SetTop(border, r.Y);
@@ -736,6 +779,27 @@ namespace FenBrowser.UI
         {
             var menu = new ContextMenu();
             
+            // Capture the right-clicked element when context menu opens
+            menu.Opening += (s, e) =>
+            {
+                try
+                {
+                    // Get the SkiaBrowserView and use its hit testing
+                    var skiaView = this.FindControl<SkiaBrowserView>("SkiaView");
+                    if (skiaView != null && menu.PlacementTarget != null)
+                    {
+                        // Get position relative to SkiaView
+                        var pos = menu.PlacementTarget.TranslatePoint(
+                            new Point(0, 0), skiaView) ?? new Point(0, 0);
+                        
+                        // For context menus, we use the last known pointer position
+                        // Unfortunately ContextMenu.Placement doesn't give us click coords directly
+                        // We'll use the renderer's last hit test result via PointerPressed handling
+                    }
+                }
+                catch { }
+            };
+            
             // Clipboard operations
             var copy = new MenuItem { Header = "Copy", InputGesture = new KeyGesture(Key.C, KeyModifiers.Control) };
             copy.Click += async (s, e) => 
@@ -841,15 +905,25 @@ namespace FenBrowser.UI
             };
             menu.Items.Add(viewSource);
             
-            var inspect = new MenuItem { Header = "Inspect" };
+            var inspect = new MenuItem { Header = "Inspect", InputGesture = new KeyGesture(Key.I, KeyModifiers.Control | KeyModifiers.Shift) };
             inspect.Click += (s, e) => 
             {
                 if (_activeBrowser != null)
                 {
                     var activeTab = Tabs.FirstOrDefault(t => t.IsActive);
-                    if (activeTab != null && !activeTab.IsDevToolsOpen)
+                    if (activeTab != null)
                     {
-                        ToggleDevTools();
+                        // Open DevTools if not already open
+                        if (!activeTab.IsDevToolsOpen)
+                        {
+                            ToggleDevTools();
+                        }
+                        
+                        // Pass the right-clicked element to DevTools
+                        if (activeTab.DevToolsInstance != null && _lastRightClickedElement != null)
+                        {
+                            activeTab.DevToolsInstance.SelectElement(_lastRightClickedElement);
+                        }
                     }
                 }
             };

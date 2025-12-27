@@ -257,6 +257,57 @@ namespace FenBrowser.UI
             _rootElement = null;
         }
 
+        /// <summary>
+        /// Select and highlight a specific element in the DOM tree.
+        /// Called from context menu "Inspect" action.
+        /// </summary>
+        public void SelectElement(Element element)
+        {
+            if (element == null) return;
+            
+            // Switch to Elements tab
+            var elementsTab = this.FindControl<Button>("TabElements");
+            if (elementsTab != null)
+            {
+                OnTabClick(elementsTab, null);
+            }
+            
+            // Refresh DOM to ensure tree is populated
+            RefreshDom();
+            
+            // Find and select the element in the tree
+            var tree = this.FindControl<TreeView>("DomTree");
+            if (tree?.ItemsSource != null)
+            {
+                // Recursively search for the matching element
+                var model = FindDomModel(tree.ItemsSource.OfType<DomElementModel>(), element);
+                if (model != null)
+                {
+                    tree.SelectedItem = model;
+                    UpdateStylesPanel(model);
+                }
+            }
+        }
+        
+        /// <summary>
+        /// Recursively find a DomElementModel that matches the given Element.
+        /// </summary>
+        private DomElementModel FindDomModel(IEnumerable<DomElementModel> models, Element target)
+        {
+            foreach (var model in models)
+            {
+                if (model.Element == target)
+                    return model;
+                
+                if (model.Children != null)
+                {
+                    var found = FindDomModel(model.Children.OfType<DomElementModel>(), target);
+                    if (found != null) return found;
+                }
+            }
+            return null;
+        }
+
         #region Console Tab
 
         /// <summary>
