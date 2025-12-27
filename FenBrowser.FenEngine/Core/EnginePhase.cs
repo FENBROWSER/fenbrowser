@@ -38,7 +38,7 @@ namespace FenBrowser.FenEngine.Core
         /// In Release builds, it logs a warning but continues.
         /// </summary>
         /// <param name="forbidden">Phases that are forbidden for the current operation.</param>
-        [Conditional("DEBUG")]
+        // [Conditional("DEBUG")] - Removed to enforce invariant in Release too, per requirements
         public static void AssertNotInPhase(params EnginePhase[] forbidden)
         {
             var current = CurrentPhase;
@@ -50,7 +50,6 @@ namespace FenBrowser.FenEngine.Core
                                   "JavaScript execution is only permitted during JSExecution phase.";
                     
                     // In debug builds, crash immediately
-                    Debug.Fail(message);
                     throw new InvalidOperationException(message);
                 }
             }

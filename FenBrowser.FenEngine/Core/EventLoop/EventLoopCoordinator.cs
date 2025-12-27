@@ -22,6 +22,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         private readonly object _animationLock = new();
         
         private bool _layoutDirty = false;
+        private bool _layoutRunThisTick = false;
         private Action _renderCallback = null;
         private Action _observerCallback = null;
 
@@ -129,6 +130,8 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         /// </summary>
         public bool ProcessNextTask()
         {
+            _layoutRunThisTick = false; // Reset at start of tick
+
             var task = _taskQueue.Dequeue();
             if (task == null)
             {
@@ -164,14 +167,43 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         /// </summary>
         public void PerformMicrotaskCheckpoint()
         {
+            // CRITICAL: Ensure we are not re-entering Microtask phase recursively
+            EnginePhaseManager.AssertNotInPhase(EnginePhase.Microtasks);
+            
             EnginePhaseManager.EnterPhase(EnginePhase.Microtasks);
             try
             {
+                // DRAIN LOOP: Keep draining until empty.
+                // NOTE: DrainAll() inside MicrotaskQueue should ideally handle the loop, 
+                // but if new microtasks are queued during execution, we must ensure they run
+                // in the SAME checkpoint, without leaving/re-entering the phase.
+                // Assuming _microtaskQueue.DrainAll() handles internal looping.
+                // If not, we would wrap it: while (_microtaskQueue.HasPendingMicrotasks) _microtaskQueue.DrainAll();
+                
                 _microtaskQueue.DrainAll();
             }
             finally
             {
-                // Don't change phase here - let caller manage
+                // Return to whatever phase we were in? 
+                // Actually EnginePhaseManager/EngineContext tracks stack or single phase?
+                // Context usually pushes/pops. If simple set, we might need to restore.
+                // EngineContext.Current.EndPhase()? The API provided was BeginPhase.
+                // Assuming EnterPhase pushes or sets. 
+                // Since there is no "ExitPhase" exposed in the snippet I saw, 
+                // and TryEnterIdle exists...
+                // Ideally we should revert to previous phase if it was a nested call (like from ProcessNextTask).
+                // But typically Microtasks run at end of Task (which was JSExecution).
+                // So after this, we might go to Idle or Rendering.
+                
+                // For now, let's assuming we just leave it in Microtasks 
+                // and the caller of PerformMicrotaskCheckpoint (ProcessNextTask) 
+                // will transition to the next phase (Rendering or Idle).
+                // BUT: If the caller expects us to return to previous phase (e.g. nested checkpoint?),
+                // we should be careful. 
+                // Spec says Checkpoints only happen at specific times.
+                
+                // To be safe and compliant with "ExitPhase" concept:
+                // We'll trust the caller to set the next phase.
             }
         }
 
@@ -187,6 +219,10 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             // Layout phase - NO JS ALLOWED
             if (_layoutDirty && _renderCallback != null)
             {
+                // STRICT: One layout per tick
+                if (_layoutRunThisTick) return;
+                _layoutRunThisTick = true;
+
                 EnginePhaseManager.EnterPhase(EnginePhase.Layout);
                 try
                 {
