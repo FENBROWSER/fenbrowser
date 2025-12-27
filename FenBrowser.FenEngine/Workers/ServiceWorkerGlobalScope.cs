@@ -28,7 +28,7 @@ namespace FenBrowser.FenEngine.Workers
             // Note: Spec says it returns a CacheStorage object. 
             // Depending on implementation, it might be the SAME object or new one.
             // Usually singleton per global scope.
-            var cacheStorage = new CacheStorage(origin, _storageBackend);
+            var cacheStorage = new CacheStorage(() => origin, _storageBackend);
             Set("caches", FenValue.FromObject(cacheStorage));
 
             Set("skipWaiting", FenValue.FromFunction(new FenFunction("skipWaiting", (args, thisVal) =>

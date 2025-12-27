@@ -43,6 +43,7 @@ namespace FenBrowser.FenEngine.Scripting
         public bool UseExperimentalEcmaEngine { get; set; } = false;
 #endif
         private readonly IJsHost _host;
+        private readonly FenBrowser.FenEngine.Storage.IStorageBackend _storageBackend;
         // private MiniJs.Engine _mini;      // MiniJS interpreter instance - DISABLED
         public IExecutionContext GlobalContext => _fenRuntime?.Context;
         private JsContext _ctx;
@@ -51,6 +52,11 @@ namespace FenBrowser.FenEngine.Scripting
         {
             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[JavaScriptEngine] Constructor Start\r\n"); } catch { }
             _host = host;
+            _storageBackend = new FenBrowser.FenEngine.Storage.FileStorageBackend();
+            
+            // Initialize ServiceWorkerManager with the same storage backend
+            FenBrowser.FenEngine.Workers.ServiceWorkerManager.Instance.Initialize(_storageBackend);
+
             InitRuntime();
             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[JavaScriptEngine] Constructor: InitRuntime Done\r\n"); } catch { }
             SetupMutationObserver();
@@ -108,7 +114,7 @@ namespace FenBrowser.FenEngine.Scripting
 
 
             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[JavaScriptEngine] InitRuntime: Creating FenRuntime...\r\n"); } catch { }
-            _fenRuntime = new FenRuntime(context);
+            _fenRuntime = new FenRuntime(context, _storageBackend);
             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[JavaScriptEngine] InitRuntime: FenRuntime Created\r\n"); } catch { }
             // Connect console messages to BrowserHost
             _fenRuntime.OnConsoleMessage = msg => 
@@ -2214,12 +2220,15 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                 {
                     try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[JavaScriptEngine] Starting inline script execution\r\n"); } catch { }
                     
+                    int scriptIndex = 0;
                     foreach (var s in _domRoot.SelfAndDescendants())
                     {
                         if (string.Equals(s.Tag, "script", StringComparison.OrdinalIgnoreCase))
                         {
+                            scriptIndex++;
                             string code = null;
                             bool isAsync = false;
+                            string srcInfo = "inline";
 
                             // External script
                             if (s.Attr != null && s.Attr.ContainsKey("src")) 
@@ -2232,6 +2241,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                     try 
                                     {
                                         var scriptUri = new Uri(baseUri, src);
+                                        srcInfo = scriptUri.ToString();
                                         
                                         // Check SubresourceAllowed delegate
                                         if (SubresourceAllowed != null && !SubresourceAllowed(scriptUri, "script"))
@@ -2274,8 +2284,14 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                             
                             if (!string.IsNullOrWhiteSpace(code))
                             {
+                                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[JavaScriptEngine] Executing script #{scriptIndex} ({srcInfo}, {code.Length} chars)\r\n"); } catch { }
                                 FenLogger.Debug($"[JavaScriptEngine] Executing script ({code.Length} chars)", LogCategory.JavaScript);
-                                _fenRuntime.ExecuteSimple(code);
+                                _fenRuntime.ExecuteSimple(code, srcInfo);
+                                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[JavaScriptEngine] Completed script #{scriptIndex}\r\n"); } catch { }
+                            }
+                            else
+                            {
+                                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[JavaScriptEngine] Skipped empty script #{scriptIndex}\r\n"); } catch { }
                             }
                         }
                     }
@@ -2306,24 +2322,29 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             // No longer used - FenEngine handles script execution in SetDom
         }
 
-        private static string CollectScriptText(Node n)
+        private static string CollectScriptText(Node n, int depth = 0)
         {
             if (n == null) return "";
-            if (n.IsText) return (n as Element)?.Text ?? ""; 
-            // Note: Element.Text is on Element. If Node does not have Text property we need cast.
-            // Wait, Node.IsText is available. Does Node have Text? 
-            // Checking Node.cs earlier... Element has Text. Node might not.
-            // Let's assume Node does not have Text given previous errors unless it was added.
-            // Safest to cast to Element for Text if IsText is true, or use a helper.
-            // Actually, in `CssLoader.cs`, `SafeGatherText` treats `n` as Element.
-            
-            var el = n as Element;
-            if (el != null && el.IsText) return el.Text ?? "";
+            if (depth > 200) // Safety break
+            {
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[JavaScriptEngine] CollectScriptText recursion limit reached!\r\n"); } catch { }
+                return "";
+            }
+
+            if (n.IsText)
+            {
+                var tel = n as Element;
+                if (tel != null) return tel.Text ?? "";
+                
+                // If Node.NodeValue is available directly or cast to Text node
+                if (n is Text t) return t.Data ?? "";
+                return n.NodeValue ?? "";
+            }
             
             var sb = new System.Text.StringBuilder();
             if (n.Children != null)
             {
-                for (int i = 0; i < n.Children.Count; i++) sb.Append(CollectScriptText(n.Children[i]));
+                for (int i = 0; i < n.Children.Count; i++) sb.Append(CollectScriptText(n.Children[i], depth + 1));
             }
             return sb.ToString();
         }

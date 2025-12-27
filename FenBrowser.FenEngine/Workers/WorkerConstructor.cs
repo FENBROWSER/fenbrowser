@@ -14,11 +14,13 @@ namespace FenBrowser.FenEngine.Workers
     public class WorkerConstructor
     {
         private readonly string _baseOrigin;
+        private readonly FenBrowser.FenEngine.Storage.IStorageBackend _storageBackend;
         private readonly List<WorkerRuntime> _activeWorkers = new();
 
-        public WorkerConstructor(string baseOrigin)
+        public WorkerConstructor(string baseOrigin, FenBrowser.FenEngine.Storage.IStorageBackend storageBackend)
         {
             _baseOrigin = baseOrigin ?? "null";
+            _storageBackend = storageBackend;
         }
 
         /// <summary>
@@ -41,7 +43,7 @@ namespace FenBrowser.FenEngine.Workers
             FenLogger.Debug($"[WorkerConstructor] Creating worker for: {scriptUrl}", LogCategory.JavaScript);
 
             // Create the worker runtime
-            var runtime = new WorkerRuntime(scriptUrl, _baseOrigin);
+            var runtime = new WorkerRuntime(scriptUrl, _baseOrigin, _storageBackend);
             _activeWorkers.Add(runtime);
 
             // Create the Worker object exposed to JS
