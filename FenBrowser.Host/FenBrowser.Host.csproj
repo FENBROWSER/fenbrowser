@@ -6,11 +6,13 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>disable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <NoWarn>$(NoWarn);NU1605</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\FenBrowser.Core\FenBrowser.Core.csproj" />
     <ProjectReference Include="..\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj" />
+    <ProjectReference Include="..\FenBrowser.DevTools\FenBrowser.DevTools.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -21,7 +23,9 @@
     
     <!-- SkiaSharp for 2D rendering -->
     <PackageReference Include="SkiaSharp" Version="2.88.9" />
+    <PackageReference Include="SkiaSharp.HarfBuzz" Version="2.88.9" />
     <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="2.88.9" />
+    <PackageReference Include="Topten.RichTextKit" Version="0.4.164" />
   </ItemGroup>
 
 </Project>

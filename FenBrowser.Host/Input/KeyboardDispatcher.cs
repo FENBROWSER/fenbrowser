@@ -13,6 +13,8 @@ public class KeyboardDispatcher
     private static KeyboardDispatcher _instance;
     public static KeyboardDispatcher Instance => _instance ??= new KeyboardDispatcher();
     
+    public bool IsCtrlPressed { get; set; }
+    
     private readonly Dictionary<(Key key, bool ctrl, bool shift, bool alt), Action> _globalShortcuts = new();
     
     /// <summary>
@@ -53,7 +55,7 @@ public class KeyboardDispatcher
         }
         
         // 2. Forward to focused widget
-        var focused = FocusManager.Instance.FocusedWidget;
+        var focused = InputManager.Instance.FocusedWidget;
         if (focused != null)
         {
             focused.OnKeyDown(key);
@@ -68,7 +70,7 @@ public class KeyboardDispatcher
     /// </summary>
     public bool DispatchChar(char c)
     {
-        var focused = FocusManager.Instance.FocusedWidget;
+        var focused = InputManager.Instance.FocusedWidget;
         if (focused != null)
         {
             focused.OnTextInput(c);
