@@ -264,7 +264,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <param name="url">Image URL</param>
         /// <param name="isLazy">If true, only register for lazy loading if not in viewport</param>
         /// <param name="elementBounds">Element bounds for lazy loading registration</param>
-        public static SKBitmap GetImage(string url, bool isLazy = false, SKRect? elementBounds = null)
+        public static SKBitmap GetImage(string url, bool isLazy = false, SKRect? elementBounds = null, int? targetWidth = null, int? targetHeight = null)
         {
             if (string.IsNullOrEmpty(url)) return null;
 
@@ -309,13 +309,19 @@ namespace FenBrowser.FenEngine.Rendering
                 _pendingLoads.Add(url);
             }
             
-            LoadImageAsync(url, isLazy);
+            LoadImageAsync(url, isLazy, targetWidth, targetHeight);
             return null;
         }
 
 
 
-        private static async void LoadImageAsync(string url, bool isLazy = false)
+        public static object GetImageTuple(string url, bool isLazy = false, SKRect? elementBounds = null, int? targetWidth = null, int? targetHeight = null)
+        {
+            var bmp = GetImage(url, isLazy, elementBounds, targetWidth, targetHeight);
+            return (bmp, isLazy);
+        }
+
+        private static async void LoadImageAsync(string url, bool isLazy = false, int? targetWidth = null, int? targetHeight = null)
         {
             string debugLogPath = @"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt";
             try
@@ -382,13 +388,21 @@ namespace FenBrowser.FenEngine.Rendering
                                      if (svg.Picture != null)
                                      {
                                          var cull = svg.Picture.CullRect;
-                                         int w = (int)cull.Width;
-                                         int h = (int)cull.Height;
+                                         int w = targetWidth ?? (int)cull.Width;
+                                         int h = targetHeight ?? (int)cull.Height;
                                          if (w <= 0 || h <= 0) { w = 300; h = 150; }
+                                         
                                          bmp = new SKBitmap(w, h);
                                          using (var canvas = new SKCanvas(bmp))
                                          {
                                              canvas.Clear(SKColors.Transparent);
+                                             // Scale picture to fit target if hints provided
+                                             if (targetWidth.HasValue || targetHeight.HasValue)
+                                             {
+                                                 float scaleX = w / cull.Width;
+                                                 float scaleY = h / cull.Height;
+                                                 canvas.Scale(scaleX, scaleY);
+                                             }
                                              canvas.DrawPicture(svg.Picture);
                                          }
                                      }
@@ -453,26 +467,27 @@ namespace FenBrowser.FenEngine.Rendering
                         {
                             var svg = new Svg.Skia.SKSvg();
                             svg.Load(ms);
-                            if (svg.Picture != null)
-                            {
-                                 // Define a target size (or use innate size)
-                                 // Usually prefer innate size or scale to something reasonable.
-                                 // Svg.Info.Size is expected.
-                                 // SKPicture CullRect is the size.
-                                 var cull = svg.Picture.CullRect;
-                                 int w = (int)cull.Width;
-                                 int h = (int)cull.Height;
-                                 
-                                 // Limit max size to avoid huge rasters?
-                                 if (w <= 0 || h <= 0) { w = 300; h = 150; } // default
-                                 
-                                 bitmap = new SKBitmap(w, h);
-                                 using (var canvas = new SKCanvas(bitmap))
-                                 {
-                                     canvas.Clear(SKColors.Transparent);
-                                     canvas.DrawPicture(svg.Picture);
-                                 }
-                            }
+                             if (svg.Picture != null)
+                             {
+                                  var cull = svg.Picture.CullRect;
+                                  int w = targetWidth ?? (int)cull.Width;
+                                  int h = targetHeight ?? (int)cull.Height;
+                                  
+                                  if (w <= 0 || h <= 0) { w = 300; h = 150; }
+                                  
+                                  bitmap = new SKBitmap(w, h);
+                                  using (var canvas = new SKCanvas(bitmap))
+                                  {
+                                      canvas.Clear(SKColors.Transparent);
+                                      if (targetWidth.HasValue || targetHeight.HasValue)
+                                      {
+                                          float scaleX = w / cull.Width;
+                                          float scaleY = h / cull.Height;
+                                          canvas.Scale(scaleX, scaleY);
+                                      }
+                                      canvas.DrawPicture(svg.Picture);
+                                  }
+                             }
                         }
                     } 
                     catch (Exception svgEx) 

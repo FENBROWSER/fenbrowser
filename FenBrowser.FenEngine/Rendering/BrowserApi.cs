@@ -179,6 +179,7 @@ namespace FenBrowser.FenEngine.Rendering
         private readonly CustomHtmlEngine _engine = new CustomHtmlEngine();
         private readonly ResourceManager _resources = new ResourceManager(new HttpClient());
         private readonly NavigationManager _navManager;
+        private readonly FenBrowser.FenEngine.Core.EngineLoop _engineLoop; // Phase 5: Engine Loop
         private Uri _current;
         private bool _disposed;
         
@@ -229,6 +230,7 @@ namespace FenBrowser.FenEngine.Rendering
         public BrowserHost(bool isPrivate = false)
         {
             IsPrivate = isPrivate;
+            _engineLoop = new FenBrowser.FenEngine.Core.EngineLoop(); // Phase 5: Initialize Loop
             
             // Get HTTP/2 and Brotli enabled handler from factory
             var config = NetworkConfiguration.Instance;
@@ -317,7 +319,11 @@ namespace FenBrowser.FenEngine.Rendering
 
             _engine.DomReady += (s, dom) =>
             {
-                try { RepaintReady?.Invoke(this, dom); }
+                try 
+                { 
+                    _engineLoop.SetRoot(dom); // Phase 5: Connect DOM to Loop
+                    RepaintReady?.Invoke(this, dom); 
+                }
                 catch { }
             };
 
@@ -417,16 +423,55 @@ namespace FenBrowser.FenEngine.Rendering
         {
             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[BrowserHost] NavigateAsync called for: '{url}'\r\n"); } catch {}
             if (_disposed) return false;
-            if (string.IsNullOrWhiteSpace(url)) return false;
+                if (string.IsNullOrWhiteSpace(url)) return false;
 
-            try
-            {
-                bool isViewSource = false;
-                if (url.StartsWith("view-source:", StringComparison.OrdinalIgnoreCase))
+                // SPECIAL HANDLING: fen://history
+                if (url.Equals("fen://history", StringComparison.OrdinalIgnoreCase))
                 {
-                    isViewSource = true;
-                    url = url.Substring("view-source:".Length);
+                    var sb = new System.Text.StringBuilder();
+                    sb.Append("<html><head><title>History</title><style>body { font-family: sans-serif; padding: 20px; background: #fff; color: #333; } h1 { border-bottom: 1px solid #ddd; padding-bottom: 10px; } ul { list-style: none; padding: 0; } li { padding: 8px; border-bottom: 1px solid #eee; } a { text-decoration: none; color: #1a73e8; font-size: 16px; display: block; } a:hover { text-decoration: underline; } .meta { color: #5f6368; font-size: 12px; margin-top: 4px; }</style></head><body>");
+                    sb.Append("<h1>Browsing History</h1><ul>");
+                    
+                    // Iterate history (reverse to show newest first) with index
+                    for (int i = _history.Count - 1; i >= 0; i--)
+                    {
+                        var u = _history[i];
+                        string currentMarker = (i == _historyIndex) ? " <span style='color:green; font-weight:bold;'>(Current)</span>" : "";
+                        sb.Append($"<li><a href='{u.AbsoluteUri}'>{u.AbsoluteUri}</a><div class='meta'>{u.Scheme}{currentMarker}</div></li>");
+                    }
+                    if (_history.Count == 0) sb.Append("<li><em>No history yet.</em></li>");
+                    
+                    sb.Append("</ul></body></html>");
+
+                    _current = new Uri("fen://history");
+                    
+                    // Render the generated HTML
+                    var elem = await _engine.RenderAsync(sb.ToString(), _current, u => _resources.FetchTextAsync(u), u => _resources.FetchImageAsync(u), u => { _ = NavigateAsync(u.AbsoluteUri); });
+                    try { RepaintReady?.Invoke(this, elem); } catch { }
+
+                    // Add to history if not navigating backwards/forwards
+                    if (!_isNavigatingHistory)
+                    {
+                        if (_historyIndex < _history.Count - 1)
+                        {
+                            _history.RemoveRange(_historyIndex + 1, _history.Count - (_historyIndex + 1));
+                        }
+                        _history.Add(_current);
+                        _historyIndex = _history.Count - 1;
+                    }
+
+                    try { Navigated?.Invoke(this, _current); } catch { }
+                    return true;
                 }
+
+                try
+                {
+                    bool isViewSource = false;
+                    if (url.StartsWith("view-source:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        isViewSource = true;
+                        url = url.Substring("view-source:".Length);
+                    }
 
                 Console.WriteLine($"[NavigateAsync] Start: {url}");
 
@@ -460,9 +505,33 @@ namespace FenBrowser.FenEngine.Rendering
 
                 if (isViewSource && result.Status == FetchStatus.Success)
                 {
-                    var escaped = System.Net.WebUtility.HtmlEncode(htmlToRender);
-                    htmlToRender = $"<html><head><title>Source of {url}</title></head><body style='font-family: Consolas, monospace; white-space: pre; background-color: #f8f8f8; color: #333; padding: 10px; font-size: 13px;'>{escaped}</body></html>";
+                    // The parser decodes HTML entities, so we need to double-encode 
+                    // so that after parsing, we still have the encoded entities as visible text
+                    var singleEncoded = System.Net.WebUtility.HtmlEncode(htmlToRender);
+                    var doubleEncoded = System.Net.WebUtility.HtmlEncode(singleEncoded);
+                    
+                    htmlToRender = $@"<html>
+<head><title>Source of {System.Net.WebUtility.HtmlEncode(url)}</title>
+<style>
+body {{ margin: 0; padding: 0; background-color: #1e1e1e; }}
+pre {{ 
+    font-family: 'Consolas', 'Monaco', monospace; 
+    font-size: 13px; 
+    line-height: 1.5;
+    color: #d4d4d4; 
+    background-color: #1e1e1e; 
+    padding: 16px; 
+    margin: 0;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    overflow-x: auto;
+}}
+</style>
+</head>
+<body><pre>{doubleEncoded}</pre></body>
+</html>";
                 }
+
 
                 if (uri == null) 
                 {
@@ -518,6 +587,10 @@ namespace FenBrowser.FenEngine.Rendering
                 // FIX: Set _current BEFORE rendering so UI has access to correct BaseUrl during render events
                 _current = uri;
                 try { FenLogger.Debug($"[BrowserApi] _current updated early to: {_current?.AbsoluteUri}", LogCategory.General); } catch {}
+                
+                // Dump raw HTML source for debugging
+                try { StructuredLogger.DumpRawSource(uri.AbsoluteUri, htmlToRender); } catch { }
+                
                 var elem = await _engine.RenderAsync(htmlToRender, uri, u => _resources.FetchTextAsync(u), u => _resources.FetchImageAsync(u), u => { _ = NavigateAsync(u.AbsoluteUri); });
                 
                 // _current already set above
@@ -529,6 +602,18 @@ namespace FenBrowser.FenEngine.Rendering
                 try { FenLogger.Debug($"[BrowserApi] _current now set to: {_current?.AbsoluteUri}. Firing RepaintReady...", LogCategory.General); } catch {}
                 
                 try { RepaintReady?.Invoke(this, elem); } catch { }
+
+                // FIX: Force re-layout after delay to catch async JS DOM updates (Google blank screen fix)
+                // Increased delay to 1500ms to allow CSS stylesheets to fully load and settle,
+                // reducing visible layout jitter from premature re-renders.
+                Task.Run(async () => 
+                {
+                    await Task.Delay(1500);
+                    try { 
+                        var dom = _engine.GetActiveDom();
+                        if (dom != null) RepaintReady?.Invoke(this, dom);
+                    } catch { }
+                });
 
                 if (!_isNavigatingHistory)
                 {
@@ -718,10 +803,9 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public void Pulse()
         {
-            // Process one task (macro-task)
-            FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance.ProcessNextTask();
-            // Then drain all microtasks (checkpoint)
-            FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance.PerformMicrotaskCheckpoint();
+            // Forward pulse to the EngineLoop (Phase 5)
+            // This consolidates task/microtask/render coordination
+            _engineLoop.RunFrame();
         }
 
         // ========== NEW WEBDRIVER METHODS ==========

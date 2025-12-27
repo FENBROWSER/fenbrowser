@@ -24,6 +24,8 @@ using FenBrowser.FenEngine.Core; // Corrected namespace
 using FenBrowser.FenEngine.Layout; // Added for LayoutResult
 using static FenBrowser.FenEngine.Rendering.CssLoader;
 using FenBrowser.FenEngine.Rendering;
+using FenBrowser.FenEngine.Core.EventLoop; // Added for EventLoopCoordinator
+using FenBrowser.Core.Engine; // Added for EnginePhase
 using SkiaSharp;
 
 
@@ -44,7 +46,7 @@ namespace FenBrowser.FenEngine.Rendering
         public Dictionary<Node, CssComputed> LastComputedStyles { get; private set; }
         public List<CssLoader.CssSource> LastCssSources { get; private set; }
 
-        public LayoutResult LastLayout => _cachedRenderer?.LastLayout;
+        public LayoutResult LastLayout { get; private set; }
         public IExecutionContext Context => _activeJs?.GlobalContext;
 
         public event Action<object> RepaintReady;
@@ -139,6 +141,8 @@ namespace FenBrowser.FenEngine.Rendering
              // [MIGRATION] Window logic removed
             return 600;
         }
+
+        private DateTime _lastRepaintTime = DateTime.MinValue;
 
         private static readonly System.Collections.Generic.HashSet<string> _loadingTokens =
             new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -542,6 +546,7 @@ namespace FenBrowser.FenEngine.Rendering
             Action<Uri> onNavigate,
             JavaScriptEngine js,
             double? viewportWidth,
+            double? viewportHeight,
             Action<object> onFixedBackground,
             bool includeDiagnosticsBanner)
         {
@@ -550,10 +555,27 @@ namespace FenBrowser.FenEngine.Rendering
             ConfigureMedia(viewportWidth);
 
             var cssFetcher = fetchExternalCssAsync ?? (async _ => { await Task.CompletedTask; return string.Empty; });
-            var result = await CssLoader.ComputeWithResultAsync(dom, baseUri, cssFetcher, viewportWidth, null);
-            LastComputedStyles = result.Computed;
-            LastCssSources = result.Sources;
-            var computed = result.Computed;
+            
+            LastComputedStyles = null;
+            LastCssSources = null;
+            try
+            {
+                FenLogger.Debug("[CustomHtmlEngine] BuildVisualTree: Calling CssLoader...", LogCategory.Rendering);
+                var result = await CssLoader.ComputeWithResultAsync(dom, baseUri, cssFetcher, viewportWidth, viewportHeight, null);
+                LastComputedStyles = result.Computed;
+                LastCssSources = result.Sources;
+                FenLogger.Debug($"[CustomHtmlEngine] BuildVisualTree: CssLoader Success. Styles Count={LastComputedStyles?.Count}", LogCategory.Rendering);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Error($"[CustomHtmlEngine] CssLoader CRASH: {ex}", LogCategory.Rendering);
+                // Continue to ensure RepaintReady fires even if CSS fails? 
+                // Better to have partial render than white screen if possible
+                LastComputedStyles = new Dictionary<Node, CssComputed>();
+            }
+
+            // var computed = result.Computed; // Use LastComputedStyles instead
+            var computed = LastComputedStyles;
 
             // [MIGRATION] Background check logic removed or simplified (Avalonia Brush removed)
             // Just invoking DomReady
@@ -611,6 +633,7 @@ namespace FenBrowser.FenEngine.Rendering
                 _activeOnNavigate,
                 _activeJs,
                 _activeViewportWidth,
+                (double?)GetPrimaryWindowHeight(),
                 _activeFixedBackground,
                 includeDiagnosticsBanner).ConfigureAwait(false);
         }
@@ -642,51 +665,19 @@ namespace FenBrowser.FenEngine.Rendering
             catch { }
         }
 
-        private void ScheduleRepaintFromJs()
+                private void ScheduleRepaintFromJs()
         {
-            FenLogger.Debug("[CustomHtmlEngine] ScheduleRepaintFromJs called", LogCategory.Rendering);
-            if (!EnableJavaScript) return;
-            if (_activeDom == null) return;
-            var disp = UiThreadHelper.TryGetDispatcher();
-            if (System.Threading.Interlocked.Exchange(ref _repaintScheduled, 1) == 1)
-            {
-                // FenLogger.Debug("[CustomHtmlEngine] Repaint already scheduled", LogCategory.Rendering);
-                return;
-            }
+            // STRICT CONTROL FLOW:
+            // JavaScript CANNOT push frames. It can only mark state as dirty.
+            
+            // 1. ASSERT: JS cannot trigger rendering logic directly.
+            EnginePhaseManager.AssertNotInPhase(EnginePhase.JSExecution, EnginePhase.Microtasks);
 
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    try { System.IO.File.AppendAllText("debug_log.txt", "[CustomHtmlEngine] ScheduleRepaintFromJs Task running\r\n"); } catch { }
-                    if (_uiDispatcher != null && !UiThreadHelper.HasThreadAccess(_uiDispatcher))
-                    {
-                         // ... logic ...
-                    }
+            FenLogger.Debug("[CustomHtmlEngine] ScheduleRepaintFromJs (Dirty Flag Set)", LogCategory.Rendering);
 
-                    await _repaintGate.WaitAsync().ConfigureAwait(false);
-                    try
-                    {
-                        FenLogger.Debug("[CustomHtmlEngine] Calling RefreshAsyncInternal", LogCategory.Rendering);
-                        var element = await RefreshAsyncInternal(includeDiagnosticsBanner: false).ConfigureAwait(false);
-                        
-                        await DispatchRepaintAsync(element).ConfigureAwait(false);
-                        FenLogger.Debug("[CustomHtmlEngine] DispatchRepaintAsync completed", LogCategory.Rendering);
-                    }
-                    finally
-                    {
-                        _repaintGate.Release();
-                    }
-                }
-                catch (Exception ex)
-                {
-                    try { System.IO.File.AppendAllText("debug_log.txt", $"[CustomHtmlEngine] ScheduleRepaintFromJs Error: {ex.Message}\r\n"); } catch { }
-                }
-                finally
-                {
-                    System.Threading.Interlocked.Exchange(ref _repaintScheduled, 0);
-                }
-            });
+            // 2. Mark dirty ONLY via the Coordinator.
+            // The Event Loop or Host will check this flag at the appropriate checkpoint.
+            EventLoopCoordinator.Instance.NotifyLayoutDirty();
         }
 
         public async Task<object> RefreshAsync(bool includeDiagnosticsBanner = false)
@@ -1055,7 +1046,8 @@ namespace FenBrowser.FenEngine.Rendering
                 Console.WriteLine("[RenderAsync] Building Visual Tree");
                 
                 // Fetch CSS is handled inside BuildVisualTreeAsync or passed as delegate
-                var control = await BuildVisualTreeAsync(dom, baseUri, cssFetcher, imageLoader, onNavigate, js, viewportWidth, onFixedBackground, includeDiagnosticsBanner: false).ConfigureAwait(false);
+                var vh = (double?)GetPrimaryWindowHeight();
+                var control = await BuildVisualTreeAsync(dom, baseUri, cssFetcher, imageLoader, onNavigate, js, viewportWidth, vh, onFixedBackground, includeDiagnosticsBanner: false).ConfigureAwait(false);
                 
                 // 7. Execute Scripts (if enabled)
                 if (js != null)
@@ -1133,7 +1125,8 @@ namespace FenBrowser.FenEngine.Rendering
                 object element = null;
                 try
                 {
-                    element = await BuildVisualTreeAsync(dom, baseUri, cssFetcher, imageLoader, onNavigate, js, viewportWidth, onFixedBackground, includeDiagnosticsBanner: false).ConfigureAwait(false);
+                    var vh2 = (double?)GetPrimaryWindowHeight();
+                    element = await BuildVisualTreeAsync(dom, baseUri, cssFetcher, imageLoader, onNavigate, js, viewportWidth, vh2, onFixedBackground, includeDiagnosticsBanner: false).ConfigureAwait(false);
                     try { System.IO.File.AppendAllText("debug_log.txt", "[RenderAsync] Visual tree built successfully\r\n"); } catch { }
                 }
                 catch (Exception vtEx)
