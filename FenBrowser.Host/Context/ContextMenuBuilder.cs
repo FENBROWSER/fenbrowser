@@ -1,111 +1,106 @@
+using System;
+using System.Collections.Generic;
 using FenBrowser.FenEngine.Interaction;
 
-namespace FenBrowser.Host.Context;
-
-/// <summary>
-/// Builds context menus based on HitTestResult and current state.
-/// No DOM traversal, no renderer calls.
-/// Uses only HitTestResult, selection state, and clipboard policy.
-/// </summary>
-public static class ContextMenuBuilder
+namespace FenBrowser.Host.Context
 {
-    /// <summary>
-    /// Build a context menu for the given hit test result.
-    /// </summary>
-    public static List<ContextMenuItem> Build(
-        HitTestResult hitTest, 
-        bool hasSelection = false,
-        bool canPaste = true,
-        Action<string> onNavigate = null,
-        Action onCopy = null,
-        Action onPaste = null,
-        Action onSelectAll = null,
-        Action onReload = null,
-        Action onBack = null,
-        Action onForward = null,
-        Action<string> onOpenInNewTab = null,
-        Action<string> onCopyLink = null,
-        Action<string> onSaveImage = null)
+    public static class ContextMenuBuilder
     {
-        var items = new List<ContextMenuItem>();
-        
-        // Link context
-        if (hitTest.IsLink && !string.IsNullOrEmpty(hitTest.Href))
+        public static List<ContextMenuItem> Build(
+            HitTestResult hit,
+            string currentUrl,
+            bool hasSelection,
+            bool canPaste,
+            Action<string> onNavigate,
+            Action onCopy,
+            Action onPaste,
+            Action onSelectAll,
+            Action onReload,
+            Action onBack,
+            Action onForward,
+            Action<string> onOpenInNewTab,
+            Action<string> onCopyLink,
+            Action<string> onViewPageSource,
+            Action<HitTestResult> onInspectElement
+        )
         {
-            items.Add(ContextMenuItem.Create("Open Link", () => onNavigate?.Invoke(hitTest.Href)));
-            items.Add(ContextMenuItem.Create("Open Link in New Tab", () => onOpenInNewTab?.Invoke(hitTest.Href)));
-            items.Add(ContextMenuItem.Create("Copy Link Address", () => onCopyLink?.Invoke(hitTest.Href)));
+            var items = new List<ContextMenuItem>();
+
+            // Navigation
+            items.Add(ContextMenuItem.Create("Back", onBack, "Alt+Left"));
+            items.Add(ContextMenuItem.Create("Forward", onForward, "Alt+Right"));
+            items.Add(ContextMenuItem.Create("Reload", onReload, "Ctrl+R"));
             items.Add(ContextMenuItem.Separator());
-        }
-        
-        // Image context (check if it's an img tag)
-        if (hitTest.TagName == "img")
-        {
-            items.Add(ContextMenuItem.Create("Save Image As...", () => onSaveImage?.Invoke(hitTest.Href)));
-            items.Add(ContextMenuItem.Create("Copy Image", () => { /* Copy image to clipboard */ }));
-            items.Add(ContextMenuItem.Separator());
-        }
-        
-        // Text/editing context
-        if (hasSelection)
-        {
-            items.Add(ContextMenuItem.Create("Copy", () => onCopy?.Invoke(), "Ctrl+C"));
-        }
-        
-        if (hitTest.IsEditable)
-        {
+
+            // Link Actions
+            if (hit.IsLink && !string.IsNullOrEmpty(hit.Href))
+            {
+                items.Add(ContextMenuItem.Create("Open Link in New Tab", () => onOpenInNewTab?.Invoke(hit.Href)));
+                items.Add(ContextMenuItem.Create("Copy Link Address", () => onCopyLink?.Invoke(hit.Href)));
+                items.Add(ContextMenuItem.Separator());
+            }
+
+            // Image Actions
+            if (hit.TagName?.ToLowerInvariant() == "img")
+            {
+                items.Add(ContextMenuItem.Create("Open Image in New Tab", () => 
+                {
+                    // TODO: Get image src from hit result
+                    FenBrowser.Core.FenLogger.Info("[ContextMenu] Open Image in New Tab requested", FenBrowser.Core.Logging.LogCategory.General);
+                }));
+                items.Add(ContextMenuItem.Create("Save Image As...", () => 
+                {
+                    FenBrowser.Core.FenLogger.Info("[ContextMenu] Save Image As... requested", FenBrowser.Core.Logging.LogCategory.General);
+                }));
+                items.Add(ContextMenuItem.Create("Copy Image", () => 
+                {
+                    FenBrowser.Core.FenLogger.Info("[ContextMenu] Copy Image requested", FenBrowser.Core.Logging.LogCategory.General);
+                }));
+                items.Add(ContextMenuItem.Separator());
+            }
+
+            // Selection Actions
             if (hasSelection)
             {
-                items.Add(ContextMenuItem.Create("Cut", () => { /* Cut */ }, "Ctrl+X"));
+                items.Add(ContextMenuItem.Create("Copy", onCopy, "Ctrl+C"));
+                items.Add(ContextMenuItem.Separator());
             }
-            items.Add(ContextMenuItem.Create("Paste", () => onPaste?.Invoke(), "Ctrl+V", canPaste));
+            
+            if (canPaste)
+            {
+                items.Add(ContextMenuItem.Create("Paste", onPaste, "Ctrl+V"));
+            }
+
+            items.Add(ContextMenuItem.Create("Select All", onSelectAll, "Ctrl+A"));
+            
+            // Developer Tools Section
             items.Add(ContextMenuItem.Separator());
+            
+            // View Page Source (opens in new tab with view-source: protocol)
+            items.Add(ContextMenuItem.Create("View Page Source", () => 
+            {
+                System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ContextMenuBuilder] ViewPageSource: currentUrl='{currentUrl}' onViewPageSource={(onViewPageSource != null ? "set" : "null")}\r\n");
+                if (!string.IsNullOrEmpty(currentUrl) && onViewPageSource != null)
+                {
+                    var viewSourceUrl = $"view-source:{currentUrl}";
+                    System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ContextMenuBuilder] Calling onViewPageSource with: '{viewSourceUrl}'\r\n");
+                    onViewPageSource(viewSourceUrl);
+                }
+                else
+                {
+                    System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ContextMenuBuilder] ViewPageSource SKIPPED - currentUrl empty or callback null\r\n");
+                }
+            }, "Ctrl+U"));
+            
+            // Inspect Element (shows element details)
+            items.Add(ContextMenuItem.Create("Inspect", () => 
+            {
+                System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ContextMenuBuilder] Inspect: hit.TagName='{hit.TagName}' onInspectElement={(onInspectElement != null ? "set" : "null")}\r\n");
+                onInspectElement?.Invoke(hit);
+            }, "Ctrl+Shift+I"));
+
+
+            return items;
         }
-        
-        // Select all (always available)
-        items.Add(ContextMenuItem.Create("Select All", () => onSelectAll?.Invoke(), "Ctrl+A"));
-        
-        // Page context (always available)
-        items.Add(ContextMenuItem.Separator());
-        
-        items.Add(ContextMenuItem.Create("Back", () => onBack?.Invoke(), "Alt+←"));
-        items.Add(ContextMenuItem.Create("Forward", () => onForward?.Invoke(), "Alt+→"));
-        items.Add(ContextMenuItem.Create("Reload", () => onReload?.Invoke(), "Ctrl+R"));
-        
-        items.Add(ContextMenuItem.Separator());
-        items.Add(ContextMenuItem.Create("View Page Source", () => { /* View source */ }, "Ctrl+U"));
-        items.Add(ContextMenuItem.Create("Inspect Element", () => { /* Open dev tools */ }, "Ctrl+Shift+I"));
-        
-        // Remove trailing separator if present
-        while (items.Count > 0 && items[items.Count - 1].IsSeparator)
-        {
-            items.RemoveAt(items.Count - 1);
-        }
-        
-        // Remove leading separator if present
-        while (items.Count > 0 && items[0].IsSeparator)
-        {
-            items.RemoveAt(0);
-        }
-        
-        return items;
-    }
-    
-    /// <summary>
-    /// Build a minimal context menu for empty areas.
-    /// </summary>
-    public static List<ContextMenuItem> BuildDefault(
-        Action onReload = null,
-        Action onBack = null,
-        Action onForward = null)
-    {
-        return new List<ContextMenuItem>
-        {
-            ContextMenuItem.Create("Back", () => onBack?.Invoke(), "Alt+←"),
-            ContextMenuItem.Create("Forward", () => onForward?.Invoke(), "Alt+→"),
-            ContextMenuItem.Create("Reload", () => onReload?.Invoke(), "Ctrl+R"),
-            ContextMenuItem.Separator(),
-            ContextMenuItem.Create("View Page Source", () => { }, "Ctrl+U")
-        };
     }
 }
