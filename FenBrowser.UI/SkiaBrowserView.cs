@@ -21,6 +21,7 @@ namespace FenBrowser.UI
         private Element _root;
         private Dictionary<Node, CssComputed> _styles;
         private SkiaDomRenderer _renderer;
+        private Element _lastHoveredElement;
         
         // Properties
         public string BaseUrl { get; set; }
@@ -33,6 +34,10 @@ namespace FenBrowser.UI
                 if (_layoutViewport != value)
                 {
                     _layoutViewport = value;
+                    // Sync control size with layout viewport to ensure hit testing works across the entire area
+                    // and the ScrollViewer parent knows the content bounds.
+                    Width = value.Width;
+                    Height = value.Height;
                     Dispatcher.UIThread.Post(InvalidateVisual, DispatcherPriority.Render);
                 }
             }
@@ -45,6 +50,7 @@ namespace FenBrowser.UI
         {
             _renderer = new SkiaDomRenderer();
             ClipToBounds = true;
+            Focusable = true; // Required to receive pointer events
         }
 
         public void Render(Element root, Dictionary<Node, CssComputed> styles)
@@ -60,13 +66,14 @@ namespace FenBrowser.UI
             
             if (_root == null || _styles == null)
             {
-                // Draw placeholder or clear
-                context.DrawRectangle(Brushes.White, null, new Rect(Bounds.Size));
+                // Keep the white background as placeholder if no content
                 return;
             }
 
             var customDraw = new BrowserDrawCheckOperation(new Rect(Bounds.Size), _renderer, _root, _styles, BaseUrl, LayoutViewport);
             context.Custom(customDraw);
+            
+            FenLogger.Debug($"[SkiaBrowserView] Render complete. Bounds={Bounds}", LogCategory.General);
         }
         
         // Input handling
@@ -75,28 +82,46 @@ namespace FenBrowser.UI
             base.OnPointerPressed(e);
             
             var point = e.GetPosition(this);
-            // Simple hit test wrapper for link clicking
-            // Real interaction should go through BrowserApi/InputManager, but this shortcuts for UI layer
-             
-             // Convert to document coordinates? Renderer handles this logic usually or we need to bridge it.
-             // For now, let's just trigger a generic click if needed or rely on MainWindow logic.
-             // MainWindow uses WebDriverIntegration or direct access.
-             // But we need to define LinkInternalClicked logic.
-             
-             // Since _renderer.HitTest is available, we can use it.
-             // But _renderer is stateful and updated during Render.
+            FenLogger.Debug($"[SkiaBrowserView] OnPointerPressed at ({point.X:F1}, {point.Y:F1})", LogCategory.General);
              
              if (_renderer.HitTest((float)point.X, (float)point.Y, out var result))
              {
+                 FenLogger.Debug($"[SkiaBrowserView] HitTest SUCCESS: Element='{result.TagName}', Href='{result.Href ?? "null"}', IsClickable={result.IsClickable}, Box={result.BoundingBox}", LogCategory.General);
+                 
                  if (!string.IsNullOrEmpty(result.Href))
                  {
+                     FenLogger.Info($"[SkiaBrowserView] CLICK -> Link detected: {result.Href}", LogCategory.General);
                      LinkInternalClicked?.Invoke(this, result.Href);
                  }
-                 
-                 // Handle other clicks (inputs etc)
-                 // This requires updating the renderer state
-                 // _renderer.OnClick(result.Element); // Not available in immutable result
              }
+             else
+             {
+                 FenLogger.Debug($"[SkiaBrowserView] HitTest FAILED (no link found) at ({point.X:F1}, {point.Y:F1})", LogCategory.General);
+             }
+        }
+        
+        /// <summary>
+        /// Public method to handle click events forwarded from parent ScrollViewer.
+        /// This bypasses hit testing issues with custom-drawn controls in Avalonia.
+        /// </summary>
+        public void HandleClickFromParent(Point point)
+        {
+            FenLogger.Debug($"[SkiaBrowserView] HandleClickFromParent (Forwarded) at ({point.X:F1}, {point.Y:F1})", LogCategory.General);
+            
+            if (_renderer.HitTest((float)point.X, (float)point.Y, out var result))
+            {
+                FenLogger.Debug($"[SkiaBrowserView] FORWARD HitTest SUCCESS: Element='{result.TagName}', Href='{result.Href ?? "null"}', IsClickable={result.IsClickable}, Box={result.BoundingBox}", LogCategory.General);
+                
+                if (!string.IsNullOrEmpty(result.Href))
+                {
+                    FenLogger.Info($"[SkiaBrowserView] FORWARD CLICK -> Link detected: {result.Href}", LogCategory.General);
+                    LinkInternalClicked?.Invoke(this, result.Href);
+                }
+            }
+            else
+            {
+                FenLogger.Debug($"[SkiaBrowserView] FORWARD HitTest FAILED (no link found) at ({point.X:F1}, {point.Y:F1})", LogCategory.General);
+            }
         }
         
         protected override void OnPointerMoved(Avalonia.Input.PointerEventArgs e)
@@ -116,12 +141,23 @@ namespace FenBrowser.UI
                     Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Arrow);
                 }
                 
-                // _renderer.OnHover(result.Element); // Not available
+                var element = result.NativeElement as Element;
+                if (element != _lastHoveredElement)
+                {
+                    _renderer.OnHover(element, _lastHoveredElement);
+                    _lastHoveredElement = element;
+                    Dispatcher.UIThread.Post(InvalidateVisual, DispatcherPriority.Render);
+                }
             }
             else
             {
                 Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Arrow);
-                 _renderer.OnHover(null);
+                if (_lastHoveredElement != null)
+                {
+                    _renderer.OnHover(null, _lastHoveredElement);
+                    _lastHoveredElement = null;
+                    Dispatcher.UIThread.Post(InvalidateVisual, DispatcherPriority.Render);
+                }
             }
         }
 
@@ -165,7 +201,7 @@ namespace FenBrowser.UI
                  SKRect paintViewport = new SKRect(0, 0, (float)Bounds.Width, (float)Bounds.Height);
                  SKSize? layoutSize = _layoutViewport.Width > 0 ? _layoutViewport : (SKSize?)null;
 
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[BrowserDrawCheckOperation] Invoking _renderer.Render. Viewport={paintViewport} LayoutSize={layoutSize}\r\n"); } catch {}
+                FenLogger.Debug($"[BrowserDrawCheckOperation] Invoking _renderer.Render. Viewport={paintViewport} LayoutSize={layoutSize}", LogCategory.General);
                 _renderer.Render(_root, canvas, _styles, paintViewport, _baseUrl, null, layoutSize);
             }
         }

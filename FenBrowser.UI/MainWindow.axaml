@@ -421,7 +421,7 @@
 					<!-- Web content rendered by Skia -->
                     <Border Background="Transparent" ClipToBounds="True">
 						<ScrollViewer x:Name="SkiaScrollViewer" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
-                            <local:SkiaBrowserView x:Name="SkiaView" />
+                            <local:SkiaBrowserView x:Name="SkiaView" IsHitTestVisible="True" />
                         </ScrollViewer>
                     </Border>
 					
@@ -433,7 +433,7 @@
 				
 				<GridSplitter Grid.Row="1" Height="4" Background="{DynamicResource BorderBrush}" ResizeDirection="Rows" HorizontalAlignment="Stretch" IsVisible="{Binding #DevToolsContainer.IsVisible}"/>
 				
-				<Border x:Name="DevToolsContainer" Grid.Row="2" Background="{DynamicResource WindowBackgroundBrush}" Height="0" IsVisible="False">
+				<Border x:Name="DevToolsContainer" Grid.Row="2" Background="{DynamicResource WindowBackgroundBrush}" IsVisible="False">
 					<!-- DevToolsView will be injected here -->
 				</Border>
 			</Grid>
