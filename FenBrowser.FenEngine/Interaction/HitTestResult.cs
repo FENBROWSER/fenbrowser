@@ -54,7 +54,18 @@ public readonly record struct HitTestResult(
     /// <summary>
     /// Text content preview (first N chars). For status bar display.
     /// </summary>
-    string? TextPreview = null
+    string? TextPreview = null,
+    
+    /// <summary>
+    /// The actual native element that was hit. 
+    /// Used for internal state updates (hover, focus).
+    /// </summary>
+    object? NativeElement = null,
+    
+    /// <summary>
+    /// The bounding box of the hit element in local coordinates.
+    /// </summary>
+    SkiaSharp.SKRect? BoundingBox = null
 )
 {
     /// <summary>
