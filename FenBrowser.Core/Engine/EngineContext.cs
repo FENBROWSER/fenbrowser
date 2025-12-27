@@ -48,13 +48,21 @@ namespace FenBrowser.Core.Engine
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void BeginPhase(EnginePhase phase)
         {
+            // STRICT MICROTASK SAFETY:
+            if (phase == EnginePhase.Microtasks && _currentPhase == EnginePhase.Microtasks)
+            {
+                 throw new InvalidOperationException("[EngineContext] VIOLATION: Recursive entry into Microtasks phase is forbidden!");
+            }
+
             ValidatePhaseTransition(_currentPhase, phase);
             _currentPhase = phase;
             _passIndex = 0;
             
             #if DEBUG
-            System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
+             try {
+                System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
                 $"[EngineContext] Phase transition: {_currentPhase} → {phase}\r\n");
+             } catch {}
             #endif
         }
         
