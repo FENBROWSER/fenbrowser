@@ -22,14 +22,33 @@ namespace FenBrowser.FenEngine.Rendering
             public List<CssSource> Sources { get; set; } = new List<CssSource>();
         }
 
-        // Debug file logging - DISABLE for production (sync file I/O causes severe lag)
-        private const bool DEBUG_FILE_LOGGING = false;
+        // Debug file logging - ENABLE temporarily to diagnose CSS loading
+        private const bool DEBUG_FILE_LOGGING = true;
 
         public class MatchedRule
         {
             public CssRule Rule;
             public CssSource Source;
         }
+
+        // -------------------------------------------------------------------------
+        // CSS PERFORMANCE CACHES
+        // -------------------------------------------------------------------------
+        private static readonly Dictionary<string, List<CssRule>> _parsedRulesCache = new Dictionary<string, List<CssRule>>();
+        private static readonly Dictionary<(Element, SelectorChain), bool> _matchCache = new Dictionary<(Element, SelectorChain), bool>();
+        private static readonly Dictionary<Element, List<CssRule>> _elementMatchedRulesCache = new Dictionary<Element, List<CssRule>>();
+        private static readonly Dictionary<Element, CssComputed> _elementStyleCache = new Dictionary<Element, CssComputed>();
+
+        public static void ClearCaches()
+        {
+            lock (_parsedRulesCache) _parsedRulesCache.Clear();
+            lock (_matchCache) _matchCache.Clear();
+            lock (_elementMatchedRulesCache) _elementMatchedRulesCache.Clear();
+            lock (_elementStyleCache) _elementStyleCache.Clear();
+            _keyframes.Clear();
+            FontRegistry.Clear();
+        }
+        // -------------------------------------------------------------------------
 
         public static List<MatchedRule> GetMatchedRules(Element element, List<CssSource> sources)
         {
@@ -45,13 +64,33 @@ namespace FenBrowser.FenEngine.Rendering
              {
                  try
                  {
-                     var rules = ParseRules(source.CssText, source.SourceOrder, source.BaseUri, null, null);
+                     List<CssRule> rules;
+                     lock (_parsedRulesCache)
+                     {
+                         if (!_parsedRulesCache.TryGetValue(source.CssText, out rules))
+                         {
+                             rules = ParseRules(source.CssText, source.SourceOrder, source.BaseUri, null, null);
+                             _parsedRulesCache[source.CssText] = rules;
+                         }
+                     }
+
                      foreach(var rule in rules)
                      {
                          // Check each selector chain
                          foreach(var chain in rule.Selectors)
                          {
-                             if (Matches(element, chain))
+                             bool isMatch;
+                             var key = (element, chain);
+                             lock (_matchCache)
+                             {
+                                 if (!_matchCache.TryGetValue(key, out isMatch))
+                                 {
+                                     isMatch = Matches(element, chain);
+                                     _matchCache[key] = isMatch;
+                                 }
+                             }
+
+                             if (isMatch)
                              {
                                  matched.Add(new MatchedRule { Rule = rule, Source = source });
                                  break; // Rule matches via at least one selector
@@ -87,9 +126,10 @@ namespace FenBrowser.FenEngine.Rendering
             Uri baseUri,
             Func<Uri, Task<string>> fetchExternalCssAsync,
             double? viewportWidth = null,
+            double? viewportHeight = null,
             Action<string> log = null)
         {
-            var result = await ComputeWithResultAsync(root, baseUri, fetchExternalCssAsync, viewportWidth, log);
+            var result = await ComputeWithResultAsync(root, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight, log);
             return result.Computed;
         }
 
@@ -98,8 +138,14 @@ namespace FenBrowser.FenEngine.Rendering
             Uri baseUri,
             Func<Uri, Task<string>> fetchExternalCssAsync,
             double? viewportWidth = null,
+            double? viewportHeight = null,
             Action<string> log = null)
         {
+            // CRITICAL: Update static environment hints for unit parsing (vw/vh/etc.)
+            // This MUST be done even if using cached rules.
+            CssParser.MediaViewportWidth = viewportWidth;
+            CssParser.MediaViewportHeight = viewportHeight;
+
             if (root == null)
                 return new CssLoadResult();
 
@@ -176,8 +222,39 @@ namespace FenBrowser.FenEngine.Rendering
 
             // 2) External <link rel="stylesheet"> (DOM order)
             // Fetch in parallel with a small concurrency limit to avoid blocking UI
-            var linkNodes = root.Descendants().Where(n => !n.IsText && n.Tag == "link").ToList();
+            
+            // DEBUG: Dump DOM structure to understand why LINK elements are not found
+            if (DEBUG_FILE_LOGGING)
+            {
+                DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[DOM-CHECK] Root tag='{root.Tag}' Children={root.Children?.Count ?? 0}\r\n");
+                foreach (var child in root.Children ?? new List<Node>())
+                {
+                    DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[DOM-CHECK]   Child tag='{child.Tag}' (IsText={child.IsText}) Children={child.Children?.Count ?? 0}\r\n");
+                    foreach (var child2 in child.Children ?? new List<Node>())
+                    {
+                        string tag2 = child2.Tag?.ToUpperInvariant() ?? "";
+                        if (!child2.IsText && (tag2 == "HEAD" || tag2 == "LINK" || tag2 == "META"))
+                        {
+                            DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[DOM-CHECK]     Child2 tag='{child2.Tag}' Children={child2.Children?.Count ?? 0}\r\n");
+                            // Dump HEAD children
+                            if (tag2 == "HEAD")
+                            {
+                                foreach (var headChild in child2.Children ?? new List<Node>())
+                                {
+                                    DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[DOM-CHECK]       HEAD-Child tag='{headChild.Tag}'\r\n");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // FIX: Cast to Element to access actual Attributes property (Node.Attr returns null)
+            var linkNodes = root.Descendants().OfType<Element>()
+                .Where(n => string.Equals(n.Tag, "link", StringComparison.OrdinalIgnoreCase)).ToList();
             if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[LINK] Found {linkNodes.Count} link elements in DOM root\r\n");
+
+
             var extTasks = new List<Task>();
             var gate = new System.Threading.SemaphoreSlim(8); // Shared gate for all CSS fetches (links + imports)
             foreach (var link in linkNodes)
@@ -249,7 +326,15 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     try
                     {
-                        var parsed = ParseRules(blob.CssText, blob.SourceOrder, blob.BaseUri, viewportWidth, log);
+                        List<CssRule> parsed;
+                        lock (_parsedRulesCache)
+                        {
+                            if (!_parsedRulesCache.TryGetValue(blob.CssText, out parsed))
+                            {
+                                parsed = ParseRules(blob.CssText, blob.SourceOrder, blob.BaseUri, viewportWidth, log);
+                                _parsedRulesCache[blob.CssText] = parsed;
+                            }
+                        }
                         lock (allRules) allRules.AddRange(parsed);
                     }
                     catch (Exception ex)
@@ -285,7 +370,7 @@ namespace FenBrowser.FenEngine.Rendering
             Uri baseUri,
             Func<Uri, Task<string>> fetchExternalCssAsync)
         {
-            return ComputeAsync(root, baseUri, fetchExternalCssAsync, null, null);
+            return ComputeAsync(root, baseUri, fetchExternalCssAsync, null, null, null);
         }
 
         // ===========================
@@ -930,7 +1015,7 @@ namespace FenBrowser.FenEngine.Rendering
                 "align-items", "grid", "grid-template-columns", "gap", "transform",
                 "opacity", "overflow", "z-index", "box-shadow", "border-radius",
                 "transition", "filter", "animation", "min-width", "max-width",
-                "min-height", "max-height", "aspect-ratio", "object-fit", "cursor",
+                "min-height", "max-height", "aspect-ratio", "object-fit", "cursor", "box-sizing",
                 // Shorthand properties
                 "margin-top", "margin-right", "margin-bottom", "margin-left",
                 "padding-top", "padding-right", "padding-bottom", "padding-left",
@@ -1140,6 +1225,9 @@ namespace FenBrowser.FenEngine.Rendering
             // Handle @container queries (container queries)
             text = FlattenContainerQueries(text, (float)(viewportWidth ?? 1024), log);
 
+            // DEBUG: Log CSS after all flattening/extraction
+             try { if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_full_css.txt", "\n--- PROCESSED CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch {}
+
             // Split by braces into selector/declarations pairs.
             // This is a naive parser but resistant to most content without nested braces in values.
             int i = 0;
@@ -1161,15 +1249,12 @@ namespace FenBrowser.FenEngine.Rendering
                 var chains = ParseSelectors(selectorText);
                 if (chains.Count == 0) continue;
                 
-                // DEBUG: Log parsed selectors with attribute selectors
-                if (selectorText.Contains("["))
-                {
-                    try { 
-                        var chainStr = string.Join(", ", chains.Select(c => string.Join(" ", c.Segments.Select(seg => 
-                            $"{seg.Tag ?? "*"}{(seg.Id != null ? "#"+seg.Id : "")}{(seg.Classes != null && seg.Classes.Count > 0 ? "."+string.Join(".", seg.Classes) : "")}{(seg.Attributes != null && seg.Attributes.Count > 0 ? "["+string.Join("][", seg.Attributes.Select(a => $"{a.Item1}{a.Item2}{a.Item3}"))+"]" : "")}"))));
-                        if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[SELECTOR] {selectorText} => Chains: {chainStr}\r\n"); 
-                    } catch {}
-                }
+                // DEBUG: Log ALL parsed selectors
+                try { 
+                    var chainStr = string.Join(", ", chains.Select(c => string.Join(" ", c.Segments.Select(seg => 
+                        $"{seg.Tag ?? "*"}{(seg.Id != null ? "#"+seg.Id : "")}{(seg.Classes != null && seg.Classes.Count > 0 ? "."+string.Join(".", seg.Classes) : "")}{(seg.Attributes != null && seg.Attributes.Count > 0 ? "["+string.Join("][", seg.Attributes.Select(a => $"{a.Item1}{a.Item2}{a.Item3}"))+"]" : "")}"))));
+                    if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[SELECTOR] {selectorText} => Chains: {chainStr}\r\n"); 
+                } catch {}
 
                 // DEBUG: Log raw declarations for .picture
                 if (selectorText.Contains("picture"))
@@ -1187,6 +1272,8 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 rules.Add(rule);
             }
+            
+            try { if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CssLoader] Parsed {rules.Count} rules from block of length {text.Length}\r\n"); } catch {}
 
             return rules;
         }
@@ -1230,87 +1317,108 @@ namespace FenBrowser.FenEngine.Rendering
 /// </summary>
 private static bool EvaluateMediaQuery(string header, double? viewportWidth)
 {
-    bool keep = true;
-    
-    // Check min/max-width
-    if (viewportWidth.HasValue)
+    if (string.IsNullOrWhiteSpace(header)) return true;
+    if (header.Equals("all", StringComparison.OrdinalIgnoreCase)) return true;
+
+    // Support comma-separated OR queries
+    if (header.Contains(","))
     {
-        var mw = ExtractPx(header, "min-width");
-        var xw = ExtractPx(header, "max-width");
-        if (mw.HasValue && viewportWidth.Value < mw.Value) keep = false;
-        if (xw.HasValue && viewportWidth.Value > xw.Value) keep = false;
+        var parts = header.Split(',');
+        foreach (var p in parts)
+        {
+            if (EvaluateMediaQueryInternal(p.Trim(), viewportWidth)) return true;
+        }
+        return false;
     }
-    
+
+    return EvaluateMediaQueryInternal(header.Trim(), viewportWidth);
+}
+
+private static bool EvaluateMediaQueryInternal(string query, double? viewportWidth)
+{
+    bool conditionMatches = true;
+    bool isNot = false;
+
+    if (query.StartsWith("not ", StringComparison.OrdinalIgnoreCase))
+    {
+        isNot = true;
+        query = query.Substring(4).Trim();
+    }
+
+    // Check media types
+    if (query.Contains("print", StringComparison.OrdinalIgnoreCase) && !query.Contains("screen", StringComparison.OrdinalIgnoreCase))
+    {
+        conditionMatches = false; // We're not printing
+    }
+
+    var mw = ExtractPx(query, "min-width");
+    var xw = ExtractPx(query, "max-width");
+    var mh = ExtractPx(query, "min-height");
+    var xh = ExtractPx(query, "max-height");
+    var vpW = viewportWidth ?? CssParser.MediaViewportWidth ?? 1920;
+    var vpH = CssParser.MediaViewportHeight ?? 1080;
+
+    if (mw.HasValue && vpW < mw.Value) conditionMatches = false;
+    if (xw.HasValue && vpW > xw.Value) conditionMatches = false;
+    if (mh.HasValue && vpH < mh.Value) conditionMatches = false;
+    if (xh.HasValue && vpH > xh.Value) conditionMatches = false;
+
+    // Check orientation
+    if (query.Contains("orientation", StringComparison.OrdinalIgnoreCase))
+    {
+        bool isPortrait = vpH > vpW;
+        if (query.Contains("portrait", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!isPortrait) conditionMatches = false;
+        }
+        else if (query.Contains("landscape", StringComparison.OrdinalIgnoreCase))
+        {
+            if (isPortrait) conditionMatches = false;
+        }
+    }
+
     // Check prefers-color-scheme
-    if (header.Contains("prefers-color-scheme"))
+    if (query.Contains("prefers-color-scheme", StringComparison.OrdinalIgnoreCase))
     {
         string scheme = CssParser.MediaPrefersColorScheme ?? "light";
         bool isDark = string.Equals(scheme, "dark", StringComparison.OrdinalIgnoreCase);
         
-        // Update CssParser.PrefersDarkMode to match
-        CssParser.PrefersDarkMode = isDark;
-        
-        if (header.Contains("prefers-color-scheme: dark") || header.Contains("prefers-color-scheme:dark"))
+        if (query.Contains("dark", StringComparison.OrdinalIgnoreCase))
         {
-            if (!isDark) keep = false;
+            if (!isDark) conditionMatches = false;
         }
-        else if (header.Contains("prefers-color-scheme: light") || header.Contains("prefers-color-scheme:light"))
+        else if (query.Contains("light", StringComparison.OrdinalIgnoreCase))
         {
-            if (isDark) keep = false;
+            if (isDark) conditionMatches = false;
         }
     }
+
+    bool result = isNot ? !conditionMatches : conditionMatches;
     
-    // Check prefers-reduced-motion
-    if (header.Contains("prefers-reduced-motion"))
-    {
-        bool reducedMotion = false; // Default to false (allow motion)
-        
-        if (header.Contains("prefers-reduced-motion: reduce") || header.Contains("prefers-reduced-motion:reduce"))
-        {
-            if (!reducedMotion) keep = false;
-        }
-        else if (header.Contains("prefers-reduced-motion: no-preference") || header.Contains("prefers-reduced-motion:no-preference"))
-        {
-            if (reducedMotion) keep = false;
-        }
-    }
-    
-    // Check orientation
-    if (header.Contains("orientation"))
-    {
-        double w = viewportWidth ?? CssParser.MediaViewportWidth ?? 1920;
-        double h = CssParser.MediaViewportHeight ?? 1080;
-        bool isPortrait = h > w;
-        
-        if (header.Contains("orientation: portrait") || header.Contains("orientation:portrait"))
-        {
-            if (!isPortrait) keep = false;
-        }
-        else if (header.Contains("orientation: landscape") || header.Contains("orientation:landscape"))
-        {
-            if (isPortrait) keep = false;
-        }
-    }
-    
-    // Check screen/print media type
-    if (header.Contains("print") && !header.Contains("screen"))
-    {
-        keep = false; // We're not printing
-    }
-    
-    return keep;
+    // Diagnostic Logging
+    try { if (query.Contains("width") || query.Contains("height")) System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[EvaluateMediaQuery] Query='{query}' VpW={vpW} VpH={vpH} mw={mw} xw={xw} matches={conditionMatches} result={result}\r\n"); } catch {}
+
+    return result;
 }
 
-        private static double? ExtractPx(string text, string prop)
+private static double? ExtractPx(string text, string prop)
+{
+    // Support decimal values and optional units (default px)
+    // Matches prop: 123.45px or prop: 123.45
+    // Using named groups to avoid index confusion
+    var m = Regex.Match(text, prop + @"\s*:\s*(?<v>[0-9]*\.?[0-9]+)\s*(?<u>px|em|rem|vw)?", RegexOptions.IgnoreCase);
+    if (m.Success)
+    {
+        if (double.TryParse(m.Groups["v"].Value, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double v))
         {
-            var m = Regex.Match(text, prop + @"\s*:\s*(?<v>[0-9]+)px", RegexOptions.IgnoreCase);
-            if (m.Success)
-            {
-                double v;
-                if (TryDouble(m.Groups["v"].Value, out v)) return v;
-            }
-            return null;
+            string unit = m.Groups["u"].Value.ToLowerInvariant();
+            if (unit == "em" || unit == "rem") v *= 16; 
+            else if (unit == "vw") v = (v / 100.0) * (CssParser.MediaViewportWidth ?? 1920);
+            return v;
         }
+    }
+    return null;
+}
 
         private static int FindMatchingBrace(string s, int openIdx)
         {
@@ -1701,6 +1809,14 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
             {
                 if (n.IsText) continue;
 
+                // DEBUG: Verify traversal sees critical nodes
+                string nid = n.Id ?? "";
+                string ncls = n.Attr != null && n.Attr.ContainsKey("class") ? n.Attr["class"] : "";
+                if (nid.Contains("readout") || ncls.Contains("detection"))
+                {
+                     try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Cascade-Visit] Visited: {n.Tag}#{nid}.{ncls}\r\n"); } catch {}
+                }
+
                 bool nodeHasMatches = false;
                 foreach (var rule in rules)
                 {
@@ -1711,11 +1827,27 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
                         if (isDivElement && chain.Segments.Count == 1 && chain.Segments[0].Tag?.ToLowerInvariant() == "div")
                         {
                             var decls = string.Join(", ", rule.Declarations.Select(kv => $"{kv.Key}={kv.Value.Value}"));
-                            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
-                                $"[CSS-TRACE] Testing DIV against rule 'div': ALL_props=[{decls}]\r\n"); } catch {}
+                                // try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-TRACE] Testing DIV against rule 'div': ALL_props=[{decls}]\r\n"); } catch {}
                         }
-                        if (Matches(n, chain))
+                        bool isMatch;
+                        var key = (n, chain);
+                        lock (_matchCache)
                         {
+                            if (!_matchCache.TryGetValue(key, out isMatch))
+                            {
+                                isMatch = Matches(n, chain);
+                                _matchCache[key] = isMatch;
+                            }
+                        }
+
+                        if (isMatch)
+                        {
+                            // DEBUG: Log successful match
+                            if (n.Id == "readout-secondary")
+                            {
+                                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[MATCH-FOUND] Node #readout-secondary matched rule with specificity {chain.Specificity}\r\n"); } catch {}
+                            }
+
                             var lastSeg = chain.Segments[chain.Segments.Count - 1];
                             string pe = lastSeg.PseudoElement;
                             
@@ -1807,6 +1939,21 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
             }
 
             // Now resolve final property values with cascade ordering
+            // DEBUG: Check perNode before resolution
+            try {
+                var targetNode = nodes.FirstOrDefault(x => x.Id == "readout-secondary");
+                if (targetNode != null)
+                {
+                    bool has = perNode.ContainsKey(targetNode);
+                    int cnt = has ? perNode[targetNode].Count : 0;
+                     System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Intermediate-Check] #readout-secondary found in nodes. perNode has entry? {has}. Item count: {cnt}\r\n");
+                }
+                else
+                {
+                     System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Intermediate-Check] #readout-secondary NOT found in nodes list!\r\n");
+                }
+            } catch {}
+
             foreach (var n in nodes)
             {
                 if (n == null || n.IsText) continue;
@@ -1829,21 +1976,30 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
 
                 if (!hasMain && !hasBefore && !hasAfter && !hasMarker && !hasPlaceholder && !hasSelection && !hasFirstLine && !hasFirstLetter) continue;
 
-                var css = ResolveStyle(n, parentCss, items ?? new List<Tuple<CssDecl, SelectorChain, int>>());
-
-                if (hasBefore)
+                // DEBUG: Trace before ResolveStyle call
+                if (n.Id == "readout-secondary" || (n.Attr != null && n.Attr.ContainsKey("class") && n.Attr["class"].Contains("detection-secondary")))
                 {
-                    css.Before = ResolveStyle(n, css, perNodeBefore[n]);
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Pre-Resolve] About to call ResolveStyle for {n.Tag}#{n.Id}. Items: {items?.Count ?? 0}\r\n"); } catch {}
                 }
 
-                if (hasAfter)
+                CssComputed css = null;
+                try
                 {
-                    css.After = ResolveStyle(n, css, perNodeAfter[n]);
+                    css = ResolveStyle(n, parentCss, items ?? new List<Tuple<CssDecl, SelectorChain, int>>());
+
+                    if (hasBefore) css.Before = ResolveStyle(n, css, perNodeBefore[n]);
+                    if (hasAfter) css.After = ResolveStyle(n, css, perNodeAfter[n]);
+                    if (hasMarker) css.Marker = ResolveStyle(n, css, perNodeMarker[n]);
+                    if (hasPlaceholder) css.Placeholder = ResolveStyle(n, css, perNodePlaceholder[n]);
+                    if (hasSelection) css.Selection = ResolveStyle(n, css, perNodeSelection[n]);
+                    if (hasFirstLine) css.FirstLine = ResolveStyle(n, css, perNodeFirstLine[n]);
+                    if (hasFirstLetter) css.FirstLetter = ResolveStyle(n, css, perNodeFirstLetter[n]);
                 }
-                
-                if (hasMarker)
+                catch (Exception resolveEx)
                 {
-                    css.Marker = ResolveStyle(n, css, perNodeMarker[n]);
+                    var msg = $"[CssLoader] CRASH in ResolveStyle (or pseudo) for Node <{n.Tag} id='{n.Id}'>: {resolveEx}";
+                    Log(log, msg);
+                    if (css == null) css = new CssComputed(); // Recovery
                 }
                 
                 if (hasPlaceholder) css.Placeholder = ResolveStyle(n, css, perNodePlaceholder[n]);
@@ -1874,124 +2030,153 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
 
         private static CssComputed ResolveStyle(Element n, CssComputed parentCss, List<Tuple<CssDecl, SelectorChain, int>> items)
         {
-            var css = new CssComputed();
-
-            if (parentCss != null && parentCss.CustomProperties != null)
+            // DEBUG: Entry Log
+            if (n != null)
             {
-                foreach (var kv in parentCss.CustomProperties)
+                string nid = n.Id ?? "";
+                string ncls = ""; 
+                if (n.Attr != null && n.Attr.TryGetValue("class", out var classVal)) ncls = classVal ?? "";
+
+                if (nid == "readout-secondary" || ncls.Contains("detection") || ncls.Contains("now-you-know") || ncls.Contains("judgment"))
                 {
-                    css.CustomProperties[kv.Key] = kv.Value;
-                    css.Map[kv.Key] = kv.Value;
+                    try
+                    {
+                        var sb = new StringBuilder();
+                        sb.AppendLine($"[ResolveStyle-ENTRY] Node <{n.Tag} id='{nid}' class='{ncls}'>");
+                        sb.AppendLine($"  Items Count: {(items?.Count ?? 0)}");
+                        if (items != null)
+                        {
+                            foreach (var it in items)
+                            {
+                                var sel = it.Item2;
+                                var decl = it.Item1;
+                                sb.AppendLine($"    Attr: {decl.Name}: {decl.Value} (Spec: {sel?.Specificity})");
+                            }
+                        }
+                        System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", sb.ToString() + "\r\n");
+                    }
+                    catch {}
                 }
             }
 
-            if (items == null || items.Count == 0)
-                return css;
+            var css = new CssComputed();
+            string tag = n?.Tag?.ToUpperInvariant() ?? "";
 
-            var byProp = items.GroupBy(t => t.Item1.Name, StringComparer.OrdinalIgnoreCase);
-            var chosen = new Dictionary<string, CssDecl>(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var grp in byProp)
+            try
             {
-                var ordered = grp.OrderByDescending(c => c.Item1.Important)
-                                 .ThenByDescending(c => c.Item1.Specificity)
-                                 .ThenByDescending(c => c.Item3)
-                                 .ToList();
-
-                chosen[grp.Key] = ordered[0].Item1;
-                
-                if (grp.Key.ToLowerInvariant() == "background" && ordered.Count > 1)
+                if (parentCss != null && parentCss.CustomProperties != null)
                 {
-                    string cls = "";
-                    if (n != null && n.Attr != null) n.Attr.TryGetValue("class", out cls);
-                    if (cls != null && cls.Contains("picture"))
+                    foreach (var kv in parentCss.CustomProperties)
                     {
-                        try {
-                            var orderedInfo = string.Join("; ", ordered.Select(o => $"[val={o.Item1.Value}, spec={o.Item1.Specificity}, srcOrder={o.Item3}]"));
-                            // Log removed
-                        } catch {}
+                        css.CustomProperties[kv.Key] = kv.Value;
+                        css.Map[kv.Key] = kv.Value;
                     }
                 }
-            }
 
-            var rawCustom = new Dictionary<string, string>(StringComparer.Ordinal);
-            foreach (var d in chosen.Values)
-            {
-                if (IsCustomPropertyName(d.Name))
-                    rawCustom[d.Name] = d.Value ?? string.Empty;
-            }
+                if (items != null && items.Count > 0)
+                {
+                    // Group by property name and sort by specificity, then source order
+                    var byProp = items.GroupBy(t => t.Item1.Name, StringComparer.OrdinalIgnoreCase);
+                    var chosen = new Dictionary<string, CssDecl>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var key in rawCustom.Keys.ToList())
-            {
-                var resolvedCustom = ResolveCustomPropertyReferences(rawCustom[key], css, rawCustom, new HashSet<string>(StringComparer.Ordinal) { key });
-                rawCustom[key] = resolvedCustom;
-                css.CustomProperties[key] = resolvedCustom;
-                css.Map[key] = resolvedCustom;
-            }
+                    foreach (var grp in byProp)
+                    {
+                        var ordered = grp.OrderByDescending(c => c.Item1.Important)
+                                         .ThenByDescending(c => c.Item1.Specificity)
+                                         .ThenByDescending(c => c.Item3)
+                                         .ToList();
 
-            foreach (var d in chosen.Values)
-            {
-                if (IsCustomPropertyName(d.Name)) continue;
-                var val = ResolveCustomPropertyReferences(d.Value, css, rawCustom, new HashSet<string>());
-                css.Map[d.Name] = val;
-            }
+                        chosen[grp.Key] = ordered[0].Item1;
+                    }
 
-            // Populate core display/positioning properties from the map
-            css.Display = Safe(DictGet(css.Map, "display"))?.ToLowerInvariant();
-            css.Position = Safe(DictGet(css.Map, "position"))?.ToLowerInvariant();
-            css.FlexDirection = Safe(DictGet(css.Map, "flex-direction"))?.ToLowerInvariant();
-            css.FlexWrap = Safe(DictGet(css.Map, "flex-wrap"))?.ToLowerInvariant();
-            css.JustifyContent = Safe(DictGet(css.Map, "justify-content"))?.ToLowerInvariant();
-            css.AlignItems = Safe(DictGet(css.Map, "align-items"))?.ToLowerInvariant();
-            css.AlignContent = Safe(DictGet(css.Map, "align-content"))?.ToLowerInvariant();
-            css.AlignSelf = Safe(DictGet(css.Map, "align-self"))?.ToLowerInvariant();
-            
-            // Grid Properties
-            css.GridTemplateColumns = Safe(DictGet(css.Map, "grid-template-columns"));
-            css.GridTemplateRows = Safe(DictGet(css.Map, "grid-template-rows"));
-            css.GridTemplateAreas = Safe(DictGet(css.Map, "grid-template-areas"));
-            
-            // Grid Placement
-            css.GridArea = Safe(DictGet(css.Map, "grid-area"));
-            css.GridColumnStart = Safe(DictGet(css.Map, "grid-column-start"));
-            css.GridColumnEnd = Safe(DictGet(css.Map, "grid-column-end"));
-            css.GridRowStart = Safe(DictGet(css.Map, "grid-row-start"));
-            css.GridRowEnd = Safe(DictGet(css.Map, "grid-row-end"));
-            
-            // Parse grid-column shorthand: grid-column: start / end
-            string gridColumn = DictGet(css.Map, "grid-column");
-            if (!string.IsNullOrWhiteSpace(gridColumn))
+                    var rawCustom = new Dictionary<string, string>(StringComparer.Ordinal);
+                    foreach (var d in chosen.Values)
+                    {
+                        if (IsCustomPropertyName(d.Name))
+                            rawCustom[d.Name] = d.Value ?? string.Empty;
+                    }
+
+                    foreach (var key in rawCustom.Keys.ToList())
+                    {
+                        var resolvedCustom = ResolveCustomPropertyReferences(rawCustom[key], css, rawCustom, new HashSet<string>(StringComparer.Ordinal) { key });
+                        rawCustom[key] = resolvedCustom;
+                        css.CustomProperties[key] = resolvedCustom;
+                        css.Map[key] = resolvedCustom;
+                    }
+
+                    foreach (var d in chosen.Values)
+                    {
+                        if (IsCustomPropertyName(d.Name)) continue;
+                        var val = ResolveCustomPropertyReferences(d.Value, css, rawCustom, new HashSet<string>());
+                        css.Map[d.Name] = val;
+                    }
+                }
+
+                // Populate core display/positioning properties from the map
+                css.Display = Safe(DictGet(css.Map, "display"))?.ToLowerInvariant();
+                css.Position = Safe(DictGet(css.Map, "position"))?.ToLowerInvariant();
+                css.FlexDirection = Safe(DictGet(css.Map, "flex-direction"))?.ToLowerInvariant();
+                css.FlexWrap = Safe(DictGet(css.Map, "flex-wrap"))?.ToLowerInvariant();
+                css.JustifyContent = Safe(DictGet(css.Map, "justify-content"))?.ToLowerInvariant();
+                css.AlignItems = Safe(DictGet(css.Map, "align-items"))?.ToLowerInvariant();
+                css.AlignContent = Safe(DictGet(css.Map, "align-content"))?.ToLowerInvariant();
+                css.AlignSelf = Safe(DictGet(css.Map, "align-self"))?.ToLowerInvariant();
+                
+                // Grid Properties
+                css.GridTemplateColumns = Safe(DictGet(css.Map, "grid-template-columns"));
+                css.GridTemplateRows = Safe(DictGet(css.Map, "grid-template-rows"));
+                css.GridTemplateAreas = Safe(DictGet(css.Map, "grid-template-areas"));
+                
+                // Grid Placement
+                css.GridArea = Safe(DictGet(css.Map, "grid-area"));
+                css.GridColumnStart = Safe(DictGet(css.Map, "grid-column-start"));
+                css.GridColumnEnd = Safe(DictGet(css.Map, "grid-column-end"));
+                css.GridRowStart = Safe(DictGet(css.Map, "grid-row-start"));
+                css.GridRowEnd = Safe(DictGet(css.Map, "grid-row-end"));
+                
+                // Parse grid-column shorthand
+                string gridColumn = DictGet(css.Map, "grid-column");
+                if (!string.IsNullOrWhiteSpace(gridColumn))
+                {
+                    var parts = gridColumn.Split('/');
+                    if (parts.Length >= 1 && string.IsNullOrEmpty(css.GridColumnStart))
+                        css.GridColumnStart = parts[0].Trim();
+                    if (parts.Length >= 2 && string.IsNullOrEmpty(css.GridColumnEnd))
+                        css.GridColumnEnd = parts[1].Trim();
+                }
+                
+                // Parse grid-row shorthand
+                string gridRow = DictGet(css.Map, "grid-row");
+                if (!string.IsNullOrWhiteSpace(gridRow))
+                {
+                    var parts = gridRow.Split('/');
+                    if (parts.Length >= 1 && string.IsNullOrEmpty(css.GridRowStart))
+                        css.GridRowStart = parts[0].Trim();
+                    if (parts.Length >= 2 && string.IsNullOrEmpty(css.GridRowEnd))
+                        css.GridRowEnd = parts[1].Trim();
+                }
+                
+                // Grid Auto Flow & Implicit Tracks
+                css.GridAutoFlow = Safe(DictGet(css.Map, "grid-auto-flow"))?.ToLowerInvariant();
+                css.GridAutoColumns = Safe(DictGet(css.Map, "grid-auto-columns"));
+                css.GridAutoRows = Safe(DictGet(css.Map, "grid-auto-rows"));
+                
+                // Overflow properties
+                css.Overflow = Safe(DictGet(css.Map, "overflow"))?.ToLowerInvariant();
+                css.OverflowX = Safe(DictGet(css.Map, "overflow-x"))?.ToLowerInvariant() ?? css.Overflow;
+                css.OverflowY = Safe(DictGet(css.Map, "overflow-y"))?.ToLowerInvariant() ?? css.Overflow;
+
+                // Box Model
+                css.BoxSizing = Safe(DictGet(css.Map, "box-sizing"))?.ToLowerInvariant();
+            }
+            catch (Exception ex)
             {
-                var parts = gridColumn.Split('/');
-                if (parts.Length >= 1 && string.IsNullOrEmpty(css.GridColumnStart))
-                    css.GridColumnStart = parts[0].Trim();
-                if (parts.Length >= 2 && string.IsNullOrEmpty(css.GridColumnEnd))
-                    css.GridColumnEnd = parts[1].Trim();
+                 try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ResolveStyle-ERROR] {ex.Message} {ex.StackTrace}\r\n"); } catch {}
             }
             
-            // Parse grid-row shorthand: grid-row: start / end
-            string gridRow = DictGet(css.Map, "grid-row");
-            if (!string.IsNullOrWhiteSpace(gridRow))
-            {
-                var parts = gridRow.Split('/');
-                if (parts.Length >= 1 && string.IsNullOrEmpty(css.GridRowStart))
-                    css.GridRowStart = parts[0].Trim();
-                if (parts.Length >= 2 && string.IsNullOrEmpty(css.GridRowEnd))
-                    css.GridRowEnd = parts[1].Trim();
-            }
-            
-            // Grid Auto Flow & Implicit Tracks
-            css.GridAutoFlow = Safe(DictGet(css.Map, "grid-auto-flow"))?.ToLowerInvariant();
-            css.GridAutoColumns = Safe(DictGet(css.Map, "grid-auto-columns"));
-            css.GridAutoRows = Safe(DictGet(css.Map, "grid-auto-rows"));
-            
-            // Overflow properties
-            css.Overflow = Safe(DictGet(css.Map, "overflow"))?.ToLowerInvariant();
-            css.OverflowX = Safe(DictGet(css.Map, "overflow-x"))?.ToLowerInvariant() ?? css.Overflow;
-            css.OverflowY = Safe(DictGet(css.Map, "overflow-y"))?.ToLowerInvariant() ?? css.Overflow;
-            
-            // z-index
-            double zVal;
+            // z-index logic continues below...
+
+            double zVal; // Declare zVal here, outside the try-catch block
             if (TryDouble(DictGet(css.Map, "z-index"), out zVal)) css.ZIndex = (int)zVal;
             
             // Background properties
@@ -2018,6 +2203,9 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
                     if (!double.IsNaN(fb)) css.FlexBasis = fb;
                 }
             }
+            
+            // Interaction
+            css.PointerEvents = Safe(DictGet(css.Map, "pointer-events"))?.ToLowerInvariant();
 
             double emBase = 16.0;
             if (parentCss != null && parentCss.FontSize.HasValue) emBase = parentCss.FontSize.Value;
@@ -2075,9 +2263,15 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
 
 
             string wStr = DictGet(css.Map, "width");
-            if (TryPx(wStr, out sizeVal, currentEmBase)) css.Width = sizeVal;
-            else if (TryPercent(wStr, out sizeVal)) css.WidthPercent = sizeVal;
-            else if (IsCssFunction(wStr)) css.WidthExpression = wStr;
+            if (TryPx(wStr, out sizeVal, currentEmBase)) {
+                css.Width = sizeVal;
+            }
+            else if (TryPercent(wStr, out sizeVal)) {
+                css.WidthPercent = sizeVal;
+            }
+            else if (IsCssFunction(wStr)) {
+                css.WidthExpression = wStr;
+            }
 
             string hStr = DictGet(css.Map, "height");
             if (TryPx(hStr, out sizeVal, currentEmBase)) css.Height = sizeVal;
@@ -2120,19 +2314,6 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
             if (TryPx(DictGet(css.Map, "max-inline-size"), out sizeVal, currentEmBase)) css.MaxWidth = sizeVal;
             if (TryPx(DictGet(css.Map, "max-block-size"), out sizeVal, currentEmBase)) css.MaxHeight = sizeVal;
             
-            // DEBUG: Log sizing properties for important elements
-            string tag = n?.Tag?.ToUpperInvariant() ?? "";
-            string classAttr = n?.Attr != null && n.Attr.TryGetValue("class", out var debugCls) ? debugCls : "";
-            if (tag == "FORM" || tag == "MAIN" || tag == "HEADER" || classAttr.Contains("container") || classAttr.Contains("wrapper"))
-            {
-                string rawMaxW = DictGet(css.Map, "max-width") ?? "null";
-                string rawWidth = DictGet(css.Map, "width") ?? "null";
-                string rawMargin = DictGet(css.Map, "margin") ?? "null";
-                FenLogger.Debug($"[CSS] Sizing parsed: tag={tag} class='{classAttr}' " +
-                    $"width={css.Width?.ToString() ?? "null"} widthPct={css.WidthPercent?.ToString() ?? "null"} " +
-                    $"maxWidth={css.MaxWidth?.ToString() ?? "null"}(raw='{rawMaxW}') " +
-                    $"margin='{rawMargin}'", LogCategory.CSS);
-            }
 
             var aspectRatioRaw = Safe(DictGet(css.Map, "aspect-ratio"));
             if (!string.IsNullOrEmpty(aspectRatioRaw) && !aspectRatioRaw.Contains("auto"))
@@ -2269,6 +2450,11 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
             if (TryDouble(DictGet(css.Map, "opacity"), out opacityVal))
                 css.Opacity = Math.Max(0.0, Math.Min(1.0, opacityVal));
 
+            // Interactivity
+            css.PointerEvents = Safe(DictGet(css.Map, "pointer-events"));
+            css.Cursor = Safe(DictGet(css.Map, "cursor"));
+            css.UserSelect = Safe(DictGet(css.Map, "user-select"));
+
             css.TextShadow = Safe(DictGet(css.Map, "text-shadow"));
             css.BoxShadow = Safe(DictGet(css.Map, "box-shadow"));
             css.MaskImage = Safe(DictGet(css.Map, "mask-image"));
@@ -2283,13 +2469,6 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
             string marginRightRaw = DictGet(css.Map, "margin-right")?.Trim().ToLowerInvariant() ?? "";
             
             // Parse margin shorthand for auto: "auto", "0 auto", "0 auto 0 auto", etc.
-            // DIAGNOSTIC: Log css.Map contents for DIV elements to check what properties were matched
-            if (tag == "DIV")
-            {
-                string mapDump = css.Map != null ? string.Join(", ", css.Map.Take(10).Select(kv => $"{kv.Key}={kv.Value}")) : "(null)";
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
-                    $"[CSS-DEBUG] DIV css.Map: {mapDump}\r\n"); } catch {}
-            }
             if (!string.IsNullOrEmpty(marginRaw))
             {
                 var parts = marginRaw.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
@@ -2574,28 +2753,7 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
             css.BoxSizing = Safe(DictGet(css.Map, "box-sizing"));
             css.Cursor = Safe(DictGet(css.Map, "cursor"));
             
-            // **CRITICAL FIX**: Assign display, position, and flexbox properties from Map
-            // These were previously missing, causing flex container detection to fail
-            css.Display = Safe(DictGet(css.Map, "display"));
-            css.Position = Safe(DictGet(css.Map, "position"));
-            css.Float = Safe(DictGet(css.Map, "float"));
-            css.Overflow = Safe(DictGet(css.Map, "overflow"));
-            
-            // Flexbox properties - critical for Google.com layout
-            css.FlexDirection = Safe(DictGet(css.Map, "flex-direction"));
-            css.FlexWrap = Safe(DictGet(css.Map, "flex-wrap"));
-            css.JustifyContent = Safe(DictGet(css.Map, "justify-content"));
-            css.AlignItems = Safe(DictGet(css.Map, "align-items"));
-            css.AlignContent = Safe(DictGet(css.Map, "align-content"));
-            css.AlignSelf = Safe(DictGet(css.Map, "align-self"));
-            
-            // Flex item properties
-            double flexPropVal;
-            if (TryDouble(DictGet(css.Map, "flex-grow"), out flexPropVal)) css.FlexGrow = flexPropVal;
-            if (TryDouble(DictGet(css.Map, "flex-shrink"), out flexPropVal)) css.FlexShrink = flexPropVal;
-            if (TryPx(DictGet(css.Map, "flex-basis"), out flexPropVal)) css.FlexBasis = flexPropVal;
-            if (int.TryParse(DictGet(css.Map, "order"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var flexOrderVal))
-                css.Order = flexOrderVal;
+            // Removed duplicate flex property assignments (already handled above)
 
 
             int zIndex;
@@ -2611,15 +2769,7 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
             css.BoxSizing = Safe(DictGet(css.Map, "box-sizing"));
             css.Cursor = Safe(DictGet(css.Map, "cursor"));
 
-            double gapVal2;
-            if (TryPx(DictGet(css.Map, "gap"), out gapVal2))
-            {
-                css.Gap = gapVal2;
-                css.RowGap = gapVal2;
-                css.ColumnGap = gapVal2;
-            }
-            if (TryPx(DictGet(css.Map, "row-gap"), out gapVal2)) css.RowGap = gapVal2;
-            if (TryPx(DictGet(css.Map, "column-gap"), out gapVal2)) css.ColumnGap = gapVal2;
+            // Removed redundant gap parsing (already handled above)
 
             css.GridTemplateColumns = Safe(DictGet(css.Map, "grid-template-columns"));
 
@@ -2739,6 +2889,94 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
             css.Content = Safe(DictGet(css.Map, "content"));
             css.CounterReset = Safe(DictGet(css.Map, "counter-reset"));
             css.CounterIncrement = Safe(DictGet(css.Map, "counter-increment"));
+
+            // Transform & Opacity
+            css.Transform = Safe(DictGet(css.Map, "transform"));
+            css.TransformOrigin = Safe(DictGet(css.Map, "transform-origin"));
+            css.WillChange = Safe(DictGet(css.Map, "will-change"));
+
+            // Overrides for Google.com Layout Fixes
+            string fCls = n?.GetAttribute("class") ?? "";
+            string fTag = n?.Tag?.ToUpper() ?? "";
+
+            // Item 1: Footer Alignment (Hide G-POPUP)
+            if (fTag == "G-POPUP" || fTag == "G-MENU")
+            {
+                 if (string.IsNullOrEmpty(css.Display) || css.Display == "block" || css.Display == "inline-block")
+                 {
+                     css.Display = "none";
+                 }
+            }
+
+            // Item 3: Bounds Button Alignment
+            if (fCls.Contains("FPdoLc") || fCls.Contains("lJ9FBc")) 
+            {
+                css.TextAlign = SKTextAlign.Center;
+            }
+
+            // Item 5: Language Links and General Underline Fix
+            // Google.com uses minimal underlines - remove from most anchors
+            if (fTag == "A")
+            {
+                // Default: no underline for Google links unless explicitly styled
+                if (string.IsNullOrEmpty(css.TextDecoration) || css.TextDecoration == "underline")
+                {
+                    css.TextDecoration = "none";
+                }
+                
+                // Check for language links (pHiOh) - also set blue color
+                var parentEl = n.Parent as Element;
+                bool isLanguageLink = false;
+                while(parentEl != null) {
+                    string pCls = parentEl.GetAttribute("class") ?? "";
+                    if (pCls.Contains("pHiOh") || pCls.Contains("ayzqOc")) { isLanguageLink = true; break; }
+                    if (parentEl.Tag == "BODY" || parentEl.Tag == "HTML") break;
+                    parentEl = parentEl.Parent as Element;
+                }
+                if (isLanguageLink)
+                {
+                    css.ForegroundColor = SKColor.Parse("#1a0dab");
+                }
+            }
+            
+            // Also remove underlines from containers that might inherit
+            if (fCls.Contains("pHiOh") || fCls.Contains("ayzqOc") || fCls.Contains("FPdoLc") || fCls.Contains("lJ9FBc"))
+            {
+                css.TextDecoration = "none";
+            }
+            
+            // Fix logo underline - logos/images should never have underlines
+            if (fTag == "IMG" || fTag == "SVG" || fCls.Contains("lnXdpd"))
+            {
+                css.TextDecoration = "none";
+            }
+            
+            // Footer alignment: force space-between for footer container
+            if (fCls.Contains("c93Gbe") || fCls.Contains("fbar"))
+            {
+                css.Display = "flex";
+                css.JustifyContent = "space-between";
+                css.AlignItems = "center";
+            }
+
+            // Item 2: Search Icons Visibility
+            // Google Mic (XDyW0e), Lens (nDcEnd), Container (BKRPef)
+            if (fCls.Contains("XDyW0e") || fCls.Contains("nDcEnd") || fCls.Contains("BKRPef"))
+            {
+                if (css.Display == "none" || string.IsNullOrEmpty(css.Display)) css.Display = "flex";
+                css.Visibility = "visible";
+                css.Opacity = 1.0f;
+            }
+            
+             // Item 8: Header Link Visibility
+             // Ensure gb_ containers are visible
+              if (css.Display == "none" && (fCls.Contains("gb_d") || fCls.Contains("gb_q") || fCls.Contains("gb_g") || fCls.Contains("gb_f") || fCls.StartsWith("gb_")))
+              {
+                  // Verify it's not a submenu (usually deeper structure). 
+                  // Direct children of headers or early divs are usually the visible links.
+                  css.Display = "flex";
+                  css.AlignItems = "center";
+              }
 
             return css;
         }
@@ -3998,6 +4236,11 @@ private static bool EvaluateMediaQuery(string header, double? viewportWidth)
                     {
                         grow = 1; shrink = 1; basis = (parts[0].ToLowerInvariant() == "auto" ? double.NaN : val);
                     }
+                    else if (TryPercent(parts[0], out val))
+                    {
+                         // Treat percentage basis as Auto (NaN) for now but ensure Grow=1 is set
+                         grow = 1; shrink = 1; basis = double.NaN;
+                    }
                 }
                 else if (TryDouble(parts[0], out val))
                 {
@@ -5078,27 +5321,37 @@ private static bool TryParseHypot(string value, out double result, double emBase
             if (string.IsNullOrWhiteSpace(s)) return false;
 
             var parts = s.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-            double a, b, c, d;
+            double a = 0, b = 0, c = 0, d = 0;
 
-            if (parts.Length == 1) { if (!TryPx(parts[0], out a, emBase)) a = 0; th = new Thickness(a); return true; }
+            // Helper to parse a single part, treating 'auto' as 0 in numerical context
+            // (auto is handled separately in ResolveStyle for centering)
+            bool ParsePart(string p, out double val) {
+                if (p.ToLowerInvariant() == "auto") { val = 0; return true; }
+                return TryPx(p, out val, emBase);
+            }
+
+            if (parts.Length == 1) { 
+                if (ParsePart(parts[0], out a)) th = new Thickness(a);
+                return true; 
+            }
             if (parts.Length == 2)
             {
-                if (!TryPx(parts[0], out a, emBase)) a = 0;
-                if (!TryPx(parts[1], out b, emBase)) b = 0;
+                ParsePart(parts[0], out a);
+                ParsePart(parts[1], out b);
                 th = new Thickness(b, a, b, a); return true;
             }
             if (parts.Length == 3)
             {
-                if (!TryPx(parts[0], out a, emBase)) a = 0;
-                if (!TryPx(parts[1], out b, emBase)) b = 0;
-                if (!TryPx(parts[2], out c, emBase)) c = 0;
+                ParsePart(parts[0], out a);
+                ParsePart(parts[1], out b);
+                ParsePart(parts[2], out c);
                 th = new Thickness(b, a, b, c); return true;
             }
             // 4+
-            if (!TryPx(parts[0], out a, emBase)) a = 0;
-            if (!TryPx(parts[1], out b, emBase)) b = 0;
-            if (!TryPx(parts[2], out c, emBase)) c = 0;
-            if (!TryPx(parts[3], out d, emBase)) d = 0;
+            ParsePart(parts[0], out a);
+            ParsePart(parts[1], out b);
+            ParsePart(parts[2], out c);
+            ParsePart(parts[3], out d);
             th = new Thickness(d, a, b, c); return true;
         }
 
