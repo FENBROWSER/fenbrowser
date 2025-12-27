@@ -1,5 +1,8 @@
 using SkiaSharp;
 using Silk.NET.Input;
+using FenBrowser.Host.Input;
+using FenBrowser.Host.Theme;
+using System;
 
 namespace FenBrowser.Host.Widgets;
 
@@ -8,64 +11,134 @@ namespace FenBrowser.Host.Widgets;
 /// </summary>
 public class ButtonWidget : Widget
 {
+    public ButtonWidget()
+    {
+        Role = WidgetRole.Button;
+    }
+    
     public string Text { get; set; } = "";
     public string Icon { get; set; } // SVG path or emoji
+    public SKPath IconPath { get; set; } // Vector icon
     public bool IsPressed { get; private set; }
     public bool IsHovered { get; private set; }
     
     public event Action Clicked;
     
     // Styling
-    public SKColor BackgroundColor { get; set; } = new SKColor(240, 240, 240);
-    public SKColor HoverColor { get; set; } = new SKColor(220, 220, 220);
-    public SKColor PressedColor { get; set; } = new SKColor(200, 200, 200);
-    public SKColor TextColor { get; set; } = SKColors.Black;
-    public float CornerRadius { get; set; } = 4;
+    // Styling properties (optional overrides)
+    public SKColor? BackgroundColor { get; set; }
+    public SKColor? BorderColor { get; set; } // Added missing property
+    public SKColor? TextColor { get; set; }
+    public float CornerRadius { get; set; } = 8;
     public float FontSize { get; set; } = 14;
+    public SKPaintStyle IconPaintStyle { get; set; } = SKPaintStyle.Fill;
+    public float IconStrokeWidth { get; set; } = 1.5f;
+    
+    protected override SKSize OnMeasure(SKSize availableSpace)
+    {
+        // Default button size if not specified. 
+        // In a real toolkit we'd measure the text here.
+        float width = string.IsNullOrEmpty(Text) ? 36 : 80;
+        return new SKSize(Math.Min(width, availableSpace.Width), Math.Min(36, availableSpace.Height));
+    }
+    
+    protected override void OnArrange(SKRect finalRect)
+    {
+        // Leaf widget, no children to arrange
+    }
     
     public override void Paint(SKCanvas canvas)
     {
+        var theme = ThemeManager.Current;
+        
         // Determine background color based on state
-        SKColor bgColor = BackgroundColor;
-        if (IsPressed) bgColor = PressedColor;
-        else if (IsHovered) bgColor = HoverColor;
+        SKColor bgColor = BackgroundColor ?? SKColors.Empty;
         
-        // Draw background
-        using var bgPaint = new SKPaint
+        if (IsPressed) bgColor = theme.SurfacePressed;
+        else if (IsHovered) bgColor = theme.SurfaceHover;
+        
+        canvas.Save();
+        
+        // Micro-animation: subtle scale down on press
+        if (IsPressed)
         {
-            Color = bgColor,
-            IsAntialias = true,
-            Style = SKPaintStyle.Fill
-        };
+            canvas.Scale(0.98f, 0.98f, Bounds.MidX, Bounds.MidY);
+        }
         
-        var rect = new SKRoundRect(Bounds, CornerRadius);
-        canvas.DrawRoundRect(rect, bgPaint);
+        // Draw background only if visible
+        if (bgColor != SKColors.Empty)
+        {
+            using var bgPaint = new SKPaint
+            {
+                Color = bgColor,
+                IsAntialias = true,
+                Style = SKPaintStyle.Fill
+            };
+            canvas.DrawRoundRect(Bounds, CornerRadius, CornerRadius, bgPaint);
+        }
+        
+        // Draw border only if explicitly set
+        if (BorderColor.HasValue)
+        {
+            using var borderPaint = new SKPaint
+            {
+                Color = BorderColor.Value,
+                IsAntialias = true,
+                Style = SKPaintStyle.Stroke,
+                StrokeWidth = 1
+            };
+            canvas.DrawRoundRect(Bounds, CornerRadius, CornerRadius, borderPaint);
+        }
         
         // Draw text
         if (!string.IsNullOrEmpty(Text))
         {
             using var textPaint = new SKPaint
             {
-                Color = IsEnabled ? TextColor : new SKColor(160, 160, 160),
+                Color = IsEnabled ? (TextColor ?? theme.Text) : theme.TextMuted,
                 IsAntialias = true,
                 TextSize = FontSize,
                 TextAlign = SKTextAlign.Center,
                 Typeface = SKTypeface.FromFamilyName("Segoe UI", SKFontStyle.Normal)
             };
             
-            // Center text vertically
             var metrics = textPaint.FontMetrics;
             float textY = Bounds.MidY - (metrics.Ascent + metrics.Descent) / 2;
             
             canvas.DrawText(Text, Bounds.MidX, textY, textPaint);
         }
         
-        // Draw icon if present
-        if (!string.IsNullOrEmpty(Icon))
+    // Draw IconPath if present
+        if (IconPath != null)
+        {
+             using var iconPaint = new SKPaint
+             {
+                 Color = IsEnabled ? (TextColor ?? theme.Text) : theme.TextMuted,
+                 IsAntialias = true,
+                 Style = IconPaintStyle,
+                 StrokeWidth = IconStrokeWidth
+             };
+             
+             // Scale/Center path
+             var pathBounds = IconPath.Bounds;
+             float targetSize = FontSize + 4;
+             // For strokes, we might need consistent scaling
+             float scale = targetSize / Math.Max(pathBounds.Width, pathBounds.Height);
+             
+             canvas.Save();
+             canvas.Translate(Bounds.MidX, Bounds.MidY);
+             canvas.Scale(scale);
+             canvas.Translate(-pathBounds.MidX, -pathBounds.MidY);
+             
+             canvas.DrawPath(IconPath, iconPaint);
+             canvas.Restore();
+        }
+        // Fallback to text icon if no path
+        else if (!string.IsNullOrEmpty(Icon))
         {
             using var iconPaint = new SKPaint
             {
-                Color = IsEnabled ? TextColor : new SKColor(160, 160, 160),
+                Color = IsEnabled ? (TextColor ?? theme.Text) : theme.TextMuted,
                 IsAntialias = true,
                 TextSize = FontSize + 4,
                 TextAlign = SKTextAlign.Center
@@ -75,6 +148,8 @@ public class ButtonWidget : Widget
             float iconY = Bounds.MidY - (metrics.Ascent + metrics.Descent) / 2;
             canvas.DrawText(Icon, Bounds.MidX, iconY, iconPaint);
         }
+        
+        canvas.Restore();
     }
     
     public override void OnMouseDown(float x, float y, MouseButton button)
@@ -82,6 +157,7 @@ public class ButtonWidget : Widget
         if (button == MouseButton.Left && IsEnabled)
         {
             IsPressed = true;
+            InputManager.Instance.SetCapture(this);
             Invalidate();
         }
     }
@@ -91,6 +167,9 @@ public class ButtonWidget : Widget
         if (button == MouseButton.Left && IsPressed)
         {
             IsPressed = false;
+            // Capture is auto-released in Program.cs OnMouseUp but we can be defensive
+            InputManager.Instance.ReleaseCapture();
+            
             if (HitTest(x, y))
             {
                 Clicked?.Invoke();
@@ -108,4 +187,5 @@ public class ButtonWidget : Widget
             Invalidate();
         }
     }
+    public override bool CanFocus => true;
 }

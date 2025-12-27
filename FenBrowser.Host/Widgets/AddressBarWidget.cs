@@ -1,5 +1,8 @@
 using SkiaSharp;
 using Silk.NET.Input;
+using Topten.RichTextKit;
+using FenBrowser.Host.Theme;
+using FenBrowser.Host.Input;
 
 namespace FenBrowser.Host.Widgets;
 
@@ -22,10 +25,13 @@ public class AddressBarWidget : Widget
         get => _text;
         set
         {
-            _text = value ?? "";
-            _caretPosition = Math.Min(_caretPosition, _text.Length);
-            ClearSelection();
-            Invalidate();
+            if (_text != value)
+            {
+                _text = value ?? "";
+                _caretPosition = Math.Min(_caretPosition, _text.Length);
+                ClearSelection();
+                InvalidateTextLayout();
+            }
         }
     }
     
@@ -34,112 +40,200 @@ public class AddressBarWidget : Widget
     public event Action<string> NavigateRequested;
     
     // Styling
-    public SKColor BackgroundColor { get; set; } = SKColors.White;
-    public SKColor BorderColor { get; set; } = new SKColor(180, 180, 180);
-    public SKColor FocusBorderColor { get; set; } = new SKColor(66, 133, 244);
-    public SKColor TextColor { get; set; } = SKColors.Black;
-    public SKColor PlaceholderColor { get; set; } = new SKColor(160, 160, 160);
-    public SKColor SelectionColor { get; set; } = new SKColor(66, 133, 244, 80);
-    public SKColor CaretColor { get; set; } = SKColors.Black;
+    // Styling (optional overrides)
+    public SKColor? BackgroundColor { get; set; }
+    public SKColor? BorderColor { get; set; }
+    public SKColor? FocusBorderColor { get; set; }
+    public SKColor? TextColor { get; set; }
+    public SKColor? PlaceholderColor { get; set; }
+    public SKColor? SelectionColor { get; set; }
+    public SKColor? CaretColor { get; set; }
     public float FontSize { get; set; } = 14;
-    public float Padding { get; set; } = 8;
+    public float Padding { get; set; } = 10; 
+    public float IconPadding { get; set; } = 34; // Extra left padding for Shield Icon
     
-    private SKPaint _textPaint;
+    // Icons
+    private SKPath _shieldPath = SKPath.ParseSvgPathData("M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"); // Material/Fluent Shield
+
+    private TextBlock _textBlock;
+    private bool _isTextLayoutDirty = true;
+    private Style _textStyle;
+    private Style _placeholderStyle;
     
     public AddressBarWidget()
     {
-        _textPaint = new SKPaint
+        Role = WidgetRole.Edit;
+        Name = "Address Bar";
+        HelpText = "Enter URL to navigate";
+        
+        _textStyle = new Style()
         {
-            IsAntialias = true,
-            TextSize = FontSize,
-            Typeface = SKTypeface.FromFamilyName("Segoe UI", SKFontStyle.Normal)
+            FontFamily = "Segoe UI",
+            FontSize = FontSize,
+            TextColor = SKColors.Black,
+        };
+        
+        _placeholderStyle = new Style()
+        {
+            FontFamily = "Segoe UI",
+            FontSize = FontSize,
+            TextColor = SKColors.Gray,
         };
     }
     
-    public override void Paint(SKCanvas canvas)
+    private void InvalidateTextLayout()
     {
-        // Update text paint
-        _textPaint.TextSize = FontSize;
-        _textPaint.Color = TextColor;
+        _isTextLayoutDirty = true;
+        Invalidate();
+    }
+    
+    protected override SKSize OnMeasure(SKSize availableSpace)
+    {
+        return new SKSize(availableSpace.Width, 32);
+    }
+    
+    protected override void OnArrange(SKRect finalRect)
+    {
+        // Leaf widget
+    }
+    
+    public override void Paint(SkiaSharp.SKCanvas canvas)
+    {
+        EnsureTextBlock();
+        var theme = ThemeManager.Current;
         
-        // Draw background
-        using var bgPaint = new SKPaint
+        var localBounds = new SKRect(0, 0, Bounds.Width, Bounds.Height);
+        
+        canvas.Save();
+        canvas.Translate(Bounds.Left, Bounds.Top);
+        
+        // Background
+        using var bgPaint = new SKPaint { Color = BackgroundColor ?? theme.Background, IsAntialias = true };
+        canvas.DrawRoundRect(localBounds, 8, 8, bgPaint);
+        
+        // Focus Glow (Glassmorphism effect)
+        if (IsFocused)
         {
-            Color = BackgroundColor,
-            IsAntialias = true,
-            Style = SKPaintStyle.Fill
-        };
-        var rect = new SKRoundRect(Bounds, 4);
-        canvas.DrawRoundRect(rect, bgPaint);
+            using var glowPaint = new SKPaint
+            {
+                Color = theme.Accent.WithAlpha(40),
+                IsAntialias = true,
+                MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 4)
+            };
+            var glowRect = localBounds;
+            glowRect.Inflate(2, 2);
+            canvas.DrawRoundRect(glowRect, 10, 10, glowPaint);
+        }
         
-        // Draw border
+        // Border
         using var borderPaint = new SKPaint
         {
-            Color = IsFocused ? FocusBorderColor : BorderColor,
+            Color = IsFocused ? theme.Accent : (BorderColor ?? theme.Border),
             IsAntialias = true,
             Style = SKPaintStyle.Stroke,
-            StrokeWidth = IsFocused ? 2 : 1
+            StrokeWidth = IsFocused ? 1.5f : 1
         };
-        canvas.DrawRoundRect(rect, borderPaint);
+        canvas.DrawRoundRect(localBounds, 8, 8, borderPaint);
         
-        // Set clip for text area
+        // Content Area Clip
         canvas.Save();
-        canvas.ClipRect(new SKRect(Bounds.Left + Padding, Bounds.Top, Bounds.Right - Padding, Bounds.Bottom));
+        // Left padding includes space for Icon
+        canvas.ClipRect(new SKRect(IconPadding, 0, localBounds.Width - Padding, localBounds.Height));
         
-        float textY = Bounds.MidY - (_textPaint.FontMetrics.Ascent + _textPaint.FontMetrics.Descent) / 2;
-        float textX = Bounds.Left + Padding - _scrollOffset;
+        // Vertical center the text block
+        float textY = (localBounds.Height - _textBlock.MeasuredHeight) / 2;
+        canvas.Translate(IconPadding - _scrollOffset, textY);
         
-        // Draw selection
+        // Selection
         if (HasSelection())
         {
             int start = Math.Min(_selectionStart, _selectionEnd);
             int end = Math.Max(_selectionStart, _selectionEnd);
             
-            float selStartX = textX + MeasureText(_text.Substring(0, start));
-            float selEndX = textX + MeasureText(_text.Substring(0, end));
+            var caretStart = _textBlock.GetCaretInfo(new CaretPosition(start));
+            var caretEnd = _textBlock.GetCaretInfo(new CaretPosition(end));
             
-            using var selPaint = new SKPaint { Color = SelectionColor };
-            canvas.DrawRect(selStartX, Bounds.Top + 4, selEndX - selStartX, Bounds.Height - 8, selPaint);
+            float x1 = caretStart.CaretRectangle.Left;
+            float x2 = caretEnd.CaretRectangle.Left;
+            
+            using var selPaint = new SKPaint { Color = SelectionColor ?? theme.AccentMuted };
+            canvas.DrawRect(x1, 0, x2 - x1, _textBlock.MeasuredHeight, selPaint);
         }
         
-        // Draw text or placeholder
-        if (string.IsNullOrEmpty(_text) && !IsFocused)
-        {
-            _textPaint.Color = PlaceholderColor;
-            canvas.DrawText(Placeholder, textX, textY, _textPaint);
-        }
-        else
-        {
-            _textPaint.Color = TextColor;
-            canvas.DrawText(_text, textX, textY, _textPaint);
-        }
+        // Paint Text
+        _textBlock.Paint(canvas);
         
-        // Draw caret
+        // Caret
         if (IsFocused && _caretVisible)
         {
-            float caretX = textX + MeasureText(_text.Substring(0, _caretPosition));
-            using var caretPaint = new SKPaint
-            {
-                Color = CaretColor,
-                StrokeWidth = 1.5f,
-                IsAntialias = true
-            };
-            canvas.DrawLine(caretX, Bounds.Top + 6, caretX, Bounds.Bottom - 6, caretPaint);
+            var caretInfo = _textBlock.GetCaretInfo(new CaretPosition(_caretPosition));
+            var caretRect = caretInfo.CaretRectangle;
+            
+            using var caretPaint = new SKPaint { Color = CaretColor ?? theme.Accent, StrokeWidth = 2f };
+            canvas.DrawLine(caretRect.Left, caretRect.Top, caretRect.Left, caretRect.Bottom, caretPaint);
         }
         
         canvas.Restore();
+        canvas.Restore();
         
-        // Blink caret
+        // Draw Shield Icon (Left)
+        // Position: Left aligned, vertically centered
+        canvas.Save();
+        float iconSize = 16;
+        float iconX = 10;
+        float iconY = (Bounds.Height - iconSize) / 2;
+        
+        canvas.Translate(Bounds.Left + iconX, Bounds.Top + iconY);
+        float scale = iconSize / 24f; // Assuming 24x24 viewbox
+        canvas.Scale(scale);
+        
+        using var iconPaint = new SKPaint 
+        { 
+            Color = theme.Text, // Or Accent if secure? Let's use generic Text for now, or Green if HTTPS?
+            IsAntialias = true, 
+            Style = SKPaintStyle.Fill 
+        };
+        // If text starts with https, maybe color it green?
+        if (_text.StartsWith("https://")) iconPaint.Color = SKColors.ForestGreen;
+        
+        canvas.DrawPath(_shieldPath, iconPaint);
+        canvas.Restore();
+        
+        // Blink
         if (IsFocused && (DateTime.Now - _lastBlink).TotalMilliseconds > 500)
         {
             _caretVisible = !_caretVisible;
             _lastBlink = DateTime.Now;
+            Invalidate();
         }
+    }
+    
+    private void EnsureTextBlock()
+    {
+        if (!_isTextLayoutDirty && _textBlock != null) return;
+        
+        _textBlock = new TextBlock();
+        _textBlock.MaxWidth = float.PositiveInfinity;
+        
+        _textStyle.FontSize = FontSize;
+        _textStyle.TextColor = TextColor ?? ThemeManager.Current.Text;
+        
+        _placeholderStyle.FontSize = FontSize;
+        _placeholderStyle.TextColor = PlaceholderColor ?? ThemeManager.Current.TextMuted;
+        
+        string display = string.IsNullOrEmpty(_text) && !IsFocused ? Placeholder : _text;
+        var style = string.IsNullOrEmpty(_text) && !IsFocused ? _placeholderStyle : _textStyle;
+        
+        _textBlock.AddText(display, style);
+        _textBlock.Layout();
+        
+        _isTextLayoutDirty = false;
     }
     
     private float MeasureText(string text)
     {
-        return _textPaint.MeasureText(text);
+        // Old method, use Paragraph instead
+        return 0;
     }
     
     private bool HasSelection()
@@ -169,6 +263,9 @@ public class AddressBarWidget : Widget
         _text = _text.Remove(start, end - start);
         _caretPosition = start;
         ClearSelection();
+        // Force synchronous update
+        _isTextLayoutDirty = true;
+        EnsureTextBlock();
     }
     
     public override void OnMouseDown(float x, float y, MouseButton button)
@@ -176,12 +273,24 @@ public class AddressBarWidget : Widget
         if (button == MouseButton.Left)
         {
             RequestFocus();
+            EnsureTextBlock();
             
-            // Calculate caret position from click
-            float textX = Bounds.Left + Padding - _scrollOffset;
-            float clickOffset = x - textX;
+            // Calculate caret position from click (relative to paragraph start)
+            float clickOffset = x - (Bounds.Left + IconPadding - _scrollOffset);
             
-            _caretPosition = GetCharIndexAtX(clickOffset);
+
+            // Fix: If text is empty (showing placeholder), caret must be at 0.
+            // If we calculate index from Placeholder text (because IsFocused is false yet), 
+            // we get an index > 0 which is invalid for _text (which is empty).
+            if (string.IsNullOrEmpty(_text))
+            {
+                _caretPosition = 0;
+            }
+            else
+            {
+                _caretPosition = GetCharIndexAtX(clickOffset);
+            }
+
             _selectionStart = _caretPosition;
             _selectionEnd = _caretPosition;
             _caretVisible = true;
@@ -197,14 +306,9 @@ public class AddressBarWidget : Widget
     
     private int GetCharIndexAtX(float x)
     {
-        if (string.IsNullOrEmpty(_text)) return 0;
-        
-        for (int i = 0; i <= _text.Length; i++)
-        {
-            float charX = MeasureText(_text.Substring(0, i));
-            if (charX > x) return Math.Max(0, i);
-        }
-        return _text.Length;
+        if (_textBlock == null) return 0;
+        var hit = _textBlock.HitTest(x, 0);
+        return hit.ClosestCodePointIndex;
     }
     
     public override void OnKeyDown(Key key)
@@ -238,11 +342,15 @@ public class AddressBarWidget : Widget
                 if (HasSelection())
                 {
                     DeleteSelection();
+                    InvalidateTextLayout();
                 }
                 else if (_caretPosition > 0)
                 {
                     _text = _text.Remove(_caretPosition - 1, 1);
                     _caretPosition--;
+                    // Force update
+                    _isTextLayoutDirty = true;
+                    EnsureTextBlock();
                 }
                 break;
                 
@@ -250,10 +358,14 @@ public class AddressBarWidget : Widget
                 if (HasSelection())
                 {
                     DeleteSelection();
+                    InvalidateTextLayout();
                 }
                 else if (_caretPosition < _text.Length)
                 {
                     _text = _text.Remove(_caretPosition, 1);
+                    // Force update
+                    _isTextLayoutDirty = true;
+                    EnsureTextBlock();
                 }
                 break;
                 
@@ -263,17 +375,76 @@ public class AddressBarWidget : Widget
                 break;
                 
             case Key.A:
-                // Ctrl+A - Select All (would need modifier check)
+                // Ctrl+A - Select All
+                if (KeyboardDispatcher.Instance.IsCtrlPressed)
+                {
+                    SelectAll();
+                }
+                break;
+                
+            case Key.C:
+                // Ctrl+C - Copy
+                if (KeyboardDispatcher.Instance.IsCtrlPressed && HasSelection())
+                {
+                    var selectedText = GetSelectedText();
+                    if (!string.IsNullOrEmpty(selectedText))
+                    {
+                        ClipboardHelper.SetText(selectedText);
+                    }
+                }
+                break;
+                
+            case Key.X:
+                // Ctrl+X - Cut
+                if (KeyboardDispatcher.Instance.IsCtrlPressed && HasSelection())
+                {
+                    var selectedText = GetSelectedText();
+                    if (!string.IsNullOrEmpty(selectedText))
+                    {
+                        ClipboardHelper.SetText(selectedText);
+                        DeleteSelection();
+                        InvalidateTextLayout();
+                    }
+                }
+                break;
+                
+            case Key.V:
+                // Ctrl+V - Paste
+                if (KeyboardDispatcher.Instance.IsCtrlPressed)
+                {
+                    var clipboardText = ClipboardHelper.GetText();
+                    if (!string.IsNullOrEmpty(clipboardText))
+                    {
+                        // Remove any newlines from pasted text
+                        clipboardText = clipboardText.Replace("\r\n", "").Replace("\n", "").Replace("\r", "");
+                        
+                        if (HasSelection())
+                        {
+                            DeleteSelection();
+                        }
+                        
+                        _text = _text.Insert(_caretPosition, clipboardText);
+                        _caretPosition += clipboardText.Length;
+                        
+                        _isTextLayoutDirty = true;
+                        EnsureTextBlock();
+                        EnsureCaretVisible();
+                    }
+                }
                 break;
         }
         
         EnsureCaretVisible();
         Invalidate();
     }
+
     
     public override void OnTextInput(char c)
     {
-        if (char.IsControl(c)) return;
+        // 1 = SOH (Start of Heading), commonly sent by Ctrl+A
+        // 127 = Delete
+        // < 32 = Control characters
+        if (char.IsControl(c) || c == 1 || KeyboardDispatcher.Instance.IsCtrlPressed) return;
         
         _caretVisible = true;
         _lastBlink = DateTime.Now;
@@ -283,8 +454,16 @@ public class AddressBarWidget : Widget
             DeleteSelection();
         }
         
+        // Safety check
+        if (_caretPosition > _text.Length) _caretPosition = _text.Length;
+        if (_caretPosition < 0) _caretPosition = 0;
+        
         _text = _text.Insert(_caretPosition, c.ToString());
         _caretPosition++;
+        
+        // Force synchronous update to prevent caret crash
+        _isTextLayoutDirty = true;
+        EnsureTextBlock();
         
         EnsureCaretVisible();
         Invalidate();
@@ -292,16 +471,27 @@ public class AddressBarWidget : Widget
     
     private void EnsureCaretVisible()
     {
-        float caretX = MeasureText(_text.Substring(0, _caretPosition));
-        float visibleWidth = Bounds.Width - Padding * 2;
+        EnsureTextBlock();
+        
+        // Safety check
+        if (_caretPosition > _text.Length || (_textBlock.MeasuredHeight == 0 && _text.Length == 0)) 
+        {
+             // If mismatch or empty
+             if (_caretPosition > _text.Length) _caretPosition = _text.Length;
+        }
+
+        var caretInfo = _textBlock.GetCaretInfo(new CaretPosition(_caretPosition));
+        float caretX = caretInfo.CaretRectangle.Left;
+        
+        float visibleWidth = Bounds.Width - IconPadding - Padding;
         
         if (caretX - _scrollOffset > visibleWidth)
         {
-            _scrollOffset = caretX - visibleWidth + 10;
+            _scrollOffset = caretX - visibleWidth + 20;
         }
         else if (caretX - _scrollOffset < 0)
         {
-            _scrollOffset = Math.Max(0, caretX - 10);
+            _scrollOffset = Math.Max(0, caretX - 20);
         }
     }
     
@@ -309,7 +499,14 @@ public class AddressBarWidget : Widget
     {
         _selectionStart = 0;
         _selectionEnd = _text.Length;
+        _selectionStart = 0;
+        _selectionEnd = _text.Length;
         _caretPosition = _text.Length;
+        // Force synchronous update
+        _isTextLayoutDirty = true;
+        EnsureTextBlock();
         Invalidate();
     }
+
+    public override bool CanFocus => true;
 }

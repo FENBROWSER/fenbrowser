@@ -1,6 +1,7 @@
 using SkiaSharp;
 using FenBrowser.Host.Widgets;
 using FenBrowser.FenEngine.Interaction;
+using FenBrowser.Host.Theme;
 
 namespace FenBrowser.Host.Widgets;
 
@@ -12,6 +13,12 @@ namespace FenBrowser.Host.Widgets;
 public class StatusBarWidget : Widget
 {
     private string _hoverUrl;
+    
+    public StatusBarWidget()
+    {
+        Role = WidgetRole.StatusBar;
+        Name = "Status Bar";
+    }
     private bool _isLoading;
     private float _zoomLevel = 100;
     private string _statusText;
@@ -81,17 +88,34 @@ public class StatusBarWidget : Widget
         }
     }
     
+    protected override SKSize OnMeasure(SKSize availableSpace)
+    {
+        return new SKSize(availableSpace.Width, HEIGHT);
+    }
+    
+    protected override void OnArrange(SKRect finalRect)
+    {
+        // StatusBar already has its bounds set by parent
+    }
+    
+    /// <summary>
+    /// Layout this widget within the available bounds.
+    /// [DEPRECATED] Use Measure/Arrange instead.
+    /// </summary>
     public override void Layout(SKRect available)
     {
-        Bounds = new SKRect(available.Left, available.Bottom - HEIGHT, available.Right, available.Bottom);
+        Measure(new SKSize(available.Width, available.Height));
+        Arrange(available);
     }
     
     public override void Paint(SKCanvas canvas)
     {
+        var theme = ThemeManager.Current;
+        
         // Background
         using var bgPaint = new SKPaint
         {
-            Color = new SKColor(248, 248, 248),
+            Color = theme.Surface,
             IsAntialias = true
         };
         canvas.DrawRect(Bounds, bgPaint);
@@ -99,7 +123,7 @@ public class StatusBarWidget : Widget
         // Top border
         using var borderPaint = new SKPaint
         {
-            Color = new SKColor(230, 230, 230),
+            Color = theme.Border,
             StrokeWidth = 1
         };
         canvas.DrawLine(Bounds.Left, Bounds.Top, Bounds.Right, Bounds.Top, borderPaint);
@@ -107,7 +131,7 @@ public class StatusBarWidget : Widget
         // Left side: Hover URL or status text
         using var textPaint = new SKPaint
         {
-            Color = SKColors.DimGray,
+            Color = theme.TextMuted,
             IsAntialias = true,
             TextSize = 12,
             TextAlign = SKTextAlign.Left
@@ -137,7 +161,7 @@ public class StatusBarWidget : Widget
         {
             using var zoomPaint = new SKPaint
             {
-                Color = SKColors.DimGray,
+                Color = theme.TextMuted,
                 IsAntialias = true,
                 TextSize = 11,
                 TextAlign = SKTextAlign.Right
@@ -150,7 +174,7 @@ public class StatusBarWidget : Widget
         {
             using var loadPaint = new SKPaint
             {
-                Color = SKColors.Blue,
+                Color = theme.Accent,
                 IsAntialias = true,
                 TextSize = 11,
                 TextAlign = SKTextAlign.Right
