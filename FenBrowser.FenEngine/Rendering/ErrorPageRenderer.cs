@@ -5,116 +5,215 @@ namespace FenBrowser.FenEngine.Rendering
 {
     public static class ErrorPageRenderer
     {
-        // Dynamic styles based on theme
-        private static string GetPageStyle(bool isDark) => 
-            $"background-color: {(isDark ? "#1e1e1e" : "#f8f9fa")}; " +
-            $"color: {(isDark ? "#f0f0f0" : "#323130")}; " +
-            "font-family: 'Segoe UI', system-ui, sans-serif; " +
-            "margin: 0; padding: 0; " +
-            "width: 100vw; height: 100vh; " +
-            "overflow: hidden; " +
-            "display: flex; align-items: center; justify-content: center;";
+        private static string GetPageStyle(bool isDark) =>
+            $"background-color: {(isDark ? "#0c0c0c" : "#f6f7f9")};" +
+            $"color: {(isDark ? "#ffffff" : "#1f2937")};" +
+            "font-family: 'Segoe UI', 'Segoe UI Variable', system-ui, sans-serif;" +
+            "margin:0;padding:0;width:100vw;height:100vh;" +
+            "display:flex;align-items:center;justify-content:center;";
 
-        private static string GetContainerStyle(bool isDark) => 
-            $"width: 600px; padding: 40px; " +
-            $"background-color: {(isDark ? "#252526" : "#ffffff")}; " +
-            "border-radius: 8px; " +
-            $"box-shadow: 0 4px 20px {(isDark ? "rgba(0,0,0,0.5)" : "rgba(0,0,0,0.15)")}; " +
-            "text-align: center;";
+        private static string GetContainerStyle(bool isDark) =>
+            $"background-color:{(isDark ? "#1b1b1b" : "#ffffff")};" +
+            $"border:1px solid {(isDark ? "#333" : "#e5e7eb")};" +
+            "border-radius:14px;" +
+            "padding:48px;" +
+            "max-width:560px;width:100%;" +
+            "box-shadow:0 20px 40px rgba(0,0,0,0.08);";
 
-        private const string IconStyle = "font-size: 64px; margin-bottom: 20px; display: block;";
-        
-        private static string GetTitleStyle(bool isDark) => 
-            $"font-size: 24px; font-weight: 600; margin-bottom: 15px; color: {(isDark ? "#ffffff" : "#201f1e")}; display: block;";
+        private static string GetTitleStyle(bool isDark) =>
+            $"font-size:22px;font-weight:500;color:{(isDark ? "#ffffff" : "#1f2937")};margin-bottom:12px;";
 
-        private static string GetMsgStyle(bool isDark) => 
-            $"font-size: 16px; color: {(isDark ? "#d0d0d0" : "#605e5c")}; margin-bottom: 25px; line-height: 1.5; display: block;";
+        private static string GetMsgStyle(bool isDark) =>
+            $"font-size:14px;color:{(isDark ? "#d1d5db" : "#374151")};line-height:1.6;margin-bottom:16px;";
 
-        private static string GetCodeStyle(bool isDark) => 
-            "font-family: Consolas, monospace; " +
-            $"color: {(isDark ? "#aaaaaa" : "#666666")}; " +
-            "font-size: 13px; margin-bottom: 30px; " +
-            $"background-color: {(isDark ? "#1a1a1a" : "#f3f2f1")}; " +
-            "padding: 10px; border-radius: 4px; display: inline-block; " +
-            $"border: 1px solid {(isDark ? "#333" : "#e1dfdd")};";
+        private static string GetMutedStyle(bool isDark) =>
+            $"font-size:13px;color:{(isDark ? "#9ca3af" : "#6b7280")};line-height:1.5;";
 
-        private const string BtnStyle = "background-color: #0078d4; color: #ffffff; padding: 10px 30px; border-radius: 4px; text-decoration: none; font-weight: bold; font-size: 14px; display: inline-block;";
+        private static string GetCodeStyle(bool isDark) =>
+            $"font-family:'Segoe UI Mono',Consolas,monospace;" +
+            $"font-size:11px;color:{(isDark ? "#9ca3af" : "#6b7280")};" +
+            "margin-top:24px;opacity:0.9;text-transform:uppercase;";
+
+        private const string PrimaryBtnStyle =
+            "background:#2563eb;color:#fff;padding:10px 18px;border-radius:10px;" +
+            "text-decoration:none;font-size:14px;font-weight:500;display:inline-block;";
+
+        private static string SecondaryBtnStyle(bool isDark) =>
+            $"background:{(isDark ? "#2a2a2a" : "#f3f4f6")};" +
+            $"color:{(isDark ? "#ffffff" : "#111827")};" +
+            "padding:10px 18px;border-radius:10px;font-size:14px;" +
+            $"border:1px solid {(isDark ? "#444" : "#e5e7eb")};text-decoration:none;" +
+            "display:inline-block;";
+
+        private static string DangerBtnStyle =>
+            "background:transparent;border:1px solid #dc2626;color:#dc2626;" +
+            "padding:8px 14px;border-radius:8px;font-size:13px;" +
+            "display:inline-block;";
+
+        private const string SslWarningIcon =
+            @"<svg width='56' height='56' viewBox='0 0 24 24' fill='#dc2626'>
+                <path d='M12 2 1 21h22L12 2zm0 14a1 1 0 110 2 1 1 0 010-2zm1-7h-2v5h2V9z'/>
+              </svg>";
 
         private static bool IsDarkTheme()
         {
             try
             {
-                var theme = FenBrowser.Core.BrowserSettings.Instance.Theme;
-                // Default to Light if System (unless we can detect OS theme, but safe defaults are better for "System" implies standard app look)
-                // Actually, Windows apps default to Light.
-                return theme == FenBrowser.Core.ThemePreference.Dark;
+                return FenBrowser.Core.BrowserSettings.Instance.Theme ==
+                       FenBrowser.Core.ThemePreference.Dark;
             }
             catch
             {
-                return false; // Safest fallback
+                return false;
             }
         }
 
-        private static string RenderPage(string icon, string iconColor, string title, string message, string code, string actionUrl)
+        private static string RenderBase(string innerHtml)
         {
             bool isDark = IsDarkTheme();
-
-            return $@"
-                <html>
-                <body style=""{GetPageStyle(isDark)}"">
-                    <div style=""{GetContainerStyle(isDark)}"">
-                        <div style=""{IconStyle} color: {iconColor};"">{icon}</div>
-                        <div style=""{GetTitleStyle(isDark)}"">{title}</div>
-                        <div style=""{GetMsgStyle(isDark)}"">{message}</div>
-                        <div style=""{GetCodeStyle(isDark)}"">{code}</div>
-                        <a href=""{actionUrl}"" style=""{BtnStyle}"">Refresh</a>
-                    </div>
-                </body>
-                </html>";
+            return $@"<html>
+<body style=""{GetPageStyle(isDark)}"">
+  <div style=""{GetContainerStyle(isDark)}"">
+    {innerHtml}
+  </div>
+</body>
+</html>";
         }
+
+        // ================= SSL ERROR PAGE =================
+
+public static string RenderSslError(string url, string details)
+{
+    bool isDark = IsDarkTheme();
+
+    string safeUrl = WebUtility.HtmlEncode(url);
+    string safeDetails = WebUtility.HtmlEncode(
+        details ?? "CERT_COMMON_NAME_INVALID"
+    );
+
+    return $@"
+<html>
+<body style=""{GetPageStyle(isDark)}"">
+  <div style=""{GetContainerStyle(isDark)} max-width:560px;"">
+
+    <!-- Header: Icon + Title (ANCHOR) -->
+    <div style=""display:flex;align-items:center;gap:16px;margin-bottom:20px;"">
+      {SslWarningIcon}
+      <div style=""{GetTitleStyle(isDark)}"">
+        This connection isn’t secure
+      </div>
+    </div>
+
+    <!-- Primary Explanation -->
+    <div style=""{GetMsgStyle(isDark)} margin-bottom:12px;"">
+      Fen Browser couldn’t verify the identity of this website.
+      The security certificate doesn’t match the site’s address.
+    </div>
+
+    <!-- Secondary Explanation (Muted) -->
+    <div style=""font-size:14px;color:{(isDark ? "#9ca3af" : "#6b7280")};
+                line-height:1.6;margin-bottom:20px;"">
+      This may happen if the site is misconfigured or if your connection
+      is being intercepted. Proceeding could expose sensitive information.
+    </div>
+
+    <!-- Context Box (Trust Builder) -->
+    <div style=""background:{(isDark ? "#111827" : "#f9fafb")};
+                border:1px solid {(isDark ? "#374151" : "#e5e7eb")};
+                border-radius:10px;
+                padding:12px;
+                font-size:13px;
+                margin-bottom:24px;"">
+      <strong>Website:</strong> {safeUrl}<br>
+      <strong>Error:</strong> Certificate name mismatch
+    </div>
+
+    <!-- Primary Actions -->
+    <div style=""display:flex;gap:12px;margin-bottom:20px;"">
+      <a href=""about:blank"" style=""{PrimaryBtnStyle}"">
+        ← Go back to safety
+      </a>
+      <a href=""#"" style=""{SecondaryBtnStyle(isDark)}"">
+        Retry
+      </a>
+    </div>
+
+    <!-- Advanced (Progressive Disclosure) -->
+    <details style=""margin-top:8px;"">
+      <summary style=""cursor:pointer;
+                      font-size:14px;
+                      color:#2563eb;
+                      user-select:none;"">
+        Advanced ▸
+      </summary>
+
+      <div style=""margin-top:16px;font-size:13px;"">
+
+        <!-- Technical Details -->
+        <div style=""{GetCodeStyle(isDark)} margin-bottom:16px;"">
+          {safeDetails}
+        </div>
+
+        <!-- Danger Zone (Earned, Not Immediate) -->
+        <div style=""border:1px solid #dc2626;
+                    background:{(isDark ? "#2a0f12" : "#fee2e2")};
+                    border-radius:10px;
+                    padding:14px;"">
+
+          <strong>Proceed anyway (unsafe)</strong>
+
+          <div style=""margin-top:6px;
+                      font-size:13px;
+                      color:{(isDark ? "#fca5a5" : "#7f1d1d")};"">
+            Fen Browser will not protect you on this site.
+          </div>
+
+          <div style=""margin-top:10px;"">
+            <button style=""background:transparent;
+                           border:1px solid #dc2626;
+                           color:#dc2626;
+                           padding:8px 14px;
+                           border-radius:8px;
+                           font-size:13px;"">
+              Continue
+            </button>
+          </div>
+
+        </div>
+      </div>
+    </details>
+
+  </div>
+</body>
+</html>";
+}
+
+
+        // ================= EXISTING PAGES (UNCHANGED BEHAVIOR) =================
 
         public static string RenderConnectionFailed(string url, string details)
         {
-            return RenderPage(
-                "&#127760;", "#0078d4", // Blue Globe
-                "Hmm... can't reach this page",
-                $"Check if there is a typo in <strong>{WebUtility.HtmlEncode(url)}</strong>.<br>If spelling is correct, try checking your connection.",
-                WebUtility.HtmlEncode(details ?? "DNS_PROBE_FINISHED_NXDOMAIN"),
-                url
-            );
-        }
-
-        public static string RenderSslError(string url, string details)
-        {
-            return RenderPage(
-                "&#9888;", "#d13438", // Red Warning
-                "Your connection isn't private",
-                $"Attackers might be trying to steal your information from <strong>{WebUtility.HtmlEncode(url)}</strong>.",
-                "NET::ERR_CERT_COMMON_NAME_INVALID",
-                url
-            );
+            return RenderBase($@"
+<h1>Hmm… can’t reach this page</h1>
+<p>{WebUtility.HtmlEncode(details)}</p>
+<a href=""{url}"" style=""{PrimaryBtnStyle}"">Refresh</a>");
         }
 
         public static string RenderNoInternet(string url, string details)
         {
-            return RenderPage(
-                "&#129430;", "#797775", // Grey
-                "No Internet",
-                "Try checking the network cables, modem, and router.<br>Reconnecting to Wi-Fi.",
-                "ERR_INTERNET_DISCONNECTED",
-                url
-            );
+            return RenderBase($@"
+<h1>No Internet</h1>
+<p>Try checking your network connection.</p>
+<a href=""{url}"" style=""{PrimaryBtnStyle}"">Refresh</a>");
         }
 
         public static string RenderGenericError(string url, string title, string message, string details)
         {
-            return RenderPage(
-                "&#128533;", "#ffb900", // Yellow
-                WebUtility.HtmlEncode(title),
-                WebUtility.HtmlEncode(message),
-                WebUtility.HtmlEncode(details),
-                url
-            );
+            return RenderBase($@"
+<h1>{WebUtility.HtmlEncode(title)}</h1>
+<p>{WebUtility.HtmlEncode(message)}</p>
+<div style=""{GetCodeStyle(IsDarkTheme())}"">{WebUtility.HtmlEncode(details)}</div>
+<a href=""{url}"" style=""{PrimaryBtnStyle}"">Refresh</a>");
         }
     }
 }

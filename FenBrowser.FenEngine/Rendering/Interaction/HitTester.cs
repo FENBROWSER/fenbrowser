@@ -41,6 +41,10 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
                 // Skip invisible elements
                 if (box.MarginBox.Width <= 0 || box.MarginBox.Height <= 0) continue;
 
+                // CHECK POINTER EVENTS
+                var style = ctx.GetStyle(element);
+                if (style != null && style.PointerEvents == "none") continue;
+
                 // Check if point is inside border box
                 if (box.BorderBox.Contains(x, y))
                 {
@@ -79,6 +83,10 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
                 var box = kvp.Value;
 
                 if (box.MarginBox.Width <= 0 || box.MarginBox.Height <= 0) continue;
+
+                // CHECK POINTER EVENTS
+                var style = ctx.GetStyle(element);
+                if (style != null && style.PointerEvents == "none") continue;
 
                 if (box.BorderBox.Contains(x, y))
                 {
