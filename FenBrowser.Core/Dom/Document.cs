@@ -54,5 +54,14 @@ namespace FenBrowser.Core.Dom
             df.OwnerDocument = this;
             return df;
         }
+
+        public QuirksMode Mode { get; set; } = QuirksMode.Quirks;
+    }
+
+    public enum QuirksMode
+    {
+        NoQuirks,
+        Quirks,
+        LimitedQuirks
     }
 }

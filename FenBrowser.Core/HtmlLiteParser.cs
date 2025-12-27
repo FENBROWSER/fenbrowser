@@ -3,6 +3,7 @@ using System.Text;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Net;
+using System.Text.RegularExpressions;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core.Dom;
 using System.Linq;
@@ -110,7 +111,7 @@ namespace FenBrowser.Core
                     if (_i + 2 <= _n && _html[_i + 1] == '!')
                     {
                         _i += 2;
-                        SkipDeclaration(); // TODO: Parse doctype properly if needed
+                        ParseDeclaration(doc); 
                         continue;
                     }
 
@@ -122,19 +123,10 @@ namespace FenBrowser.Core
                         while (!Eof() && Peek() != '>') _i++;
                         if (!Eof()) _i++;
 
-                        // FenBrowser Mod: Adoption Agency Algorithm Integration
-                        if (FormattingElements.Contains(endName))
+                        if (!string.IsNullOrEmpty(endName))
                         {
-                            // FenLogger.Debug($"[HtmlLiteParser] Triggering Adoption Agency for </{endName}>");
-                            RunAdoptionAgency(endName, stack);
-                            continue;
+                            PopUntil(endName, stack);
                         }
-
-                        // Close elements up to matching tag
-                        // Note: Document root (#document) never matches tag name, so stack > 1 check preserves root.
-                        while (stack.Count > 1 && !string.Equals(stack.Peek().NodeName, endName, StringComparison.OrdinalIgnoreCase))
-                            stack.Pop();
-                        if (stack.Count > 1) stack.Pop(); // Pop the matching element
                         continue;
                     }
 
@@ -153,19 +145,14 @@ namespace FenBrowser.Core
                         ReadAttribute(out lowerName, out value, out originalName, out rawValue);
                         if (!string.IsNullOrEmpty(lowerName)) 
                         {
-                             // Using standard SetAttribute for now as SetAttributeInternal was mostly for casing preservation which we support
                              elem.SetAttribute(originalName ?? lowerName, value);
-                             
-                             // DEBUG: Log SVG path attributes
-                             if (tag == "path" || tag == "svg")
-                             {
-                                 try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_parser.txt", $"[PARSER] {tag}.{lowerName}={value?.Substring(0, Math.Min(value?.Length ?? 0, 50))}\r\n"); } catch {}
-                             }
+                             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Parser] Attribute: {tag} -> {originalName}='{value}'\r\n"); } catch {}
                         }
                     }
 
                     // Handle end of tag
                     bool selfClosing = false;
+                    SkipWs();
                     if (Peek() == '/')
                     {
                         selfClosing = true;
@@ -173,86 +160,50 @@ namespace FenBrowser.Core
                     }
                     if (Peek() == '>') _i++;
 
-                    // HTML5 implicit tag closing: close <p> when certain block elements are encountered
-                    if (TagsThatCloseP.Contains(tag))
+                    // --- Implicit Closing Rules ---
+                    if (tag == "a")
                     {
-                        while (stack.Count > 1 && string.Equals(stack.Peek().NodeName, "p", StringComparison.OrdinalIgnoreCase))
-                        {
-                            stack.Pop();
-                        }
+                        // Links cannot nest
+                        FenLogger.Debug($"[Parser] Encountered nested <a>, calling PopUntil('a')");
+                        PopUntil("a", stack);
                     }
-                    
-                    // Additional implicit closing rules
-                    if (tag == "li")
+                    else if (tag == "p" || TagsThatCloseP.Contains(tag))
                     {
-                         while (stack.Count > 1 && string.Equals(stack.Peek().NodeName, "li", StringComparison.OrdinalIgnoreCase)) stack.Pop();
+                        // New P or block tag closes open P
+                        PopUntilOne("p", stack);
                     }
-                    if (tag == "dt" || tag == "dd")
+                    else if (tag == "li")
                     {
-                        while (stack.Count > 1)
-                        {
-                            var current = stack.Peek().NodeName.ToLowerInvariant();
-                            if (current == "dt" || current == "dd") stack.Pop();
-                            else break;
-                        }
+                        PopUntilOne("li", stack);
                     }
-                    if (tag == "tr")
+                    else if (tag == "dt" || tag == "dd")
                     {
-                        while (stack.Count > 1)
-                        {
-                            var current = stack.Peek().NodeName.ToLowerInvariant();
-                            if (current == "td" || current == "th" || current == "tr") stack.Pop();
-                            else break;
-                        }
+                        PopUntilOne("dt", stack);
+                        PopUntilOne("dd", stack);
                     }
-                    if (tag == "td" || tag == "th")
+                    else if (tag == "tr" || tag == "thead" || tag == "tbody" || tag == "tfoot")
                     {
-                        while (stack.Count > 1)
-                        {
-                            var current = stack.Peek().NodeName.ToLowerInvariant();
-                            if (current == "td" || current == "th") stack.Pop();
-                            else break;
-                        }
+                         PopUntilOne("tr", stack);
+                         // Don't pop section headers unless explicitly closed or higher level tag pops them
                     }
-
-                    // Add to parent
-                    if (stack.Count > 0)
+                    else if (tag == "td" || tag == "th")
                     {
-                        var parent = stack.Peek();
-                        // Foster Parenting logic (simplified)
-                        if (stack.Count > 1 && IsTableStructure(parent.NodeName) && !IsTableValidTag(tag, parent.NodeName))
-                        {
-                            // Try to hoist out of table
-                            if ((parent.NodeName.Equals("table", StringComparison.OrdinalIgnoreCase) || 
-                                 parent.NodeName.Equals("tbody", StringComparison.OrdinalIgnoreCase) ||
-                                 parent.NodeName.Equals("tr", StringComparison.OrdinalIgnoreCase)) && IsBlockElement(tag))
-                            {
-                                // Append to table itself? No, before table. But we don't have access to Stack[n-1] easily.
-                                // For safely, just append to current parent.
-                                parent.AppendChild(elem);
-                            }
-                            else
-                            {
-                                parent.AppendChild(elem);
-                            }
-                        }
-                        else
-                        {
-                            parent.AppendChild(elem);
-                        }
+                        PopUntilOne("td", stack);
+                        PopUntilOne("th", stack);
                     }
 
                     // Force void elements to self-close
                     if (!selfClosing && IsVoid(tag)) selfClosing = true;
 
-                    // Push if container
+                    // Add to parent
+                    if (stack.Count > 0)
+                    {
+                        stack.Peek().AppendChild(elem);
+                    }
+
                     if (!selfClosing)
                     {
-                        if (FormattingElements.Contains(tag))
-                        {
-                            PushFormattingElement(elem);
-                        }
-                        
+                        FenLogger.Debug($"[Parser] Pushing {tag}_{elem.GetHashCode()} to stack (Depth: {stack.Count})");
                         stack.Push(elem);
 
                         // Handle raw text elements (script, style)
@@ -279,10 +230,38 @@ namespace FenBrowser.Core
             return doc;
         }
 
-        private void SkipDeclaration()
+        private void PopUntil(string tagName, Stack<Node> stack)
         {
+            var targetFound = stack.Any(n => string.Equals((n as Element)?.TagName ?? n.NodeName, tagName, StringComparison.OrdinalIgnoreCase));
+            FenLogger.Debug($"[Parser] PopUntil({tagName}). Target in stack: {targetFound}. Current top: {stack.Peek().NodeName}_{stack.Peek().GetHashCode()}");
+            
+            if (targetFound)
+            {
+                while (stack.Count > 1)
+                {
+                    var popped = stack.Pop();
+                    FenLogger.Debug($"[Parser] Popped {popped.NodeName}_{popped.GetHashCode()}");
+                    if (string.Equals((popped as Element)?.TagName ?? popped.NodeName, tagName, StringComparison.OrdinalIgnoreCase)) break;
+                }
+            }
+        }
+
+        private void PopUntilOne(string tagName, Stack<Node> stack)
+        {
+            if (stack.Count > 1 && string.Equals(stack.Peek().NodeName, tagName, StringComparison.OrdinalIgnoreCase))
+            {
+                stack.Pop();
+            }
+        }
+
+        private void ParseDeclaration(Document doc)
+        {
+            var start = _i;
             while (!Eof() && Peek() != '>') _i++;
+            var content = _html.Substring(start, _i - start).Trim();
             if (!Eof()) _i++;
+            if (content.StartsWith("DOCTYPE", StringComparison.OrdinalIgnoreCase))
+                doc.Mode = QuirksMode.NoQuirks;
         }
 
         private string ReadRawElementBody(string tag)
@@ -298,8 +277,6 @@ namespace FenBrowser.Core
                     _i = _n;
                     return s;
                 }
-
-                // Verify it's a real tag boundary
                 var afterTag = idx + close.Length;
                 if (afterTag < _n)
                 {
@@ -310,10 +287,8 @@ namespace FenBrowser.Core
                         continue;
                     }
                 }
-
                 var result = _html.Substring(_i, idx - _i);
                 _i = idx;
-
                 _i += close.Length;
                 while (!Eof() && Peek() != '>') _i++;
                 if (!Eof()) _i++;
@@ -340,7 +315,6 @@ namespace FenBrowser.Core
                 lowerName = string.Empty;
                 return;
             }
-
             SkipWs();
             if (Peek() == '=')
             {
@@ -349,7 +323,6 @@ namespace FenBrowser.Core
                 value = ReadAttrValue(out rawValue);
                 return;
             }
-
             value = lowerName;
             rawValue = originalName;
         }
@@ -372,19 +345,16 @@ namespace FenBrowser.Core
         {
             rawValue = string.Empty;
             if (Eof()) return "";
-
             var c = Peek();
             if (c == '"' || c == '\'')
             {
                 var q = c; _i++;
                 var st = _i;
-            
-                var s_start = st;
                 while (!Eof())
                 {
                     var cc = Peek();
                     if (cc == q) break;
-                    if (cc == '>') break; // Recovery
+                    if (cc == '>') break; 
                     _i++;
                 }
                 var s = _html.Substring(st, System.Math.Max(0, _i - st));
@@ -392,7 +362,6 @@ namespace FenBrowser.Core
                 if (!Eof() && Peek() == q) _i++; 
                 return DecodeEntities(s);
             }
-
             var start = _i;
             while (!Eof())
             {
@@ -432,8 +401,6 @@ namespace FenBrowser.Core
                 case "area": case "base": case "br": case "col": case "embed":
                 case "hr": case "img": case "input": case "link": case "meta":
                 case "param": case "source": case "track": case "wbr":
-                case "path": case "rect": case "circle": case "line": case "polyline": 
-                case "polygon": case "ellipse": case "stop": case "use": case "image":
                     return true;
                 default:
                     return false;
@@ -443,23 +410,77 @@ namespace FenBrowser.Core
         private static string DecodeEntities(string s)
         {
             if (string.IsNullOrEmpty(s)) return s;
-            return WebUtility.HtmlDecode(s);
+            
+            string decoded = s;
+            string prev = null;
+            int maxIterations = 3; // Prevent infinite loops
+            int iteration = 0;
+            
+            // Iterate until no more changes (handles double-escaped entities like &amp;#10003;)
+            while (decoded != prev && iteration < maxIterations)
+            {
+                prev = decoded;
+                iteration++;
+                
+                // First pass: WebUtility.HtmlDecode for named entities
+                decoded = WebUtility.HtmlDecode(decoded);
+                
+                // Second pass: Manual numeric entity decoding
+                // Pattern: &#NNNNN; (decimal) or &#xHHHH; (hex)
+                if (decoded.Contains("&#"))
+                {
+                    // Decimal entities: &#10003;
+                    decoded = Regex.Replace(decoded, @"&#(\d+);", m => {
+                        try {
+                            int code = int.Parse(m.Groups[1].Value);
+                            if (code > 0 && code <= 0x10FFFF)
+                                return char.ConvertFromUtf32(code);
+                        } catch { }
+                        return m.Value;
+                    });
+                    
+                    // Hex entities: &#x2713;
+                    decoded = Regex.Replace(decoded, @"&#x([0-9a-fA-F]+);", m => {
+                        try {
+                            int code = Convert.ToInt32(m.Groups[1].Value, 16);
+                            if (code > 0 && code <= 0x10FFFF)
+                                return char.ConvertFromUtf32(code);
+                        } catch { }
+                        return m.Value;
+                    });
+                }
+            }
+            
+            // Final fallback: direct string replacement for common stubborn entities
+            decoded = decoded.Replace("&#10003;", "✓");
+            decoded = decoded.Replace("&#x2713;", "✓");
+            decoded = decoded.Replace("&#10004;", "✔");
+            decoded = decoded.Replace("&#x2714;", "✔");
+            
+            return decoded;
         }
 
         private static void AppendText(Node parent, string raw)
         {
             if (parent == null || string.IsNullOrEmpty(raw)) return;
+            
+            // Ensure entities are decoded (in case they weren't decoded earlier)
+            string text = raw;
+            
+            // Direct replacement for common entities that may not be decoded
+            if (text.Contains("&#10003;")) text = text.Replace("&#10003;", "✓");
+            if (text.Contains("&#x2713;")) text = text.Replace("&#x2713;", "✓");
+            if (text.Contains("&amp;")) text = text.Replace("&amp;", "&");
+            
             var last = parent.Children.Count > 0 ? parent.Children[parent.Children.Count - 1] : null;
             if (last is Text t)
-                t.Data += raw;
+                t.Data += text;
             else
-                parent.AppendChild(new Text(raw));
+                parent.AppendChild(new Text(text));
         }
         
-        // ---- Helpers for Foster Parenting ----
         private static bool IsBlockElement(string tag)
         {
-            // Simple subset of block elements
             return tag == "div" || tag == "p" || tag == "h1" || tag == "h2" || tag == "ul" || tag == "ol" || tag == "li" || tag == "table"; 
         }
 
@@ -477,111 +498,6 @@ namespace FenBrowser.Core
             if (parentTag == "thead" || parentTag == "tbody" || parentTag == "tfoot") return childTag == "tr";
             if (parentTag == "tr") return childTag == "td" || childTag == "th";
             return true; 
-        }
-
-        // -------------------- Adoption Agency Algorithm --------------------
-
-        private void RunAdoptionAgency(string endTag, Stack<Node> stack)
-        {
-            const int outerLoopLimit = 8;
-            for (int outerLoop = 0; outerLoop < outerLoopLimit; outerLoop++)
-            {
-                // Find formatting element
-                int formattingIndex = -1;
-                Element formattingElement = null;
-                for (int i = _activeFormattingElements.Count - 1; i >= 0; i--)
-                {
-                    if (string.Equals(_activeFormattingElements[i].TagName, endTag, StringComparison.OrdinalIgnoreCase))
-                    {
-                        formattingIndex = i;
-                        formattingElement = _activeFormattingElements[i];
-                        break;
-                    }
-                }
-
-                if (formattingElement == null)
-                {
-                    while (stack.Count > 1 && !string.Equals(stack.Peek().NodeName, endTag, StringComparison.OrdinalIgnoreCase))
-                        stack.Pop();
-                    if (stack.Count > 1) stack.Pop();
-                    return;
-                }
-
-                // Check if in stack
-                var stackList = new List<Node>(stack);
-                stackList.Reverse();
-                int stackIndex = stackList.FindIndex(e => ReferenceEquals(e, formattingElement));
-                
-                if (stackIndex < 0)
-                {
-                    _activeFormattingElements.RemoveAt(formattingIndex);
-                    return;
-                }
-
-                // Find furthest block
-                Element furthestBlock = null;
-                for (int i = stackIndex + 1; i < stackList.Count; i++)
-                {
-                    // Treat any element that is "Special" as a block for this purpose
-                    if (stackList[i] is Element el && SpecialElements.Contains(el.TagName))
-                    {
-                        furthestBlock = el;
-                        break;
-                    }
-                }
-
-                if (furthestBlock == null)
-                {
-                    while (stack.Count > 0 && !ReferenceEquals(stack.Peek(), formattingElement))
-                        stack.Pop();
-                    if (stack.Count > 0) stack.Pop();
-                    _activeFormattingElements.RemoveAt(formattingIndex);
-                    return;
-                }
-
-                // Cloning and Reparenting
-                var commonAncestor = stackIndex > 0 ? stackList[stackIndex - 1] : stackList[0];
-                var clone = formattingElement.ShallowClone();
-                
-                foreach (var child in new List<Node>(furthestBlock.Children))
-                {
-                    child.Remove(); // Logic handles parent/child relation update
-                    clone.AppendChild(child);
-                }
-                
-                furthestBlock.AppendChild(clone);
-                
-                if (formattingIndex < _activeFormattingElements.Count)
-                {
-                    _activeFormattingElements[formattingIndex] = clone;
-                }
-
-                // Pop until formatting element
-                while (stack.Count > 0 && !ReferenceEquals(stack.Peek(), formattingElement))
-                    stack.Pop();
-                if (stack.Count > 0) stack.Pop();
-                
-                return;
-            }
-        }
-
-        private void PushFormattingElement(Element element)
-        {
-            int count = 0;
-            for (int i = _activeFormattingElements.Count - 1; i >= 0; i--)
-            {
-                var el = _activeFormattingElements[i];
-                if (string.Equals(el.TagName, element.TagName, StringComparison.OrdinalIgnoreCase))
-                {
-                    count++;
-                    if (count >= 3)
-                    {
-                        _activeFormattingElements.RemoveAt(i);
-                        break;
-                    }
-                }
-            }
-            _activeFormattingElements.Add(element);
         }
     }
 }

@@ -152,11 +152,27 @@ namespace FenBrowser.Core.Dom
 
         public IEnumerable<Node> Descendants()
         {
-            foreach (var child in Children)
+            if (Children == null || Children.Count == 0) yield break;
+            
+            var stack = new Stack<Node>();
+            // Push in reverse order to maintain original iteration order (first child processed first)
+            for (int i = Children.Count - 1; i >= 0; i--)
             {
-                yield return child;
-                foreach (var d in child.Descendants())
-                    yield return d;
+                stack.Push(Children[i]);
+            }
+            
+            while (stack.Count > 0)
+            {
+                var node = stack.Pop();
+                yield return node;
+                
+                if (node.Children != null && node.Children.Count > 0)
+                {
+                    for (int i = node.Children.Count - 1; i >= 0; i--)
+                    {
+                        stack.Push(node.Children[i]);
+                    }
+                }
             }
         }
         

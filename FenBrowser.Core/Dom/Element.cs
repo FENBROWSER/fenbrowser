@@ -115,13 +115,24 @@ namespace FenBrowser.Core.Dom
         /// <summary>Self and all descendants (LiteElement compatibility)</summary>
         public IEnumerable<Element> SelfAndDescendants()
         {
-            yield return this;
-            foreach (var child in Children)
+            var stack = new Stack<Element>();
+            stack.Push(this);
+            
+            while (stack.Count > 0)
             {
-                if (child is Element el)
+                var el = stack.Pop();
+                yield return el;
+                
+                if (el.Children != null && el.Children.Count > 0)
                 {
-                    foreach (var desc in el.SelfAndDescendants())
-                        yield return desc;
+                    // Push in reverse order to maintain original iteration order
+                    for (int i = el.Children.Count - 1; i >= 0; i--)
+                    {
+                        if (el.Children[i] is Element childEl)
+                        {
+                            stack.Push(childEl);
+                        }
+                    }
                 }
             }
         }
