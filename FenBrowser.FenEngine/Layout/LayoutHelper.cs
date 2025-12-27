@@ -1,0 +1,124 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Globalization;
+using System.Text;
+using SkiaSharp;
+using FenBrowser.Core.Dom;
+using FenBrowser.Core.Css;
+using FenBrowser.Core.Logging;
+using FenBrowser.FenEngine.Rendering.UserAgent;
+using FenBrowser.FenEngine.Rendering;
+
+namespace FenBrowser.FenEngine.Layout
+{
+    public static class LayoutHelper
+    {
+        public static string GetTextContent(Node node)
+        {
+             if (node is Text t) return t.NodeValue ?? "";
+             if (node.Children == null) return "";
+             var sb = new StringBuilder();
+             foreach (var c in node.Children) sb.Append(GetTextContent(c));
+             return sb.ToString();
+        }
+
+        public static SKRect CleanRect(SKRect r)
+        {
+            float l = r.Left, t = r.Top, ri = r.Right, b = r.Bottom;
+            if (float.IsNaN(l) || float.IsInfinity(l)) l = 0;
+            if (float.IsNaN(t) || float.IsInfinity(t)) t = 0;
+            if (float.IsNaN(ri) || float.IsInfinity(ri)) ri = l;
+            if (float.IsNaN(b) || float.IsInfinity(b)) b = t;
+            return new SKRect(l, t, ri, b);
+        }
+
+        public static bool ShouldHide(Node node, CssComputed style)
+        {
+            if (style != null && style.Display == "none") return true;
+            if (style != null && style.Visibility == "hidden") return true;
+            if (node.Tag?.ToUpperInvariant() == "HEAD" || 
+                node.Tag?.ToUpperInvariant() == "SCRIPT" || 
+                node.Tag?.ToUpperInvariant() == "STYLE" || 
+                node.Tag?.ToUpperInvariant() == "META" || 
+                node.Tag?.ToUpperInvariant() == "TITLE" || 
+                node.Tag?.ToUpperInvariant() == "LINK") 
+            {
+                 if (style?.Display == null || style.Display == "none") return true;
+            }
+            return false;
+        }
+
+        public static void ApplyUserAgentStyles(Node node, ref CssComputed style)
+        {
+             if (style == null) return;
+             if (node is Element e)
+             {
+                 // Reference implementation in UAStyleProvider
+                 UAStyleProvider.Apply(e, ref style);
+             }
+        }
+
+        public static void MeasureInputButtonText(Element node, CssComputed style, ref float width, ref float height)
+        {
+             string val = node.GetAttribute("value");
+             if (string.IsNullOrEmpty(val) && node.Tag == "BUTTON")
+             {
+                 val = GetTextContent(node);
+             }
+             
+             if (string.IsNullOrEmpty(val))
+             {
+                 if (node.Tag == "INPUT") val = "Submit"; 
+             }
+
+             if (!string.IsNullOrEmpty(val))
+             {
+                 using (var paint = new SKPaint())
+                 {
+                      paint.TextSize = style?.FontSize != null ? (float)style.FontSize.Value : 16f; 
+                      var tf = TextLayoutHelper.ResolveTypeface(style?.FontFamily?.ToString(), val);
+                      paint.Typeface = tf;
+                      
+                      var bounds = new SKRect();
+                      paint.MeasureText(val, ref bounds);
+                      
+                      float w = bounds.Width + 24; 
+                      if (w > width) width = w;
+                      
+                      float h = bounds.Height + 10;
+                      if (h > height) height = h;
+                 }
+             }
+        }
+
+        public static float EvaluateCssExpression(string expression, float parentSize, float viewportWidth = 0, float viewportHeight = 0)
+        {
+            if (string.IsNullOrEmpty(expression)) return -1;
+            expression = expression.Trim().ToLowerInvariant();
+
+            // Simple parser
+            if (expression.StartsWith("calc")) return -1; // TODO: Implement calc
+
+            if (expression.EndsWith("px"))
+            {
+                 if (float.TryParse(expression.Replace("px", ""), NumberStyles.Float, CultureInfo.InvariantCulture, out float px)) return px;
+            }
+            if (expression.EndsWith("%"))
+            {
+                 if (float.TryParse(expression.Replace("%", ""), NumberStyles.Float, CultureInfo.InvariantCulture, out float pct)) return parentSize * (pct / 100f);
+            }
+            if (expression.EndsWith("vh"))
+            {
+                 if (float.TryParse(expression.Replace("vh", ""), NumberStyles.Float, CultureInfo.InvariantCulture, out float vh)) return viewportHeight * (vh / 100f);
+            }
+            if (expression.EndsWith("vw"))
+            {
+                 if (float.TryParse(expression.Replace("vw", ""), NumberStyles.Float, CultureInfo.InvariantCulture, out float vw)) return viewportWidth * (vw / 100f);
+            }
+             if (float.TryParse(expression, NumberStyles.Float, CultureInfo.InvariantCulture, out float val)) return val;
+
+            return -1;
+        }
+    }
+}
