@@ -15,6 +15,7 @@ using System.Net.WebSockets;
 using System.Threading;
 using System.Threading.Tasks;
 using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType;
+using FenBrowser.FenEngine.Storage;
 
 namespace FenBrowser.FenEngine.Core
 {
@@ -25,15 +26,18 @@ namespace FenBrowser.FenEngine.Core
     {
         private readonly FenEnvironment _globalEnv;
         private readonly IExecutionContext _context;
+        private readonly IStorageBackend _storageBackend;
         private readonly Dictionary<int, CancellationTokenSource> _activeTimers = new Dictionary<int, CancellationTokenSource>();
         private int _timerIdCounter = 1;
         private readonly object _timerLock = new object();
         private static readonly Random _mathRandom = new Random(); // Cached Random for Math.random()
 
-        public FenRuntime(IExecutionContext context = null)
+        public FenRuntime(IExecutionContext context = null, IStorageBackend storageBackend = null)
         {
             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[FenRuntime] Constructor Start\r\n"); } catch { }
             _context = context ?? new ExecutionContext();
+            _storageBackend = storageBackend ?? new InMemoryStorageBackend();
+
             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[FenRuntime] Creating FenEnvironment...\r\n"); } catch { }
             _globalEnv = new FenEnvironment();
             _context.Environment = _globalEnv;
@@ -137,6 +141,14 @@ namespace FenBrowser.FenEngine.Core
 
             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[InitializeBuiltins] console setup done\r\n"); } catch { }
             SetGlobal("console", FenValue.FromObject(console));
+
+            // caches API (CacheStorage) - Persistent and partitioned by origin
+            var cacheStorage = new FenBrowser.FenEngine.WebAPIs.CacheStorage(() => GetCurrentOrigin(), _storageBackend);
+            SetGlobal("caches", FenValue.FromObject(cacheStorage));
+
+            // Worker API - Persistent storage for workers
+            var workerCtor = new FenBrowser.FenEngine.Workers.WorkerConstructor(GetCurrentOrigin(), _storageBackend);
+            SetGlobal("Worker", FenValue.FromFunction(workerCtor.GetConstructorFunction()));
 
             // Timers
             var setTimeout = FenValue.FromFunction(new FenFunction("setTimeout", (args, thisVal) =>
@@ -3770,16 +3782,13 @@ namespace FenBrowser.FenEngine.Core
 
         #region IndexedDB API Helpers
 
-        // In-memory storage for IndexedDB databases
-        private static readonly Dictionary<string, Dictionary<string, Dictionary<string, IValue>>> _idbDatabases = 
-            new Dictionary<string, Dictionary<string, Dictionary<string, IValue>>>(StringComparer.OrdinalIgnoreCase);
-
         /// <summary>
         /// Creates the indexedDB global object (IDBFactory)
         /// </summary>
         private FenObject CreateIndexedDB()
         {
             var idb = new FenObject();
+            var origin = GetCurrentOrigin();
             
             // open(name, version) - Opens a database, returns IDBOpenDBRequest
             idb.Set("open", FenValue.FromFunction(new FenFunction("open", (args, thisVal) =>
@@ -3799,11 +3808,8 @@ namespace FenBrowser.FenEngine.Core
                 {
                     await Task.Delay(10); // Small delay to mimic async
                     
-                    bool isNew = !_idbDatabases.ContainsKey(dbName);
-                    if (isNew)
-                    {
-                        _idbDatabases[dbName] = new Dictionary<string, Dictionary<string, IValue>>(StringComparer.OrdinalIgnoreCase);
-                    }
+                    var openResult = await _storageBackend.OpenDatabase(origin, dbName, version);
+                    bool isNew = openResult.UpgradeNeeded;
                     
                     var db = CreateIDBDatabase(dbName, version);
                     request.Set("result", db);
@@ -3820,8 +3826,8 @@ namespace FenBrowser.FenEngine.Core
                             {
                                 var evt = new FenObject();
                                 evt.Set("target", FenValue.FromObject(request));
-                                evt.Set("oldVersion", FenValue.FromNumber(0));
-                                evt.Set("newVersion", FenValue.FromNumber(version));
+                                evt.Set("oldVersion", FenValue.FromNumber(openResult.OldVersion));
+                                evt.Set("newVersion", FenValue.FromNumber(openResult.NewVersion));
                                 cb.NativeImplementation(new IValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
                             }
                         }
@@ -3848,7 +3854,7 @@ namespace FenBrowser.FenEngine.Core
             idb.Set("deleteDatabase", FenValue.FromFunction(new FenFunction("deleteDatabase", (args, thisVal) =>
             {
                 var dbName = args.Length > 0 ? args[0].ToString() : "";
-                _idbDatabases.Remove(dbName);
+                _ = _storageBackend.DeleteDatabase(origin, dbName);
                 
                 var request = new FenObject();
                 request.Set("readyState", FenValue.FromString("done"));
@@ -3871,13 +3877,7 @@ namespace FenBrowser.FenEngine.Core
             db.Set("createObjectStore", FenValue.FromFunction(new FenFunction("createObjectStore", (args, thisVal) =>
             {
                 var storeName = args.Length > 0 ? args[0].ToString() : "default";
-                
-                if (!_idbDatabases.ContainsKey(name))
-                    _idbDatabases[name] = new Dictionary<string, Dictionary<string, IValue>>(StringComparer.OrdinalIgnoreCase);
-                
-                if (!_idbDatabases[name].ContainsKey(storeName))
-                    _idbDatabases[name][storeName] = new Dictionary<string, IValue>(StringComparer.OrdinalIgnoreCase);
-                
+                _ = _storageBackend.CreateObjectStore(GetCurrentOrigin(), name, storeName, new ObjectStoreOptions());
                 return CreateIDBObjectStore(name, storeName);
             })));
             
@@ -3915,14 +3915,7 @@ namespace FenBrowser.FenEngine.Core
         {
             var store = new FenObject();
             store.Set("name", FenValue.FromString(storeName));
-            
-            // Ensure store exists
-            if (!_idbDatabases.ContainsKey(dbName))
-                _idbDatabases[dbName] = new Dictionary<string, Dictionary<string, IValue>>(StringComparer.OrdinalIgnoreCase);
-            if (!_idbDatabases[dbName].ContainsKey(storeName))
-                _idbDatabases[dbName][storeName] = new Dictionary<string, IValue>(StringComparer.OrdinalIgnoreCase);
-            
-            var storeData = _idbDatabases[dbName][storeName];
+            var origin = GetCurrentOrigin();
             
             // add(value, key) - Adds a value
             store.Set("add", FenValue.FromFunction(new FenFunction("add", (args, thisVal) =>
@@ -3930,7 +3923,10 @@ namespace FenBrowser.FenEngine.Core
                 var value = args.Length > 0 ? args[0] : FenValue.Undefined;
                 var key = args.Length > 1 ? args[1].ToString() : Guid.NewGuid().ToString();
                 
-                storeData[key] = value;
+                _ = Task.Run(async () =>
+                {
+                    await _storageBackend.Add(origin, dbName, storeName, key, StorageUtils.ToSerializable(value));
+                });
                 
                 var request = new FenObject();
                 request.Set("result", FenValue.FromString(key));
@@ -3959,14 +3955,14 @@ namespace FenBrowser.FenEngine.Core
             store.Set("get", FenValue.FromFunction(new FenFunction("get", (args, thisVal) =>
             {
                 var key = args.Length > 0 ? args[0].ToString() : "";
-                
                 var request = new FenObject();
-                storeData.TryGetValue(key, out var value);
-                request.Set("result", value ?? FenValue.Undefined);
                 request.Set("onsuccess", FenValue.Null);
                 
                 _ = Task.Run(async () =>
                 {
+                    var result = await _storageBackend.Get(origin, dbName, storeName, key);
+                    request.Set("result", StorageUtils.FromSerializable(result));
+                    
                     await Task.Delay(1);
                     var cb = request.Get("onsuccess");
                     if (cb != null && cb.IsFunction)
@@ -3990,11 +3986,26 @@ namespace FenBrowser.FenEngine.Core
                 var value = args.Length > 0 ? args[0] : FenValue.Undefined;
                 var key = args.Length > 1 ? args[1].ToString() : Guid.NewGuid().ToString();
                 
-                storeData[key] = value;
-                
                 var request = new FenObject();
                 request.Set("result", FenValue.FromString(key));
                 request.Set("onsuccess", FenValue.Null);
+
+                _ = Task.Run(async () =>
+                {
+                    await _storageBackend.Put(origin, dbName, storeName, key, StorageUtils.ToSerializable(value));
+                    
+                    var cb = request.Get("onsuccess");
+                    if (cb != null && cb.IsFunction)
+                    {
+                        var fn = cb.AsFunction();
+                        if (fn.IsNative && fn.NativeImplementation != null)
+                        {
+                            var evt = new FenObject();
+                            evt.Set("target", FenValue.FromObject(request));
+                            fn.NativeImplementation(new IValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
+                        }
+                    }
+                });
                 
                 return FenValue.FromObject(request);
             })));
@@ -4003,20 +4014,52 @@ namespace FenBrowser.FenEngine.Core
             store.Set("delete", FenValue.FromFunction(new FenFunction("delete", (args, thisVal) =>
             {
                 var key = args.Length > 0 ? args[0].ToString() : "";
-                storeData.Remove(key);
-                
                 var request = new FenObject();
                 request.Set("onsuccess", FenValue.Null);
+
+                _ = Task.Run(async () =>
+                {
+                    await _storageBackend.Delete(origin, dbName, storeName, key);
+                    
+                    var cb = request.Get("onsuccess");
+                    if (cb != null && cb.IsFunction)
+                    {
+                        var fn = cb.AsFunction();
+                        if (fn.IsNative && fn.NativeImplementation != null)
+                        {
+                            var evt = new FenObject();
+                            evt.Set("target", FenValue.FromObject(request));
+                            fn.NativeImplementation(new IValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
+                        }
+                    }
+                });
+
                 return FenValue.FromObject(request);
             })));
             
             // clear() - Clears all values
             store.Set("clear", FenValue.FromFunction(new FenFunction("clear", (args, thisVal) =>
             {
-                storeData.Clear();
-                
                 var request = new FenObject();
                 request.Set("onsuccess", FenValue.Null);
+
+                _ = Task.Run(async () =>
+                {
+                    await _storageBackend.Clear(origin, dbName, storeName);
+                    
+                    var cb = request.Get("onsuccess");
+                    if (cb != null && cb.IsFunction)
+                    {
+                        var fn = cb.AsFunction();
+                        if (fn.IsNative && fn.NativeImplementation != null)
+                        {
+                            var evt = new FenObject();
+                            evt.Set("target", FenValue.FromObject(request));
+                            fn.NativeImplementation(new IValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
+                        }
+                    }
+                });
+
                 return FenValue.FromObject(request);
             })));
             
