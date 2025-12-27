@@ -37,3 +37,4 @@ build_log.txt
 build_*.log
 erro_*.log
 .agent/
+.github/instructions/
