@@ -244,6 +244,94 @@ namespace FenBrowser.FenEngine.Rendering
     }
 
     /// <summary>
+    /// Draw a rounded rectangle with individual corner radii
+    /// </summary>
+    public class DrawComplexRoundRectCommand : RenderCommand
+    {
+        public SKRect Rect { get; set; }
+        public float[] Radii { get; set; } // TL, TR, BR, BL
+        public SKColor Color { get; set; }
+        public SKPaintStyle Style { get; set; } = SKPaintStyle.Fill;
+        public float StrokeWidth { get; set; } = 1f;
+
+        public override void Execute(SKCanvas canvas)
+        {
+            using var paint = new SKPaint
+            {
+                Color = Color.WithAlpha((byte)(Color.Alpha * Opacity)),
+                Style = Style,
+                StrokeWidth = StrokeWidth,
+                IsAntialias = true
+            };
+            
+            if (Radii == null || Radii.Length < 4)
+            {
+                 canvas.DrawRect(Rect, paint);
+                 return;
+            }
+
+            using var rr = new SKRoundRect();
+            var radii = new SKPoint[4];
+            for (int i = 0; i < 4; i++)
+                radii[i] = new SKPoint(Radii[i], Radii[i]);
+            
+            rr.SetRectRadii(Rect, radii);
+            canvas.DrawRoundRect(rr, paint);
+        }
+    }
+
+    /// <summary>
+    /// Draw a box shadow
+    /// </summary>
+    public class DrawBoxShadowCommand : RenderCommand
+    {
+        public SKRect Box { get; set; }
+        public float[] BorderRadius { get; set; }
+        public SKColor Color { get; set; }
+        public float OffsetX { get; set; }
+        public float OffsetY { get; set; }
+        public float BlurRadius { get; set; }
+        public float SpreadRadius { get; set; }
+        public bool Inset { get; set; }
+
+        public override void Execute(SKCanvas canvas)
+        {
+            if (Inset) return; // TODO: Inset shadows
+            
+            var shadowRect = new SKRect(
+                Box.Left + OffsetX - SpreadRadius,
+                Box.Top + OffsetY - SpreadRadius,
+                Box.Right + OffsetX + SpreadRadius,
+                Box.Bottom + OffsetY + SpreadRadius
+            );
+
+            using var paint = new SKPaint
+            {
+                Color = Color.WithAlpha((byte)(Color.Alpha * Opacity)),
+                IsAntialias = true,
+                Style = SKPaintStyle.Fill
+            };
+
+            if (BlurRadius > 0)
+                paint.MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, BlurRadius / 2);
+
+            if (BorderRadius != null && BorderRadius.Length >= 4)
+            {
+                using var rr = new SKRoundRect();
+                var radii = new SKPoint[4];
+                for (int i = 0; i < 4; i++)
+                    radii[i] = new SKPoint(BorderRadius[i], BorderRadius[i]);
+                rr.SetRectRadii(shadowRect, radii);
+                canvas.DrawRoundRect(rr, paint);
+            }
+            else
+            {
+                canvas.DrawRect(shadowRect, paint);
+            }
+        }
+    }
+
+    /// <summary>
     /// Clip to a rectangle
     /// </summary>
     public class ClipRectCommand : RenderCommand
