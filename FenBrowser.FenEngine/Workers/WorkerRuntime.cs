@@ -6,6 +6,7 @@ using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core; // Added for IExecutionContext
 using FenBrowser.FenEngine.Core.EventLoop;
 using FenBrowser.FenEngine.Core.Interfaces; // Added for IExecutionContext
+using FenBrowser.Core.Network;
 
 namespace FenBrowser.FenEngine.Workers
 {
@@ -20,6 +21,7 @@ namespace FenBrowser.FenEngine.Workers
     public class WorkerRuntime : IDisposable
     {
         private readonly string _origin;
+        private readonly FenBrowser.FenEngine.Storage.IStorageBackend _storageBackend;
         private readonly string _scriptUrl;
         private readonly TaskQueue _taskQueue;
         private readonly MicrotaskQueue _microtaskQueue;
@@ -27,6 +29,8 @@ namespace FenBrowser.FenEngine.Workers
         private readonly Thread _workerThread;
         private bool _isRunning;
         private bool _isDisposed;
+        private FenRuntime _runtime;
+        private WorkerGlobalScope _globalScope;
 
         /// <summary>
         /// Event fired when the worker sends a message to the main thread
@@ -45,10 +49,11 @@ namespace FenBrowser.FenEngine.Workers
         /// </summary>
         /// <param name="scriptUrl">URL of the worker script</param>
         /// <param name="origin">Origin for security context</param>
-        public WorkerRuntime(string scriptUrl, string origin)
+        public WorkerRuntime(string scriptUrl, string origin, FenBrowser.FenEngine.Storage.IStorageBackend storageBackend = null)
         {
             _scriptUrl = scriptUrl ?? throw new ArgumentNullException(nameof(scriptUrl));
             _origin = origin ?? "null";
+            _storageBackend = storageBackend ?? new FenBrowser.FenEngine.Storage.InMemoryStorageBackend();
             _taskQueue = new TaskQueue();
             _microtaskQueue = new MicrotaskQueue();
             _cts = new CancellationTokenSource();
@@ -121,9 +126,47 @@ namespace FenBrowser.FenEngine.Workers
 
             try
             {
+                // Initialize dedicated runtime
+                _globalScope = new WorkerGlobalScope(this, _origin);
+                _runtime = new FenRuntime(); // We need a way to set the global object or prototype
+                
+                // Inject globals into the worker runtime
+                foreach (var key in _globalScope.Keys())
+                {
+                    _runtime.SetGlobal(key, _globalScope.Get(key));
+                }
+                _runtime.SetGlobal("self", FenValue.FromObject(_globalScope));
+
                 // Load and execute worker script
-                // In a real impl, we'd fetch the script and execute it
-                // For now, this is a placeholder for the event loop
+                _ = Task.Run(async () => {
+                    try {
+                        string scriptContent = "";
+                        if (_scriptUrl.StartsWith("http")) {
+                            using (var client = new System.Net.Http.HttpClient())
+                            {
+                                scriptContent = await client.GetStringAsync(new Uri(_scriptUrl));
+                            }
+                        } else {
+                            // Local file handling or relative URL
+                            scriptContent = File.Exists(_scriptUrl) ? File.ReadAllText(_scriptUrl) : "";
+                        }
+
+                        if (!string.IsNullOrEmpty(scriptContent)) {
+                            _taskQueue.Enqueue(() => {
+                                try {
+                                    _runtime.ExecuteSimple(scriptContent);
+                                    FenLogger.Debug($"[WorkerRuntime] Executed script: {_scriptUrl}", LogCategory.JavaScript);
+                                } catch (Exception ex) {
+                                    FenLogger.Error($"[WorkerRuntime] Script execution error: {ex.Message}", LogCategory.Errors);
+                                    OnError?.Invoke(ex);
+                                }
+                            }, TaskSource.Networking, "Worker-ScriptLoad");
+                        }
+                    } catch (Exception ex) {
+                        FenLogger.Error($"[WorkerRuntime] Script fetch error: {ex.Message}", LogCategory.Errors);
+                        OnError?.Invoke(ex);
+                    }
+                });
                 
                 while (_isRunning && !_cts.IsCancellationRequested)
                 {
@@ -190,9 +233,7 @@ namespace FenBrowser.FenEngine.Workers
         /// </summary>
         private void InvokeOnMessage(WorkerMessageEvent evt)
         {
-            // This would be: workerGlobalScope.onmessage(evt)
-            // For now, we just log
-            FenLogger.Debug($"[WorkerRuntime] Received message: {evt.Data}", LogCategory.JavaScript);
+            _globalScope?.DispatchMessage(evt.Data);
         }
 
         public void Dispose()

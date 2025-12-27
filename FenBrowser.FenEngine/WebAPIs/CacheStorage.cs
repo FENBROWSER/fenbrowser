@@ -15,12 +15,12 @@ namespace FenBrowser.FenEngine.WebAPIs
     public class CacheStorage : FenObject
     {
         private readonly IStorageBackend _storageBackend;
-        private readonly string _origin;
+        private readonly Func<string> _originProvider;
         private readonly Dictionary<string, Cache> _openCaches = new();
 
-        public CacheStorage(string origin, IStorageBackend storageBackend)
+        public CacheStorage(Func<string> originProvider, IStorageBackend storageBackend)
         {
-            _origin = origin;
+            _originProvider = originProvider;
             _storageBackend = storageBackend;
 
             Set("open", FenValue.FromFunction(new FenFunction("open", Open)));
@@ -39,7 +39,7 @@ namespace FenBrowser.FenEngine.WebAPIs
              {
                  if (!_openCaches.ContainsKey(cacheName))
                  {
-                     _openCaches[cacheName] = new Cache(_origin, cacheName, _storageBackend);
+                     _openCaches[cacheName] = new Cache(_originProvider(), cacheName, _storageBackend);
                  }
                  return FenValue.FromObject(_openCaches[cacheName]);
              }));
@@ -53,7 +53,7 @@ namespace FenBrowser.FenEngine.WebAPIs
              return FenValue.FromObject(CreatePromise(async () =>
              {
                  // Check if database exists for this cache
-                 var info = await _storageBackend.GetDatabaseInfo(_origin, $"cache_{cacheName}");
+                 var info = await _storageBackend.GetDatabaseInfo(_originProvider(), $"cache_{cacheName}");
                  return FenValue.FromBoolean(info != null);
              }));
         }
@@ -66,10 +66,10 @@ namespace FenBrowser.FenEngine.WebAPIs
              return FenValue.FromObject(CreatePromise(async () =>
              {
                  _openCaches.Remove(cacheName);
-                 var deleted = await _storageBackend.GetDatabaseInfo(_origin, $"cache_{cacheName}") != null;
+                 var deleted = await _storageBackend.GetDatabaseInfo(_originProvider(), $"cache_{cacheName}") != null;
                  if (deleted)
                  {
-                     await _storageBackend.DeleteDatabase(_origin, $"cache_{cacheName}");
+                     await _storageBackend.DeleteDatabase(_originProvider(), $"cache_{cacheName}");
                  }
                  return FenValue.FromBoolean(deleted);
              }));

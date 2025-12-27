@@ -26,8 +26,15 @@ namespace FenBrowser.FenEngine.Workers
         // Better: Registration Scope -> Active Worker Runtime
         // For simplicity: We track runtimes by scope for now.
         private readonly ConcurrentDictionary<string, WorkerRuntime> _activeRuntimes = new();
+        
+        private FenBrowser.FenEngine.Storage.IStorageBackend _storageBackend;
 
         private ServiceWorkerManager() { }
+        
+        public void Initialize(FenBrowser.FenEngine.Storage.IStorageBackend storageBackend)
+        {
+            _storageBackend = storageBackend;
+        }
 
         public async Task<ServiceWorkerRegistration> Register(string scriptUrl, string scope)
         {
@@ -110,6 +117,10 @@ namespace FenBrowser.FenEngine.Workers
                 // For testing/simplicity: Auto-Activate if no existing active worker
                 if (reg.Active == null)
                 {
+                    // Create actual runtime for events
+                    var runtime = new WorkerRuntime(scriptUrl, scope, _storageBackend);
+                    _activeRuntimes[scope] = runtime;
+                    
                     ActivateWorker(scope, reg, sw);
                 }
             }
