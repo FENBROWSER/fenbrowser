@@ -4,6 +4,26 @@ using Silk.NET.Input;
 namespace FenBrowser.Host.Widgets;
 
 /// <summary>
+/// Basic accessibility roles for widgets.
+/// </summary>
+public enum WidgetRole
+{
+    None,
+    Window,
+    Pane,
+    Button,
+    Edit,
+    Link,
+    Text,
+    Image,
+    Tab,
+    TabItem,
+    Toolbar,
+    StatusBar,
+    Document
+}
+
+/// <summary>
 /// Base class for all UI widgets in FenBrowser.Host.
 /// Provides common layout, painting, and input handling.
 /// </summary>
@@ -28,6 +48,28 @@ public abstract class Widget
     /// Whether this widget is enabled for interaction.
     /// </summary>
     public bool IsEnabled { get; set; } = true;
+    
+    // Accessibility Hooks
+    
+    /// <summary>
+    /// Unique ID for automation finding.
+    /// </summary>
+    public string AutomationId { get; set; }
+    
+    /// <summary>
+    /// Human-readable name (e.g., for screen readers).
+    /// </summary>
+    public string Name { get; set; }
+    
+    /// <summary>
+    /// Extended help text or tooltip.
+    /// </summary>
+    public string HelpText { get; set; }
+    
+    /// <summary>
+    /// Semantic role of this widget.
+    /// </summary>
+    public WidgetRole Role { get; set; } = WidgetRole.None;
     
     /// <summary>
     /// Parent widget (null for root).
@@ -56,25 +98,112 @@ public abstract class Widget
     {
         child.Parent = this;
         Children.Add(child);
+        InvalidateLayout();
+        Invalidate();
+    }
+    
+    /// <summary>
+    /// Remove a child widget.
+    /// </summary>
+    public void RemoveChild(Widget child)
+    {
+        if (Children.Remove(child))
+        {
+            child.Parent = null;
+            InvalidateLayout();
+            Invalidate();
+        }
+    }
+    
+    /// <summary>
+    /// Desired size calculated during Measure pass.
+    /// </summary>
+    public SKSize DesiredSize { get; protected set; }
+    
+    /// <summary>
+    /// Whether this widget needs layout recalculation.
+    /// </summary>
+    public bool IsLayoutDirty { get; protected set; } = true;
+    
+    /// <summary>
+    /// Measure this widget and its children to determine desired size.
+    /// </summary>
+    public void Measure(SKSize availableSpace)
+    {
+        if (!IsVisible)
+        {
+            DesiredSize = SKSize.Empty;
+            return;
+        }
+        
+        DesiredSize = OnMeasure(availableSpace);
+    }
+    
+    /// <summary>
+    /// Arrange this widget and its children within the final rectangle.
+    /// </summary>
+    public void Arrange(SKRect finalRect)
+    {
+        if (!IsVisible) return;
+        
+        Bounds = finalRect;
+        OnArrange(finalRect);
+        IsLayoutDirty = false;
+    }
+    
+    /// <summary>
+    /// Override to implement custom child measurement.
+    /// Default: returns full available space if children exist, or zero if none.
+    /// </summary>
+    protected virtual SKSize OnMeasure(SKSize availableSpace)
+    {
+        // Default: measure children and return bounding box
+        float maxWidth = 0;
+        float totalHeight = 0;
+        
+        foreach (var child in Children)
+        {
+            child.Measure(availableSpace);
+            maxWidth = Math.Max(maxWidth, child.DesiredSize.Width);
+            totalHeight += child.DesiredSize.Height;
+        }
+        
+        return new SKSize(maxWidth, totalHeight);
+    }
+    
+    /// <summary>
+    /// Override to implement custom child arrangement.
+    /// Default: stacks children vertically.
+    /// </summary>
+    protected virtual void OnArrange(SKRect finalRect)
+    {
+        float y = finalRect.Top;
+        foreach (var child in Children)
+        {
+            if (!child.IsVisible) continue;
+            var childRect = new SKRect(finalRect.Left, y, finalRect.Right, y + child.DesiredSize.Height);
+            child.Arrange(childRect);
+            y += childRect.Height;
+        }
+    }
+    
+    /// <summary>
+    /// Mark this widget and its parents as needing layout.
+    /// </summary>
+    public void InvalidateLayout()
+    {
+        IsLayoutDirty = true;
+        Parent?.InvalidateLayout();
     }
     
     /// <summary>
     /// Layout this widget within the available bounds.
-    /// Override to implement custom layout.
+    /// [DEPRECATED] Use Measure/Arrange instead.
     /// </summary>
     public virtual void Layout(SKRect available)
     {
-        Bounds = available;
-        
-        // Default: stack children vertically
-        float y = available.Top;
-        foreach (var child in Children)
-        {
-            if (!child.IsVisible) continue;
-            var childBounds = new SKRect(available.Left, y, available.Right, y + 40);
-            child.Layout(childBounds);
-            y += childBounds.Height;
-        }
+        Measure(new SKSize(available.Width, available.Height));
+        Arrange(available);
     }
     
     /// <summary>
@@ -98,11 +227,56 @@ public abstract class Widget
     }
     
     /// <summary>
+    /// Current dirty rectangle that needs repainting (relative to this widget).
+    /// </summary>
+    public SKRect? DirtyRect { get; protected set; }
+    
+    /// <summary>
+    /// Request a repaint of this widget or a specific region.
+    /// </summary>
+    public void Invalidate(SKRect? bounds = null)
+    {
+        var localBounds = bounds ?? new SKRect(0, 0, Bounds.Width, Bounds.Height);
+        
+        if (DirtyRect == null)
+        {
+            DirtyRect = localBounds;
+        }
+        else
+        {
+            DirtyRect = SKRect.Union(DirtyRect.Value, localBounds);
+        }
+        
+        // Propagate to parent (translating coordinates)
+        if (Parent != null)
+        {
+            var parentBounds = localBounds;
+            parentBounds.Offset(Bounds.Left, Bounds.Top);
+            Parent.Invalidate(parentBounds);
+        }
+        
+        Invalidated?.Invoke();
+    }
+    
+    /// <summary>
+    /// Clear the dirty rect after painting.
+    /// </summary>
+    public void ClearDirtyRect()
+    {
+        DirtyRect = null;
+        foreach (var child in Children)
+        {
+            child.ClearDirtyRect();
+        }
+    }
+    
+    /// <summary>
     /// Request a repaint of this widget.
+    /// [DEPRECATED] Use Invalidate(bounds) instead.
     /// </summary>
     protected void Invalidate()
     {
-        Invalidated?.Invoke();
+        Invalidate(null);
     }
     
     /// <summary>
@@ -145,6 +319,7 @@ public abstract class Widget
     public virtual void OnKeyDown(Key key) { }
     public virtual void OnKeyUp(Key key) { }
     public virtual void OnTextInput(char c) { }
+    public virtual void OnMouseWheel(float x, float y, float deltaX, float deltaY) { }
     
     /// <summary>
     /// Whether this widget can receive keyboard focus.
