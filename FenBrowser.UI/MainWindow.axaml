@@ -5,7 +5,6 @@
         x:Class="FenBrowser.UI.MainWindow"
         Title="FenBrowser"
         WindowState="Maximized"
-        Width="1100" Height="700"
         ExtendClientAreaToDecorationsHint="True"
         ExtendClientAreaChromeHints="NoChrome"
         ExtendClientAreaTitleBarHeightHint="42"

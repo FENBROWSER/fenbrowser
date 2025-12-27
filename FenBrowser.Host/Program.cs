@@ -89,6 +89,7 @@ public class Program
         var options = WindowOptions.Default;
         options.Size = new Vector2D<int>(_logicalWidth, _logicalHeight);
         options.VSync = true;
+        options.WindowState = WindowState.Maximized;
         options.WindowBorder = WindowBorder.Hidden; // Borderless for custom chrome
         options.TransparentFramebuffer = false;
         
@@ -133,6 +134,8 @@ public class Program
             // Initialize physical units
             _physicalWidth = _window.FramebufferSize.X;
             _physicalHeight = _window.FramebufferSize.Y;
+            _logicalWidth = _window.Size.X;
+            _logicalHeight = _window.Size.Y;
             _dpiScale = (float)_physicalWidth / _logicalWidth;
             
             _mouse = mouse; // Store for cursor management
