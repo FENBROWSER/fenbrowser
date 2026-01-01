@@ -233,7 +233,7 @@ namespace FenBrowser.FenEngine.Scripting
                     var name = j._node.Tag == "#text" ? (j._node.Text ?? "") : (j._node.Attr != null && j._node.Attr.TryGetValue("id", out __tmpId) ? "#" + __tmpId : j._node.Tag);
                     lock (_e._mutationLock)
                     {
-                        _e._pendingMutations.Add(new MutationRecord { Type = "childList", AddedNodes = new System.Collections.Generic.List<Element> { j._node }, RemovedNodes = new System.Collections.Generic.List<Element>() });
+                        _e._pendingMutations.Add(new MutationRecord { Type = "childList", AddedNodes = new System.Collections.Generic.List<Node> { j._node }, RemovedNodes = new System.Collections.Generic.List<Node>() });
                     }
                 }
                 catch { }
@@ -255,7 +255,7 @@ namespace FenBrowser.FenEngine.Scripting
                         {
                             string __tmpId3 = null;
                             var name = j._node.Tag == "#text" ? (j._node.Text ?? "") : (j._node.Attr != null && j._node.Attr.TryGetValue("id", out __tmpId3) ? "#" + __tmpId3 : j._node.Tag);
-                            _e._pendingMutations.Add(new MutationRecord { Type = "childList", AddedNodes = new System.Collections.Generic.List<Element>(), RemovedNodes = new System.Collections.Generic.List<Element> { j._node } });
+                            _e._pendingMutations.Add(new MutationRecord { Type = "childList", AddedNodes = new System.Collections.Generic.List<Node>(), RemovedNodes = new System.Collections.Generic.List<Node> { j._node } });
                         }
                         _e.RequestRepaint();
                     }
@@ -382,8 +382,8 @@ namespace FenBrowser.FenEngine.Scripting
                             _e._pendingMutations.Add(new MutationRecord
                             {
                                 Type = "childList",
-                                AddedNodes = new System.Collections.Generic.List<Element> { textNode },
-                                RemovedNodes = new System.Collections.Generic.List<Element>()
+                                AddedNodes = new System.Collections.Generic.List<Node> { textNode },
+                                RemovedNodes = new System.Collections.Generic.List<Node>()
                             });
                         }
                     }
@@ -537,7 +537,7 @@ namespace FenBrowser.FenEngine.Scripting
                 {
                     string __tmpId2 = null;
                     var name = j._node.Tag == "#text" ? (j._node.Text ?? "") : (j._node.Attr != null && j._node.Attr.TryGetValue("id", out __tmpId2) ? "#" + __tmpId2 : j._node.Tag);
-                    lock (_e._mutationLock) { _e._pendingMutations.Add(new MutationRecord { Type = "childList", AddedNodes = new System.Collections.Generic.List<Element> { j._node }, RemovedNodes = new System.Collections.Generic.List<Element>() }); }
+                    lock (_e._mutationLock) { _e._pendingMutations.Add(new MutationRecord { Type = "childList", AddedNodes = new System.Collections.Generic.List<Node> { j._node }, RemovedNodes = new System.Collections.Generic.List<Node>() }); }
                 }
                 catch { }
                 _e.RequestRepaint();
@@ -572,7 +572,7 @@ namespace FenBrowser.FenEngine.Scripting
                     _node.Children.Remove(j._node);
                     string __tmpId4 = null;
                     var name = j._node.Tag == "#text" ? (j._node.Text ?? "") : (j._node.Attr != null && j._node.Attr.TryGetValue("id", out __tmpId4) ? "#" + __tmpId4 : j._node.Tag);
-                    lock (_e._mutationLock) { _e._pendingMutations.Add(new MutationRecord { Type = "childList", AddedNodes = new System.Collections.Generic.List<Element>(), RemovedNodes = new System.Collections.Generic.List<Element> { j._node } }); }
+                    lock (_e._mutationLock) { _e._pendingMutations.Add(new MutationRecord { Type = "childList", AddedNodes = new System.Collections.Generic.List<Node>(), RemovedNodes = new System.Collections.Generic.List<Node> { j._node } }); }
                 }
                 catch { }
                 _e.RequestRepaint();
