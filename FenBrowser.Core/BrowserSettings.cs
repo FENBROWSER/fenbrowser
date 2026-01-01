@@ -109,6 +109,7 @@ namespace FenBrowser.Core
         public double DefaultZoom { get; set; } = 1.0;
         public bool RestoreTabsOnStartup { get; set; } = false;
         public StartupBehavior StartupAction { get; set; } = StartupBehavior.OpenNewTab;
+        public System.Collections.Generic.List<string> StartupUrls { get; set; } = new System.Collections.Generic.List<string>();
         
         // UI Settings
         public bool ShowHomeButton { get; set; } = true;

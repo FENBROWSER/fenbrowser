@@ -31,6 +31,7 @@ bld/
 *.ps1
 *.py
 *.log
+*.png
 wpt/
 debug_log.txt
 build_log.txt
