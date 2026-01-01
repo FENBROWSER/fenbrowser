@@ -18,6 +18,19 @@ namespace FenBrowser.Core
         Dark
     }
 
+    public enum StartupBehavior
+    {
+        OpenNewTab,
+        RestoreLastSession,
+        OpenSpecificPage
+    }
+
+    public class Bookmark
+    {
+        public string Title { get; set; }
+        public string Url { get; set; }
+    }
+
     public class LogSettings
     {
         public bool EnableLogging { get; set; } = false;
@@ -64,6 +77,23 @@ namespace FenBrowser.Core
         public UserAgentType SelectedUserAgent { get; set; } = UserAgentType.Chrome;
         public ThemePreference Theme { get; set; } = ThemePreference.System;
 
+        public bool ShowFavoritesBar 
+        { 
+            get => _showFavoritesBar; 
+            set 
+            {
+                _showFavoritesBar = value;
+                try {
+                System.IO.File.AppendAllText(
+                    System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FenBrowser", "click_debug.log"),
+                    $"[BrowserSettings] SET ShowFavoritesBar = {value}\n");
+                } catch {}
+            }
+        }
+        private bool _showFavoritesBar = true;
+        public bool ShowFavoritesButton { get; set; } = true;
+        public System.Collections.Generic.List<Bookmark> Bookmarks { get; set; } = new System.Collections.Generic.List<Bookmark>();
+        
         public LogSettings Logging { get; set; } = new LogSettings();
         public bool EnableJavaScript { get; set; } = true;
         public bool EnableTrackingPrevention { get; set; } = true;
@@ -71,9 +101,42 @@ namespace FenBrowser.Core
         /// <summary>
         /// Home page URL for the Home button
         /// </summary>
-        public string HomePage { get; set; } = "https://www.google.com";
+        public string HomePage { get; set; } = "example.com";
         
+        // General Settings
+        public string SearchEngine { get; set; } = "Google";
+        public string SearchEngineUrl { get; set; } = "https://www.google.com/search?q=";
+        public double DefaultZoom { get; set; } = 1.0;
+        public bool RestoreTabsOnStartup { get; set; } = false;
+        public StartupBehavior StartupAction { get; set; } = StartupBehavior.OpenNewTab;
+        
+        // UI Settings
+        public bool ShowHomeButton { get; set; } = true;
+        
+        // Downloads Settings
+        public string DownloadPath { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+        public bool AskDownloadLocation { get; set; } = false;
+        public bool OpenDownloadFolderOnStart { get; set; } = false;
+        
+        // Privacy Settings
+        public bool SendDoNotTrack { get; set; } = true;
+        public bool ClearCookiesOnExit { get; set; } = false;
         public bool BlockThirdPartyCookies { get; set; } = false;
+        public bool UseSecureDNS { get; set; } = false;
+        public bool SafeBrowsing { get; set; } = true;
+        public bool ImproveBrowser { get; set; } = false;
+        public bool BlockPopups { get; set; } = true;
+        
+        // Appearance Settings
+        public string FontSize { get; set; } = "Medium";
+        
+        // Advanced Settings
+        public bool ShowDeveloperTools { get; set; } = true;
+        
+        // System Settings
+        public bool HardwareAcceleration { get; set; } = true;
+        public bool EnableSleepingTabs { get; set; } = true;
+        public bool RunInBackground { get; set; } = false;
         public static string GetUserAgentString(UserAgentType type, bool useMobile = false)
         {
             switch (type)
@@ -108,7 +171,7 @@ namespace FenBrowser.Core
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[Settings] Failed to save: {ex.Message}");
+                FenBrowser.Core.FenLogger.Error($"[Settings] Failed to save: {ex.Message}", FenBrowser.Core.Logging.LogCategory.General);
             }
         }
 
@@ -124,10 +187,18 @@ namespace FenBrowser.Core
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[Settings] Failed to load: {ex.Message}");
+                FenBrowser.Core.FenLogger.Error($"[Settings] Failed to load: {ex.Message}", FenBrowser.Core.Logging.LogCategory.General);
             }
 
-            return new BrowserSettings();
+            var settings = new BrowserSettings();
+            
+            // Add some default bookmarks
+            settings.Bookmarks.Add(new Bookmark { Title = "Google", Url = "https://www.google.com" });
+            settings.Bookmarks.Add(new Bookmark { Title = "GitHub", Url = "https://github.com" });
+            settings.Bookmarks.Add(new Bookmark { Title = "YouTube", Url = "https://www.youtube.com" });
+            settings.Bookmarks.Add(new Bookmark { Title = "Microsoft Edge", Url = "https://www.microsoft.com/edge" });
+            
+            return settings;
         }
     }
 }

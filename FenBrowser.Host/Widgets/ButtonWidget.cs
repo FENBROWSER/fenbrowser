@@ -27,9 +27,11 @@ public class ButtonWidget : Widget
     // Styling
     // Styling properties (optional overrides)
     public SKColor? BackgroundColor { get; set; }
-    public SKColor? BorderColor { get; set; } // Added missing property
+    public SKColor? HoverBackgroundColor { get; set; }
+    public SKColor? BorderColor { get; set; }
     public SKColor? TextColor { get; set; }
-    public float CornerRadius { get; set; } = 8;
+    public SKColor? HoverTextColor { get; set; }
+    public float CornerRadius { get; set; } = 4;
     public float FontSize { get; set; } = 14;
     public SKPaintStyle IconPaintStyle { get; set; } = SKPaintStyle.Fill;
     public float IconStrokeWidth { get; set; } = 1.5f;
@@ -51,11 +53,22 @@ public class ButtonWidget : Widget
     {
         var theme = ThemeManager.Current;
         
-        // Determine background color based on state
+        // Determine background and text color based on state
+        // Modern Style: Transparent by default unless hovered/pressed (Ghost buttons)
         SKColor bgColor = BackgroundColor ?? SKColors.Empty;
+        SKColor textColor = TextColor ?? theme.Text;
+        SKColor borderColor = BorderColor ?? SKColors.Empty;
         
-        if (IsPressed) bgColor = theme.SurfacePressed;
-        else if (IsHovered) bgColor = theme.SurfaceHover;
+        if (IsPressed) 
+        {
+            bgColor = HoverBackgroundColor ?? theme.SurfacePressed;
+            textColor = HoverTextColor ?? theme.Text; // Usually same as text but could vary
+        }
+        else if (IsHovered) 
+        {
+            bgColor = HoverBackgroundColor ?? theme.SurfaceHover;
+            textColor = HoverTextColor ?? theme.Text;
+        }
         
         canvas.Save();
         
@@ -77,25 +90,22 @@ public class ButtonWidget : Widget
             canvas.DrawRoundRect(Bounds, CornerRadius, CornerRadius, bgPaint);
         }
         
-        // Draw border only if explicitly set
-        if (BorderColor.HasValue)
+        // Draw border
+        using var borderPaint = new SKPaint
         {
-            using var borderPaint = new SKPaint
-            {
-                Color = BorderColor.Value,
-                IsAntialias = true,
-                Style = SKPaintStyle.Stroke,
-                StrokeWidth = 1
-            };
-            canvas.DrawRoundRect(Bounds, CornerRadius, CornerRadius, borderPaint);
-        }
+            Color = borderColor,
+            IsAntialias = true,
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 1
+        };
+        canvas.DrawRoundRect(Bounds, CornerRadius, CornerRadius, borderPaint);
         
         // Draw text
         if (!string.IsNullOrEmpty(Text))
         {
             using var textPaint = new SKPaint
             {
-                Color = IsEnabled ? (TextColor ?? theme.Text) : theme.TextMuted,
+                Color = IsEnabled ? textColor : theme.TextMuted,
                 IsAntialias = true,
                 TextSize = FontSize,
                 TextAlign = SKTextAlign.Center,
@@ -113,7 +123,7 @@ public class ButtonWidget : Widget
         {
              using var iconPaint = new SKPaint
              {
-                 Color = IsEnabled ? (TextColor ?? theme.Text) : theme.TextMuted,
+                 Color = IsEnabled ? textColor : theme.TextMuted,
                  IsAntialias = true,
                  Style = IconPaintStyle,
                  StrokeWidth = IconStrokeWidth
@@ -138,7 +148,7 @@ public class ButtonWidget : Widget
         {
             using var iconPaint = new SKPaint
             {
-                Color = IsEnabled ? (TextColor ?? theme.Text) : theme.TextMuted,
+                Color = IsEnabled ? textColor : theme.TextMuted,
                 IsAntialias = true,
                 TextSize = FontSize + 4,
                 TextAlign = SKTextAlign.Center
