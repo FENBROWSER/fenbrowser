@@ -19,16 +19,31 @@ public class DevToolsController
     private SKRect _tabBarBounds;
     private SKRect _contentBounds;
     private int _hoveredTabIndex = -1;
+    private bool _isCloseHovered = false;
     
     // State
     public bool IsVisible { get; private set; }
-    public float Height { get; set; } = 300f;
+    public bool IsDragging => _activePanel?.IsDragging ?? false;
+    private float _height = 300f;
+    public float Height 
+    { 
+        get => _height; 
+        set 
+        { 
+            if (_height != value)
+            {
+                _height = value;
+                LayoutChanged?.Invoke();
+            }
+        }
+    }
     public float MinHeight { get; } = 200f;
     public float MaxHeight { get; } = 600f;
     
     // Events
     public event Action? Invalidated;
     public event Action? CloseRequested;
+    public event Action? LayoutChanged;
     
     // Selected element (for Elements panel)
     private Element? _selectedElement;
@@ -78,6 +93,7 @@ public class DevToolsController
         IsVisible = true;
         _activePanel?.OnActivate();
         Invalidated?.Invoke();
+        LayoutChanged?.Invoke();
     }
     
     /// <summary>
@@ -86,8 +102,10 @@ public class DevToolsController
     public void Hide()
     {
         IsVisible = false;
+        _host?.RequestCursorChange(CursorType.Default);
         _activePanel?.OnDeactivate();
         Invalidated?.Invoke();
+        LayoutChanged?.Invoke();
     }
     
     /// <summary>
@@ -220,11 +238,25 @@ public class DevToolsController
         }
         
         // Draw close button
-        float closeX = _tabBarBounds.Right - 30;
+        float closeX = _tabBarBounds.Right - 20;
         float closeY = _tabBarBounds.MidY;
-        using var closePaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.TextSecondary, DevToolsTheme.FontSizeLarge);
+        
+        // Draw hover highlight
+        if (_isCloseHovered)
+        {
+            using var hoverPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.ConsoleError.WithAlpha(40));
+            canvas.DrawCircle(closeX, closeY, 14, hoverPaint);
+            
+            // Draw "Close DevTools" text
+            using var hintPaint = DevToolsTheme.CreateUITextPaint(DevToolsTheme.TextSecondary, DevToolsTheme.FontSizeSmall);
+            string hint = "Close DevTools";
+            float hintWidth = hintPaint.MeasureText(hint);
+            canvas.DrawText(hint, closeX - 30 - hintWidth, closeY + 5, hintPaint);
+        }
+
+        using var closePaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.TextPrimary, DevToolsTheme.FontSizeLarge * 1.2f);
         closePaint.TextAlign = SKTextAlign.Center;
-        canvas.DrawText("×", closeX, closeY + 5, closePaint);
+        canvas.DrawText("×", closeX, closeY + 6, closePaint);
         
         // Draw bottom border of tab bar
         using var borderPaint = DevToolsTheme.CreateStrokePaint(DevToolsTheme.Border);
@@ -235,11 +267,18 @@ public class DevToolsController
     {
         if (!IsVisible) return;
         
-        // Check tab hover
+        // Check tab bar
         if (_tabBarBounds.Contains(x, y))
         {
-            int newHovered = GetTabIndexAt(x);
-            if (newHovered != _hoveredTabIndex)
+            // Reset panel cursor when moving over tab bar
+            _host?.RequestCursorChange(CursorType.Default);
+
+            // Check close button hover (right 40px)
+            bool wasCloseHovered = _isCloseHovered;
+            _isCloseHovered = x >= _tabBarBounds.Right - 40;
+            
+            int newHovered = _isCloseHovered ? -1 : GetTabIndexAt(x);
+            if (newHovered != _hoveredTabIndex || wasCloseHovered != _isCloseHovered)
             {
                 _hoveredTabIndex = newHovered;
                 Invalidated?.Invoke();
@@ -247,9 +286,10 @@ public class DevToolsController
         }
         else
         {
-            if (_hoveredTabIndex != -1)
+            if (_hoveredTabIndex != -1 || _isCloseHovered)
             {
                 _hoveredTabIndex = -1;
+                _isCloseHovered = false;
                 Invalidated?.Invoke();
             }
             

@@ -298,6 +298,8 @@ public class NetworkPanel : DevToolsPanelBase
     
     public override void OnMouseMove(float x, float y)
     {
+        Host?.RequestCursorChange(CursorType.Default);
+        
         if (y < Bounds.Top + _listHeight)
         {
             int index = GetRequestIndexAt(y);

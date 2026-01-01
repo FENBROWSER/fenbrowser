@@ -59,9 +59,13 @@ public class DevToolsServer
         _router.RegisterHandler(_networkDomain);
     }
     
-    public void InitializeCss(Func<Node, CssComputed?> getComputedStyle, Func<Node, List<CssLoader.MatchedRule>>? getMatchedRules = null)
+    public void InitializeCss(
+        Func<Node, CssComputed?> getComputedStyle, 
+        Func<Node, List<CssLoader.MatchedRule>>? getMatchedRules = null,
+        Action<Node, string, string>? setInlineStyle = null,
+        Action? triggerRepaint = null)
     {
-        _cssDomain = new CSSDomain(_registry, getComputedStyle, getMatchedRules);
+        _cssDomain = new CSSDomain(_registry, getComputedStyle, getMatchedRules, setInlineStyle, triggerRepaint);
         _router.RegisterHandler(_cssDomain);
     }
     
