@@ -91,6 +91,8 @@ public class BrowserIntegration
             NeedsRepaint?.Invoke(); // Signal UI to redraw using last frame
         };
         
+        _browser.TitleChanged += (s, title) => TitleChanged?.Invoke(title);
+        
         _browser.ConsoleMessage += msg => ConsoleMessage?.Invoke(msg);
         
         // Start Engine Thread
@@ -107,6 +109,27 @@ public class BrowserIntegration
             _wakeEvent.Set();
             NeedsRepaint?.Invoke();
         }
+    }
+    
+    /// <summary>
+    /// Invalidate computed style cache for an element (for live CSS editing).
+    /// </summary>
+    public void InvalidateComputedStyle(Element element)
+    {
+        // Remove from cache so it gets recomputed on next paint
+        _styles.Remove(element);
+        // Also clear browser's internal cache
+        _browser.ComputedStyles.Remove(element);
+    }
+    
+    /// <summary>
+    /// Request a repaint (for live CSS editing).
+    /// </summary>
+    public void RequestRepaint()
+    {
+        _needsRepaint = true;
+        _wakeEvent.Set();
+        NeedsRepaint?.Invoke();
     }
     
     public object EvaluateScript(string script)
@@ -169,7 +192,15 @@ public class BrowserIntegration
             !url.StartsWith("file://") && !url.StartsWith("data:") && 
             !url.StartsWith("fen://") && !url.StartsWith("view-source:"))
         {
-            url = "https://" + url;
+            // Default to http for localhost/127.0.0.1 to facilitate debugging
+            if (url.StartsWith("localhost") || url.StartsWith("127.0.0.1") || url.StartsWith("[::1]"))
+            {
+                url = "http://" + url;
+            }
+            else
+            {
+                url = "https://" + url;
+            }
         }
 
         
@@ -416,20 +447,18 @@ public class BrowserIntegration
     {
         PostToEngine(() => 
         {
+            FenLogger.Debug($"[Scroll] DeltaY={deltaY}, OldY={_scrollY}, ContentHeight={_contentHeight}, Viewport={_lastViewportSize.Height}", LogCategory.Rendering);
+            
             float scrollSpeed = 40f;
             _scrollY -= deltaY * scrollSpeed;
             
             // Clamp scroll - use actual viewport height instead of hardcoded 600
             _scrollY = Math.Max(0, _scrollY);
-            float viewportHeight = _lastViewportSize.Height > 0 ? _lastViewportSize.Height : 600;
-            if (_contentHeight > viewportHeight)
-            {
-                _scrollY = Math.Min(_scrollY, _contentHeight - viewportHeight);
-            }
-            else
-            {
-                _scrollY = 0; // No scrolling needed if content fits
-            }
+            float maxScroll = Math.Max(0, _contentHeight - _lastViewportSize.Height);
+            
+            if (_scrollY > maxScroll) _scrollY = maxScroll;
+
+            FenLogger.Debug($"[Scroll] NewY={_scrollY}, MaxScroll={maxScroll}", LogCategory.Rendering);
             
             _needsRepaint = true;
         });

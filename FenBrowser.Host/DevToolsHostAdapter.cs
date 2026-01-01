@@ -21,6 +21,7 @@ public class DevToolsHostAdapter : IDevToolsHost
     public event Action<ConsoleMessageInfo> ConsoleMessageAdded;
     public event Action<NetworkRequestInfo> NetworkRequestUpdated;
     public event Action<string>? ProtocolEventReceived;
+    public event Action<CursorType>? CursorChanged;
     
     public string CurrentUrl => _browser.CurrentUrl;
     
@@ -30,10 +31,12 @@ public class DevToolsHostAdapter : IDevToolsHost
         _server = server;
         
         // Wire up events
-        _browser.NeedsRepaint += () => DomChanged?.Invoke();
+        _browser.NeedsRepaint += () => Program.RunOnMainThread(() => DomChanged?.Invoke());
         
-        // Wire up protocol events
-        _server.OnJsonOutput(json => ProtocolEventReceived?.Invoke(json));
+        // Wire up protocol events - Assuming OnJsonOutput can be handled on any thread or is already safe?
+        // RemoteDebugServer handles it. Internal DevTools might need safe dispatch. 
+        // Let's safe dispatch it.
+        _server.OnJsonOutput(json => Program.RunOnMainThread(() => ProtocolEventReceived?.Invoke(json)));
         
         // Initialize domains
         _server.InitializeRuntime(this);
@@ -42,22 +45,26 @@ public class DevToolsHostAdapter : IDevToolsHost
         // Wire up network events from legacy DevToolsCore (correlate with protocol)
         FenBrowser.FenEngine.DevTools.DevToolsCore.Instance.OnNetworkRequest += (req) =>
         {
-            BroadcastNetworkEvent(req);
+            Program.RunOnMainThread(() => BroadcastNetworkEvent(req));
         };
         
         // Wire up console messages from engine
         _browser.ConsoleMessage += (msg) =>
         {
-            var level = ConsoleLevel.Log;
-            var cleanMsg = msg;
-            
-            if (msg.StartsWith("[Error] ")) { level = ConsoleLevel.Error; cleanMsg = msg.Substring(8); }
-            else if (msg.StartsWith("[Warn] ")) { level = ConsoleLevel.Warn; cleanMsg = msg.Substring(7); }
-            else if (msg.StartsWith("[Info] ")) { level = ConsoleLevel.Info; cleanMsg = msg.Substring(7); }
-            else if (msg.StartsWith("[Debug] ")) { level = ConsoleLevel.Debug; cleanMsg = msg.Substring(8); }
-            else if (msg.StartsWith("[Alert] ")) { level = ConsoleLevel.Info; cleanMsg = "alert: " + msg.Substring(8); }
-            
-            AddConsoleMessage(cleanMsg, level);
+            // Do parsing on BG thread to save UI time? Or just marshal all?
+            // Parsing is cheap. Marshal safely.
+            Program.RunOnMainThread(() => {
+                var level = ConsoleLevel.Log;
+                var cleanMsg = msg;
+                
+                if (msg.StartsWith("[Error] ")) { level = ConsoleLevel.Error; cleanMsg = msg.Substring(8); }
+                else if (msg.StartsWith("[Warn] ")) { level = ConsoleLevel.Warn; cleanMsg = msg.Substring(7); }
+                else if (msg.StartsWith("[Info] ")) { level = ConsoleLevel.Info; cleanMsg = msg.Substring(7); }
+                else if (msg.StartsWith("[Debug] ")) { level = ConsoleLevel.Debug; cleanMsg = msg.Substring(8); }
+                else if (msg.StartsWith("[Alert] ")) { level = ConsoleLevel.Info; cleanMsg = "alert: " + msg.Substring(8); }
+                
+                AddConsoleMessage(cleanMsg, level);
+            });
         };
     }
     
@@ -73,7 +80,7 @@ public class DevToolsHostAdapter : IDevToolsHost
     
     public void HighlightElement(Element? element)
     {
-        _browser.HighlightElement(element);
+        Program.RunOnMainThread(() => _browser.HighlightElement(element));
     }
 
     public IEnumerable<NetworkRequestInfo> GetNetworkRequests() => _networkRequests;
@@ -82,6 +89,11 @@ public class DevToolsHostAdapter : IDevToolsHost
     public void ScrollToElement(Element element)
     {
         // TODO
+    }
+
+    public void RequestCursorChange(CursorType cursor)
+    {
+        Program.RunOnMainThread(() => CursorChanged?.Invoke(cursor));
     }
     
     public IEnumerable<ScriptSourceInfo> GetScriptSources()
@@ -94,6 +106,7 @@ public class DevToolsHostAdapter : IDevToolsHost
     /// </summary>
     public void AddConsoleMessage(string message, ConsoleLevel level = ConsoleLevel.Log)
     {
+        // Assumes called on MainThread now (wrapper above)
         var msg = new ConsoleMessageInfo(
             message,
             level,
@@ -123,6 +136,7 @@ public class DevToolsHostAdapter : IDevToolsHost
     
     private void BroadcastNetworkEvent(FenBrowser.FenEngine.DevTools.NetworkRequest req)
     {
+        // Assumes called on MainThread now
         // Translate legacy NetworkRequest to protocol events
         if (req.Status == "pending")
         {

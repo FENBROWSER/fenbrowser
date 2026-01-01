@@ -167,10 +167,10 @@ namespace FenBrowser.UI
                          {
                              var resolved = new Uri(current, url);
                              url = resolved.AbsoluteUri;
-                             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[MainWindow] Resolved to: '{url}'\r\n"); } catch {}
+                             /* [PERF-REMOVED] */
                          }
                          catch (Exception resEx) {
-                             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[MainWindow] Resolution failed: {resEx.Message}\r\n"); } catch {}
+                             /* [PERF-REMOVED] */
                          }
                      }
                      
@@ -267,11 +267,11 @@ namespace FenBrowser.UI
 
         private void BindSkiaViewport()
         {
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[MainWindow] BindSkiaViewport called. _skiaScrollViewer={(_skiaScrollViewer != null ? "Found" : "Null")}\r\n"); } catch {}
+            /* [PERF-REMOVED] */
             
             if (_skiaScrollViewer != null && this.FindControl<SkiaBrowserView>("SkiaView") is SkiaBrowserView skiaView)
             {
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[MainWindow] BindSkiaViewport - Registering event handlers for ScrollViewer and SkiaView\r\n"); } catch {}
+                /* [PERF-REMOVED] */
                 void UpdateLayoutViewport()
                 {
                     Dispatcher.UIThread.Post(() => {
@@ -329,7 +329,7 @@ namespace FenBrowser.UI
 
             if (!string.IsNullOrEmpty(initialUrl))
             {
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[MainWindow] Ctor Navigating to {initialUrl}\r\n"); } catch {}
+                /* [PERF-REMOVED] */
                 _activeBrowser.NavigateAsync(initialUrl);
             }
 
@@ -353,12 +353,12 @@ namespace FenBrowser.UI
 
             browser.RepaintReady += (s, element) =>
             {
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[MainWindow] RepaintReady Handler Entered. Element={(element != null ? "Present" : "Null")}\r\n"); } catch {}
+                /* [PERF-REMOVED] */
                 try { FenLogger.Debug($"[MainWindow] RepaintReady fired. Element: {element}", LogCategory.General); } catch {}
                 tab.LastRenderedContent = element;
                 Dispatcher.UIThread.Post(() =>
                 {
-                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[MainWindow] RepaintReady Dispatcher Lambda Running. TabActive={tab.IsActive}\r\n"); } catch {}
+                    /* [PERF-REMOVED] */
                     if (tab.IsActive)
                     {
                         // TEMPORARY SKIA VERIFICATION WITH BOX MODEL
@@ -367,7 +367,7 @@ namespace FenBrowser.UI
                         
                         try { FenLogger.Debug($"[MainWindow] UI Thread. Root: {root?.Tag}, SkiaView: {skiaView}", LogCategory.General); } catch {}
 
-                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[MainWindow] Checks: Root={(root != null ? root.Tag : "null")} SkiaView={(skiaView != null ? "Found" : "Null")}\r\n"); } catch {}
+                        /* [PERF-REMOVED] */
 
                         if (root != null)
                         {
@@ -411,7 +411,7 @@ namespace FenBrowser.UI
                                skiaView.BaseUrl = newBaseUrl;
                                
                                // 2. Render
-                               try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[MainWindow] Calling SkiaView.Render(root, styles). Root={root.Tag}\r\n"); } catch {}
+                               /* [PERF-REMOVED] */
                                skiaView.Render(root, browser.ComputedStyles);
                                return; // Skip old renderer logic
                            }

@@ -16,6 +16,7 @@ using FenBrowser.Host.Context;
 using FenBrowser.Host.Theme;
 using FenBrowser.FenEngine.Interaction;
 using FenBrowser.FenEngine.Rendering;
+using FenBrowser.Core.Css;
 using System.Linq;
 
 namespace FenBrowser.Host;
@@ -37,7 +38,7 @@ public class Program
     private static int _logicalWidth = 1280;
     private static int _logicalHeight = 800;
     private static float _dpiScale = 1.0f;
-    private static string _currentUrl = "https://example.com";
+    private static string _currentUrl = "file:///c:/Users/udayk/Videos/FENBROWSER/tests/comprehensive_phase_test.html";
     
     // Compositor and Root UI
     private static Compositor _compositor;
@@ -66,16 +67,21 @@ public class Program
     private static FenBrowser.DevTools.Core.DevToolsController _devTools;
     private static DevToolsHostAdapter _devToolsHost;
     private static FenBrowser.DevTools.Core.DevToolsServer _devToolsServer;
+    private static FenBrowser.DevTools.Core.RemoteDebugServer _remoteDebugServer;
     private static FenBrowser.DevTools.Instrumentation.DomInstrumenter _domInstrumenter;
 
     
     public static void Main(string[] args)
     {
         // Parse command line for initial URL
+        // Parse command line for initial URL
         if (args.Length > 0)
         {
             _currentUrl = args[0];
         }
+        
+        // Capture Main Thread ID for safe dispatching
+        _mainThreadId = Environment.CurrentManagedThreadId;
         
         // Initialize logging to absolute path to ensure visibility
         FenBrowser.Core.FenLogger.Initialize(@"C:\Users\udayk\Videos\FENBROWSER\host_debug.txt");
@@ -84,6 +90,9 @@ public class Program
         StructuredLogger.Initialize(@"C:\Users\udayk\Videos\FENBROWSER\logs");
         
         FenLogger.Info($"[Host] Starting FenBrowser.Host with URL: {_currentUrl}", LogCategory.General);
+        
+        // CSS Engine configuration
+        CssEngineConfig.CurrentEngine = CssEngineType.Custom;
         
         // Create window options
         var options = WindowOptions.Default;
@@ -139,6 +148,7 @@ public class Program
             _dpiScale = (float)_physicalWidth / _logicalWidth;
             
             _mouse = mouse; // Store for cursor management
+            InputManager.Instance.Mouse = mouse;
         }
         
         SyncCompositorScale();
@@ -196,8 +206,9 @@ public class Program
             var tab = TabManager.Instance.ActiveTab;
             if (tab != null) await tab.Browser.RefreshAsync();
         };
-        _toolbar.HomeClicked += () => OnNavigate("https://example.com");
+        _toolbar.HomeClicked += () => OnNavigate(BrowserSettings.Instance.HomePage);
         _toolbar.AddressBar.FocusRequested += w => InputManager.Instance.RequestFocus(w);
+        _toolbar.AddressBar.BookmarkToggled += OnBookmarkToggled;
         _toolbar.SettingsClicked += () => 
         {
              var existingTab = TabManager.Instance.Tabs.FirstOrDefault(t => t.Url.Equals("fen://settings", StringComparison.OrdinalIgnoreCase));
@@ -211,25 +222,40 @@ public class Program
                  TabManager.Instance.CreateTab("fen://settings");
              }
         };
+        _toolbar.FavoritesClicked += () =>
+        {
+            var existingTab = TabManager.Instance.Tabs.FirstOrDefault(t => t.Url.Equals("fen://settings", StringComparison.OrdinalIgnoreCase));
+            if (existingTab != null)
+            {
+                int index = TabManager.Instance.Tabs.ToList().IndexOf(existingTab);
+                TabManager.Instance.SwitchToTab(index);
+            }
+            else
+            {
+                TabManager.Instance.CreateTab("fen://settings");
+            }
+        };
         
         // Initialize StatusBar
         _statusBar = new StatusBarWidget();
         
         // _settingsOverlay = new SettingsOverlayWidget(); // REMOVED
         
+        // Initialize DevTools
+        InitializeDevTools();
+        
         // Create the Root UI Hierarchy
-        _root = new RootWidget(_tabBar, _toolbar, _statusBar);
+        _root = new RootWidget(_tabBar, _toolbar, _statusBar, new DevToolsWidget(_devTools));
         _root.SetContent(new WebContentWidget());
-        // _root.SetOverlay(_settingsOverlay); // REMOVED
+        
+        // Wire BookmarksBar
+        _root.BookmarksBar.BookmarkClicked += url => OnNavigate(url);
         
         // Initialize the Compositor (The Heartbeat)
         _compositor = new Compositor(_root);
         
         // Wire TabManager events
         TabManager.Instance.ActiveTabChanged += OnActiveTabChanged;
-        
-        // Initialize DevTools
-        InitializeDevTools();
         
         // Create first tab with initial URL
         TabManager.Instance.CreateTab(_currentUrl);
@@ -298,6 +324,12 @@ public class Program
     {
         // Create DevTools Protocol Server
         _devToolsServer = new FenBrowser.DevTools.Core.DevToolsServer();
+        
+        // Start Remote Debugging Server on port 9222
+        // Allows Chrome/Firefox/VSCode to attach via WebSocket
+        _remoteDebugServer = new FenBrowser.DevTools.Core.RemoteDebugServer(_devToolsServer, 9222);
+        _remoteDebugServer.Start();
+        
         _domInstrumenter = new FenBrowser.DevTools.Instrumentation.DomInstrumenter(_devToolsServer);
         
         // Log protocol messages to console for Phase D1 verification
@@ -324,8 +356,8 @@ public class Program
                 
                 // Initialize DOM domain with current tab's document
                 _devToolsServer.InitializeDom(
-                    () => tab.Browser.Document,
-                    nodeId => {
+                    () => Program.RunOnMainThread(() => tab.Browser.Document).Result,
+                    nodeId => Program.RunOnMainThread(() => {
                         if (nodeId.HasValue)
                         {
                             var node = _devToolsServer.Registry.GetNode(nodeId.Value);
@@ -335,36 +367,71 @@ public class Program
                         {
                             tab.Browser.HighlightElement(null);
                         }
-                    }
+                    }).Wait()
                 );
                 
-                _devToolsServer.InitializeCss(node => {
-                    if (node == null) return null;
-                    return tab.Browser.ComputedStyles.TryGetValue(node, out var s) ? s : null;
-                }, node => {
-                    if (node is Element el && tab.Browser.CssSources != null)
-                    {
-                        return CssLoader.GetMatchedRules(el, tab.Browser.CssSources);
-                    }
-                    return new System.Collections.Generic.List<CssLoader.MatchedRule>();
-                });
+                _devToolsServer.InitializeCss(
+                    // getComputedStyle
+                    node => Program.RunOnMainThread(() => {
+                        if (node == null) return null;
+                        return tab.Browser.ComputedStyles.TryGetValue(node, out var s) ? s : null;
+                    }).Result, 
+                    // getMatchedRules
+                    node => Program.RunOnMainThread(() => {
+                        if (node is Element el && tab.Browser.CssSources != null)
+                        {
+                            return CssLoader.GetMatchedRules(el, tab.Browser.CssSources);
+                        }
+                        return new System.Collections.Generic.List<CssLoader.MatchedRule>();
+                    }).Result,
+                    // setInlineStyle - mutate element's style attribute for live editing
+                    (node, propertyName, value) => Program.RunOnMainThread(() => {
+                        if (node is Element el)
+                        {
+                            // Get or create style attribute
+                            if (!el.Attributes.TryGetValue("style", out var existingStyle))
+                                existingStyle = "";
+                            
+                            // Parse existing inline styles
+                            var styles = new Dictionary<string, string>();
+                            foreach (var part in existingStyle.Split(';', StringSplitOptions.RemoveEmptyEntries))
+                            {
+                                var kv = part.Split(':', 2);
+                                if (kv.Length == 2)
+                                    styles[kv[0].Trim().ToLower()] = kv[1].Trim();
+                            }
+                            
+                            // Update or add the property
+                            if (string.IsNullOrWhiteSpace(value))
+                                styles.Remove(propertyName.ToLower());
+                            else
+                                styles[propertyName.ToLower()] = value;
+                            
+                            // Rebuild style attribute
+                            el.Attributes["style"] = string.Join("; ", styles.Select(kv => $"{kv.Key}: {kv.Value}"));
+                            
+                            // Invalidate computed style cache for this element
+                            tab.Browser.InvalidateComputedStyle(el);
+                        }
+                    }).Wait(),
+                    // triggerRepaint
+                    () => Program.RunOnMainThread(() => tab.Browser.RequestRepaint()).Wait()
+                );
 
                 _devToolsHost = new DevToolsHostAdapter(tab.Browser, _devToolsServer);
+                _devToolsHost.CursorChanged += cursor => {
+                    CursorManager.UpdateCursorFromDevTools(_mouse, cursor);
+                };
                 _devTools.Attach(_devToolsHost);
 
                 // Phase D1 Verification: Request document when navigation completes
                 tab.Browser.UrlChanged += async (url) => {
-                    await Task.Delay(2000); // Wait for initial render to settle
-                    var response = await _devToolsServer.ProcessRequestAsync("{\"id\": 100, \"method\": \"DOM.getDocument\", \"params\": {}}");
-                    FenLogger.Info($"[DevTools-D1] Document snapshot for {url}: {response}", LogCategory.General);
+                     // No-op for now to avoid delays
+                     await Task.CompletedTask;
                 };
 
-                // Test Phase D1: Request document 5 seconds after load to verify JSON protocol
-                Task.Run(async () => {
-                    await Task.Delay(5000);
-                    var response = await _devToolsServer.ProcessRequestAsync("{\"id\": 1, \"method\": \"DOM.getDocument\", \"params\": {}}");
-                    FenLogger.Info($"[DevTools-Test] getDocument response: {response}", LogCategory.General);
-                });
+                // Test Phase D1: Removed auto-request
+
             }
         };
         
@@ -404,6 +471,7 @@ public class Program
             
             // Initial update
             _toolbar.SetUrl(tab.Url);
+            UpdateBookmarkStar(tab.Url); // Sync star state
             _toolbar.SetCanGoBack(tab.Browser.CanGoBack);
             _toolbar.SetCanGoForward(tab.Browser.CanGoForward);
             _window.Title = $"FenBrowser - {tab.Title}";
@@ -505,7 +573,52 @@ public class Program
         // We should ensure thread safety or Invalidate logic.
         // For simple host, just setting property is fine, Invalidate triggers render.
         _toolbar.SetUrl(url);
+        UpdateBookmarkStar(url); // Sync star state
         _root.Invalidate();
+    }
+    
+    private static void UpdateBookmarkStar(string url)
+    {
+        if (_toolbar?.AddressBar == null) return;
+        
+        // Check if bookmarked
+        var isBookmarked = BrowserSettings.Instance.Bookmarks.Any(b => b.Url.Equals(url, StringComparison.OrdinalIgnoreCase));
+        _toolbar.AddressBar.IsBookmarked = isBookmarked;
+    }
+
+    private static void OnBookmarkToggled()
+    {
+        var tab = TabManager.Instance.ActiveTab;
+        if (tab == null) return;
+        
+        string url = tab.Url;
+        string title = tab.Title ?? url;
+        
+        var existing = BrowserSettings.Instance.Bookmarks.FirstOrDefault(b => b.Url.Equals(url, StringComparison.OrdinalIgnoreCase));
+        if (existing != null)
+        {
+            BrowserSettings.Instance.Bookmarks.Remove(existing);
+        }
+        else
+        {
+            BrowserSettings.Instance.Bookmarks.Add(new Bookmark { Title = title, Url = url });
+        }
+        
+        BrowserSettings.Instance.Save();
+        UpdateBookmarkStar(url);
+        
+        // Refresh UI
+        _root?.BookmarksBar.RefreshBookmarks();
+        _root?.Invalidate();
+        
+        // Refresh settings if open
+        var settingsTab = TabManager.Instance.Tabs.FirstOrDefault(t => t.Url.StartsWith("fen://settings", StringComparison.OrdinalIgnoreCase));
+        if (settingsTab != null)
+        {
+            // The WebContentWidget should ideally refresh the SettingsPageWidget
+            // Since we don't have a direct reference here, we'll rely on the fact that
+            // BookmarksBar.RefreshBookmarks() was called, and potentially add a global event if needed.
+        }
     }
     
     private static void OnNavigate(string url)
@@ -568,8 +681,68 @@ public class Program
         }
     }
     
+    // Thread safety for Remote Debugging
+    private static readonly System.Collections.Concurrent.ConcurrentQueue<Action> _mainThreadQueue = new();
+    private static int _mainThreadId;
+
+    public static Task<T> RunOnMainThread<T>(Func<T> func)
+    {
+        if (Environment.CurrentManagedThreadId == _mainThreadId)
+        {
+             // Already on main thread, just run
+             return Task.FromResult(func());
+        }
+
+        var tcs = new TaskCompletionSource<T>();
+        _mainThreadQueue.Enqueue(() => {
+            try {
+                tcs.SetResult(func());
+            } catch (Exception ex) {
+                tcs.SetException(ex);
+            }
+        });
+        return tcs.Task;
+    }
+    
+    public static Task RunOnMainThread(Action action)
+    {
+        if (Environment.CurrentManagedThreadId == _mainThreadId)
+        {
+             // Already on main thread, just run
+             try {
+                action();
+                return Task.CompletedTask;
+             } catch (Exception ex) {
+                return Task.FromException(ex);
+             }
+        }
+
+        var tcs = new TaskCompletionSource();
+        _mainThreadQueue.Enqueue(() => {
+            try {
+                action();
+                tcs.SetResult();
+            } catch (Exception ex) {
+                tcs.SetException(ex);
+            }
+        });
+        return tcs.Task;
+    }
+
+    private static void ProcessMainThreadQueue()
+    {
+        int max = 50; // Don't block render too long
+        while (max-- > 0 && _mainThreadQueue.TryDequeue(out var action))
+        {
+            action();
+        }
+    }
+    
     private static void OnRender(double deltaTime)
     {
+        // 1. Process Main Thread Tasks (DevTools requests, etc)
+        ProcessMainThreadQueue();
+
         if (_surface == null || _compositor == null) return;
         
         // The Compositor is the single authority over rendering
@@ -579,19 +752,6 @@ public class Program
         
         // Draw Tooltips (Overlay)
         DrawTooltip(_surface.Canvas);
-        
-        // Draw DevTools (docked at bottom)
-        if (_devTools != null && _devTools.IsVisible)
-        {
-            float devToolsHeight = _devTools.Height;
-            var devToolsBounds = new SKRect(
-                0, 
-                _logicalHeight - devToolsHeight,
-                _logicalWidth,
-                _logicalHeight
-            );
-            _devTools.Paint(_surface.Canvas, devToolsBounds);
-        }
         
         // Flush and swap
         _surface.Canvas.Flush();
@@ -636,18 +796,18 @@ public class Program
     // Input handlers
     private static void OnKeyDown(IKeyboard keyboard, Key key, int scancode)
     {
-        // Check context menu first
-        if (_contextMenu?.IsOpen == true)
-        {
-            _contextMenu.OnKeyDown(key);
-            // If still open, don't bubble
-            if (_contextMenu?.IsOpen == true) return;
-        }
-        
         // Get modifier states
         bool ctrl = keyboard.IsKeyPressed(Key.ControlLeft) || keyboard.IsKeyPressed(Key.ControlRight);
         bool shift = keyboard.IsKeyPressed(Key.ShiftLeft) || keyboard.IsKeyPressed(Key.ShiftRight);
         bool alt = keyboard.IsKeyPressed(Key.AltLeft) || keyboard.IsKeyPressed(Key.AltRight);
+
+        // Check context menu first
+        if (_contextMenu?.IsOpen == true)
+        {
+            _contextMenu.OnKeyDown(key, ctrl, shift, alt);
+            // If still open, don't bubble
+            if (_contextMenu?.IsOpen == true) return;
+        }
         
         
         // Update global state for widgets to check
@@ -681,6 +841,9 @@ public class Program
     
     private static void OnKeyChar(IKeyboard keyboard, char character)
     {
+        // Get modifier states
+        bool ctrl = keyboard.IsKeyPressed(Key.ControlLeft) || keyboard.IsKeyPressed(Key.ControlRight);
+
         // Forward to DevTools
         if (_devTools != null && _devTools.IsVisible)
         {
@@ -688,7 +851,7 @@ public class Program
         }
         
         // Use KeyboardDispatcher
-        KeyboardDispatcher.Instance.DispatchChar(character);
+        KeyboardDispatcher.Instance.DispatchChar(character, ctrl);
     }
     
     private static void OnMouseDown(IMouse mouse, MouseButton button)
@@ -696,6 +859,10 @@ public class Program
         // Convert to logic units
         float x = mouse.Position.X / _dpiScale;
         float y = mouse.Position.Y / _dpiScale;
+        
+        // Debug logging for click issues
+        string logPath = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FenBrowser", "click_debug.log");
+        System.IO.File.AppendAllText(logPath, $"[MouseDown] Physical=({mouse.Position.X:F0},{mouse.Position.Y:F0}), DpiScale={_dpiScale:F2}, Logical=({x:F0},{y:F0})\n");
         
         // Close context menu on any click
         if (_contextMenu?.IsOpen == true && !_contextMenu.Bounds.Contains(x, y))
@@ -709,17 +876,6 @@ public class Program
         {
             _contextMenu.OnMouseDown(x, y, button);
             return;
-        }
-        
-        // Check DevTools
-        if (_devTools != null && _devTools.IsVisible)
-        {
-            float devToolsHeight = _devTools.Height;
-            var dtBounds = new SKRect(0, _logicalHeight - devToolsHeight, _logicalWidth, _logicalHeight);
-            if (dtBounds.Contains(x, y))
-            {
-                if (_devTools.OnMouseDown(x, y, button == MouseButton.Right)) return;
-            }
         }
         
         // Hit test the entire root UI
@@ -818,17 +974,7 @@ public class Program
             return;
         }
         
-        // Check DevTools
-        if (_devTools != null && _devTools.IsVisible)
-        {
-            float devToolsHeight = _devTools.Height;
-            var dtBounds = new SKRect(0, _logicalHeight - devToolsHeight, _logicalWidth, _logicalHeight);
-            if (dtBounds.Contains(x, y))
-            {
-                _devTools.OnMouseUp(x, y);
-                return;
-            }
-        }
+        // Legacy DevTools check removed (now handled by Widget system)
         
         if (button == MouseButton.Left)
         {
@@ -843,11 +989,7 @@ public class Program
         var x = position.X / _dpiScale;
         var y = position.Y / _dpiScale;
         
-        // Forward to DevTools
-        if (_devTools != null && _devTools.IsVisible)
-        {
-            _devTools.OnMouseMove(x, y);
-        }
+        // Legacy DevTools check removed (now handled by Widget system)
 
         // Window Dragging logic
         if (_isDragging)

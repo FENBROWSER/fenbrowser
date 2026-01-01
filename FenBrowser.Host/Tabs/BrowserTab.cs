@@ -62,14 +62,23 @@ public class BrowserTab
         Browser = new BrowserIntegration();
         
         // Wire browser events to tab events
+        Browser.TitleChanged += title =>
+        {
+            if (!string.IsNullOrEmpty(title))
+            {
+                Title = title;
+                TitleChanged?.Invoke(this);
+            }
+        };
+        
         Browser.UrlChanged += url =>
         {
-            // Update title from URL if no page title
-            if (string.IsNullOrEmpty(Title) || Title == "New Tab")
+            // Update title from URL only if it's currently generic
+            if (Title == "New Tab" || Title == "Loading...")
             {
                 Title = url.Length > 30 ? url.Substring(0, 30) + "..." : url;
+                TitleChanged?.Invoke(this);
             }
-            TitleChanged?.Invoke(this);
         };
         
         Browser.LoadingChanged += loading =>

@@ -58,7 +58,7 @@ public class KeyboardDispatcher
         var focused = InputManager.Instance.FocusedWidget;
         if (focused != null)
         {
-            focused.OnKeyDown(key);
+            focused.OnKeyDown(key, ctrl, shift, alt);
             return true;
         }
         
@@ -68,12 +68,12 @@ public class KeyboardDispatcher
     /// <summary>
     /// Dispatch a text input character.
     /// </summary>
-    public bool DispatchChar(char c)
+    public bool DispatchChar(char c, bool ctrl)
     {
         var focused = InputManager.Instance.FocusedWidget;
         if (focused != null)
         {
-            focused.OnTextInput(c);
+            focused.OnTextInput(c, ctrl);
             return true;
         }
         return false;

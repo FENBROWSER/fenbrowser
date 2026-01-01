@@ -1,3 +1,4 @@
+using Silk.NET.Input;
 using FenBrowser.Host.Widgets;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
@@ -18,6 +19,7 @@ public class InputManager
     
     public Widget FocusedWidget => _focusedWidget;
     public Widget CapturedWidget => _capturedWidget;
+    public IMouse Mouse { get; set; }
     
     /// <summary>
     /// Request focus for a widget.
