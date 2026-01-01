@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Text;
 using System.Collections.Generic;
 using System.Globalization;
@@ -146,7 +146,7 @@ namespace FenBrowser.Core
                         if (!string.IsNullOrEmpty(lowerName)) 
                         {
                              elem.SetAttribute(originalName ?? lowerName, value);
-                             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Parser] Attribute: {tag} -> {originalName}='{value}'\r\n"); } catch {}
+                             /* [PERF-REMOVED] */
                         }
                     }
 
@@ -452,10 +452,10 @@ namespace FenBrowser.Core
             }
             
             // Final fallback: direct string replacement for common stubborn entities
-            decoded = decoded.Replace("&#10003;", "✓");
-            decoded = decoded.Replace("&#x2713;", "✓");
-            decoded = decoded.Replace("&#10004;", "✔");
-            decoded = decoded.Replace("&#x2714;", "✔");
+            decoded = decoded.Replace("&#10003;", "?");
+            decoded = decoded.Replace("&#x2713;", "?");
+            decoded = decoded.Replace("&#10004;", "?");
+            decoded = decoded.Replace("&#x2714;", "?");
             
             return decoded;
         }
@@ -468,8 +468,8 @@ namespace FenBrowser.Core
             string text = raw;
             
             // Direct replacement for common entities that may not be decoded
-            if (text.Contains("&#10003;")) text = text.Replace("&#10003;", "✓");
-            if (text.Contains("&#x2713;")) text = text.Replace("&#x2713;", "✓");
+            if (text.Contains("&#10003;")) text = text.Replace("&#10003;", "?");
+            if (text.Contains("&#x2713;")) text = text.Replace("&#x2713;", "?");
             if (text.Contains("&amp;")) text = text.Replace("&amp;", "&");
             
             var last = parent.Children.Count > 0 ? parent.Children[parent.Children.Count - 1] : null;

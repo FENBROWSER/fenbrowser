@@ -20,5 +20,10 @@ namespace FenBrowser.Core.Dom
         {
             return $"<!DOCTYPE {Name}>";
         }
+
+        public override Node CloneNode(bool deep)
+        {
+            return new DocumentType(Name, PublicId, SystemId);
+        }
     }
 }

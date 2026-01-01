@@ -12,5 +12,10 @@ namespace FenBrowser.Core.Dom
         {
             Data = data;
         }
+
+        public override Node CloneNode(bool deep)
+        {
+            return new Comment(Data);
+        }
     }
 }

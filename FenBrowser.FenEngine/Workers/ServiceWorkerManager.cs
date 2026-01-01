@@ -48,7 +48,7 @@ namespace FenBrowser.FenEngine.Workers
             var registration = _registrations[scope];
 
             // 2. Lifecycle: "Installing"
-            var sw = new ServiceWorker(scriptUrl, "installing");
+            var sw = new ServiceWorker(scriptUrl, scope, "installing");
             registration.SetInstalling(sw);
 
             // 3. Spin up runtime (simplified)
@@ -90,14 +90,17 @@ namespace FenBrowser.FenEngine.Workers
             return matchedScope != null ? _registrations[matchedScope].Active : null;
         }
 
-        public void PostMessageToWorker(string scriptUrl, object message)
+        public void PostMessageToWorker(string scope, object message)
         {
-            // Find runtime 
-            // HACK: Need better mapping. iterating runtimes.
-            // In production map by Registration ID or Version ID.
-            
-            // For now, logging usage
-            FenBrowser.Core.FenLogger.Debug($"[ServiceWorkerManager] PostMessage to {scriptUrl}: {message}", LogCategory.ServiceWorker);
+            if (_activeRuntimes.TryGetValue(scope, out var runtime))
+            {
+                // runtime.PostMessage(message); // Needed: Dispatch 'message' event on worker global scope
+                FenBrowser.Core.FenLogger.Debug($"[ServiceWorkerManager] PostMessage to scope {scope}: {message}", LogCategory.ServiceWorker);
+            }
+            else
+            {
+               FenBrowser.Core.FenLogger.Debug($"[ServiceWorkerManager] No active runtime found for scope {scope}", LogCategory.ServiceWorker);
+            }
         }
 
         private void StartWorkerRuntime(string scriptUrl, string scope, ServiceWorker sw, ServiceWorkerRegistration reg)
@@ -132,28 +135,14 @@ namespace FenBrowser.FenEngine.Workers
 
         public async Task<bool> DispatchFetchEvent(ServiceWorker sw, FenBrowser.FenEngine.WebAPIs.FetchEvent fetchEvt)
         {
-            // Find runtime for the SW
-            // Simplification: We iterate _registrations to find which scope owns this SW, then find runtime?
-            // Better: Store runtime reference in SW object or map SW -> Runtime
+            if (sw == null) return false;
             
-            // For Phase G, we'll iterate active runtimes and match script URL
-            foreach(var kvp in _registrations)
+            // Lookup runtime by scope directly
+            if (_activeRuntimes.TryGetValue(sw.Scope, out var runtime))
             {
-                if (kvp.Value.Active == sw)
-                {
-                    // Found registration. 
-                    // Now find runtime. We didn't store runtime in Registration...
-                    // HACK: Just look for a runtime with matching script URL in _activeRuntimes?
-                    // We don't have _activeRuntimes populated yet.
-                    
-                    // Let's assume we can get it or we store it.
-                    // Implementation: Since we don't have full runtime tracking yet, we'll just log and return false
-                    // UNLESS we are in a test environment where we can inject logic.
-                    
-                    // TODO: Implement actual runtime dispatch
-                    // For now, return false to fallback to network
-                    return false;
-                }
+                 // TODO: Implement actual runtime dispatch
+                FenBrowser.Core.FenLogger.Debug($"[ServiceWorkerManager] Dispatch FetchEvent to {sw.Scope}", LogCategory.ServiceWorker);
+                return false;
             }
             return false;
         }

@@ -28,6 +28,7 @@ namespace FenBrowser.Core.Logging
         JsExecution  = 1 << 15,  // JS execution details, API calls, failures
         FeatureGaps  = 1 << 16,  // Unsupported features summary reporting
         ServiceWorker= 1 << 17,  // ServiceWorker lifecycle and fetch events
+        WebDriver    = 1 << 18,  // WebDriver server and commands
         All          = int.MaxValue
     }
 

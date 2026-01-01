@@ -209,7 +209,12 @@ namespace FenBrowser.Core.Dom
             AttributesRaw[originalName] = val;
             
             // Notify MutationObserver (Attributes)
-            OnMutation?.Invoke(this, "attributes", key, null, null, null);
+            NotifyMutation(new MutationRecord
+            {
+                Type = "attributes",
+                Target = this,
+                AttributeName = key
+            });
         }
 
         public override bool HasAttribute(string name)
@@ -231,7 +236,13 @@ namespace FenBrowser.Core.Dom
             if (!string.IsNullOrEmpty(original)) AttributesRaw.Remove(original);
             _attrOriginalNames.Remove(key);
             
-            if (removed) OnMutation?.Invoke(this, "attributes", key, null, null, null);
+            if (removed)
+                NotifyMutation(new MutationRecord
+                {
+                    Type = "attributes",
+                    Target = this,
+                    AttributeName = key
+                });
             return removed;
         }
 
@@ -250,10 +261,7 @@ namespace FenBrowser.Core.Dom
                     _templateContent = new DocumentFragment();
                     foreach(var child in Children)
                     {
-                        // TODO: Deep clone
-                       // _templateContent.AppendChild(child.Clone(true));
-                       // For now just moving them might be wrong, need clone logic.
-                       // Leaving as placeholder for simple refactor.
+                        _templateContent.AppendChild(child.CloneNode(true));
                     }
                 }
                 return _templateContent;
@@ -262,7 +270,7 @@ namespace FenBrowser.Core.Dom
         
         // ---- Cloning ---------------------------------------------------------
 
-        public Element ShallowClone()
+        public override Node CloneNode(bool deep)
         {
             var c = new Element(this.TagName);
             foreach (var kv in Attributes)
@@ -270,20 +278,19 @@ namespace FenBrowser.Core.Dom
                 c.Attributes[kv.Key] = kv.Value;
                 c.AttributesRaw[kv.Key] = AttributesRaw.TryGetValue(kv.Key, out var raw) ? raw : kv.Value;
             }
-            return c;
-        }
 
-        public Element DeepClone()
-        {
-            var c = ShallowClone();
-            foreach (var child in Children)
+            if (deep)
             {
-                if (child is Element el) c.AppendChild(el.DeepClone());
-                else if (child is Text txt) c.AppendChild(new Text(txt.Data));
-                else if (child is Comment com) c.AppendChild(new Comment(com.Data));
+                foreach (var child in Children)
+                {
+                    c.AppendChild(child.CloneNode(true));
+                }
             }
             return c;
         }
+
+        public Element ShallowClone() => (Element)CloneNode(false);
+        public Element DeepClone() => (Element)CloneNode(true);
 
         // ---- Query Selectors -------------------------------------------------
 
