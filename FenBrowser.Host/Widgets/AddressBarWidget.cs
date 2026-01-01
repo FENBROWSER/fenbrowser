@@ -306,9 +306,18 @@ public class AddressBarWidget : Widget
             }
             
             // Check if shield was clicked (Left icon)
-            // Fix: x is Global coordinate. Bounds.Left is global position.
-            if (x >= Bounds.Left && x < Bounds.Left + IconPadding)
+            // Bounds.Left is global/parent relative. x is global/parent relative.
+            // Increase hit target slightly (+6px) for usability
+            if (x >= Bounds.Left && x < Bounds.Left + IconPadding + 6)
             {
+                // Explicitly clear focus and selection to prevent "selected" look behind popup
+                ClearSelection();
+                if (IsFocused)
+                {
+                    _caretVisible = false;
+                    FenBrowser.Host.Input.InputManager.Instance.ClearFocus();
+                }
+                
                 SecurityIconClicked?.Invoke();
                 return;
             }
@@ -341,6 +350,22 @@ public class AddressBarWidget : Widget
     
     public override void OnMouseMove(float x, float y)
     {
+        var mouse = FenBrowser.Host.Input.InputManager.Instance.Mouse;
+        if (mouse == null) return;
+
+        // Check for hover over shield
+        // Match click target expansion (+6)
+        if (x >= Bounds.Left && x < Bounds.Left + IconPadding + 6)
+        {
+            HelpText = "View site information";
+            FenBrowser.Host.Input.CursorManager.UpdateCursor(mouse, FenBrowser.FenEngine.Interaction.CursorType.Pointer);
+        }
+        else
+        {
+            HelpText = "Enter URL to navigate";
+            FenBrowser.Host.Input.CursorManager.UpdateCursor(mouse, FenBrowser.FenEngine.Interaction.CursorType.Text);
+        }
+
         // Extend selection if dragging
         // (Left button held - would need mouse state tracking)
     }
