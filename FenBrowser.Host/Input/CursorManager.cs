@@ -1,6 +1,8 @@
 using Silk.NET.Input;
 using FenCursorType = FenBrowser.FenEngine.Interaction.CursorType;
 using FenBrowser.FenEngine.Interaction;
+using FenBrowser.Core.Logging;
+using FenBrowser.Core;
 
 namespace FenBrowser.Host.Input;
 
@@ -25,6 +27,7 @@ public static class CursorManager
         if (cursor == _currentCursor && (now - _lastUpdate) < _throttleInterval)
             return;
         
+        FenLogger.Info($"[Cursor] Updating to {cursor} (Previous: {_currentCursor})", LogCategory.General);
         _currentCursor = cursor;
         _lastUpdate = now;
         
@@ -39,6 +42,24 @@ public static class CursorManager
     public static void UpdateFromHitTest(IMouse mouse, HitTestResult result)
     {
         UpdateCursor(mouse, result.Cursor);
+    }
+    
+    /// <summary>
+    /// Update cursor from DevTools request.
+    /// </summary>
+    public static void UpdateCursorFromDevTools(IMouse mouse, FenBrowser.DevTools.Core.CursorType cursor)
+    {
+        var fenCursor = cursor switch
+        {
+            FenBrowser.DevTools.Core.CursorType.Pointer => FenCursorType.Pointer,
+            FenBrowser.DevTools.Core.CursorType.Text => FenCursorType.Text,
+            FenBrowser.DevTools.Core.CursorType.HorizontalResize => FenCursorType.ResizeEW,
+            FenBrowser.DevTools.Core.CursorType.VerticalResize => FenCursorType.ResizeNS,
+            FenBrowser.DevTools.Core.CursorType.Crosshair => FenCursorType.Crosshair,
+            _ => FenCursorType.Default
+        };
+        
+        UpdateCursor(mouse, fenCursor);
     }
     
     /// <summary>

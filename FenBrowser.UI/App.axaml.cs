@@ -26,7 +26,7 @@ public partial class App : Application
             string initialUrl = null;
             bool isPrivate = false;
             var args = desktop.Args;
-            try { System.IO.File.AppendAllText("debug_log.txt", $"[App] Args: {string.Join(", ", args ?? Array.Empty<string>())}\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             if (args != null)
             {
                 for (int i = 0; i < args.Length; i++)
