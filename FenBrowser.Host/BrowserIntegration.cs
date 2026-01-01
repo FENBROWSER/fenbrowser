@@ -212,10 +212,18 @@ public class BrowserIntegration
         
         if (url.StartsWith("fen://", StringComparison.OrdinalIgnoreCase))
         {
-            _overrideUrl = url;
-            UrlChanged?.Invoke(url);
-            NeedsRepaint?.Invoke();
-            return;
+            // fen://settings is handled by a special widget overlay, not the engine
+            if (url.Equals("fen://settings", StringComparison.OrdinalIgnoreCase))
+            {
+                _overrideUrl = url;
+                UrlChanged?.Invoke(url);
+                NeedsRepaint?.Invoke();
+                return;
+            }
+            
+            // fen://newtab and other fen:// URLs should be rendered by the engine
+            _overrideUrl = null;
+            // Fall through to navigate via the browser engine
         }
         
         _overrideUrl = null;

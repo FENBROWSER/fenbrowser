@@ -38,7 +38,7 @@ public class Program
     private static int _logicalWidth = 1280;
     private static int _logicalHeight = 800;
     private static float _dpiScale = 1.0f;
-    private static string _currentUrl = "file:///c:/Users/udayk/Videos/FENBROWSER/tests/comprehensive_phase_test.html";
+    private static string _currentUrl = "fen://newtab"; // Modern new tab page
     
     // Compositor and Root UI
     private static Compositor _compositor;
@@ -173,7 +173,7 @@ public class Program
     {
         // Initialize TabBar
         _tabBar = new TabBarWidget();
-        _tabBar.NewTabRequested += () => TabManager.Instance.CreateTab("https://example.com");
+        _tabBar.NewTabRequested += () => TabManager.Instance.CreateTab("fen://newtab");
         _tabBar.TabActivated += tab => TabManager.Instance.SwitchToTab(TabManager.Instance.Tabs.ToList().IndexOf(tab));
         _tabBar.TabCloseRequested += tab =>
         {
@@ -269,7 +269,7 @@ public class Program
         var kbd = KeyboardDispatcher.Instance;
         
         // Tab shortcuts
-        kbd.RegisterCtrl(Key.T, () => TabManager.Instance.CreateTab("https://example.com"));
+        kbd.RegisterCtrl(Key.T, () => TabManager.Instance.CreateTab("fen://newtab"));
         kbd.RegisterCtrl(Key.W, () => TabManager.Instance.CloseActiveTab());
         kbd.RegisterGlobal(Key.Tab, true, false, false, () => TabManager.Instance.NextTab()); // Ctrl+Tab
         kbd.RegisterGlobal(Key.Tab, true, true, false, () => TabManager.Instance.PreviousTab()); // Ctrl+Shift+Tab
