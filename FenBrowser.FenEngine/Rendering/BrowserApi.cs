@@ -214,6 +214,9 @@ namespace FenBrowser.FenEngine.Rendering
         public Dictionary<Node, CssComputed> ComputedStyles => _engine.LastComputedStyles;
         public CustomHtmlEngine Engine => _engine;
 
+        public SKBitmap Favicon { get; private set; }
+        public event EventHandler<SKBitmap> FaviconChanged;
+
         // ========== INJECTABLE DELEGATES FOR WEBDRIVER ==========
         // These are set by MainWindow/WebDriverIntegration to provide real implementations
         public Func<WindowRect> GetWindowRectDelegate { get; set; }
@@ -638,6 +641,10 @@ pre {{
                 }
 
                 try { Navigated?.Invoke(this, uri); } catch { }
+                
+                // Fetch Favicon
+                _ = FetchFaviconAsync(uri);
+                
                 return true;
             }
             catch (Exception ex)
@@ -792,6 +799,72 @@ pre {{
                 {
                      await NavigateAsync(href);
                 }
+            }
+        }
+
+        private async Task FetchFaviconAsync(Uri pageUrl)
+        {
+            try
+            {
+                string iconUrl = null;
+                var dom = _engine.GetActiveDom();
+                
+                // 1. Try to find link tag in DOM
+                if (dom != null)
+                {
+                    // Find <link rel="icon" ...>
+                    var links = dom.Descendants().OfType<Element>().Where(x => x.Tag == "link" && x.Attr != null && x.Attr.ContainsKey("rel"));
+                    var iconLink = links.FirstOrDefault(x => x.Attr["rel"].IndexOf("icon", StringComparison.OrdinalIgnoreCase) >= 0);
+                    
+                    if (iconLink != null && iconLink.Attr.ContainsKey("href"))
+                    {
+                        iconUrl = iconLink.Attr["href"];
+                    }
+                }
+                
+                // 2. Fallback to /favicon.ico
+                if (string.IsNullOrEmpty(iconUrl))
+                {
+                    iconUrl = "/favicon.ico";
+                }
+                
+                // Resolve relative URL
+                Uri absoluteIconUri = null;
+                if (Uri.TryCreate(pageUrl, iconUrl, out absoluteIconUri))
+                {
+                    // 3. Fetch Image
+                    using var stream = await _resources.FetchImageAsync(absoluteIconUri, pageUrl);
+                    if (stream != null)
+                    {
+                        // Decode
+                        // Copy to memory stream if needed for Skia
+                        using var ms = new System.IO.MemoryStream();
+                        await stream.CopyToAsync(ms);
+                        ms.Position = 0;
+                        
+                        var bitmap = SKBitmap.Decode(ms);
+                        if (bitmap != null)
+                        {
+                            // Resize if too large? Tab is small (16px), but keep quality High.
+                            // Set property and fire event
+                            Favicon = bitmap;
+                            FenBrowser.Core.FenLogger.Info($"[BrowserHost] Favicon loaded for {pageUrl}", FenBrowser.Core.Logging.LogCategory.General);
+                            
+                            // Marshall to UI thread handled by consumers
+                            RepaintReady?.Invoke(this, null); // Trigger repaint? Or specific event
+                            FaviconChanged?.Invoke(this, bitmap);
+                            return;
+                        }
+                    }
+                }
+                
+                // If failed, clear favicon?
+                // Favicon = null;
+                // FaviconChanged?.Invoke(this, null);
+            }
+            catch (Exception ex)
+            {
+                FenBrowser.Core.FenLogger.Warn($"[BrowserHost] Failed to fetch favicon: {ex.Message}", FenBrowser.Core.Logging.LogCategory.General);
             }
         }
 

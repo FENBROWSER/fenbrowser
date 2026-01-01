@@ -124,9 +124,24 @@ public class TabWidget : Widget
         }
         else
         {
-            // Default icon placeholder
-            using var iconPaint = new SKPaint { Color = SKColors.Gray, IsAntialias = true };
-            canvas.DrawCircle(faviconX + FAVICON_SIZE / 2, faviconY + FAVICON_SIZE / 2, 6, iconPaint);
+            // Default FenBrowser Icon (Blue circle with 'F' text)
+            // Background Circle
+            using var iconBgPaint = new SKPaint { Color = SKColor.Parse("#0078D7"), IsAntialias = true, Style = SKPaintStyle.Fill };
+            canvas.DrawCircle(faviconX + FAVICON_SIZE / 2, faviconY + FAVICON_SIZE / 2, FAVICON_SIZE / 2, iconBgPaint);
+            
+            // 'F' Text
+            using var iconTextPaint = new SKPaint 
+            { 
+                Color = SKColors.White, 
+                IsAntialias = true, 
+                TextSize = 10, 
+                TextAlign = SKTextAlign.Center,
+                Typeface = SKTypeface.FromFamilyName("Segoe UI", SKFontStyle.Bold) 
+            };
+            
+            // Adjust text Y position for centering
+            float textY = faviconY + FAVICON_SIZE / 2 + 4; 
+            canvas.DrawText("F", faviconX + FAVICON_SIZE / 2, textY, iconTextPaint);
         }
         
         // Title
