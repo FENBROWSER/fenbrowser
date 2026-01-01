@@ -34,9 +34,12 @@ public class ElementsPanel : DevToolsPanelBase
     private const float MIN_PANEL_WIDTH = 200f;
     private const float SPLITTER_WIDTH = 4f;
     
-    // Styles panel scroll
-    private float _stylesScrollY;
+    private float _treeScrollY;
+    private float _treeMaxScrollY;
+    private float _stylesScrollY; // Renamed from _stylesScrollY to follow pattern if needed, but it was already there
     private float _stylesMaxScrollY;
+    
+    public override bool IsDragging => _draggingSplitter;
     
     private float _treeWidth;
     private float _stylesWidth;
@@ -52,6 +55,21 @@ public class ElementsPanel : DevToolsPanelBase
     // Style and Layout Data
     private GetComputedStyleResponse? _computedStyleData;
     private GetMatchedStylesResponse? _matchedStyleData;
+    
+    // CSS Property Live Editing
+    private int? _editingCssNodeId = null;
+    private string? _editingCssPropertyName = null;
+    private string _editingCssPropertyValue = "";
+    
+    // Autocomplete state
+    private List<string> _autocompleteSuggestions = new();
+    private int _autocompleteSelectedIndex = 0;
+    
+    // Color picker state
+    private bool _colorPickerVisible = false;
+    
+    // Property toggle state (disabled properties)
+    private HashSet<string> _disabledProperties = new();
     
     protected override void OnHostChanged()
     {
@@ -292,6 +310,13 @@ public class ElementsPanel : DevToolsPanelBase
              }
              return;
         }
+        
+        // Skip whitespace-only text nodes (matches Chrome/Edge behavior)
+        if (node.NodeType == 3) // Text node
+        {
+            if (string.IsNullOrWhiteSpace(node.NodeValue))
+                return; // Skip whitespace-only text nodes
+        }
 
         bool hasChildren = node.ChildNodeCount > 0;
         bool isExpanded = _expandedNodes.Contains(node.NodeId);
@@ -319,33 +344,80 @@ public class ElementsPanel : DevToolsPanelBase
         }
     }
     
-    protected override void OnPaint(SKCanvas canvas, SKRect bounds)
+    public override void Paint(SKCanvas canvas, SKRect bounds)
     {
-        // Initialize splitter position
-        if (_splitterX == 0)
+        Bounds = bounds;
+
+        // Initialize or re-sync splitter position if it drifted or window resized
+        if (_splitterX <= bounds.Left || _splitterX >= bounds.Right)
         {
             _splitterX = bounds.Left + (bounds.Width * 0.6f);
         }
-        
+
         _treeWidth = _splitterX - bounds.Left;
         _stylesWidth = bounds.Right - _splitterX - SPLITTER_WIDTH;
-        
-        // Draw DOM tree
+
+        // Clip and draw DOM tree
         var treeBounds = new SKRect(bounds.Left, bounds.Top, _splitterX, bounds.Bottom);
+        canvas.Save();
+        canvas.ClipRect(treeBounds);
+        canvas.Translate(0, -_treeScrollY);
         DrawDomTree(canvas, treeBounds);
-        
-        // Draw splitter
+        canvas.Restore();
+
+        // Draw splitter (fixed)
         DrawSplitter(canvas, bounds);
-        
-        // Draw styles panel
+
+        // Draw sidebar tabs FIRST (fixed, not scrolled)
         var stylesBounds = new SKRect(_splitterX + SPLITTER_WIDTH, bounds.Top, bounds.Right, bounds.Bottom);
-        DrawStylesPanel(canvas, stylesBounds);
+        DrawSidebarTabs(canvas, stylesBounds);
+        
+        // Clip and draw styles panel CONTENT (scrollable area below tabs)
+        var stylesContentBounds = new SKRect(_splitterX + SPLITTER_WIDTH, bounds.Top + 32, bounds.Right, bounds.Bottom);
+        canvas.Save();
+        canvas.ClipRect(stylesContentBounds);
+        canvas.Translate(0, -_stylesScrollY);
+        DrawStylesPanelContent(canvas, stylesContentBounds);
+        canvas.Restore();
+
+        // Draw scrollbars
+        if (_treeMaxScrollY > 0)
+        {
+             DrawCustomScrollbar(canvas, treeBounds, _treeScrollY, _treeMaxScrollY);
+        }
+        if (_stylesMaxScrollY > 0)
+        {
+             DrawCustomScrollbar(canvas, stylesContentBounds, _stylesScrollY, _stylesMaxScrollY);
+        }
+    }
+
+    protected override void OnPaint(SKCanvas canvas, SKRect bounds)
+    {
+        // Not used anymore as we override Paint directly to manage multiple scroll areas
+    }
+
+    private void DrawCustomScrollbar(SKCanvas canvas, SKRect bounds, float currentScroll, float maxScroll)
+    {
+        float scrollbarWidth = 6f;
+        float trackHeight = bounds.Height;
+        float thumbHeight = Math.Max(20, trackHeight * (trackHeight / (trackHeight + maxScroll)));
+        float thumbY = bounds.Top + (currentScroll / maxScroll) * (trackHeight - thumbHeight);
+        
+        var thumbRect = new SKRect(
+            bounds.Right - scrollbarWidth - 2,
+            thumbY,
+            bounds.Right - 2,
+            thumbY + thumbHeight
+        );
+        
+        using var paint = DevToolsTheme.CreateFillPaint(DevToolsTheme.Scrollbar);
+        canvas.DrawRoundRect(thumbRect, 3, 3, paint);
     }
     
     
     private void DrawDomTree(SKCanvas canvas, SKRect bounds)
     {
-        float y = bounds.Top + DevToolsTheme.PaddingNormal - ScrollY;
+        float y = bounds.Top + DevToolsTheme.PaddingNormal;
         
         using var tagPaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.SyntaxTag);
         using var attrNamePaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.SyntaxAttribute);
@@ -355,7 +427,7 @@ public class ElementsPanel : DevToolsPanelBase
         for (int i = 0; i < _flattenedNodes.Count; i++)
         {
             var node = _flattenedNodes[i];
-            float itemY = y + i * DevToolsTheme.ItemHeight;
+            float itemY = y + i * DevToolsTheme.ItemHeight - _treeScrollY;
             
             // Skip if outside visible area
             if (itemY + DevToolsTheme.ItemHeight < bounds.Top) continue;
@@ -488,6 +560,8 @@ public class ElementsPanel : DevToolsPanelBase
                 }
             }
         }
+
+        _treeMaxScrollY = Math.Max(0, (y + _flattenedNodes.Count * DevToolsTheme.ItemHeight) - bounds.Bottom);
     }
     
     private void DrawSplitter(SKCanvas canvas, SKRect bounds)
@@ -496,16 +570,20 @@ public class ElementsPanel : DevToolsPanelBase
         canvas.DrawRect(new SKRect(_splitterX, bounds.Top, _splitterX + SPLITTER_WIDTH, bounds.Bottom), splitterPaint);
     }
     
-    private void DrawStylesPanel(SKCanvas canvas, SKRect bounds)
+    private void DrawSidebarTabs(SKCanvas canvas, SKRect bounds)
     {
-        // Tabs
+        // Tabs (fixed at top, not scrolled)
         float tabWidth = bounds.Width / 3;
         string[] tabs = { "Styles", "Computed", "Layout" };
         
+        using var tabBgPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.BackgroundLight);
         using var tabBorderPaint = DevToolsTheme.CreateStrokePaint(DevToolsTheme.Border);
         using var activeTabPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.TabActive);
         using var tabTextPaint = DevToolsTheme.CreateUITextPaint(DevToolsTheme.TextPrimary, DevToolsTheme.FontSizeNormal);
         using var inactiveTabTextPaint = DevToolsTheme.CreateUITextPaint(DevToolsTheme.TextSecondary, DevToolsTheme.FontSizeNormal);
+        
+        // Draw tab bar background
+        canvas.DrawRect(new SKRect(bounds.Left, bounds.Top, bounds.Right, bounds.Top + 32), tabBgPaint);
         
         for (int i = 0; i < tabs.Length; i++)
         {
@@ -513,7 +591,6 @@ public class ElementsPanel : DevToolsPanelBase
             if (i == _sidebarTab)
             {
                 canvas.DrawRect(tabRect, activeTabPaint);
-                canvas.DrawLine(tabRect.Left, tabRect.Bottom, tabRect.Right, tabRect.Bottom, activeTabPaint); // Hide border at bottom
             }
             
             float textWidth = tabTextPaint.MeasureText(tabs[i]);
@@ -522,8 +599,12 @@ public class ElementsPanel : DevToolsPanelBase
         }
         
         canvas.DrawLine(bounds.Left, bounds.Top + 32, bounds.Right, bounds.Top + 32, tabBorderPaint);
-        
-        float contentTop = bounds.Top + 32 + DevToolsTheme.PaddingNormal;
+    }
+
+    private void DrawStylesPanelContent(SKCanvas canvas, SKRect bounds)
+    {
+        string[] tabs = { "Styles", "Computed", "Layout" };
+        float contentTop = bounds.Top + DevToolsTheme.PaddingNormal;
         
         if (_selectedNodeId == null)
         {
@@ -571,9 +652,13 @@ public class ElementsPanel : DevToolsPanelBase
         using var valuePaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.SyntaxValue);
         using var punctPaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.TextSecondary);
         using var mutedPaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.TextMuted);
+        using var selectorPaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.SyntaxTag);
         
         // 1. Element Inline Style
-        canvas.DrawText("element.style {", bounds.Left + DevToolsTheme.PaddingNormal, y, mutedPaint);
+        float ex = bounds.Left + DevToolsTheme.PaddingNormal;
+        canvas.DrawText("element.style", ex, y, selectorPaint);
+        ex += selectorPaint.MeasureText("element.style");
+        canvas.DrawText(" {", ex, y, mutedPaint);
         y += DevToolsTheme.ItemHeight;
         
         if (_matchedStyleData?.InlineStyle?.CssProperties != null)
@@ -583,12 +668,23 @@ public class ElementsPanel : DevToolsPanelBase
                 if (y > bounds.Bottom) break;
                 if (y < bounds.Top + 32) { y += DevToolsTheme.ItemHeight; continue; }
                 
-                float x = bounds.Left + DevToolsTheme.PaddingNormal * 2;
-                canvas.DrawText(prop.Name, x, y, propPaint);
-                x += Math.Max(120, propPaint.MeasureText(prop.Name) + 10);
+                bool isDisabled = _disabledProperties.Contains(prop.Name);
+                float x = bounds.Left + DevToolsTheme.PaddingNormal;
+                
+                // Draw checkbox
+                DrawPropertyCheckbox(canvas, x, y - 12, !isDisabled);
+                x += 20;
+                
+                // Draw property with strikethrough if disabled
+                var textPaint = isDisabled ? mutedPaint : propPaint;
+                var valPaint = isDisabled ? mutedPaint : valuePaint;
+                
+                canvas.DrawText(prop.Name, x, y, textPaint);
+                x += Math.Max(120, textPaint.MeasureText(prop.Name) + 10);
                 canvas.DrawText(": ", x, y, punctPaint);
                 x += punctPaint.MeasureText(": ");
-                canvas.DrawText(prop.Value + ";", x, y, valuePaint);
+                canvas.DrawText(prop.Value + ";", x, y, valPaint);
+                
                 y += DevToolsTheme.ItemHeight;
             }
         }
@@ -618,8 +714,24 @@ public class ElementsPanel : DevToolsPanelBase
         {
             foreach (var rule in _matchedStyleData.MatchedCSSRules)
             {
-                string selector = rule.Rule?.SelectorList?.Text ?? "selector";
-                canvas.DrawText(selector + " {", bounds.Left + DevToolsTheme.PaddingNormal, y, mutedPaint);
+                string? selector = rule.Rule?.SelectorList?.Text;
+                if (string.IsNullOrEmpty(selector) && rule.Rule?.SelectorList?.Selectors != null)
+                {
+                    selector = string.Join(", ", rule.Rule.SelectorList.Selectors.Select(s => s.Text));
+                }
+                if (string.IsNullOrEmpty(selector)) selector = "selector";
+                
+                float sx = bounds.Left + DevToolsTheme.PaddingNormal;
+                canvas.DrawText(selector, sx, y, selectorPaint);
+                sx += selectorPaint.MeasureText(selector);
+                canvas.DrawText(" {", sx, y, mutedPaint);
+                
+                // Draw origin (Edge parity)
+                string origin = rule.Rule?.Origin ?? "regular";
+                if (origin == "user-agent") origin = "user agent stylesheet";
+                float originWidth = mutedPaint.MeasureText(origin);
+                canvas.DrawText(origin, bounds.Right - originWidth - DevToolsTheme.PaddingNormal, y, mutedPaint);
+
                 y += DevToolsTheme.ItemHeight;
                 
                 if (rule.Rule?.Style?.CssProperties != null)
@@ -628,11 +740,41 @@ public class ElementsPanel : DevToolsPanelBase
                     {
                         if (y > bounds.Bottom) break;
                         float x = bounds.Left + DevToolsTheme.PaddingNormal * 2;
+                        
+                        // Check if this property is being edited
+                        bool isEditing = _editingCssPropertyName == prop.Name && _editingCssNodeId == _selectedNodeId;
+                        
                         canvas.DrawText(prop.Name, x, y, propPaint);
                         x += Math.Max(120, propPaint.MeasureText(prop.Name) + 10);
                         canvas.DrawText(": ", x, y, punctPaint);
                         x += punctPaint.MeasureText(": ");
-                        canvas.DrawText(prop.Value + ";", x, y, valuePaint);
+                        
+                        if (isEditing)
+                        {
+                            // Draw editable text box
+                            float editBoxWidth = Math.Max(100, valuePaint.MeasureText(_editingCssPropertyValue) + 16);
+                            var editRect = new SKRect(x - 4, y - 14, x + editBoxWidth, y + 4);
+                            using var editBgPaint = DevToolsTheme.CreateFillPaint(new SKColor(60, 60, 90));
+                            using var editBorderPaint = DevToolsTheme.CreateStrokePaint(DevToolsTheme.SyntaxTag);
+                            canvas.DrawRoundRect(editRect, 2, 2, editBgPaint);
+                            canvas.DrawRoundRect(editRect, 2, 2, editBorderPaint);
+                            
+                            // Draw the editing value
+                            canvas.DrawText(_editingCssPropertyValue, x, y, valuePaint);
+                            
+                            // Draw cursor if blinking
+                            if (_cursorBlink)
+                            {
+                                float cursorX = x + valuePaint.MeasureText(_editingCssPropertyValue);
+                                using var cursorPaint = DevToolsTheme.CreateStrokePaint(DevToolsTheme.TextPrimary);
+                                canvas.DrawLine(cursorX, y - 12, cursorX, y + 2, cursorPaint);
+                            }
+                        }
+                        else
+                        {
+                            canvas.DrawText(prop.Value + ";", x, y, valuePaint);
+                        }
+                        
                         y += DevToolsTheme.ItemHeight;
                     }
                 }
@@ -642,7 +784,180 @@ public class ElementsPanel : DevToolsPanelBase
             }
         }
         
+        // Draw autocomplete dropdown if editing and have suggestions
+        if (_editingCssPropertyName != null && _autocompleteSuggestions.Count > 0)
+        {
+            DrawAutocompleteDropdown(canvas, bounds);
+        }
+        
+        // Draw color picker for color properties
+        if (_editingCssPropertyName != null && _colorPickerVisible && ColorPicker.IsColorProperty(_editingCssPropertyName))
+        {
+            DrawColorPicker(canvas, bounds);
+        }
+        
+        // Draw Box Model diagram at the bottom of Styles tab (Edge parity)
+        y += DevToolsTheme.PaddingNormal;
+        DrawBoxModelDiagram(canvas, bounds, y);
+        y += 180; // Height of box model diagram
+        
         _stylesMaxScrollY = Math.Max(0, y + _stylesScrollY - bounds.Bottom);
+    }
+    
+    private void DrawAutocompleteDropdown(SKCanvas canvas, SKRect bounds)
+    {
+        if (_autocompleteSuggestions.Count == 0) return;
+        
+        float dropdownX = bounds.Left + DevToolsTheme.PaddingNormal * 3;
+        float dropdownY = bounds.Top + 60; // Approximate position below edit line
+        float dropdownWidth = 180;
+        int maxVisible = Math.Min(8, _autocompleteSuggestions.Count);
+        float dropdownHeight = maxVisible * DevToolsTheme.ItemHeight;
+        
+        // Background
+        using var bgPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.BackgroundLight);
+        using var borderPaint = DevToolsTheme.CreateStrokePaint(DevToolsTheme.Border);
+        using var textPaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.TextPrimary, DevToolsTheme.FontSizeSmall);
+        using var selectedBgPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.BackgroundSelected);
+        
+        var dropdownRect = new SKRect(dropdownX, dropdownY, dropdownX + dropdownWidth, dropdownY + dropdownHeight);
+        canvas.DrawRect(dropdownRect, bgPaint);
+        canvas.DrawRect(dropdownRect, borderPaint);
+        
+        // Suggestions
+        float itemY = dropdownY;
+        for (int i = 0; i < maxVisible; i++)
+        {
+            if (i >= _autocompleteSuggestions.Count) break;
+            
+            var itemRect = new SKRect(dropdownX, itemY, dropdownX + dropdownWidth, itemY + DevToolsTheme.ItemHeight);
+            if (i == _autocompleteSelectedIndex)
+            {
+                canvas.DrawRect(itemRect, selectedBgPaint);
+            }
+            
+            canvas.DrawText(_autocompleteSuggestions[i], dropdownX + 8, itemY + 15, textPaint);
+            itemY += DevToolsTheme.ItemHeight;
+        }
+    }
+    
+    private void DrawColorPicker(SKCanvas canvas, SKRect bounds)
+    {
+        float pickerX = bounds.Left + DevToolsTheme.PaddingNormal * 3;
+        float pickerY = bounds.Top + 80; // Below autocomplete if present
+        
+        // Background
+        using var bgPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.BackgroundLight);
+        using var borderPaint = DevToolsTheme.CreateStrokePaint(DevToolsTheme.Border);
+        
+        float width = ColorPicker.GetWidth();
+        float height = ColorPicker.GetHeight() + 24; // Extra for current color preview
+        
+        var pickerRect = new SKRect(pickerX, pickerY, pickerX + width, pickerY + height);
+        canvas.DrawRect(pickerRect, bgPaint);
+        canvas.DrawRect(pickerRect, borderPaint);
+        
+        // Current color preview
+        if (ColorPicker.TryParse(_editingCssPropertyValue, out var currentColor))
+        {
+            using var previewPaint = new SKPaint { Color = currentColor, IsAntialias = true };
+            var previewRect = new SKRect(pickerX + ColorPicker.Padding, pickerY + ColorPicker.Padding, 
+                                          pickerX + width - ColorPicker.Padding, pickerY + 20);
+            canvas.DrawRect(previewRect, previewPaint);
+        }
+        
+        // Color palette
+        float swatchY = pickerY + 24;
+        for (int row = 0; row < ColorPicker.Rows; row++)
+        {
+            float swatchX = pickerX + ColorPicker.Padding;
+            for (int col = 0; col < ColorPicker.ColsPerRow; col++)
+            {
+                int idx = row * ColorPicker.ColsPerRow + col;
+                if (idx >= ColorPicker.Palette.Length) break;
+                
+                using var swatchPaint = new SKPaint { Color = ColorPicker.Palette[idx], IsAntialias = true };
+                var swatchRect = new SKRect(swatchX, swatchY, swatchX + ColorPicker.SwatchSize, swatchY + ColorPicker.SwatchSize);
+                canvas.DrawRect(swatchRect, swatchPaint);
+                
+                swatchX += ColorPicker.SwatchSize + ColorPicker.Padding;
+            }
+            swatchY += ColorPicker.SwatchSize + ColorPicker.Padding;
+        }
+    }
+    
+    private void DrawPropertyCheckbox(SKCanvas canvas, float x, float y, bool isChecked)
+    {
+        float size = 12f;
+        var rect = new SKRect(x, y, x + size, y + size);
+        
+        using var borderPaint = DevToolsTheme.CreateStrokePaint(DevToolsTheme.Border);
+        using var bgPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.BackgroundLight);
+        
+        canvas.DrawRect(rect, bgPaint);
+        canvas.DrawRect(rect, borderPaint);
+        
+        if (isChecked)
+        {
+            using var checkPaint = new SKPaint
+            {
+                Color = DevToolsTheme.SyntaxTag,
+                IsAntialias = true,
+                StrokeWidth = 2,
+                Style = SKPaintStyle.Stroke
+            };
+            // Draw checkmark
+            canvas.DrawLine(x + 2, y + 6, x + 5, y + 9, checkPaint);
+            canvas.DrawLine(x + 5, y + 9, x + 10, y + 3, checkPaint);
+        }
+    }
+
+    private void DrawBoxModelDiagram(SKCanvas canvas, SKRect bounds, float startY)
+    {
+        float centerX = bounds.Left + bounds.Width / 2;
+        float centerY = startY + 80;
+        
+        using var marginPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.BoxMargin);
+        using var borderPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.BoxBorder);
+        using var paddingPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.BoxPadding);
+        using var contentPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.BoxContent);
+        using var textPaint = DevToolsTheme.CreateTextPaint(new SKColor(30, 30, 30), 10);
+        
+        string GetStyle(string name) 
+        {
+            if (_computedStyleData?.ComputedStyle == null) return "-";
+            return _computedStyleData.ComputedStyle.FirstOrDefault(s => s.Name == name)?.Value ?? "-";
+        }
+        
+        string mt = GetStyle("margin-top"), mr = GetStyle("margin-right");
+        string mb = GetStyle("margin-bottom"), ml = GetStyle("margin-left");
+        string bt = GetStyle("border-top-width"), br = GetStyle("border-right-width");
+        string bb = GetStyle("border-bottom-width"), bl = GetStyle("border-left-width");
+        string pt = GetStyle("padding-top"), pr = GetStyle("padding-right");
+        string pb = GetStyle("padding-bottom"), pl = GetStyle("padding-left");
+        string w = GetStyle("width"), h = GetStyle("height");
+        
+        float mw = 220, mh = 130, bw = 170, bh = 100, pw = 120, ph = 70, cw = 70, ch = 35;
+        
+        void DrawBox(float boxW, float boxH, SKPaint paint, string label, string t, string r, string b, string l)
+        {
+            var rect = SKRect.Create(centerX - boxW/2, centerY - boxH/2, boxW, boxH);
+            canvas.DrawRect(rect, paint);
+            canvas.DrawText(label, rect.Left + 4, rect.Top + 12, textPaint);
+            canvas.DrawText(t, rect.MidX - textPaint.MeasureText(t)/2, rect.Top + 12, textPaint);
+            canvas.DrawText(b, rect.MidX - textPaint.MeasureText(b)/2, rect.Bottom - 4, textPaint);
+            canvas.DrawText(l, rect.Left + 4, rect.MidY + 4, textPaint);
+            canvas.DrawText(r, rect.Right - textPaint.MeasureText(r) - 4, rect.MidY + 4, textPaint);
+        }
+        
+        DrawBox(mw, mh, marginPaint, "margin", mt, mr, mb, ml);
+        DrawBox(bw, bh, borderPaint, "border", bt, br, bb, bl);
+        DrawBox(pw, ph, paddingPaint, "padding", pt, pr, pb, pl);
+        
+        var contentRect = SKRect.Create(centerX - cw/2, centerY - ch/2, cw, ch);
+        canvas.DrawRect(contentRect, contentPaint);
+        string contentDim = $"{w} × {h}";
+        canvas.DrawText(contentDim, centerX - textPaint.MeasureText(contentDim)/2, centerY + 4, textPaint);
     }
 
     private void DrawComputedContent(SKCanvas canvas, SKRect bounds, DomNodeDto selectedNode, float y)
@@ -650,19 +965,27 @@ public class ElementsPanel : DevToolsPanelBase
         y -= _stylesScrollY;
         using var propPaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.SyntaxProperty);
         using var valuePaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.SyntaxValue);
-        using var punctPaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.TextSecondary);
+        using var originPaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.TextMuted, DevToolsTheme.FontSizeSmall);
 
         if (_computedStyleData?.ComputedStyle != null)
         {
             foreach (var prop in _computedStyleData.ComputedStyle.OrderBy(p => p.Name))
             {
                 if (y > bounds.Bottom) break;
-                if (y < bounds.Top + 32) { y += DevToolsTheme.ItemHeight; continue; }
+                if (y < bounds.Top) { y += DevToolsTheme.ItemHeight; continue; }
 
                 float x = bounds.Left + DevToolsTheme.PaddingNormal;
                 canvas.DrawText(prop.Name, x, y, propPaint);
                 x += Math.Max(160, propPaint.MeasureText(prop.Name) + 10);
                 canvas.DrawText(prop.Value, x, y, valuePaint);
+                
+                // Show origin (style tracing)
+                string origin = FindPropertyOrigin(prop.Name);
+                if (!string.IsNullOrEmpty(origin))
+                {
+                    float originX = bounds.Right - originPaint.MeasureText(origin) - DevToolsTheme.PaddingNormal;
+                    canvas.DrawText(origin, originX, y, originPaint);
+                }
                 
                 y += DevToolsTheme.ItemHeight;
             }
@@ -675,6 +998,39 @@ public class ElementsPanel : DevToolsPanelBase
         }
         
         _stylesMaxScrollY = Math.Max(0, y + _stylesScrollY - bounds.Bottom);
+    }
+    
+    /// <summary>
+    /// Find which CSS rule sets a given property (for computed style tracing).
+    /// </summary>
+    private string FindPropertyOrigin(string propertyName)
+    {
+        // Check inline style first
+        if (_matchedStyleData?.InlineStyle?.CssProperties != null)
+        {
+            if (_matchedStyleData.InlineStyle.CssProperties.Any(p => p.Name.Equals(propertyName, StringComparison.OrdinalIgnoreCase)))
+                return "element.style";
+        }
+        
+        // Check matched rules
+        if (_matchedStyleData?.MatchedCSSRules != null)
+        {
+            foreach (var rule in _matchedStyleData.MatchedCSSRules)
+            {
+                if (rule.Rule?.Style?.CssProperties?.Any(p => p.Name.Equals(propertyName, StringComparison.OrdinalIgnoreCase)) == true)
+                {
+                    string? selector = rule.Rule.SelectorList?.Text;
+                    if (string.IsNullOrEmpty(selector) && rule.Rule.SelectorList?.Selectors != null)
+                        selector = string.Join(", ", rule.Rule.SelectorList.Selectors.Select(s => s.Text));
+                    
+                    string origin = rule.Rule.Origin ?? "regular";
+                    if (origin == "user-agent") return "user agent";
+                    return selector ?? "stylesheet";
+                }
+            }
+        }
+        
+        return "inherited";
     }
 
     private void DrawLayoutContent(SKCanvas canvas, SKRect bounds, DomNodeDto selectedNode, float y)
@@ -766,21 +1122,36 @@ public class ElementsPanel : DevToolsPanelBase
     
     public override void OnMouseMove(float x, float y)
     {
-        // Check splitter hover
-        if (x >= _splitterX - 2 && x <= _splitterX + SPLITTER_WIDTH + 2)
-        {
-            // Could set cursor to resize
-        }
+        // 1. Determine splitter hit - consistent 10px hit area
+        bool isOverSplitter = Math.Abs(x - _splitterX) <= 5; 
         
-        // Check tree hover
+        if (_draggingSplitter)
+        {
+             _splitterX = Math.Clamp(x, Bounds.Left + MIN_PANEL_WIDTH, Bounds.Right - MIN_PANEL_WIDTH);
+             Host?.RequestCursorChange(CursorType.HorizontalResize);
+             Invalidate();
+             return; // Dragging has absolute priority
+        }
+
+        // 2. Set cursor based on hover
+        if (isOverSplitter)
+        {
+            Host?.RequestCursorChange(CursorType.HorizontalResize);
+        }
+        else
+        {
+            Host?.RequestCursorChange(CursorType.Default);
+        }
+
+        // FenBrowser.Core.FenLogger.Info($"[Elements] MouseMove x={x:F1}, y={y:F1}, splitterX={_splitterX:F1}, isOver={isOverSplitter}, dragging={_draggingSplitter}, bounds={Bounds}", FenBrowser.Core.Logging.LogCategory.General);
+
+        // 3. Handle Tree hover
         if (x < _splitterX)
         {
-            int index = GetNodeIndexAt(y);
+            int index = GetNodeIndexAt(y + _treeScrollY - Bounds.Top - DevToolsTheme.PaddingNormal);
             if (index != _hoveredIndex)
             {
                 _hoveredIndex = index;
-                
-                // Highlight element on page (Hovered node OR Selected node if not hovering)
                 if (index >= 0 && index < _flattenedNodes.Count)
                 {
                     _hoveredNodeId = _flattenedNodes[index].Node.NodeId;
@@ -789,35 +1160,28 @@ public class ElementsPanel : DevToolsPanelBase
                 else
                 {
                     _hoveredNodeId = null;
-                    _ = SendHighlightCommand(_selectedNodeId); // Fallback to selected node
+                    _ = SendHighlightCommand(_selectedNodeId);
                 }
-                
                 Invalidate();
             }
         }
         else
         {
+            // Reset tree hover if moving to styles panel
             if (_hoveredIndex != -1)
             {
                 _hoveredIndex = -1;
                 _hoveredNodeId = null;
-                _ = SendHighlightCommand(_selectedNodeId); // Fallback to selected node
+                _ = SendHighlightCommand(_selectedNodeId);
                 Invalidate();
             }
-        }
-        
-        // Handle splitter drag
-        if (_draggingSplitter)
-        {
-            _splitterX = Math.Clamp(x, Bounds.Left + MIN_PANEL_WIDTH, Bounds.Right - MIN_PANEL_WIDTH);
-            Invalidate();
         }
     }
     
     public override bool OnMouseDown(float x, float y, bool isRightButton)
     {
-        // Check splitter
-        if (x >= _splitterX - 2 && x <= _splitterX + SPLITTER_WIDTH + 2)
+        // Check splitter - consistent 10px hit area
+        if (Math.Abs(x - _splitterX) <= 5)
         {
             _draggingSplitter = true;
             return true;
@@ -826,7 +1190,7 @@ public class ElementsPanel : DevToolsPanelBase
         // Check tree click
         if (x < _splitterX)
         {
-            int index = GetNodeIndexAt(y);
+            int index = GetNodeIndexAt(y + _treeScrollY - Bounds.Top - DevToolsTheme.PaddingNormal);
             
             if (index >= 0 && index < _flattenedNodes.Count)
             {
@@ -913,22 +1277,58 @@ public class ElementsPanel : DevToolsPanelBase
                 float contentTop = Bounds.Top + 32 + DevToolsTheme.PaddingNormal;
                 float relativeY = y - contentTop + _stylesScrollY;
                 
-                // Only for Styles tab (0)
+                // Only for Styles tab (0) - handle CSS property click-to-edit
                 if (_sidebarTab == 0 && relativeY >= DevToolsTheme.ItemHeight)
                 {
-                    int attrIndex = (int)((relativeY - DevToolsTheme.ItemHeight) / DevToolsTheme.ItemHeight);
-                    if (selectedNode.Attributes != null && attrIndex >= 0 && attrIndex < selectedNode.Attributes.Count)
+                    // Calculate which property row was clicked
+                    int rowIndex = (int)((relativeY - DevToolsTheme.ItemHeight) / DevToolsTheme.ItemHeight);
+                    
+                    // Build list of all CSS properties to find clicked one
+                    var allProps = new List<(string Name, string Value)>();
+                    
+                    // Inline styles first
+                    if (_matchedStyleData?.InlineStyle?.CssProperties != null)
                     {
-                        var kv = selectedNode.Attributes.ElementAt(attrIndex);
-                        
-                        _editingAttrKey = kv.Key;
-                        _editingAttrValue = kv.Value;
-                        _editingNodeId = null; // Clear node editing
-                        _cursorBlink = true;
-                        _lastBlink = DateTime.Now;
-                        
-                        Invalidate();
-                        return true;
+                        foreach (var p in _matchedStyleData.InlineStyle.CssProperties)
+                            allProps.Add((p.Name, p.Value));
+                    }
+                    
+                    // Then matched rules
+                    if (_matchedStyleData?.MatchedCSSRules != null)
+                    {
+                        foreach (var rule in _matchedStyleData.MatchedCSSRules)
+                        {
+                            allProps.Add(("__selector__", "")); // Selector line
+                            if (rule.Rule?.Style?.CssProperties != null)
+                            {
+                                foreach (var p in rule.Rule.Style.CssProperties)
+                                    allProps.Add((p.Name, p.Value));
+                            }
+                            allProps.Add(("__closing__", "")); // Closing brace
+                        }
+                    }
+                    
+                    if (rowIndex >= 0 && rowIndex < allProps.Count)
+                    {
+                        var (propName, propValue) = allProps[rowIndex];
+                        if (propName != "__selector__" && propName != "__closing__")
+                        {
+                            _editingCssNodeId = _selectedNodeId;
+                            _editingCssPropertyName = propName;
+                            _editingCssPropertyValue = propValue;
+                            _cursorBlink = true;
+                            _lastBlink = DateTime.Now;
+                            
+                            // Show color picker for color properties
+                            _colorPickerVisible = ColorPicker.IsColorProperty(propName);
+                            
+                            // Initialize autocomplete
+                            _autocompleteSuggestions = CssAutocomplete.GetSuggestions(propName, propValue);
+                            _autocompleteSelectedIndex = 0;
+                            
+                            Invalidate();
+                            return true;
+                        }
                     }
                 }
             }
@@ -967,11 +1367,26 @@ public class ElementsPanel : DevToolsPanelBase
                 Invalidate();
             }
         }
+        else if (_editingCssPropertyName != null)
+        {
+            if (!char.IsControl(c))
+            {
+                _editingCssPropertyValue += c;
+                _cursorBlink = true;
+                _lastBlink = DateTime.Now;
+                
+                // Update autocomplete suggestions
+                _autocompleteSuggestions = CssAutocomplete.GetSuggestions(_editingCssPropertyName, _editingCssPropertyValue);
+                _autocompleteSelectedIndex = 0;
+                
+                Invalidate();
+            }
+        }
     }
     
     public override bool OnKeyDown(int keyCode, bool ctrl, bool shift, bool alt)
     {
-        if (_editingAttrKey == null && _editingNodeId == null) return false;
+        if (_editingAttrKey == null && _editingNodeId == null && _editingCssPropertyName == null) return false;
         
         const int KEY_BACK = 8;
         const int KEY_ENTER = 13;
@@ -999,20 +1414,65 @@ public class ElementsPanel : DevToolsPanelBase
                     Invalidate();
                 }
             }
+            else if (_editingCssPropertyName != null)
+            {
+                if (_editingCssPropertyValue.Length > 0)
+                {
+                    _editingCssPropertyValue = _editingCssPropertyValue.Substring(0, _editingCssPropertyValue.Length - 1);
+                    _cursorBlink = true;
+                    _lastBlink = DateTime.Now;
+                    Invalidate();
+                }
+            }
             return true;
         }
         else if (keyCode == KEY_ENTER)
         {
             if (_editingAttrKey != null) _ = ApplyAttributeChange();
             else if (_editingNodeId != null) _ = ApplyNodeValueChange();
+            else if (_editingCssPropertyName != null) _ = ApplyCssPropertyChange();
             return true;
         }
         else if (keyCode == KEY_ESC)
         {
             _editingAttrKey = null;
             _editingNodeId = null;
+            _editingCssPropertyName = null;
+            _autocompleteSuggestions.Clear();
             Invalidate();
             return true;
+        }
+        
+        // Autocomplete navigation (only when editing CSS and have suggestions)
+        if (_editingCssPropertyName != null && _autocompleteSuggestions.Count > 0)
+        {
+            const int KEY_UP = 38;
+            const int KEY_DOWN = 40;
+            const int KEY_TAB = 9;
+            
+            if (keyCode == KEY_UP)
+            {
+                _autocompleteSelectedIndex = Math.Max(0, _autocompleteSelectedIndex - 1);
+                Invalidate();
+                return true;
+            }
+            else if (keyCode == KEY_DOWN)
+            {
+                _autocompleteSelectedIndex = Math.Min(_autocompleteSuggestions.Count - 1, _autocompleteSelectedIndex + 1);
+                Invalidate();
+                return true;
+            }
+            else if (keyCode == KEY_TAB && !shift)
+            {
+                // Accept suggestion with Tab
+                if (_autocompleteSelectedIndex >= 0 && _autocompleteSelectedIndex < _autocompleteSuggestions.Count)
+                {
+                    _editingCssPropertyValue = _autocompleteSuggestions[_autocompleteSelectedIndex];
+                    _autocompleteSuggestions.Clear();
+                    Invalidate();
+                }
+                return true;
+            }
         }
         
         return false;
@@ -1079,6 +1539,41 @@ public class ElementsPanel : DevToolsPanelBase
         }
     }
     
+    private async Task ApplyCssPropertyChange()
+    {
+        if (_editingCssPropertyName == null || _editingCssNodeId == null || Host == null) return;
+        
+        int nodeId = _editingCssNodeId.Value;
+        string propertyName = _editingCssPropertyName;
+        string value = _editingCssPropertyValue;
+        
+        // Clear editing state immediately for UX
+        _editingCssPropertyName = null;
+        _editingCssNodeId = null;
+        Invalidate();
+        
+        try
+        {
+            // Send CSS.setStyleTexts command with edits array
+            var edits = new[] { new { nodeId = nodeId, propertyName = propertyName, value = value } };
+            var request = new ProtocolRequest<object>
+            {
+                Id = 1005,
+                Method = "CSS.setStyleTexts",
+                Params = new { edits = edits }
+            };
+            
+            await Host.SendProtocolCommandAsync(JsonSerializer.Serialize(request, ProtocolJson.Options));
+            
+            // Refresh styles after applying change
+            await FetchStylesAsync(nodeId);
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.FenLogger.Error($"[ElementsPanel] CSS property change error: {ex.Message}", LogCategory.General);
+        }
+    }
+    
     private async Task SendHighlightCommand(int? nodeId)
     {
         if (Host == null) return;
@@ -1109,7 +1604,11 @@ public class ElementsPanel : DevToolsPanelBase
     
     public override void OnMouseUp(float x, float y)
     {
-        _draggingSplitter = false;
+        if (_draggingSplitter)
+        {
+            _draggingSplitter = false;
+            Host?.RequestCursorChange(CursorType.Default);
+        }
     }
     
     public override void OnMouseWheel(float x, float y, float deltaX, float deltaY)
@@ -1117,7 +1616,7 @@ public class ElementsPanel : DevToolsPanelBase
         if (x < _splitterX)
         {
             // Tree scroll
-            ScrollY = Math.Clamp(ScrollY - deltaY * 40, 0, MaxScrollY);
+            _treeScrollY = Math.Clamp(_treeScrollY - deltaY * 40, 0, _treeMaxScrollY);
         }
         else
         {
@@ -1128,9 +1627,8 @@ public class ElementsPanel : DevToolsPanelBase
         Invalidate();
     }
     
-    private int GetNodeIndexAt(float y)
+    private int GetNodeIndexAt(float relativeY)
     {
-        float relativeY = (y - Bounds.Top) - DevToolsTheme.PaddingNormal + ScrollY;
         int index = (int)(relativeY / DevToolsTheme.ItemHeight);
         return index >= 0 && index < _flattenedNodes.Count ? index : -1;
     }

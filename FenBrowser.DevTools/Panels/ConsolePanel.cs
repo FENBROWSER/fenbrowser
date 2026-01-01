@@ -217,6 +217,20 @@ public class ConsolePanel : DevToolsPanelBase
         }
     }
     
+    public override void OnMouseMove(float x, float y)
+    {
+        // Check if over input area
+        bool isOverInput = y >= Bounds.Bottom - INPUT_HEIGHT;
+        if (isOverInput)
+        {
+            Host?.RequestCursorChange(CursorType.Text);
+        }
+        else
+        {
+            Host?.RequestCursorChange(CursorType.Default);
+        }
+    }
+    
     public override bool OnMouseDown(float x, float y, bool isRightButton)
     {
         // Check if clicked in input area

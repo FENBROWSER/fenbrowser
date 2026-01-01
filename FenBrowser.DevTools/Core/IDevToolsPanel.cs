@@ -54,6 +54,11 @@ public interface IDevToolsPanel
     void OnMouseWheel(float x, float y, float deltaX, float deltaY);
     
     /// <summary>
+    /// Whether the panel is currently dragging an element (e.g., splitter).
+    /// </summary>
+    bool IsDragging { get; }
+    
+    /// <summary>
     /// Handle key down.
     /// </summary>
     bool OnKeyDown(int keyCode, bool ctrl, bool shift, bool alt);
@@ -79,10 +84,11 @@ public interface IDevToolsPanel
 /// </summary>
 public abstract class DevToolsPanelBase : IDevToolsPanel
 {
-    protected IDevToolsHost? Host { get; private set; }
-    protected SKRect Bounds { get; private set; }
+    protected IDevToolsHost? Host { get; set; }
+    protected SKRect Bounds { get; set; }
     protected float ScrollY { get; set; }
     protected float MaxScrollY { get; set; }
+    public virtual bool IsDragging => false;
     
     public abstract string Title { get; }
     public virtual string? Shortcut => null;
@@ -102,7 +108,7 @@ public abstract class DevToolsPanelBase : IDevToolsPanel
     public virtual void OnActivate() { }
     public virtual void OnDeactivate() { }
     
-    public void Paint(SKCanvas canvas, SKRect bounds)
+    public virtual void Paint(SKCanvas canvas, SKRect bounds)
     {
         Bounds = bounds;
         
