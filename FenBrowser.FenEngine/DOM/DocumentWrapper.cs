@@ -106,8 +106,7 @@ namespace FenBrowser.FenEngine.DOM
                     return FenValue.FromFunction(new FenFunction("dispatchEvent", DispatchEventMethod));
 
                 case "cookie":
-                    // Simple cookie stub - non-persistent for now
-                    return FenValue.FromString(""); 
+                    return FenValue.FromString(GetCookieString()); 
 
                 case "domain":
                     return FenValue.FromString(_baseUri?.Host ?? "");
@@ -137,9 +136,7 @@ namespace FenBrowser.FenEngine.DOM
         {
             if (key.ToLowerInvariant() == "cookie")
             {
-                // Accept cookie writes (log them)
-                try { FenLogger.Debug($"[DocumentWrapper] Set cookie: {value}", FenBrowser.Core.Logging.LogCategory.JavaScript); } catch {}
-                // TODO: Parse and store cookies properly
+                SetCookie(value.ToString());
                 return;
             }
             // document properties are mostly read-only
@@ -170,17 +167,17 @@ namespace FenBrowser.FenEngine.DOM
             if (args.Length == 0) return FenValue.Null;
 
             var id = args[0].ToString();
-            try { System.IO.File.AppendAllText("debug_log.txt", $"[DocumentWrapper] getElementById searching for: {id}\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             var element = FindElementById(_root, id);
 
             if (element != null)
             {
-                try { System.IO.File.AppendAllText("debug_log.txt", $"[DocumentWrapper] Found element: {element.Tag} (id={id})\r\n"); } catch { }
+                /* [PERF-REMOVED] */
                 return FenValue.FromObject(new ElementWrapper(element, _context));
             }
             else
             {
-                try { System.IO.File.AppendAllText("debug_log.txt", $"[DocumentWrapper] Element NOT found: {id}\r\n"); } catch { }
+                /* [PERF-REMOVED] */
                 return FenValue.Null;
             }
         }
@@ -447,6 +444,42 @@ namespace FenBrowser.FenEngine.DOM
             }
             
             return FenValue.FromBoolean(true);
+        }
+
+        // --- Cookie Implementation ---
+        private readonly Dictionary<string, string> _cookies = new Dictionary<string, string>();
+
+        private string GetCookieString()
+        {
+            // Format: key=value; key2=value2
+            return string.Join("; ", _cookies.Select(kv => $"{kv.Key}={kv.Value}"));
+        }
+
+        private void SetCookie(string cookieStr)
+        {
+            if (string.IsNullOrWhiteSpace(cookieStr)) return;
+
+            // Basic parsing: split by ';' to ignore attributes for now (path, domain, expires)
+            // Real implementation would parse attributes and checking matching logic
+            var parts = cookieStr.Split(';');
+            if (parts.Length > 0)
+            {
+                var kv = parts[0].Trim();
+                var eq = kv.IndexOf('=');
+                if (eq > 0)
+                {
+                    var key = kv.Substring(0, eq).Trim();
+                    var val = kv.Substring(eq + 1).Trim();
+                    _cookies[key] = val;
+                }
+                else
+                {
+                    // "key" without value?
+                    _cookies[kv] = "";
+                }
+                
+                FenLogger.Debug($"[DocumentWrapper] Cookie set: {parts[0]}", FenBrowser.Core.Logging.LogCategory.JavaScript);
+            }
         }
     }
 }
