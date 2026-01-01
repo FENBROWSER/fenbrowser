@@ -124,7 +124,7 @@ namespace FenBrowser.Tests.Engine
             };
 
             public IModuleLoader ModuleLoader { get; set; }
-            public Action<FenBrowser.FenEngine.Core.MutationRecord> OnMutation { get; set; }
+            public Action<FenBrowser.Core.Dom.MutationRecord> OnMutation { get; set; }
             public string CurrentUrl { get; set; } = "test";
             public FenEnvironment Environment { get; set; }
 
