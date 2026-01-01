@@ -4,7 +4,7 @@ using System.Collections.Generic;
 
 namespace FenBrowser.Core.Parsing
 {
-    public class HtmlParser
+    public class HtmlParser : IHtmlParser
     {
         private readonly string _html;
 
@@ -15,7 +15,12 @@ namespace FenBrowser.Core.Parsing
 
         public Document Parse()
         {
-            var builder = new HtmlTreeBuilder(_html);
+            return Parse(_html);
+        }
+
+        public Document Parse(string html)
+        {
+            var builder = new HtmlTreeBuilder(html);
             var doc = builder.Build();
             return doc;
         }
