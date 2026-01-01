@@ -13,24 +13,61 @@ public class RootWidget : DockPanel
     private readonly TabBarWidget _tabBar;
     private readonly ToolbarWidget _toolbar;
     private readonly StatusBarWidget _statusBar;
+    private readonly BookmarksBarWidget _bookmarksBar;
     private Widget _contentWidget;
     private Widget _overlay;
     private Widget _separator;
+    private readonly DevToolsWidget _devToolsWidget;
+    private readonly SiteInfoPopupWidget _siteInfoPopup;
 
-    public RootWidget(TabBarWidget tabBar, ToolbarWidget toolbar, StatusBarWidget statusBar)
+    public RootWidget(TabBarWidget tabBar, ToolbarWidget toolbar, StatusBarWidget statusBar, DevToolsWidget devToolsWidget)
     {
         _tabBar = tabBar;
         _toolbar = toolbar;
         _statusBar = statusBar;
+        _bookmarksBar = new BookmarksBarWidget();
+        _devToolsWidget = devToolsWidget;
         _separator = new SeparatorWidget();
+        
+        _siteInfoPopup = new SiteInfoPopupWidget();
+        _siteInfoPopup.CloseRequested += () => SetPopup(null);
+        
+        // Wire up security icon click
+        _toolbar.AddressBar.SecurityIconClicked += ToggleSiteInfoPopup;
         
         AddChild(_tabBar, Dock.Top);
         AddChild(_toolbar, Dock.Top);
-        AddChild(_separator, Dock.Top); // Add separator after toolbar
+        AddChild(_bookmarksBar, Dock.Top);
+        AddChild(_separator, Dock.Top); // Add separator after bookmarks bar
         AddChild(_statusBar, Dock.Bottom);
+        AddChild(_devToolsWidget, Dock.Bottom);
         
         LastChildFill = true;
     }
+
+    private void ToggleSiteInfoPopup()
+    {
+        if (_popup == _siteInfoPopup && _siteInfoPopup.IsVisible)
+        {
+            SetPopup(null);
+            return;
+        }
+
+        // Calculate position
+        // Toolbar is docked Top, so its Y is likely TabBarHeight.
+        // AddressBar is inside Toolbar.
+        
+        float x = _toolbar.Bounds.Left + _toolbar.AddressBar.Bounds.Left;
+        float y = _toolbar.Bounds.Top + _toolbar.AddressBar.Bounds.Bottom + 5; // Below address bar
+        
+        // Only valid if layout has happened
+        if (x == 0 && y == 0) return; 
+
+        _siteInfoPopup.Show(x, y, "google.com", true); // Mock data for now
+        SetPopup(_siteInfoPopup);
+    }
+    
+    public BookmarksBarWidget BookmarksBar => _bookmarksBar;
     
     public void SetContent(Widget content)
     {
@@ -62,6 +99,14 @@ public class RootWidget : DockPanel
              // Add last so it paints on top. Do NOT set Dock property, handled manually.
              AddChild(_popup, Dock.None); 
         }
+    }
+
+    protected override SKSize OnMeasure(SKSize availableSpace)
+    {
+        // Sync visibility with settings
+        if (_bookmarksBar != null)
+            _bookmarksBar.IsVisible = FenBrowser.Core.BrowserSettings.Instance.ShowFavoritesBar;
+        return base.OnMeasure(availableSpace);
     }
 
     protected override void OnArrange(SKRect finalRect)

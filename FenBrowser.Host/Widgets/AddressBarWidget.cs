@@ -38,6 +38,10 @@ public class AddressBarWidget : Widget
     public string Placeholder { get; set; } = "Enter URL...";
     
     public event Action<string> NavigateRequested;
+    public event Action BookmarkToggled;
+    public event Action SecurityIconClicked;
+    
+    public bool IsBookmarked { get; set; }
     
     // Styling
     // Styling (optional overrides)
@@ -49,11 +53,13 @@ public class AddressBarWidget : Widget
     public SKColor? SelectionColor { get; set; }
     public SKColor? CaretColor { get; set; }
     public float FontSize { get; set; } = 14;
-    public float Padding { get; set; } = 10; 
     public float IconPadding { get; set; } = 34; // Extra left padding for Shield Icon
+    public float IconPaddingRight { get; set; } = 34; // Extra right padding for Star Icon
     
     // Icons
     private SKPath _shieldPath = SKPath.ParseSvgPathData("M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"); // Material/Fluent Shield
+    private SKPath _starOutlinePath = SKPath.ParseSvgPathData("M22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24zM12 15.4l-3.76 2.27 1-4.28-3.32-2.88 4.38-.38L12 6.1l1.71 4.04 4.38.38-3.32 2.88 1 4.28L12 15.4z");
+    private SKPath _starFilledPath = SKPath.ParseSvgPathData("M12 17.27L18.18 21l-1.63-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z");
 
     private TextBlock _textBlock;
     private bool _isTextLayoutDirty = true;
@@ -138,7 +144,8 @@ public class AddressBarWidget : Widget
         // Content Area Clip
         canvas.Save();
         // Left padding includes space for Icon
-        canvas.ClipRect(new SKRect(IconPadding, 0, localBounds.Width - Padding, localBounds.Height));
+        // Left padding includes space for Icon, Right includes Star
+        canvas.ClipRect(new SKRect(IconPadding, 0, localBounds.Width - IconPaddingRight, localBounds.Height));
         
         // Vertical center the text block
         float textY = (localBounds.Height - _textBlock.MeasuredHeight) / 2;
@@ -197,6 +204,23 @@ public class AddressBarWidget : Widget
         if (_text.StartsWith("https://")) iconPaint.Color = SKColors.ForestGreen;
         
         canvas.DrawPath(_shieldPath, iconPaint);
+        canvas.Restore();
+        
+        // Draw Star Icon (Right)
+        canvas.Save();
+        float starX = Bounds.Width - 30;
+        float starY = (Bounds.Height - iconSize) / 2;
+        canvas.Translate(Bounds.Left + starX, Bounds.Top + starY);
+        canvas.Scale(scale);
+        
+        using var starPaint = new SKPaint
+        {
+            Color = IsBookmarked ? theme.Accent : theme.TextMuted,
+            IsAntialias = true,
+            Style = SKPaintStyle.Fill
+        };
+        
+        canvas.DrawPath(IsBookmarked ? _starFilledPath : _starOutlinePath, starPaint);
         canvas.Restore();
         
         // Blink
@@ -272,6 +296,23 @@ public class AddressBarWidget : Widget
     {
         if (button == MouseButton.Left)
         {
+            // Check if star was clicked
+            float starX = Bounds.Width - 30;
+            var starRect = new SKRect(Bounds.Left + starX - 5, Bounds.Top, Bounds.Left + starX + 25, Bounds.Bottom);
+            if (starRect.Contains(x, y))
+            {
+                BookmarkToggled?.Invoke();
+                return;
+            }
+            
+            // Check if shield was clicked (Left icon)
+            // Fix: x is Global coordinate. Bounds.Left is global position.
+            if (x >= Bounds.Left && x < Bounds.Left + IconPadding)
+            {
+                SecurityIconClicked?.Invoke();
+                return;
+            }
+
             RequestFocus();
             EnsureTextBlock();
             
@@ -311,7 +352,7 @@ public class AddressBarWidget : Widget
         return hit.ClosestCodePointIndex;
     }
     
-    public override void OnKeyDown(Key key)
+    public override void OnKeyDown(Key key, bool ctrl, bool shift, bool alt)
     {
         _caretVisible = true;
         _lastBlink = DateTime.Now;
@@ -376,7 +417,7 @@ public class AddressBarWidget : Widget
                 
             case Key.A:
                 // Ctrl+A - Select All
-                if (KeyboardDispatcher.Instance.IsCtrlPressed)
+                if (ctrl)
                 {
                     SelectAll();
                 }
@@ -384,7 +425,7 @@ public class AddressBarWidget : Widget
                 
             case Key.C:
                 // Ctrl+C - Copy
-                if (KeyboardDispatcher.Instance.IsCtrlPressed && HasSelection())
+                if (ctrl && HasSelection())
                 {
                     var selectedText = GetSelectedText();
                     if (!string.IsNullOrEmpty(selectedText))
@@ -396,7 +437,7 @@ public class AddressBarWidget : Widget
                 
             case Key.X:
                 // Ctrl+X - Cut
-                if (KeyboardDispatcher.Instance.IsCtrlPressed && HasSelection())
+                if (ctrl && HasSelection())
                 {
                     var selectedText = GetSelectedText();
                     if (!string.IsNullOrEmpty(selectedText))
@@ -410,7 +451,7 @@ public class AddressBarWidget : Widget
                 
             case Key.V:
                 // Ctrl+V - Paste
-                if (KeyboardDispatcher.Instance.IsCtrlPressed)
+                if (ctrl)
                 {
                     var clipboardText = ClipboardHelper.GetText();
                     if (!string.IsNullOrEmpty(clipboardText))
@@ -439,12 +480,12 @@ public class AddressBarWidget : Widget
     }
 
     
-    public override void OnTextInput(char c)
+    public override void OnTextInput(char c, bool ctrl)
     {
         // 1 = SOH (Start of Heading), commonly sent by Ctrl+A
         // 127 = Delete
         // < 32 = Control characters
-        if (char.IsControl(c) || c == 1 || KeyboardDispatcher.Instance.IsCtrlPressed) return;
+        if (char.IsControl(c) || c == 1 || ctrl) return;
         
         _caretVisible = true;
         _lastBlink = DateTime.Now;
@@ -483,7 +524,7 @@ public class AddressBarWidget : Widget
         var caretInfo = _textBlock.GetCaretInfo(new CaretPosition(_caretPosition));
         float caretX = caretInfo.CaretRectangle.Left;
         
-        float visibleWidth = Bounds.Width - IconPadding - Padding;
+        float visibleWidth = Bounds.Width - IconPadding - IconPaddingRight;
         
         if (caretX - _scrollOffset > visibleWidth)
         {
