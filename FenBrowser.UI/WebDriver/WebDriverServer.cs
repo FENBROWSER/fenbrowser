@@ -8,6 +8,8 @@ using System.Threading.Tasks;
 using Avalonia.Threading;
 using System.Linq;
 using FenBrowser.FenEngine.Rendering;
+using FenBrowser.Core.Logging;
+using FenBrowser.Core;
 
 namespace FenBrowser.WebDriver
 {
@@ -37,13 +39,11 @@ namespace FenBrowser.WebDriver
                 _listener.Start();
                 _running = true;
                 Task.Run(ListenLoop);
-                System.Diagnostics.Debug.WriteLine($"WebDriver server started on {_listener.Prefixes.First()}");
-                try { System.IO.File.AppendAllText("debug_log.txt", $"[WebDriver] Started on {_listener.Prefixes.First()}\r\n"); } catch { }
+                FenLogger.Info($"WebDriver server started on {_listener.Prefixes.First()}", LogCategory.WebDriver);
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"Failed to start WebDriver server: {ex.Message}");
-                try { System.IO.File.AppendAllText("debug_log.txt", $"[WebDriver] Failed to start: {ex.Message}\r\n"); } catch { }
+                FenLogger.Error($"Failed to start WebDriver server: {ex.Message}", LogCategory.WebDriver);
             }
         }
 
@@ -65,7 +65,7 @@ namespace FenBrowser.WebDriver
                     _ = HandleRequestAsync(context);
                 }
                 catch (HttpListenerException) { break; }
-                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"WebDriver listen error: {ex}"); }
+                catch (Exception ex) { FenLogger.Error($"WebDriver listen error: {ex}", LogCategory.WebDriver); }
             }
         }
 
@@ -76,8 +76,7 @@ namespace FenBrowser.WebDriver
             var method = req.HttpMethod;
             var path = req.Url.AbsolutePath.TrimEnd('/');
             
-            Console.WriteLine($"[WebDriver] {method} {path}");
-            try { System.IO.File.AppendAllText("debug_log.txt", $"[WebDriver] {method} {path}\r\n"); } catch { }
+            FenLogger.Debug($"[WebDriver] {method} {path}", LogCategory.WebDriver);
 
             try
             {
@@ -128,7 +127,7 @@ namespace FenBrowser.WebDriver
             var json = JsonSerializer.Serialize(payload);
             
             // Debug: log the response for troubleshooting
-            try { System.IO.File.AppendAllText("debug_log.txt", $"[WebDriver Response] {json}\r\n"); } catch { }
+            FenLogger.Debug($"[WebDriver Response] {json}", LogCategory.WebDriver);
             
             var buffer = Encoding.UTF8.GetBytes(json);
             res.ContentType = "application/json; charset=utf-8";
