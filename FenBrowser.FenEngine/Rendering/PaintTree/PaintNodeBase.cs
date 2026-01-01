@@ -25,6 +25,12 @@ namespace FenBrowser.FenEngine.Rendering
         public float Opacity { get; init; } = 1.0f;
 
         /// <summary>
+        /// The DOM node that created this paint node.
+        /// Used for hit-testing.
+        /// </summary>
+        public FenBrowser.Core.Dom.Node SourceNode { get; init; }
+
+        /// <summary>
         /// Whether this node represents a focused element.
         /// </summary>
         public bool IsFocused { get; init; }

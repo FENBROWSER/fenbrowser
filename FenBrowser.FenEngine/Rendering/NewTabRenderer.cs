@@ -91,23 +91,26 @@ namespace FenBrowser.FenEngine.Rendering
                 <body>
                     <div class='search-container'>
                         <div class='logo'>FenBrowser</div>
-                        <input type='text' class='search-box' placeholder='Search the web or enter URL' onkeydown='if(event.key===""Enter"") window.location.href=""https://www.google.com/search?q=""+encodeURIComponent(this.value)'>
+                        <input type='text' class='search-box' placeholder='Search web or enter URL' onkeydown='if(event.key===""Enter"") window.location.href=""https://example.com/?q=""+encodeURIComponent(this.value)'>
                     </div>
 
                     <div class='quick-links'>
-                        <a href='https://www.google.com' class='link-item'>
-                            <div class='link-icon'>G</div>
-                            <div class='link-title'>Google</div>
+                        <a href='https://example.com' class='link-item'>
+                            <div class='link-icon'>E</div>
+                            <div class='link-title'>Example</div>
                         </a>
-                        <a href='https://www.youtube.com' class='link-item'>
-                            <div class='link-icon'>Y</div>
-                            <div class='link-title'>YouTube</div>
+                        <a href='https://example.com' class='link-item'>
+                            <div class='link-icon'>1</div>
+                            <div class='link-title'>Test 1</div>
                         </a>
-                        <a href='https://github.com' class='link-item'>
-                            <div class='link-icon'>&#128049;</div>
-                            <div class='link-title'>GitHub</div>
+                        <a href='https://example.com' class='link-item'>
+                            <div class='link-icon'>2</div>
+                            <div class='link-title'>Test 2</div>
                         </a>
-                        <a href='https://news.ycombinator.com' class='link-item'>
+                        <a href='https://example.com' class='link-item'>
+                            <div class='link-icon'>3</div>
+                            <div class='link-title'>Test 3</div>
+                        </a>
                             <div class='link-icon'>H</div>
                             <div class='link-title'>Hacker News</div>
                         </a>

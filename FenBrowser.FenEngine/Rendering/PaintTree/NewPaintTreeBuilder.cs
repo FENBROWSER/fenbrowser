@@ -32,18 +32,21 @@ namespace FenBrowser.FenEngine.Rendering
         private readonly IReadOnlyDictionary<Node, CssComputed> _styles;
         private readonly float _viewportWidth;
         private readonly float _viewportHeight;
+        private readonly string _baseUri;
         private int _frameId;
         
         private NewPaintTreeBuilder(
             IReadOnlyDictionary<Node, Layout.BoxModel> boxes,
             IReadOnlyDictionary<Node, CssComputed> styles,
             float viewportWidth,
-            float viewportHeight)
+            float viewportHeight,
+            string baseUri)
         {
             _boxes = boxes ?? throw new ArgumentNullException(nameof(boxes));
             _styles = styles ?? new Dictionary<Node, CssComputed>();
             _viewportWidth = viewportWidth;
             _viewportHeight = viewportHeight;
+            _baseUri = baseUri;
         }
         
         /// <summary>
@@ -55,14 +58,16 @@ namespace FenBrowser.FenEngine.Rendering
             IReadOnlyDictionary<Node, CssComputed> styles,
             float viewportWidth,
             float viewportHeight,
+            string baseUri = null,
             int frameId = 0)
         {
+            FenBrowser.Core.FenLogger.Debug($"[PAINT-TREE] Build called. Root={(root != null ? root.GetType().Name : "NULL")} Boxes={boxes?.Count} Styles={styles?.Count}");
             if (root == null || boxes == null || boxes.Count == 0)
             {
                 return ImmutablePaintTree.Empty;
             }
             
-            var builder = new NewPaintTreeBuilder(boxes, styles, viewportWidth, viewportHeight);
+            var builder = new NewPaintTreeBuilder(boxes, styles, viewportWidth, viewportHeight, baseUri);
             builder._frameId = frameId;
             
             // Build the root stacking context
@@ -72,7 +77,7 @@ namespace FenBrowser.FenEngine.Rendering
             // Flatten stacking contexts into paint order
             var rootNodes = rootContext.Flatten();
             
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[NewPaintTreeBuilder] Built paint tree with {rootNodes.Count} roots for frame {frameId}.\r\n"); } catch {}
+            /* [PERF-REMOVED] */
 
             return new ImmutablePaintTree(rootNodes, frameId);
         }
@@ -180,32 +185,38 @@ namespace FenBrowser.FenEngine.Rendering
             bool isHovered = elemNode != null && ElementStateManager.Instance.IsHovered(elemNode);
             
             // 0. Shadow (below background)
-            var shadowNode = BuildBoxShadowNode(bounds, style);
+            var shadowNode = BuildBoxShadowNode(node, bounds, style);
             if (shadowNode != null) nodes.Add(shadowNode);
 
             // 1. Background
-            var bgNode = BuildBackgroundNode(bounds, style, isFocused, isHovered);
+            var bgNode = BuildBackgroundNode(node, bounds, style, isFocused, isHovered);
             if (bgNode != null) nodes.Add(bgNode);
             
             // 2. Border
-            var borderNode = BuildBorderNode(bounds, style, isFocused, isHovered);
+            var borderNode = BuildBorderNode(node, bounds, style, isFocused, isHovered);
             if (borderNode != null) nodes.Add(borderNode);
             
             // 3. Content (text or image)
             if (node is Text textNode)
             {
-                var textPaintNode = BuildTextNode(textNode, box, style, isFocused, isHovered);
-                if (textPaintNode != null) nodes.Add(textPaintNode);
+                var textNodes = BuildTextNode(textNode, box, style, isFocused, isHovered);
+                if (textNodes != null) nodes.AddRange(textNodes);
             }
             else if (node is Element elem)
             {
-                if (IsImageElement(elem) || elem.Tag?.ToUpperInvariant() == "SVG")
+                string tagUpper = elem.Tag?.ToUpperInvariant();
+                if (tagUpper == "IMG")
+                {
+                    FenBrowser.Core.FenLogger.Debug($"[PAINT-BUILD] Found IMG element id={elem.GetAttribute("id")} src={(elem.GetAttribute("src")?.Length > 60 ? elem.GetAttribute("src")?.Substring(0,60) + "..." : elem.GetAttribute("src"))}");
+                }
+                if (IsImageElement(elem) || tagUpper == "SVG")
                 {
                     var imageNode = BuildImageOrSvgNode(elem, box, style, isFocused, isHovered);
                     if (imageNode != null) nodes.Add(imageNode);
                 }
                 else if (elem.Tag?.ToUpperInvariant() == "INPUT" || elem.Tag?.ToUpperInvariant() == "TEXTAREA")
                 {
+                    // Inputs are still single line for now (simple implementation)
                     var inputNode = BuildInputTextNode(elem, box, style, isFocused, isHovered);
                     if (inputNode != null) nodes.Add(inputNode);
                 }
@@ -226,36 +237,71 @@ namespace FenBrowser.FenEngine.Rendering
             return nodes;
         }
 
-        private BackgroundPaintNode BuildBackgroundNode(SKRect bounds, CssComputed style, bool isFocused, bool isHovered)
+        private BackgroundPaintNode BuildBackgroundNode(Node node, SKRect bounds, CssComputed style, bool isFocused, bool isHovered)
         {
-            if (style?.BackgroundColor == null || style.BackgroundColor.Value.Alpha == 0)
+            SKColor? bgColor = style?.BackgroundColor;
+            
+            // UA Defaults if transparent
+            if (bgColor == null || bgColor.Value.Alpha == 0)
+            {
+                if (node is Element e)
+                {
+                    string tag = e.Tag?.ToUpperInvariant();
+                    string type = e.GetAttribute("type")?.ToLowerInvariant();
+                    
+                    if (tag == "INPUT" && type != "hidden")
+                    {
+                        // Default Inputs to White
+                         bgColor = SKColors.White;
+                    }
+                    else if (tag == "BUTTON" || (tag == "INPUT" && (type == "button" || type == "submit" || type == "reset")))
+                    {
+                        // Default Buttons to Light Gray
+                        bgColor = new SKColor(240, 240, 240);
+                    }
+                }
+            }
+            
+            if (bgColor == null || bgColor.Value.Alpha == 0)
                 return null;
             
             return new BackgroundPaintNode
             {
                 Bounds = bounds,
-                Color = style.BackgroundColor,
+                SourceNode = node,
+                Color = bgColor,
                 BorderRadius = ExtractBorderRadius(style),
                 IsFocused = isFocused,
                 IsHovered = isHovered
             };
         }
         
-        private BorderPaintNode BuildBorderNode(SKRect bounds, CssComputed style, bool isFocused, bool isHovered)
+        private BorderPaintNode BuildBorderNode(Node node, SKRect bounds, CssComputed style, bool isFocused, bool isHovered)
         {
-            if (style == null) return null;
-            
-            var bt = style.BorderThickness;
-            float[] widths = new float[4]
+            float[] widths = null;
+            if (style != null)
             {
-                (float)bt.Top,
-                (float)bt.Right,
-                (float)bt.Bottom,
-                (float)bt.Left
-            };
-            
-            // Skip if no borders
-            if (widths.All(w => w <= 0)) return null;
+                var bt = style.BorderThickness;
+                widths = new float[4] { (float)bt.Top, (float)bt.Right, (float)bt.Bottom, (float)bt.Left };
+            }
+
+            // UA Defaults
+            if (widths == null || widths.All(w => w <= 0))
+            {
+                 if (node is Element e)
+                 {
+                    string tag = e.Tag?.ToUpperInvariant();
+                    string type = e.GetAttribute("type")?.ToLowerInvariant();
+                    
+                    if ((tag == "INPUT" && type != "hidden") || tag == "BUTTON" || (tag == "INPUT" && (type == "button" || type == "submit" || type == "reset")))
+                    {
+                        // Default Border
+                        widths = new float[4] { 1, 1, 1, 1 };
+                    }
+                 }
+            }
+
+            if (widths == null || widths.All(w => w <= 0)) return null;
             
             SKColor borderColor = style.BorderBrushColor ?? SKColors.Black;
             SKColor[] colors = new SKColor[4]
@@ -277,6 +323,7 @@ namespace FenBrowser.FenEngine.Rendering
             return new BorderPaintNode
             {
                 Bounds = bounds,
+                SourceNode = node,
                 Widths = widths,
                 Colors = colors,
                 Styles = styles,
@@ -286,14 +333,13 @@ namespace FenBrowser.FenEngine.Rendering
             };
         }
 
-        private BoxShadowPaintNode BuildBoxShadowNode(SKRect bounds, CssComputed style)
+        private BoxShadowPaintNode BuildBoxShadowNode(Node node, SKRect bounds, CssComputed style)
         {
             if (string.IsNullOrEmpty(style?.BoxShadow) || style.BoxShadow == "none") return null;
-
-            return ParseBoxShadow(style.BoxShadow, bounds, ExtractBorderRadius(style));
+            return ParseBoxShadow(node, style.BoxShadow, bounds, ExtractBorderRadius(style));
         }
 
-        private BoxShadowPaintNode ParseBoxShadow(string shadowStr, SKRect bounds, float[] borderRadius)
+        private BoxShadowPaintNode ParseBoxShadow(Node node, string shadowStr, SKRect bounds, float[] borderRadius)
         {
             try
             {
@@ -342,6 +388,7 @@ namespace FenBrowser.FenEngine.Rendering
                 return new BoxShadowPaintNode
                 {
                     Bounds = bounds,
+                    SourceNode = node,
                     Offset = new SKPoint(offsetX, offsetY),
                     Blur = blur,
                     Spread = spread,
@@ -356,7 +403,8 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
         
-        private TextPaintNode BuildTextNode(Text textNode, Layout.BoxModel box, CssComputed style, bool isFocused, bool isHovered)
+        // CHANGED: Returned list of nodes to support multi-line text
+        private List<TextPaintNode> BuildTextNode(FenBrowser.Core.Dom.Text textNode, Layout.BoxModel box, CssComputed style, bool isFocused, bool isHovered)
         {
             if (string.IsNullOrEmpty(textNode.Data)) return null;
             
@@ -372,75 +420,102 @@ namespace FenBrowser.FenEngine.Rendering
             SKFontStyleSlant slant = (parentStyle?.FontStyle == SKFontStyleSlant.Italic) ? SKFontStyleSlant.Italic : SKFontStyleSlant.Upright;
 
             var typeface = TextLayoutHelper.ResolveTypeface(fontFamily, textNode.Data, weight, slant);
-            float fontSize = (float)(parentStyle?.FontSize ?? 16);
             
-            // Extract text decorations from style or apply default for links
+            // RULE 2: FenEngine controls font size and line-height, not external libraries
+            // Enforce minimum 16px font size for readable text
+            float fontSize = (float)(parentStyle?.FontSize ?? 16);
+            if (fontSize < 10) fontSize = 16f; // Force readable minimum
+            
+            // Extract text decorations
             List<string> textDecorations = null;
             string decorValue = parentStyle?.TextDecoration;
             
             if (!string.IsNullOrWhiteSpace(decorValue) && !decorValue.Equals("none", StringComparison.OrdinalIgnoreCase))
             {
-                // Parse text-decoration value (can be multiple: "underline line-through")
                 textDecorations = decorValue.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).ToList();
             }
             else
             {
-                // Default: Apply underline for anchor elements with href (browser default UA style)
-                // BUT skip underlines for navigation links (in nav, header, or #main-nav)
+                // UA Default: Underline for links
                 var ancestor = textNode.Parent as Element;
                 bool inNav = false;
                 Element anchorEl = null;
                 while (ancestor != null)
                 {
                     string tag = ancestor.Tag?.ToUpperInvariant();
-                    if (tag == "NAV" || tag == "HEADER" || ancestor.Id == "main-nav" || ancestor.Id == "site")
-                    {
-                        inNav = true;
-                    }
-                    if (tag == "A")
-                    {
-                        anchorEl = ancestor;
-                    }
+                    if (tag == "NAV" || tag == "HEADER" || ancestor.Id == "main-nav" || ancestor.Id == "site") inNav = true;
+                    if (tag == "A") anchorEl = ancestor;
                     ancestor = ancestor.Parent as Element;
                 }
                 
-                // Only apply underline if anchor is NOT in navigation
                 if (anchorEl != null && !inNav)
                 {
                     string href = anchorEl.GetAttribute("href");
-                    if (!string.IsNullOrWhiteSpace(href))
-                    {
-                        textDecorations = new List<string> { "underline" };
-                    }
+                    if (!string.IsNullOrWhiteSpace(href)) textDecorations = new List<string> { "underline" };
                 }
             }
             
-            // Decode any remaining HTML entities in the text and collapse whitespace
+            // Text color
+             SKColor color = parentStyle?.ForegroundColor ?? SKColors.Black;
+
+            // MULTI-LINE SUPPORT
+            // If BoxModel has Lines populated (from TextLayoutComputer), use them.
+            if (box.Lines != null && box.Lines.Count > 0)
+            {
+                var list = new List<TextPaintNode>();
+                foreach (var line in box.Lines)
+                {
+                    // Calculate absolute bounds for this line
+                    float absX = box.ContentBox.Left + line.Origin.X;
+                    float absY = box.ContentBox.Top + line.Origin.Y;
+                    var lineBounds = new SKRect(absX, absY, absX + line.Width, absY + line.Height);
+                    
+                    // Origin for text drawing (Baseline)
+                    var textOrigin = new SKPoint(absX, absY + line.Baseline);
+
+                    list.Add(new TextPaintNode
+                    {
+                        Bounds = lineBounds,
+                        SourceNode = textNode,
+                        Color = color,
+                        FontSize = fontSize,
+                        Typeface = typeface,
+                        TextOrigin = textOrigin,
+                        FallbackText = line.Text, // Each line node holds its own text segment
+                        TextDecorations = textDecorations,
+                        IsFocused = isFocused,
+                        IsHovered = isHovered
+                    });
+                }
+                return list;
+            }
+
+            // FALLBACK (Single Line) - OLD LOGIC
             string displayText = System.Text.RegularExpressions.Regex.Replace(textNode.Data, @"\s+", " ");
             if (displayText.Contains("&#"))
             {
-                // Use checkmark emoji for better cross-font support
-                displayText = displayText.Replace("&#10003;", "✔");
-                displayText = displayText.Replace("&#x2713;", "✔");
-                displayText = displayText.Replace("&#10004;", "✔");
-                displayText = displayText.Replace("&#x2714;", "✔");
+                displayText = displayText.Replace("&#10003;", "✔")
+                                         .Replace("&#x2713;", "✔")
+                                         .Replace("&#10004;", "✔")
+                                         .Replace("&#x2714;", "✔");
             }
-            if (displayText.Contains("&amp;"))
-            {
-                displayText = displayText.Replace("&amp;", "&");
-            }
+            if (displayText.Contains("&amp;")) displayText = displayText.Replace("&amp;", "&");
             
-            return new TextPaintNode
+            return new List<TextPaintNode> 
             {
-                Bounds = box.ContentBox,
-                Color = parentStyle?.ForegroundColor ?? SKColors.Black,
-                FontSize = fontSize,
-                Typeface = typeface,
-                TextOrigin = new SKPoint(box.ContentBox.Left, box.ContentBox.Top + fontSize * 0.9f),
-                FallbackText = displayText,
-                TextDecorations = textDecorations,
-                IsFocused = isFocused,
-                IsHovered = isHovered
+                new TextPaintNode
+                {
+                    Bounds = box.ContentBox,
+                    SourceNode = textNode,
+                    Color = color,
+                    FontSize = fontSize,
+                    Typeface = typeface,
+                    TextOrigin = new SKPoint(box.ContentBox.Left, box.ContentBox.Top + fontSize * 0.9f),
+                    FallbackText = displayText,
+                    TextDecorations = textDecorations,
+                    IsFocused = isFocused,
+                    IsHovered = isHovered
+                }
             };
         }
         
@@ -452,7 +527,38 @@ namespace FenBrowser.FenEngine.Rendering
             if (tag == "IMG")
             {
                 url = elem.GetAttribute("src");
+                
+                // Resolve Relative URLs
+                if (!string.IsNullOrEmpty(url) && 
+                    !url.StartsWith("http", StringComparison.OrdinalIgnoreCase) && 
+                    !url.StartsWith("data:", StringComparison.OrdinalIgnoreCase) && 
+                    !string.IsNullOrEmpty(_baseUri))
+                {
+                    try 
+                    {
+                        if (url.StartsWith("//"))
+                        {
+                            var scheme = new Uri(_baseUri).Scheme;
+                            url = scheme + ":" + url;
+                        }
+                        else if (url.StartsWith("/"))
+                        {
+                            var uri = new Uri(_baseUri);
+                            url = $"{uri.Scheme}://{uri.Host}{url}";
+                        }
+                        else
+                        {
+                            var uri = new Uri(_baseUri);
+                            url = $"{uri.Scheme}://{uri.Host}/{url}";
+                        }
+                    }
+                    catch {}
+                }
+
+                FenBrowser.Core.FenLogger.Debug($"[IMG-BUILD] Tag={tag} URL={(url?.Length > 80 ? url?.Substring(0, 80) + "..." : url)}");
+                FenBrowser.Core.FenLogger.Debug($"[IMG-BUILD] box.ContentBox={box.ContentBox.Width}x{box.ContentBox.Height} @ {box.ContentBox.Left},{box.ContentBox.Top}");
                 var bitmap = ImageLoader.GetImage(url);
+                FenBrowser.Core.FenLogger.Debug($"[IMG-BUILD] Bitmap={(bitmap != null ? $"{bitmap.Width}x{bitmap.Height}" : "NULL")}");
                 
                 // Image loading is handled upstream - we just reference the bounds
                 return new ImagePaintNode
@@ -471,13 +577,30 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     if (elem.Attributes.TryGetValue("width", out var wStr) && float.TryParse(wStr, out var w)) svgW = w;
                     if (elem.Attributes.TryGetValue("height", out var hStr) && float.TryParse(hStr, out var h)) svgH = h;
+                    
+                    // Parse viewBox for intrinsic dimensions
+                    string viewBox = null;
+                    if (elem.Attributes.TryGetValue("viewBox", out viewBox) || elem.Attributes.TryGetValue("viewbox", out viewBox))
+                    {
+                        var parts = viewBox.Split(new[] {' ', ','}, StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length >= 4)
+                        {
+                            if (!svgW.HasValue && float.TryParse(parts[2], out var vbW)) svgW = vbW;
+                            if (!svgH.HasValue && float.TryParse(parts[3], out var vbH)) svgH = vbH;
+                        }
+                    }
                 }
 
-                // Match layout's intrinsic/computed dimensions
-                float finalW = box.ContentBox.Width;
-                float finalH = box.ContentBox.Height;
-                if (finalW <= 0) finalW = svgW ?? 24;
-                if (finalH <= 0) finalH = svgH ?? 24;
+                // Use intrinsic SVG dimensions if available, otherwise use box (but clamp to prevent massive renders)
+                float finalW = svgW ?? box.ContentBox.Width;
+                float finalH = svgH ?? box.ContentBox.Height;
+                
+                // Clamp to reasonable SVG icon size to prevent massive rasterizations
+                if (finalW > 200) finalW = svgW ?? 24;
+                if (finalH > 200) finalH = svgH ?? 24;
+                
+                if (finalW <= 0) finalW = 24;
+                if (finalH <= 0) finalH = 24;
 
                 string svgContent = elem.ToHtml();
                 
@@ -503,7 +626,7 @@ namespace FenBrowser.FenEngine.Rendering
                      {
                          // var(--bbQxAb) is usually grey/blue on Google. Let's use #5f6368 (Google Grey 700) or style color.
                          svgContent = svgContent.Replace("var(--bbQxAb)", "#5f6368");
-                         try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[SVG-DEBUG] Replaced var(--bbQxAb) with #5f6368 for SVG size {finalW}x{finalH}\r\n"); } catch {}
+                         /* [PERF-REMOVED] */
                      }
                 }
 
@@ -520,6 +643,7 @@ namespace FenBrowser.FenEngine.Rendering
                 return new ImagePaintNode
                 {
                     Bounds = box.ContentBox,
+                    SourceNode = elem,
                     Bitmap = bitmap,
                     ObjectFit = "contain",
                     IsFocused = isFocused,
