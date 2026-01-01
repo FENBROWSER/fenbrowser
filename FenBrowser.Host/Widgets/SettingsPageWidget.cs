@@ -15,6 +15,7 @@ public enum SettingsCategory
     General,
     Privacy,
     Appearance,
+    StartHomeNewTab,
     Downloads,
     Advanced,
     System,
@@ -32,11 +33,19 @@ public class SettingsPageWidget : Widget
     // Sidebar item rects for hit testing
     private Dictionary<SettingsCategory, SKRect> _sidebarItemRects = new();
     
+    // Startup Radio Rects
+    private Dictionary<StartupBehavior, SKRect> _startupRadioRects = new();
+    
     // General Controls
     private TextInputWidget _homePageInput;
     private DropdownWidget _searchEngineDropdown;
-    private DropdownWidget _startupActionDropdown;
     private SwitchWidget _restoreTabsSwitch;
+    
+    // Start, Home, New Tab Controls
+    private ButtonWidget _addStartupSiteButton;
+    private ButtonWidget _useCurrentPagesButton;
+    private TextInputWidget _newStartupUrlInput;
+    private List<ButtonWidget> _deleteStartupUrlButtons = new();
     
     // Privacy Controls
     private SwitchWidget _switchJs;
@@ -115,14 +124,44 @@ public class SettingsPageWidget : Widget
         };
         AddChild(_searchEngineDropdown);
         
-        _startupActionDropdown = new DropdownWidget();
-        _startupActionDropdown.Options = new List<string> { "Open New Tab", "Restore Last Session", "Open Specific Page" };
-        _startupActionDropdown.SelectedIndex = (int)BrowserSettings.Instance.StartupAction;
-        _startupActionDropdown.SelectionChanged += (idx, val) => {
-            BrowserSettings.Instance.StartupAction = (StartupBehavior)idx;
+        // === Start, Home, and New Tab ===
+        _addStartupSiteButton = new ButtonWidget { Text = "Add a new page" };
+        _addStartupSiteButton.Clicked += () => {
+            if (!string.IsNullOrWhiteSpace(_newStartupUrlInput.Text))
+            {
+                BrowserSettings.Instance.StartupUrls.Add(_newStartupUrlInput.Text);
+                BrowserSettings.Instance.Save();
+                _newStartupUrlInput.Text = "";
+                Invalidate();
+            }
+        };
+        AddChild(_addStartupSiteButton);
+        
+        _useCurrentPagesButton = new ButtonWidget { Text = "Use all open tabs" };
+        _useCurrentPagesButton.Clicked += () => {
+             BrowserSettings.Instance.StartupUrls.Clear();
+             foreach(var tab in FenBrowser.Host.Tabs.TabManager.Instance.Tabs)
+             {
+                 if (!string.IsNullOrEmpty(tab.Url) && !tab.Url.StartsWith("fen://") && !tab.Url.StartsWith("about:"))
+                 {
+                      BrowserSettings.Instance.StartupUrls.Add(tab.Url);
+                 }
+             }
+             BrowserSettings.Instance.Save();
+             Invalidate();
+        };
+        AddChild(_useCurrentPagesButton);
+        
+        _newStartupUrlInput = new TextInputWidget { Placeholder = "Enter URL" };
+        AddChild(_newStartupUrlInput);
+        
+        _restoreTabsSwitch = new SwitchWidget();
+        _restoreTabsSwitch.IsChecked = BrowserSettings.Instance.RestoreTabsOnStartup;
+        _restoreTabsSwitch.CheckedChanged += (val) => {
+            BrowserSettings.Instance.RestoreTabsOnStartup = val;
             BrowserSettings.Instance.Save();
         };
-        AddChild(_startupActionDropdown);
+        AddChild(_restoreTabsSwitch);
 
         _restoreTabsSwitch = new SwitchWidget();
         _restoreTabsSwitch.IsChecked = BrowserSettings.Instance.RestoreTabsOnStartup;
@@ -426,20 +465,51 @@ public class SettingsPageWidget : Widget
         switch (_selectedCategory)
         {
             case SettingsCategory.General:
-                _homePageInput.IsVisible = true;
-                _homePageInput.Arrange(new SKRect(contentLeft, currentY + 25, contentLeft + controlWidth, currentY + 57));
-                currentY += 70;
-                
                 _searchEngineDropdown.IsVisible = true;
                 _searchEngineDropdown.Arrange(new SKRect(contentLeft, currentY + 25, contentLeft + 180, currentY + 57));
                 currentY += 70;
-
-                _startupActionDropdown.IsVisible = true;
-                _startupActionDropdown.Arrange(new SKRect(contentLeft, currentY + 25, contentLeft + 220, currentY + 57));
-                currentY += 70;
+                break;
                 
-                _restoreTabsSwitch.IsVisible = true;
-                _restoreTabsSwitch.Arrange(new SKRect(switchX, currentY + 8, switchX + 50, currentY + 32));
+            case SettingsCategory.StartHomeNewTab:
+                // 1. Startup Action (Radios - manual paint, but we arrange controls if any exist)
+                // We have no widgets for radios themselves, just rects.
+                // Reserve space.
+                currentY += 140; // Space for Radio options
+                
+                // If "Specific Page" is selected (Enum index 2), show custom list
+                if (BrowserSettings.Instance.StartupAction == StartupBehavior.OpenSpecificPage)
+                {
+                    float listY = currentY;
+                    _newStartupUrlInput.IsVisible = true;
+                    _newStartupUrlInput.Arrange(new SKRect(contentLeft, listY, contentLeft + 300, listY + 32));
+                    
+                    _addStartupSiteButton.IsVisible = true;
+                    _addStartupSiteButton.Arrange(new SKRect(contentLeft + 310, listY, contentLeft + 420, listY + 32));
+                    
+                    _useCurrentPagesButton.IsVisible = true;
+                    _useCurrentPagesButton.Arrange(new SKRect(contentLeft + 430, listY, contentLeft + 580, listY + 32));
+                    
+                    currentY += 50;
+                    
+                    // Specific sites list space
+                    currentY += BrowserSettings.Instance.StartupUrls.Count * 40;
+                }
+                
+                currentY += 40;
+                
+                // 2. Home Button
+                _showHomeButtonSwitch.IsVisible = true;
+                _showHomeButtonSwitch.Arrange(new SKRect(switchX, currentY + 8, switchX + 50, currentY + 32));
+                
+                if (BrowserSettings.Instance.ShowHomeButton)
+                {
+                    currentY += 50;
+                    _homePageInput.IsVisible = true;
+                    _homePageInput.Arrange(new SKRect(contentLeft, currentY + 10, contentLeft + 350, currentY + 42));
+                }
+                currentY += 60;
+                
+                // 3. New Tab Page options (if any)
                 break;
                 
             case SettingsCategory.Privacy:
@@ -487,10 +557,6 @@ public class SettingsPageWidget : Widget
             case SettingsCategory.Appearance:
                 _switchTheme.IsVisible = true;
                 _switchTheme.Arrange(new SKRect(switchX, currentY + 8, switchX + 50, currentY + 32));
-                currentY += 60;
-
-                _showHomeButtonSwitch.IsVisible = true;
-                _showHomeButtonSwitch.Arrange(new SKRect(switchX, currentY + 8, switchX + 50, currentY + 32));
                 currentY += 60;
 
                 _showFavoritesBarSwitch.IsVisible = true;
@@ -602,6 +668,7 @@ public class SettingsPageWidget : Widget
             (SettingsCategory.General, "General", "⚙"),
             (SettingsCategory.Privacy, "Privacy & Security", "🔒"),
             (SettingsCategory.Appearance, "Appearance", "🎨"),
+            (SettingsCategory.StartHomeNewTab, "Start, Home, and New Tab", "🏠"),
             (SettingsCategory.Downloads, "Downloads", "📥"),
             (SettingsCategory.Advanced, "Advanced", "🔧"),
             (SettingsCategory.System, "System", "💻"),
@@ -664,18 +731,92 @@ public class SettingsPageWidget : Widget
         using var descPaint = new SKPaint { Color = theme.TextMuted, IsAntialias = true, TextSize = 13, Typeface = _labelFont };
         
         float currentY = Bounds.Top + 80;
+        float switchX = Bounds.Left + _sidebarWidth + 700;
         
         switch (_selectedCategory)
         {
             case SettingsCategory.General:
-                canvas.DrawText("Home page", contentLeft, currentY + 18, labelPaint);
-                currentY += 70;
                 canvas.DrawText("Search engine", contentLeft, currentY + 18, labelPaint);
-                currentY += 70;
-                canvas.DrawText("On startup", contentLeft, currentY + 18, labelPaint);
-                currentY += 70;
-                canvas.DrawText("Continue where you left off", contentLeft, currentY + 20, labelPaint);
-                canvas.DrawText("Reopen previous tabs when browser starts", contentLeft, currentY + 38, descPaint);
+                // Removed Home page and Startup Action drawings
+                break;
+                
+            case SettingsCategory.StartHomeNewTab:
+                canvas.DrawText("When FenBrowser starts", contentLeft, currentY + 20, labelPaint);
+                currentY += 40;
+                
+                // Radio Options
+                _startupRadioRects.Clear();
+                var options = new[] { 
+                    (StartupBehavior.OpenNewTab, "Open the new tab page"),
+                    (StartupBehavior.RestoreLastSession, "Open tabs from previous session"),
+                    (StartupBehavior.OpenSpecificPage, "Open these pages:")
+                };
+                
+                foreach (var (behavior, text) in options)
+                {
+                    bool selected = BrowserSettings.Instance.StartupAction == behavior;
+                    
+                    // Radio Circle
+                    float radioY = currentY + 15;
+                    // Draw Outer Circle
+                    using var radioBorder = new SKPaint { Color = selected ? theme.Accent : theme.TextMuted, Style = SKPaintStyle.Stroke, StrokeWidth = 2, IsAntialias = true };
+                    canvas.DrawCircle(contentLeft + 10, radioY, 8, radioBorder);
+                    
+                    if (selected)
+                    {
+                         using var radioFill = new SKPaint { Color = theme.Accent, Style = SKPaintStyle.Fill, IsAntialias = true };
+                         canvas.DrawCircle(contentLeft + 10, radioY, 4, radioFill);
+                    }
+                    
+                    // Text
+                    canvas.DrawText(text, contentLeft + 30, radioY + 5, labelPaint);
+                    
+                    // Save Rect for hit testing
+                    float textWidth = labelPaint.MeasureText(text);
+                    _startupRadioRects[behavior] = new SKRect(contentLeft, currentY, contentLeft + 30 + textWidth + 20, currentY + 30);
+                    
+                    currentY += 35;
+                }
+                
+                // Specific Pages List
+                if (BrowserSettings.Instance.StartupAction == StartupBehavior.OpenSpecificPage)
+                {
+                    // Input/Buttons are children, handled by Arrange/base.Paint
+                    currentY += 50; 
+                    
+                    var urls = BrowserSettings.Instance.StartupUrls;
+                    // Note: We need to match Arrange's layout
+                    float listY = currentY;
+                    
+                    foreach (var url in urls)
+                    {
+                        canvas.DrawText(url, contentLeft + 10, listY + 20, labelPaint);
+                        
+                        // Draw "Remove" button visual
+                        var delRect = new SKRect(contentLeft + 400, listY, contentLeft + 470, listY + 32);
+                        using var delPaint = new SKPaint { Color = SKColors.Red.WithAlpha(30), IsAntialias = true };
+                        canvas.DrawRoundRect(delRect, 4, 4, delPaint);
+                        using var delTextPaint = new SKPaint { Color = SKColors.Red, IsAntialias = true, TextSize = 12, TextAlign = SKTextAlign.Center };
+                        canvas.DrawText("Remove", delRect.MidX, delRect.MidY + 4, delTextPaint);
+                        
+                        listY += 40;
+                    }
+                    currentY = listY; // Update currentY for next elements
+                }
+                
+                currentY += 40;
+                canvas.DrawLine(contentLeft, currentY, Bounds.Right - _padding, currentY, borderPaint);
+                currentY += 30;
+                
+                // Home Button
+                canvas.DrawText("Home button", contentLeft, currentY + 20, labelPaint);
+                canvas.DrawText("Show home button on the toolbar", contentLeft, currentY + 38, descPaint);
+                
+                if (BrowserSettings.Instance.ShowHomeButton)
+                {
+                    currentY += 80;
+                    canvas.DrawText("Set home page URL", contentLeft, currentY, descPaint);
+                }
                 break;
                 
             case SettingsCategory.Privacy:
@@ -716,9 +857,11 @@ public class SettingsPageWidget : Widget
                 canvas.DrawText("Dark Mode", contentLeft, currentY + 20, labelPaint);
                 canvas.DrawText("Switch between light and dark themes", contentLeft, currentY + 38, descPaint);
                 currentY += 60;
-                canvas.DrawText("Show home button", contentLeft, currentY + 20, labelPaint);
-                canvas.DrawText("Show button in toolbar for quick access", contentLeft, currentY + 38, descPaint);
-                currentY += 60;
+
+                _showFavoritesBarSwitch.IsVisible = true;
+                _showFavoritesBarSwitch.Arrange(new SKRect(switchX, currentY + 8, switchX + 50, currentY + 32));
+                // Note: Re-enabling visibility here is redundant if Arrange handles it but harmless for paint logic flow
+                
                 canvas.DrawText("Show favorites bar", contentLeft, currentY + 20, labelPaint);
                 canvas.DrawText("Always show shortcuts below address bar", contentLeft, currentY + 38, descPaint);
                 currentY += 60;
@@ -929,6 +1072,46 @@ public class SettingsPageWidget : Widget
                     return;
                 }
                 currentY += 45;
+            }
+        }
+        
+        // Check Start/Home interactions
+        if (_selectedCategory == SettingsCategory.StartHomeNewTab && button == MouseButton.Left)
+        {
+            // 1. Radio Buttons
+            foreach (var (behavior, rect) in _startupRadioRects)
+            {
+                if (rect.Contains(x, y))
+                {
+                    BrowserSettings.Instance.StartupAction = behavior;
+                    BrowserSettings.Instance.Save();
+                    OnArrange(Bounds);
+                    Invalidate();
+                    return;
+                }
+            }
+            
+            // 2. Remove Buttons for Custom Sites
+            if (BrowserSettings.Instance.StartupAction == StartupBehavior.OpenSpecificPage)
+            {
+                float contentLeft = Bounds.Left + _sidebarWidth + _padding * 2;
+                // Matches Paint logic: Top(80) + Header(40) + Radios(105) + Space(50) = 275 offset
+                float listY = Bounds.Top + 275;
+                
+                var urls = BrowserSettings.Instance.StartupUrls;
+                for (int i = 0; i < urls.Count; i++)
+                {
+                    var delRect = new SKRect(contentLeft + 400, listY, contentLeft + 470, listY + 32);
+                    if (delRect.Contains(x, y))
+                    {
+                        urls.RemoveAt(i);
+                        BrowserSettings.Instance.Save();
+                        OnArrange(Bounds);
+                        Invalidate();
+                        return;
+                    }
+                    listY += 40;
+                }
             }
         }
         
