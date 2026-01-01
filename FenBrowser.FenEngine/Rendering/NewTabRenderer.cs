@@ -6,121 +6,147 @@ namespace FenBrowser.FenEngine.Rendering
     {
         public static string Render()
         {
-            return @"
-                <html>
-                <head>
-                    <title>New Tab</title>
-                    <style>
-                        body {
-                            font-family: 'Segoe UI', system-ui, sans-serif;
-                            background-color: #f3f3f3; /* Light gray background */
-                            color: #0F172A;
-                            display: flex;
-                            flex-direction: column;
-                            align-items: center;
-                            height: 100vh;
-                            margin: 0;
-                        }
-                        @media (prefers-color-scheme: dark) {
-                            body {
-                                background-color: #0F172A; /* Slate-900 (matches Window Background) */
-                                color: #F8FAFC; /* Slate-50 */
-                            }
-                        }
-                        .search-container {
-                            margin-top: 15vh;
-                            width: 100%;
-                            max-width: 600px;
-                            text-align: center;
-                        }
-                        .logo {
-                            font-size: 48px;
-                            font-weight: bold;
-                            margin-bottom: 32px;
-                            color: #3b82f6; /* Accent color */
-                        }
-                        .search-box {
-                            width: 100%;
-                            padding: 12px 20px;
-                            border-radius: 24px;
-                            border: 1px solid #ccc;
-                            font-size: 16px;
-                            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
-                            outline: none;
-                            transition: box-shadow 0.2s;
-                        }
-                        .search-box:focus {
-                            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-                            border-color: #3b82f6;
-                        }
-                        .quick-links {
-                            display: flex;
-                            gap: 24px;
-                            margin-top: 40px;
-                            justify-content: center;
-                        }
-                        .link-item {
-                            display: flex;
-                            flex-direction: column;
-                            align-items: center;
-                            text-decoration: none;
-                            color: inherit;
-                            width: 80px;
-                        }
-                        .link-icon {
-                            width: 48px;
-                            height: 48px;
-                            background-color: #e0e0e0;
-                            border-radius: 50%;
-                            display: flex;
-                            justify-content: center;
-                            align-items: center;
-                            margin-bottom: 8px;
-                            font-size: 20px;
-                        }
-                        .link-title {
-                            font-size: 12px;
-                            text-align: center;
-                            white-space: nowrap;
-                            overflow: hidden;
-                            text-overflow: ellipsis;
-                            width: 100%;
-                        }
-                    </style>
-                </head>
-                <body>
-                    <div class='search-container'>
-                        <div class='logo'>FenBrowser</div>
-                        <input type='text' class='search-box' placeholder='Search web or enter URL' onkeydown='if(event.key===""Enter"") window.location.href=""https://example.com/?q=""+encodeURIComponent(this.value)'>
-                    </div>
+            // Simplified HTML/CSS for FenBrowser's layout engine
+            return @"<!DOCTYPE html>
+<html>
+<head>
+    <title>New Tab</title>
+    <style>
+        body {
+            font-family: Segoe UI, Arial, sans-serif;
+            background-color: #1e293b;
+            color: #f8fafc;
+            margin: 0;
+            padding: 60px 20px;
+            text-align: center;
+        }
+        
+        .logo {
+            font-size: 42px;
+            font-weight: bold;
+            color: #3b82f6;
+            margin-bottom: 10px;
+        }
+        
+        .tagline {
+            font-size: 14px;
+            color: #94a3b8;
+            margin-bottom: 40px;
+        }
+        
+        .search-box {
+            width: 500px;
+            padding: 14px 20px;
+            border-radius: 24px;
+            border: 1px solid #475569;
+            background-color: #334155;
+            color: #f8fafc;
+            font-size: 16px;
+            margin-bottom: 50px;
+        }
+        
+        .sites-container {
+            margin: 0 auto;
+            width: 600px;
+        }
 
-                    <div class='quick-links'>
-                        <a href='https://example.com' class='link-item'>
-                            <div class='link-icon'>E</div>
-                            <div class='link-title'>Example</div>
-                        </a>
-                        <a href='https://example.com' class='link-item'>
-                            <div class='link-icon'>1</div>
-                            <div class='link-title'>Test 1</div>
-                        </a>
-                        <a href='https://example.com' class='link-item'>
-                            <div class='link-icon'>2</div>
-                            <div class='link-title'>Test 2</div>
-                        </a>
-                        <a href='https://example.com' class='link-item'>
-                            <div class='link-icon'>3</div>
-                            <div class='link-title'>Test 3</div>
-                        </a>
-                            <div class='link-icon'>H</div>
-                            <div class='link-title'>Hacker News</div>
-                        </a>
-                    </div>
-                    
-                    <script>
-                        document.querySelector('.search-box').focus();
-                    </script>
-                </body>
-                </html>";
+        .site-row {
+            margin-bottom: 20px;
+        }
+        
+        .site-link {
+            display: inline-block;
+            width: 120px;
+            padding: 16px 8px;
+            margin: 0 10px;
+            text-decoration: none;
+            color: #cbd5e1;
+            background-color: #334155;
+            border-radius: 12px;
+            vertical-align: top;
+        }
+        
+        .site-icon {
+            width: 48px;
+            height: 48px;
+            margin: 0 auto 10px auto;
+            border-radius: 10px;
+            font-size: 24px;
+            font-weight: bold;
+            line-height: 48px;
+            color: white;
+        }
+        
+        .google-bg { background-color: #4285f4; }
+        .youtube-bg { background-color: #ff0000; }
+        .facebook-bg { background-color: #1877f2; }
+        .github-bg { background-color: #333333; }
+        .wikipedia-bg { background-color: #636466; }
+        .reddit-bg { background-color: #ff4500; }
+        .twitter-bg { background-color: #1da1f2; }
+        .amazon-bg { background-color: #ff9900; }
+        
+        .site-name {
+            font-size: 13px;
+        }
+
+        .footer {
+            margin-top: 60px;
+            font-size: 12px;
+            color: #475569;
+        }
+    </style>
+</head>
+<body>
+    <div class='logo'>FenBrowser</div>
+    <div class='tagline'>SECURE • PRIVATE • FAST</div>
+    
+    <div>
+        <input type='text' class='search-box' placeholder='Search the web or enter a URL...'>
+    </div>
+    
+    <div class='sites-container'>
+        <div class='site-row'>
+            <a href='https://www.google.com' class='site-link'>
+                <div class='site-icon google-bg'>G</div>
+                <div class='site-name'>Google</div>
+            </a>
+            <a href='https://www.youtube.com' class='site-link'>
+                <div class='site-icon youtube-bg'>Y</div>
+                <div class='site-name'>YouTube</div>
+            </a>
+            <a href='https://www.facebook.com' class='site-link'>
+                <div class='site-icon facebook-bg'>f</div>
+                <div class='site-name'>Facebook</div>
+            </a>
+            <a href='https://github.com' class='site-link'>
+                <div class='site-icon github-bg'>G</div>
+                <div class='site-name'>GitHub</div>
+            </a>
+        </div>
+        <div class='site-row'>
+            <a href='https://www.wikipedia.org' class='site-link'>
+                <div class='site-icon wikipedia-bg'>W</div>
+                <div class='site-name'>Wikipedia</div>
+            </a>
+            <a href='https://www.reddit.com' class='site-link'>
+                <div class='site-icon reddit-bg'>R</div>
+                <div class='site-name'>Reddit</div>
+            </a>
+            <a href='https://twitter.com' class='site-link'>
+                <div class='site-icon twitter-bg'>X</div>
+                <div class='site-name'>X / Twitter</div>
+            </a>
+            <a href='https://www.amazon.com' class='site-link'>
+                <div class='site-icon amazon-bg'>a</div>
+                <div class='site-name'>Amazon</div>
+            </a>
+        </div>
+    </div>
+    
+    <div class='footer'>FenBrowser - Built for the modern web</div>
+</body>
+</html>";
         }
     }
 }
