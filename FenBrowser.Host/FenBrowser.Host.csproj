@@ -28,4 +28,9 @@
     <PackageReference Include="Topten.RichTextKit" Version="0.4.164" />
   </ItemGroup>
 
+  <!-- Clean up debug logs before each build for fresh logging -->
+  <Target Name="CleanupLogs" BeforeTargets="Build">
+    <Exec Command="call &quot;$(SolutionDir)cleanup_logs.bat&quot;" IgnoreExitCode="true" />
+  </Target>
+
 </Project>
