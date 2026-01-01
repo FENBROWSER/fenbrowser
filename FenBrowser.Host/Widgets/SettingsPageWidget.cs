@@ -796,7 +796,7 @@ public class SettingsPageWidget : Widget
                 currentY += 40;
                 canvas.DrawText("Built with .NET, SkiaSharp, and Silk.NET", contentLeft, currentY + 20, descPaint);
                 currentY += 40;
-                canvas.DrawText("Inspired by Microsoft Edge Design Language", contentLeft, currentY + 20, descPaint);
+                canvas.DrawText("Inspired by modern web design principles", contentLeft, currentY + 20, descPaint);
                 break;
         }
         
