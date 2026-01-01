@@ -58,6 +58,7 @@ public class BrowserIntegration
     public event Action<string> TitleChanged;
     public event Action<string> UrlChanged;
     public event Action<bool> LoadingChanged;
+    public event Action<SKBitmap> FaviconChanged; // [NEW]
     public event Action NeedsRepaint;
     public event Action<string> LinkClicked;
     public event Action<string> ConsoleMessage;
@@ -92,6 +93,9 @@ public class BrowserIntegration
         };
         
         _browser.TitleChanged += (s, title) => TitleChanged?.Invoke(title);
+        
+        // [NEW] Wire favicon
+        _browser.FaviconChanged += (s, icon) => FaviconChanged?.Invoke(icon);
         
         _browser.ConsoleMessage += msg => ConsoleMessage?.Invoke(msg);
         

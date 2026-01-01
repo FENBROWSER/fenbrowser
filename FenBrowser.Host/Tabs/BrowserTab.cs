@@ -90,6 +90,12 @@ public class BrowserTab
         {
             NeedsRepaint?.Invoke(this);
         };
+
+        Browser.FaviconChanged += icon =>
+        {
+            Favicon = icon;
+            NeedsRepaint?.Invoke(this); // Trigger UI update
+        };
     }
     
     /// <summary>
