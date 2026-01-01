@@ -55,7 +55,31 @@ namespace FenBrowser.Core.Dom
             return df;
         }
 
+        public DocumentType CreateDocumentType(string name, string publicId = null, string systemId = null)
+        {
+            var dt = new DocumentType(name, publicId, systemId);
+            dt.OwnerDocument = this;
+            return dt;
+        }
+
+
         public QuirksMode Mode { get; set; } = QuirksMode.Quirks;
+
+        public override Node CloneNode(bool deep)
+        {
+            var doc = new Document();
+            doc.Mode = this.Mode;
+            // TODO: Copy other properties like baseURI, encoding, etc if we added them
+            
+            if (deep)
+            {
+                foreach (var child in Children)
+                {
+                    doc.AppendChild(child.CloneNode(true));
+                }
+            }
+            return doc;
+        }
     }
 
     public enum QuirksMode

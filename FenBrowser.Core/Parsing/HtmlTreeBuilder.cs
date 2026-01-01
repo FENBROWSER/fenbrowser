@@ -250,13 +250,10 @@ namespace FenBrowser.Core.Parsing
                     // DEBUG: Log LINK token attributes
                     if (tagLower == "link")
                     {
-                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
-                            $"[HtmlTreeBuilder] LINK token has {st.Attributes?.Count ?? -1} attributes\r\n"); } catch {}
+                        /* [PERF-REMOVED] */
                         if (st.Attributes != null)
                         {
-                            foreach (var attr in st.Attributes)
-                                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
-                                    $"[HtmlTreeBuilder]   Attr: {attr.Name}='{attr.Value}'\r\n"); } catch {}
+                            // Debug logging removed for performance
                         }
                     }
                     InsertHtmlElement(st);
@@ -781,7 +778,7 @@ namespace FenBrowser.Core.Parsing
                 el.SetAttribute(attr.Name, attr.Value);
                 if (token.TagName.Equals("svg", StringComparison.OrdinalIgnoreCase))
                 {
-                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[TreeBuilder] SVG Attr: {attr.Name}='{attr.Value}'\r\n"); } catch {}
+                    /* [PERF-REMOVED] */
                 }
             }
             return el;

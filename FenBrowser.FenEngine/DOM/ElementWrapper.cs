@@ -29,6 +29,8 @@ namespace FenBrowser.FenEngine.DOM
             _context = context ?? throw new ArgumentNullException(nameof(context));
         }
 
+        public Element Element => _element;
+
         public IValue Get(string key, IExecutionContext context = null)
         {
             _context?.CheckExecutionTimeLimit();
@@ -493,12 +495,12 @@ namespace FenBrowser.FenEngine.DOM
             }
             _context.RequestRender?.Invoke();
 
-            _context.OnMutation?.Invoke(new FenBrowser.FenEngine.Core.MutationRecord
+            _context.OnMutation?.Invoke(new FenBrowser.Core.Dom.MutationRecord
             {
                 Type = "childList",
                 Target = _element,
-                AddedNodes = added,
-                RemovedNodes = removed
+                AddedNodes = added.Cast<Node>().ToList(),
+                RemovedNodes = removed.Cast<Node>().ToList()
             });
         }
 
@@ -822,7 +824,7 @@ namespace FenBrowser.FenEngine.DOM
         }
 
         // Expose underlying element to other wrappers
-        internal Element Element => _element;
+
 
         private IValue FocusMethod(IValue[] args, IValue thisVal)
         {
@@ -1027,12 +1029,12 @@ namespace FenBrowser.FenEngine.DOM
             {
                 _element.Attr["style"] = sb.ToString();
                 // Debug: Log element tag and final style value
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSSStyleDeclaration] Set on <{_element.Tag}> style='{sb}'\r\n"); } catch {}
+                /* [PERF-REMOVED] */
             }
             else
             {
                 // Debug: Attr is null!
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSSStyleDeclaration] FAILED: Attr is null for <{_element.Tag}>\r\n"); } catch {}
+                /* [PERF-REMOVED] */
             }
             FenLogger.Debug($"[CSS] Set style {key}={value}", LogCategory.CSS);
             _context.RequestRender?.Invoke();

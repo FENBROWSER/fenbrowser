@@ -35,7 +35,8 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
                 {
                     style.HeightPercent = 100;
                 }
-                if (string.IsNullOrEmpty(style.Display)) style.Display = "block";
+                if (string.IsNullOrEmpty(style.Display)) style.Display = "flex";
+                if (string.IsNullOrEmpty(style.FlexDirection)) style.FlexDirection = "column";
             }
 
             if (tag == "BODY")
@@ -63,6 +64,18 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
             {
                 if (style == null) style = new CssComputed();
                 if (string.IsNullOrEmpty(style.Display)) style.Display = "block";
+                
+                if (tag == "MAIN")
+                {
+                    // ARCHITECTURAL FIX: Centering via UA flex properties
+                    if (string.IsNullOrEmpty(style.Display) || style.Display == "block") 
+                        style.Display = "flex";
+                    
+                    if (string.IsNullOrEmpty(style.FlexDirection)) style.FlexDirection = "column";
+                    if (string.IsNullOrEmpty(style.JustifyContent)) style.JustifyContent = "center";
+                    if (string.IsNullOrEmpty(style.AlignItems)) style.AlignItems = "center";
+                    if (!style.FlexGrow.HasValue) style.FlexGrow = 1.0;
+                }
             }
             
             // SVG

@@ -5,7 +5,7 @@ namespace FenBrowser.FenEngine.Tests
 {
     class Program
     {
-        static void Main(string[] args)
+        static void MainTest(string[] args)
         {
             Console.WriteLine("=== FenEngine Test Suite ===\n");
 

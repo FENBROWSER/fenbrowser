@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using FenBrowser.FenEngine.Security;
 using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.Core.Dom; // MutationRecord
 
 namespace FenBrowser.FenEngine.Core
 {

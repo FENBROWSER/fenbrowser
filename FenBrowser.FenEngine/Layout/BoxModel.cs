@@ -7,6 +7,22 @@ namespace FenBrowser.FenEngine.Layout
     /// CSS Box Model storage for a single element.
     /// Represents the margin, border, padding, and content boxes.
     /// </summary>
+    /// <summary>
+    /// Represents a single line of laid-out text.
+    /// </summary>
+    public struct ComputedTextLine
+    {
+        public string Text;
+        public SKPoint Origin; // Relative to ContentBox
+        public float Width;
+        public float Height;
+        public float Baseline; // Ascent from Top
+    }
+
+    /// <summary>
+    /// CSS Box Model storage for a single element.
+    /// Represents the margin, border, padding, and content boxes.
+    /// </summary>
     public class BoxModel
     {
         /// <summary>
@@ -68,6 +84,11 @@ namespace FenBrowser.FenEngine.Layout
         /// Transform for this element.
         /// </summary>
         public TransformParsed Transform;
+
+        /// <summary>
+        /// Computed text lines (if this is a text node).
+        /// </summary>
+        public List<ComputedTextLine> Lines;
         
         /// <summary>
         /// Creates a default box model.
@@ -82,6 +103,7 @@ namespace FenBrowser.FenEngine.Layout
             Border = new Thickness();
             Padding = new Thickness();
             Baseline = 0;
+            Lines = null;
         }
         
         /// <summary>

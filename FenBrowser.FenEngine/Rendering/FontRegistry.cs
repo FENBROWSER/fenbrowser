@@ -1,12 +1,21 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Net.Http;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using SkiaSharp;
-// using Avalonia.Media;
+using FenBrowser.Core;
+using FenBrowser.Core.Network;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.FenEngine.Rendering
 {
     /// <summary>
     /// Registry for @font-face definitions. Maps font-family names to font sources.
     /// Supports url() and local() font sources with font-weight and font-style matching.
+    /// Manages async downloading of fonts.
     /// </summary>
     public static class FontRegistry
     {
@@ -15,6 +24,9 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static readonly Dictionary<string, SKTypeface> _loadedFonts 
             = new Dictionary<string, SKTypeface>(StringComparer.OrdinalIgnoreCase);
+
+        private static readonly Dictionary<string, Task<SKTypeface>> _loadingTasks 
+            = new Dictionary<string, Task<SKTypeface>>(StringComparer.OrdinalIgnoreCase);
 
         private static readonly object _lock = new object();
 
@@ -29,10 +41,10 @@ namespace FenBrowser.FenEngine.Rendering
             public int Weight { get; set; } = 400;      // 100-900
             public SKFontStyleSlant Style { get; set; } = SKFontStyleSlant.Upright;
             public string UnicodeRange { get; set; }    // Optional unicode-range
-            public string Display { get; set; } = "auto"; // auto, block, swap, fallback, optional
-            public string Stretch { get; set; }         // normal, condensed, expanded, etc.
-            public string FeatureSettings { get; set; } // font-feature-settings
-            public string VariationSettings { get; set; } // font-variation-settings (for variable fonts)
+            public string Display { get; set; } = "auto"; 
+            public string Stretch { get; set; }         
+            public string FeatureSettings { get; set; } 
+            public string VariationSettings { get; set; } 
         }
 
         /// <summary>
@@ -41,18 +53,16 @@ namespace FenBrowser.FenEngine.Rendering
         public static void Register(string familyName, string uri)
         {
             if (string.IsNullOrWhiteSpace(familyName) || string.IsNullOrWhiteSpace(uri)) return;
-            try 
-            { 
-                lock (_lock)
-                {
-                    _loadedFonts[familyName.Trim().Trim('"', '\'')] = SKTypeface.FromFamilyName(uri); 
-                }
-            } 
-            catch { }
+            // Legacy direct registration - assumes local file or system font for now
+             lock (_lock)
+            {
+                // If it's a file path, load it? For now, just trust SKTypeface.
+                _loadedFonts[familyName.Trim().Trim('"', '\'')] = SKTypeface.FromFamilyName(uri);
+            }
         }
 
         /// <summary>
-        /// Register a @font-face descriptor
+        /// Register a @font-face descriptor and trigger load if needed.
         /// </summary>
         public static void RegisterFontFace(FontFaceDescriptor descriptor)
         {
@@ -68,6 +78,105 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 list.Add(descriptor);
             }
+
+            // Trigger load in background
+            if (!string.IsNullOrEmpty(descriptor.Source))
+            {
+                FenLogger.Debug($"[FontRegistry] Registering font: {descriptor.Family}", LogCategory.Rendering);
+                _ = LoadFontFaceAsync(descriptor);
+            }
+        }
+
+        public static async Task LoadPendingFontsAsync()
+        {
+            List<Task<SKTypeface>> tasks;
+            lock (_lock)
+            {
+                tasks = _loadingTasks.Values.ToList();
+            }
+            if (tasks.Count > 0)
+            {
+                await Task.WhenAll(tasks);
+            }
+        }
+
+        private static async Task<SKTypeface> LoadFontFaceAsync(FontFaceDescriptor descriptor)
+        {
+            string src = descriptor.Source;
+            if (string.IsNullOrEmpty(src)) return null;
+
+            // Check if already loading/loaded
+            string cacheKey = $"{descriptor.Family}|{descriptor.Weight}|{descriptor.Style}";
+            Task<SKTypeface> existingTask = null;
+            lock (_lock)
+            {
+                 if (_loadedFonts.ContainsKey(cacheKey)) return _loadedFonts[cacheKey];
+                 if (_loadingTasks.TryGetValue(cacheKey, out existingTask)) 
+                 {
+                     // Found existing task, will await outside lock
+                 }
+            }
+            if (existingTask != null) return await existingTask;
+
+            var tcs = new TaskCompletionSource<SKTypeface>();
+            lock (_lock) _loadingTasks[cacheKey] = tcs.Task;
+
+            try
+            {
+                SKTypeface typeface = null;
+
+                // local() check
+                var localMatch = Regex.Match(src, @"local\s*\(\s*([""']?)([^)""']+)\1\s*\)", RegexOptions.IgnoreCase);
+                if (localMatch.Success)
+                {
+                    string localName = localMatch.Groups[2].Value;
+                    typeface = SKTypeface.FromFamilyName(localName, 
+                        (SKFontStyleWeight)descriptor.Weight, 
+                        SKFontStyleWidth.Normal, 
+                        descriptor.Style);
+                }
+                else
+                {
+                    // url() check - assumed if not local
+                    // Sanitize url(...) wrapper if present (CssLoader might pass raw src string)
+                    string url = src;
+                    var urlMatch = Regex.Match(src, @"url\s*\(\s*([""']?)([^)""']+)\1\s*\)", RegexOptions.IgnoreCase);
+                    if (urlMatch.Success) url = urlMatch.Groups[2].Value;
+
+                    if (Uri.TryCreate(url, UriKind.Absolute, out var uri))
+                    {
+                        var httpClient = HttpClientFactory.GetSharedClient();
+                        using (var stream = await httpClient.GetStreamAsync(uri))
+                        using (var ms = new MemoryStream())
+                        {
+                            await stream.CopyToAsync(ms);
+                            ms.Position = 0;
+                            typeface = SKTypeface.FromStream(ms);
+                        }
+                    }
+                }
+
+                if (typeface != null)
+                {
+                    lock (_lock)
+                    {
+                        _loadedFonts[cacheKey] = typeface;
+                        // Also map family name directly if it's the first/only one
+                        if (!_loadedFonts.ContainsKey(descriptor.Family))
+                            _loadedFonts[descriptor.Family] = typeface;
+                    }
+                    FenLogger.Debug($"[FontRegistry] Loaded font: {descriptor.Family} ({typeface.FamilyName})", LogCategory.Rendering);
+                    tcs.SetResult(typeface);
+                    return typeface;
+                }
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Error($"[FontRegistry] Failed to load font {descriptor.Family}: {ex.Message}", LogCategory.Rendering, ex);
+            }
+
+            tcs.SetResult(null);
+            return null;
         }
 
         /// <summary>
@@ -91,17 +200,8 @@ namespace FenBrowser.FenEngine.Rendering
                 var srcMatch = Regex.Match(fontFaceBlock, @"src\s*:\s*([^;]+)", RegexOptions.IgnoreCase);
                 if (srcMatch.Success)
                 {
-                    var srcValue = srcMatch.Groups[1].Value;
-                    
-                    // Extract url()
-                    var urlMatch = Regex.Match(srcValue, @"url\s*\(\s*([""']?)([^)""']+)\1\s*\)", RegexOptions.IgnoreCase);
-                    if (urlMatch.Success)
-                        descriptor.Source = urlMatch.Groups[2].Value.Trim();
-
-                    // Extract format() if present
-                    var formatMatch = Regex.Match(srcValue, @"format\s*\(\s*([""']?)([^)""']+)\1\s*\)", RegexOptions.IgnoreCase);
-                    if (formatMatch.Success)
-                        descriptor.Format = formatMatch.Groups[2].Value.Trim().ToLowerInvariant();
+                    descriptor.Source = srcMatch.Groups[1].Value.Trim();
+                    // We let LoadFontFaceAsync handle the url()/local() parsing details
                 }
 
                 // Parse font-weight
@@ -126,31 +226,6 @@ namespace FenBrowser.FenEngine.Rendering
                     else descriptor.Style = SKFontStyleSlant.Upright;
                 }
 
-                // Parse unicode-range (optional)
-                var rangeMatch = Regex.Match(fontFaceBlock, @"unicode-range\s*:\s*([^;]+)", RegexOptions.IgnoreCase);
-                if (rangeMatch.Success)
-                    descriptor.UnicodeRange = rangeMatch.Groups[1].Value.Trim();
-
-                // Parse font-display (auto, block, swap, fallback, optional)
-                var displayMatch = Regex.Match(fontFaceBlock, @"font-display\s*:\s*(auto|block|swap|fallback|optional)", RegexOptions.IgnoreCase);
-                if (displayMatch.Success)
-                    descriptor.Display = displayMatch.Groups[1].Value.ToLowerInvariant();
-
-                // Parse font-stretch (normal, condensed, expanded, etc.)
-                var stretchMatch = Regex.Match(fontFaceBlock, @"font-stretch\s*:\s*([^;]+)", RegexOptions.IgnoreCase);
-                if (stretchMatch.Success)
-                    descriptor.Stretch = stretchMatch.Groups[1].Value.Trim();
-
-                // Parse font-feature-settings
-                var featureMatch = Regex.Match(fontFaceBlock, @"font-feature-settings\s*:\s*([^;]+)", RegexOptions.IgnoreCase);
-                if (featureMatch.Success)
-                    descriptor.FeatureSettings = featureMatch.Groups[1].Value.Trim();
-
-                // Parse font-variation-settings (for variable fonts)
-                var variationMatch = Regex.Match(fontFaceBlock, @"font-variation-settings\s*:\s*([^;]+)", RegexOptions.IgnoreCase);
-                if (variationMatch.Success)
-                    descriptor.VariationSettings = variationMatch.Groups[1].Value.Trim();
-
                 if (!string.IsNullOrEmpty(descriptor.Family) && !string.IsNullOrEmpty(descriptor.Source))
                 {
                     RegisterFontFace(descriptor);
@@ -174,74 +249,20 @@ namespace FenBrowser.FenEngine.Rendering
 
             lock (_lock)
             {
-                // Check if already loaded (legacy or cached)
-                if (_loadedFonts.TryGetValue(familyName, out var cached))
-                    return cached;
-
+                // Check specific cache key first
                 var cacheKey = $"{familyName}|{weight}|{style}";
-                if (_loadedFonts.TryGetValue(cacheKey, out cached))
+                if (_loadedFonts.TryGetValue(cacheKey, out var cached))
                     return cached;
 
-                // Check if registered via @font-face
-                if (!_fontFaces.TryGetValue(familyName, out var descriptors) || descriptors.Count == 0)
-                    return null;
+                // Check generic family name
+                if (_loadedFonts.TryGetValue(familyName, out cached))
+                    return cached;
 
-                // Find best matching descriptor
-                FontFaceDescriptor best = null;
-                int bestWeightDiff = int.MaxValue;
-
-                foreach (var desc in descriptors)
-                {
-                    if (desc.Style != style) continue;
-                    var weightDiff = Math.Abs(desc.Weight - weight);
-                    if (weightDiff < bestWeightDiff)
-                    {
-                        bestWeightDiff = weightDiff;
-                        best = desc;
-                    }
-                }
-
-                // If no style match, try any
-                if (best == null)
-                {
-                    foreach (var desc in descriptors)
-                    {
-                        var weightDiff = Math.Abs(desc.Weight - weight);
-                        if (weightDiff < bestWeightDiff)
-                        {
-                            bestWeightDiff = weightDiff;
-                            best = desc;
-                        }
-                    }
-                }
-
-                if (best == null) return null;
-
-                // Try to create FontFamily
-                try
-                {
-                    SKTypeface fontFamily = null;
-
-                    // Check for local font reference
-                    if (best.Source.StartsWith("local(", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // Handle local font (mock logic for Skia)
-                        var localName = Regex.Match(best.Source, @"local\s*\(\s*([""']?)([^)""']+)\1\s*\)", RegexOptions.IgnoreCase);
-                        if (localName.Success)
-                            fontFamily = SKTypeface.FromFamilyName(localName.Groups[2].Value);
-                    }
-                    else
-                    {
-                        // For URL fonts, use family name (works if installed on system)
-                        fontFamily = SKTypeface.FromFamilyName(familyName);
-                    }
-
-                    if (fontFamily != null)
-                        _loadedFonts[cacheKey] = fontFamily;
-
-                    return fontFamily;
-                }
-                catch { return null; }
+                // If registered but not loaded, it might be loading or failed. 
+                // We return null here which triggers fallback.
+                // Ideally we'd have a way to know if it's "loading" to maybe show a placeholder.
+                
+                return null;
             }
         }
 
@@ -253,9 +274,6 @@ namespace FenBrowser.FenEngine.Rendering
             return TryResolve(familyName, 400, SKFontStyleSlant.Upright);
         }
 
-        /// <summary>
-        /// Check if a font family has been registered
-        /// </summary>
         public static bool IsRegistered(string familyName)
         {
             if (string.IsNullOrEmpty(familyName)) return false;
@@ -266,15 +284,13 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        /// <summary>
-        /// Clear all registered fonts
-        /// </summary>
         public static void Clear()
         {
             lock (_lock)
             {
                 _fontFaces.Clear();
                 _loadedFonts.Clear();
+                _loadingTasks.Clear();
             }
         }
     }

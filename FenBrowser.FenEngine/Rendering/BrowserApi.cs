@@ -379,8 +379,19 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 try
                 {
-                    System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ImageLoader-Repaint] Triggering repaint after image load\r\n");
+                    FenLogger.Debug($"[ImageLoader-Repaint] Triggering repaint after image load", LogCategory.Rendering);
                     RepaintReady?.Invoke(this, null);
+                }
+                catch { }
+            };
+
+            ImageLoader.RequestRelayout = () =>
+            {
+                try
+                {
+                    FenLogger.Debug($"[ImageLoader-Relayout] Triggering re-layout after image load", LogCategory.Rendering);
+                    var dom = _engine.GetActiveDom();
+                    if (dom != null) RepaintReady?.Invoke(this, dom);
                 }
                 catch { }
             };
@@ -421,7 +432,8 @@ namespace FenBrowser.FenEngine.Rendering
 
         public async Task<bool> NavigateAsync(string url)
         {
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[BrowserHost] NavigateAsync called for: '{url}'\r\n"); } catch {}
+            try { FenLogger.Debug($"[BrowserHost] NavigateAsync called for: '{url}'", LogCategory.Navigation); } catch {}
+
             if (_disposed) return false;
                 if (string.IsNullOrWhiteSpace(url)) return false;
 

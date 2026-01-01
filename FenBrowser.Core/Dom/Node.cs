@@ -39,7 +39,88 @@ namespace FenBrowser.Core.Dom
         private Dictionary<string, List<EventListenerEntry>> _eventListeners;
 
         // --- MutationObserver integration ---
+        [Obsolete("Use RegisterObserver/NotifyMutation instead")]
         public static Action<Node, string, string, string, List<Node>, List<Node>> OnMutation;
+
+        private List<RegisteredObserver> _registeredObservers;
+
+        internal class RegisteredObserver
+        {
+            public MutationObserver Observer { get; set; }
+            public MutationObserverInit Options { get; set; }
+        }
+
+        public void RegisterObserver(MutationObserver observer, MutationObserverInit options)
+        {
+            if (observer == null) return;
+            _registeredObservers ??= new List<RegisteredObserver>();
+            // Check for existing registration and update options
+            foreach (var reg in _registeredObservers)
+            {
+                if (ReferenceEquals(reg.Observer, observer))
+                {
+                    reg.Options = options;
+                    return;
+                }
+            }
+            _registeredObservers.Add(new RegisteredObserver { Observer = observer, Options = options });
+        }
+
+        public void UnregisterObserver(MutationObserver observer)
+        {
+            if (_registeredObservers == null || observer == null) return;
+            _registeredObservers.RemoveAll(r => ReferenceEquals(r.Observer, observer));
+        }
+
+        protected void NotifyMutation(MutationRecord record)
+        {
+            if (record == null) return;
+            
+            // Legacy callback (for backward compat)
+            OnMutation?.Invoke(record.Target, record.Type, record.AttributeName, record.OldValue, record.AddedNodes, record.RemovedNodes);
+
+            // New observer dispatch
+            NotifyObserversInternal(this, record, false);
+        }
+
+        private void NotifyObserversInternal(Node target, MutationRecord record, bool isSubtree)
+        {
+            if (_registeredObservers != null)
+            {
+                foreach (var reg in _registeredObservers)
+                {
+                    if (!ShouldNotify(reg.Options, record, isSubtree)) continue;
+                    reg.Observer.EnqueueRecord(record);
+                }
+            }
+
+            // Propagate up the tree for subtree observers
+            if (Parent != null)
+            {
+                Parent.NotifyObserversInternal(target, record, true);
+            }
+        }
+
+        private static bool ShouldNotify(MutationObserverInit opts, MutationRecord record, bool isSubtree)
+        {
+            if (isSubtree && !opts.Subtree) return false;
+            switch (record.Type)
+            {
+                case "childList": return opts.ChildList;
+                case "attributes":
+                    if (!opts.Attributes) return false;
+                    if (opts.AttributeFilter != null && opts.AttributeFilter.Length > 0)
+                    {
+                        bool found = false;
+                        foreach (var f in opts.AttributeFilter)
+                            if (string.Equals(f, record.AttributeName, StringComparison.OrdinalIgnoreCase)) { found = true; break; }
+                        return found;
+                    }
+                    return true;
+                case "characterData": return opts.CharacterData;
+                default: return false;
+            }
+        }
 
         // ---- Backward Compatibility Aliases (for LiteElement migration) ----
         
@@ -76,6 +157,98 @@ namespace FenBrowser.Core.Dom
 
         // Hierarchy Methods
 
+        // --- DOM Traversal Properties (DOM Living Standard §4.4) ---
+        
+        /// <summary>
+        /// First child node (null if none).
+        /// </summary>
+        public Node FirstChild => Children.Count > 0 ? Children[0] : null;
+        
+        /// <summary>
+        /// Last child node (null if none).
+        /// </summary>
+        public Node LastChild => Children.Count > 0 ? Children[Children.Count - 1] : null;
+        
+        /// <summary>
+        /// Next sibling node (null if none or last child).
+        /// </summary>
+        public Node NextSibling
+        {
+            get
+            {
+                if (Parent == null) return null;
+                var siblings = Parent.Children;
+                var index = siblings.IndexOf(this);
+                return (index >= 0 && index < siblings.Count - 1) ? siblings[index + 1] : null;
+            }
+        }
+        
+        /// <summary>
+        /// Previous sibling node (null if none or first child).
+        /// </summary>
+        public Node PreviousSibling
+        {
+            get
+            {
+                if (Parent == null) return null;
+                var siblings = Parent.Children;
+                var index = siblings.IndexOf(this);
+                return (index > 0) ? siblings[index - 1] : null;
+            }
+        }
+        
+        /// <summary>
+        /// Parent as Element (null if parent is not an Element).
+        /// </summary>
+        public Element ParentElement => Parent as Element;
+        
+        /// <summary>
+        /// Whether this node has child nodes.
+        /// </summary>
+        public bool HasChildNodes => Children.Count > 0;
+        
+        /// <summary>
+        /// textContent per DOM Living Standard §4.4.3.
+        /// Gets the text content of this node and its descendants.
+        /// </summary>
+        public virtual string TextContent
+        {
+            get
+            {
+                if (NodeType == NodeType.Text || NodeType == NodeType.Comment)
+                    return NodeValue ?? "";
+                
+                // For elements/documents, concatenate all descendant text
+                var sb = new System.Text.StringBuilder();
+                CollectTextContent(this, sb);
+                return sb.ToString();
+            }
+            set
+            {
+                // Remove all children and replace with a single text node
+                while (Children.Count > 0)
+                    Children[0].Remove();
+                    
+                if (!string.IsNullOrEmpty(value))
+                    AppendChild(new Text(value));
+            }
+        }
+        
+        private static void CollectTextContent(Node node, System.Text.StringBuilder sb)
+        {
+            if (node.NodeType == NodeType.Text)
+            {
+                sb.Append(node.NodeValue);
+                return;
+            }
+            
+            foreach (var child in node.Children)
+            {
+                CollectTextContent(child, sb);
+            }
+        }
+
+
         public void AppendChild(Node child)
         {
             // Phase Guard
@@ -93,8 +266,21 @@ namespace FenBrowser.Core.Dom
             Children.Add(child);
 
             // Notify MutationObserver
-            OnMutation?.Invoke(this, "childList", null, null, new List<Node> { child }, null);
+            NotifyMutation(new MutationRecord
+            {
+                Type = "childList",
+                Target = this,
+                AddedNodes = new List<Node> { child }
+            });
         }
+
+        // --- Cloning ---
+        
+        /// <summary>
+        /// Returns a duplicate of the node.
+        /// </summary>
+        /// <param name="deep">If true, recursively clone the subtree under the specified node; if false, clone only the node itself (and its attributes, if it is an Element).</param>
+        public abstract Node CloneNode(bool deep);
 
         public void InsertBefore(Node newNode, Node referenceNode)
         {
@@ -118,7 +304,12 @@ namespace FenBrowser.Core.Dom
             Children.Insert(idx, newNode);
 
             // Notify MutationObserver
-            OnMutation?.Invoke(this, "childList", null, null, new List<Node> { newNode }, null);
+            NotifyMutation(new MutationRecord
+            {
+                Type = "childList",
+                Target = this,
+                AddedNodes = new List<Node> { newNode }
+            });
         }
 
         public void Remove()
@@ -132,7 +323,12 @@ namespace FenBrowser.Core.Dom
             Parent = null;
 
             // Notify MutationObserver
-            OnMutation?.Invoke(p, "childList", null, null, null, new List<Node> { this });
+            p.NotifyMutation(new MutationRecord
+            {
+                Type = "childList",
+                Target = p,
+                RemovedNodes = new List<Node> { this }
+            });
         }
 
         public void RemoveAllChildren()
@@ -147,7 +343,12 @@ namespace FenBrowser.Core.Dom
             
              // Notify MutationObserver
             if (removed.Count > 0)
-                OnMutation?.Invoke(this, "childList", null, null, null, removed);
+                NotifyMutation(new MutationRecord
+                {
+                    Type = "childList",
+                    Target = this,
+                    RemovedNodes = removed
+                });
         }
 
         public IEnumerable<Node> Descendants()

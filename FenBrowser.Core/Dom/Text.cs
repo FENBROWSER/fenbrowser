@@ -33,5 +33,10 @@ namespace FenBrowser.Core.Dom
         {
             return "#text: " + (_data ?? "");
         }
+
+        public override Node CloneNode(bool deep)
+        {
+            return new Text(Data);
+        }
     }
 }

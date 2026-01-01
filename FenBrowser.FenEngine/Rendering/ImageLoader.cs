@@ -9,6 +9,7 @@ using System.Threading;
 using System.Linq;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.FenEngine.Adapters;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -63,6 +64,9 @@ namespace FenBrowser.FenEngine.Rendering
         private static bool _repaintPending = false;
         private const int DEBOUNCE_DELAY_MS = 100;
         
+        // RULE 3 & 5: SVG rendering through adapter with safety limits
+        private static readonly ISvgRenderer _svgRenderer = new SvgSkiaRenderer();
+        
         static ImageLoader()
         {
             _httpClient = FenBrowser.Core.Network.HttpClientFactory.GetSharedClient();
@@ -70,6 +74,9 @@ namespace FenBrowser.FenEngine.Rendering
         
         // Callback to request a repaint when image loads
         public static Action RequestRepaint { get; set; }
+        
+        // Callback to request a full re-layout when image dimensions are resolved
+        public static Action RequestRelayout { get; set; }
 
         // ========== Memory Management Properties ==========
         
@@ -233,6 +240,42 @@ namespace FenBrowser.FenEngine.Rendering
         }
         
         /// <summary>
+        /// RULE 3 & 5: Render SVG content to bitmap using adapter with safety limits
+        /// </summary>
+        private static SKBitmap RenderSvgToBitmap(string svgContent, int? targetWidth, int? targetHeight)
+        {
+            var result = _svgRenderer.Render(svgContent, SvgRenderLimits.Default);
+            
+            if (!result.Success || result.Picture == null)
+            {
+                FenLogger.Debug($"[ImageLoader] SVG render failed: {result.ErrorMessage}", LogCategory.Rendering);
+                return null;
+            }
+            
+            int w = targetWidth ?? (int)result.Width;
+            int h = targetHeight ?? (int)result.Height;
+            if (w <= 0 || h <= 0) { w = 300; h = 150; }
+            
+            var bitmap = new SKBitmap(w, h);
+            using (var canvas = new SKCanvas(bitmap))
+            {
+                canvas.Clear(SKColors.Transparent);
+                
+                // Scale picture to fit target
+                if (result.Width > 0 && result.Height > 0)
+                {
+                    float scaleX = w / result.Width;
+                    float scaleY = h / result.Height;
+                    canvas.Scale(scaleX, scaleY);
+                }
+                
+                canvas.DrawPicture(result.Picture);
+            }
+            
+            return bitmap;
+        }
+        
+        /// <summary>
         /// Request a debounced repaint. Multiple calls within DEBOUNCE_DELAY_MS
         /// will result in only a single repaint after the delay.
         /// </summary>
@@ -323,7 +366,6 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static async void LoadImageAsync(string url, bool isLazy = false, int? targetWidth = null, int? targetHeight = null)
         {
-            string debugLogPath = @"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt";
             try
             {
                 // Check caches before loading
@@ -345,7 +387,7 @@ namespace FenBrowser.FenEngine.Rendering
                      // Security/Feature Check: Only allow images
                      if (!string.IsNullOrEmpty(mimeType) && !mimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
                      {
-                         try { File.AppendAllText(debugLogPath, $"[ImageLoader] Blocked non-image Data URI: {mimeType}\r\n"); } catch {}
+                         FenLogger.Warn($"[ImageLoader] Blocked non-image Data URI: {mimeType}", LogCategory.Rendering);
                          return;
                      }
 
@@ -361,7 +403,7 @@ namespace FenBrowser.FenEngine.Rendering
                          }
                          catch (Exception b64Ex)
                          {
-                             try { File.AppendAllText(debugLogPath, $"[ImageLoader] Base64 Parse Error: {b64Ex.Message}\r\n"); } catch {}
+                             FenLogger.Error($"[ImageLoader] Base64 Parse Error: {b64Ex.Message}", LogCategory.Rendering);
                              return;
                          }
                      }
@@ -375,40 +417,11 @@ namespace FenBrowser.FenEngine.Rendering
                      if (bytes != null && bytes.Length > 0)
                      {
                          SKBitmap bmp = null;
-                         // Check for SVG
+                         // RULE 3 & 5: Use SvgSkiaRenderer adapter for SVG rendering with safety limits
                          if (mimeType.Contains("svg"))
                          {
-                             // Simple SVG handling from bytes
-                             try 
-                             {
-                                 using (var ms = new MemoryStream(bytes))
-                                 {
-                                     var svg = new Svg.Skia.SKSvg();
-                                     svg.Load(ms);
-                                     if (svg.Picture != null)
-                                     {
-                                         var cull = svg.Picture.CullRect;
-                                         int w = targetWidth ?? (int)cull.Width;
-                                         int h = targetHeight ?? (int)cull.Height;
-                                         if (w <= 0 || h <= 0) { w = 300; h = 150; }
-                                         
-                                         bmp = new SKBitmap(w, h);
-                                         using (var canvas = new SKCanvas(bmp))
-                                         {
-                                             canvas.Clear(SKColors.Transparent);
-                                             // Scale picture to fit target if hints provided
-                                             if (targetWidth.HasValue || targetHeight.HasValue)
-                                             {
-                                                 float scaleX = w / cull.Width;
-                                                 float scaleY = h / cull.Height;
-                                                 canvas.Scale(scaleX, scaleY);
-                                             }
-                                             canvas.DrawPicture(svg.Picture);
-                                         }
-                                     }
-                                 }
-                             }
-                             catch {}
+                             string svgContent = System.Text.Encoding.UTF8.GetString(bytes);
+                             bmp = RenderSvgToBitmap(svgContent, targetWidth, targetHeight);
                          }
                          else
                          {
@@ -420,9 +433,10 @@ namespace FenBrowser.FenEngine.Rendering
                              _legacyCache[url] = bmp;
                              // Log success for specific debugging
                              if (url.Length > 50) 
-                                 try { File.AppendAllText(debugLogPath, $"[ImageLoader] Loaded Data URI (len={bytes.Length})\r\n"); } catch {}
+                                 FenLogger.Debug($"[ImageLoader] Loaded Data URI (len={bytes.Length})", LogCategory.Rendering);
                              
                              RequestDebouncedRepaint();
+                             RequestRelayout?.Invoke();
                          }
                      }
                      return;
@@ -432,11 +446,11 @@ namespace FenBrowser.FenEngine.Rendering
                 // Only allow http/https for now
                 if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase)) 
                 {
-                     try { File.AppendAllText(debugLogPath, $"[ImageLoader] Skipped URL (Not HTTP): {url}\r\n"); } catch {}
+                     FenLogger.Warn($"[ImageLoader] Skipped URL (Not HTTP): {url}", LogCategory.Rendering);
                      return;
                 }
 
-                try { File.AppendAllText(debugLogPath, $"[ImageLoader] Fetching: {url}\r\n"); } catch {}
+                FenLogger.Debug($"[ImageLoader] Fetching: {url}", LogCategory.Rendering);
 
                 var data = await _httpClient.GetByteArrayAsync(url);
                 SKBitmap bitmap = null;
@@ -461,38 +475,13 @@ namespace FenBrowser.FenEngine.Rendering
 
                 if (isSvg)
                 {
-                    try 
+                    // RULE 3 & 5: Use SvgSkiaRenderer adapter for SVG rendering with safety limits
+                    string svgContent = System.Text.Encoding.UTF8.GetString(data);
+                    bitmap = RenderSvgToBitmap(svgContent, targetWidth, targetHeight);
+                    
+                    if (bitmap == null)
                     {
-                        using (var ms = new MemoryStream(data))
-                        {
-                            var svg = new Svg.Skia.SKSvg();
-                            svg.Load(ms);
-                             if (svg.Picture != null)
-                             {
-                                  var cull = svg.Picture.CullRect;
-                                  int w = targetWidth ?? (int)cull.Width;
-                                  int h = targetHeight ?? (int)cull.Height;
-                                  
-                                  if (w <= 0 || h <= 0) { w = 300; h = 150; }
-                                  
-                                  bitmap = new SKBitmap(w, h);
-                                  using (var canvas = new SKCanvas(bitmap))
-                                  {
-                                      canvas.Clear(SKColors.Transparent);
-                                      if (targetWidth.HasValue || targetHeight.HasValue)
-                                      {
-                                          float scaleX = w / cull.Width;
-                                          float scaleY = h / cull.Height;
-                                          canvas.Scale(scaleX, scaleY);
-                                      }
-                                      canvas.DrawPicture(svg.Picture);
-                                  }
-                             }
-                        }
-                    } 
-                    catch (Exception svgEx) 
-                    {
-                         try { File.AppendAllText(debugLogPath, $"[ImageLoader] SVG Render Error: {url} -> {svgEx.Message}\r\n"); } catch {}
+                        FenLogger.Warn($"[ImageLoader] SVG Render Error: {url}", LogCategory.Rendering);
                     }
                 }
                 
@@ -504,7 +493,17 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 if (bitmap != null)
                 {
-                    _legacyCache[url] = bitmap;
+                    // Standardize on _memoryCache for all new loads
+                    var entry = new ImageCacheEntry
+                    {
+                        Bitmap = bitmap,
+                        ByteSize = bitmap.ByteCount,
+                        LastAccessed = DateTime.UtcNow,
+                        IsLazy = isLazy
+                    };
+                    
+                    _memoryCache[url] = entry;
+                    _legacyCache[url] = bitmap; // Keep legacy for fallback
                     
                     // Track memory usage
                     lock (_cacheLock)
@@ -522,17 +521,18 @@ namespace FenBrowser.FenEngine.Rendering
                     // Remove from lazy registry if present
                     _lazyRegistry.TryRemove(url, out _);
                     
-                    try { File.AppendAllText(debugLogPath, $"[ImageLoader] Success: {url} ({bitmap.Width}x{bitmap.Height})\r\n"); } catch {}
+                    FenLogger.Debug($"[ImageLoader] Success: {url} ({bitmap.Width}x{bitmap.Height})", LogCategory.Rendering);
                     RequestDebouncedRepaint();
+                    RequestRelayout?.Invoke();
                 }
                 else
                 {
-                    try { File.AppendAllText(debugLogPath, $"[ImageLoader] Decode Failed: {url}\r\n"); } catch {}
+                    FenLogger.Warn($"[ImageLoader] Decode Failed: {url}", LogCategory.Rendering);
                 }
             }
             catch (Exception ex)
             {
-                try { File.AppendAllText(debugLogPath, $"[ImageLoader] Error loading {url}: {ex.Message}\r\n"); } catch {}
+                FenLogger.Error($"[ImageLoader] Error loading {url}: {ex.Message}", LogCategory.Rendering);
             }
         }
     }

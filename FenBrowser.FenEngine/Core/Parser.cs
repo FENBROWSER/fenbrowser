@@ -1076,7 +1076,7 @@ namespace FenBrowser.FenEngine.Core
             if (PeekTokenIs(end))
             {
                 NextToken();
-                try { System.IO.File.AppendAllText("parse_debug.txt", $"[ParseExpressionList] Empty list, end token found\r\n"); } catch { }
+                /* [PERF-REMOVED] */
                 return list;
             }
 
@@ -1091,14 +1091,14 @@ namespace FenBrowser.FenEngine.Core
                 // Use Assignment precedence to avoid consuming commas as operators
                 var expr = ParseExpression(Precedence.Assignment);
                 list.Add(expr);
-                try { System.IO.File.AppendAllText("parse_debug.txt", $"[ParseExpressionList] First element: {expr?.GetType().Name}, Peek: {_peekToken.Type}\r\n"); } catch { }
+                /* [PERF-REMOVED] */
             }
 
             while (PeekTokenIs(TokenType.Comma))
             {
                 NextToken();
                 NextToken();
-                try { System.IO.File.AppendAllText("parse_debug.txt", $"[ParseExpressionList] Next element after comma, Cur: {_curToken.Type} '{_curToken.Literal}'\r\n"); } catch { }
+                /* [PERF-REMOVED] */
                 
                 if (CurTokenIs(TokenType.Ellipsis))
                 {
@@ -1110,14 +1110,14 @@ namespace FenBrowser.FenEngine.Core
                     // Use Assignment precedence to avoid consuming commas as operators
                     var expr = ParseExpression(Precedence.Assignment);
                     list.Add(expr);
-                    try { System.IO.File.AppendAllText("parse_debug.txt", $"[ParseExpressionList] Element added: {expr?.GetType().Name}\r\n"); } catch { }
+                    /* [PERF-REMOVED] */
                 }
             }
 
-            try { System.IO.File.AppendAllText("parse_debug.txt", $"[ParseExpressionList] Total elements: {list.Count}, Peek: {_peekToken.Type}\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             if (!ExpectPeek(end))
             {
-                try { System.IO.File.AppendAllText("parse_debug.txt", $"[ParseExpressionList] ERROR: Expected {end}, got {_peekToken.Type}\r\n"); } catch { }
+                /* [PERF-REMOVED] */
                 return null;
             }
 

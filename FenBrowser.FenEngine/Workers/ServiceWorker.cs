@@ -11,11 +11,13 @@ namespace FenBrowser.FenEngine.Workers
     public class ServiceWorker : FenObject
     {
         public string ScriptURL { get; private set; }
+        public string Scope { get; private set; }
         public string State { get; private set; } // installing, installed, activating, activated, redundant
 
-        public ServiceWorker(string scriptURL, string state)
+        public ServiceWorker(string scriptURL, string scope, string state)
         {
             ScriptURL = scriptURL;
+            Scope = scope;
             State = state;
             InitializeInterface();
         }
@@ -48,8 +50,8 @@ namespace FenBrowser.FenEngine.Workers
 
             // Forward to the actual worker runtime via ServiceWorkerManager
             // For now, we need a way to reference the runtime. 
-            // We'll delegate to the Manager using the ScriptURL/Scope as key.
-            ServiceWorkerManager.Instance.PostMessageToWorker(ScriptURL, message);
+            // We'll delegate to the Manager using the Scope as key.
+            ServiceWorkerManager.Instance.PostMessageToWorker(Scope, message);
             
             return FenValue.Undefined;
         }

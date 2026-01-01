@@ -66,6 +66,8 @@ namespace FenBrowser.Core.Css
         public Thickness Margin { get; set; }
         public bool MarginLeftAuto { get; set; }   // For margin: auto centering
         public bool MarginRightAuto { get; set; }  // For margin: auto centering
+        public bool MarginTopAuto { get; set; }
+        public bool MarginBottomAuto { get; set; }
         public Thickness Padding { get; set; }
         public Thickness BorderThickness { get; set; }
         public SKColor? BorderBrush { get; set; }

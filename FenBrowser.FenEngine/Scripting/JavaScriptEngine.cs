@@ -50,7 +50,7 @@ namespace FenBrowser.FenEngine.Scripting
 
         public JavaScriptEngine(IJsHost host)
         {
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[JavaScriptEngine] Constructor Start\r\n"); } catch { }
+            try { FenLogger.Debug("[JavaScriptEngine] Constructor Start", LogCategory.JavaScript); } catch { }
             _host = host;
             _storageBackend = new FenBrowser.FenEngine.Storage.FileStorageBackend();
             
@@ -58,7 +58,7 @@ namespace FenBrowser.FenEngine.Scripting
             FenBrowser.FenEngine.Workers.ServiceWorkerManager.Instance.Initialize(_storageBackend);
 
             InitRuntime();
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[JavaScriptEngine] Constructor: InitRuntime Done\r\n"); } catch { }
+            try { FenLogger.Debug("[JavaScriptEngine] Constructor: InitRuntime Done", LogCategory.JavaScript); } catch { }
             SetupMutationObserver();
             // _mini = new MiniJs.Engine();
         }
@@ -113,9 +113,9 @@ namespace FenBrowser.FenEngine.Scripting
 
 
 
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[JavaScriptEngine] InitRuntime: Creating FenRuntime...\r\n"); } catch { }
+            try { FenLogger.Debug("[JavaScriptEngine] InitRuntime: Creating FenRuntime...", LogCategory.JavaScript); } catch { }
             _fenRuntime = new FenRuntime(context, _storageBackend);
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[JavaScriptEngine] InitRuntime: FenRuntime Created\r\n"); } catch { }
+            try { FenLogger.Debug("[JavaScriptEngine] InitRuntime: FenRuntime Created", LogCategory.JavaScript); } catch { }
             // Connect console messages to BrowserHost
             _fenRuntime.OnConsoleMessage = msg => 
             {
@@ -156,23 +156,173 @@ namespace FenBrowser.FenEngine.Scripting
         {
             if (args.Length < 2) return FenValue.Undefined;
             var evt = args[0].ToString();
-            try { FenLogger.Debug($"[JS_API] addEventListener called for '{evt}'", LogCategory.JavaScript); } catch { }
             
-            var callback = (args[1].IsFunction) ? args[1].AsFunction() : null;
-            
-            if (callback != null && (evt == "DOMContentLoaded" || evt == "load"))
+            // Check for function callback
+            FenFunction callback = null;
+            if (args[1].IsFunction) callback = args[1].AsFunction() as FenFunction;
+            else if (args[1].IsObject) 
             {
-                // Execute immediately as we assume ready
+                // handle { handleEvent: function() ... } object interface?
+                var obj = args[1].AsObject();
+                // simplified: ignore for now, standard requires function or object with handleEvent
+            }
+            
+            if (callback == null) return FenValue.Undefined;
+
+            try { FenLogger.Debug($"[JS_API] addEventListener called for '{evt}' on {thisVal?.GetType().Name}", LogCategory.JavaScript); } catch { }
+
+            // Normalize target key
+            // If thisVal is a wrapper (JsDomElement), key by the underlying Node to ensure identity persistence
+            object key = thisVal;
+            if (thisVal is JsDomElement elWrapper) key = elWrapper._node;
+            else if (thisVal is JsDomText textWrapper) key = textWrapper._node;
+
+            if (key != null)
+            {
+                // Get or create listener dictionary for this object
+                Dictionary<string, List<FenFunction>> listeners;
+                if (!_objectEventListeners.TryGetValue(key, out listeners))
+                {
+                    listeners = new Dictionary<string, List<FenFunction>>(StringComparer.OrdinalIgnoreCase);
+                    _objectEventListeners.Add(key, listeners);
+                }
+
+                if (!listeners.ContainsKey(evt)) listeners[evt] = new List<FenFunction>();
+                
+                // Avoid duplicates? Standard says yes.
+                // Assuming simple linear scan is fine for now.
+                // Note: FenFunction equality might reference underlying delegate, which should be fine.
+                if (!listeners[evt].Contains(callback)) 
+                {
+                    listeners[evt].Add(callback);
+                }
+            }
+            
+            // Keep legacy immediate-fire behavior for 'load' on window/document if needed,
+            // but ONLY if we are sure the event has already passed.
+            // For now, trusting the event loop to fire 'load' naturally is better, 
+            // but sticking to existing logic for safety if the engine doesn't fire load explicitly yet.
+            if ((evt == "DOMContentLoaded" || evt == "load") && (thisVal is JsDocument || (thisVal is FenObject win && win == _fenRuntime.GetGlobal("window").AsObject())))
+            {
+                // Execute immediately as we assume ready if this is late-binding
                 _fenRuntime.Context.ScheduleCallback(() => {
-                     try { 
-                        FenLogger.Debug($"[EventListener] Firing {evt} event immediately", LogCategory.JavaScript);
+                        try { 
+                        FenLogger.Debug($"[EventListener] Firing {evt} event immediately (compat)", LogCategory.JavaScript);
                         callback.Invoke(new FenBrowser.FenEngine.Core.Interfaces.IValue[] { FenValue.FromObject(new FenBrowser.FenEngine.Core.FenObject()) }, _fenRuntime.Context); 
-                     } catch (Exception ex) {
+                        } catch (Exception ex) {
                         FenLogger.Error($"[EventListener] Error executing {evt}: {ex.Message}", LogCategory.JavaScript, ex);
-                     }
+                        }
                 }, 0);
             }
             return FenValue.Undefined;
+        }
+
+        /// <summary>
+        /// Dispatch a mechanism event to stored listeners on the target.
+        /// </summary>
+        public void DispatchEvent(object target, string eventName, FenObject eventArgs = null)
+        {
+            if (target == null || string.IsNullOrEmpty(eventName)) return;
+
+            // Normalize key
+            object key = target;
+            if (target is JsDomElement elWrapper) key = elWrapper._node;
+
+            if (_objectEventListeners.TryGetValue(key, out var listeners) && listeners.ContainsKey(eventName))
+            {
+                var list = listeners[eventName].ToArray(); 
+                
+                // Wrap 'this' context if needed
+                // If we keyed by Element, the 'this' passed to handler should be a JsDomElement wrapper
+                object thisContext = target;
+                if (key is Element domEl && !(target is JsDomElement))
+                {
+                    thisContext = new JsDomElement(this, domEl);
+                }
+                // If 'thisContext' is not IValue/FenObject/JsObject, the interpreter might complain.
+                // JsDomElement implements IObject.
+
+                var args = new FenBrowser.FenEngine.Core.Interfaces.IValue[] {
+                    eventArgs != null ? FenValue.FromObject(eventArgs) : FenValue.Undefined
+                };
+
+                foreach (var handler in list)
+                {
+                        _fenRuntime.Context.ScheduleCallback(() => {
+                        try { 
+                            // Check if 'thisContext' is valid for Invoke?
+                            // FenFunction.Invoke mainly uses context, 'this' is implicit in how it's called unless we pass it?
+                            // FenRuntime.ExecuteFunction / FenFunction.Invoke signature: (args, context). 
+                            // It doesn't take 'this' explicitly unless the function logic uses it.
+                            // The closure might capture 'this'.
+                            // BUT 'addEventListener' callbacks usually expect 'this' to be the element.
+                            // The MiniPratt engine implementation of FenFunction might not support 'this' binding easily 
+                            // without 'call'/'apply'.
+                            // However, let's assume standard behavior: handler(event).
+                            handler.Invoke(args, _fenRuntime.Context); 
+                        } catch (Exception ex) {
+                            FenLogger.Error($"[DispatchEvent] Error in handler for {eventName}: {ex}", LogCategory.JavaScript);
+                        }
+                        }, 0);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Dispatches an event with bubbling (Element -> Parent -> ... -> Document -> Window)
+        /// </summary>
+        public void DispatchEventForElement(Element el, string eventName)
+        {
+            if (el == null) return;
+            
+            try 
+            {
+                // Create Event Object
+                // In a perfect world we reuse the same object and update currentTarget.
+                var jsEl = new JsDomElement(this, el);
+                
+                var evtObj = new FenBrowser.FenEngine.Core.FenObject();
+                evtObj.Set("type", FenValue.FromString(eventName));
+                evtObj.Set("target", FenValue.FromObject(jsEl));
+                evtObj.Set("timeStamp", FenValue.FromNumber((DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalMilliseconds));
+                evtObj.Set("bubbles", FenValue.FromBoolean(true));
+
+                // 1. Capture Phase (skipped for now)
+
+                // 2. Target Phase & 3. Bubble Phase
+                var current = el;
+                while (current != null)
+                {
+                    // Update currentTarget if we were reusing event object
+                    // For now, simple dispatch
+                    DispatchEvent(current, eventName, evtObj);
+                    current = current.Parent as Element;
+                }
+
+                // 4. Document & Window
+                var doc = _fenRuntime.GetGlobal("document");
+                if (doc.IsObject) 
+                {
+                    var dObj = doc.AsObject();
+                    object dNative = dObj;
+                    if (dObj is FenObject fo) dNative = fo.NativeObject;
+                    else if (dObj is JsDocument jd) dNative = jd.NativeObject;
+                    DispatchEvent(dNative ?? dObj, eventName, evtObj);
+                }
+                
+                var win = _fenRuntime.GetGlobal("window");
+                if (win.IsObject) 
+                {
+                    var wObj = win.AsObject();
+                    object wNative = wObj;
+                    if (wObj is FenObject fo) wNative = fo.NativeObject;
+                    DispatchEvent(wNative ?? wObj, eventName, evtObj);
+                }
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Error($"[DispatchEventForElement] Failed: {ex}", LogCategory.JavaScript);
+            }
         }
 
         private void SetupWindowEvents()
@@ -523,7 +673,15 @@ namespace FenBrowser.FenEngine.Scripting
         private readonly HashSet<string> _script404 = new HashSet<string>(StringComparer.Ordinal);
         private readonly object _script404Lock = new object();
 
-        // element-level listeners: id -> (event -> [fnName])
+        // element-level listeners - REPLACED with generic object storage
+        // private readonly Dictionary<string, Dictionary<string, List<string>>> _evtEl = ...
+
+        // Centralized event listener storage for all objects (Window, Document, Element)
+        // Key: The target object (Element, or FenObject for Window/Document)
+        // Value: Dictionary of EventName -> List of Handlers
+        private readonly System.Runtime.CompilerServices.ConditionalWeakTable<object, Dictionary<string, List<FenFunction>>> _objectEventListeners =
+            new System.Runtime.CompilerServices.ConditionalWeakTable<object, Dictionary<string, List<FenFunction>>>();
+
         private readonly Dictionary<string, Dictionary<string, List<string>>> _evtEl =
             new Dictionary<string, Dictionary<string, List<string>>>(StringComparer.Ordinal);
 
@@ -879,7 +1037,7 @@ namespace FenBrowser.FenEngine.Scripting
                 }
                 catch (Exception ex)
                 {
-                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Event Propagation Error] {ex.Message}\r\n"); } catch { }
+                    /* [PERF-REMOVED] */
                 }
             }
 
@@ -2193,7 +2351,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         /// <summary>Expose current DOM to the engine (for document.* bridge).</summary>
         public async Task SetDomAsync(Element domRoot, Uri baseUri = null)
         {
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[JavaScriptEngine] SetDomAsync Start\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             _domRoot = domRoot;
             
             // Initialize FenEngine with DOM
@@ -2201,24 +2359,24 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             {
                 try
                 {
-                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[JavaScriptEngine] Calling _fenRuntime.SetDom...\r\n"); } catch { }
+                    /* [PERF-REMOVED] */
                     _fenRuntime.SetDom(domRoot, baseUri);
-                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[JavaScriptEngine] Calling SetupPermissions...\r\n"); } catch { }
+                    /* [PERF-REMOVED] */
                     SetupPermissions(); // Re-apply permissions to new context if needed
-                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[JavaScriptEngine] Calling SetupWindowEvents...\r\n"); } catch { }
+                    /* [PERF-REMOVED] */
                     SetupWindowEvents(); // Re-apply addEventListener to new document
-                    try { System.IO.File.AppendAllText("debug_log.txt", "[JavaScriptEngine] SetDomAsync called on FenRuntime\r\n"); } catch { }
+                    /* [PERF-REMOVED] */
                 }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"[FenEngine] Error setting DOM: {ex.Message}");
-                    try { System.IO.File.AppendAllText("debug_log.txt", $"[FenEngine] Error setting DOM: {ex.Message}\r\n"); } catch { }
+                    /* [PERF-REMOVED] */
                 }
                 
                 // Execute inline scripts with FenEngine
                 try
                 {
-                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[JavaScriptEngine] Starting inline script execution\r\n"); } catch { }
+                    /* [PERF-REMOVED] */
                     
                     int scriptIndex = 0;
                     foreach (var s in _domRoot.SelfAndDescendants())
@@ -2246,7 +2404,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                         // Check SubresourceAllowed delegate
                                         if (SubresourceAllowed != null && !SubresourceAllowed(scriptUri, "script"))
                                         {
-                                             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[JavaScriptEngine] Blocked script {scriptUri}\r\n"); } catch { }
+                                             /* [PERF-REMOVED] */
                                              continue;
                                         }
 
@@ -2271,7 +2429,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                     }
                                     catch (Exception ex)
                                     {
-                                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[JavaScriptEngine] Failed to fetch script {src}: {ex.Message}\r\n"); } catch { }
+                                        /* [PERF-REMOVED] */
                                     }
                                 }
                             }
@@ -2284,14 +2442,14 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                             
                             if (!string.IsNullOrWhiteSpace(code))
                             {
-                                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[JavaScriptEngine] Executing script #{scriptIndex} ({srcInfo}, {code.Length} chars)\r\n"); } catch { }
+                                /* [PERF-REMOVED] */
                                 FenLogger.Debug($"[JavaScriptEngine] Executing script ({code.Length} chars)", LogCategory.JavaScript);
                                 _fenRuntime.ExecuteSimple(code, srcInfo);
-                                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[JavaScriptEngine] Completed script #{scriptIndex}\r\n"); } catch { }
+                                /* [PERF-REMOVED] */
                             }
                             else
                             {
-                                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[JavaScriptEngine] Skipped empty script #{scriptIndex}\r\n"); } catch { }
+                                /* [PERF-REMOVED] */
                             }
                         }
                     }
@@ -2327,7 +2485,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             if (n == null) return "";
             if (depth > 200) // Safety break
             {
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[JavaScriptEngine] CollectScriptText recursion limit reached!\r\n"); } catch { }
+                /* [PERF-REMOVED] */
                 return "";
             }
 

@@ -1,4 +1,4 @@
-using FenBrowser.Core.Css;
+﻿using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
@@ -11,10 +11,12 @@ using System.Globalization;
 using SkiaSharp;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.FenEngine.Rendering.Css; // Direct using, will resolve ambiguity manually or by deleting inner classes
+using NewCss = FenBrowser.FenEngine.Rendering.Css;
 // using FenBrowser.Core.Math; // Namespace moved to Core
 namespace FenBrowser.FenEngine.Rendering
 {
-    public static class CssLoader
+    public static partial class CssLoader
     {
         public class CssLoadResult
         {
@@ -23,21 +25,26 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         // Debug file logging - ENABLE temporarily to diagnose CSS loading
-        private const bool DEBUG_FILE_LOGGING = true;
+        private const bool DEBUG_FILE_LOGGING = false;
 
         public class MatchedRule
         {
-            public CssRule Rule;
+            public NewCss.CssRule Rule;
             public CssSource Source;
+            public NewCss.Specificity Specificity;
         }
 
         // -------------------------------------------------------------------------
         // CSS PERFORMANCE CACHES
         // -------------------------------------------------------------------------
-        private static readonly Dictionary<string, List<CssRule>> _parsedRulesCache = new Dictionary<string, List<CssRule>>();
+        private static readonly Dictionary<string, List<NewCss.CssRule>> _parsedRulesCache = new Dictionary<string, List<NewCss.CssRule>>();
         private static readonly Dictionary<(Element, SelectorChain), bool> _matchCache = new Dictionary<(Element, SelectorChain), bool>();
-        private static readonly Dictionary<Element, List<CssRule>> _elementMatchedRulesCache = new Dictionary<Element, List<CssRule>>();
+        private static readonly Dictionary<Element, List<NewCss.CssRule>> _elementMatchedRulesCache = new Dictionary<Element, List<NewCss.CssRule>>();
         private static readonly Dictionary<Element, CssComputed> _elementStyleCache = new Dictionary<Element, CssComputed>();
+        
+        // CSS Custom Properties (CSS Variables) storage - keyed by property name (e.g., "--primary-color")
+        private static readonly Dictionary<string, string> _customProperties = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private static double _rootFontSize = 16.0;
 
         public static void ClearCaches()
         {
@@ -45,6 +52,8 @@ namespace FenBrowser.FenEngine.Rendering
             lock (_matchCache) _matchCache.Clear();
             lock (_elementMatchedRulesCache) _elementMatchedRulesCache.Clear();
             lock (_elementStyleCache) _elementStyleCache.Clear();
+            lock (_customProperties) _customProperties.Clear();
+            _rootFontSize = 16.0;
             _keyframes.Clear();
             FontRegistry.Clear();
         }
@@ -55,54 +64,58 @@ namespace FenBrowser.FenEngine.Rendering
              var matched = new List<MatchedRule>();
              if (element == null || sources == null) return matched;
              
-             // 1. Gather all rules from all sources
-             // WARNING: Re-parsing is expensive. Better to parse once?
-             // But sources only contains TEXT.
-             // We need to re-parse.
-             
              foreach(var source in sources)
              {
                  try
                  {
-                     List<CssRule> rules;
+                     List<NewCss.CssRule> rules;
                      lock (_parsedRulesCache)
                      {
                          if (!_parsedRulesCache.TryGetValue(source.CssText, out rules))
                          {
-                             rules = ParseRules(source.CssText, source.SourceOrder, source.BaseUri, null, null);
+                             rules = ParseRules(source.CssText, source.SourceOrder, source.BaseUri, null, null, (NewCss.CssOrigin)(int)source.Origin);
                              _parsedRulesCache[source.CssText] = rules;
                          }
                      }
 
                      foreach(var rule in rules)
                      {
-                         // Check each selector chain
-                         foreach(var chain in rule.Selectors)
+                         if (rule is NewCss.CssStyleRule styleRule)
                          {
-                             bool isMatch;
-                             var key = (element, chain);
-                             lock (_matchCache)
+                             // Specificity calculation
+                             var spec = SelectorMatcher.GetMatchingSpecificity(element, styleRule.Selector);
+                             if (spec.HasValue)
                              {
-                                 if (!_matchCache.TryGetValue(key, out isMatch))
-                                 {
-                                     isMatch = Matches(element, chain);
-                                     _matchCache[key] = isMatch;
-                                 }
-                             }
-
-                             if (isMatch)
-                             {
-                                 matched.Add(new MatchedRule { Rule = rule, Source = source });
-                                 break; // Rule matches via at least one selector
+                                 matched.Add(new MatchedRule { Rule = rule, Source = source, Specificity = spec.Value });
                              }
                          }
+                         // TODO: Support media rules nesting for DevTools inspection
                      }
                  }
-                 catch {}
+                 catch (Exception parseEx)
+                 {
+                     /* [PERF-REMOVED] */
+                 }
              }
              
-             // Sort by weight: SourceOrder ASC
-             matched.Sort((a,b) => a.Rule.SourceOrder.CompareTo(b.Rule.SourceOrder));
+             // Sort by Origin -> Specificity -> Order
+             matched.Sort((a,b) => {
+                 var ruleA = a.Rule as NewCss.CssStyleRule;
+                 var ruleB = b.Rule as NewCss.CssStyleRule;
+                 if (ruleA == null) return -1; 
+                 if (ruleB == null) return 1;
+
+                 // 1. Origin (Ascending: UserAgent < User < Author)
+                 int originComp = ruleA.Origin.CompareTo(ruleB.Origin);
+                 if (originComp != 0) return originComp;
+
+                 // 2. Specificity (Ascending: lower specificity first, higher later)
+                 int specComp = a.Specificity.CompareTo(b.Specificity);
+                 if (specComp != 0) return specComp;
+
+                 // 3. Source Order (Ascending)
+                 return ruleA.Order.CompareTo(ruleB.Order);
+             });
              return matched;
         }
 
@@ -141,56 +154,81 @@ namespace FenBrowser.FenEngine.Rendering
             double? viewportHeight = null,
             Action<string> log = null)
         {
-            // CRITICAL: Update static environment hints for unit parsing (vw/vh/etc.)
             // This MUST be done even if using cached rules.
             CssParser.MediaViewportWidth = viewportWidth;
             CssParser.MediaViewportHeight = viewportHeight;
+
+            /* [PERF-REMOVED] */
 
             if (root == null)
                 return new CssLoadResult();
 
             var cssBlobs = new List<CssSource>(); // collected CSS texts with source ordering
             int sourceIndex = 0;
+            var _cssStopwatch = System.Diagnostics.Stopwatch.StartNew();
 
-            // 0) UA stylesheet (very small normalize) ? lowest precedence
+            // 0) UA stylesheet - load from external file (lowest precedence)
             try
             {
-                var uaCss = @"
-                    /* Basic UA defaults for readability on phone */
-                    html,body{background:#fff;color:#222;margin:0;padding:0;}
-                    body{font:16px/1.5 'Segoe UI',Roboto,Arial,sans-serif;}
-                    a{color:#1a0dab;text-decoration:underline;}
-                    /* Footer/nav polish: compact inline links with spacing */
-                    nav a, footer a, .footer a, #footer a, .nav a, .menu a{ display:inline-block; margin:0 8px 6px 0; }
-                    nav ul, footer ul, .footer ul, #footer ul, .nav ul, .menu ul, .uiList{ list-style:none; padding:0; margin:0.5em 0; }
-                    nav li, footer li, .footer li, #footer li, .nav li, .menu li, .uiList li{ display:inline-block; margin:0 10px 6px 0; }
-                    a:focus,a:hover{ text-decoration:underline; }
-                    img{border:0;max-width:100%;height:auto;}
-                    input,button,select,textarea{font:inherit;}
-                    /* Block semantics */
-                    div,article,aside,nav,section,header,footer,main,figure,form,pre,blockquote,hr{display:block;}
-                    center{display:flex;flex-direction:column;align-items:center;text-align:center;}
-                    h1{font-size:2em;margin:0.67em 0;font-weight:600;}
-                    h2{font-size:1.5em;margin:0.83em 0;font-weight:600;}
-                    h3{font-size:1.17em;margin:1em 0;font-weight:600;}
-                    h4{font-size:1em;margin:1.33em 0;font-weight:600;}
-                    h5{font-size:0.83em;margin:1.67em 0;font-weight:600;}
-                    h6{font-size:0.67em;margin:2.33em 0;font-weight:600;}
-                    p{margin:1em 0;}
-                    ul,ol{margin:1em 0;padding-left:2em;}
-                    li{margin:0.25em 0;}
-                    small{font-size:0.875em;}
-                    strong,b{font-weight:600;}
-                    em,i{font-style:italic;}
-                    figure{margin:1em 0;}
-                    figcaption{font-size:0.875em;color:#555;}
-                    table{border-collapse:collapse;}
-                    th{font-weight:600;text-align:left;}
-                    td,th{padding:0.4em 0.6em;}
-                ";
+                string uaCss = null;
+                
+                try
+                {
+                    // PRIORITY 1: Development path (hardcoded for debugging)
+                    var devPath = @"c:\Users\udayk\Videos\FENBROWSER\FenBrowser.FenEngine\Assets\ua.css";
+                    if (File.Exists(devPath))
+                    {
+                        uaCss = File.ReadAllText(devPath);
+                        System.Diagnostics.Debug.WriteLine($"[CssLoader] Loaded UA stylesheet from: {devPath} ({uaCss.Length} chars)");
+                    }
+                    else
+                    {
+                        // Fallback: try assembly path
+                        var assemblyDir = Path.GetDirectoryName(typeof(CssLoader).Assembly.Location);
+                        var uaCssPath = Path.Combine(assemblyDir, "Assets", "ua.css");
+                        if (File.Exists(uaCssPath))
+                        {
+                            uaCss = File.ReadAllText(uaCssPath);
+                            System.Diagnostics.Debug.WriteLine($"[CssLoader] Loaded UA stylesheet from assembly: {uaCssPath}");
+                        }
+                    }
+                }
+                catch (Exception readEx)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[CssLoader] Failed to read UA file: {readEx.Message}. Using fallback.");
+                    /* [PERF-REMOVED] */
+                }
+                
+                // Fallback: minimal inline defaults
+                if (string.IsNullOrEmpty(uaCss))
+                {
+                    uaCss = @"
+                        html,body{background:#fff;color:#000;margin:0;padding:0;}
+                        head,style,script,title,meta,link{display:none;}
+                        body{font:16px/1.5 'Segoe UI',Arial,sans-serif;margin:8px;}
+                        h1{font-size:2em;font-weight:bold;margin:0.67em 0;}
+                        h2{font-size:1.5em;font-weight:bold;margin:0.83em 0;}
+                        h3{font-size:1.17em;font-weight:bold;margin:1em 0;}
+                        p{margin:1em 0;}
+                        div,article,section,header,footer,nav,main{display:block;}
+                        strong,b{font-weight:bold;}
+                        em,i{font-style:italic;}
+                        a{color:#0000EE;text-decoration:underline;}
+                    ";
+                    /* [PERF-REMOVED] */
+                }
+                else
+                {
+                     /* [PERF-REMOVED] */
+                }
+                
                 cssBlobs.Add(new CssSource { CssText = uaCss, Origin = CssOrigin.UserAgent, SourceOrder = sourceIndex++, BaseUri = baseUri });
             }
-            catch { /* Ignore UA style errors */ }
+            catch (Exception ex) 
+            { 
+                System.Diagnostics.Debug.WriteLine($"[CssLoader] UA stylesheet error: {ex.Message}");
+                /* [PERF-REMOVED] */
+            }
 
             // 1) Inline <style> tags first (DOM order)
             foreach (var n in root.Descendants().OfType<Element>().Where(n => !n.IsText && string.Equals(n.Tag, "style", StringComparison.OrdinalIgnoreCase)))
@@ -198,13 +236,7 @@ namespace FenBrowser.FenEngine.Rendering
                 var text = SafeGatherText(n);
                 if (!string.IsNullOrWhiteSpace(text))
                 {
-                    try {
-                    try {
-                        var msg = $"[{DateTime.Now:HH:mm:ss}] [CssLoader] Found style block: {text.Length} chars. Content start: {text.Substring(0, Math.Min(text.Length, 200))}\r\n";
-                        // ALWAYS log style block content for debugging
-                        System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", msg);
-                    } catch {}
-                    } catch {}
+                    // Debug logging disabled for performance
                     
                     cssBlobs.Add(new CssSource
                     {
@@ -266,10 +298,10 @@ namespace FenBrowser.FenEngine.Rendering
                      if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", "[LINK] Link has no rel attribute\r\n");
                      continue; 
                 }
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[LINK] Found link with rel='{rel}'\r\n"); } catch {}
+                /* [PERF-REMOVED] */
                 if (!ContainsToken(rel, "stylesheet")) continue;
                 string href; if (!link.Attr.TryGetValue("href", out href) || string.IsNullOrWhiteSpace(href)) continue;
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[LINK] Loading stylesheet: {href}\r\n"); } catch {}
+                /* [PERF-REMOVED] */
                 // Respect media attribute (screen/all)
                 string media;
                 if (link.Attr.TryGetValue("media", out media) && !string.IsNullOrWhiteSpace(media))
@@ -287,7 +319,7 @@ namespace FenBrowser.FenEngine.Rendering
                     try
                     {
                         var css = await fetchExternalCssAsync(abs).ConfigureAwait(false);
-                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[LINK] Fetched CSS len={css?.Length ?? -1} for {abs}\r\n"); } catch {}
+                        /* [PERF-REMOVED] */
                         if (!string.IsNullOrWhiteSpace(css))
                         {
                             lock (cssBlobs)
@@ -311,12 +343,14 @@ namespace FenBrowser.FenEngine.Rendering
                 extTasks.Add(t);
             }
             if (extTasks.Count > 0) { try { await Task.WhenAll(extTasks); } catch { /* Ignore fetch errors */ } }
+            FenLogger.Debug($"[PERF-CSS] External CSS Fetch: {_cssStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
 
             // 3) Expand @import (depth-bounded)
             var expanded = await ExpandImportsAsync(cssBlobs, fetchExternalCssAsync, viewportWidth, log, gate);
+            FenLogger.Debug($"[PERF-CSS] @import Expansion: {_cssStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
 
             // 4) Parse rules from all sources (parallel, bounded)
-            var allRules = new List<CssRule>();
+            var allRules = new List<NewCss.CssRule>();
             var parseGate = new System.Threading.SemaphoreSlim(4);
             var parseTasks = new List<Task>();
             foreach (var blob in expanded)
@@ -326,12 +360,12 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     try
                     {
-                        List<CssRule> parsed;
+                        List<NewCss.CssRule> parsed;
                         lock (_parsedRulesCache)
                         {
                             if (!_parsedRulesCache.TryGetValue(blob.CssText, out parsed))
                             {
-                                parsed = ParseRules(blob.CssText, blob.SourceOrder, blob.BaseUri, viewportWidth, log);
+                                parsed = ParseRules(blob.CssText, blob.SourceOrder, blob.BaseUri, viewportWidth, log, (NewCss.CssOrigin)(int)blob.Origin);
                                 _parsedRulesCache[blob.CssText] = parsed;
                             }
                         }
@@ -340,20 +374,24 @@ namespace FenBrowser.FenEngine.Rendering
                     catch (Exception ex)
                     {
                         Log(log, "[CssLoader] Parse error: " + ex.Message);
+                        /* [PERF-REMOVED] */
                     }
                     finally { try { parseGate.Release(); } catch { /* Ignore release errors */ } }
                 }));
             }
             if (parseTasks.Count > 0) { try { await Task.WhenAll(parseTasks); } catch { /* Ignore parse errors */ } }
+            FenLogger.Debug($"[PERF-CSS] Rule Parsing: {_cssStopwatch.ElapsedMilliseconds}ms (Rules: {allRules.Count})", LogCategory.Rendering);
 
             // Debug: Log parsed rules count
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CssLoader] Total CSS rules parsed: {allRules.Count}\r\n"); } catch {}
+            /* [PERF-REMOVED] */
 
             // 4.5) Resolve CSS variables
             // 4.5) Resolve CSS variables & 5) Compute per-element cascaded styles
             // CRITICAL FIX: Offload heavy CSS matching/cascading to background thread to avoid freezing UI
             ResolveVariables(allRules);
+            FenLogger.Debug($"[PERF-CSS] Variable Resolution: {_cssStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
             var computed = CascadeIntoComputedStyles(root, allRules, log);
+            FenLogger.Debug($"[PERF-CSS] Cascade Matching: {_cssStopwatch.ElapsedMilliseconds}ms (Elements: {computed.Count})", LogCategory.Rendering);
             
             return new CssLoadResult
             {
@@ -371,6 +409,106 @@ namespace FenBrowser.FenEngine.Rendering
             Func<Uri, Task<string>> fetchExternalCssAsync)
         {
             return ComputeAsync(root, baseUri, fetchExternalCssAsync, null, null, null);
+        }
+
+        // ===========================
+        // CSS Custom Properties (Variables)
+        // ===========================
+        
+        /// <summary>
+        /// Extract CSS custom properties (--name: value) from :root and html rules
+        /// and store them in the global _customProperties dictionary for var() resolution.
+        /// </summary>
+        private static void ResolveVariables(List<NewCss.CssRule> rules)
+        {
+            if (rules == null) return;
+            
+            lock (_customProperties)
+            {
+                _customProperties.Clear();
+                _rootFontSize = 16.0;
+                int count = 0;
+                
+                foreach (var rule in rules)
+                {
+                    if (!(rule is NewCss.CssStyleRule styleRule)) continue;
+
+                    bool isRootRule = false;
+                    foreach (var chain in styleRule.Selector.Chains)
+                    {
+                        if (chain.Segments.Count > 0)
+                        {
+                            var lastSeg = chain.Segments[chain.Segments.Count - 1];
+                            string tag = lastSeg.Tag?.ToLowerInvariant() ?? "";
+                            if (tag == ":root" || tag == "html" || tag == "body" || tag == "*" || lastSeg.PseudoClasses?.Any(pc => pc.name == "root" || pc.name == ":root") == true)
+                            {
+                                isRootRule = true;
+                                break;
+                            }
+                            // Check pseudo-classes if tag is empty/implied
+                            if (string.IsNullOrEmpty(tag) && lastSeg.PseudoClasses != null)
+                            {
+                                foreach (var pc in lastSeg.PseudoClasses)
+                                {
+                                    if (pc.name.ToLowerInvariant().Contains("root"))
+                                    {
+                                        isRootRule = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    foreach (var decl in styleRule.Declarations)
+                    {
+                        string propName = decl.Property;
+                        if (string.IsNullOrEmpty(propName)) continue;
+
+                        if (propName.StartsWith("--"))
+                        {
+                            string value = decl.Value?.Trim() ?? "";
+                            if (!string.IsNullOrEmpty(value))
+                            {
+                                if (isRootRule || !_customProperties.ContainsKey(propName))
+                                {
+                                    _customProperties[propName] = value;
+                                    count++;
+                                }
+                            }
+                        }
+                        
+                        if (isRootRule && propName.Equals("font-size", StringComparison.OrdinalIgnoreCase))
+                        {
+                            double fs;
+                            if (TryPx(decl.Value, out fs, percentBase: 16.0))
+                            {
+                                _rootFontSize = fs;
+                                DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-VAR] Captured Root Font Size: {_rootFontSize}px from '{decl.Value}'\r\n");
+                            }
+                        }
+                    }
+                }
+                
+                DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-VAR] Final Root Font Size: {_rootFontSize}px\r\n");
+                DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-VAR] Extracted {count} global variables.\r\n");
+                
+                try
+                {
+                    var sbDump = new StringBuilder();
+                    sbDump.AppendLine($"--- GLOBAL CSS VARIABLES DUMP ({_customProperties.Count} items, RootFS: {_rootFontSize}) ---");
+                    var sorted = _customProperties.ToList();
+                    sorted.Sort((a, b) => string.Compare(a.Key, b.Key, StringComparison.OrdinalIgnoreCase));
+                    foreach(var kv in sorted) sbDump.AppendLine($"{kv.Key}: {kv.Value}");
+                    System.IO.File.WriteAllText(@"C:\Users\udayk\Videos\FENBROWSER\css_vars_dump.txt", sbDump.ToString());
+                } catch {}
+                
+                int d = 0;
+                foreach (var kvp in _customProperties) {
+                    if (d++ > 50) break;
+                    DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"  - {kvp.Key}: {kvp.Value}\r\n");
+                }
+            }
         }
 
         // ===========================
@@ -443,26 +581,7 @@ namespace FenBrowser.FenEngine.Rendering
             public int Specificity;   // computed from selector where used
         }
 
-        /// <summary>Single selector fragment with combinators, e.g. "div.foo #bar > span"</summary>
-        public class SelectorChain
-        {
-            public List<SelectorSegment> Segments = new List<SelectorSegment>(); // left-to-right parsed
-            public int Specificity; // computed from segments
-        }
 
-        public enum Combinator { Descendant, Child, AdjacentSibling, GeneralSibling }
-
-        public class SelectorSegment
-        {
-            public string Tag;                    // e.g. "div"
-            public string Id;                     // e.g. "main"
-            public List<string> Classes;          // e.g. ["foo","bar"]
-            public List<string> PseudoClasses;    // e.g. [":first-child"]
-            public string PseudoElement;          // e.g. "before", "after"
-            public List<Tuple<string, string, string>> Attributes; // e.g. [("type", "=", "text")]
-            public Combinator? Next;              // relation to the NEXT segment (left-to-right)
-            public List<SelectorSegment> NotSelectors; // :not() selectors (elements must NOT match these)
-        }
 
         // ===========================
         // Stage 1: Import expansion
@@ -1194,81 +1313,42 @@ namespace FenBrowser.FenEngine.Rendering
         // Stage 2: Parsing rules
         // ===========================
 
-        private static List<CssRule> ParseRules(string css, int sourceOrder, Uri baseForUrls, double? viewportWidth, Action<string> log)
+        private static List<NewCss.CssRule> ParseRules(string css, int sourceOrder, Uri baseForUrls, double? viewportWidth, Action<string> log, NewCss.CssOrigin origin = NewCss.CssOrigin.Author)
         {
-            var rules = new List<CssRule>();
+            var rules = new List<NewCss.CssRule>();
             if (string.IsNullOrWhiteSpace(css)) return rules;
 
             try { if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_raw_css.txt", "\n--- RAW CSS BLOCK ---\n" + css + "\n-------------------\n"); } catch {}
             var text = StripComments(css);
             
-            // DEBUG: Log CSS after comment stripping
-            // DEBUG: Log CSS after comment stripping
              try { if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_full_css.txt", "\n--- NEW CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch {}
 
-            // (Very) basic @media handling: keep simple "screen" blocks; ignore others.
-            // We flatten recognized @media blocks by inlining their contents.
+            // Flatten basic media (Regex-based) - Keeping this for now as simplified media handling
             text = FlattenBasicMedia(text, viewportWidth, log);
             
-            // Extract and parse @keyframes rules
+            // Extract non-standard/unimplemented blocks to avoid parser errors
             text = ExtractKeyframes(text, log);
-
-            // Extract and register @font-face rules
             text = ExtractFontFace(text, log);
-
-            // Handle @supports feature queries
             text = FlattenSupports(text, log);
-
-            // Handle @layer cascade layers
             text = ExtractLayers(text, log);
-            
-            // Handle @container queries (container queries)
             text = FlattenContainerQueries(text, (float)(viewportWidth ?? 1024), log);
 
-            // DEBUG: Log CSS after all flattening/extraction
              try { if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_full_css.txt", "\n--- PROCESSED CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch {}
 
-            // Split by braces into selector/declarations pairs.
-            // This is a naive parser but resistant to most content without nested braces in values.
-            int i = 0;
-            while (i < text.Length)
+            // New Pipeline: Tokenize -> Parse
+            // New Pipeline: Tokenize -> Parse
+            var tokenizer = new CssTokenizer(text);
+            var parser = new CssSyntaxParser(tokenizer);
+            var sheet = parser.ParseStylesheet();
+
+            int ruleIndexInsideSheet = 0;
+            foreach (var rule in sheet.Rules)
             {
-                // find '{'
-                int open = text.IndexOf('{', i);
-                if (open < 0) break;
-                var selectorText = text.Substring(i, open - i).Trim();
-                int close = FindMatchingBrace(text, open);
-                if (close < 0) break;
-
-                var declText = text.Substring(open + 1, close - open - 1);
-                i = close + 1;
-
-                if (string.IsNullOrWhiteSpace(selectorText) || string.IsNullOrWhiteSpace(declText))
-                    continue;
-
-                var chains = ParseSelectors(selectorText);
-                if (chains.Count == 0) continue;
-                
-                // DEBUG: Log ALL parsed selectors
-                try { 
-                    var chainStr = string.Join(", ", chains.Select(c => string.Join(" ", c.Segments.Select(seg => 
-                        $"{seg.Tag ?? "*"}{(seg.Id != null ? "#"+seg.Id : "")}{(seg.Classes != null && seg.Classes.Count > 0 ? "."+string.Join(".", seg.Classes) : "")}{(seg.Attributes != null && seg.Attributes.Count > 0 ? "["+string.Join("][", seg.Attributes.Select(a => $"{a.Item1}{a.Item2}{a.Item3}"))+"]" : "")}"))));
-                    if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[SELECTOR] {selectorText} => Chains: {chainStr}\r\n"); 
-                } catch {}
-
-                // DEBUG: Log raw declarations for .picture
-                if (selectorText.Contains("picture"))
+                rule.BaseUri = baseForUrls;
+                rule.Origin = origin; 
+                if (rule is NewCss.CssStyleRule styleRule)
                 {
-                    try { if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[PARSER_RAW] Selectors: {selectorText} | Decls: {declText}\r\n"); } catch {}
-                }
-
-                var decls = ParseDeclarations(declText);
-
-                var rule = new CssRule { Selectors = chains, SourceOrder = sourceOrder, BaseUri = baseForUrls };
-                foreach (var d in decls)
-                {
-                    // last declaration wins inside the same block
-                    rule.Declarations[d.Name] = d;
+                    styleRule.Order = (sourceOrder * 10000) + ruleIndexInsideSheet++;
                 }
                 rules.Add(rule);
             }
@@ -1279,8 +1359,8 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         private static string FlattenBasicMedia(string text, double? viewportWidth, Action<string> log)
-{
-    if (string.IsNullOrEmpty(text)) return "";
+        {
+            if (string.IsNullOrEmpty(text)) return "";
     if (text.IndexOf("@media", StringComparison.OrdinalIgnoreCase) < 0) return text;
 
     // Enhanced media query support: min/max-width, prefers-color-scheme, prefers-reduced-motion, orientation
@@ -1309,8 +1389,10 @@ namespace FenBrowser.FenEngine.Rendering
             i++;
         }
     }
-    return sb.ToString();
-}
+
+            /* [PERF-REMOVED] */
+            return sb.ToString();
+        }
 
 /// <summary>
 /// Evaluate a media query condition string
@@ -1395,8 +1477,7 @@ private static bool EvaluateMediaQueryInternal(string query, double? viewportWid
 
     bool result = isNot ? !conditionMatches : conditionMatches;
     
-    // Diagnostic Logging
-    try { if (query.Contains("width") || query.Contains("height")) System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[EvaluateMediaQuery] Query='{query}' VpW={vpW} VpH={vpH} mw={mw} xw={xw} matches={conditionMatches} result={result}\r\n"); } catch {}
+    // Diagnostic logging disabled for performance
 
     return result;
 }
@@ -1436,313 +1517,13 @@ private static double? ExtractPx(string text, string prop)
             return -1;
         }
 
-        private static List<SelectorChain> ParseSelectors(string selectorText)
+
+
+
+
+        private static List<NewCss.CssDeclaration> ParseDeclarations(string declText)
         {
-            // Split on commas at top level (not inside anything else ? here we assume plain selectors).
-            var parts = selectorText.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
-            var list = new List<SelectorChain>();
-            foreach (var p in parts)
-            {
-                var chain = ParseSelectorChain(p.Trim());
-                if (chain != null) list.Add(chain);
-            }
-            return list;
-        }
-
-        private static SelectorChain ParseSelectorChain(string s)
-        {
-            // Supports sequences separated by space (descendant) or '>' (child)
-            // Each segment supports: tag (optional), #id, .class(.class2...)
-            var chain = new SelectorChain();
-            var tokens = TokenizeSelector(s);
-            if (tokens.Count == 0) return null;
-
-            var seg = new SelectorSegment { Classes = new List<string>() };
-            for (int i = 0; i < tokens.Count; i++)
-            {
-                var t = tokens[i];
-                if (t == " ")
-                {
-                    seg.Next = Combinator.Descendant;
-                    chain.Segments.Add(seg);
-                    seg = new SelectorSegment { Classes = new List<string>() };
-                }
-                else if (t == ">")
-                {
-                    seg.Next = Combinator.Child;
-                    chain.Segments.Add(seg);
-                    seg = new SelectorSegment { Classes = new List<string>() };
-                }
-                else if (t == "+")
-                {
-                    seg.Next = Combinator.AdjacentSibling;
-                    chain.Segments.Add(seg);
-                    seg = new SelectorSegment { Classes = new List<string>() };
-                }
-                else if (t == "~")
-                {
-                    seg.Next = Combinator.GeneralSibling;
-                    chain.Segments.Add(seg);
-                    seg = new SelectorSegment { Classes = new List<string>() };
-                }
-                else if (t.StartsWith("."))
-                {
-                    seg.Classes.Add(t.Substring(1));
-                }
-                else if (t.StartsWith("#"))
-                {
-                    seg.Id = t.Substring(1);
-                }
-                else if (t.StartsWith(":"))
-                {
-                    string lower = t.ToLowerInvariant();
-                    if (lower.StartsWith("::"))
-                    {
-                        string pe = lower.Substring(2);
-                        if (pe == "before" || pe == "after")
-                        {
-                            seg.PseudoElement = pe;
-                        }
-                        else
-                        {
-                            if (seg.PseudoClasses == null) seg.PseudoClasses = new List<string>();
-                            seg.PseudoClasses.Add(t.Substring(2));
-                        }
-                    }
-                    else
-                    {
-                        string val = lower.Substring(1);
-                        if (val == "before" || val == "after")
-                        {
-                            seg.PseudoElement = val;
-                        }
-                        else if (val.StartsWith("not("))
-                        {
-                            // Handle :not() selector
-                            var notArg = ExtractPseudoArg(val);
-                            if (!string.IsNullOrEmpty(notArg))
-                            {
-                                // Parse the inner selector
-                                var notSeg = ParseSimpleSelector(notArg);
-                                if (notSeg != null)
-                                {
-                                    if (seg.NotSelectors == null) seg.NotSelectors = new List<SelectorSegment>();
-                                    seg.NotSelectors.Add(notSeg);
-                                }
-                            }
-                        }
-                        else
-                        {
-                            if (seg.PseudoClasses == null) seg.PseudoClasses = new List<string>();
-                            seg.PseudoClasses.Add(t.Substring(1));
-                        }
-                    }
-                }
-                else if (t.StartsWith("["))
-                {
-                    // Attribute selector parsing: [attr], [attr=val], [attr~=val], [attr|=val], [attr^=val], [attr$=val], [attr*=val]
-                    var content = t.TrimStart('[').TrimEnd(']');
-                    if (seg.Attributes == null) seg.Attributes = new List<Tuple<string, string, string>>();
-
-                    // Check for operator (in order of length to match longest first)
-                    string[] operators = { "~=", "|=", "^=", "$=", "*=", "=" };
-                    string foundOp = null;
-                    int opIndex = -1;
-                    
-                    foreach (var op in operators)
-                    {
-                        int idx = content.IndexOf(op);
-                        if (idx >= 0)
-                        {
-                            foundOp = op;
-                            opIndex = idx;
-                            break;
-                        }
-                    }
-
-                    if (foundOp == null || opIndex < 0)
-                    {
-                        // Just [attr] - presence check
-                        seg.Attributes.Add(Tuple.Create(content.Trim(), "", ""));
-                    }
-                    else
-                    {
-                        var name = content.Substring(0, opIndex).Trim();
-                        var val = content.Substring(opIndex + foundOp.Length).Trim().Trim('"', '\'');
-                        // Handle CSS escape sequences: backslash followed by a character means the character itself
-                        // e.g., "second\ two" becomes "second two"
-                        val = System.Text.RegularExpressions.Regex.Replace(val, @"\\(.)", "$1");
-                        seg.Attributes.Add(Tuple.Create(name, foundOp, val));
-                    }
-                }
-                else
-                {
-                    seg.Tag = t;
-                }
-            }
-            chain.Segments.Add(seg);
-
-            // compute specificity: ids*100 + classes*10 + tags*1
-            int ids = 0, cl = 0, tg = 0;
-            foreach (var s2 in chain.Segments)
-            {
-                if (!string.IsNullOrEmpty(s2.Id)) ids++;
-                if (!string.IsNullOrEmpty(s2.Tag)) tg++;
-                if (s2.Classes != null) cl += s2.Classes.Count;
-            }
-            chain.Specificity = ids * 100 + cl * 10 + tg;
-
-            return chain;
-        }
-
-        private static List<string> TokenizeSelector(string s)
-        {
-            // turns "div#main .x > span.y [attr=val]" into ["div","#main"," ",".x",">","span",".y"," ","[attr=val]"]
-            var r = new List<string>();
-            var sb = new StringBuilder();
-            Action flush = () => { if (sb.Length > 0) { r.Add(sb.ToString()); sb.Clear(); } };
-
-            for (int i = 0; i < s.Length; i++)
-            {
-                var c = s[i];
-                if (char.IsWhiteSpace(c))
-                {
-                    flush();
-                    // coalesce spaces
-                    if (r.Count == 0 || r[r.Count - 1] != " ") r.Add(" ");
-                }
-                else if (c == '>' || c == '+' || c == '~')
-                {
-                    // Check if ~ is part of ~= attribute selector (peek ahead)
-                    if (c == '~' && i + 1 < s.Length && s[i + 1] == '=')
-                    {
-                        // This is part of an attribute selector inside [], should be handled there
-                        sb.Append(c);
-                    }
-                    else
-                    {
-                        flush(); r.Add(c.ToString());
-                    }
-                }
-                else if (c == '[')
-                {
-                    // Read entire attribute selector until closing ]
-                    flush();
-                    sb.Append(c);
-                    i++;
-                    int bracketDepth = 1;
-                    while (i < s.Length && bracketDepth > 0)
-                    {
-                        char ac = s[i];
-                        sb.Append(ac);
-                        if (ac == '[') bracketDepth++;
-                        else if (ac == ']') bracketDepth--;
-                        i++;
-                    }
-                    i--; // Back up since outer loop will increment
-                    flush();
-                }
-                else if (c == '.' || c == '#')
-                {
-                    flush(); sb.Append(c);
-                }
-                else if (c == ':')
-                {
-                    flush(); 
-                    sb.Append(c);
-                    // Handle double colon ::
-                    if (i + 1 < s.Length && s[i + 1] == ':')
-                    {
-                        i++;
-                        sb.Append(s[i]);
-                    }
-                }
-                else
-                {
-                    sb.Append(char.ToLowerInvariant(c));
-                }
-            }
-            flush();
-            // trim leading/trailing spaces tokens
-            if (r.Count > 0 && r[0] == " ") r.RemoveAt(0);
-            if (r.Count > 0 && r[r.Count - 1] == " ") r.RemoveAt(r.Count - 1);
-            return r;
-        }
-
-        /// <summary>
-        /// Parse a simple selector (for :not() argument) - supports tag, .class, #id, [attr]
-        /// </summary>
-        private static SelectorSegment ParseSimpleSelector(string s)
-        {
-            if (string.IsNullOrWhiteSpace(s)) return null;
-            s = s.Trim();
-            
-            var seg = new SelectorSegment { Classes = new List<string>() };
-            var tokens = TokenizeSelector(s);
-            
-            foreach (var t in tokens)
-            {
-                if (t == " " || t == ">" || t == "+" || t == "~") continue; // Skip combinators
-                
-                if (t.StartsWith("."))
-                {
-                    seg.Classes.Add(t.Substring(1));
-                }
-                else if (t.StartsWith("#"))
-                {
-                    seg.Id = t.Substring(1);
-                }
-                else if (t.StartsWith("["))
-                {
-                    // Attribute selector parsing
-                    var content = t.TrimStart('[').TrimEnd(']');
-                    if (seg.Attributes == null) seg.Attributes = new List<Tuple<string, string, string>>();
-                    
-                    string[] operators = { "~=", "|=", "^=", "$=", "*=", "=" };
-                    string foundOp = null;
-                    int opIndex = -1;
-                    
-                    foreach (var op in operators)
-                    {
-                        int idx = content.IndexOf(op);
-                        if (idx >= 0)
-                        {
-                            foundOp = op;
-                            opIndex = idx;
-                            break;
-                        }
-                    }
-                    
-                    if (foundOp == null || opIndex < 0)
-                    {
-                        seg.Attributes.Add(Tuple.Create(content.Trim(), "", ""));
-                    }
-                    else
-                    {
-                        var name = content.Substring(0, opIndex).Trim();
-                        var val = content.Substring(opIndex + foundOp.Length).Trim().Trim('"', '\'');
-                        seg.Attributes.Add(Tuple.Create(name, foundOp, val));
-                    }
-                }
-                else if (t.StartsWith(":"))
-                {
-                    // Pseudo-class inside :not() - add to pseudo-classes
-                    string val = t.Substring(1).ToLowerInvariant();
-                    if (seg.PseudoClasses == null) seg.PseudoClasses = new List<string>();
-                    seg.PseudoClasses.Add(val);
-                }
-                else if (!string.IsNullOrEmpty(t))
-                {
-                    seg.Tag = t;
-                }
-            }
-            
-            return seg;
-        }
-
-        private static List<CssDecl> ParseDeclarations(string declText)
-        {
-            var list = new List<CssDecl>();
+            var list = new List<NewCss.CssDeclaration>();
             // naive split by ';', then split by ':'
             var parts = declText.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
             foreach (var p in parts)
@@ -1762,7 +1543,7 @@ private static double? ExtractPx(string text, string prop)
                     val = valRaw.Substring(0, idx).Trim();
                 }
 
-                list.Add(new CssDecl { Name = name, Value = val, Important = important });
+                list.Add(new NewCss.CssDeclaration { Property = name, Value = val, IsImportant = important });
             }
             return list;
         }
@@ -1771,15 +1552,17 @@ private static double? ExtractPx(string text, string prop)
         // Stage 3: Cascade
         // ===========================
 
-        private static Dictionary<Node, CssComputed> CascadeIntoComputedStyles(Element root, List<CssRule> rules, Action<string> log)
+        private static Dictionary<Node, CssComputed> CascadeIntoComputedStyles(Element root, List<NewCss.CssRule> rules, Action<string> log)
         {
             var result = new Dictionary<Node, CssComputed>();
             if (root == null) return result;
             
-            // Debug: Log root hash to compare with DocumentWrapper._root
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CssLoader] CascadeIntoComputedStyles: root_hash={root.GetHashCode()}\r\n"); } catch {}
+            // Create CascadeEngine with provided rules (Author + User)
+            var sheet = new NewCss.CssStylesheet();
+            sheet.Rules.AddRange(rules);
+            var engine = new CascadeEngine(sheet);
 
-            // Pre-flatten the DOM into a list to avoid repeated Descendants() enumerations
+            // Pre-flatten the DOM into a list
             var nodes = new List<Element>();
             var stack = new Stack<Element>();
             stack.Push(root);
@@ -1787,7 +1570,6 @@ private static double? ExtractPx(string text, string prop)
             {
                 var n = stack.Pop();
                 nodes.Add(n);
-                // Push children in reverse so natural order remains pre-order in 'nodes'
                 for (int i = n.Children.Count - 1; i >= 0; i--)
                 {
                     if (n.Children[i] is Element childEl)
@@ -1795,269 +1577,70 @@ private static double? ExtractPx(string text, string prop)
                 }
             }
 
-            // Prepare per-element candidate declarations+weights
-            var perNode = new Dictionary<Element, List<Tuple<CssDecl, SelectorChain, int>>>();
-            var perNodeBefore = new Dictionary<Element, List<Tuple<CssDecl, SelectorChain, int>>>();
-            var perNodeAfter = new Dictionary<Element, List<Tuple<CssDecl, SelectorChain, int>>>();
-            var perNodeMarker = new Dictionary<Element, List<Tuple<CssDecl, SelectorChain, int>>>();
-            var perNodePlaceholder = new Dictionary<Element, List<Tuple<CssDecl, SelectorChain, int>>>();
-            var perNodeSelection = new Dictionary<Element, List<Tuple<CssDecl, SelectorChain, int>>>();
-            var perNodeFirstLine = new Dictionary<Element, List<Tuple<CssDecl, SelectorChain, int>>>();
-            var perNodeFirstLetter = new Dictionary<Element, List<Tuple<CssDecl, SelectorChain, int>>>();
-            int matchedNodes = 0;
             foreach (var n in nodes)
             {
                 if (n.IsText) continue;
-
-                // DEBUG: Verify traversal sees critical nodes
-                string nid = n.Id ?? "";
-                string ncls = n.Attr != null && n.Attr.ContainsKey("class") ? n.Attr["class"] : "";
-                if (nid.Contains("readout") || ncls.Contains("detection"))
-                {
-                     try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Cascade-Visit] Visited: {n.Tag}#{nid}.{ncls}\r\n"); } catch {}
-                }
-
-                bool nodeHasMatches = false;
-                foreach (var rule in rules)
-                {
-                    foreach (var chain in rule.Selectors)
-                    {
-                        // DIAGNOSTIC: Trace DIV element matching against rules
-                        bool isDivElement = string.Equals(n.Tag, "DIV", StringComparison.OrdinalIgnoreCase);
-                        if (isDivElement && chain.Segments.Count == 1 && chain.Segments[0].Tag?.ToLowerInvariant() == "div")
-                        {
-                            var decls = string.Join(", ", rule.Declarations.Select(kv => $"{kv.Key}={kv.Value.Value}"));
-                                // try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-TRACE] Testing DIV against rule 'div': ALL_props=[{decls}]\r\n"); } catch {}
-                        }
-                        bool isMatch;
-                        var key = (n, chain);
-                        lock (_matchCache)
-                        {
-                            if (!_matchCache.TryGetValue(key, out isMatch))
-                            {
-                                isMatch = Matches(n, chain);
-                                _matchCache[key] = isMatch;
-                            }
-                        }
-
-                        if (isMatch)
-                        {
-                            // DEBUG: Log successful match
-                            if (n.Id == "readout-secondary")
-                            {
-                                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[MATCH-FOUND] Node #readout-secondary matched rule with specificity {chain.Specificity}\r\n"); } catch {}
-                            }
-
-                            var lastSeg = chain.Segments[chain.Segments.Count - 1];
-                            string pe = lastSeg.PseudoElement;
-                            
-                            Dictionary<Element, List<Tuple<CssDecl, SelectorChain, int>>> targetDict = perNode;
-                            if (pe == "before") targetDict = perNodeBefore;
-                            else if (pe == "after") targetDict = perNodeAfter;
-                            else if (pe == "marker") targetDict = perNodeMarker;
-                            else if (pe == "placeholder") targetDict = perNodePlaceholder;
-                            else if (pe == "selection") targetDict = perNodeSelection;
-                            else if (pe == "first-line") targetDict = perNodeFirstLine;
-                            else if (pe == "first-letter") targetDict = perNodeFirstLetter;
-                            else if (!string.IsNullOrEmpty(pe)) continue; // Unknown pseudo-element
-
-                            nodeHasMatches = true;
-                            // weight tuple: important (1/0), specificity, sourceOrder
-                            foreach (var decl in rule.Declarations.Values)
-                            {
-                                // NOTE: we assign specificity here; for a rule with multiple selectors we use the chain's specificity
-                                var d = new CssDecl
-                                {
-                                    Name = decl.Name,
-                                    Value = ResolveUrlIfNeeded(decl.Value, rule.BaseUri),
-                                    Important = decl.Important,
-                                    Specificity = chain.Specificity
-                                };
-
-                                List<Tuple<CssDecl, SelectorChain, int>> list;
-                                if (!targetDict.TryGetValue(n, out list))
-                                {
-                                    list = new List<Tuple<CssDecl, SelectorChain, int>>();
-                                    targetDict[n] = list;
-                                }
-                                list.Add(Tuple.Create(d, chain, rule.SourceOrder));
-                            }
-                        }
-                    }
-                }
-                if (nodeHasMatches) matchedNodes++;
-            }
-            
-            // Debug: Log how many nodes had CSS rule matches
-            // Log removed
-            
-            // Debug: Log CSS properties for key Acid2 elements
-            try {
-                foreach (var n in nodes)
-                {
-                    if (n.IsText) continue;
-                    string cls = "";
-                    if (n.Attr != null) n.Attr.TryGetValue("class", out cls);
-                    if (cls != null && (cls.Contains("picture") || cls.Contains("intro") || cls.Contains("eyes") || cls.Contains("nose") || cls.Contains("forehead")))
-                    {
-                        List<Tuple<CssDecl, SelectorChain, int>> items;
-                        perNode.TryGetValue(n, out items);
-                        int propCount = items != null ? items.Count : 0;
-                        var propList = items != null ? string.Join(", ", items.Select(i => i.Item1.Name + ":" + i.Item1.Value).Take(10)) : "none";
-                        // Log removed
-                    }
-                }
-            } catch {}
-
-            // Inline style beats author rules; include as highest priority ?rule?
-            foreach (var n in nodes)
-            {
-                if (n.IsText) continue;
-                string style;
-                if (n.Attr != null && n.Attr.TryGetValue("style", out style) && !string.IsNullOrWhiteSpace(style))
-                {
-                    // Debug: Log inline style for body element
-                    if (string.Equals(n.Tag, "body", StringComparison.OrdinalIgnoreCase))
-                    {
-                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CssLoader] BODY inline style found: '{style}'\r\n"); } catch {}
-                    }
-                    
-                    var decls = ParseDeclarations(style);
-                    List<Tuple<CssDecl, SelectorChain, int>> list;
-                    if (!perNode.TryGetValue(n, out list))
-                    {
-                        list = new List<Tuple<CssDecl, SelectorChain, int>>();
-                        perNode[n] = list;
-                    }
-                    // inline specificity: max out (acts like 1000)
-                    foreach (var d in decls)
-                    {
-                        d.Specificity = 1000;
-                        list.Add(Tuple.Create(d, (SelectorChain)null, int.MaxValue));
-                    }
-                }
-            }
-
-            // Now resolve final property values with cascade ordering
-            // DEBUG: Check perNode before resolution
-            try {
-                var targetNode = nodes.FirstOrDefault(x => x.Id == "readout-secondary");
-                if (targetNode != null)
-                {
-                    bool has = perNode.ContainsKey(targetNode);
-                    int cnt = has ? perNode[targetNode].Count : 0;
-                     System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Intermediate-Check] #readout-secondary found in nodes. perNode has entry? {has}. Item count: {cnt}\r\n");
-                }
-                else
-                {
-                     System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Intermediate-Check] #readout-secondary NOT found in nodes list!\r\n");
-                }
-            } catch {}
-
-            foreach (var n in nodes)
-            {
-                if (n == null || n.IsText) continue;
 
                 CssComputed parentCss = null;
                 if (n.Parent != null)
                     result.TryGetValue(n.Parent, out parentCss);
 
-                List<Tuple<CssDecl, SelectorChain, int>> items;
-                perNode.TryGetValue(n, out items);
-
-                bool hasMain = items != null && items.Count > 0;
-                bool hasBefore = perNodeBefore.ContainsKey(n) && perNodeBefore[n].Count > 0;
-                bool hasAfter = perNodeAfter.ContainsKey(n) && perNodeAfter[n].Count > 0;
-                bool hasMarker = perNodeMarker.ContainsKey(n) && perNodeMarker[n].Count > 0;
-                bool hasPlaceholder = perNodePlaceholder.ContainsKey(n) && perNodePlaceholder[n].Count > 0;
-                bool hasSelection = perNodeSelection.ContainsKey(n) && perNodeSelection[n].Count > 0;
-                bool hasFirstLine = perNodeFirstLine.ContainsKey(n) && perNodeFirstLine[n].Count > 0;
-                bool hasFirstLetter = perNodeFirstLetter.ContainsKey(n) && perNodeFirstLetter[n].Count > 0;
-
-                if (!hasMain && !hasBefore && !hasAfter && !hasMarker && !hasPlaceholder && !hasSelection && !hasFirstLine && !hasFirstLetter) continue;
-
-                // DEBUG: Trace before ResolveStyle call
-                if (n.Id == "readout-secondary" || (n.Attr != null && n.Attr.ContainsKey("class") && n.Attr["class"].Contains("detection-secondary")))
-                {
-                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Pre-Resolve] About to call ResolveStyle for {n.Tag}#{n.Id}. Items: {items?.Count ?? 0}\r\n"); } catch {}
-                }
-
-                CssComputed css = null;
                 try
                 {
-                    css = ResolveStyle(n, parentCss, items ?? new List<Tuple<CssDecl, SelectorChain, int>>());
+                    // 1. Compute Main Styles
+                    var mainProps = engine.ComputeCascadedValues(n, null);
+                    MergeInlineStyle(n, mainProps);
+                    var css = ResolveStyle(n, parentCss, mainProps);
 
-                    if (hasBefore) css.Before = ResolveStyle(n, css, perNodeBefore[n]);
-                    if (hasAfter) css.After = ResolveStyle(n, css, perNodeAfter[n]);
-                    if (hasMarker) css.Marker = ResolveStyle(n, css, perNodeMarker[n]);
-                    if (hasPlaceholder) css.Placeholder = ResolveStyle(n, css, perNodePlaceholder[n]);
-                    if (hasSelection) css.Selection = ResolveStyle(n, css, perNodeSelection[n]);
-                    if (hasFirstLine) css.FirstLine = ResolveStyle(n, css, perNodeFirstLine[n]);
-                    if (hasFirstLetter) css.FirstLetter = ResolveStyle(n, css, perNodeFirstLetter[n]);
+                    // 2. Compute Pseudo-Element Styles
+                    ResolvePseudo(n, css, engine, "before", (c, s) => c.Before = s);
+                    ResolvePseudo(n, css, engine, "after", (c, s) => c.After = s);
+                    ResolvePseudo(n, css, engine, "marker", (c, s) => c.Marker = s);
+                    ResolvePseudo(n, css, engine, "placeholder", (c, s) => c.Placeholder = s);
+                    ResolvePseudo(n, css, engine, "selection", (c, s) => c.Selection = s);
+                    ResolvePseudo(n, css, engine, "first-line", (c, s) => c.FirstLine = s);
+                    ResolvePseudo(n, css, engine, "first-letter", (c, s) => c.FirstLetter = s);
+
+                    result[n] = css;
                 }
                 catch (Exception resolveEx)
                 {
                     var msg = $"[CssLoader] CRASH in ResolveStyle (or pseudo) for Node <{n.Tag} id='{n.Id}'>: {resolveEx}";
                     Log(log, msg);
-                    if (css == null) css = new CssComputed(); // Recovery
+                    result[n] = new CssComputed(); // Recovery
                 }
-                
-                if (hasPlaceholder) css.Placeholder = ResolveStyle(n, css, perNodePlaceholder[n]);
-                if (hasSelection) css.Selection = ResolveStyle(n, css, perNodeSelection[n]);
-                if (hasFirstLine) css.FirstLine = ResolveStyle(n, css, perNodeFirstLine[n]);
-                if (hasFirstLetter) css.FirstLetter = ResolveStyle(n, css, perNodeFirstLetter[n]);
-
-                result[n] = css;
             }
-
-            // Debug: Summary statistics
-            try { 
-                int nodesWithBackground = result.Values.Count(c => c.Background != null || c.BackgroundColor.HasValue);
-                int nodesWithColor = result.Values.Count(c => c.ForegroundColor.HasValue);
-                int nodesWithDisplay = result.Values.Count(c => !string.IsNullOrEmpty(c.Display));
-                System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
-                    $"[CssLoader] === CASCADE SUMMARY ===\r\n" +
-                    $"[CssLoader] Total nodes styled: {result.Count}\r\n" +
-                    $"[CssLoader] Nodes matched by CSS: {matchedNodes}\r\n" +
-                    $"[CssLoader] Match rate: {(nodes.Count > 0 ? (100.0 * matchedNodes / nodes.Count).ToString("F1") : "0")}%\r\n" +
-                    $"[CssLoader] Nodes with background: {nodesWithBackground}\r\n" +
-                    $"[CssLoader] Nodes with color: {nodesWithColor}\r\n" +
-                    $"[CssLoader] Nodes with display: {nodesWithDisplay}\r\n"); 
-            } catch {}
-
+            
             return result;
         }
 
-        private static CssComputed ResolveStyle(Element n, CssComputed parentCss, List<Tuple<CssDecl, SelectorChain, int>> items)
+        private static void ResolvePseudo(Element n, CssComputed parent, CascadeEngine engine, string pseudo, Action<CssComputed, CssComputed> setProp)
         {
-            // DEBUG: Entry Log
-            if (n != null)
+            var props = engine.ComputeCascadedValues(n, pseudo);
+            if (props.Count > 0)
             {
-                string nid = n.Id ?? "";
-                string ncls = ""; 
-                if (n.Attr != null && n.Attr.TryGetValue("class", out var classVal)) ncls = classVal ?? "";
+                // Pseudo-elements inherit from their originating element (parent)
+                var resolved = ResolveStyle(n, parent, props);
+                setProp(parent, resolved);
+            }
+        }
 
-                if (nid == "readout-secondary" || ncls.Contains("detection") || ncls.Contains("now-you-know") || ncls.Contains("judgment"))
+        private static void MergeInlineStyle(Element n, Dictionary<string, NewCss.CssDeclaration> props)
+        {
+            if (n.Attr != null && n.Attr.TryGetValue("style", out var style) && !string.IsNullOrWhiteSpace(style))
+            {
+                var decls = ParseDeclarations(style);
+                foreach (var d in decls)
                 {
-                    try
-                    {
-                        var sb = new StringBuilder();
-                        sb.AppendLine($"[ResolveStyle-ENTRY] Node <{n.Tag} id='{nid}' class='{ncls}'>");
-                        sb.AppendLine($"  Items Count: {(items?.Count ?? 0)}");
-                        if (items != null)
-                        {
-                            foreach (var it in items)
-                            {
-                                var sel = it.Item2;
-                                var decl = it.Item1;
-                                sb.AppendLine($"    Attr: {decl.Name}: {decl.Value} (Spec: {sel?.Specificity})");
-                            }
-                        }
-                        System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", sb.ToString() + "\r\n");
-                    }
-                    catch {}
+                    // Inline style overrides author rules.
+                    props[d.Property] = d; 
                 }
             }
+        }
+
+        private static CssComputed ResolveStyle(Element n, CssComputed parentCss, Dictionary<string, NewCss.CssDeclaration> cascadedProperties)
+        {
+            // DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[D-BUG] ResolveStyle\r\n");
 
             var css = new CssComputed();
             string tag = n?.Tag?.ToUpperInvariant() ?? "";
@@ -2073,29 +1656,17 @@ private static double? ExtractPx(string text, string prop)
                     }
                 }
 
-                if (items != null && items.Count > 0)
+                if (cascadedProperties != null && cascadedProperties.Count > 0)
                 {
-                    // Group by property name and sort by specificity, then source order
-                    var byProp = items.GroupBy(t => t.Item1.Name, StringComparer.OrdinalIgnoreCase);
-                    var chosen = new Dictionary<string, CssDecl>(StringComparer.OrdinalIgnoreCase);
-
-                    foreach (var grp in byProp)
-                    {
-                        var ordered = grp.OrderByDescending(c => c.Item1.Important)
-                                         .ThenByDescending(c => c.Item1.Specificity)
-                                         .ThenByDescending(c => c.Item3)
-                                         .ToList();
-
-                        chosen[grp.Key] = ordered[0].Item1;
-                    }
-
+                    // Extract custom properties first
                     var rawCustom = new Dictionary<string, string>(StringComparer.Ordinal);
-                    foreach (var d in chosen.Values)
+                    foreach(var kv in cascadedProperties)
                     {
-                        if (IsCustomPropertyName(d.Name))
-                            rawCustom[d.Name] = d.Value ?? string.Empty;
+                         if (kv.Key.StartsWith("--"))
+                            rawCustom[kv.Key] = kv.Value.Value ?? "";
                     }
-
+                    
+                    // Resolve variables in custom properties
                     foreach (var key in rawCustom.Keys.ToList())
                     {
                         var resolvedCustom = ResolveCustomPropertyReferences(rawCustom[key], css, rawCustom, new HashSet<string>(StringComparer.Ordinal) { key });
@@ -2104,16 +1675,21 @@ private static double? ExtractPx(string text, string prop)
                         css.Map[key] = resolvedCustom;
                     }
 
-                    foreach (var d in chosen.Values)
+                    // Resolve standard properties
+                    foreach (var kv in cascadedProperties)
                     {
-                        if (IsCustomPropertyName(d.Name)) continue;
-                        var val = ResolveCustomPropertyReferences(d.Value, css, rawCustom, new HashSet<string>());
-                        css.Map[d.Name] = val;
+                        if (kv.Key.StartsWith("--")) continue;
+                        var val = ResolveCustomPropertyReferences(kv.Value.Value, css, rawCustom, new HashSet<string>());
+                        css.Map[kv.Key] = val;
                     }
                 }
 
                 // Populate core display/positioning properties from the map
                 css.Display = Safe(DictGet(css.Map, "display"))?.ToLowerInvariant();
+                if (n != null && (n.GetAttribute("class")?.Contains("gb") == true))
+                {
+                    FenLogger.Debug($"[CSS-DISPLAY] Tag={n.TagName} Class='{n.GetAttribute("class")}' MapDisplay='{DictGet(css.Map, "display")}' ResultDisplay='{css.Display}'");
+                }
                 css.Position = Safe(DictGet(css.Map, "position"))?.ToLowerInvariant();
                 css.FlexDirection = Safe(DictGet(css.Map, "flex-direction"))?.ToLowerInvariant();
                 css.FlexWrap = Safe(DictGet(css.Map, "flex-wrap"))?.ToLowerInvariant();
@@ -2171,7 +1747,7 @@ private static double? ExtractPx(string text, string prop)
             }
             catch (Exception ex)
             {
-                 try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ResolveStyle-ERROR] {ex.Message} {ex.StackTrace}\r\n"); } catch {}
+                 /* [PERF-REMOVED] */
             }
             
             // z-index logic continues below...
@@ -2210,17 +1786,34 @@ private static double? ExtractPx(string text, string prop)
             double emBase = 16.0;
             if (parentCss != null && parentCss.FontSize.HasValue) emBase = parentCss.FontSize.Value;
             
+            // Parse CSS 'font' shorthand: font: [style] [weight] size[/line-height] family
+            // Example: font: 400 16px/1.5 Arial
+            string fontShorthand = DictGet(css.Map, "font");
+            if (!string.IsNullOrWhiteSpace(fontShorthand) && !fontShorthand.StartsWith("var("))
+            {
+                ParseFontShorthand(fontShorthand, css, emBase);
+            }
+            
             double currentEmBase = emBase;
             double fsPx;
-            if (TryPx(DictGet(css.Map, "font-size"), out fsPx, emBase)) 
+            string rawFontSize = DictGet(css.Map, "font-size");
+            if (TryPx(rawFontSize, out fsPx, emBase, percentBase: emBase)) 
             {
                 css.FontSize = fsPx;
                 currentEmBase = fsPx;
+                // DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[FONT-TRACE] Element={n.Tag} fs={rawFontSize} -> {fsPx}px\r\n");
             }
             else if (parentCss != null && parentCss.FontSize.HasValue)
             {
                 css.FontSize = parentCss.FontSize.Value;
                 currentEmBase = parentCss.FontSize.Value;
+            }
+            else {
+                css.FontSize = 16.0;
+                currentEmBase = 16.0;
+            }
+            if (css.FontSize < 8) {
+                DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[FONT-WARN] Tiny Font! Element={n.Tag} fs={rawFontSize ?? "null"} resolved={css.FontSize}px\r\n");
             }
 
             double posVal;
@@ -2263,6 +1856,8 @@ private static double? ExtractPx(string text, string prop)
 
 
             string wStr = DictGet(css.Map, "width");
+            if (tag == "BODY") {
+            }
             if (TryPx(wStr, out sizeVal, currentEmBase)) {
                 css.Width = sizeVal;
             }
@@ -2381,25 +1976,19 @@ private static double? ExtractPx(string text, string prop)
                 else if (containsGradient)
                 {
                     // Parse gradient
-                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_gradient.txt", $"[CSS] Parsing gradient: {bgImage.Substring(0, Math.Min(100, bgImage.Length))}...\r\n"); } catch { }
+
                     
                     var grad = ParseGradient(bgImage);
                     if (grad != null) 
                     {
                         css.BackgroundImage = grad;
-                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_gradient.txt", $"[CSS] Gradient parsed successfully! Type={grad.GetType().Name}\r\n"); } catch { }
+
                     }
                     else
                     {
-                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_gradient.txt", $"[CSS] Gradient parsing FAILED for: {bgImage.Substring(0, Math.Min(100, bgImage.Length))}...\r\n"); } catch { }
+
                     }
                 }
-            }
-
-            var fontShorthand = Safe(DictGet(css.Map, "font"));
-            if (!string.IsNullOrEmpty(fontShorthand))
-            {
-                ParseFontShorthand(fontShorthand, css);
             }
 
             try
@@ -2463,10 +2052,12 @@ private static double? ExtractPx(string text, string prop)
             Thickness th;
             if (TryThickness(DictGet(css.Map, "margin"), out th, currentEmBase)) css.Margin = th;
             
-            // Detect margin: auto for horizontal centering
+            // Detect margin: auto for centering (horizontal and vertical for absolute pos)
             string marginRaw = DictGet(css.Map, "margin")?.Trim().ToLowerInvariant() ?? "";
             string marginLeftRaw = DictGet(css.Map, "margin-left")?.Trim().ToLowerInvariant() ?? "";
             string marginRightRaw = DictGet(css.Map, "margin-right")?.Trim().ToLowerInvariant() ?? "";
+            string marginTopRaw = DictGet(css.Map, "margin-top")?.Trim().ToLowerInvariant() ?? "";
+            string marginBottomRaw = DictGet(css.Map, "margin-bottom")?.Trim().ToLowerInvariant() ?? "";
             
             // Parse margin shorthand for auto: "auto", "0 auto", "0 auto 0 auto", etc.
             if (!string.IsNullOrEmpty(marginRaw))
@@ -2474,40 +2065,45 @@ private static double? ExtractPx(string text, string prop)
                 var parts = marginRaw.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
                 if (parts.Length == 1 && parts[0] == "auto")
                 {
-                    // margin: auto - all sides auto (horizontal centering)
+                    // margin: auto - all sides auto
                     css.MarginLeftAuto = true;
                     css.MarginRightAuto = true;
+                    css.MarginTopAuto = true;
+                    css.MarginBottomAuto = true;
                 }
-                else if (parts.Length == 2 && parts[1] == "auto")
+                else if (parts.Length == 2)
                 {
-                    // margin: X auto - left and right are auto (common centering pattern)
-                    css.MarginLeftAuto = true;
-                    css.MarginRightAuto = true;
+                    // margin: V H
+                    if (parts[0] == "auto") { css.MarginTopAuto = true; css.MarginBottomAuto = true; }
+                    if (parts[1] == "auto") { css.MarginLeftAuto = true; css.MarginRightAuto = true; }
                 }
-                else if (parts.Length == 3 && parts[1] == "auto")
+                else if (parts.Length == 3)
                 {
-                    // margin: X auto X - left and right are auto
-                    css.MarginLeftAuto = true;
-                    css.MarginRightAuto = true;
+                    // margin: T H B
+                    if (parts[0] == "auto") css.MarginTopAuto = true;
+                    if (parts[1] == "auto") { css.MarginLeftAuto = true; css.MarginRightAuto = true; }
+                    if (parts[2] == "auto") css.MarginBottomAuto = true;
                 }
                 else if (parts.Length == 4)
                 {
-                    // margin: top right bottom left
+                    // margin: T R B L
+                    if (parts[0] == "auto") css.MarginTopAuto = true;
                     if (parts[1] == "auto") css.MarginRightAuto = true;
+                    if (parts[2] == "auto") css.MarginBottomAuto = true;
                     if (parts[3] == "auto") css.MarginLeftAuto = true;
                 }
             }
             
-            // Individual margin-left/margin-right: auto
+            // Individual overrides
             if (marginLeftRaw == "auto") css.MarginLeftAuto = true;
             if (marginRightRaw == "auto") css.MarginRightAuto = true;
+            if (marginTopRaw == "auto") css.MarginTopAuto = true;
+            if (marginBottomRaw == "auto") css.MarginBottomAuto = true;
 
             // DEBUG: Log margin auto detection for DIV elements
             if (tag == "DIV" && (!string.IsNullOrEmpty(marginRaw) || !string.IsNullOrEmpty(marginLeftRaw) || !string.IsNullOrEmpty(marginRightRaw)))
             {
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
-                    $"[CSS-MARGIN-AUTO] DIV margin='{marginRaw}' marginLeft='{marginLeftRaw}' marginRight='{marginRightRaw}' " +
-                    $"MarginLeftAuto={css.MarginLeftAuto} MarginRightAuto={css.MarginRightAuto}\r\n"); } catch {}
+                /* [PERF-REMOVED] */
             }
 
             double mVal;
@@ -2541,7 +2137,7 @@ private static double? ExtractPx(string text, string prop)
             // {
             //     string rawMarginH2 = DictGet(css.Map, "margin") ?? "(none)";
             //     string rawMarginTop = DictGet(css.Map, "margin-top") ?? "(none)";
-            //     try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-H2-MARGIN] margin='{rawMarginH2}' margin-top='{rawMarginTop}' computed=L:{mLeft},T:{mTop},R:{mRight},B:{mBottom}\r\n"); } catch {}
+            //     /* [PERF-REMOVED] */
             // }
 
             if (TryThickness(DictGet(css.Map, "padding"), out th, currentEmBase)) css.Padding = th;
@@ -2571,6 +2167,7 @@ private static double? ExtractPx(string text, string prop)
             
             var borderColor = TryColor(ExtractBorderColor(css.Map));
             if (borderColor.HasValue) css.BorderBrushColor = borderColor;
+
             if (TryThickness(ExtractBorderThickness(css.Map), out th, currentEmBase)) css.BorderThickness = th;
             CornerRadius cr;
             if (TryCornerRadius(DictGet(css.Map, "border-radius"), out cr)) css.BorderRadius = cr;
@@ -2725,7 +2322,7 @@ private static double? ExtractPx(string text, string prop)
             if (!string.IsNullOrEmpty(lhRaw))
             {
                 double lh;
-                if (TryPx(lhRaw, out lh)) css.LineHeight = lh;
+                if (TryPx(lhRaw, out lh, currentEmBase, 0, allowUnitless: true)) css.LineHeight = lh;
                 else if (double.TryParse(lhRaw, NumberStyles.Float, CultureInfo.InvariantCulture, out lh)) css.LineHeight = lh;
             }
 
@@ -2940,9 +2537,11 @@ private static double? ExtractPx(string text, string prop)
             }
             
             // Also remove underlines from containers that might inherit
+            // Footer links should be inline-block for proper inline layout
             if (fCls.Contains("pHiOh") || fCls.Contains("ayzqOc") || fCls.Contains("FPdoLc") || fCls.Contains("lJ9FBc"))
             {
                 css.TextDecoration = "none";
+                css.Display = "inline-block"; // Force inline-block for shrink-to-fit width
             }
             
             // Fix logo underline - logos/images should never have underlines
@@ -3134,68 +2733,6 @@ private static double? ExtractPx(string text, string prop)
             return true;
         }
 
-        private static SelectorSegment ParseSegment(List<string> tokens)
-        {
-            var seg = new SelectorSegment();
-            foreach (var t in tokens)
-            {
-                if (t == " " || t == ">" || t == "+" || t == "~") continue; // Skip combinators
-                if (t == "*") { seg.Tag = "*"; continue; }
-                if (t.StartsWith("."))
-                {
-                    seg.Classes.Add(t.Substring(1));
-                }
-                else if (t.StartsWith("#"))
-                {
-                    seg.Id = t.Substring(1);
-                }
-                else if (t.StartsWith("["))
-                {
-                    // Attribute selector parsing (improved for escapes)
-                    var content = t.TrimStart('[').TrimEnd(']');
-                    if (seg.Attributes == null) seg.Attributes = new List<Tuple<string, string, string>>();
-                    string[] operators = { "~=", "|=", "^=", "$=", "*=", "=" };
-                    string foundOp = null;
-                    int opIndex = -1;
-                    foreach (var op in operators)
-                    {
-                        int idx = content.IndexOf(op);
-                        if (idx >= 0)
-                        {
-                            foundOp = op;
-                            opIndex = idx;
-                            break;
-                        }
-                    }
-                    if (foundOp == null || opIndex < 0)
-                    {
-                        seg.Attributes.Add(Tuple.Create(content.Trim(), "", ""));
-                    }
-                    else
-                    {
-                        var name = content.Substring(0, opIndex).Trim();
-                        var val = content.Substring(opIndex + foundOp.Length).Trim().Trim('"', '\'');
-                        // Unescape CSS escapes
-                        val = Regex.Replace(val, @"\\(.)", "$1");
-                        seg.Attributes.Add(Tuple.Create(name, foundOp, val));
-                    }
-                }
-                else if (t.StartsWith(":"))
-                {
-                    // Pseudo-class or pseudo-element
-                    string val = t.Substring(1).ToLowerInvariant();
-                    if (seg.PseudoClasses == null) seg.PseudoClasses = new List<string>();
-                    seg.PseudoClasses.Add(val);
-                }
-                else if (!string.IsNullOrEmpty(t))
-                {
-                    seg.Tag = t;
-                }
-            }
-            return seg;
-
-        }
-
         private static Element FindAncestorMatching(Element n, SelectorSegment seg)
         {
             var p = n.Parent;
@@ -3305,18 +2842,7 @@ private static double? ExtractPx(string text, string prop)
         /// <summary>
         /// Extract the argument from a pseudo-class like ":nth-child(2n+1)" -> "2n+1"
         /// </summary>
-        private static string ExtractPseudoArg(string pseudoClass)
-        {
-            if (string.IsNullOrEmpty(pseudoClass)) return "";
 
-            int start = pseudoClass.IndexOf('(');
-            int end = pseudoClass.LastIndexOf(')');
-
-            if (start >= 0 && end > start)
-                return pseudoClass.Substring(start + 1, end - start - 1).Trim();
-
-            return "";
-        }
 
         /// <summary>
         /// Check if a tag is a form element that can have :enabled/:disabled/:required states
@@ -4019,6 +3545,7 @@ private static double? ExtractPx(string text, string prop)
 
         private static string ResolveCustomPropertyReferences(string value, CssComputed current, Dictionary<string, string> rawCurrent, HashSet<string> seen)
         {
+            if (value != null && value.Contains("var(")) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[D-BUG] ResolveCustomPropertyReferences value='{value}'\r\n");
             if (string.IsNullOrEmpty(value)) return value ?? string.Empty;
             if (value.IndexOf("var(", StringComparison.OrdinalIgnoreCase) < 0) return value;
 
@@ -4071,6 +3598,7 @@ private static double? ExtractPx(string text, string prop)
 
             int comma = FindTopLevelComma(trimmed);
             string name = comma >= 0 ? trimmed.Substring(0, comma).Trim() : trimmed;
+            DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[D-BUG] EvaluateVarExpression name='{name}'\r\n");
             string fallback = comma >= 0 ? trimmed.Substring(comma + 1) : null;
 
             if (string.IsNullOrEmpty(name) || !name.StartsWith("--", StringComparison.Ordinal))
@@ -4082,17 +3610,53 @@ private static double? ExtractPx(string text, string prop)
             {
                 if (seen == null) seen = new HashSet<string>(StringComparer.Ordinal);
                 if (seen.Contains(name))
+                {
+                    DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-VAR-LOOP] name='{name}' already in seen set\r\n");
                     return ResolveFallback(fallback, current, rawCurrent, seen);
+                }
 
                 seen.Add(name);
                 resolved = ResolveCustomPropertyReferences(rawValue, current, rawCurrent, seen);
                 seen.Remove(name);
                 current.CustomProperties[name] = resolved;
+                DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-VAR-LOCAL] name='{name}' resolved to='{resolved}'\r\n");
                 return resolved;
             }
 
             if (current != null && current.CustomProperties != null && current.CustomProperties.TryGetValue(name, out resolved))
+            {
+                DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-VAR-INHERITED] name='{name}' found value='{resolved}'\r\n");
                 return resolved;
+            }
+
+            // GLOBAL FALLBACK (My addition for :root/global variables)
+            lock (_customProperties)
+            {
+                if (_customProperties.TryGetValue(name, out resolved))
+                {
+                    DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-VAR-GLOBAL] name='{name}' resolved to='{resolved}'\r\n");
+                    
+                    // Recursive resolution for global properties (e.g., --brand-font: var(--main-font))
+                    if (resolved != null && resolved.Contains("var("))
+                    {
+                        if (seen == null) seen = new HashSet<string>(StringComparer.Ordinal);
+                        if (!seen.Contains(name))
+                        {
+                             seen.Add(name);
+                             DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-VAR-RECURSE] Recursing for {name} value='{resolved}'\r\n");
+                             var recursiveResolved = ResolveCustomPropertyReferences(resolved, current, rawCurrent, seen);
+                             seen.Remove(name);
+                             DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-VAR-RECURSE] Result for {name} is '{recursiveResolved}'\r\n");
+                             return recursiveResolved;
+                        }
+                    }
+                    return resolved;
+                }
+                else
+                {
+                    DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-VAR-MISS] name='{name}' (Global Dict Count: {_customProperties.Count})\r\n");
+                }
+            }
 
             return ResolveFallback(fallback, current, rawCurrent, seen);
         }
@@ -4305,45 +3869,52 @@ private static double? ExtractPx(string text, string prop)
         {
             radius = new CornerRadius(0);
             if (string.IsNullOrWhiteSpace(raw)) return false;
+            
+            /* [PERF-REMOVED] */
 
+            // Remove / part for now (elliptical corners not fully supported in simple model)
             var main = raw.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? raw;
-            var parts = main.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            
+            // Robust splitting by whitespace
+            var parts = main.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
 
             double tl, tr, br, bl;
-            switch (parts.Length)
+            if (parts.Length == 1)
             {
-                case 1:
-                    if (TryCornerComponent(parts[0], out tl))
-                    {
-                        radius = new CornerRadius(tl);
-                        return true;
-                    }
-                    return false;
-                case 2:
-                    if (TryCornerComponent(parts[0], out tl) && TryCornerComponent(parts[1], out tr))
-                    {
-                        radius = new CornerRadius(tl, tr, tl, tr);
-                        return true;
-                    }
-                    return false;
-                case 3:
-                    if (TryCornerComponent(parts[0], out tl) && TryCornerComponent(parts[1], out tr) && TryCornerComponent(parts[2], out br))
-                    {
-                        radius = new CornerRadius(tl, tr, br, tr);
-                        return true;
-                    }
-                    return false;
-                default:
-                    if (TryCornerComponent(parts[0], out tl) &&
-                        TryCornerComponent(parts[1], out tr) &&
-                        TryCornerComponent(parts[2], out br) &&
-                        TryCornerComponent(parts[3], out bl))
-                    {
-                        radius = new CornerRadius(tl, tr, br, bl);
-                        return true;
-                    }
-                    return false;
+                if (TryCornerComponent(parts[0], out tl))
+                {
+                    radius = new CornerRadius(tl);
+                    return true;
+                }
             }
+            else if (parts.Length == 2)
+            {
+                if (TryCornerComponent(parts[0], out tl) && TryCornerComponent(parts[1], out tr))
+                {
+                    radius = new CornerRadius(tl, tr, tl, tr); // top-left=bottom-right, top-right=bottom-left
+                    return true;
+                }
+            }
+            else if (parts.Length == 3)
+            {
+                if (TryCornerComponent(parts[0], out tl) && TryCornerComponent(parts[1], out tr) && TryCornerComponent(parts[2], out br))
+                {
+                    radius = new CornerRadius(tl, tr, br, tr); // top-left, top-right=bottom-left, bottom-right
+                    return true;
+                }
+            }
+            else if (parts.Length >= 4)
+            {
+                if (TryCornerComponent(parts[0], out tl) &&
+                    TryCornerComponent(parts[1], out tr) &&
+                    TryCornerComponent(parts[2], out br) &&
+                    TryCornerComponent(parts[3], out bl))
+                {
+                    radius = new CornerRadius(tl, tr, br, bl);
+                    return true;
+                }
+            }
+            return false;
         }
 
         private static bool TryCornerComponent(string raw, out double value)
@@ -4498,997 +4069,90 @@ private static double? ExtractPx(string text, string prop)
                    s.StartsWith("var(");
         }
 
-
-
-        private static bool TryDouble(string s, out double v)
-        {
-            return double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v);
-        }
-
-        private static bool TryPx(string s, out double px, double emBase = 16.0)
-        {
-            px = 0;
-            if (string.IsNullOrWhiteSpace(s)) return false;
-            s = s.Trim();
-            var sl = s.ToLowerInvariant();
-
-            // Handle calc() expressions
-            if (sl.StartsWith("calc("))
-            {
-                return TryParseCalc(s, out px, emBase);
-            }
-
-            // px
-            if (sl.EndsWith("px"))
-            {
-                var num = s.Substring(0, s.Length - 2).Trim();
-                double v;
-                if (TryDouble(num, out v)) { px = v; return true; }
-                return false;
-            }
-
-            // rem (baseline 16px)
-            if (sl.EndsWith("rem"))
-            {
-                var num = s.Substring(0, s.Length - 3).Trim();
-                double v;
-                if (TryDouble(num, out v)) { px = v * 16.0; return true; }
-                return false;
-            }
-
-            // em (uses provided base, usually 16px if root or inherited)
-            if (sl.EndsWith("em") && !sl.EndsWith("rem"))
-            {
-                var num = s.Substring(0, s.Length - 2).Trim();
-                double v;
-                if (TryDouble(num, out v)) { px = v * emBase; return true; }
-                return false;
-            }
-
-            // Viewport units - use CssParser.MediaViewportWidth/Height if available
-            double vpWidth = CssParser.MediaViewportWidth ?? 1920.0;
-            double vpHeight = CssParser.MediaViewportHeight ?? 1080.0;
-
-            // vw (viewport width percentage)
-            if (sl.EndsWith("vw"))
-            {
-                var num = s.Substring(0, s.Length - 2).Trim();
-                double v;
-                if (TryDouble(num, out v)) { px = v * vpWidth / 100.0; return true; }
-                return false;
-            }
-
-            // vh (viewport height percentage)
-            if (sl.EndsWith("vh"))
-            {
-                var num = s.Substring(0, s.Length - 2).Trim();
-                double v;
-                if (TryDouble(num, out v)) { px = v * vpHeight / 100.0; return true; }
-                return false;
-            }
-
-            // vmin (smaller of vw or vh)
-            if (sl.EndsWith("vmin"))
-            {
-                var num = s.Substring(0, s.Length - 4).Trim();
-                double v;
-                if (TryDouble(num, out v)) { px = v * Math.Min(vpWidth, vpHeight) / 100.0; return true; }
-                return false;
-            }
-
-            // vmax (larger of vw or vh)
-            if (sl.EndsWith("vmax"))
-            {
-                var num = s.Substring(0, s.Length - 4).Trim();
-                double v;
-                if (TryDouble(num, out v)) { px = v * Math.Max(vpWidth, vpHeight) / 100.0; return true; }
-                return false;
-            }
-
-            // ch (width of '0' character, approximate as 0.5em)
-            if (sl.EndsWith("ch"))
-            {
-                var num = s.Substring(0, s.Length - 2).Trim();
-                double v;
-                if (TryDouble(num, out v)) { px = v * emBase * 0.5; return true; }
-                return false;
-            }
-
-            // ex (x-height, approximate as 0.5em)
-            if (sl.EndsWith("ex"))
-            {
-                var num = s.Substring(0, s.Length - 2).Trim();
-                double v;
-                if (TryDouble(num, out v)) { px = v * emBase * 0.5; return true; }
-                return false;
-            }
-
-            // pt (points: 1pt = 1/72 inch at 96 DPI = 96/72 = 1.333... px)
-            if (sl.EndsWith("pt"))
-            {
-                var num = s.Substring(0, s.Length - 2).Trim();
-                double v;
-                if (TryDouble(num, out v)) { px = v * (96.0 / 72.0); return true; }
-                return false;
-            }
-
-            // pc (picas: 1pc = 12pt = 16px)
-            if (sl.EndsWith("pc"))
-            {
-                var num = s.Substring(0, s.Length - 2).Trim();
-                double v;
-                if (TryDouble(num, out v)) { px = v * 16.0; return true; }
-                return false;
-            }
-
-            // in (inches: 1in = 96px at 96 DPI)
-            if (sl.EndsWith("in"))
-            {
-                var num = s.Substring(0, s.Length - 2).Trim();
-                double v;
-                if (TryDouble(num, out v)) { px = v * 96.0; return true; }
-                return false;
-            }
-
-            // cm (centimeters: 1cm = 96/2.54 px)
-            if (sl.EndsWith("cm"))
-            {
-                var num = s.Substring(0, s.Length - 2).Trim();
-                double v;
-                if (TryDouble(num, out v)) { px = v * (96.0 / 2.54); return true; }
-                return false;
-            }
-
-            // mm (millimeters: 1mm = 96/25.4 px)
-            if (sl.EndsWith("mm"))
-            {
-                var num = s.Substring(0, s.Length - 2).Trim();
-                double v;
-                if (TryDouble(num, out v)) { px = v * (96.0 / 25.4); return true; }
-                return false;
-            }
-
-            // raw number -> px
-            {
-                double v;
-                if (TryDouble(sl, out v)) { px = v; return true; }
-            }
-            return false;
-        }
-
         /// <summary>
-        /// Parse CSS calc() expressions like calc(100% - 40px), calc(100vh - 60px), etc.
-        /// Supports: +, -, *, / operators and px, em, rem, %, vw, vh, vmin, vmax units
+        /// Parse CSS 'font' shorthand property.
+        /// Format: [font-style] [font-variant] [font-weight] font-size[/line-height] font-family
+        /// Example: font: italic 400 16px/1.5 Arial, sans-serif
+        /// Only font-size and font-family are required.
         /// </summary>
-        private static bool TryParseCalc(string s, out double px, double emBase = 16.0, double percentBase = 0)
+        private static void ParseFontShorthand(string value, CssComputed css, double emBase)
         {
-            px = 0;
-            if (string.IsNullOrWhiteSpace(s)) return false;
-
-            // Extract content between calc( and )
-            var sl = s.Trim().ToLowerInvariant();
-            if (!sl.StartsWith("calc(") || !sl.EndsWith(")")) return false;
+            if (string.IsNullOrWhiteSpace(value)) return;
             
-            var expr = s.Substring(5, s.Length - 6).Trim();
-            if (string.IsNullOrWhiteSpace(expr)) return false;
-
+            // Skip system font keywords
+            var lower = value.Trim().ToLowerInvariant();
+            if (lower == "caption" || lower == "icon" || lower == "menu" || 
+                lower == "message-box" || lower == "small-caption" || lower == "status-bar" ||
+                lower == "inherit" || lower == "initial" || lower == "unset")
+            {
+                return;
+            }
+            
             try
             {
-                px = EvaluateCalcExpression(expr, emBase, percentBase);
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-        
-        /// <summary>
-        /// Parse CSS min() function: min(value1, value2, ...)
-        /// Returns the smallest of the provided values
-        /// </summary>
-        private static bool TryParseMin(string s, out double px, double emBase = 16.0, double percentBase = 0)
-        {
-            px = 0;
-            if (string.IsNullOrWhiteSpace(s)) return false;
-
-            var sl = s.Trim().ToLowerInvariant();
-            if (!sl.StartsWith("min(") || !sl.EndsWith(")")) return false;
-            
-            var inner = s.Substring(4, s.Length - 5).Trim();
-            if (string.IsNullOrWhiteSpace(inner)) return false;
-
-            try
-            {
-                var args = SplitCssFunctionArgs(inner);
-                if (args.Count == 0) return false;
+                // Split by spaces, but be careful of font-family names with spaces
+                var parts = value.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 2) return;
                 
-                double minVal = double.MaxValue;
-                foreach (var arg in args)
+                // Font-size is the first part that looks like a size (has unit or is a size keyword)
+                // Font-weight is typically 100-900 or normal/bold/lighter/bolder
+                double parsedSize = 0;
+                bool foundSize = false;
+                
+                foreach (var part in parts)
                 {
-                    double val = EvaluateCssValue(arg.Trim(), emBase, percentBase);
-                    if (val < minVal) minVal = val;
-                }
-                px = minVal;
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-        
-        /// <summary>
-        /// Parse CSS max() function: max(value1, value2, ...)
-        /// Returns the largest of the provided values
-        /// </summary>
-        private static bool TryParseMax(string s, out double px, double emBase = 16.0, double percentBase = 0)
-        {
-            px = 0;
-            if (string.IsNullOrWhiteSpace(s)) return false;
-
-            var sl = s.Trim().ToLowerInvariant();
-            if (!sl.StartsWith("max(") || !sl.EndsWith(")")) return false;
-            
-            var inner = s.Substring(4, s.Length - 5).Trim();
-            if (string.IsNullOrWhiteSpace(inner)) return false;
-
-            try
-            {
-                var args = SplitCssFunctionArgs(inner);
-                if (args.Count == 0) return false;
-                
-                double maxVal = double.MinValue;
-                foreach (var arg in args)
-                {
-                    double val = EvaluateCssValue(arg.Trim(), emBase, percentBase);
-                    if (val > maxVal) maxVal = val;
-                }
-                px = maxVal;
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-        
-        /// <summary>
-        /// Parse CSS clamp() function: clamp(min, preferred, max)
-        /// Clamps the preferred value between min and max
-        /// </summary>
-        private static bool TryParseClamp(string s, out double px, double emBase = 16.0, double percentBase = 0)
-        {
-            px = 0;
-            if (string.IsNullOrWhiteSpace(s)) return false;
-
-            var sl = s.Trim().ToLowerInvariant();
-            if (!sl.StartsWith("clamp(") || !sl.EndsWith(")")) return false;
-            
-            var inner = s.Substring(6, s.Length - 7).Trim();
-            if (string.IsNullOrWhiteSpace(inner)) return false;
-
-            try
-            {
-                var args = SplitCssFunctionArgs(inner);
-                if (args.Count != 3) return false;
-                
-                double minVal = EvaluateCssValue(args[0].Trim(), emBase, percentBase);
-                double preferred = EvaluateCssValue(args[1].Trim(), emBase, percentBase);
-                double maxVal = EvaluateCssValue(args[2].Trim(), emBase, percentBase);
-                
-                // clamp(min, preferred, max) = max(min, min(preferred, max))
-                px = Math.Max(minVal, Math.Min(preferred, maxVal));
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-        
-        /// <summary>
-        /// Split CSS function arguments, handling nested functions
-        /// </summary>
-        private static List<string> SplitCssFunctionArgs(string inner)
-        {
-            var args = new List<string>();
-            var current = new StringBuilder();
-            int depth = 0;
-            
-            foreach (char c in inner)
-            {
-                if (c == '(') depth++;
-                else if (c == ')') depth--;
-                
-                if (c == ',' && depth == 0)
-                {
-                    args.Add(current.ToString());
-                    current.Clear();
-                }
-                else
-                {
-                    current.Append(c);
-                }
-            }
-            
-            if (current.Length > 0)
-                args.Add(current.ToString());
-                
-            return args;
-        }
-        
-        /// <summary>
-        /// Evaluate a CSS value that may contain functions like calc(), min(), max(), clamp(), env()
-        /// </summary>
-        private static double EvaluateCssValue(string value, double emBase = 16.0, double percentBase = 0)
-        {
-            if (string.IsNullOrWhiteSpace(value)) return 0;
-            
-            value = value.Trim();
-            var lower = value.ToLowerInvariant();
-            
-            // Try CSS math functions
-            if (lower.StartsWith("calc(") && TryParseCalc(value, out double calcVal, emBase, percentBase))
-                return calcVal;
-            if (lower.StartsWith("min(") && TryParseMin(value, out double minVal, emBase, percentBase))
-                return minVal;
-            if (lower.StartsWith("max(") && TryParseMax(value, out double maxVal, emBase, percentBase))
-                return maxVal;
-            if (lower.StartsWith("clamp(") && TryParseClamp(value, out double clampVal, emBase, percentBase))
-                return clampVal;
-            
-            // env() function - environment variables
-            if (lower.StartsWith("env(") && TryParseEnv(value, out double envVal))
-                return envVal;
-            
-            // CSS Values Level 4 math functions
-            if (lower.StartsWith("abs(") && TryParseMathFunc(value, "abs", out double absVal, emBase, percentBase))
-                return Math.Abs(absVal);
-            if (lower.StartsWith("sign(") && TryParseMathFunc(value, "sign", out double signVal, emBase, percentBase))
-                return Math.Sign(signVal);
-            if (lower.StartsWith("round(") && TryParseRound(value, out double roundVal, emBase, percentBase))
-                return roundVal;
-            if (lower.StartsWith("mod(") && TryParseMod(value, out double modVal, emBase, percentBase))
-                return modVal;
-            if (lower.StartsWith("rem(") && TryParseRem(value, out double remVal, emBase, percentBase))
-                return remVal;
-            if (lower.StartsWith("pow(") && TryParsePow(value, out double powVal, emBase, percentBase))
-                return powVal;
-            if (lower.StartsWith("sqrt(") && TryParseMathFunc(value, "sqrt", out double sqrtVal, emBase, percentBase))
-                return Math.Sqrt(sqrtVal);
-            if (lower.StartsWith("log(") && TryParseMathFunc(value, "log", out double logVal, emBase, percentBase))
-                return Math.Log(logVal);
-            if (lower.StartsWith("exp(") && TryParseMathFunc(value, "exp", out double expVal, emBase, percentBase))
-                return Math.Exp(expVal);
-            
-            // CSS Trigonometric functions (input in degrees, output unitless)
-            if (lower.StartsWith("sin(") && TryParseMathFunc(value, "sin", out double sinVal, emBase, percentBase))
-                return Math.Sin(sinVal * Math.PI / 180.0);
-            if (lower.StartsWith("cos(") && TryParseMathFunc(value, "cos", out double cosVal, emBase, percentBase))
-                return Math.Cos(cosVal * Math.PI / 180.0);
-            if (lower.StartsWith("tan(") && TryParseMathFunc(value, "tan", out double tanVal, emBase, percentBase))
-                return Math.Tan(tanVal * Math.PI / 180.0);
-            if (lower.StartsWith("asin(") && TryParseMathFunc(value, "asin", out double asinVal, emBase, percentBase))
-                return Math.Asin(asinVal) * 180.0 / Math.PI; // Output in degrees
-            if (lower.StartsWith("acos(") && TryParseMathFunc(value, "acos", out double acosVal, emBase, percentBase))
-                return Math.Acos(acosVal) * 180.0 / Math.PI;
-            if (lower.StartsWith("atan(") && TryParseMathFunc(value, "atan", out double atanVal, emBase, percentBase))
-                return Math.Atan(atanVal) * 180.0 / Math.PI;
-            if (lower.StartsWith("atan2(") && TryParseAtan2(value, out double atan2Val, emBase, percentBase))
-                return atan2Val;
-            if (lower.StartsWith("hypot(") && TryParseHypot(value, out double hypotVal, emBase, percentBase))
-                return hypotVal;
-            
-            // Try simple value with units
-            return ParseCalcValue(value, emBase, percentBase);
-        }
-
-/// <summary>
-/// Parse a single-argument math function like abs(), sign(), sqrt(), etc.
-/// </summary>
-private static bool TryParseMathFunc(string value, string funcName, out double result, double emBase = 16.0, double percentBase = 0)
-{
-    result = 0;
-    int open = value.IndexOf('(');
-    int close = value.LastIndexOf(')');
-    if (open < 0 || close <= open) return false;
-    
-    var inner = value.Substring(open + 1, close - open - 1).Trim();
-    result = EvaluateCssValue(inner, emBase, percentBase);
-    return true;
-}
-
-/// <summary>
-/// Parse round() function: round(strategy?, value, interval?)
-/// Strategies: nearest (default), up, down, to-zero
-/// </summary>
-private static bool TryParseRound(string value, out double result, double emBase = 16.0, double percentBase = 0)
-{
-    result = 0;
-    int open = value.IndexOf('(');
-    int close = value.LastIndexOf(')');
-    if (open < 0 || close <= open) return false;
-    
-    var inner = value.Substring(open + 1, close - open - 1).Trim();
-    var parts = SplitCssFunctionArgs(inner);
-    
-    if (parts.Count == 0) return false;
-    
-    string strategy = "nearest";
-    double val, interval = 1;
-    
-    if (parts.Count >= 3)
-    {
-        strategy = parts[0].Trim().ToLowerInvariant();
-        val = EvaluateCssValue(parts[1].Trim(), emBase, percentBase);
-        interval = EvaluateCssValue(parts[2].Trim(), emBase, percentBase);
-    }
-    else if (parts.Count == 2)
-    {
-        val = EvaluateCssValue(parts[0].Trim(), emBase, percentBase);
-        interval = EvaluateCssValue(parts[1].Trim(), emBase, percentBase);
-    }
-    else
-    {
-        val = EvaluateCssValue(parts[0].Trim(), emBase, percentBase);
-    }
-    
-    if (interval == 0) interval = 1;
-    
-    switch (strategy)
-    {
-        case "up":
-            result = Math.Ceiling(val / interval) * interval;
-            break;
-        case "down":
-            result = Math.Floor(val / interval) * interval;
-            break;
-        case "to-zero":
-            result = Math.Truncate(val / interval) * interval;
-            break;
-        default: // nearest
-            result = Math.Round(val / interval) * interval;
-            break;
-    }
-    return true;
-}
-
-/// <summary>
-/// Parse mod() function: mod(dividend, divisor) - like % but always positive
-/// </summary>
-private static bool TryParseMod(string value, out double result, double emBase = 16.0, double percentBase = 0)
-{
-    result = 0;
-    int open = value.IndexOf('(');
-    int close = value.LastIndexOf(')');
-    if (open < 0 || close <= open) return false;
-    
-    var inner = value.Substring(open + 1, close - open - 1).Trim();
-    var parts = SplitCssFunctionArgs(inner);
-    
-    if (parts.Count < 2) return false;
-    
-    double dividend = EvaluateCssValue(parts[0].Trim(), emBase, percentBase);
-    double divisor = EvaluateCssValue(parts[1].Trim(), emBase, percentBase);
-    
-    if (divisor == 0) return false;
-    
-    // CSS mod() uses floored division (always towards -infinity)
-    result = dividend - divisor * Math.Floor(dividend / divisor);
-    return true;
-}
-
-/// <summary>
-/// Parse rem() function: rem(dividend, divisor) - like % with sign of dividend
-/// </summary>
-private static bool TryParseRem(string value, out double result, double emBase = 16.0, double percentBase = 0)
-{
-    result = 0;
-    int open = value.IndexOf('(');
-    int close = value.LastIndexOf(')');
-    if (open < 0 || close <= open) return false;
-    
-    var inner = value.Substring(open + 1, close - open - 1).Trim();
-    var parts = SplitCssFunctionArgs(inner);
-    
-    if (parts.Count < 2) return false;
-    
-    double dividend = EvaluateCssValue(parts[0].Trim(), emBase, percentBase);
-    double divisor = EvaluateCssValue(parts[1].Trim(), emBase, percentBase);
-    
-    if (divisor == 0) return false;
-    
-    // CSS rem() uses truncated division (sign of dividend)
-    result = dividend % divisor;
-    return true;
-}
-
-/// <summary>
-/// Parse pow() function: pow(base, exponent)
-/// </summary>
-private static bool TryParsePow(string value, out double result, double emBase = 16.0, double percentBase = 0)
-{
-    result = 0;
-    int open = value.IndexOf('(');
-    int close = value.LastIndexOf(')');
-    if (open < 0 || close <= open) return false;
-    
-    var inner = value.Substring(open + 1, close - open - 1).Trim();
-    var parts = SplitCssFunctionArgs(inner);
-    
-    if (parts.Count < 2) return false;
-    
-    double baseVal = EvaluateCssValue(parts[0].Trim(), emBase, percentBase);
-    double exponent = EvaluateCssValue(parts[1].Trim(), emBase, percentBase);
-    
-    result = Math.Pow(baseVal, exponent);
-    return true;
-}
-
-/// <summary>
-/// Parse atan2() function: atan2(y, x) - returns angle in degrees
-/// </summary>
-private static bool TryParseAtan2(string value, out double result, double emBase = 16.0, double percentBase = 0)
-{
-    result = 0;
-    int open = value.IndexOf('(');
-    int close = value.LastIndexOf(')');
-    if (open < 0 || close <= open) return false;
-    
-    var inner = value.Substring(open + 1, close - open - 1).Trim();
-    var parts = SplitCssFunctionArgs(inner);
-    
-    if (parts.Count < 2) return false;
-    
-    double y = EvaluateCssValue(parts[0].Trim(), emBase, percentBase);
-    double x = EvaluateCssValue(parts[1].Trim(), emBase, percentBase);
-    
-    result = Math.Atan2(y, x) * 180.0 / Math.PI; // Output in degrees
-    return true;
-}
-
-/// <summary>
-/// Parse hypot() function: hypot(value1, value2, ...) - hypotenuse of values
-/// </summary>
-private static bool TryParseHypot(string value, out double result, double emBase = 16.0, double percentBase = 0)
-{
-    result = 0;
-    int open = value.IndexOf('(');
-    int close = value.LastIndexOf(')');
-    if (open < 0 || close <= open) return false;
-    
-    var inner = value.Substring(open + 1, close - open - 1).Trim();
-    var parts = SplitCssFunctionArgs(inner);
-    
-    if (parts.Count == 0) return false;
-    
-    double sumOfSquares = 0;
-    foreach (var part in parts)
-    {
-        double v = EvaluateCssValue(part.Trim(), emBase, percentBase);
-        sumOfSquares += v * v;
-    }
-    
-    result = Math.Sqrt(sumOfSquares);
-    return true;
-}
-
-        /// <summary>
-        /// Parse env() function for environment variables like safe-area-inset-*
-        /// </summary>
-        private static bool TryParseEnv(string value, out double result)
-        {
-            result = 0;
-            
-            int open = value.IndexOf('(');
-            int close = value.LastIndexOf(')');
-            if (open < 0 || close <= open) return false;
-            
-            var inner = value.Substring(open + 1, close - open - 1).Trim();
-            
-            // Split by comma to get variable name and optional fallback
-            var parts = SplitCssFunctionArgs(inner);
-            if (parts.Count == 0) return false;
-            
-            string varName = parts[0].Trim().ToLowerInvariant();
-            
-            // Environment variable values (0 for now, could be made configurable)
-            switch (varName)
-            {
-                case "safe-area-inset-top":
-                case "safe-area-inset-bottom":
-                case "safe-area-inset-left":
-                case "safe-area-inset-right":
-                    result = 0; // Default to 0 (no notch/safe area)
-                    return true;
+                    var p = part.Trim().ToLowerInvariant();
                     
-                case "titlebar-area-x":
-                case "titlebar-area-y":
-                case "titlebar-area-width":
-                case "titlebar-area-height":
-                    result = 0; // PWA titlebar area
-                    return true;
-                    
-                case "keyboard-inset-top":
-                case "keyboard-inset-bottom":
-                case "keyboard-inset-left":
-                case "keyboard-inset-right":
-                case "keyboard-inset-width":
-                case "keyboard-inset-height":
-                    result = 0; // Virtual keyboard dimensions
-                    return true;
-                    
-                default:
-                    // Unknown env variable - try fallback if provided
-                    if (parts.Count > 1)
+                    // Skip font-weight numeric values (100-900)
+                    if (p == "100" || p == "200" || p == "300" || p == "400" || 
+                        p == "500" || p == "600" || p == "700" || p == "800" || p == "900")
                     {
-                        if (TryPx(parts[1].Trim(), out result))
-                            return true;
-                    }
-                    return false;
-            }
-        }
-        
-        /// <summary>
-        /// Evaluate a calc expression supporting +, -, *, / with proper operator precedence
-        /// </summary>
-        private static double EvaluateCalcExpression(string expr, double emBase, double percentBase)
-        {
-            // Tokenize the expression
-            var tokens = TokenizeCalcExpression(expr);
-            if (tokens.Count == 0) return 0;
-
-            // Convert to postfix notation (Shunting-yard algorithm) and evaluate
-            var output = new Stack<double>();
-            var operators = new Stack<char>();
-
-            for (int i = 0; i < tokens.Count; i++)
-            {
-                var token = tokens[i];
-
-                if (IsCalcOperator(token))
-                {
-                    char op = token[0];
-                    while (operators.Count > 0 && ShouldPopOperator(operators.Peek(), op))
-                    {
-                        ApplyOperator(output, operators.Pop());
-                    }
-                    operators.Push(op);
-                }
-                else
-                {
-                    // It's a value with potential unit
-                    double val = ParseCalcValue(token, emBase, percentBase);
-                    output.Push(val);
-                }
-            }
-
-            while (operators.Count > 0)
-            {
-                ApplyOperator(output, operators.Pop());
-            }
-
-            return output.Count > 0 ? output.Pop() : 0;
-        }
-
-        private static List<string> TokenizeCalcExpression(string expr)
-        {
-            var tokens = new List<string>();
-            var current = new System.Text.StringBuilder();
-
-            for (int i = 0; i < expr.Length; i++)
-            {
-                char c = expr[i];
-
-                if (c == ' ' || c == '\t')
-                {
-                    if (current.Length > 0)
-                    {
-                        tokens.Add(current.ToString());
-                        current.Clear();
-                    }
-                    continue;
-                }
-
-                // Handle operators - they must be surrounded by spaces in calc(), but handle anyway
-                if ((c == '+' || c == '-') && current.Length > 0 && !char.IsDigit(expr[Math.Max(0, i - 1)]))
-                {
-                    // This is an operator
-                    if (current.Length > 0)
-                    {
-                        tokens.Add(current.ToString());
-                        current.Clear();
-                    }
-                    tokens.Add(c.ToString());
-                    continue;
-                }
-                else if ((c == '+' || c == '-') && current.Length == 0)
-                {
-                    // Could be a sign or operator - check if there's a previous token
-                    if (tokens.Count > 0 && !IsCalcOperator(tokens[tokens.Count - 1]))
-                    {
-                        tokens.Add(c.ToString());
                         continue;
                     }
-                    // Otherwise it's a sign, part of the number
-                    current.Append(c);
-                    continue;
-                }
-                else if (c == '*' || c == '/')
-                {
-                    if (current.Length > 0)
+                    
+                    // Skip font-style
+                    if (p == "normal" || p == "italic" || p == "oblique") continue;
+                    
+                    // Skip font-variant
+                    if (p == "small-caps") continue;
+                    
+                    // Skip font-weight keywords
+                    if (p == "bold" || p == "bolder" || p == "lighter") continue;
+                    
+                    // Handle size/line-height (e.g., "16px/1.5")
+                    string sizeStr = p;
+                    if (p.Contains("/"))
                     {
-                        tokens.Add(current.ToString());
-                        current.Clear();
+                        var slashParts = p.Split('/');
+                        sizeStr = slashParts[0];
+                        // Could parse line-height from slashParts[1] here
                     }
-                    tokens.Add(c.ToString());
-                    continue;
+                    
+                    // Try to parse as font-size
+                    if (TryPx(sizeStr, out parsedSize, emBase, percentBase: emBase))
+                    {
+                        foundSize = true;
+                        break; // Font-size found, rest is font-family
+                    }
                 }
-
-                current.Append(c);
-            }
-
-            if (current.Length > 0)
-            {
-                tokens.Add(current.ToString());
-            }
-            return tokens;
-        }
-
-        private static double ParseCalcValue(string token, double emBase, double percentBase)
-        {
-            token = token.Trim().ToLowerInvariant();
-            double v;
-            double vpWidth = CssParser.MediaViewportWidth ?? 1920.0;
-            double vpHeight = CssParser.MediaViewportHeight ?? 1080.0;
-
-            if (token.EndsWith("rem"))
-            {
-                if (TryDouble(token.Substring(0, token.Length - 3), out v)) return v * 16.0;
-            }
-            else if (token.EndsWith("em"))
-            {
-                if (TryDouble(token.Substring(0, token.Length - 2), out v)) return v * emBase;
-            }
-            else if (token.EndsWith("vw"))
-            {
-                if (TryDouble(token.Substring(0, token.Length - 2), out v)) return v * vpWidth / 100.0;
-            }
-            else if (token.EndsWith("vh"))
-            {
-                if (TryDouble(token.Substring(0, token.Length - 2), out v)) return v * vpHeight / 100.0;
-            }
-            else if (token.EndsWith("vmin"))
-            {
-                if (TryDouble(token.Substring(0, token.Length - 4), out v)) return v * Math.Min(vpWidth, vpHeight) / 100.0;
-            }
-            else if (token.EndsWith("vmax"))
-            {
-                if (TryDouble(token.Substring(0, token.Length - 4), out v)) return v * Math.Max(vpWidth, vpHeight) / 100.0;
-            }
-            else if (token.EndsWith("%"))
-            {
-                if (TryDouble(token.Substring(0, token.Length - 1), out v)) return v * percentBase / 100.0;
-            }
-            else
-            {
-                // Raw number (treated as px)
-                if (TryDouble(token, out v)) return v;
-            }
-            return 0;
-        }
-
-        private static bool IsCalcOperator(string token)
-        {
-            return token == "+" || token == "-" || token == "*" || token == "/";
-        }
-
-        private static bool ShouldPopOperator(char stackTop, char newOp)
-        {
-             int p1 = GetPriority(stackTop);
-             int p2 = GetPriority(newOp);
-             return p1 >= p2;
-        }
-
-        private static int GetPriority(char op)
-        {
-            if (op == '*' || op == '/') return 2;
-            if (op == '+' || op == '-') return 1;
-            return 0;
-        }
-
-        private static void ApplyOperator(Stack<double> output, char op)
-        {
-            if (output.Count < 2) return;
-            double right = output.Pop();
-            double left = output.Pop();
-            double res = 0;
-            switch(op)
-            {
-                case '+': res = left + right; break;
-                case '-': res = left - right; break;
-                case '*': res = left * right; break;
-                case '/': res = right != 0 ? left / right : 0; break;
-            }
-            output.Push(res);
-        }
-
-
-        private static bool TryThickness(string s, out Thickness th, double emBase = 16.0)
-        {
-            th = new Thickness(0);
-            if (string.IsNullOrWhiteSpace(s)) return false;
-
-            var parts = s.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-            double a = 0, b = 0, c = 0, d = 0;
-
-            // Helper to parse a single part, treating 'auto' as 0 in numerical context
-            // (auto is handled separately in ResolveStyle for centering)
-            bool ParsePart(string p, out double val) {
-                if (p.ToLowerInvariant() == "auto") { val = 0; return true; }
-                return TryPx(p, out val, emBase);
-            }
-
-            if (parts.Length == 1) { 
-                if (ParsePart(parts[0], out a)) th = new Thickness(a);
-                return true; 
-            }
-            if (parts.Length == 2)
-            {
-                ParsePart(parts[0], out a);
-                ParsePart(parts[1], out b);
-                th = new Thickness(b, a, b, a); return true;
-            }
-            if (parts.Length == 3)
-            {
-                ParsePart(parts[0], out a);
-                ParsePart(parts[1], out b);
-                ParsePart(parts[2], out c);
-                th = new Thickness(b, a, b, c); return true;
-            }
-            // 4+
-            ParsePart(parts[0], out a);
-            ParsePart(parts[1], out b);
-            ParsePart(parts[2], out c);
-            ParsePart(parts[3], out d);
-            th = new Thickness(d, a, b, c); return true;
-        }
-
-        private static SKColor FromHex(string hex)
-        {
-            hex = (hex ?? "").Trim().TrimStart('#');
-            if (hex.Length == 3) // #abc -> #aabbcc
-            {
-                var r = Convert.ToByte(new string(hex[0], 2), 16);
-                var g = Convert.ToByte(new string(hex[1], 2), 16);
-                var b = Convert.ToByte(new string(hex[2], 2), 16);
-                return new SKColor(r, g, b, 255);
-            }
-            if (hex.Length == 6)
-            {
-                byte r = Convert.ToByte(hex.Substring(0, 2), 16);
-                byte g = Convert.ToByte(hex.Substring(2, 2), 16);
-                byte b = Convert.ToByte(hex.Substring(4, 2), 16);
-                return new SKColor(r, g, b, 255);
-            }
-            if (hex.Length == 8)
-            {
-                byte a = Convert.ToByte(hex.Substring(0, 2), 16);
-                byte r = Convert.ToByte(hex.Substring(2, 2), 16);
-                byte g = Convert.ToByte(hex.Substring(4, 2), 16);
-                byte b = Convert.ToByte(hex.Substring(6, 2), 16);
-                return new SKColor(r, g, b, a);
-            }
-            return SKColors.Black;
-        }
-
-        private static SKColor? TryColor(string css)
-        {
-            return CssParser.ParseColor(css);
-        }
-
-
-
-        private static string ExtractBackgroundColor(Dictionary<string, string> map)
-        {
-            string v;
-            if (map.TryGetValue("background-color", out v) && !string.IsNullOrWhiteSpace(v)) return v;
-            if (map.TryGetValue("background", out v) && !string.IsNullOrWhiteSpace(v))
-            {
-                // Find all potential color matches
-                // Matches hex, rgb/rgba, or named colors (letters only)
-                var matches = Regex.Matches(v, @"(#[0-9a-fA-F]{3,8}|rgba?\([^)]+\)|[a-zA-Z]+)");
-                foreach (Match m in matches)
+                
+                if (foundSize && parsedSize > 0)
                 {
-                    var val = m.Value;
-                    // Ignore common keywords that might look like colors but aren't
-                    if (val.Equals("none", StringComparison.OrdinalIgnoreCase) ||
-                        val.Equals("url", StringComparison.OrdinalIgnoreCase) ||
-                        val.Equals("repeat", StringComparison.OrdinalIgnoreCase) ||
-                        val.Equals("scroll", StringComparison.OrdinalIgnoreCase) ||
-                        val.Equals("fixed", StringComparison.OrdinalIgnoreCase) ||
-                        val.Equals("center", StringComparison.OrdinalIgnoreCase) ||
-                        val.Equals("top", StringComparison.OrdinalIgnoreCase) ||
-                        val.Equals("bottom", StringComparison.OrdinalIgnoreCase) ||
-                        val.Equals("left", StringComparison.OrdinalIgnoreCase) ||
-                        val.Equals("right", StringComparison.OrdinalIgnoreCase))
-                        continue;
-
-                    return val;
+                    // Only set if font-size isn't already explicitly set
+                    if (!css.FontSize.HasValue)
+                    {
+                        css.FontSize = parsedSize;
+                        css.Map["font-size"] = parsedSize.ToString("0.##") + "px";
+                    }
                 }
             }
-            return null;
-        }
-
-        private static string ExtractBorderColor(Dictionary<string, string> map)
-        {
-            string v;
-            if (map.TryGetValue("border-color", out v) && !string.IsNullOrWhiteSpace(v)) return v;
-            if (map.TryGetValue("border", out v) && !string.IsNullOrWhiteSpace(v))
+            catch
             {
-                // Find all potential color matches
-                var matches = Regex.Matches(v, @"(#[0-9a-fA-F]{3,8}|rgba?\([^)]+\)|[a-zA-Z]+)");
-                foreach (Match m in matches)
-                {
-                    var val = m.Value;
-                    if (IsBorderStyle(val)) continue;
-                    // Ignore width keywords
-                    if (val.Equals("thin", StringComparison.OrdinalIgnoreCase) ||
-                        val.Equals("medium", StringComparison.OrdinalIgnoreCase) ||
-                        val.Equals("thick", StringComparison.OrdinalIgnoreCase) ||
-                        val.EndsWith("px", StringComparison.OrdinalIgnoreCase) ||
-                        val.EndsWith("em", StringComparison.OrdinalIgnoreCase) ||
-                        val.EndsWith("rem", StringComparison.OrdinalIgnoreCase))
-                        continue;
-
-                    return val;
-                }
-                // If no color found but border is present, default to current color (black usually)
-                // But we return null here and let the renderer decide or default to black if border width > 0
-                return null; 
+                // Ignore parsing errors for font shorthand
             }
-            return null;
         }
 
-        private static bool IsBorderStyle(string s)
-        {
-            s = s.ToLowerInvariant();
-            return s == "none" || s == "hidden" || s == "dotted" || s == "dashed" ||
-                   s == "solid" || s == "double" || s == "groove" || s == "ridge" ||
-                   s == "inset" || s == "outset";
-        }
 
-        private static bool TryPercent(string s, out double pct)
-        {
-            pct = 0;
-            if (string.IsNullOrWhiteSpace(s)) return false;
-            s = s.Trim();
-            if (s.EndsWith("%"))
-            {
-                var num = s.Substring(0, s.Length - 1).Trim();
-                return TryDouble(num, out pct);
-            }
-            return false;
-        }
-
-        private static string ExtractBorderThickness(Dictionary<string, string> map)
-        {
-            string v;
-            if (map.TryGetValue("border-width", out v) && !string.IsNullOrWhiteSpace(v)) return v;
-            if (map.TryGetValue("border", out v) && !string.IsNullOrWhiteSpace(v))
-            {
-                // Check for keywords first
-                if (v.IndexOf("thin", StringComparison.OrdinalIgnoreCase) >= 0) return "1px";
-                if (v.IndexOf("medium", StringComparison.OrdinalIgnoreCase) >= 0) return "3px";
-                if (v.IndexOf("thick", StringComparison.OrdinalIgnoreCase) >= 0) return "5px";
-
-                // naive: pick first length
-                var m = Regex.Match(v, @"([0-9.]+)(px|em|rem)");
-                if (m.Success) return m.Groups[0].Value;
-            }
-            return null;
-        }
 
         /// <summary>
         /// Extract width from a border-side shorthand (e.g., "2px solid #eee")
@@ -5624,120 +4288,6 @@ private static bool TryParseHypot(string value, out double result, double emBase
             try { if (log != null) log(msg); } catch { }
         }
 
-        private static void ResolveVariables(List<CssRule> rules)
-        {
-            if (rules == null) return;
-            var vars = new Dictionary<string, string>(StringComparer.Ordinal);
-
-            // 1. Collect global variables from :root
-            foreach (var rule in rules)
-            {
-                if (rule.Selectors == null) continue;
-                foreach (var sel in rule.Selectors)
-                {
-                    bool isRoot = false;
-                    if (sel.Segments != null && sel.Segments.Count == 1)
-                    {
-                        var seg = sel.Segments[0];
-                        if (string.Equals(seg.Tag, ":root", StringComparison.OrdinalIgnoreCase)) isRoot = true;
-                    }
-
-                    if (isRoot && rule.Declarations != null)
-                    {
-                        foreach (var kvp in rule.Declarations)
-                        {
-                            if (kvp.Key.StartsWith("--"))
-                            {
-                                vars[kvp.Key] = kvp.Value.Value;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (vars.Count == 0) return;
-
-            // 2. Substitute in all rules
-            foreach (var rule in rules)
-            {
-                if (rule.Declarations == null) continue;
-                foreach (var kvp in rule.Declarations.ToList())
-                {
-                    var val = kvp.Value.Value;
-                    if (val != null && val.IndexOf("var(--", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        // Manual parsing to handle nested parenthesis and fallbacks
-                        var sb = new StringBuilder();
-                        int lastPos = 0;
-                        int i = 0;
-                        while ((i = val.IndexOf("var(--", i, StringComparison.OrdinalIgnoreCase)) >= 0)
-                        {
-                            sb.Append(val.Substring(lastPos, i - lastPos));
-                            
-                            // Find closing parenthesis accounting for nesting
-                            int open = i + 3; // pointing to '(' of var(
-                            int balance = 0;
-                            int j = open + 1;
-                            bool foundClose = false;
-                            
-                            for (; j < val.Length; j++)
-                            {
-                                if (val[j] == '(') balance++;
-                                else if (val[j] == ')')
-                                {
-                                    if (balance == 0) { foundClose = true; break; }
-                                    balance--;
-                                }
-                            }
-                            
-                            if (foundClose)
-                            {
-                                string content = val.Substring(open + 1, j - open - 1);
-                                string varName = content;
-                                string fallback = null;
-                                
-                                int comma = content.IndexOf(',');
-                                if (comma > 0)
-                                {
-                                    varName = content.Substring(0, comma).Trim();
-                                    fallback = content.Substring(comma + 1).Trim();
-                                }
-                                else
-                                {
-                                    varName = varName.Trim();
-                                }
-                                
-                                string resolved = null;
-                                if (vars.TryGetValue(varName, out var sub)) resolved = sub;
-                                else if (fallback != null) resolved = fallback;
-                                
-                                sb.Append(resolved ?? $"var({content})");
-                                
-                                i = j + 1;
-                                lastPos = i;
-                            }
-                            else
-                            {
-                                // No matching close, skip
-                                sb.Append(val.Substring(i, 4)); // var(
-                                i += 4;
-                                lastPos = i;
-                            }
-                        }
-                        sb.Append(val.Substring(lastPos));
-                        var newVal = sb.ToString();
-
-                        if (newVal != val)
-                        {
-                            kvp.Value.Value = newVal;
-                        }
-                    }
-                }
-            }
-        }
-
-
-
 
 
         private static List<string> SplitByComma(string content)
@@ -5764,7 +4314,7 @@ private static bool TryParseHypot(string value, out double result, double emBase
     private static readonly object _logLock = new object();
     private static void DebugLog(string filename, string message)
     {
-        try { lock (_logLock) { System.IO.File.AppendAllText(filename, message); } } catch { }
+        // Disabled for performance
     }
 
     /// <summary>

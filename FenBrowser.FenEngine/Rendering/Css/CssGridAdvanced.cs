@@ -176,8 +176,8 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             // Calculate positions
-            var columnStarts = CalculateTrackStarts(_columnTracks, ColumnGap, startX);
-            var rowStarts = CalculateTrackStarts(_rowTracks, RowGap, startY);
+            var columnStarts = CalculateTrackStarts(_columnTracks, ColumnGap, startX, ContainerWidth, true);
+            var rowStarts = CalculateTrackStarts(_rowTracks, RowGap, startY, ContainerHeight, false);
 
             foreach (var item in _items)
             {
@@ -266,13 +266,82 @@ namespace FenBrowser.FenEngine.Rendering
             return true;
         }
 
-        private float[] CalculateTrackStarts(List<float> tracks, float gap, float start)
+        public Func<Element, SKSize> MeasureChild { get; set; }
+
+        private float[] CalculateTrackStarts(List<float> tracks, float gap, float start, float containerSize, bool isColumn)
         {
+            float[] resolvedSizes = new float[tracks.Count];
+            float usedSpace = 0;
+            float totalFr = 0;
+            var autoIndices = new List<int>();
+            int gapCount = Math.Max(0, tracks.Count - 1);
+            float totalGap = gapCount * gap;
+
+            // Pass 1: Fixed sizes and collect dynamic ones
+            for (int i = 0; i < tracks.Count; i++)
+            {
+                float t = tracks[i];
+                if (t >= 0)
+                {
+                    resolvedSizes[i] = t;
+                    usedSpace += t;
+                }
+                else if (t < 0) // fr or auto
+                {
+                    if (t == -1) // auto
+                    {
+                        // Auto track: measure content
+                        // Simplified: Treat as 0-base, expand to content max
+                        float maxContent = 0;
+                        if (MeasureChild != null)
+                        {
+                            // Find all items in this track
+                            foreach (var item in _items)
+                            {
+                                bool inTrack = isColumn 
+                                    ? (item.ColumnStart <= i + 1 && item.ColumnEnd > i + 1)
+                                    : (item.RowStart <= i + 1 && item.RowEnd > i + 1);
+                                
+                                if (inTrack)
+                                {
+                                    var size = MeasureChild(item.Element);
+                                    float dim = isColumn ? size.Width : size.Height;
+                                    if (dim > maxContent) maxContent = dim;
+                                }
+                            }
+                        }
+                        resolvedSizes[i] = maxContent;
+                        usedSpace += maxContent;
+                    }
+                    else // fr (stored as negative value of fr count? No, ParseGridTemplate stores -fr)
+                    {
+                        // tracks[i] is e.g. -1 for 1fr, -2 for 2fr
+                        totalFr += Math.Abs(t);
+                    }
+                }
+            }
+
+            // Pass 2: Distribute FR
+            if (totalFr > 0)
+            {
+                float remaining = Math.Max(0, containerSize - usedSpace - totalGap);
+                float perFr = remaining / totalFr;
+                
+                for (int i = 0; i < tracks.Count; i++)
+                {
+                    if (tracks[i] < 0 && tracks[i] != -1) // fr
+                    {
+                        resolvedSizes[i] = Math.Abs(tracks[i]) * perFr;
+                    }
+                }
+            }
+
+            // Build starts
             var starts = new float[tracks.Count + 1];
             starts[0] = start;
             for (int i = 0; i < tracks.Count; i++)
             {
-                starts[i + 1] = starts[i] + tracks[i] + gap;
+                starts[i + 1] = starts[i] + resolvedSizes[i] + gap;
             }
             return starts;
         }

@@ -14,6 +14,58 @@ namespace FenBrowser.FenEngine.Rendering.Css
     {
         #region Public API
 
+        public static bool Matches(Element element, CssSelector selector)
+        {
+            if (selector == null) return false;
+            // Use pre-parsed chains if available
+            if (selector.Chains != null && selector.Chains.Count > 0)
+            {
+                return selector.Chains.Any(chain => MatchesChain(element, chain));
+            }
+            // Fallback to raw parsing
+            return Matches(element, selector.Raw);
+        }
+
+        public static SelectorChain GetMatchingChain(Element element, CssSelector selector)
+        {
+            if (selector == null || element == null) return null;
+            if (selector.Chains != null && selector.Chains.Count > 0)
+            {
+                SelectorChain best = null;
+                foreach (var chain in selector.Chains)
+                {
+                    if (MatchesChain(element, chain))
+                    {
+                        if (best == null || chain.Specificity.CompareTo(best.Specificity) > 0)
+                            best = chain;
+                    }
+                }
+                return best;
+            }
+            // Fallback for raw string
+            if (Matches(element, selector.Raw))
+            {
+                 var chains = ParseSelectorList(selector.Raw);
+                 SelectorChain best = null;
+                 foreach (var chain in chains)
+                 {
+                     if (MatchesChain(element, chain))
+                     {
+                         if (best == null || chain.Specificity.CompareTo(best.Specificity) > 0)
+                            best = chain;
+                     }
+                 }
+                 return best;
+            }
+            return null;
+        }
+
+        public static Specificity? GetMatchingSpecificity(Element element, CssSelector selector)
+        {
+            var chain = GetMatchingChain(element, selector);
+            return chain?.Specificity;
+        }
+
         /// <summary>
         /// Check if an element matches a selector string.
         /// </summary>
@@ -35,7 +87,8 @@ namespace FenBrowser.FenEngine.Rendering.Css
             if (parsed.Count == 0) return (0, 0, 0);
             
             // Return highest specificity among selector list
-            return parsed.Select(c => c.Specificity).OrderByDescending(s => s).First();
+            var s = parsed.Select(c => c.Specificity).OrderByDescending(x => x).First();
+            return (s.A, s.B, s.C);
         }
 
         #endregion
@@ -275,44 +328,64 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
         private static bool MatchesChain(Element element, SelectorChain chain)
         {
-            if (chain.Segments.Count == 0) return false;
-
-            // Match from right to left
-            var current = element;
-            for (int i = chain.Segments.Count - 1; i >= 0; i--)
-            {
-                var seg = chain.Segments[i];
-                
-                if (!MatchesSegment(current, seg))
-                    return false;
-
-                if (i == 0) break;
-
-                // Navigate based on next combinator
-                var nextSeg = chain.Segments[i - 1];
-                current = FindMatchingAncestor(current, nextSeg.Combinator);
-                if (current == null) return false;
-            }
-
-            return true;
+            if (chain == null || chain.Segments.Count == 0) return false;
+            return MatchesChainRecursive(element, chain, chain.Segments.Count - 1);
         }
 
-        private static Element FindMatchingAncestor(Element el, char combinator)
+        private static bool MatchesChainRecursive(Element element, SelectorChain chain, int index)
         {
-            return combinator switch
+            if (element == null) return false;
+            
+            var seg = chain.Segments[index];
+            if (!MatchesSegment(element, seg)) return false;
+
+            // Base case: matched the leftmost segment
+            if (index == 0) return true;
+
+            var combinator = seg.Combinator; // Combinator connecting this segment to the previous one (to the left)
+            
+            if (combinator == ' ') // Descendant
             {
-                ' ' => el.Parent as Element,  // Descendant - next segment can match any ancestor
-                '>' => el.Parent as Element,  // Child - next segment must match parent
-                '+' => GetPreviousSibling(el), // Adjacent sibling
-                '~' => GetPreviousSibling(el), // General sibling
-                _ => el.Parent as Element
-            };
+                var ancestor = element.Parent as Element;
+                while (ancestor != null)
+                {
+                    if (MatchesChainRecursive(ancestor, chain, index - 1))
+                        return true;
+                    ancestor = ancestor.Parent as Element;
+                }
+                return false;
+            }
+            else if (combinator == '>') // Child
+            {
+                return MatchesChainRecursive(element.Parent as Element, chain, index - 1);
+            }
+            else if (combinator == '+') // Adjacent Sibling
+            {
+                var prev = GetPreviousSibling(element);
+                return MatchesChainRecursive(prev, chain, index - 1);
+            }
+            else if (combinator == '~') // General Sibling
+            {
+                var prev = GetPreviousSibling(element);
+                while (prev != null)
+                {
+                    if (MatchesChainRecursive(prev, chain, index - 1))
+                        return true;
+                    prev = GetPreviousSibling(prev);
+                }
+                return false;
+            }
+
+            return false;
         }
 
         private static Element GetPreviousSibling(Element el)
         {
             var parent = el.Parent as Element;
             if (parent?.Children == null) return null;
+            // Optimization: Iterate backwards instead of using IndexOf which is O(N)
+            // But we don't have linked list.
+            // Using IndexOf is acceptable for now.
             var siblings = parent.Children.OfType<Element>().ToList();
             int idx = siblings.IndexOf(el);
             return idx > 0 ? siblings[idx - 1] : null;
@@ -478,64 +551,5 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
         #endregion
     }
-
-    #region Data Structures
-
-    public class SelectorChain : IComparable<SelectorChain>
-    {
-        public List<SelectorSegment> Segments { get; } = new List<SelectorSegment>();
-
-        public (int a, int b, int c) Specificity
-        {
-            get
-            {
-                int a = 0, b = 0, c = 0;
-                foreach (var seg in Segments)
-                {
-                    if (!string.IsNullOrEmpty(seg.Id)) a++;
-                    b += seg.Classes.Count + seg.Attributes.Count + seg.PseudoClasses.Count;
-                    if (!string.IsNullOrEmpty(seg.Tag) && seg.Tag != "*") c++;
-                    c += seg.PseudoElements.Count;
-                }
-                return (a, b, c);
-            }
-        }
-
-        public int CompareTo(SelectorChain other)
-        {
-            var (a1, b1, c1) = Specificity;
-            var (a2, b2, c2) = other.Specificity;
-            int cmp = a1.CompareTo(a2);
-            if (cmp != 0) return cmp;
-            cmp = b1.CompareTo(b2);
-            if (cmp != 0) return cmp;
-            return c1.CompareTo(c2);
-        }
-    }
-
-    public class SelectorSegment
-    {
-        public string Tag { get; set; }
-        public string Id { get; set; }
-        public List<string> Classes { get; } = new List<string>();
-        public List<AttributeSelector> Attributes { get; } = new List<AttributeSelector>();
-        public List<(string name, string args)> PseudoClasses { get; } = new List<(string, string)>();
-        public List<(string name, string args)> PseudoElements { get; } = new List<(string, string)>();
-        public char Combinator { get; set; } = ' ';
-
-        public bool IsEmpty => string.IsNullOrEmpty(Tag) && string.IsNullOrEmpty(Id) && 
-                               Classes.Count == 0 && Attributes.Count == 0 && 
-                               PseudoClasses.Count == 0 && PseudoElements.Count == 0;
-    }
-
-    public class AttributeSelector
-    {
-        public string Name { get; set; }
-        public string Operator { get; set; }
-        public string Value { get; set; }
-        public bool CaseInsensitive { get; set; }
-    }
-
-    #endregion
 }
 

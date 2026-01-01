@@ -1,12 +1,17 @@
 using FenBrowser.Core.Dom;
+using SkiaSharp;
+using System.Collections.Generic;
 
 namespace FenBrowser.FenEngine.Layout
 {
     public struct LayoutMetrics
     {
         public float ContentHeight;
+        public float ActualHeight; // Unconstrained content height (for scrolling overflow)
         public float MaxChildWidth;
         public float Baseline;
+        public float MarginTop;
+        public float MarginBottom;
     }
 
     /// <summary>
@@ -16,31 +21,15 @@ namespace FenBrowser.FenEngine.Layout
     public interface ILayoutComputer
     {
         /// <summary>
-        /// Compute layout for a node at the given position.
+        /// Pass 1: Measure - determine desired size.
         /// </summary>
-        void ComputeLayout(
-            Node node, 
-            float x, 
-            float y, 
-            float availableWidth, 
-            bool shrinkToContent = false, 
-            float availableHeight = 0, 
-            bool hasTargetAncestor = false);
-            
-        /// <summary>
-        /// Perform the actual layout logic for a node (without recursion checks).
-        /// Called by LayoutEngine after validation.
-        /// </summary>
-        void RawLayout(
-            Node node, 
-            float x, 
-            float y, 
-            float availableWidth, 
-            bool shrinkToContent = false, 
-            float availableHeight = 0, 
-            bool hasTargetAncestor = false);
+        LayoutMetrics Measure(Node node, SKSize availableSize);
 
-        
+        /// <summary>
+        /// Pass 2: Arrange - position node and set final bounds.
+        /// </summary>
+        void Arrange(Node node, SKRect finalRect);
+
         /// <summary>
         /// Gets the computed box model for a node.
         /// </summary>
@@ -56,16 +45,18 @@ namespace FenBrowser.FenEngine.Layout
         /// </summary>
         IEnumerable<KeyValuePair<Node, BoxModel>> GetAllBoxes();
         
-        // Specialized layout methods (Temporary exposure for migration)
-        // Specialized layout methods (Temporary exposure for migration)
-        LayoutMetrics ComputeBlockLayout(Element element, BoxModel box, float x, float y, float availableWidth, float availableHeight, bool shrinkToContent = false, int depth = 0);
-        LayoutMetrics ComputeFlexLayout(Element element, BoxModel box, float x, float y, float availableWidth, float availableHeight, int depth = 0);
-        LayoutMetrics ComputeGridLayout(Element element, BoxModel box, float x, float y, float availableWidth, float availableHeight, int depth = 0);
-        LayoutMetrics ComputeTableLayout(Element element, BoxModel box, float x, float y, float availableWidth, float availableHeight, int depth = 0);
-        LayoutMetrics ComputeAbsoluteLayout(Element element, BoxModel box, float x, float y, float availableWidth, float availableHeight, int depth = 0);
-        LayoutMetrics ComputeTextLayout(Node node, BoxModel box, float x, float y, float availableWidth, float availableHeight, int depth = 0);
-        float ComputeInlineContext(Element element, BoxModel box, float x, float y, float availableWidth, float availableHeight, int depth = 0); 
-        
+        // Measure specialized
+        LayoutMetrics MeasureBlock(Element element, SKSize availableSize);
+        LayoutMetrics MeasureFlex(Element element, SKSize availableSize);
+        LayoutMetrics MeasureGrid(Element element, SKSize availableSize);
+        LayoutMetrics MeasureText(Node node, SKSize availableSize);
+
+        // Arrange specialized
+        void ArrangeBlock(Element element, SKRect finalRect);
+        void ArrangeFlex(Element element, SKRect finalRect);
+        void ArrangeGrid(Element element, SKRect finalRect);
+        void ArrangeText(Node node, SKRect finalRect);
+
         void DumpLayoutTree(Node root);
     }
 

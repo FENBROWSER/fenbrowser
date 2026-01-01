@@ -34,21 +34,21 @@ namespace FenBrowser.FenEngine.Core
 
         public FenRuntime(IExecutionContext context = null, IStorageBackend storageBackend = null)
         {
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[FenRuntime] Constructor Start\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             _context = context ?? new ExecutionContext();
             _storageBackend = storageBackend ?? new InMemoryStorageBackend();
 
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[FenRuntime] Creating FenEnvironment...\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             _globalEnv = new FenEnvironment();
             _context.Environment = _globalEnv;
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[FenRuntime] FenEnvironment Created. Creating ModuleLoader...\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             
             // Initialize module loader
             _context.ModuleLoader = new ModuleLoader(_globalEnv, _context);
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[FenRuntime] ModuleLoader Created. Calling InitializeBuiltins...\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             
             InitializeBuiltins();
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[FenRuntime] InitializeBuiltins Done. Constructor Finished.\r\n"); } catch { }
+            /* [PERF-REMOVED] */
         }
 
         public Action RequestRender
@@ -77,6 +77,39 @@ namespace FenBrowser.FenEngine.Core
             return func.Invoke(args, _context);
         }
 
+        /// <summary>
+        /// Helper for console.dir to inspect objects recursively.
+        /// </summary>
+        private static string InspectObject(IValue value, int depth)
+        {
+            if (depth > 3) return "..."; // Prevent infinite recursion
+            if (value == null) return "null";
+            if (value.IsUndefined) return "undefined";
+            if (value.IsNull) return "null";
+            if (value.IsString) return $"\"{value.ToString()}\"";
+            if (value.IsNumber) return value.ToNumber().ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (value.IsBoolean) return value.ToBoolean() ? "true" : "false";
+            if (value.IsFunction) return $"[Function: {(value.AsFunction() as FenFunction)?.Name ?? "anonymous"}]";
+            if (value.IsObject)
+            {
+                var obj = value.AsObject();
+                var sb = new StringBuilder();
+                sb.Append("{ ");
+                var keys = obj.Keys()?.Take(10).ToList() ?? new List<string>();
+                for (int i = 0; i < keys.Count; i++)
+                {
+                    var k = keys[i];
+                    var v = obj.Get(k);
+                    sb.Append(k).Append(": ").Append(InspectObject(v as IValue ?? FenValue.Undefined, depth + 1));
+                    if (i < keys.Count - 1) sb.Append(", ");
+                }
+                if (keys.Count >= 10) sb.Append(", ...");
+                sb.Append(" }");
+                return sb.ToString();
+            }
+            return value.ToString();
+        }
+
         private void InitializeBuiltins()
         {
             try { FenLogger.Debug("[FenRuntime] InitializeBuiltins called", LogCategory.JavaScript); } catch { }
@@ -92,7 +125,7 @@ namespace FenBrowser.FenEngine.Core
                 foreach (var arg in args) messages.Add(arg.ToString());
                 var msg = string.Join(" ", messages);
                 Console.WriteLine(msg);
-                // try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Console] {msg}\r\n"); } catch { }
+                // /* [PERF-REMOVED] */
                 try { FenLogger.Debug($"[FenRuntime] Console.log: {msg}", LogCategory.JavaScript); } catch { }
                 try { 
                     if (OnConsoleMessage == null) FenLogger.Error("[FenRuntime] OnConsoleMessage is NULL!", LogCategory.JavaScript);
@@ -107,7 +140,7 @@ namespace FenBrowser.FenEngine.Core
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine($"ERROR: {msg}");
                 Console.ResetColor();
-                // try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Console Error] {msg}\r\n"); } catch { }
+                // /* [PERF-REMOVED] */
                 try { FenLogger.Error($"[FenRuntime] Console.error: {msg}", LogCategory.JavaScript); } catch { }
                 try { OnConsoleMessage?.Invoke($"[Error] {msg}"); } catch { }
                 return FenValue.Undefined;
@@ -118,7 +151,7 @@ namespace FenBrowser.FenEngine.Core
                 Console.ForegroundColor = ConsoleColor.Yellow;
                 Console.WriteLine($"WARN: {msg}");
                 Console.ResetColor();
-                // try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Console Warn] {msg}\r\n"); } catch { }
+                // /* [PERF-REMOVED] */
                 try { FenLogger.Info($"[FenRuntime] Console.warn: {msg}", LogCategory.JavaScript); } catch { }
                 try { OnConsoleMessage?.Invoke($"[Warn] {msg}"); } catch { }
                 return FenValue.Undefined;
@@ -127,7 +160,7 @@ namespace FenBrowser.FenEngine.Core
             {
                 var msg = string.Join(" ", args.Select(a => a.ToString()));
                 Console.WriteLine($"INFO: {msg}");
-                // try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Console Info] {msg}\r\n"); } catch { }
+                // /* [PERF-REMOVED] */
                 try { FenLogger.Info($"[FenRuntime] Console.info: {msg}", LogCategory.JavaScript); } catch { }
                 try { OnConsoleMessage?.Invoke($"[Info] {msg}"); } catch { }
                 return FenValue.Undefined;
@@ -139,7 +172,127 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.Undefined;
             })));
 
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[InitializeBuiltins] console setup done\r\n"); } catch { }
+            // console.dir - Object inspection
+            console.Set("dir", FenValue.FromFunction(new FenFunction("dir", (args, thisVal) =>
+            {
+                if (args.Length == 0) return FenValue.Undefined;
+                var obj = args[0];
+                var output = InspectObject(obj, 0);
+                Console.WriteLine(output);
+                try { FenLogger.Debug($"[FenRuntime] Console.dir: {output}", LogCategory.JavaScript); } catch { }
+                try { OnConsoleMessage?.Invoke($"[Dir] {output}"); } catch { }
+                return FenValue.Undefined;
+            })));
+
+            // console.table - Tabular data display
+            console.Set("table", FenValue.FromFunction(new FenFunction("table", (args, thisVal) =>
+            {
+                if (args.Length == 0) return FenValue.Undefined;
+                var obj = args[0];
+                var output = $"[Table] {obj}"; // Simplified - full table formatting would be complex
+                Console.WriteLine(output);
+                try { FenLogger.Debug($"[FenRuntime] Console.table: {output}", LogCategory.JavaScript); } catch { }
+                try { OnConsoleMessage?.Invoke(output); } catch { }
+                return FenValue.Undefined;
+            })));
+
+            // console.group / groupEnd - Indentation
+            int _consoleGroupLevel = 0;
+            console.Set("group", FenValue.FromFunction(new FenFunction("group", (args, thisVal) =>
+            {
+                var label = args.Length > 0 ? args[0].ToString() : "";
+                _consoleGroupLevel++;
+                var indent = new string(' ', _consoleGroupLevel * 2);
+                var msg = $"{indent}▼ {label}";
+                Console.WriteLine(msg);
+                try { OnConsoleMessage?.Invoke($"[Group] {label}"); } catch { }
+                return FenValue.Undefined;
+            })));
+
+            console.Set("groupCollapsed", FenValue.FromFunction(new FenFunction("groupCollapsed", (args, thisVal) =>
+            {
+                var label = args.Length > 0 ? args[0].ToString() : "";
+                _consoleGroupLevel++;
+                var indent = new string(' ', _consoleGroupLevel * 2);
+                var msg = $"{indent}▶ {label}";
+                Console.WriteLine(msg);
+                try { OnConsoleMessage?.Invoke($"[GroupCollapsed] {label}"); } catch { }
+                return FenValue.Undefined;
+            })));
+
+            console.Set("groupEnd", FenValue.FromFunction(new FenFunction("groupEnd", (args, thisVal) =>
+            {
+                if (_consoleGroupLevel > 0) _consoleGroupLevel--;
+                return FenValue.Undefined;
+            })));
+
+            // console.time / timeEnd - Timing
+            var _consoleTimers = new Dictionary<string, DateTime>();
+            console.Set("time", FenValue.FromFunction(new FenFunction("time", (args, thisVal) =>
+            {
+                var label = args.Length > 0 ? args[0].ToString() : "default";
+                _consoleTimers[label] = DateTime.Now;
+                return FenValue.Undefined;
+            })));
+
+            console.Set("timeEnd", FenValue.FromFunction(new FenFunction("timeEnd", (args, thisVal) =>
+            {
+                var label = args.Length > 0 ? args[0].ToString() : "default";
+                if (_consoleTimers.TryGetValue(label, out var start))
+                {
+                    var elapsed = (DateTime.Now - start).TotalMilliseconds;
+                    var msg = $"{label}: {elapsed:F2}ms";
+                    Console.WriteLine(msg);
+                    try { OnConsoleMessage?.Invoke($"[Timer] {msg}"); } catch { }
+                    _consoleTimers.Remove(label);
+                }
+                return FenValue.Undefined;
+            })));
+
+            // console.count / countReset
+            var _consoleCounts = new Dictionary<string, int>();
+            console.Set("count", FenValue.FromFunction(new FenFunction("count", (args, thisVal) =>
+            {
+                var label = args.Length > 0 ? args[0].ToString() : "default";
+                if (!_consoleCounts.ContainsKey(label)) _consoleCounts[label] = 0;
+                _consoleCounts[label]++;
+                var msg = $"{label}: {_consoleCounts[label]}";
+                Console.WriteLine(msg);
+                try { OnConsoleMessage?.Invoke($"[Count] {msg}"); } catch { }
+                return FenValue.Undefined;
+            })));
+
+            console.Set("countReset", FenValue.FromFunction(new FenFunction("countReset", (args, thisVal) =>
+            {
+                var label = args.Length > 0 ? args[0].ToString() : "default";
+                _consoleCounts[label] = 0;
+                return FenValue.Undefined;
+            })));
+
+            // console.assert
+            console.Set("assert", FenValue.FromFunction(new FenFunction("assert", (args, thisVal) =>
+            {
+                if (args.Length == 0 || args[0].ToBoolean()) return FenValue.Undefined;
+                var msg = args.Length > 1 ? string.Join(" ", args.Skip(1).Select(a => a.ToString())) : "Assertion failed";
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"Assertion failed: {msg}");
+                Console.ResetColor();
+                try { FenLogger.Error($"[FenRuntime] Console.assert: {msg}", LogCategory.JavaScript); } catch { }
+                try { OnConsoleMessage?.Invoke($"[Assert] {msg}"); } catch { }
+                return FenValue.Undefined;
+            })));
+
+            // console.trace
+            console.Set("trace", FenValue.FromFunction(new FenFunction("trace", (args, thisVal) =>
+            {
+                var label = args.Length > 0 ? args[0].ToString() : "Trace";
+                var stack = Environment.StackTrace;
+                Console.WriteLine($"{label}\n{stack}");
+                try { OnConsoleMessage?.Invoke($"[Trace] {label}"); } catch { }
+                return FenValue.Undefined;
+            })));
+
+            /* [PERF-REMOVED] */
             SetGlobal("console", FenValue.FromObject(console));
 
             // caches API (CacheStorage) - Persistent and partitioned by origin
@@ -334,7 +487,7 @@ namespace FenBrowser.FenEngine.Core
             connection.Set("saveData", FenValue.FromBoolean(false));
             navigator.Set("connection", FenValue.FromObject(connection));
 
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[InitializeBuiltins] navigator setup done\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             SetGlobal("navigator", FenValue.FromObject(navigator));
 
             // location object (basic)
@@ -713,8 +866,12 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromNumber(Math.Sqrt(sum));
             })));
             
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[InitializeBuiltins] Math setup done\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             SetGlobal("Math", FenValue.FromObject(math));
+
+            // Symbol constructor
+            var symbolCtor = FenSymbol.CreateSymbolConstructor();
+            SetGlobal("Symbol", FenValue.FromObject(symbolCtor));
 
             // Global functions: parseInt, parseFloat, isNaN, isFinite
             SetGlobal("parseInt", FenValue.FromFunction(new FenFunction("parseInt", (args, thisVal) => {
@@ -1218,7 +1375,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromNumber(double.NaN);
             })));
 
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[InitializeBuiltins] Date setup done\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             SetGlobal("Date", FenValue.FromObject(dateObj));
 
             // JSON object
@@ -1292,7 +1449,7 @@ namespace FenBrowser.FenEngine.Core
                     return new ErrorValue($"JSON.stringify error: {ex.Message}");
                 }
             })));
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[InitializeBuiltins] JSON setup done\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             SetGlobal("JSON", FenValue.FromObject(json));
 
             // Object global - provides static methods like Object.keys(), Object.values(), etc.
@@ -1481,7 +1638,7 @@ namespace FenBrowser.FenEngine.Core
                 return args[0];
             })));
             
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[InitializeBuiltins] Object setup done\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             SetGlobal("Object", FenValue.FromObject(objectConstructor));
 
             // Symbol - ES6 primitive type for unique identifiers
@@ -1502,7 +1659,7 @@ namespace FenBrowser.FenEngine.Core
                 symbol.Set("valueOf", FenValue.FromFunction(new FenFunction("valueOf", (a, t) => FenValue.FromObject(symbol))));
                 return FenValue.FromObject(symbol);
             })));
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[InitializeBuiltins] Symbol (basic) SetGlobal done\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             
             // Symbol.for(key) - get or create symbol in global registry
             symbolConstructor.Set("for", FenValue.FromFunction(new FenFunction("for", (args, thisVal) =>
@@ -1566,7 +1723,7 @@ namespace FenBrowser.FenEngine.Core
                 // Already set above via symbolConstructor reference
             }
             
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[InitializeBuiltins] Creating Reflect object...\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             // Reflect - provides methods for interceptable JavaScript operations
             var reflectObj = new FenObject();
             
@@ -1579,7 +1736,7 @@ namespace FenBrowser.FenEngine.Core
                 var result = target?.Get(key);
                 return result != null ? (FenValue)result : FenValue.Undefined;
             })));
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[InitializeBuiltins] Reflect.get done\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             
             // Reflect.set(target, propertyKey, value)
             reflectObj.Set("set", FenValue.FromFunction(new FenFunction("set", (args, thisVal) =>
@@ -1617,7 +1774,7 @@ namespace FenBrowser.FenEngine.Core
                 var keys = target.Keys().ToArray();
                 return FenValue.FromObject(CreateArray(keys));
             })));
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[InitializeBuiltins] Reflect.ownKeys done\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             
             // Reflect.apply(target, thisArgument, argumentsList)
             reflectObj.Set("apply", FenValue.FromFunction(new FenFunction("apply", (args, thisVal) =>
@@ -1689,7 +1846,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromBoolean(false);
             })));
             
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[InitializeBuiltins] SetGlobal Reflect done\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             SetGlobal("Reflect", FenValue.FromObject(reflectObj));
 
             // Proxy - Meta-programming proxy objects
@@ -1726,15 +1883,15 @@ namespace FenBrowser.FenEngine.Core
 
                 return FenValue.FromObject(proxy);
             })));
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[InitializeBuiltins] Proxy SetGlobal done\r\n"); } catch { }
+            /* [PERF-REMOVED] */
 
             // GLOBALTHIS
             // Use the 'window' object we created earlier (it was SetGlobal'd as "window")
             var winGlobal = GetGlobal("window"); 
             SetGlobal("globalThis", winGlobal);
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[InitializeBuiltins] globalThis SetGlobal done\r\n"); } catch { }
+            /* [PERF-REMOVED] */
 
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[InitializeBuiltins] Creating Symbol override...\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             // SYMBOL - Create as FenObject with callable NativeObject so we can attach static properties
             var symbolFunc = new FenFunction("Symbol", (args, thisVal) =>
             {
@@ -1747,7 +1904,7 @@ namespace FenBrowser.FenEngine.Core
             var symbolStatic = new FenObject();
             symbolStatic.NativeObject = symbolFunc; // Make it callable
             
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[InitializeBuiltins] Setting Symbol static properties...\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             
             // Symbol.iterator and other well-known symbols
             // JsSymbol.* are static JsSymbol instances (IValue), so pass directly
@@ -1770,13 +1927,13 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.Undefined;
             })));
 
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[InitializeBuiltins] Symbol setup done\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             SetGlobal("Symbol", FenValue.FromObject(symbolStatic));
 
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[InitializeBuiltins] Setting up Object static methods...\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             // OBJECT STATIC METHODS
             var objectFunc = GetGlobal("Object");
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", $"[InitializeBuiltins] objectFunc.IsFunction={objectFunc.IsFunction}, IsObject={objectFunc.IsObject}\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             if (objectFunc.IsFunction)
             {
                 var objStatic = objectFunc.AsObject() as FenObject;
@@ -1845,11 +2002,11 @@ namespace FenBrowser.FenEngine.Core
                     return FenValue.FromObject(CreateArray(new IValue[0])); 
                 })));
             }
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[InitializeBuiltins] Object static methods done (or skipped)\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             
             // PROXY.REVOCABLE
             var proxyFunc = GetGlobal("Proxy");
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", $"[InitializeBuiltins] proxyFunc.IsFunction={proxyFunc.IsFunction}\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             if (proxyFunc.IsFunction)
             {
                 var proxyObj = proxyFunc.AsObject() as FenObject;
@@ -1905,7 +2062,7 @@ namespace FenBrowser.FenEngine.Core
                 })));
                 } // end if (proxyObj != null)
             }
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[InitializeBuiltins] Proxy.revocable done (or skipped)\r\n"); } catch { }
+            /* [PERF-REMOVED] */
 
             // REFLECT API
             var reflect = new FenObject();
@@ -1991,7 +2148,7 @@ namespace FenBrowser.FenEngine.Core
                  }
             })));
 
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log_trace.txt", "[InitializeBuiltins] Reflect setup done\r\n"); } catch { }
+            /* [PERF-REMOVED] */
             SetGlobal("Reflect", FenValue.FromObject(reflect));
 
             
@@ -3107,7 +3264,7 @@ namespace FenBrowser.FenEngine.Core
             }
             catch (Exception ex)
             {
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[DispatchEvent Error] {ex.Message}\r\n"); } catch { }
+                /* [PERF-REMOVED] */
             }
         }
         
@@ -3140,7 +3297,7 @@ namespace FenBrowser.FenEngine.Core
                 }
                 catch (Exception ex)
                 {
-                   try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Timer Error] {ex.Message}\r\n"); } catch { }
+                   /* [PERF-REMOVED] */
                 }
 
                 if (repeat && !cts.IsCancellationRequested)
@@ -3409,7 +3566,7 @@ namespace FenBrowser.FenEngine.Core
             })));
 
             // Execute the fetch asynchronously
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[FenRuntime] Fetch called: {url}\r\n"); } catch {}
+            /* [PERF-REMOVED] */
             _ = Task.Run(async () =>
             {
                 try
@@ -3434,13 +3591,13 @@ namespace FenBrowser.FenEngine.Core
                     var statusCode = (int)response.StatusCode;
                     var reasonPhrase = response.ReasonPhrase;
                    
-                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[FenRuntime] Fetch got response: {statusCode}\r\n"); } catch {}
+                    /* [PERF-REMOVED] */
 
                     // Schedule callback on MAIN THREAD to handle JS objects
                     // Use 0 delay to execute on next tick
                     _context.ScheduleCallback(() =>
                     {
-                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[FenRuntime] Fetch callback executing\r\n"); } catch {}
+                        /* [PERF-REMOVED] */
                         try
                         {
                             // Create Response object (must be on main thread)

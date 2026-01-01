@@ -12,9 +12,9 @@ namespace FenBrowser.Core.Logging
     /// </summary>
     public static class LogConfig
     {
-        private static LogCategory _enabledCategories = LogCategory.Errors | LogCategory.General;
-        private static LogLevel _minimumLevel = LogLevel.Info;
-        private static bool _masterEnabled = false;
+        private static LogCategory _enabledCategories = LogCategory.All;
+        private static LogLevel _minimumLevel = LogLevel.Debug;
+        private static bool _masterEnabled = true;
         private static readonly object _lock = new object();
 
         #region Master Control

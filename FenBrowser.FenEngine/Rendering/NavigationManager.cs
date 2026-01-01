@@ -38,7 +38,7 @@ namespace FenBrowser.FenEngine.Rendering
                 if (url.IndexOf(':') >= 0 || url.StartsWith("\\\\"))
                 {
                     url = "file:///" + url.Replace("\\", "/");
-                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[NavigationManager] Converted to file URI: {url}\r\n"); } catch {}
+                    try { FenBrowser.Core.FenLogger.Debug($"[NavigationManager] Converted to file URI: {url}", FenBrowser.Core.Logging.LogCategory.Navigation); } catch {}
                 }
             }
 
@@ -46,7 +46,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (!url.StartsWith("http://") && !url.StartsWith("https://") && !url.StartsWith("file://") && !url.StartsWith("fen://") && !url.StartsWith("about:") && !url.StartsWith("data:"))
             {
                 // Log what we are doing
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[NavigationManager] Defaulting '{url}' to HTTPS\r\n"); } catch {}
+                try { FenBrowser.Core.FenLogger.Debug($"[NavigationManager] Defaulting '{url}' to HTTPS", FenBrowser.Core.Logging.LogCategory.Navigation); } catch {}
                 url = "https://" + url;
             }
 
@@ -57,7 +57,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             // Handle images
             var path = uri.AbsolutePath.ToLowerInvariant();
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[NavigationManager] Checking image: path='{path}' endsWithJpg={path.EndsWith(".jpg")}\r\n"); } catch {}
+            try { FenBrowser.Core.FenLogger.Debug($"[NavigationManager] Checking image: path='{path}' endsWithJpg={path.EndsWith(".jpg")}", FenBrowser.Core.Logging.LogCategory.Navigation); } catch {}
             if (path.EndsWith(".png") || path.EndsWith(".jpg") || path.EndsWith(".jpeg") || 
                 path.EndsWith(".gif") || path.EndsWith(".bmp") || path.EndsWith(".webp") || path.EndsWith(".svg"))
             {

@@ -161,7 +161,7 @@ namespace FenBrowser.FenEngine.Core
                         var targetObj = Eval(leftMember.Object, env, context);
                         if (IsError(targetObj)) return targetObj;
                         
-                        try { System.IO.File.AppendAllText("debug_log.txt", $"[Interpreter] Assigning to member: {leftMember.Property}. Object type: {targetObj.Type}\r\n"); } catch { }
+                        /* [PERF-REMOVED] */
 
                         if (targetObj.IsObject)
                         {
@@ -174,7 +174,7 @@ namespace FenBrowser.FenEngine.Core
                         }
                         else
                         {
-                            try { System.IO.File.AppendAllText("debug_log.txt", $"[Interpreter] Cannot assign to non-object: {targetObj.Type}\r\n"); } catch { }
+                            /* [PERF-REMOVED] */
                         }
                     }
                     
@@ -428,14 +428,14 @@ namespace FenBrowser.FenEngine.Core
                 var obj = thisVal.AsObject();
                 if (obj == null) 
                 {
-                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[Array.push] thisVal is not an object\r\n"); } catch { }
+                    /* [PERF-REMOVED] */
                     return FenValue.FromNumber(0);
                 }
                 
                 var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[Array.push] Initial length: {len}, Args count: {args.Length}\r\n"); } catch { }
+                /* [PERF-REMOVED] */
 
                 foreach (var arg in args)
                 {

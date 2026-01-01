@@ -31,6 +31,7 @@ namespace FenBrowser.FenEngine.Rendering
         private readonly Dictionary<Node, BoxModel> _boxes = new Dictionary<Node, BoxModel>();
         private IReadOnlyDictionary<Node, CssComputed> _lastStyles;
         private LayoutResult _lastLayout;
+        private ImmutablePaintTree _lastPaintTree;
         private float _viewportWidth;
         private float _viewportHeight;
         
@@ -77,16 +78,22 @@ namespace FenBrowser.FenEngine.Rendering
             _viewportWidth = layoutWidth > 0 ? layoutWidth : 1920;
             _viewportHeight = layoutHeight > 0 ? layoutHeight : 1080;
             
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            
             try
             {
                 // PHASE 1: Layout using the new LayoutEngine
                 var layoutEngine = new LayoutEngine(
                     styles ?? new Dictionary<Node, CssComputed>(),
                     _viewportWidth,
-                    _viewportHeight);
+                    _viewportHeight,
+                    null,
+                    baseUrl);
                 
                 _lastLayout = layoutEngine.ComputeLayout(root, _viewportWidth, 
                     _viewportHeight);
+                FenLogger.Debug($"[PERF] Layout Phase: {stopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
+                stopwatch.Restart();
                 
                 // Copy boxes for hit testing
                 _boxes.Clear();
@@ -101,45 +108,73 @@ namespace FenBrowser.FenEngine.Rendering
                 try { 
                     var sb = new System.Text.StringBuilder();
                     DumpDom(root, 0, sb, styles, _boxes);
-                    System.IO.File.WriteAllText(@"C:\Users\udayk\Videos\FENBROWSER\dom_dump.txt", sb.ToString());
+                    // Standardized: using FenLogger instead of hardcoded paths
+                    FenLogger.Debug($"[SkiaDomRenderer] DOM Dump: {sb}", LogCategory.Rendering);
                 } catch {}
                 
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[SkiaDomRenderer] Copied {boxCount} boxes for rendering.\r\n"); } catch {}
+                FenLogger.Debug($"[SkiaDomRenderer] Copied {boxCount} boxes for rendering.", LogCategory.Rendering);
                 
                 // PHASE 2: Build Paint Tree
+                FenLogger.Debug($"[SkiaDomRenderer] Invoke NewPaintTreeBuilder... Root={root.GetType().Name} BoxCount={_boxes.Count}");
                 var paintTree = NewPaintTreeBuilder.Build(
                     root,
                     _boxes,
                     styles,
                     _viewportWidth,
-                    _viewportHeight);
+                    _viewportHeight,
+                    baseUrl);
+                _lastPaintTree = paintTree;
+                FenLogger.Debug($"[PERF] Paint Tree Phase: {stopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
+                stopwatch.Restart();
                 
                 // PHASE 3: Render
                 SKColor bgColor = SKColors.White;
-                if (root is Element rootEl && styles != null)
+                
+                try 
                 {
-                    // 1. Check root (html) background
-                    if (styles.TryGetValue(rootEl, out var rootStyle) && 
-                        rootStyle.BackgroundColor.HasValue && 
-                        rootStyle.BackgroundColor.Value.Alpha > 0)
+                    string log = $"[Render] Root={root?.GetType().Name}, StylesNull={styles==null}, Count={styles?.Count}\n";
+                    if (root is Element rootEl && styles != null)
                     {
-                        bgColor = rootStyle.BackgroundColor.Value;
-                    }
-                    else
-                    {
-                        // 2. Propagate body background if html is transparent
-                        // Find body element
-                        var body = rootEl.Children?.FirstOrDefault(c => c is Element e && e.TagName == "body") as Element;
-                        if (body != null && styles.TryGetValue(body, out var bodyStyle) && 
-                            bodyStyle.BackgroundColor.HasValue &&
-                            bodyStyle.BackgroundColor.Value.Alpha > 0)
+                        if (styles.TryGetValue(rootEl, out var rootStyle) && rootStyle != null)
                         {
-                            bgColor = bodyStyle.BackgroundColor.Value;
+                            log += $"HTML Style Found. BG={rootStyle.BackgroundColor}\n";
+                            if (rootStyle.Map.ContainsKey("background")) log += $"  Map[background] = '{rootStyle.Map["background"]}'\n";
+                            if (rootStyle.Map.ContainsKey("background-color")) log += $"  Map[background-color] = '{rootStyle.Map["background-color"]}'\n";
+                            log += $"  Tag={rootEl.Tag}\n";
+
+                            if (rootStyle.BackgroundColor.HasValue && rootStyle.BackgroundColor.Value.Alpha > 0)
+                            {
+                                bgColor = rootStyle.BackgroundColor.Value;
+                                log += $"-> Using HTML BG: {bgColor}\n";
+                            }
+                        }
+                        else { log += "HTML Style NOT Found.\n"; }
+
+                        if (bgColor == SKColors.White)
+                        {
+                            var body = rootEl.Children?.FirstOrDefault(c => c is Element e && e.TagName?.ToLowerInvariant() == "body") as Element;
+                            log += $"Body Element={body!=null}\n";
+                            if (body != null)
+                            {
+                                if (styles.TryGetValue(body, out var bodyStyle) && bodyStyle != null)
+                                {
+                                    log += $"BODY Style Found. BG={bodyStyle.BackgroundColor}\n";
+                                    if (bodyStyle.BackgroundColor.HasValue && bodyStyle.BackgroundColor.Value.Alpha > 0)
+                                    {
+                                        bgColor = bodyStyle.BackgroundColor.Value;
+                                        log += $"-> Using BODY BG: {bgColor}\n";
+                                    }
+                                }
+                                else { log += "BODY Style NOT Found.\n"; }
+                            }
                         }
                     }
-                }
+
+                } 
+                catch {}
                 
                 _renderer.Render(canvas, paintTree, viewport, bgColor);
+                FenLogger.Debug($"[PERF] Skia Draw Phase: {stopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
                 
                 // Callback with layout info
                 float totalHeight = _lastLayout?.ContentHeight ?? _viewportHeight;
@@ -148,7 +183,7 @@ namespace FenBrowser.FenEngine.Rendering
             catch (Exception ex)
             {
                 // Log error but don't crash
-                FenLogger.Error($"[SkiaDomRenderer] Render error: {ex.Message}", LogCategory.Rendering);
+                FenLogger.Error($"[SkiaDomRenderer] Render error: {ex}", LogCategory.Rendering);
                 canvas.Clear(SKColors.White);
             }
         }
@@ -159,79 +194,87 @@ namespace FenBrowser.FenEngine.Rendering
         public bool HitTest(float x, float y, out HitTestResult result)
         {
             result = HitTestResult.None;
-            HitTestResult? bestMatch = null;
-            float minArea = float.MaxValue;
-            
-            // Find element at point using cached boxes
-            foreach (var kvp in _boxes)
+            if (_lastPaintTree == null || _lastPaintTree.Roots == null) return false;
+
+            // Traverse paint nodes in REVERSE order (top-to-bottom)
+            var allNodes = new List<PaintNodeBase>();
+            CollectAllNodes(_lastPaintTree.Roots, allNodes);
+
+            for (int i = allNodes.Count - 1; i >= 0; i--)
             {
-                if (kvp.Value.BorderBox.Contains(x, y))
+                var ptNode = allNodes[i];
+                if (ptNode.Bounds.Contains(x, y))
                 {
-                    var node = kvp.Key;
-                    var element = node as Element;
-                    
+                    var domNode = ptNode.SourceNode;
+                    var element = domNode as Element;
+                    if (element == null && domNode?.Parent is Element parentEl) element = parentEl;
+
                     if (element != null)
                     {
-                        // Fix for Interaction: Check pointer-events
                         if (_lastStyles != null && _lastStyles.TryGetValue(element, out var style))
                         {
                             if (style.PointerEvents == "none") continue;
                         }
-                        
-                        // Heuristic: Pick the match with the smallest area (deepest/narrowest element)
-                        float area = kvp.Value.BorderBox.Width * kvp.Value.BorderBox.Height;
-                        if (area <= minArea)
+
+                        // Found the top-most interactive element
+                        string href = null;
+                        var interactive = FindInteractiveAncestor(element);
+                        string tagName = element.Tag;
+                        string elementId = element.GetAttribute("id");
+
+                        if (interactive != null)
                         {
-                            minArea = area;
-                            
-                            string href = null;
-                            string tagName = element.Tag;
-                            string elementId = element.GetAttribute("id");
-                            
-                            // Check if link
-                            bool isLink = false;
-                            var linkAncestor = FindLinkAncestor(element);
-                            if (linkAncestor != null)
+                            if (interactive.Tag == "a")
                             {
-                                href = linkAncestor.GetAttribute("href");
-                                isLink = !string.IsNullOrEmpty(href);
+                                href = interactive.GetAttribute("href");
                             }
-                            
-                            bool isClickable = isLink || tagName == "button" || tagName == "input";
-                            bool isFocusable = isClickable || tagName == "input" || tagName == "textarea" || tagName == "select";
-                            bool isEditable = tagName == "input" || tagName == "textarea";
-                            
-                            bestMatch = new HitTestResult(
-                                TagName: tagName?.ToLowerInvariant() ?? "",
-                                Href: href,
-                                Cursor: isLink ? CursorType.Pointer : (isEditable ? CursorType.Text : CursorType.Default),
-                                IsClickable: isClickable,
-                                IsFocusable: isFocusable,
-                                IsEditable: isEditable,
-                                ElementId: elementId,
-                                NativeElement: element,
-                                BoundingBox: kvp.Value.BorderBox
-                            );
+                            else if (interactive.Tag == "button")
+                            {
+                                tagName = "button";
+                                element = interactive;
+                            }
                         }
+
+                        bool isClickable = !string.IsNullOrEmpty(href) || tagName == "button" || tagName == "input";
+                        bool isFocusable = isClickable || tagName == "input" || tagName == "textarea" || tagName == "select";
+                        bool isEditable = tagName == "input" || tagName == "textarea";
+
+                        result = new HitTestResult(
+                            TagName: tagName?.ToLowerInvariant() ?? "",
+                            Href: href,
+                            Cursor: !string.IsNullOrEmpty(href) ? CursorType.Pointer : (isEditable ? CursorType.Text : CursorType.Default),
+                            IsClickable: isClickable,
+                            IsFocusable: isFocusable,
+                            IsEditable: isEditable,
+                            ElementId: elementId,
+                            NativeElement: element,
+                            BoundingBox: ptNode.Bounds
+                        );
+                        return true;
                     }
                 }
             }
-            
-            if (bestMatch.HasValue)
-            {
-                result = bestMatch.Value;
-                return true;
-            }
-            
+
             return false;
         }
+
+        private void CollectAllNodes(IReadOnlyList<PaintNodeBase> nodes, List<PaintNodeBase> result)
+        {
+            if (nodes == null) return;
+            foreach (var node in nodes)
+            {
+                result.Add(node);
+                CollectAllNodes(node.Children, result);
+            }
+        }
         
-        private Element FindLinkAncestor(Element element)
+        private Element FindInteractiveAncestor(Element element)
         {
             var current = element;
             while (current != null)
             {
-                if (string.Equals(current.Tag, "a", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(current.Tag, "a", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(current.Tag, "button", StringComparison.OrdinalIgnoreCase))
                     return current;
                 current = current.Parent as Element;
             }
