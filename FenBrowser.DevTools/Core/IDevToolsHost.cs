@@ -68,6 +68,24 @@ public interface IDevToolsHost
     /// Event when network request is made or updates.
     /// </summary>
     event Action<NetworkRequestInfo>? NetworkRequestUpdated;
+    
+    /// <summary>
+    /// Request the browser to change the mouse cursor.
+    /// </summary>
+    void RequestCursorChange(CursorType cursor);
+}
+
+/// <summary>
+/// Mouse cursor types.
+/// </summary>
+public enum CursorType
+{
+    Default,
+    Pointer,
+    Text,
+    HorizontalResize,
+    VerticalResize,
+    Crosshair
 }
 
 /// <summary>
