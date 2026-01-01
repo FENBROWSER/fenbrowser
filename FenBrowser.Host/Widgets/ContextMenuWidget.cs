@@ -225,7 +225,7 @@ public class ContextMenuWidget : Widget
     }
 
     
-    public override void OnKeyDown(Key key)
+    public override void OnKeyDown(Key key, bool ctrl, bool shift, bool alt)
     {
         if (!IsOpen) return;
         

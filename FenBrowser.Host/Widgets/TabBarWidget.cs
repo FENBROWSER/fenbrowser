@@ -51,7 +51,7 @@ public class TabBarWidget : Widget
     private readonly ButtonWidget _maximizeButton;
     private readonly ButtonWidget _closeButton;
     
-    private const float WINDOW_CONTROL_WIDTH = 45;
+    private const float WINDOW_CONTROL_WIDTH = 38;
     
     public TabBarWidget()
     {
@@ -63,15 +63,35 @@ public class TabBarWidget : Widget
         AddChild(_newTabButton);
         
         // Window Controls
-        _minimizeButton = new ButtonWidget() { Text = "_", CornerRadius = 0, Name = "Minimize", Role = WidgetRole.Button };
+        _minimizeButton = new ButtonWidget() { CornerRadius = 0, Name = "Minimize", Role = WidgetRole.Button };
+        _minimizeButton.BackgroundColor = SKColors.Transparent;
+        _minimizeButton.BorderColor = SKColors.Transparent;
+        _minimizeButton.IconPath = CreateMinimizePath();
+        _minimizeButton.IconPaintStyle = SKPaintStyle.Stroke;
+        _minimizeButton.IconStrokeWidth = 0.7f;
+        _minimizeButton.FontSize = 9;
         _minimizeButton.Clicked += () => MinimizeRequested?.Invoke();
         AddChild(_minimizeButton);
         
-        _maximizeButton = new ButtonWidget() { Text = "□", CornerRadius = 0, Name = "Maximize", Role = WidgetRole.Button };
+        _maximizeButton = new ButtonWidget() { CornerRadius = 0, Name = "Maximize", Role = WidgetRole.Button };
+        _maximizeButton.BackgroundColor = SKColors.Transparent;
+        _maximizeButton.BorderColor = SKColors.Transparent;
+        _maximizeButton.IconPath = CreateMaximizePath();
+        _maximizeButton.IconPaintStyle = SKPaintStyle.Stroke;
+        _maximizeButton.IconStrokeWidth = 0.7f;
+        _maximizeButton.FontSize = 9;
         _maximizeButton.Clicked += () => MaximizeRequested?.Invoke();
         AddChild(_maximizeButton);
         
-        _closeButton = new ButtonWidget() { Text = "×", CornerRadius = 0, Name = "Close", Role = WidgetRole.Button, BackgroundColor = new SKColor(232, 17, 35) }; // Windows Red
+        _closeButton = new ButtonWidget() { CornerRadius = 0, Name = "Close", Role = WidgetRole.Button };
+        _closeButton.BackgroundColor = SKColors.Transparent;
+        _closeButton.BorderColor = SKColors.Transparent;
+        _closeButton.HoverBackgroundColor = new SKColor(232, 17, 35); // Edge Red
+        _closeButton.HoverTextColor = SKColors.White;
+        _closeButton.IconPath = CreateClosePath();
+        _closeButton.IconPaintStyle = SKPaintStyle.Stroke;
+        _closeButton.IconStrokeWidth = 0.7f;
+        _closeButton.FontSize = 9;
         _closeButton.Clicked += () => CloseRequested?.Invoke();
         AddChild(_closeButton);
         
@@ -229,7 +249,7 @@ public class TabBarWidget : Widget
     public void HandleScroll(float delta)
     {
         float totalWidth = _tabWidgets.Sum(w => w.PreferredWidth + 2);
-        float visibleWidth = Bounds.Width - NEW_TAB_BUTTON_WIDTH - 8;
+        float visibleWidth = Bounds.Width - NEW_TAB_BUTTON_WIDTH - 8 - (WINDOW_CONTROL_WIDTH * 3);
         
         if (totalWidth > visibleWidth)
         {
@@ -238,5 +258,30 @@ public class TabBarWidget : Widget
             InvalidateLayout();
             Invalidate();
         }
+    }
+
+    private SKPath CreateMinimizePath()
+    {
+        var path = new SKPath();
+        path.MoveTo(0, 5);
+        path.LineTo(8, 5);
+        return path;
+    }
+
+    private SKPath CreateMaximizePath()
+    {
+        var path = new SKPath();
+        path.AddRect(new SKRect(0, 0, 8, 8));
+        return path;
+    }
+
+    private SKPath CreateClosePath()
+    {
+        var path = new SKPath();
+        path.MoveTo(0, 0);
+        path.LineTo(8, 8);
+        path.MoveTo(8, 0);
+        path.LineTo(0, 8);
+        return path;
     }
 }
