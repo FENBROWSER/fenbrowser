@@ -63,6 +63,9 @@ public class WebContentWidget : Widget
     protected override void OnArrange(SKRect finalRect)
     {
         FenLogger.Info($"[WebContentWidget] OnArrange: {finalRect}", FenBrowser.Core.Logging.LogCategory.General);
+        string logPath = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FenBrowser", "click_debug.log");
+        System.IO.File.AppendAllText(logPath, $"[WebContentWidget.OnArrange] finalRect={finalRect}, this.Bounds={Bounds}\n");
+        
         // Bounds set by parent
         var activeTab = TabManager.Instance.ActiveTab;
         if (activeTab != null)
@@ -71,6 +74,8 @@ public class WebContentWidget : Widget
         }
         
         // Arrange settings page (always full fill)
+        // Must call Measure first since _settingsPage is not a regular child
+        _settingsPage.Measure(new SKSize(finalRect.Width, finalRect.Height));
         _settingsPage.Arrange(finalRect);
     }
     
@@ -103,6 +108,20 @@ public class WebContentWidget : Widget
         }
     }
     
+    public override Widget HitTestDeep(float x, float y)
+    {
+        if (!HitTest(x, y)) return null;
+
+        var activeTab = TabManager.Instance.ActiveTab;
+        if (activeTab != null && activeTab.Url.StartsWith("fen://settings", StringComparison.OrdinalIgnoreCase))
+        {
+            var hit = _settingsPage.HitTestDeep(x, y);
+            if (hit != null) return hit;
+        }
+
+        return this;
+    }
+
     public override void OnMouseDown(float x, float y, Silk.NET.Input.MouseButton button)
     {
         if (!Bounds.Contains(x, y)) return;
@@ -110,21 +129,18 @@ public class WebContentWidget : Widget
         var activeTab = TabManager.Instance.ActiveTab;
         if (activeTab != null)
         {
-            // Translate absolute window coordinates to document-relative coordinates
             if (activeTab.Url.StartsWith("fen://settings", StringComparison.OrdinalIgnoreCase))
             {
+                // Route clicks to settings page
                 _settingsPage.OnMouseDown(x, y, button);
+            }
+            else if (button == Silk.NET.Input.MouseButton.Right)
+            {
+                activeTab.Browser.HandleRightClick(x, y, Bounds.Left, Bounds.Top);
             }
             else
             {
-                if (button == Silk.NET.Input.MouseButton.Right)
-                {
-                    activeTab.Browser.HandleRightClick(x, y, Bounds.Left, Bounds.Top);
-                }
-                else
-                {
-                    activeTab.Browser.HandleClick(x, y, Bounds.Left, Bounds.Top);
-                }
+                activeTab.Browser.HandleClick(x, y, Bounds.Left, Bounds.Top);
             }
         }
     }
@@ -132,18 +148,9 @@ public class WebContentWidget : Widget
     public override void OnMouseMove(float x, float y)
     {
         var activeTab = TabManager.Instance.ActiveTab;
-        if (activeTab != null)
+        if (activeTab != null && !activeTab.Url.StartsWith("fen://settings", StringComparison.OrdinalIgnoreCase))
         {
-            // InputManager passes window-absolute coordinates
-            // BrowserIntegration.HandleMouseMove handles translation to doc-space.
-             if (activeTab.Url.StartsWith("fen://settings", StringComparison.OrdinalIgnoreCase))
-            {
-                _settingsPage.OnMouseMove(x, y);
-            }
-            else
-            {
-                activeTab.Browser.HandleMouseMove(x, y, Bounds.Left, Bounds.Top);
-            }
+            activeTab.Browser.HandleMouseMove(x, y, Bounds.Left, Bounds.Top);
         }
     }
     

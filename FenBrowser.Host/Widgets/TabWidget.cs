@@ -47,6 +47,8 @@ public class TabWidget : Widget
         Role = WidgetRole.TabItem;
         Name = tab.Title;
         // Initial bounds will be set by parent via Arrange
+        
+        _tab.TitleChanged += t => Invalidate();
     }
     
     protected override SKSize OnMeasure(SKSize availableSpace)

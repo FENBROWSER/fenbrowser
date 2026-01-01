@@ -290,7 +290,7 @@ public abstract class Widget
     /// <summary>
     /// Check if a point is within this widget's bounds.
     /// </summary>
-    public bool HitTest(float x, float y)
+    public virtual bool HitTest(float x, float y)
     {
         return IsVisible && IsEnabled && Bounds.Contains(x, y);
     }
@@ -298,7 +298,7 @@ public abstract class Widget
     /// <summary>
     /// Find the deepest widget at the given point.
     /// </summary>
-    public Widget HitTestDeep(float x, float y)
+    public virtual Widget HitTestDeep(float x, float y)
     {
         if (!HitTest(x, y)) return null;
         
@@ -316,9 +316,9 @@ public abstract class Widget
     public virtual void OnMouseDown(float x, float y, MouseButton button) { }
     public virtual void OnMouseUp(float x, float y, MouseButton button) { }
     public virtual void OnMouseMove(float x, float y) { }
-    public virtual void OnKeyDown(Key key) { }
+    public virtual void OnKeyDown(Key key, bool ctrl, bool shift, bool alt) { }
     public virtual void OnKeyUp(Key key) { }
-    public virtual void OnTextInput(char c) { }
+    public virtual void OnTextInput(char c, bool ctrl) { }
     public virtual void OnMouseWheel(float x, float y, float deltaX, float deltaY) { }
     
     /// <summary>
