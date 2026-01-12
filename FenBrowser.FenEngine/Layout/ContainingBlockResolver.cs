@@ -50,20 +50,20 @@ namespace FenBrowser.FenEngine.Layout
     /// </summary>
     public class ContainingBlockResolver
     {
-        private readonly Dictionary<Node, CssComputed> _styles;
-        private readonly Dictionary<Node, SKRect> _layoutBoxes;
+        private readonly IReadOnlyDictionary<Node, CssComputed> _styles;
+        private readonly IReadOnlyDictionary<Node, BoxModel> _layoutBoxes;
         private readonly float _viewportWidth;
         private readonly float _viewportHeight;
-        private readonly Dictionary<Node, ContainingBlock> _cache = new();
+        private readonly Dictionary<Node, ContainingBlock> _cache = new Dictionary<Node, ContainingBlock>();
 
         public ContainingBlockResolver(
-            Dictionary<Node, CssComputed> styles,
-            Dictionary<Node, SKRect> layoutBoxes,
+            IReadOnlyDictionary<Node, CssComputed> styles,
+            IReadOnlyDictionary<Node, BoxModel> layoutBoxes,
             float viewportWidth,
             float viewportHeight)
         {
             _styles = styles ?? new Dictionary<Node, CssComputed>();
-            _layoutBoxes = layoutBoxes ?? new Dictionary<Node, SKRect>();
+            _layoutBoxes = layoutBoxes ?? new Dictionary<Node, BoxModel>();
             _viewportWidth = viewportWidth;
             _viewportHeight = viewportHeight;
         }
@@ -149,35 +149,32 @@ namespace FenBrowser.FenEngine.Layout
         {
             var cb = new ContainingBlock { Node = element, IsInitial = false };
 
-            if (_layoutBoxes.TryGetValue(element, out var box))
+            if (_layoutBoxes.TryGetValue(element, out var boxModel))
             {
-                cb.X = box.Left;
-                cb.Y = box.Top;
-                cb.PaddingBox = box;
-
-                if (useContentBox && _styles.TryGetValue(element, out var style))
+                if (useContentBox)
                 {
-                    // Use Thickness for padding
-                    float paddingLeft = (float)(style.Padding.Left);
-                    float paddingRight = (float)(style.Padding.Right);
-                    float paddingTop = (float)(style.Padding.Top);
-                    float paddingBottom = (float)(style.Padding.Bottom);
-
-                    cb.X += paddingLeft;
-                    cb.Y += paddingTop;
-                    cb.Width = box.Width - paddingLeft - paddingRight;
-                    cb.Height = box.Height - paddingTop - paddingBottom;
+                    // Static/Relative: CB is formed by the content edge of the ancestor
+                    cb.X = boxModel.ContentBox.Left;
+                    cb.Y = boxModel.ContentBox.Top;
+                    cb.Width = boxModel.ContentBox.Width;
+                    cb.Height = boxModel.ContentBox.Height;
+                    cb.PaddingBox = boxModel.PaddingBox; 
                 }
                 else
                 {
-                    cb.Width = box.Width;
-                    cb.Height = box.Height;
+                    // Absolute: CB is formed by the padding edge of the ancestor
+                    cb.X = boxModel.PaddingBox.Left;
+                    cb.Y = boxModel.PaddingBox.Top;
+                    cb.Width = boxModel.PaddingBox.Width;
+                    cb.Height = boxModel.PaddingBox.Height;
+                    cb.PaddingBox = boxModel.PaddingBox;
                 }
             }
             else
             {
                 cb.Width = _viewportWidth;
                 cb.Height = _viewportHeight;
+                cb.PaddingBox = new SKRect(0, 0, _viewportWidth, _viewportHeight);
             }
 
             return cb;
