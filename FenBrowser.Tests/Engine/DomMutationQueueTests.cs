@@ -1,5 +1,6 @@
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.DOM;
+using FenBrowser.Core.Dom;
 using FenBrowser.Core.Engine; // Phase enum
 using Xunit;
 using System.Collections.Generic;
