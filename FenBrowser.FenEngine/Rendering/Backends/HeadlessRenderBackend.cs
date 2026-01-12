@@ -136,6 +136,12 @@ namespace FenBrowser.FenEngine.Rendering.Backends
                 CommandLog.Add(new RenderCommand("PopLayer", ""));
         }
         
+        public void ApplyMask(SKImage mask, SKRect bounds)
+        {
+            if (LogCommands)
+                CommandLog.Add(new RenderCommand("ApplyMask", $"bounds={bounds}"));
+        }
+        
         public void DrawShadow(SKPath path, float offsetX, float offsetY, float blurRadius, SKColor color)
         {
             if (LogCommands)

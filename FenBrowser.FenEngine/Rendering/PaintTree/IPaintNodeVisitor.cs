@@ -14,5 +14,9 @@ namespace FenBrowser.FenEngine.Rendering
         void Visit(OpacityGroupPaintNode node);
         void Visit(ClipPaintNode node);
         void Visit(BoxShadowPaintNode node);
+        void Visit(CustomPaintNode node);
+        void Visit(MaskPaintNode node);
+        void Visit(ScrollPaintNode node);
+        void Visit(StickyPaintNode node);
     }
 }

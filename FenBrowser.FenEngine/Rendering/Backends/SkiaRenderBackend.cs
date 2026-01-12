@@ -18,6 +18,11 @@ namespace FenBrowser.FenEngine.Rendering.Backends
             _canvas = canvas ?? throw new ArgumentNullException(nameof(canvas));
         }
         
+        /// <summary>
+        /// Exposes the underlying canvas for custom drawing operations.
+        /// </summary>
+        public SKCanvas Canvas => _canvas;
+        
         #region Primitives
         
         public void DrawRect(SKRect rect, SKColor color, float opacity = 1f)
@@ -107,33 +112,98 @@ namespace FenBrowser.FenEngine.Rendering.Backends
         
         public void DrawBorder(SKRect rect, BorderStyle border)
         {
+            // Check for uniform border (common case for UI inputs)
+            bool isUniformColor = border.TopColor == border.RightColor && 
+                                  border.TopColor == border.BottomColor && 
+                                  border.TopColor == border.LeftColor;
+                                  
+            bool isUniformWidth = Math.Abs(border.TopWidth - border.RightWidth) < 0.01f &&
+                                  Math.Abs(border.TopWidth - border.BottomWidth) < 0.01f &&
+                                  Math.Abs(border.TopWidth - border.LeftWidth) < 0.01f;
+                                  
+            bool hasRadius = border.TopLeftRadius.X > 0 || border.TopLeftRadius.Y > 0 || 
+                             border.TopRightRadius.X > 0 || border.TopRightRadius.Y > 0 || 
+                             border.BottomRightRadius.X > 0 || border.BottomRightRadius.Y > 0 ||
+                             border.BottomLeftRadius.X > 0 || border.BottomLeftRadius.Y > 0;
+
+            // Optimized path for uniform borders (most common)
+            if (isUniformColor && isUniformWidth && border.TopWidth > 0)
+            {
+                using var paint = CreateBorderPaint(border.TopColor, border.TopWidth);
+                
+                // SKPaint Stroke is centered. To keep border INSIDE the bounds (CSS Border-Box model),
+                // we must inset the drawn shape by half the stroke width.
+                float inset = border.TopWidth / 2.0f;
+                var drawRect = rect;
+                drawRect.Inflate(-inset, -inset);
+                
+                if (hasRadius)
+                {
+                    // Adjust radii for inset
+                    // innerRadius = outerRadius - width
+                    // midRadius = outerRadius - width/2
+                    SKPoint[] radii = new SKPoint[] 
+                    {
+                        new SKPoint(Math.Max(0, border.TopLeftRadius.X - inset), Math.Max(0, border.TopLeftRadius.Y - inset)),
+                        new SKPoint(Math.Max(0, border.TopRightRadius.X - inset), Math.Max(0, border.TopRightRadius.Y - inset)),
+                        new SKPoint(Math.Max(0, border.BottomRightRadius.X - inset), Math.Max(0, border.BottomRightRadius.Y - inset)),
+                        new SKPoint(Math.Max(0, border.BottomLeftRadius.X - inset), Math.Max(0, border.BottomLeftRadius.Y - inset))
+                    };
+                    
+                    using var path = CreateRoundedRectPath(drawRect, radii);
+                    _canvas.DrawPath(path, paint);
+                }
+                else
+                {
+                    _canvas.DrawRect(drawRect, paint);
+                }
+                return;
+            }
+
+            // Fallback for non-uniform borders (simplified to prevent crashing/logic errors, ignores radius for now)
+            // Note: Ideally we would construct complex paths for corners, but that's a larger task.
+            // Using existing line logic but fixing offsets to be "inner" borders.
+            
             // Top border
             if (border.TopWidth > 0)
             {
                 using var paint = CreateBorderPaint(border.TopColor, border.TopWidth);
-                _canvas.DrawLine(rect.Left, rect.Top, rect.Right, rect.Top, paint);
+                float y = rect.Top + border.TopWidth / 2;
+                _canvas.DrawLine(rect.Left, y, rect.Right, y, paint);
             }
             
             // Right border
             if (border.RightWidth > 0)
             {
                 using var paint = CreateBorderPaint(border.RightColor, border.RightWidth);
-                _canvas.DrawLine(rect.Right, rect.Top, rect.Right, rect.Bottom, paint);
+                float x = rect.Right - border.RightWidth / 2;
+                _canvas.DrawLine(x, rect.Top, x, rect.Bottom, paint);
             }
             
             // Bottom border
             if (border.BottomWidth > 0)
             {
                 using var paint = CreateBorderPaint(border.BottomColor, border.BottomWidth);
-                _canvas.DrawLine(rect.Right, rect.Bottom, rect.Left, rect.Bottom, paint);
+                float y = rect.Bottom - border.BottomWidth / 2;
+                _canvas.DrawLine(rect.Right, y, rect.Left, y, paint);
             }
             
             // Left border
             if (border.LeftWidth > 0)
             {
                 using var paint = CreateBorderPaint(border.LeftColor, border.LeftWidth);
-                _canvas.DrawLine(rect.Left, rect.Bottom, rect.Left, rect.Top, paint);
+                float x = rect.Left + border.LeftWidth / 2;
+                _canvas.DrawLine(x, rect.Bottom, x, rect.Top, paint);
             }
+        }
+
+        private static SKPath CreateRoundedRectPath(SKRect bounds, SKPoint[] radius)
+        {
+            var path = new SKPath();
+            var rrect = new SKRoundRect();
+            rrect.SetRectRadii(bounds, radius);
+            path.AddRoundRect(rrect);
+            return path;
         }
         
         private SKPaint CreateBorderPaint(SKColor color, float width)
@@ -248,19 +318,19 @@ namespace FenBrowser.FenEngine.Rendering.Backends
         public void PushClip(SKRect clipRect)
         {
             _canvas.Save();
-            _canvas.ClipRect(clipRect);
+            _canvas.ClipRect(clipRect, SKClipOperation.Intersect, antialias: true);
         }
         
         public void PushClip(SKRect clipRect, float radiusX, float radiusY)
         {
             _canvas.Save();
-            _canvas.ClipRoundRect(new SKRoundRect(clipRect, radiusX, radiusY));
+            _canvas.ClipRoundRect(new SKRoundRect(clipRect, radiusX, radiusY), SKClipOperation.Intersect, antialias: true);
         }
         
         public void PushClip(SKPath clipPath)
         {
             _canvas.Save();
-            _canvas.ClipPath(clipPath);
+            _canvas.ClipPath(clipPath, SKClipOperation.Intersect, antialias: true);
         }
 
         public void PopClip()
@@ -286,6 +356,17 @@ namespace FenBrowser.FenEngine.Rendering.Backends
         public void PopLayer()
         {
             _canvas.Restore();
+        }
+        
+        public void ApplyMask(SKImage mask, SKRect bounds)
+        {
+            if (mask == null) return;
+            using var paint = new SKPaint
+            {
+                BlendMode = SKBlendMode.DstIn,
+                IsAntialias = true
+            };
+            _canvas.DrawImage(mask, bounds, paint);
         }
         
         #endregion

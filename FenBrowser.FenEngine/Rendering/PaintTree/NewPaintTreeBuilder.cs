@@ -4,6 +4,7 @@ using System.Linq;
 using FenBrowser.Core.Dom;
 using FenBrowser.Core.Css;
 using FenBrowser.FenEngine.Layout;
+using FenBrowser.Core.Logging;
 using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Rendering
@@ -35,19 +36,29 @@ namespace FenBrowser.FenEngine.Rendering
         private readonly string _baseUri;
         private int _frameId;
         
+        // CSS Counters state - tracks counter values during tree traversal
+        private readonly Dictionary<string, int> _counters = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        
+        private readonly Interaction.ScrollManager _scrollManager;
+        
         private NewPaintTreeBuilder(
             IReadOnlyDictionary<Node, Layout.BoxModel> boxes,
             IReadOnlyDictionary<Node, CssComputed> styles,
             float viewportWidth,
             float viewportHeight,
+            Interaction.ScrollManager scrollManager,
             string baseUri)
         {
             _boxes = boxes ?? throw new ArgumentNullException(nameof(boxes));
             _styles = styles ?? new Dictionary<Node, CssComputed>();
             _viewportWidth = viewportWidth;
             _viewportHeight = viewportHeight;
+            _scrollManager = scrollManager;
             _baseUri = baseUri;
         }
+        
+        private readonly HashSet<Element> _topLayerElements = new HashSet<Element>();
+        private bool _renderingTopLayer = false;
         
         /// <summary>
         /// Builds an immutable paint tree from layout and style data.
@@ -58,6 +69,7 @@ namespace FenBrowser.FenEngine.Rendering
             IReadOnlyDictionary<Node, CssComputed> styles,
             float viewportWidth,
             float viewportHeight,
+            Interaction.ScrollManager scrollManager,
             string baseUri = null,
             int frameId = 0)
         {
@@ -67,17 +79,55 @@ namespace FenBrowser.FenEngine.Rendering
                 return ImmutablePaintTree.Empty;
             }
             
-            var builder = new NewPaintTreeBuilder(boxes, styles, viewportWidth, viewportHeight, baseUri);
+            var builder = new NewPaintTreeBuilder(boxes, styles, viewportWidth, viewportHeight, scrollManager, baseUri);
             builder._frameId = frameId;
+            
+            // Populate Top Layer set
+            Document doc = root as Document;
+            if (doc != null && doc.TopLayer != null)
+            {
+                foreach (var el in doc.TopLayer)
+                    builder._topLayerElements.Add(el);
+            }
             
             // Build the root stacking context
             var rootContext = new BuilderStackingContext(root);
-            builder.BuildRecursive(root, rootContext);
+            builder.BuildRecursive(root, rootContext, 0);
             
             // Flatten stacking contexts into paint order
             var rootNodes = rootContext.Flatten();
             
-            /* [PERF-REMOVED] */
+            // Render Top Layer
+            if (builder._topLayerElements.Count > 0 && doc != null)
+            {
+                builder._renderingTopLayer = true;
+                foreach (var modal in doc.TopLayer)
+                {
+                    // Verify if it has a box (rendered)
+                    if (boxes.ContainsKey(modal))
+                    {
+                        // Add Backdrop
+                        // Grey semi-transparent overlay
+                        rootNodes.Add(new CustomPaintNode
+                        {
+                            Bounds = new SKRect(0, 0, viewportWidth, viewportHeight),
+                            PaintAction = (canvas, bounds) =>
+                            {
+                                using var p = new SKPaint { Color = new SKColor(0, 0, 0, 30), IsAntialias = false }; // ~12% opacity
+                                canvas.DrawRect(bounds, p);
+                            }
+                        });
+                        
+                        // Render Modal
+                        // We use a fresh stacking context for the modal tree
+                        var modalContext = new BuilderStackingContext(modal);
+                        builder.BuildRecursive(modal, modalContext, 0);
+                        var modalNodes = modalContext.Flatten();
+                        rootNodes.AddRange(modalNodes);
+                    }
+                }
+                builder._renderingTopLayer = false;
+            }
 
             return new ImmutablePaintTree(rootNodes, frameId);
         }
@@ -85,17 +135,22 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Recursively builds paint nodes for an element and its children.
         /// </summary>
-        private void BuildRecursive(Node node, BuilderStackingContext currentContext)
+        private void BuildRecursive(Node node, BuilderStackingContext currentContext, int depth, BuilderStackingContext escapeContext = null)
         {
+            if (depth > 128) return; 
             try { System.Runtime.CompilerServices.RuntimeHelpers.EnsureSufficientExecutionStack(); }
             catch (InsufficientExecutionStackException) { return; }
+            
+            // Skip Top Layer elements during normal pass
+            if (!_renderingTopLayer && node is Element el && _topLayerElements.Contains(el))
+                return;
 
             if (node == null) return;
             
             // Process children for Document/Fragment even if they don't have boxes themselves
             if (node is Document || node is DocumentFragment)
             {
-                ProcessChildren(node, currentContext);
+                ProcessChildren(node, currentContext, depth + 1);
                 return;
             }
             
@@ -107,55 +162,309 @@ namespace FenBrowser.FenEngine.Rendering
             
             // Get computed style
             _styles.TryGetValue(node, out var style);
+
+            // ABSOLUTE POSITION ESCAPE LOGIC
+            // If this node is absolute, and we have a valid escape context (from a static parent), use it.
+            if (escapeContext != null && style != null && string.Equals(style.Position, "absolute", StringComparison.OrdinalIgnoreCase))
+            {
+                 currentContext = escapeContext;
+                 escapeContext = null; 
+            }
             
             // Skip hidden elements
-            if (ShouldHide(node, style)) return;
+            if (ShouldHide(node, style)) {
+                 if (FenBrowser.Core.Logging.DebugConfig.LogPaintCommands && depth < 20)
+                     global::FenBrowser.Core.FenLogger.Log($"[PAINT-SKIP] {(node as Element)?.TagName} Reason=ShouldHide", FenBrowser.Core.Logging.LogCategory.Paint);
+                 return;
+            }
+            
+            // Process CSS counters (counter-reset and counter-increment)
+            ProcessCounters(style);
             
             // Determine if this creates a new stacking context
             bool createsStackingContext = DetermineCreatesStackingContext(style);
             int zIndex = style?.ZIndex ?? 0;
+
+            if (FenBrowser.Core.Logging.DebugConfig.LogPaintCommands && depth < 20)
+            {
+                 var logEl = node as Element;
+                 string cls = logEl?.GetAttribute("class");
+                 if (string.IsNullOrEmpty(cls) || FenBrowser.Core.Logging.DebugConfig.ShouldLog(cls))
+                 {
+                     string scInfo = createsStackingContext ? $" SC=True Z={zIndex}" : "";
+                     string clipInfo = (style?.Overflow == "hidden" || style?.OverflowX == "hidden") ? " Clipped=True" : "";
+                     global::FenBrowser.Core.FenLogger.Log($"[PAINT-NODE] {new string(' ', depth)}{(node as Element)?.TagName} {scInfo}{clipInfo} Rect={box.BorderBox}", LogCategory.Paint);
+                 }
+            }
             
             // Build paint nodes for this element
             var paintNodes = BuildPaintNodesForElement(node, box, style);
             
+            // Handle Sticky Positioning
+            if (style?.Position?.ToLowerInvariant() == "sticky")
+            {
+                // Find Scroll Container
+                var resolvedScrollContainer = FindNearestScrollContainer(node as Element);
+                float scrollX = 0;
+                float scrollY = 0;
+                SKRect containerRect = new SKRect(0, 0, _viewportWidth, _viewportHeight); // Default to viewport
+                
+                if (resolvedScrollContainer != null)
+                {
+                    // Container is an element
+                    if (_boxes.TryGetValue(resolvedScrollContainer, out var cBox))
+                    {
+                        containerRect = cBox.PaddingBox;
+                    }
+                    var state = _scrollManager?.GetScrollState(resolvedScrollContainer);
+                    if (state != null)
+                    {
+                        scrollX = state.ScrollX;
+                        scrollY = state.ScrollY;
+                    }
+                }
+                else
+                {
+                    // Container is Viewport (Root)
+                    // If root document is scrollable?
+                    // Usually window scroll. We assume viewport acts as window scroll if no element container?
+                    // Currently we only support element scrolling via ScrollManager?
+                    // If ScrollManager tracks root scroll, use keys like 'null' or Document?
+                    // For now, assume element scrolling or nothing.
+                    var rootState = _scrollManager?.GetScrollState(null); // Try get global scroll
+                     if (rootState != null)
+                    {
+                        scrollX = rootState.ScrollX;
+                        scrollY = rootState.ScrollY;
+                    }
+                }
+
+                // Calculate Sticky Offset
+                // 1. Calculate the 'natural' position relative to the scroll container's content box
+                //    Layout coordinates are already absolute document coordinates.
+                //    So naturalY = box.MarginBox.Top.
+                
+                float translationX = 0;
+                float translationY = 0;
+                
+                // Top Constraint
+                // stickyY = max(naturalY, scrollY + top)
+                if (style.Top.HasValue) // Assume pixels for now
+                {
+                    float topConstraint = (float)style.Top.Value;
+                    float naturalY = box.MarginBox.Top;
+                    
+                    // The element effectively shifts down to stay visible
+                    // TargetY (absolute) = max(naturalY, scrollY + containerRect.Top + topConstraint)
+                    // Note: ScrollY is positive. ContainerRect.Top is its document position.
+                    
+                    // If container is viewport(0,0), then TargetY = max(naturalY, scrollY + top).
+                    // If container is an element at 100, and we scrolled 50px inside it. 
+                    // Visual Top of container content starts at 100 - 50 = 50.
+                    // We want element to be at 100 (container visual top) + topConstraint.
+                    // Equivalent Abs Y = ContainerRect.Top + ScrollY + topConstraint ??
+                    // No. 
+                    // Let's think in "Flow Relative" coords?
+                    // VisualY = AbsY - ScrollY.
+                    // We want VisualY >= ContainerRect.Top (visually) + TopConstraint?
+                    // Actually, for a nested scroll container, VisualY relative to screen.
+                    
+                    // Simple logic:
+                    // Sticky element sticks to the "scroll port".
+                    // Scroll Port Top (in document coords) = ContainerRect.Top + ScrollY.
+                    
+                    float scrollPortTop = (resolvedScrollContainer == null ? 0 : containerRect.Top) + scrollY;
+                    float targetY = Math.Max(naturalY, scrollPortTop + topConstraint);
+                    
+                    // Limit by Containing Block (Parent)
+                    // The sticky element cannot escape its parent.
+                    if (node.Parent is Element parentEl && _boxes.TryGetValue(parentEl, out var parentBox))
+                    {
+                        float limitY = parentBox.ContentBox.Bottom - box.MarginBox.Height - (float)style.Margin.Bottom;
+                        targetY = Math.Min(targetY, limitY);
+                    }
+                    
+                    translationY = targetY - naturalY;
+                }
+                
+                // Apply wrapper if translation needed
+                if (Math.Abs(translationX) > 0.1f || Math.Abs(translationY) > 0.1f)
+                {
+                     paintNodes = new List<PaintNodeBase> 
+                     { 
+                         new StickyPaintNode 
+                         { 
+                             StickyOffset = new SKPoint(translationX, translationY),
+                             Children = paintNodes,
+                             Bounds = box.BorderBox // Approx
+                         } 
+                     };
+                }
+            }
+
             if (createsStackingContext)
             {
                 // Create a new stacking context
                 var childContext = new BuilderStackingContext(node)
                 {
                     ZIndex = zIndex,
-                    PaintNodes = paintNodes
+                    PaintNodes = paintNodes,
+                    MaskImage = style?.MaskImage,
+                    // Use BorderBox for masking area by default (standard box-mask)
+                    MaskBounds = box.BorderBox,
+                    Opacity = (float)(style.Opacity ?? 1.0)
                 };
+
+                // Check for overflow/scroll
+                bool isScrollable = (style?.OverflowX == "scroll" || style?.OverflowX == "auto" || 
+                                     style?.OverflowY == "scroll" || style?.OverflowY == "auto");
+                bool isClipped = (style?.Overflow == "hidden" || style?.OverflowX == "hidden" || style?.OverflowY == "hidden");
+
+                if (isScrollable || isClipped)
+                {
+                    // Scrollable containers clip purely to padding box (usually) or content box?
+                    // Spec: overflow applies to padding box.
+                    childContext.ClipBounds = box.PaddingBox;
+                }
+
+                if (isScrollable && _scrollManager != null)
+                {
+                    // Get current scroll offset from manager
+                    var scrollState = _scrollManager.GetScrollState(node as Element);
+                    if (scrollState != null)
+                    {
+                        childContext.ScrollOffset = new SKPoint(scrollState.ScrollX, scrollState.ScrollY);
+                    }
+                }
                 
                 // Add to parent context based on z-index
                 currentContext.AddChildContext(childContext);
                 
                 // Process children in the new context
-                ProcessChildren(node, childContext);
+                ProcessChildren(node, childContext, depth + 1);
             }
             else
             {
                 // Check if positioned (affects paint order)
                 string pos = style?.Position?.ToLowerInvariant();
-                bool isPositioned = pos == "absolute" || pos == "fixed";
+                bool isPositioned = pos == "absolute" || pos == "fixed" || pos == "sticky";
+                bool isFloat = !string.IsNullOrEmpty(style?.Float) && (style.Float == "left" || style.Float == "right");
                 
+                string display = style?.Display?.ToLowerInvariant() ?? "inline";
+                bool isInlineLevel = display == "inline" || display == "inline-block" || display == "inline-flex" || display == "inline-grid" || display == "inline-table";
+                if (node is Text) isInlineLevel = true;
+
+                // 1. Add element's background/border nodes (UNCLIPPED by self)
+                //    (paintNodes contains the background, border, etc.)
                 if (isPositioned)
                 {
-                    // Positioned elements go to a special layer in the current context
                     currentContext.AddPositionedNodes(paintNodes, zIndex);
+                }
+                else if (isFloat)
+                {
+                    currentContext.AddFloatNodes(paintNodes);
+                }
+                else if (isInlineLevel)
+                {
+                    currentContext.AddInlineNodes(paintNodes);
                 }
                 else
                 {
-                    // Normal flow - add to current context
-                    currentContext.AddFlowNodes(paintNodes);
+                    currentContext.AddBlockNodes(paintNodes);
                 }
-                
-                // Process children in the current context
-                ProcessChildren(node, currentContext);
+
+                // 2. Process Children (Clipped or Normal)
+                bool isClipped = (style?.Overflow == "hidden" || style?.OverflowX == "hidden" || style?.OverflowY == "hidden" ||
+                                  style?.Overflow == "scroll" || style?.OverflowX == "scroll" || style?.OverflowY == "scroll");
+
+                if (isClipped)
+                {
+                    // Create Clip Node for children
+                    var paddingBox = box.PaddingBox;
+                    var radius = ExtractBorderRadius(box, style);
+                    SKPath clipPath = null;
+                    SKRect clipRect = paddingBox;
+
+                    // Calculate rounded clip if needed
+                    if (radius != null && (radius[0].X > 0 || radius[0].Y > 0 || radius[1].X > 0 || radius[1].Y > 0 || 
+                                           radius[2].X > 0 || radius[2].Y > 0 || radius[3].X > 0 || radius[3].Y > 0))
+                    {
+                         float topW = (float)style.BorderThickness.Top;
+                         float rightW = (float)style.BorderThickness.Right;
+                         float botW = (float)style.BorderThickness.Bottom;
+                         float leftW = (float)style.BorderThickness.Left;
+                         
+                         var radii = new SKPoint[4];
+                         // Inner radius = Outer radius - Border thickness (clamped to 0)
+                         radii[0] = new SKPoint(Math.Max(0, radius[0].X - leftW), Math.Max(0, radius[0].Y - topW));
+                         radii[1] = new SKPoint(Math.Max(0, radius[1].X - rightW), Math.Max(0, radius[1].Y - topW));
+                         radii[2] = new SKPoint(Math.Max(0, radius[2].X - rightW), Math.Max(0, radius[2].Y - botW));
+                         radii[3] = new SKPoint(Math.Max(0, radius[3].X - leftW), Math.Max(0, radius[3].Y - botW));
+                         
+                         var rrect = new SKRoundRect();
+                         rrect.SetRectRadii(paddingBox, radii);
+                         clipPath = new SKPath();
+                         clipPath.AddRoundRect(rrect);
+                    }
+
+                    // Collect children into a temporary context and flatten them
+                    var tempCtx = new BuilderStackingContext(node);
+                    
+                    // Determine if we are a containing block for absolute children.
+                    // If we are NOT (i.e. we are static), then absolute children should escape this clip.
+                    bool isContainingBlock = isPositioned || (style.Transform != "none" && !string.IsNullOrEmpty(style.Transform)); 
+                    BuilderStackingContext nextEscapeContext = isContainingBlock ? null : currentContext;
+
+                    // Inherit scroll offset logic if strictly needed, but for visual clipping Flatten() handles list construction.
+                    // Important: Recursion here puts children into tempCtx.
+                    ProcessChildren(node, tempCtx, depth + 1, nextEscapeContext);
+                    
+                    var clippedChildren = tempCtx.Flatten();
+                    
+                    if (clippedChildren.Count > 0)
+                    {
+                        var clipNode = new ClipPaintNode
+                        {
+                            Bounds = paddingBox,
+                            ClipRect = clipRect,
+                            ClipPath = clipPath,
+                            Children = clippedChildren,
+                            SourceNode = node
+                        };
+                        
+                        // Add ClipNode to context (same bucket as element usually, or Block)
+                        var clipList = new List<PaintNodeBase> { clipNode };
+                        
+                        if (isPositioned) currentContext.AddPositionedNodes(clipList, zIndex);
+                        else if (isFloat) currentContext.AddFloatNodes(clipList);
+                        else currentContext.AddBlockNodes(clipList);
+                    }
+                }
+                else
+                {
+                    // No clipping - process children directly into current context
+                    ProcessChildren(node, currentContext, depth + 1, escapeContext);
+                }
             }
         }
+
+        private Element FindNearestScrollContainer(Element startNode)
+        {
+            var curr = startNode?.Parent as Element;
+            while (curr != null)
+            {
+                if (_styles.TryGetValue(curr, out var s))
+                {
+                    bool scroll = (s.OverflowX == "scroll" || s.OverflowX == "auto" || 
+                                   s.OverflowY == "scroll" || s.OverflowY == "auto");
+                    if (scroll) return curr;
+                }
+                curr = curr.Parent as Element;
+            }
+            return null; // Viewport
+        }
         
-        private void ProcessChildren(Node node, BuilderStackingContext context)
+        private void ProcessChildren(Node node, BuilderStackingContext context, int depth, BuilderStackingContext escapeContext = null)
         {
             // Form controls (INPUT, TEXTAREA) are replaced elements; we handle their content rendering explicitly.
             // Skipping children prevents double-rendering of text.
@@ -166,7 +475,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 foreach (var child in node.Children)
                 {
-                    BuildRecursive(child, context);
+                    BuildRecursive(child, context, depth + 1, escapeContext);
                 }
             }
         }
@@ -185,16 +494,29 @@ namespace FenBrowser.FenEngine.Rendering
             bool isHovered = elemNode != null && ElementStateManager.Instance.IsHovered(elemNode);
             
             // 0. Shadow (below background)
-            var shadowNode = BuildBoxShadowNode(node, bounds, style);
+            var shadowNode = BuildBoxShadowNode(node, bounds, style, box);
             if (shadowNode != null) nodes.Add(shadowNode);
 
-            // 1. Background
-            var bgNode = BuildBackgroundNode(node, bounds, style, isFocused, isHovered);
-            if (bgNode != null) nodes.Add(bgNode);
+            // SPECIAL: Inline Elements (Span, A, etc.) need constructed backgrounds from children
+            bool isInlineGroup = elemNode != null && string.Equals(style?.Display, "inline", StringComparison.OrdinalIgnoreCase) && !(node is Text);
             
-            // 2. Border
-            var borderNode = BuildBorderNode(node, bounds, style, isFocused, isHovered);
-            if (borderNode != null) nodes.Add(borderNode);
+            if (isInlineGroup)
+            {
+                 var inlineNodes = BuildInlineBackgroundAndBorder(node, style, isFocused, isHovered);
+                 if (inlineNodes != null) nodes.AddRange(inlineNodes);
+            }
+            else
+            {
+                // Standard Block/Atomic/Replaced Behavior
+
+                // 1. Background
+                var bgNode = BuildBackgroundNode(node, box, style, isFocused, isHovered);
+                if (bgNode != null) nodes.Add(bgNode);
+                
+                // 2. Border
+                var borderNode = BuildBorderNode(node, box, style, isFocused, isHovered);
+                if (borderNode != null) nodes.Add(borderNode);
+            }
             
             // 3. Content (text or image)
             if (node is Text textNode)
@@ -207,18 +529,91 @@ namespace FenBrowser.FenEngine.Rendering
                 string tagUpper = elem.Tag?.ToUpperInvariant();
                 if (tagUpper == "IMG")
                 {
-                    FenBrowser.Core.FenLogger.Debug($"[PAINT-BUILD] Found IMG element id={elem.GetAttribute("id")} src={(elem.GetAttribute("src")?.Length > 60 ? elem.GetAttribute("src")?.Substring(0,60) + "..." : elem.GetAttribute("src"))}");
+                    global::FenBrowser.Core.FenLogger.Debug($"[PAINT-BUILD] Found IMG element id={elem.GetAttribute("id")} src={(elem.GetAttribute("src")?.Length > 60 ? elem.GetAttribute("src")?.Substring(0,60) + "..." : elem.GetAttribute("src"))}");
                 }
-                if (IsImageElement(elem) || tagUpper == "SVG")
+                if (tagUpper.Contains("SVG"))
+                {
+                     global::FenBrowser.Core.FenLogger.Debug($"[SVG-CANDIDATE] Tag={elem.Tag} TagUpper={tagUpper}", FenBrowser.Core.Logging.LogCategory.Rendering);
+                }
+                if (IsImageElement(elem) || tagUpper == "SVG" || tagUpper.EndsWith(":SVG")) // Handle namespace?
                 {
                     var imageNode = BuildImageOrSvgNode(elem, box, style, isFocused, isHovered);
                     if (imageNode != null) nodes.Add(imageNode);
                 }
-                else if (elem.Tag?.ToUpperInvariant() == "INPUT" || elem.Tag?.ToUpperInvariant() == "TEXTAREA")
+                else if (elem.Tag?.ToUpperInvariant() == "INPUT")
                 {
-                    // Inputs are still single line for now (simple implementation)
+                    string inputType = elem.GetAttribute("type")?.ToLowerInvariant() ?? "text";
+                    if (inputType == "checkbox" || inputType == "radio" || inputType == "color" || inputType == "range" ||
+                        inputType == "date" || inputType == "time" || inputType == "datetime-local" || inputType == "number" || inputType == "file")
+                    {
+                        var specialNode = BuildSpecialInputNode(elem, box, style, isFocused, isHovered);
+                        if (specialNode != null) nodes.Add(specialNode);
+                    }
+                    else
+                    {
+                        var inputNode = BuildInputTextNode(elem, box, style, isFocused, isHovered);
+                        if (inputNode != null) nodes.Add(inputNode);
+                    }
+                }
+                else if (elem.Tag?.ToUpperInvariant() == "TEXTAREA")
+                {
                     var inputNode = BuildInputTextNode(elem, box, style, isFocused, isHovered);
                     if (inputNode != null) nodes.Add(inputNode);
+                }
+                else if (elem.Tag?.ToUpperInvariant() == "RUBY")
+                {
+                    // Ruby annotation - render RT above base text
+                    var rubyNodes = BuildRubyTextNode(elem, box, style);
+                    if (rubyNodes != null) nodes.AddRange(rubyNodes);
+                }
+                else if (elem.Tag?.ToUpperInvariant() == "VIDEO")
+                {
+                    var videoNode = BuildVideoPlaceholder(elem, box, style);
+                    if (videoNode != null) nodes.Add(videoNode);
+                }
+                else if (elem.Tag?.ToUpperInvariant() == "AUDIO")
+                {
+                    var audioNode = BuildAudioPlaceholder(elem, box, style);
+                    if (audioNode != null) nodes.Add(audioNode);
+                }
+                else if (elem.Tag?.ToUpperInvariant() == "IFRAME")
+                {
+                    var iframeNode = BuildIframePlaceholder(elem, box, style);
+                    if (iframeNode != null) nodes.Add(iframeNode);
+                }
+                else if (tagUpper == "PROGRESS")
+                {
+                    var progressNode = BuildProgressBar(elem, box, style);
+                    if (progressNode != null) nodes.Add(progressNode);
+                }
+                else if (tagUpper == "METER")
+                {
+                    var meterNode = BuildMeterBar(elem, box, style);
+                    if (meterNode != null) nodes.Add(meterNode);
+                }
+            }
+            // 4. List Marker (if display: list-item)
+            if (string.Equals(style?.Display, "list-item", StringComparison.OrdinalIgnoreCase))
+            {
+                var markerNode = BuildListMarkerNode(node, box, style, isFocused, isHovered);
+                if (markerNode != null) nodes.Add(markerNode);
+            }
+            
+            // 5. Pseudo-elements (::before and ::after)
+            if (node is Element pseudoParent && style != null)
+            {
+                // ::before pseudo-element
+                if (style.Before != null && !string.IsNullOrEmpty(style.Before.Content))
+                {
+                    var beforeNode = BuildPseudoElementNode(pseudoParent, box, style.Before, "before");
+                    if (beforeNode != null) nodes.Insert(0, beforeNode); // Insert at beginning
+                }
+                
+                // ::after pseudo-element
+                if (style.After != null && !string.IsNullOrEmpty(style.After.Content))
+                {
+                    var afterNode = BuildPseudoElementNode(pseudoParent, box, style.After, "after");
+                    if (afterNode != null) nodes.Add(afterNode); // Add at end
                 }
             }
             
@@ -236,8 +631,410 @@ namespace FenBrowser.FenEngine.Rendering
             
             return nodes;
         }
+        
+        /// <summary>
+        /// Builds a paint node for ::before or ::after pseudo-element content.
+        /// </summary>
+        private PaintNodeBase BuildPseudoElementNode(Element parent, Layout.BoxModel box, CssComputed pseudoStyle, string position)
+        {
+            if (box == null || pseudoStyle == null) return null;
+            
+            string content = pseudoStyle.Content;
+            if (string.IsNullOrEmpty(content) || content == "none" || content == "normal") return null;
+            
+            // Parse content value - remove quotes for string content
+            string textContent = ParseContentValue(content, parent);
+            if (string.IsNullOrEmpty(textContent)) return null;
+            
+            // Get styling
+            float fontSize = (float)(pseudoStyle.FontSize ?? 16.0);
+            CssComputed parentStyle = null;
+            _styles?.TryGetValue(parent, out parentStyle);
+            var color = pseudoStyle.ForegroundColor ?? parentStyle?.ForegroundColor ?? SKColors.Black;
+            string fontFamily = pseudoStyle.FontFamilyName ?? "sans-serif";
+            int fontWeight = pseudoStyle.FontWeight ?? 400;
+            
+            // Calculate position
+            SKRect contentBox = box.ContentBox;
+            float x = position == "before" ? contentBox.Left : contentBox.Right;
+            float y = contentBox.Top + fontSize;
+            
+            return new CustomPaintNode
+            {
+                Bounds = contentBox,
+                PaintAction = (canvas, bounds) =>
+                {
+                    using var paint = new SKPaint
+                    {
+                        Color = color,
+                        TextSize = fontSize,
+                        IsAntialias = true,
+                        Typeface = SKTypeface.FromFamilyName(fontFamily, fontWeight >= 700 ? SKFontStyleWeight.Bold : SKFontStyleWeight.Normal, SKFontStyleWidth.Normal, SKFontStyleSlant.Upright)
+                    };
+                    
+                    float textWidth = paint.MeasureText(textContent);
+                    float drawX = position == "before" ? bounds.Left : bounds.Right - textWidth;
+                    float drawY = bounds.Top + fontSize;
+                    
+                    // Draw background if specified
+                    if (pseudoStyle.BackgroundColor.HasValue && pseudoStyle.BackgroundColor.Value.Alpha > 0)
+                    {
+                        using var bgPaint = new SKPaint { Color = pseudoStyle.BackgroundColor.Value, Style = SKPaintStyle.Fill };
+                        canvas.DrawRect(new SKRect(drawX, bounds.Top, drawX + textWidth, bounds.Top + fontSize + 4), bgPaint);
+                    }
+                    
+                    canvas.DrawText(textContent, drawX, drawY, paint);
+                }
+            };
+        }
+        
+        /// <summary>
+        /// Parses CSS content property value into actual text.
+        /// </summary>
+        private string ParseContentValue(string content, Element parent)
+        {
+            if (string.IsNullOrEmpty(content)) return null;
+            
+            content = content.Trim();
+            
+            // Handle quoted strings: "text" or 'text'
+            if ((content.StartsWith("\"") && content.EndsWith("\"")) ||
+                (content.StartsWith("'") && content.EndsWith("'")))
+            {
+                return content.Substring(1, content.Length - 2);
+            }
+            
+            // Handle attr() function
+            if (content.StartsWith("attr(") && content.EndsWith(")"))
+            {
+                string attrName = content.Substring(5, content.Length - 6).Trim();
+                return parent?.GetAttribute(attrName) ?? "";
+            }
+            
+            // Handle counter() function
+            if (content.StartsWith("counter(") && content.EndsWith(")"))
+            {
+                string args = content.Substring(8, content.Length - 9).Trim();
+                string[] parts = args.Split(',');
+                string counterName = parts[0].Trim();
+                string listStyle = parts.Length > 1 ? parts[1].Trim() : "decimal";
+                
+                int value = _counters.ContainsKey(counterName) ? _counters[counterName] : 0;
+                return FormatCounterValue(value, listStyle);
+            }
+            
+            // Handle counters() function (for nested lists with separator)
+            if (content.StartsWith("counters(") && content.EndsWith(")"))
+            {
+                string args = content.Substring(9, content.Length - 10).Trim();
+                // counters(name, "separator", style)
+                // For now, just return the current counter value
+                string[] parts = args.Split(',');
+                string counterName = parts[0].Trim().Trim('"', '\'');
+                
+                int value = _counters.ContainsKey(counterName) ? _counters[counterName] : 0;
+                return value.ToString();
+            }
+            
+            // Handle open-quote / close-quote
+            if (content == "open-quote") return "\"";
+            if (content == "close-quote") return "\"";
+            
+            // Return as-is for other values
+            return content;
+        }
+        
+        /// <summary>
+        /// Processes counter-reset and counter-increment for the current element.
+        /// </summary>
+        private void ProcessCounters(CssComputed style)
+        {
+            if (style == null) return;
+            
+            // Process counter-reset
+            if (!string.IsNullOrEmpty(style.CounterReset))
+            {
+                ParseCounterDirective(style.CounterReset, isReset: true);
+            }
+            
+            // Process counter-increment
+            if (!string.IsNullOrEmpty(style.CounterIncrement))
+            {
+                ParseCounterDirective(style.CounterIncrement, isReset: false);
+            }
+        }
+        
+        /// <summary>
+        /// Parses counter-reset or counter-increment directive.
+        /// Format: "name1 value1 name2 value2" or just "name1 name2"
+        /// </summary>
+        private void ParseCounterDirective(string directive, bool isReset)
+        {
+            if (string.IsNullOrWhiteSpace(directive) || directive == "none") return;
+            
+            string[] tokens = directive.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            
+            for (int i = 0; i < tokens.Length; i++)
+            {
+                string name = tokens[i];
+                int value = 0;
+                
+                // Check if next token is a number
+                if (i + 1 < tokens.Length && int.TryParse(tokens[i + 1], out int parsedValue))
+                {
+                    value = parsedValue;
+                    i++; // Skip the number
+                }
+                
+                if (isReset)
+                {
+                    _counters[name] = value;
+                }
+                else
+                {
+                    // Increment (default by 1 if no value specified)
+                    if (value == 0) value = 1;
+                    if (_counters.ContainsKey(name))
+                        _counters[name] += value;
+                    else
+                        _counters[name] = value;
+                }
+            }
+        }
+        
+        /// <summary>
+        /// Formats a counter value according to list-style-type.
+        /// </summary>
+        private static string FormatCounterValue(int value, string listStyle)
+        {
+            listStyle = listStyle?.Trim().ToLowerInvariant() ?? "decimal";
+            
+            switch (listStyle)
+            {
+                case "decimal":
+                    return value.ToString();
+                case "decimal-leading-zero":
+                    return value.ToString("D2");
+                case "lower-roman":
+                    return ToRoman(value).ToLowerInvariant();
+                case "upper-roman":
+                    return ToRoman(value);
+                case "lower-alpha":
+                case "lower-latin":
+                    return value > 0 && value <= 26 ? ((char)('a' + value - 1)).ToString() : value.ToString();
+                case "upper-alpha":
+                case "upper-latin":
+                    return value > 0 && value <= 26 ? ((char)('A' + value - 1)).ToString() : value.ToString();
+                case "disc":
+                    return "•";
+                case "circle":
+                    return "○";
+                case "square":
+                    return "■";
+                default:
+                    return value.ToString();
+            }
+        }
+        
+        /// <summary>
+        /// Converts a number to Roman numerals.
+        /// </summary>
+        private static string ToRoman(int number)
+        {
+            if (number <= 0 || number > 3999) return number.ToString();
+            
+            var romanNumerals = new (int, string)[]
+            {
+                (1000, "M"), (900, "CM"), (500, "D"), (400, "CD"),
+                (100, "C"), (90, "XC"), (50, "L"), (40, "XL"),
+                (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")
+            };
+            
+            var result = new System.Text.StringBuilder();
+            foreach (var (val, numeral) in romanNumerals)
+            {
+                while (number >= val)
+                {
+                    result.Append(numeral);
+                    number -= val;
+                }
+            }
+            return result.ToString();
+        }
 
-        private BackgroundPaintNode BuildBackgroundNode(Node node, SKRect bounds, CssComputed style, bool isFocused, bool isHovered)
+        private List<PaintNodeBase> BuildInlineBackgroundAndBorder(Node node, CssComputed style, bool isFocused, bool isHovered)
+        {
+            if (style == null) return null;
+            bool hasBg = style.BackgroundColor.HasValue && style.BackgroundColor.Value.Alpha > 0;
+            var bt = style.BorderThickness;
+            bool hasBorder = (bt.Left > 0 || bt.Right > 0 || bt.Top > 0 || bt.Bottom > 0);
+            
+            if (!hasBg && !hasBorder) return null;
+
+            // 1. Collect all content bounds
+            var rects = new List<SKRect>();
+            CollectContentRects(node, rects);
+            
+            if (rects.Count == 0) return null;
+            
+            // 2. Group by Line (Y) - approximate using helper
+            var lines = GroupRectsByLine(rects);
+            
+            var resultNodes = new List<PaintNodeBase>();
+            _boxes.TryGetValue(node, out var box); // Get box for radius resolution
+            var fullRadius = ExtractBorderRadius(box, style); // [TL, TR, BR, BL]
+
+            for (int i = 0; i < lines.Count; i++)
+            {
+                var lineGroup = lines[i];
+                float minX = float.MaxValue;
+                float maxX = float.MinValue;
+                float minY = float.MaxValue;
+                float maxY = float.MinValue;
+                
+                foreach (var r in lineGroup)
+                {
+                    if (r.Left < minX) minX = r.Left;
+                    if (r.Right > maxX) maxX = r.Right;
+                    if (r.Top < minY) minY = r.Top;
+                    if (r.Bottom > maxY) maxY = r.Bottom;
+                }
+                
+                // 3. Apply Padding/Border expansion
+                // Only First Line gets Left padding/border
+                if (i == 0)
+                {
+                    minX -= (float)(style.Padding.Left + bt.Left);
+                }
+                
+                // Only Last Line gets Right padding/border
+                if (i == lines.Count - 1)
+                {
+                    maxX += (float)(style.Padding.Right + bt.Right);
+                }
+                
+                // All lines get Top/Bottom expansion
+                minY -= (float)(style.Padding.Top + bt.Top);
+                maxY += (float)(style.Padding.Bottom + bt.Bottom);
+                
+                var finalRect = new SKRect(minX, minY, maxX, maxY);
+                
+                // Determines Radii for this slice
+                SKPoint[] sliceRadius = new SKPoint[4];
+                if (fullRadius != null && fullRadius.Length == 4)
+                {
+                     if (i == 0) { sliceRadius[0] = fullRadius[0]; sliceRadius[3] = fullRadius[3]; }
+                     if (i == lines.Count - 1) { sliceRadius[1] = fullRadius[1]; sliceRadius[2] = fullRadius[2]; }
+                }
+
+                // 4. Create Nodes
+                if (hasBg)
+                {
+                    resultNodes.Add(new BackgroundPaintNode 
+                    { 
+                        Bounds = finalRect, 
+                        Color = style.BackgroundColor,
+                        SourceNode = node,
+                        BorderRadius = sliceRadius,
+                        IsFocused = isFocused,
+                        IsHovered = isHovered
+                    });
+                }
+                
+                if (hasBorder)
+                {
+                    // For slice, we only draw side borders on ends
+                    float leftW = (i == 0) ? (float)bt.Left : 0;
+                    float rightW = (i == lines.Count - 1) ? (float)bt.Right : 0;
+                    
+                    var borderNode = new BorderPaintNode
+                    {
+                        Bounds = finalRect,
+                        SourceNode = node,
+                        Widths = new float[] { (float)bt.Top, rightW, (float)bt.Bottom, leftW },
+                        Colors = new SKColor[] { style.BorderBrushColor ?? SKColors.Black, style.BorderBrushColor ?? SKColors.Black, style.BorderBrushColor ?? SKColors.Black, style.BorderBrushColor ?? SKColors.Black },
+                        Styles = new string[] { style.BorderStyleTop, style.BorderStyleRight, style.BorderStyleBottom, style.BorderStyleLeft }, 
+                        BorderRadius = sliceRadius,
+                        IsFocused = isFocused,
+                        IsHovered = isHovered
+                    };
+                    resultNodes.Add(borderNode);
+                }
+            }
+            
+            return resultNodes;
+        }
+
+        private void CollectContentRects(Node node, List<SKRect> rects)
+        {
+             if (_boxes.TryGetValue(node, out var box))
+             {
+                 if (node is Text && box.Lines != null)
+                 {
+                     foreach(var line in box.Lines)
+                     {
+                         float absX = box.ContentBox.Left + line.Origin.X;
+                         float absY = box.ContentBox.Top + line.Origin.Y;
+                         rects.Add(new SKRect(absX, absY, absX + line.Width, absY + line.Height));
+                     }
+                     return; 
+                 }
+                 if (node is Element elem)
+                 {
+                     _styles.TryGetValue(elem, out var style);
+                     bool isAtomic = style?.Display == "inline-block" || elem.Tag == "IMG" || elem.Tag == "INPUT" || elem.Tag == "BUTTON";
+                     if (isAtomic)
+                     {
+                         rects.Add(box.BorderBox);
+                         return;
+                     }
+                 }
+             }
+             
+             if (node is Element e && e.Children != null)
+             {
+                 foreach(var child in e.Children)
+                 {
+                     CollectContentRects(child, rects);
+                 }
+             }
+        }
+
+        private List<List<SKRect>> GroupRectsByLine(List<SKRect> rects)
+        {
+            rects.Sort((a, b) => a.Top.CompareTo(b.Top));
+            var groups = new List<List<SKRect>>();
+            if (rects.Count == 0) return groups;
+            
+            var currentGroup = new List<SKRect> { rects[0] };
+            groups.Add(currentGroup);
+            float groupY1 = rects[0].Top;
+            float groupY2 = rects[0].Bottom;
+            
+            for (int i = 1; i < rects.Count; i++)
+            {
+                var r = rects[i];
+                float overlapStart = Math.Max(groupY1, r.Top);
+                float overlapEnd = Math.Min(groupY2, r.Bottom);
+                
+                if (overlapEnd > overlapStart)
+                {
+                    currentGroup.Add(r);
+                    groupY1 = Math.Min(groupY1, r.Top);
+                    groupY2 = Math.Max(groupY2, r.Bottom);
+                }
+                else
+                {
+                    currentGroup = new List<SKRect> { r };
+                    groups.Add(currentGroup);
+                    groupY1 = r.Top;
+                    groupY2 = r.Bottom;
+                }
+            }
+            return groups;
+        }
+
+        private BackgroundPaintNode BuildBackgroundNode(Node node, Layout.BoxModel box, CssComputed style, bool isFocused, bool isHovered)
         {
             SKColor? bgColor = style?.BackgroundColor;
             
@@ -265,18 +1062,63 @@ namespace FenBrowser.FenEngine.Rendering
             if (bgColor == null || bgColor.Value.Alpha == 0)
                 return null;
             
+            // Handle background-clip
+            // Default: border-box
+            SKRect renderBounds = box.BorderBox;
+            var radius = ExtractBorderRadius(box, style); // Outer radii (for border-box)
+
+            string clip = style?.BackgroundClip ?? "border-box";
+            if (clip == "padding-box")
+            {
+                renderBounds = box.PaddingBox;
+                // Adjust radius if needed?
+                // For now, using Outer Radii on Padding Box is slightly wrong (should be Inner Radii),
+                // but NewPaintTreeBuilder usually handles clipping via specific nodes.
+                // However, BackgroundPaintNode takes a radius.
+                // Let's compute proper inner radius for padding-box.
+                if (radius != null)
+                {
+                    float topW = (float)style.BorderThickness.Top;
+                    float rightW = (float)style.BorderThickness.Right;
+                    float botW = (float)style.BorderThickness.Bottom;
+                    float leftW = (float)style.BorderThickness.Left;
+                    
+                    radius[0] = new SKPoint(Math.Max(0, radius[0].X - leftW), Math.Max(0, radius[0].Y - topW));
+                    radius[1] = new SKPoint(Math.Max(0, radius[1].X - rightW), Math.Max(0, radius[1].Y - topW));
+                    radius[2] = new SKPoint(Math.Max(0, radius[2].X - rightW), Math.Max(0, radius[2].Y - botW));
+                    radius[3] = new SKPoint(Math.Max(0, radius[3].X - leftW), Math.Max(0, radius[3].Y - botW));
+                }
+            }
+            else if (clip == "content-box")
+            {
+                renderBounds = box.ContentBox;
+                // Further reduce radius for Content Box
+                if (radius != null)
+                {
+                    float topW = (float)style.BorderThickness.Top + (float)style.Padding.Top;
+                    float rightW = (float)style.BorderThickness.Right + (float)style.Padding.Right;
+                    float botW = (float)style.BorderThickness.Bottom + (float)style.Padding.Bottom;
+                    float leftW = (float)style.BorderThickness.Left + (float)style.Padding.Left;
+                    
+                    radius[0] = new SKPoint(Math.Max(0, radius[0].X - leftW), Math.Max(0, radius[0].Y - topW));
+                    radius[1] = new SKPoint(Math.Max(0, radius[1].X - rightW), Math.Max(0, radius[1].Y - topW));
+                    radius[2] = new SKPoint(Math.Max(0, radius[2].X - rightW), Math.Max(0, radius[2].Y - botW));
+                    radius[3] = new SKPoint(Math.Max(0, radius[3].X - leftW), Math.Max(0, radius[3].Y - botW));
+                }
+            }
+            
             return new BackgroundPaintNode
             {
-                Bounds = bounds,
+                Bounds = renderBounds,
                 SourceNode = node,
                 Color = bgColor,
-                BorderRadius = ExtractBorderRadius(style),
+                BorderRadius = radius,
                 IsFocused = isFocused,
                 IsHovered = isHovered
             };
         }
         
-        private BorderPaintNode BuildBorderNode(Node node, SKRect bounds, CssComputed style, bool isFocused, bool isHovered)
+        private BorderPaintNode BuildBorderNode(Node node, Layout.BoxModel box, CssComputed style, bool isFocused, bool isHovered)
         {
             float[] widths = null;
             if (style != null)
@@ -303,7 +1145,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (widths == null || widths.All(w => w <= 0)) return null;
             
-            SKColor borderColor = style.BorderBrushColor ?? SKColors.Black;
+            SKColor borderColor = (style?.BorderBrushColor) ?? SKColors.Black;
             SKColor[] colors = new SKColor[4]
             {
                 borderColor,
@@ -314,32 +1156,32 @@ namespace FenBrowser.FenEngine.Rendering
             
             string[] styles = new string[4]
             {
-                style.BorderStyleTop ?? "solid",
-                style.BorderStyleRight ?? "solid",
-                style.BorderStyleBottom ?? "solid",
-                style.BorderStyleLeft ?? "solid"
+                style?.BorderStyleTop ?? "solid",
+                style?.BorderStyleRight ?? "solid",
+                style?.BorderStyleBottom ?? "solid",
+                style?.BorderStyleLeft ?? "solid"
             };
             
             return new BorderPaintNode
             {
-                Bounds = bounds,
+                Bounds = box.BorderBox,
                 SourceNode = node,
                 Widths = widths,
                 Colors = colors,
                 Styles = styles,
-                BorderRadius = ExtractBorderRadius(style),
+                BorderRadius = ExtractBorderRadius(box, style),
                 IsFocused = isFocused,
                 IsHovered = isHovered
             };
         }
 
-        private BoxShadowPaintNode BuildBoxShadowNode(Node node, SKRect bounds, CssComputed style)
+        private BoxShadowPaintNode BuildBoxShadowNode(Node node, SKRect bounds, CssComputed style, Layout.BoxModel box)
         {
             if (string.IsNullOrEmpty(style?.BoxShadow) || style.BoxShadow == "none") return null;
-            return ParseBoxShadow(node, style.BoxShadow, bounds, ExtractBorderRadius(style));
+            return ParseBoxShadow(node, style.BoxShadow, bounds, ExtractBorderRadius(box, style));
         }
 
-        private BoxShadowPaintNode ParseBoxShadow(Node node, string shadowStr, SKRect bounds, float[] borderRadius)
+        private BoxShadowPaintNode ParseBoxShadow(Node node, string shadowStr, SKRect bounds, SKPoint[] borderRadius)
         {
             try
             {
@@ -430,13 +1272,17 @@ namespace FenBrowser.FenEngine.Rendering
             List<string> textDecorations = null;
             string decorValue = parentStyle?.TextDecoration;
             
-            if (!string.IsNullOrWhiteSpace(decorValue) && !decorValue.Equals("none", StringComparison.OrdinalIgnoreCase))
+            if (!string.IsNullOrWhiteSpace(decorValue))
             {
-                textDecorations = decorValue.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).ToList();
+                if (!decorValue.Equals("none", StringComparison.OrdinalIgnoreCase))
+                {
+                    textDecorations = decorValue.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).ToList();
+                }
+                // If "none", textDecorations remains null, effectively clearing any defaults
             }
             else
             {
-                // UA Default: Underline for links
+                // UA Default: Underline for links - ONLY if property is not specified
                 var ancestor = textNode.Parent as Element;
                 bool inNav = false;
                 Element anchorEl = null;
@@ -444,19 +1290,37 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     string tag = ancestor.Tag?.ToUpperInvariant();
                     if (tag == "NAV" || tag == "HEADER" || ancestor.Id == "main-nav" || ancestor.Id == "site") inNav = true;
-                    if (tag == "A") anchorEl = ancestor;
+                    if (tag == "A") 
+                    {
+                        anchorEl = ancestor;
+                        break; 
+                    }
                     ancestor = ancestor.Parent as Element;
                 }
                 
                 if (anchorEl != null && !inNav)
                 {
-                    string href = anchorEl.GetAttribute("href");
-                    if (!string.IsNullOrWhiteSpace(href)) textDecorations = new List<string> { "underline" };
+                    // Check if anchor explicitly disabled underlines
+                    _styles.TryGetValue(anchorEl, out var anchorStyle);
+                    bool explicitlyNone = anchorStyle != null && 
+                                        string.Equals(anchorStyle.TextDecoration, "none", StringComparison.OrdinalIgnoreCase);
+
+                    if (!explicitlyNone)
+                    {
+                        string href = anchorEl.GetAttribute("href");
+                        if (!string.IsNullOrWhiteSpace(href)) textDecorations = new List<string> { "underline" };
+                    }
                 }
             }
             
             // Text color
              SKColor color = parentStyle?.ForegroundColor ?? SKColors.Black;
+
+            // [DEBUG-LOGGING]
+            if (textNode.Parent is Element p && FenBrowser.Core.Logging.DebugConfig.ShouldLog(p.GetAttribute("class")))
+            {
+                 Console.WriteLine($"[PAINT-TEXT] Text='{textNode.Data}' Color={color} Pos=({box.ContentBox.Left},{box.ContentBox.Top}) FontSize={fontSize}px Lines={box.Lines?.Count ?? 0}");
+            }
 
             // MULTI-LINE SUPPORT
             // If BoxModel has Lines populated (from TextLayoutComputer), use them.
@@ -513,6 +1377,7 @@ namespace FenBrowser.FenEngine.Rendering
                     TextOrigin = new SKPoint(box.ContentBox.Left, box.ContentBox.Top + fontSize * 0.9f),
                     FallbackText = displayText,
                     TextDecorations = textDecorations,
+                    WritingMode = parentStyle?.WritingMode,
                     IsFocused = isFocused,
                     IsHovered = isHovered
                 }
@@ -555,10 +1420,10 @@ namespace FenBrowser.FenEngine.Rendering
                     catch {}
                 }
 
-                FenBrowser.Core.FenLogger.Debug($"[IMG-BUILD] Tag={tag} URL={(url?.Length > 80 ? url?.Substring(0, 80) + "..." : url)}");
-                FenBrowser.Core.FenLogger.Debug($"[IMG-BUILD] box.ContentBox={box.ContentBox.Width}x{box.ContentBox.Height} @ {box.ContentBox.Left},{box.ContentBox.Top}");
+                global::FenBrowser.Core.FenLogger.Debug($"[IMG-BUILD] Tag={tag} URL={(url?.Length > 80 ? url?.Substring(0, 80) + "..." : url)}");
+                global::FenBrowser.Core.FenLogger.Debug($"[IMG-BUILD] box.ContentBox={box.ContentBox.Width}x{box.ContentBox.Height} @ {box.ContentBox.Left},{box.ContentBox.Top}");
                 var bitmap = ImageLoader.GetImage(url);
-                FenBrowser.Core.FenLogger.Debug($"[IMG-BUILD] Bitmap={(bitmap != null ? $"{bitmap.Width}x{bitmap.Height}" : "NULL")}");
+                global::FenBrowser.Core.FenLogger.Debug($"[IMG-BUILD] Bitmap={(bitmap != null ? $"{bitmap.Width}x{bitmap.Height}" : "NULL")}");
                 
                 // Image loading is handled upstream - we just reference the bounds
                 return new ImagePaintNode
@@ -568,8 +1433,9 @@ namespace FenBrowser.FenEngine.Rendering
                     ObjectFit = style?.ObjectFit ?? "fill"
                 };
             }
-            else if (tag == "SVG")
+            else if (tag.Equals("SVG", StringComparison.OrdinalIgnoreCase))
             {
+                global::FenBrowser.Core.FenLogger.Debug($"[SVG-ENTRY] Processing SVG tag. Attributes: {elem.Attributes?.Count}", FenBrowser.Core.Logging.LogCategory.Rendering);
                 // Parse SVG attributes for better rasterization
                 float? svgW = null;
                 float? svgH = null;
@@ -595,9 +1461,9 @@ namespace FenBrowser.FenEngine.Rendering
                 float finalW = svgW ?? box.ContentBox.Width;
                 float finalH = svgH ?? box.ContentBox.Height;
                 
-                // Clamp to reasonable SVG icon size to prevent massive rasterizations
-                if (finalW > 200) finalW = svgW ?? 24;
-                if (finalH > 200) finalH = svgH ?? 24;
+                // Clamp ONLY if it's unreasonably huge (e.g. > 2000), not 200.
+                if (finalW > 2048) finalW = 2048;
+                if (finalH > 2048) finalH = 2048;
                 
                 if (finalW <= 0) finalW = 24;
                 if (finalH <= 0) finalH = 24;
@@ -636,8 +1502,14 @@ namespace FenBrowser.FenEngine.Rendering
                 var (bitmap, isLazy) = ((SKBitmap, bool))tuple;
                 
                 try { 
-                    if (bitmap == null) System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[SVG-DEBUG] Bitmap is NULL for SVG. Content: {svgContent.Substring(0, Math.Min(50, svgContent.Length))}...\r\n");
-                    else System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[SVG-DEBUG] Created bitmap {bitmap.Width}x{bitmap.Height} for SVG {finalW}x{finalH}. Color fixed? {svgContent.Contains("#")}\r\n");
+                    if (bitmap == null) global::FenBrowser.Core.FenLogger.Debug($"[SVG-DEBUG] Bitmap is NULL for SVG. Content: {svgContent.Substring(0, Math.Min(200, svgContent.Length))}...", FenBrowser.Core.Logging.LogCategory.Rendering);
+                    else {
+                        global::FenBrowser.Core.FenLogger.Debug($"[SVG-DEBUG] Created bitmap {bitmap.Width}x{bitmap.Height} for SVG {finalW}x{finalH}. HasFill={svgContent.Contains("fill=")} HasPath={svgContent.Contains("<path")} Color fixed? {svgContent.Contains("#")}", FenBrowser.Core.Logging.LogCategory.Rendering);
+                        // Dump first 500 chars of SVG content for 272x92 logo
+                        if (finalW > 200 && finalH > 80) {
+                            global::FenBrowser.Core.FenLogger.Debug($"[SVG-CONTENT] {svgContent.Substring(0, Math.Min(500, svgContent.Length))}", FenBrowser.Core.Logging.LogCategory.Rendering);
+                        }
+                    }
                 } catch {}
 
                 return new ImagePaintNode
@@ -746,20 +1618,610 @@ namespace FenBrowser.FenEngine.Rendering
              };
         }
         
-        private static float[] ExtractBorderRadius(CssComputed style)
+        private PaintNodeBase BuildSpecialInputNode(Element elem, Layout.BoxModel box, CssComputed style, bool isFocused, bool isHovered)
+        {
+            if (box == null) return null;
+            
+            string inputType = elem.GetAttribute("type")?.ToLowerInvariant() ?? "text";
+            bool isChecked = elem.HasAttribute("checked");
+            bool isDisabled = elem.HasAttribute("disabled");
+            
+            SKColor borderColor = isDisabled ? SKColors.LightGray : SKColors.Gray;
+            SKColor fillColor = isDisabled ? new SKColor(240, 240, 240) : SKColors.White;
+            SKColor checkColor = isDisabled ? SKColors.Gray : new SKColor(0, 120, 215); // Windows accent blue
+            
+            switch (inputType)
+            {
+                case "checkbox":
+                    return new CustomPaintNode
+                    {
+                        Bounds = box.ContentBox,
+                        PaintAction = (canvas, bounds) =>
+                        {
+                            // Draw checkbox box
+                            using var borderPaint = new SKPaint { Color = borderColor, Style = SKPaintStyle.Stroke, StrokeWidth = 1, IsAntialias = true };
+                            using var fillPaint = new SKPaint { Color = fillColor, Style = SKPaintStyle.Fill, IsAntialias = true };
+                            
+                            canvas.DrawRect(bounds, fillPaint);
+                            canvas.DrawRect(bounds, borderPaint);
+                            
+                            // Draw checkmark if checked
+                            if (isChecked)
+                            {
+                                using var checkPaint = new SKPaint { Color = checkColor, Style = SKPaintStyle.Stroke, StrokeWidth = 2, IsAntialias = true, StrokeCap = SKStrokeCap.Round };
+                                using var path = new SKPath();
+                                path.MoveTo(bounds.Left + bounds.Width * 0.2f, bounds.Top + bounds.Height * 0.5f);
+                                path.LineTo(bounds.Left + bounds.Width * 0.4f, bounds.Top + bounds.Height * 0.7f);
+                                path.LineTo(bounds.Left + bounds.Width * 0.8f, bounds.Top + bounds.Height * 0.3f);
+                                canvas.DrawPath(path, checkPaint);
+                            }
+                        }
+                    };
+                    
+                case "radio":
+                    return new CustomPaintNode
+                    {
+                        Bounds = box.ContentBox,
+                        PaintAction = (canvas, bounds) =>
+                        {
+                            // Draw radio circle
+                            using var borderPaint = new SKPaint { Color = borderColor, Style = SKPaintStyle.Stroke, StrokeWidth = 1, IsAntialias = true };
+                            using var fillPaint = new SKPaint { Color = fillColor, Style = SKPaintStyle.Fill, IsAntialias = true };
+                            
+                            float cx = bounds.MidX;
+                            float cy = bounds.MidY;
+                            float radius = Math.Min(bounds.Width, bounds.Height) / 2 - 1;
+                            
+                            canvas.DrawCircle(cx, cy, radius, fillPaint);
+                            canvas.DrawCircle(cx, cy, radius, borderPaint);
+                            
+                            // Draw inner dot if checked
+                            if (isChecked)
+                            {
+                                using var checkPaint = new SKPaint { Color = checkColor, Style = SKPaintStyle.Fill, IsAntialias = true };
+                                canvas.DrawCircle(cx, cy, radius * 0.5f, checkPaint);
+                            }
+                        }
+                    };
+                    
+                case "color":
+                    string colorValue = elem.GetAttribute("value") ?? "#000000";
+                    SKColor displayColor;
+                    if (!SKColor.TryParse(colorValue, out displayColor))
+                        displayColor = SKColors.Black;
+                    
+                    return new CustomPaintNode
+                    {
+                        Bounds = box.ContentBox,
+                        PaintAction = (canvas, bounds) =>
+                        {
+                            using var borderPaint = new SKPaint { Color = SKColors.Gray, Style = SKPaintStyle.Stroke, StrokeWidth = 1, IsAntialias = true };
+                            using var colorPaint = new SKPaint { Color = displayColor, Style = SKPaintStyle.Fill };
+                            
+                            // Draw color swatch with border
+                            var inset = new SKRect(bounds.Left + 2, bounds.Top + 2, bounds.Right - 2, bounds.Bottom - 2);
+                            canvas.DrawRect(inset, colorPaint);
+                            canvas.DrawRect(bounds, borderPaint);
+                        }
+                    };
+                    
+                case "range":
+                    string minStr = elem.GetAttribute("min") ?? "0";
+                    string maxStr = elem.GetAttribute("max") ?? "100";
+                    string valStr = elem.GetAttribute("value") ?? "50";
+                    
+                    float.TryParse(minStr, out float min);
+                    float.TryParse(maxStr, out float max);
+                    float.TryParse(valStr, out float val);
+                    
+                    float percent = (max > min) ? (val - min) / (max - min) : 0.5f;
+                    
+                    return new CustomPaintNode
+                    {
+                        Bounds = box.ContentBox,
+                        PaintAction = (canvas, bounds) =>
+                        {
+                            // Track
+                            float trackHeight = 4;
+                            float trackY = bounds.MidY - trackHeight / 2;
+                            var trackRect = new SKRect(bounds.Left, trackY, bounds.Right, trackY + trackHeight);
+                            
+                            using var trackPaint = new SKPaint { Color = new SKColor(200, 200, 200), Style = SKPaintStyle.Fill };
+                            using var filledPaint = new SKPaint { Color = checkColor, Style = SKPaintStyle.Fill };
+                            
+                            canvas.DrawRoundRect(trackRect, 2, 2, trackPaint);
+                            
+                            // Filled portion
+                            float thumbX = bounds.Left + (bounds.Width - 10) * percent;
+                            var filledRect = new SKRect(bounds.Left, trackY, thumbX + 5, trackY + trackHeight);
+                            canvas.DrawRoundRect(filledRect, 2, 2, filledPaint);
+                            
+                            // Thumb
+                            float thumbRadius = 7;
+                            using var thumbPaint = new SKPaint { Color = checkColor, Style = SKPaintStyle.Fill, IsAntialias = true };
+                            using var thumbBorder = new SKPaint { Color = SKColors.White, Style = SKPaintStyle.Stroke, StrokeWidth = 2, IsAntialias = true };
+                            
+                        canvas.DrawCircle(thumbX + 5, bounds.MidY, thumbRadius, thumbPaint);
+                            canvas.DrawCircle(thumbX + 5, bounds.MidY, thumbRadius, thumbBorder);
+                        }
+                    };
+                    
+                case "date":
+                case "datetime-local":
+                    return new CustomPaintNode
+                    {
+                        Bounds = box.ContentBox,
+                        PaintAction = (canvas, bounds) =>
+                        {
+                            // Input background
+                            using var bgPaint = new SKPaint { Color = fillColor, Style = SKPaintStyle.Fill };
+                            canvas.DrawRoundRect(bounds, 3, 3, bgPaint);
+                            
+                            // Border
+                            using var borderPaint = new SKPaint { Color = borderColor, Style = SKPaintStyle.Stroke, StrokeWidth = 1 };
+                            canvas.DrawRoundRect(bounds, 3, 3, borderPaint);
+                            
+                            // Calendar icon on right
+                            float iconSize = Math.Min(bounds.Height - 6, 16);
+                            float iconX = bounds.Right - iconSize - 8;
+                            float iconY = bounds.MidY;
+                            
+                            using var iconPaint = new SKPaint { Color = new SKColor(100, 100, 100), Style = SKPaintStyle.Stroke, StrokeWidth = 1.5f, IsAntialias = true };
+                            // Calendar box
+                            canvas.DrawRect(new SKRect(iconX, iconY - iconSize/2 + 2, iconX + iconSize, iconY + iconSize/2), iconPaint);
+                            // Calendar top bar
+                            canvas.DrawLine(iconX, iconY - iconSize/2 + 5, iconX + iconSize, iconY - iconSize/2 + 5, iconPaint);
+                            
+                            // Date text placeholder
+                            string val = elem.GetAttribute("value") ?? "yyyy-mm-dd";
+                            using var textPaint = new SKPaint { Color = new SKColor(60, 60, 60), TextSize = 12, IsAntialias = true };
+                            canvas.DrawText(val, bounds.Left + 8, bounds.MidY + 4, textPaint);
+                        }
+                    };
+                    
+                case "time":
+                    return new CustomPaintNode
+                    {
+                        Bounds = box.ContentBox,
+                        PaintAction = (canvas, bounds) =>
+                        {
+                            // Input background
+                            using var bgPaint = new SKPaint { Color = fillColor, Style = SKPaintStyle.Fill };
+                            canvas.DrawRoundRect(bounds, 3, 3, bgPaint);
+                            
+                            using var borderPaint = new SKPaint { Color = borderColor, Style = SKPaintStyle.Stroke, StrokeWidth = 1 };
+                            canvas.DrawRoundRect(bounds, 3, 3, borderPaint);
+                            
+                            // Clock icon on right
+                            float iconSize = Math.Min(bounds.Height - 6, 14);
+                            float iconX = bounds.Right - iconSize - 8;
+                            float iconY = bounds.MidY;
+                            
+                            using var iconPaint = new SKPaint { Color = new SKColor(100, 100, 100), Style = SKPaintStyle.Stroke, StrokeWidth = 1.5f, IsAntialias = true };
+                            // Clock circle
+                            canvas.DrawCircle(iconX + iconSize/2, iconY, iconSize/2, iconPaint);
+                            // Clock hands
+                            canvas.DrawLine(iconX + iconSize/2, iconY, iconX + iconSize/2, iconY - iconSize/3, iconPaint);
+                            canvas.DrawLine(iconX + iconSize/2, iconY, iconX + iconSize/2 + iconSize/4, iconY, iconPaint);
+                            
+                            string val = elem.GetAttribute("value") ?? "--:--";
+                            using var textPaint = new SKPaint { Color = new SKColor(60, 60, 60), TextSize = 12, IsAntialias = true };
+                            canvas.DrawText(val, bounds.Left + 8, bounds.MidY + 4, textPaint);
+                        }
+                    };
+                    
+                case "number":
+                    return new CustomPaintNode
+                    {
+                        Bounds = box.ContentBox,
+                        PaintAction = (canvas, bounds) =>
+                        {
+                            using var bgPaint = new SKPaint { Color = fillColor, Style = SKPaintStyle.Fill };
+                            canvas.DrawRoundRect(bounds, 3, 3, bgPaint);
+                            
+                            using var borderPaint = new SKPaint { Color = borderColor, Style = SKPaintStyle.Stroke, StrokeWidth = 1 };
+                            canvas.DrawRoundRect(bounds, 3, 3, borderPaint);
+                            
+                            // Spinbox arrows on right
+                            float arrowWidth = 20;
+                            float arrowX = bounds.Right - arrowWidth;
+                            
+                            using var arrowPaint = new SKPaint { Color = new SKColor(100, 100, 100), Style = SKPaintStyle.Fill, IsAntialias = true };
+                            
+                            // Up arrow
+                            using var upPath = new SKPath();
+                            upPath.MoveTo(arrowX + arrowWidth/2, bounds.Top + 4);
+                            upPath.LineTo(arrowX + 4, bounds.MidY - 2);
+                            upPath.LineTo(arrowX + arrowWidth - 4, bounds.MidY - 2);
+                            upPath.Close();
+                            canvas.DrawPath(upPath, arrowPaint);
+                            
+                            // Down arrow
+                            using var downPath = new SKPath();
+                            downPath.MoveTo(arrowX + arrowWidth/2, bounds.Bottom - 4);
+                            downPath.LineTo(arrowX + 4, bounds.MidY + 2);
+                            downPath.LineTo(arrowX + arrowWidth - 4, bounds.MidY + 2);
+                            downPath.Close();
+                            canvas.DrawPath(downPath, arrowPaint);
+                            
+                            // Separator line
+                            using var sepPaint = new SKPaint { Color = borderColor, Style = SKPaintStyle.Stroke, StrokeWidth = 1 };
+                            canvas.DrawLine(arrowX, bounds.Top, arrowX, bounds.Bottom, sepPaint);
+                            
+                            string val = elem.GetAttribute("value") ?? "";
+                            using var textPaint = new SKPaint { Color = new SKColor(60, 60, 60), TextSize = 12, IsAntialias = true };
+                            canvas.DrawText(val, bounds.Left + 8, bounds.MidY + 4, textPaint);
+                        }
+                    };
+                    
+                case "file":
+                    return new CustomPaintNode
+                    {
+                        Bounds = box.ContentBox,
+                        PaintAction = (canvas, bounds) =>
+                        {
+                            using var bgPaint = new SKPaint { Color = fillColor, Style = SKPaintStyle.Fill };
+                            canvas.DrawRoundRect(bounds, 3, 3, bgPaint);
+                            
+                            using var borderPaint = new SKPaint { Color = borderColor, Style = SKPaintStyle.Stroke, StrokeWidth = 1 };
+                            canvas.DrawRoundRect(bounds, 3, 3, borderPaint);
+                            
+                            // "Choose File" button on left
+                            float btnWidth = 80;
+                            var btnRect = new SKRect(bounds.Left, bounds.Top, bounds.Left + btnWidth, bounds.Bottom);
+                            
+                            using var btnPaint = new SKPaint { Color = new SKColor(228, 228, 228), Style = SKPaintStyle.Fill };
+                            canvas.DrawRoundRect(btnRect, 3, 3, btnPaint);
+                            
+                            using var btnBorder = new SKPaint { Color = new SKColor(180, 180, 180), Style = SKPaintStyle.Stroke, StrokeWidth = 1 };
+                            canvas.DrawRoundRect(btnRect, 3, 3, btnBorder);
+                            
+                            using var btnText = new SKPaint { Color = new SKColor(40, 40, 40), TextSize = 11, IsAntialias = true };
+                            canvas.DrawText("Choose File", bounds.Left + 8, bounds.MidY + 3, btnText);
+                            
+                            // Filename area
+                            using var textPaint = new SKPaint { Color = new SKColor(100, 100, 100), TextSize = 11, IsAntialias = true };
+                            canvas.DrawText("No file chosen", bounds.Left + btnWidth + 10, bounds.MidY + 3, textPaint);
+                        }
+                    };
+                    
+                default:
+                    return null;
+            }
+        }
+        
+        private PaintNodeBase BuildVideoPlaceholder(Element elem, Layout.BoxModel box, CssComputed style)
+        {
+            if (box == null) return null;
+            
+            return new CustomPaintNode
+            {
+                Bounds = box.ContentBox,
+                PaintAction = (canvas, bounds) =>
+                {
+                    // Black background
+                    using var bgPaint = new SKPaint { Color = SKColors.Black, Style = SKPaintStyle.Fill };
+                    canvas.DrawRect(bounds, bgPaint);
+                    
+                    // Play button triangle (centered)
+                    float size = Math.Min(bounds.Width, bounds.Height) * 0.3f;
+                    float cx = bounds.MidX;
+                    float cy = bounds.MidY;
+                    
+                    using var playPaint = new SKPaint { Color = new SKColor(255, 255, 255, 180), Style = SKPaintStyle.Fill, IsAntialias = true };
+                    using var path = new SKPath();
+                    path.MoveTo(cx - size * 0.4f, cy - size * 0.5f);
+                    path.LineTo(cx + size * 0.6f, cy);
+                    path.LineTo(cx - size * 0.4f, cy + size * 0.5f);
+                    path.Close();
+                    canvas.DrawPath(path, playPaint);
+                    
+                    // Border
+                    using var borderPaint = new SKPaint { Color = new SKColor(80, 80, 80), Style = SKPaintStyle.Stroke, StrokeWidth = 1 };
+                    canvas.DrawRect(bounds, borderPaint);
+                }
+            };
+        }
+        
+        private PaintNodeBase BuildAudioPlaceholder(Element elem, Layout.BoxModel box, CssComputed style)
+        {
+            if (box == null) return null;
+            
+            // Only show if controls attribute is present
+            if (!elem.HasAttribute("controls")) return null;
+            
+            return new CustomPaintNode
+            {
+                Bounds = box.ContentBox,
+                PaintAction = (canvas, bounds) =>
+                {
+                    // Control bar background
+                    using var bgPaint = new SKPaint { Color = new SKColor(240, 240, 240), Style = SKPaintStyle.Fill };
+                    canvas.DrawRoundRect(bounds, 4, 4, bgPaint);
+                    
+                    // Play button
+                    float btnSize = bounds.Height * 0.6f;
+                    float btnX = bounds.Left + 8;
+                    float btnY = bounds.MidY;
+                    
+                    using var playPaint = new SKPaint { Color = new SKColor(100, 100, 100), Style = SKPaintStyle.Fill, IsAntialias = true };
+                    using var path = new SKPath();
+                    path.MoveTo(btnX, btnY - btnSize * 0.4f);
+                    path.LineTo(btnX + btnSize * 0.7f, btnY);
+                    path.LineTo(btnX, btnY + btnSize * 0.4f);
+                    path.Close();
+                    canvas.DrawPath(path, playPaint);
+                    
+                    // Progress bar track
+                    float trackLeft = btnX + btnSize + 10;
+                    float trackRight = bounds.Right - 60;
+                    float trackY = bounds.MidY - 2;
+                    
+                    using var trackPaint = new SKPaint { Color = new SKColor(200, 200, 200), Style = SKPaintStyle.Fill };
+                    canvas.DrawRoundRect(new SKRect(trackLeft, trackY, trackRight, trackY + 4), 2, 2, trackPaint);
+                    
+                    // Time display placeholder
+                    using var timePaint = new SKPaint { Color = new SKColor(100, 100, 100), TextSize = 10, IsAntialias = true };
+                    canvas.DrawText("0:00", bounds.Right - 50, bounds.MidY + 4, timePaint);
+                    
+                    // Border
+                    using var borderPaint = new SKPaint { Color = new SKColor(200, 200, 200), Style = SKPaintStyle.Stroke, StrokeWidth = 1 };
+                    canvas.DrawRoundRect(bounds, 4, 4, borderPaint);
+                }
+            };
+        }
+        
+        private PaintNodeBase BuildProgressBar(Element elem, Layout.BoxModel box, CssComputed style)
+        {
+            if (box == null) return null;
+            
+            // Parse value and max attributes
+            float value = 0;
+            float max = 1;
+            
+            if (float.TryParse(elem.GetAttribute("value"), out float v)) value = v;
+            if (float.TryParse(elem.GetAttribute("max"), out float m)) max = m;
+            
+            float percent = (max > 0) ? Math.Min(value / max, 1f) : 0;
+            bool isIndeterminate = !elem.HasAttribute("value");
+            
+            return new CustomPaintNode
+            {
+                Bounds = box.ContentBox,
+                PaintAction = (canvas, bounds) =>
+                {
+                    // Background (light gray)
+                    using var bgPaint = new SKPaint { Color = new SKColor(230, 230, 230), Style = SKPaintStyle.Fill };
+                    canvas.DrawRoundRect(bounds, 3, 3, bgPaint);
+                    
+                    if (isIndeterminate)
+                    {
+                        // Striped pattern for indeterminate
+                        using var stripePaint = new SKPaint { Color = new SKColor(66, 133, 244), Style = SKPaintStyle.Fill };
+                        float stripeWidth = bounds.Width * 0.3f;
+                        canvas.DrawRoundRect(new SKRect(bounds.Left, bounds.Top, bounds.Left + stripeWidth, bounds.Bottom), 3, 3, stripePaint);
+                    }
+                    else
+                    {
+                        // Filled portion (blue)
+                        float fillWidth = bounds.Width * percent;
+                        using var fillPaint = new SKPaint { Color = new SKColor(66, 133, 244), Style = SKPaintStyle.Fill };
+                        canvas.DrawRoundRect(new SKRect(bounds.Left, bounds.Top, bounds.Left + fillWidth, bounds.Bottom), 3, 3, fillPaint);
+                    }
+                    
+                    // Border
+                    using var borderPaint = new SKPaint { Color = new SKColor(200, 200, 200), Style = SKPaintStyle.Stroke, StrokeWidth = 1 };
+                    canvas.DrawRoundRect(bounds, 3, 3, borderPaint);
+                }
+            };
+        }
+        
+        private PaintNodeBase BuildMeterBar(Element elem, Layout.BoxModel box, CssComputed style)
+        {
+            if (box == null) return null;
+            
+            // Parse value, min, max, low, high, optimum
+            float value = 0, min = 0, max = 1;
+            float? low = null, high = null, optimum = null;
+            
+            if (float.TryParse(elem.GetAttribute("value"), out float v)) value = v;
+            if (float.TryParse(elem.GetAttribute("min"), out float minVal)) min = minVal;
+            if (float.TryParse(elem.GetAttribute("max"), out float maxVal)) max = maxVal;
+            if (float.TryParse(elem.GetAttribute("low"), out float lowVal)) low = lowVal;
+            if (float.TryParse(elem.GetAttribute("high"), out float highVal)) high = highVal;
+            if (float.TryParse(elem.GetAttribute("optimum"), out float optVal)) optimum = optVal;
+            
+            float range = max - min;
+            float percent = (range > 0) ? (value - min) / range : 0;
+            
+            // Determine color based on value relative to low/high/optimum
+            SKColor fillColor;
+            if (low.HasValue && value < low.Value)
+                fillColor = new SKColor(255, 100, 100); // Red - below low
+            else if (high.HasValue && value > high.Value)
+                fillColor = new SKColor(100, 200, 100); // Green - above high
+            else
+                fillColor = new SKColor(255, 200, 100); // Yellow/Orange - normal
+            
+            return new CustomPaintNode
+            {
+                Bounds = box.ContentBox,
+                PaintAction = (canvas, bounds) =>
+                {
+                    // Background
+                    using var bgPaint = new SKPaint { Color = new SKColor(230, 230, 230), Style = SKPaintStyle.Fill };
+                    canvas.DrawRoundRect(bounds, 3, 3, bgPaint);
+                    
+                    // Filled portion
+                    float fillWidth = bounds.Width * percent;
+                    using var fillPaint = new SKPaint { Color = fillColor, Style = SKPaintStyle.Fill };
+                    canvas.DrawRoundRect(new SKRect(bounds.Left, bounds.Top, bounds.Left + fillWidth, bounds.Bottom), 3, 3, fillPaint);
+                    
+                    // Border
+                    using var borderPaint = new SKPaint { Color = new SKColor(180, 180, 180), Style = SKPaintStyle.Stroke, StrokeWidth = 1 };
+                    canvas.DrawRoundRect(bounds, 3, 3, borderPaint);
+                }
+            };
+        }
+        
+        private PaintNodeBase BuildIframePlaceholder(Element elem, Layout.BoxModel box, CssComputed style)
+        {
+            if (box == null) return null;
+            
+            string src = elem.GetAttribute("src") ?? "";
+            
+            return new CustomPaintNode
+            {
+                Bounds = box.ContentBox,
+                PaintAction = (canvas, bounds) =>
+                {
+                    // Light gray background
+                    using var bgPaint = new SKPaint { Color = new SKColor(248, 248, 248), Style = SKPaintStyle.Fill };
+                    canvas.DrawRect(bounds, bgPaint);
+                    
+                    // Border
+                    using var borderPaint = new SKPaint { Color = new SKColor(200, 200, 200), Style = SKPaintStyle.Stroke, StrokeWidth = 1 };
+                    canvas.DrawRect(bounds, borderPaint);
+                    
+                    // Icon (document/frame icon)
+                    float iconSize = Math.Min(bounds.Width, bounds.Height) * 0.15f;
+                    float cx = bounds.MidX;
+                    float cy = bounds.MidY - 10;
+                    
+                    using var iconPaint = new SKPaint { Color = new SKColor(150, 150, 150), Style = SKPaintStyle.Stroke, StrokeWidth = 2, IsAntialias = true };
+                    var iconRect = new SKRect(cx - iconSize, cy - iconSize * 0.8f, cx + iconSize, cy + iconSize * 0.8f);
+                    canvas.DrawRect(iconRect, iconPaint);
+                    
+                    // Small inner rect for frame effect
+                    var innerRect = iconRect;
+                    innerRect.Inflate(-iconSize * 0.3f, -iconSize * 0.3f);
+                    canvas.DrawRect(innerRect, iconPaint);
+                    
+                    // Display src URL (truncated)
+                    if (!string.IsNullOrEmpty(src))
+                    {
+                        string displaySrc = src.Length > 40 ? src.Substring(0, 40) + "..." : src;
+                        using var textPaint = new SKPaint { Color = new SKColor(100, 100, 100), TextSize = 11, IsAntialias = true };
+                        float textWidth = textPaint.MeasureText(displaySrc);
+                        float textX = cx - textWidth / 2;
+                        float textY = cy + iconSize + 20;
+                        canvas.DrawText(displaySrc, textX, textY, textPaint);
+                    }
+                    else
+                    {
+                        using var textPaint = new SKPaint { Color = new SKColor(150, 150, 150), TextSize = 11, IsAntialias = true };
+                        string label = "<iframe>";
+                        float textWidth = textPaint.MeasureText(label);
+                        canvas.DrawText(label, cx - textWidth / 2, cy + iconSize + 20, textPaint);
+                    }
+                }
+            };
+        }
+        
+        private List<TextPaintNode> BuildRubyTextNode(Element elem, Layout.BoxModel box, CssComputed style)
+        {
+            var nodes = new List<TextPaintNode>();
+            if (box == null) return nodes;
+            
+            // Get ruby text data from layout
+            // The ruby element stores its layout info in the box's Lines property
+            // Format: "RT:rtText|BASE:baseText|RT_SIZE:size|BASE_SIZE:size|RT_HEIGHT:height"
+            
+            if (box.Lines == null || box.Lines.Count == 0) return nodes;
+            
+            foreach (var line in box.Lines)
+            {
+                if (string.IsNullOrEmpty(line.Text)) continue;
+                
+                // Parse the ruby metadata
+                var parts = line.Text.Split('|');
+                string rtText = "", baseText = "";
+                float rtFontSize = 12f, baseFontSize = 24f, rtHeight = 14f;
+                
+                foreach (var part in parts)
+                {
+                    if (part.StartsWith("RT:")) rtText = part.Substring(3);
+                    else if (part.StartsWith("BASE:")) baseText = part.Substring(5);
+                    else if (part.StartsWith("RT_SIZE:")) float.TryParse(part.Substring(8), out rtFontSize);
+                    else if (part.StartsWith("BASE_SIZE:")) float.TryParse(part.Substring(10), out baseFontSize);
+                    else if (part.StartsWith("RT_HEIGHT:")) float.TryParse(part.Substring(10), out rtHeight);
+                }
+                
+                var typeface = Layout.TextLayoutHelper.ResolveTypeface(style?.FontFamilyName ?? "sans-serif", baseText + rtText, style?.FontWeight ?? 400, SkiaSharp.SKFontStyleSlant.Upright);
+                SKColor color = style?.ForegroundColor ?? SKColors.Black;
+                
+                float containerWidth = box.ContentBox.Width;
+                
+                using var rtPaint = new SKPaint { TextSize = rtFontSize, Typeface = typeface };
+                using var basePaint = new SKPaint { TextSize = baseFontSize, Typeface = typeface };
+                
+                float rtWidth = rtPaint.MeasureText(rtText);
+                float baseWidth = basePaint.MeasureText(baseText);
+                
+                // RT text node (above)
+                if (!string.IsNullOrEmpty(rtText))
+                {
+                    float rtX = box.ContentBox.Left + (containerWidth - rtWidth) / 2;
+                    float rtY = box.ContentBox.Top + rtFontSize; // Baseline
+                    
+                    nodes.Add(new TextPaintNode
+                    {
+                        Bounds = new SKRect(rtX, box.ContentBox.Top, rtX + rtWidth, box.ContentBox.Top + rtHeight),
+                        SourceNode = elem,
+                        Color = color,
+                        FontSize = rtFontSize,
+                        Typeface = typeface,
+                        TextOrigin = new SKPoint(rtX, rtY),
+                        FallbackText = rtText
+                    });
+                }
+                
+                // Base text node (below RT)
+                if (!string.IsNullOrEmpty(baseText))
+                {
+                    float baseX = box.ContentBox.Left + (containerWidth - baseWidth) / 2;
+                    float baseY = box.ContentBox.Top + rtHeight + baseFontSize; // Below RT
+                    
+                    nodes.Add(new TextPaintNode
+                    {
+                        Bounds = new SKRect(baseX, box.ContentBox.Top + rtHeight, baseX + baseWidth, box.ContentBox.Bottom),
+                        SourceNode = elem,
+                        Color = color,
+                        FontSize = baseFontSize,
+                        Typeface = typeface,
+                        TextOrigin = new SKPoint(baseX, baseY),
+                        FallbackText = baseText
+                    });
+                }
+            }
+            
+            return nodes;
+        }
+        
+        private static SKPoint[] ExtractBorderRadius(Layout.BoxModel box, CssComputed style)
         {
             if (style == null) return null;
             
             var br = style.BorderRadius;
-            if (br.TopLeft == 0 && br.TopRight == 0 && br.BottomRight == 0 && br.BottomLeft == 0)
+            if (br.TopLeft.Value == 0 && br.TopRight.Value == 0 && br.BottomRight.Value == 0 && br.BottomLeft.Value == 0)
                 return null;
             
-            return new float[]
+            float w = box.BorderBox.Width;
+            float h = box.BorderBox.Height;
+
+            SKPoint Resolve(CssLength len)
             {
-                (float)br.TopLeft,
-                (float)br.TopRight,
-                (float)br.BottomRight,
-                (float)br.BottomLeft
+                if (!len.IsPercent) return new SKPoint(len.Value, len.Value);
+                // CSS spec: % is relative to Width for horizontal, Height for vertical
+                return new SKPoint(w * len.Value / 100f, h * len.Value / 100f);
+            }
+
+            return new SKPoint[]
+            {
+                Resolve(br.TopLeft),
+                Resolve(br.TopRight),
+                Resolve(br.BottomRight),
+                Resolve(br.BottomLeft)
             };
         }
         
@@ -768,6 +2230,164 @@ namespace FenBrowser.FenEngine.Rendering
             return elem.Tag?.ToUpperInvariant() == "IMG";
         }
         
+        private PaintNodeBase BuildListMarkerNode(Node node, Layout.BoxModel box, CssComputed style, bool isFocused, bool isHovered)
+        {
+            // Only for Elements
+            if (!(node is Element elem)) return null;
+
+            string listStyleType = style?.ListStyleType ?? "disc"; // Default to disc
+            string listStylePosition = style?.ListStylePosition ?? "outside";
+            
+            // Check for explicit list-style-image (URL)
+            // TODO: Implement list-style-image support
+            
+            // Determine marker text/shape
+            string markerText = "•"; // Default disc
+            
+            // Basic types
+            if (listStyleType == "disc") markerText = "•";       // U+2022
+            else if (listStyleType == "circle") markerText = "◦"; // U+25E6
+            else if (listStyleType == "square") markerText = "■"; // U+25A0
+            else if (listStyleType == "decimal")
+            {
+                // Find index in parent
+                int index = 1;
+                /* [PERF-WARNING] This is O(N) per item, can be slow for large lists.
+                   Ideally layout engine should calculate this. */
+                if (elem.Parent != null)
+                {
+                    int count = 0;
+                    foreach (var child in elem.Parent.Children)
+                    {
+                        if (child is Element childEl && childEl.TagName == "LI") 
+                        {
+                            count++;
+                            if (child == elem) 
+                            { 
+                                index = count; 
+                                break; 
+                            }
+                        }
+                    }
+                }
+                
+                // Handle 'start' attribute on OL
+                if (elem.Parent is Element parentEl && parentEl.TagName == "OL")
+                {
+                    int startVal = 1;
+                    if (int.TryParse(parentEl.GetAttribute("start"), out int sv))
+                    {
+                        startVal = sv;
+                    }
+                    
+                    // Handle 'reversed' attribute on OL
+                    if (parentEl.HasAttribute("reversed"))
+                    {
+                        // Count total LI items for reversed calculation
+                        int totalItems = 0;
+                        foreach (var c in parentEl.Children)
+                        {
+                            if (c is Element ce && ce.TagName == "LI") totalItems++;
+                        }
+                        // Reversed: first item = start, last item = start - (count-1)
+                        index = startVal - (index - 1);
+                    }
+                    else
+                    {
+                        index = startVal + (index - 1);
+                    }
+                }
+                
+                // Handle 'value' attribute on LI (overrides everything)
+                if (int.TryParse(elem.GetAttribute("value"), out int valueVal))
+                {
+                    index = valueVal;
+                }
+                
+                markerText = $"{index}.";
+            }
+            else if (listStyleType == "lower-alpha" || listStyleType == "upper-alpha")
+            {
+                int index = CalculateListIndex(elem);
+                markerText = ToAlpha(index, listStyleType == "upper-alpha") + ".";
+            }
+            else if (listStyleType == "lower-roman" || listStyleType == "upper-roman")
+            {
+                int index = CalculateListIndex(elem);
+                markerText = ToRoman(index, listStyleType == "upper-roman") + ".";
+            }
+            else if (listStyleType == "disclosure-closed")
+            {
+                markerText = "▶"; // Right-pointing triangle (closed)
+            }
+            else if (listStyleType == "disclosure-open")
+            {
+                markerText = "▼"; // Down-pointing triangle (open)
+            }
+            else if (listStyleType == "none") return null;
+            
+            // Calculate Position
+            float fontSize = (float)(style?.FontSize ?? 16.0);
+            
+            // Use same typeface as element
+            string fontFamily = style?.FontFamilyName;
+            int weight = style?.FontWeight ?? 400;
+            SKFontStyleSlant slant = (style?.FontStyle == SKFontStyleSlant.Italic) ? SKFontStyleSlant.Italic : SKFontStyleSlant.Upright;
+            var typeface = TextLayoutHelper.ResolveTypeface(fontFamily, markerText, weight, slant);
+            
+            using var paint = new SKPaint { Typeface = typeface, TextSize = fontSize, IsAntialias = true };
+            float markerWidth = paint.MeasureText(markerText);
+            
+            float x, y;
+            
+            // Vertical alignment: align baseline with first line of text
+            // Roughly: Top + (FontSize * 0.9) ? Or use Box Baseline if available?
+            // Box.Lines[0].Baseline is best if available.
+            float baselineOffset = fontSize;
+            if (box.Lines != null && box.Lines.Count > 0)
+            {
+                baselineOffset = box.Lines[0].Baseline;
+            }
+            else
+            {
+                 // Fallback
+                 baselineOffset = fontSize * 0.85f;
+            }
+            
+            y = box.ContentBox.Top + baselineOffset;
+            
+            if (listStylePosition == "inside")
+            {
+                // Inside: Render as inline text at start of content
+                // Actually, real browsers just indent the first line. 
+                // Since our layout didn't reserve space for "inside", this will draw OVER content.
+                // A proper implementation requires LayoutEngine support.
+                // For now, let's treat it same as outside but shifted right? 
+                // Or just shifted slightly left of content.
+                x = box.ContentBox.Left - markerWidth - 8; 
+            }
+            else
+            {
+                // Outside: Render to the left of the border box
+                // Default margin is 40px padding-left on UL/OL.
+                // Marker typically sits ~20px left of content or right-aligned in that gutter.
+                x = box.ContentBox.Left - markerWidth - 8; 
+            }
+            
+            return new TextPaintNode
+            {
+                Bounds = new SKRect(x, y - fontSize, x + markerWidth, y), // Approximate
+                SourceNode = node,
+                Color = style?.ForegroundColor ?? SKColors.Black,
+                FontSize = fontSize,
+                Typeface = typeface,
+                TextOrigin = new SKPoint(x, y),
+                FallbackText = markerText,
+                IsFocused = isFocused,
+                IsHovered = isHovered
+            };
+        }
+
         private static bool ShouldHide(Node node, CssComputed style)
         {
             if (node == null) return true;
@@ -809,6 +2429,27 @@ namespace FenBrowser.FenEngine.Rendering
             // will-change with certain values creates stacking context
             if (!string.IsNullOrEmpty(style.WillChange) && style.WillChange != "auto")
                 return true;
+                
+            // mask-image creates stacking context
+            if (!string.IsNullOrEmpty(style.MaskImage) && style.MaskImage != "none")
+                return true;
+                
+            // filter creates stacking context
+            // Note: filter is not yet fully implemented for rendering, but it MUST create a stacking context
+            // to support overlays like the "AI Mode" overlay or backdrop-filters.
+            if (!string.IsNullOrEmpty(style.Filter) && style.Filter != "none")
+                return true;
+
+            // Overflow != visible creates stacking context (for our simplified renderer)
+            // Overflow != visible creates stacking context (for our simplified renderer)
+            // UPDATE: Only scroll/auto needs context for scroll management. 
+            // Hidden should NOT create context to allow proper z-index interleaving.
+            if (style.OverflowX == "scroll" || style.OverflowX == "auto" || 
+                style.OverflowY == "scroll" || style.OverflowY == "auto")
+                return true;
+            
+            // Note: overflow: hidden does NOT create a stacking context by itself.
+            // It will be handled via ClipPaintNode in the normal flow.
             
             return false;
         }
@@ -823,11 +2464,25 @@ namespace FenBrowser.FenEngine.Rendering
             public int ZIndex { get; set; }
             public List<PaintNodeBase> PaintNodes { get; set; } = new List<PaintNodeBase>();
             
+            // Masking support
+            public string MaskImage { get; set; }
+            public SKRect MaskBounds { get; set; }
+            
+            // Overflow support
+            public SKRect? ClipBounds { get; set; }
+            public SKPoint? ScrollOffset { get; set; }
+            public float Opacity { get; set; } = 1.0f;
+            
             // Categorized by paint order (CSS spec)
             private readonly List<BuilderStackingContext> _negativeZContexts = new List<BuilderStackingContext>();
-            private readonly List<PaintNodeBase> _flowNodes = new List<PaintNodeBase>();
-            private readonly List<(List<PaintNodeBase> nodes, int zIndex)> _positionedNodes = new List<(List<PaintNodeBase>, int)>();
-            private readonly List<BuilderStackingContext> _zeroZContexts = new List<BuilderStackingContext>();
+            private readonly List<PaintNodeBase> _blockNodes = new List<PaintNodeBase>();
+            private readonly List<PaintNodeBase> _floatNodes = new List<PaintNodeBase>();
+            private readonly List<PaintNodeBase> _inlineNodes = new List<PaintNodeBase>();
+
+            // Step 6: Stacking contexts with z-index: 0 AND Positioned descendants with z-index: auto
+            // These must be painted in TREE ORDER (DOM order).
+            private readonly List<object> _step6Items = new List<object>(); 
+            
             private readonly List<BuilderStackingContext> _positiveZContexts = new List<BuilderStackingContext>();
             
             public BuilderStackingContext(Node source)
@@ -840,29 +2495,21 @@ namespace FenBrowser.FenEngine.Rendering
                 if (child.ZIndex < 0)
                     _negativeZContexts.Add(child);
                 else if (child.ZIndex == 0)
-                    _zeroZContexts.Add(child);
+                    _step6Items.Add(child); // Step 6
                 else
                     _positiveZContexts.Add(child);
             }
             
-            public void AddFlowNodes(List<PaintNodeBase> nodes)
-            {
-                _flowNodes.AddRange(nodes);
-            }
+            public void AddBlockNodes(List<PaintNodeBase> nodes) => _blockNodes.AddRange(nodes);
+            public void AddFloatNodes(List<PaintNodeBase> nodes) => _floatNodes.AddRange(nodes);
+            public void AddInlineNodes(List<PaintNodeBase> nodes) => _inlineNodes.AddRange(nodes);
             
             public void AddPositionedNodes(List<PaintNodeBase> nodes, int zIndex)
             {
-                _positionedNodes.Add((nodes, zIndex));
+                // Positioned with z-index: auto (which comes here as we verify no-context in caller)
+                _step6Items.Add(nodes); // Step 6
             }
             
-            /// <summary>
-            /// Flattens this stacking context into paint order per CSS spec:
-            /// 1. Background & borders of root
-            /// 2. Negative z-index children
-            /// 3. In-flow content (block, float, inline)
-            /// 4. Positioned children with z-index:auto or 0
-            /// 5. Positive z-index children
-            /// </summary>
             public List<PaintNodeBase> Flatten()
             {
                 try { System.Runtime.CompilerServices.RuntimeHelpers.EnsureSufficientExecutionStack(); }
@@ -871,37 +2518,180 @@ namespace FenBrowser.FenEngine.Rendering
                 var result = new List<PaintNodeBase>();
                 
                 // 1. Own paint nodes (background, border)
-                result.AddRange(PaintNodes);
+                if (PaintNodes != null)
+                    result.AddRange(PaintNodes);
+                
+                // Content to be clipped/scrolled
+                var contentNodes = new List<PaintNodeBase>();
                 
                 // 2. Negative z-index stacking contexts (sorted)
                 foreach (var ctx in _negativeZContexts.OrderBy(c => c.ZIndex))
                 {
-                    result.AddRange(ctx.Flatten());
+                    contentNodes.AddRange(ctx.Flatten());
                 }
                 
-                // 3. In-flow content
-                result.AddRange(_flowNodes);
+                // 3. In-flow Block Level descendants
+                contentNodes.AddRange(_blockNodes);
+
+                // 4. In-flow Float descendants
+                contentNodes.AddRange(_floatNodes);
+
+                // 5. In-flow Inline Level descendants
+                contentNodes.AddRange(_inlineNodes);
                 
-                // 4. Zero z-index stacking contexts
-                foreach (var ctx in _zeroZContexts)
+                // 6. Step 6: Zero z-index contexts AND positioned z-auto descendants (In Tree Order)
+                foreach (var item in _step6Items)
                 {
-                    result.AddRange(ctx.Flatten());
+                    if (item is BuilderStackingContext ctx)
+                    {
+                        contentNodes.AddRange(ctx.Flatten());
+                    }
+                    else if (item is List<PaintNodeBase> nodes)
+                    {
+                        contentNodes.AddRange(nodes);
+                    }
                 }
                 
-                // 4b. Positioned elements (sorted by z-index)
-                foreach (var (nodes, _) in _positionedNodes.OrderBy(p => p.zIndex))
-                {
-                    result.AddRange(nodes);
-                }
-                
-                // 5. Positive z-index stacking contexts (sorted)
+                // 7. Positive z-index stacking contexts (sorted)
                 foreach (var ctx in _positiveZContexts.OrderBy(c => c.ZIndex))
                 {
-                    result.AddRange(ctx.Flatten());
+                    contentNodes.AddRange(ctx.Flatten());
                 }
                 
+                // Apply Scroll
+                if (ScrollOffset.HasValue && (ScrollOffset.Value.X != 0 || ScrollOffset.Value.Y != 0))
+                {
+                    var scrollNode = new ScrollPaintNode
+                    {
+                        Bounds = ClipBounds ?? new SKRect(0,0,10000,10000), 
+                        ScrollX = ScrollOffset.Value.X,
+                        ScrollY = ScrollOffset.Value.Y,
+                        Children = contentNodes
+                    };
+                    contentNodes = new List<PaintNodeBase> { scrollNode };
+                }
+                
+                // Apply Clip
+                if (ClipBounds.HasValue)
+                {
+                    var clipNode = new ClipPaintNode
+                    {
+                        Bounds = ClipBounds.Value,
+                        ClipRect = ClipBounds.Value,
+                        Children = contentNodes
+                    };
+                    contentNodes = new List<PaintNodeBase> { clipNode };
+                }
+                
+                result.AddRange(contentNodes);
+                
+                // Apply Mask (if any)
+                if (!string.IsNullOrEmpty(MaskImage) && MaskImage != "none")
+                {
+                    string url = MaskImage;
+                    if (url.StartsWith("url("))
+                    {
+                        int start = url.IndexOf("(") + 1;
+                        int end = url.LastIndexOf(")");
+                        if (end > start)
+                        {
+                            url = url.Substring(start, end - start).Trim('"', '\'', ' ');
+                        }
+                    }
+                    
+                    var bitmap = ImageLoader.GetImage(url);
+                    if (bitmap != null)
+                    {
+                         var maskNode = new MaskPaintNode
+                         {
+                             Bounds = MaskBounds,
+                             MaskBitmap = bitmap,
+                             MaskSize = "cover",
+                             Children = result, 
+                             SourceNode = SourceNode
+                         };
+                         result = new List<PaintNodeBase> { maskNode };
+                    }
+                }
+                
+                // Apply Opacity (Stacking Context Atomic Paint)
+                if (Opacity < 1.0f)
+                {
+                    var opacityNode = new OpacityGroupPaintNode
+                    {
+                        Bounds = MaskBounds, // Opacity group bounds usually match border box or union of children. BorderBox is safest approximation for layer size.
+                        Opacity = Opacity,
+                        Children = result,
+                        SourceNode = SourceNode
+                    };
+                    return new List<PaintNodeBase> { opacityNode };
+                }
+
                 return result;
             }
+        }
+
+        private int CalculateListIndex(Element elem)
+        {
+            int index = 1;
+            if (elem.Parent != null)
+            {
+                int count = 0;
+                foreach (var child in elem.Parent.Children)
+                {
+                    if (child is Element childEl && childEl.TagName == "LI") 
+                    {
+                        count++;
+                        if (child == elem) 
+                        { 
+                            index = count; 
+                            break; 
+                        }
+                    }
+                }
+            }
+            
+            // Handle 'start' attribute on OL
+            if (elem.Parent is Element parentEl && parentEl.TagName == "OL")
+            {
+                if (int.TryParse(parentEl.GetAttribute("start"), out int startVal))
+                {
+                    index = startVal + (index - 1);
+                }
+            }
+            
+            // Handle 'value' attribute on LI
+            if (int.TryParse(elem.GetAttribute("value"), out int valueVal))
+            {
+                index = valueVal;
+            }
+            return index;
+        }
+
+        private static string ToAlpha(int index, bool upper)
+        {
+            if (index < 1) return index.ToString();
+            string s = "";
+            index--; // 0-based
+            while (index >= 0)
+            {
+                s = (char)('a' + (index % 26)) + s;
+                index /= 26;
+                index--;
+            }
+            return upper ? s.ToUpperInvariant() : s;
+        }
+
+        private static string ToRoman(int number, bool upper)
+        {
+            if (number < 1 || number > 3999) return number.ToString();
+            string[] thousands = { "", "m", "mm", "mmm" };
+            string[] hundreds = { "", "c", "cc", "ccc", "cd", "d", "dc", "dcc", "dccc", "cm" };
+            string[] tens = { "", "x", "xx", "xxx", "xl", "l", "lx", "lxx", "lxxx", "xc" };
+            string[] ones = { "", "i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix" };
+            
+            string s = thousands[number / 1000] + hundreds[(number % 1000) / 100] + tens[(number % 100) / 10] + ones[number % 10];
+            return upper ? s.ToUpperInvariant() : s;
         }
     }
 }

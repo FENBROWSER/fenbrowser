@@ -30,6 +30,8 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static readonly object _lock = new object();
 
+        public static event Action<string> FontLoaded;
+
         /// <summary>
         /// Represents a parsed @font-face rule
         /// </summary>
@@ -145,13 +147,33 @@ namespace FenBrowser.FenEngine.Rendering
 
                     if (Uri.TryCreate(url, UriKind.Absolute, out var uri))
                     {
-                        var httpClient = HttpClientFactory.GetSharedClient();
-                        using (var stream = await httpClient.GetStreamAsync(uri))
-                        using (var ms = new MemoryStream())
+                        // Only download from HTTP/HTTPS - skip unsupported schemes like file://
+                        if (uri.Scheme == "http" || uri.Scheme == "https")
                         {
-                            await stream.CopyToAsync(ms);
-                            ms.Position = 0;
-                            typeface = SKTypeface.FromStream(ms);
+                            var httpClient = HttpClientFactory.GetSharedClient();
+                            using (var stream = await httpClient.GetStreamAsync(uri))
+                            using (var ms = new MemoryStream())
+                            {
+                                await stream.CopyToAsync(ms);
+                                ms.Position = 0;
+                                typeface = SKTypeface.FromStream(ms);
+                            }
+                        }
+                        else if (uri.Scheme == "file")
+                        {
+                            // Try to load from local file path
+                            try
+                            {
+                                typeface = SKTypeface.FromFile(uri.LocalPath);
+                            }
+                            catch
+                            {
+                                FenLogger.Debug($"[FontRegistry] Cannot load font from file path: {uri.LocalPath}", LogCategory.Rendering);
+                            }
+                        }
+                        else
+                        {
+                            FenLogger.Debug($"[FontRegistry] Unsupported scheme '{uri.Scheme}' for font: {descriptor.Family}", LogCategory.Rendering);
                         }
                     }
                 }
@@ -167,6 +189,7 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                     FenLogger.Debug($"[FontRegistry] Loaded font: {descriptor.Family} ({typeface.FamilyName})", LogCategory.Rendering);
                     tcs.SetResult(typeface);
+                    try { FontLoaded?.Invoke(descriptor.Family); } catch { }
                     return typeface;
                 }
             }

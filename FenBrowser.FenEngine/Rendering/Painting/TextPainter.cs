@@ -44,6 +44,11 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             }
 
             // Draw text
+            if (FenBrowser.Core.Logging.DebugConfig.LogPaintCommands)
+            {
+                 if (text.Length < 100 && (text.Contains("Google") || text.Contains("Wiki") || text.Contains("Reddit")))
+                     Console.WriteLine($"[SKIA-DRAW-TEXT] '{text}' at ({x}, {y}) Color={paint.Color} Alpha={paint.Color.Alpha}");
+            }
             canvas.DrawText(text, x, y, paint);
 
             // Draw text decoration

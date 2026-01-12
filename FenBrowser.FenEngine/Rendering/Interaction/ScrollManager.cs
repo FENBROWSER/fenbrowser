@@ -191,13 +191,30 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             return true; // Animation in progress
         }
 
+        /// <summary>
+        /// Update all smooth scroll animations.
+        /// Returns true if any animation is active (requests repaint).
+        /// </summary>
+        public bool OnFrame()
+        {
+            bool active = false;
+            lock (_lock)
+            {
+                foreach (var kvp in _scrollStates)
+                {
+                    if (UpdateSmoothScroll(kvp.Key))
+                    {
+                        active = true;
+                    }
+                }
+            }
+            return active;
+        }
+
         #endregion
 
         #region Scroll Snapping
 
-        /// <summary>
-        /// Apply scroll snap if configured.
-        /// </summary>
         public void ApplyScrollSnap(Element element, CssComputed style, List<float> snapPoints)
         {
             if (style?.ScrollSnapType == null || snapPoints == null || snapPoints.Count == 0)
@@ -206,6 +223,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             var state = GetScrollState(element);
             var snapType = style.ScrollSnapType.ToLowerInvariant();
 
+            // Simple Y-axis snap for now
             if (snapType.Contains("y") || snapType.Contains("both") || snapType.Contains("block"))
             {
                 // Find nearest snap point
@@ -222,11 +240,98 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
                     }
                 }
 
+                // Snap if mandatory or close enough (proximity)
+                // Default threshold for proximity can be e.g. 50px
                 if (snapType.Contains("mandatory") || minDist < 50)
                 {
+                    // Trigger smooth scroll
                     SmoothScrollTo(element, state.ScrollX, nearestY);
                 }
             }
+            // TODO: X-axis snap
+        }
+
+        public void PerformSnap(Element element)
+        {
+             // 1. Get computed style (need to fetch from Layout/Renderer or pass it in)
+            // For now, assuming we can get it via helper or cached
+            // We'll pass null to IsScrollable and check if we can retrieve it from layout engine?
+            // Actually, we need the style. 
+            // MinimalLayoutComputer keeps styles.
+            // But ScrollManager is in Rendering, separation of concerns?
+            // Let's rely on passed style or look it up if possible.
+            // For now, allow passing style?
+            // Or assume `element.ComputedStyle` if we add it?
+        }
+        
+        public void PerformSnap(Element element, CssComputed style, Func<Element, SKRect> getBox)
+        {
+            if (style == null || style.ScrollSnapType == null || style.ScrollSnapType == "none") return;
+            
+            var snapPoints = CalculateSnapPoints(element, style, getBox);
+            ApplyScrollSnap(element, style, snapPoints);
+        }
+
+        private List<float> CalculateSnapPoints(Element container, CssComputed containerStyle, Func<Element, SKRect> getBox)
+        {
+            var points = new List<float>();
+            if (container.Children == null) return points;
+            
+            var containerBox = getBox(container);
+            if (containerBox.IsEmpty) return points;
+
+            bool vertical = containerStyle.ScrollSnapType.Contains("y") || containerStyle.ScrollSnapType.Contains("block") || containerStyle.ScrollSnapType.Contains("both");
+            
+            foreach (var child in container.Children) 
+            {
+                if (child is Element childEl)
+                {
+                    // effectively: if (childStyle.ScrollSnapAlign != "none")
+                    // But we don't have child style here easily unless we pass a style provider too.
+                    // For MVP, assume all children are snap targets if container has snap-type.
+                    // Or rely on default "none" which means we should look it up.
+                    
+                    var childBox = getBox(childEl);
+                    if (childBox.IsEmpty) continue;
+
+                    // Naive implementation: Snap to start
+                    // TODO: Parse scroll-snap-align (start, center, end)
+                    
+                    float snapPos = 0;
+                    if (vertical)
+                    {
+                        // Snap-align: start
+                        // The scroll position where child.Top aligns with container.Top
+                        // Offset = child.Top - container.Top (relative to current scroll?)
+                        // Wait, boxes are likely in *document* coordinates (including scroll offset?).
+                        // If boxes are static layout (Scrolled), then child.Top changes as we scroll?
+                        // Usually LayoutResult is "Layout coordinates" (0,0 is top of content).
+                        // So child.Top is fixed relative to content.
+                        // Container.Top is fixed relative to content (if it's the scroll container itself).
+                        
+                        // ScrollPosition = Child.Top - Container.PaddingTop?
+                        // Let's assume layout coordinates are relative to the container's content origin (0,0).
+                        
+                        // If container is checking its own children:
+                        // Child.Y relative to Container Content.
+                        
+                        // Let's assume getBox returns rects in global/document space.
+                        // child.Top - container.Top gives offset within container content?
+                        // No, if container is scrolled, its "Top" might be visually shifted?
+                        // LayoutEngine usually produces coordinates relative to the Document (0,0).
+                        
+                        // Target ScrollY = Child.Top (in document) - Container.Top (in document).
+                        snapPos = childBox.Top - containerBox.Top;
+                    }
+                    else
+                    {
+                        snapPos = childBox.Left - containerBox.Left;
+                    }
+                    
+                    points.Add(snapPos);
+                }
+            }
+            return points;
         }
 
         #endregion

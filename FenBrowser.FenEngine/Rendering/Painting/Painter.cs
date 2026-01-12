@@ -42,6 +42,39 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             // Apply transform if present
             ApplyTransform(canvas, box, style);
 
+            // Apply clip-path if present
+            SKPath clipPath = null;
+            if (!string.IsNullOrEmpty(style?.ClipPath) && style.ClipPath != "none")
+            {
+                clipPath = Css.CssClipPathParser.Parse(style.ClipPath, box);
+                if (clipPath != null)
+                {
+                    canvas.ClipPath(clipPath);
+                }
+            }
+
+            // Apply CSS filter if present
+            SKImageFilter filter = null;
+            bool hasFilter = false;
+            if (!string.IsNullOrEmpty(style?.Filter) && style.Filter != "none")
+            {
+                filter = Css.CssFilterParser.Parse(style.Filter);
+                if (filter != null)
+                {
+                    hasFilter = true;
+                    // Use SaveLayer with filter to apply effects to all content
+                    using var paint = new SKPaint { ImageFilter = filter };
+                    canvas.SaveLayer(paint);
+                }
+            }
+
+            // Apply mix-blend-mode if present
+            SKBlendMode blendMode = SKBlendMode.SrcOver;
+            if (!string.IsNullOrEmpty(style?.MixBlendMode))
+            {
+                blendMode = ParseBlendMode(style.MixBlendMode);
+            }
+
             // Apply opacity
             byte opacity = 255;
             if (style?.Opacity.HasValue == true)
@@ -52,13 +85,19 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             // 1. Box shadows (painted behind)
             _boxPainter.PaintBoxShadow(canvas, box, style);
 
-            // 2. Background
-            _boxPainter.PaintBackground(canvas, box, style, opacity);
+            // 2. Backdrop filter (applied before background, affects content behind)
+            if (!string.IsNullOrEmpty(style?.BackdropFilter) && style.BackdropFilter != "none")
+            {
+                ApplyBackdropFilter(canvas, box, style.BackdropFilter);
+            }
 
-            // 3. Border
+            // 3. Background (with blend mode)
+            _boxPainter.PaintBackground(canvas, box, style, opacity, blendMode);
+
+            // 4. Border
             _boxPainter.PaintBorder(canvas, box, style, opacity);
 
-            // 4. Content (text or image)
+            // 5. Content (text or image)
             if (element.Tag?.ToLowerInvariant() == "img")
             {
                 _imagePainter.PaintImage(canvas, element, box, style);
@@ -68,7 +107,62 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                 _textPainter.PaintText(canvas, element.Text ?? "", box, style);
             }
 
+            // Restore filter layer if we used one
+            if (hasFilter)
+            {
+                canvas.Restore();
+                filter?.Dispose();
+            }
+
             canvas.Restore();
+        }
+
+        /// <summary>
+        /// Apply backdrop-filter effect (blur, etc. applied to content behind element)
+        /// </summary>
+        private void ApplyBackdropFilter(SKCanvas canvas, SKRect box, string backdropFilter)
+        {
+            var filter = Css.CssFilterParser.Parse(backdropFilter);
+            if (filter == null) return;
+
+            // Create a temporary surface to capture the background
+            // Note: This is a simplified implementation - full impl would need access to frame buffer
+            using var paint = new SKPaint { ImageFilter = filter };
+            
+            // Draw the backdrop effect by saving layer with the filter
+            // In a full implementation, we'd sample from the existing frame buffer
+            canvas.SaveLayer(box, paint);
+            canvas.ClipRect(box);
+            // The actual backdrop sampling would happen here in a full impl
+            canvas.Restore();
+            
+            filter.Dispose();
+        }
+
+        /// <summary>
+        /// Parse CSS mix-blend-mode to SKBlendMode
+        /// </summary>
+        private static SKBlendMode ParseBlendMode(string mode)
+        {
+            switch (mode?.Trim().ToLowerInvariant())
+            {
+                case "multiply": return SKBlendMode.Multiply;
+                case "screen": return SKBlendMode.Screen;
+                case "overlay": return SKBlendMode.Overlay;
+                case "darken": return SKBlendMode.Darken;
+                case "lighten": return SKBlendMode.Lighten;
+                case "color-dodge": return SKBlendMode.ColorDodge;
+                case "color-burn": return SKBlendMode.ColorBurn;
+                case "hard-light": return SKBlendMode.HardLight;
+                case "soft-light": return SKBlendMode.SoftLight;
+                case "difference": return SKBlendMode.Difference;
+                case "exclusion": return SKBlendMode.Exclusion;
+                case "hue": return SKBlendMode.Hue;
+                case "saturation": return SKBlendMode.Saturation;
+                case "color": return SKBlendMode.Color;
+                case "luminosity": return SKBlendMode.Luminosity;
+                default: return SKBlendMode.SrcOver;
+            }
         }
 
         /// <summary>
@@ -113,12 +207,12 @@ namespace FenBrowser.FenEngine.Rendering.Painting
         /// </summary>
         public void BeginClip(SKCanvas canvas, SKRect clipRect, CssComputed style)
         {
-            var radius = style?.BorderRadius ?? new CornerRadius(0);
-            if (radius.TopLeft > 0 || radius.TopRight > 0 || radius.BottomRight > 0 || radius.BottomLeft > 0)
+            var radius = style?.BorderRadius ?? new CssCornerRadius(0);
+            if (radius.TopLeft.Value > 0 || radius.TopRight.Value > 0 || radius.BottomRight.Value > 0 || radius.BottomLeft.Value > 0)
             {
                 using var path = new SKPath();
-                path.AddRoundRect(clipRect, 
-                    (float)radius.TopLeft, (float)radius.TopLeft);
+                var r = (float)radius.TopLeft.Value;
+                path.AddRoundRect(clipRect, r, r);
                 canvas.ClipPath(path);
             }
             else

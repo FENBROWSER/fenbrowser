@@ -135,6 +135,12 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         void PopLayer();
         
+        /// <summary>
+        /// Apply an image as a mask to the current layer using DstIn blend mode.
+        /// Caller must ensure a layer is active.
+        /// </summary>
+        void ApplyMask(SKImage mask, SKRect bounds);
+        
         #endregion
         
         #region Shadows
@@ -186,13 +192,14 @@ namespace FenBrowser.FenEngine.Rendering
         public SKColor BottomColor;
         public SKColor LeftColor;
         
-        public float TopLeftRadius;
-        public float TopRightRadius;
-        public float BottomRightRadius;
-        public float BottomLeftRadius;
+        public SKPoint TopLeftRadius;
+        public SKPoint TopRightRadius;
+        public SKPoint BottomRightRadius;
+        public SKPoint BottomLeftRadius;
         
         public static BorderStyle Uniform(float width, SKColor color, float radius = 0)
         {
+            var r = new SKPoint(radius, radius);
             return new BorderStyle
             {
                 TopWidth = width,
@@ -203,10 +210,10 @@ namespace FenBrowser.FenEngine.Rendering
                 RightColor = color,
                 BottomColor = color,
                 LeftColor = color,
-                TopLeftRadius = radius,
-                TopRightRadius = radius,
-                BottomRightRadius = radius,
-                BottomLeftRadius = radius
+                TopLeftRadius = r,
+                TopRightRadius = r,
+                BottomRightRadius = r,
+                BottomLeftRadius = r
             };
         }
     }

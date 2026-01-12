@@ -47,7 +47,7 @@ namespace FenBrowser.FenEngine.Rendering
             
             // The root effectively creates the initial stacking context
             var rootContext = new StackingContext(root);
-            builder.BuildRecursive(root, rootContext);
+            builder.BuildRecursive(root, rootContext, null, 0);
             
             // Sort and finalize the root context into a PaintNode tree
             var rootPaintNode = rootContext.Flatten();
@@ -55,14 +55,15 @@ namespace FenBrowser.FenEngine.Rendering
             if (rootPaintNode == null) return PaintTree.Empty;
 
             // Final recursive bounds pass to ensure all nodes have correct VisualBounds
-            CalculateFinalVisualBounds(rootPaintNode);
+            CalculateFinalVisualBounds(rootPaintNode, 0);
             
             return new PaintTree(rootPaintNode);
         }
 
-        private static void CalculateFinalVisualBounds(PaintNode node)
+        private static void CalculateFinalVisualBounds(PaintNode node, int depth)
         {
             if (node == null) return;
+            if (depth > 256) return; // Guard against ultra-deep trees
 
             // Start with own bounds
             SKRect bounds = node.IsText ? node.Box.ContentBox : node.Box.MarginBox;
@@ -82,18 +83,20 @@ namespace FenBrowser.FenEngine.Rendering
 
             foreach (var child in node.Children)
             {
-                CalculateFinalVisualBounds(child);
+                CalculateFinalVisualBounds(child, depth + 1);
                 bounds = SKRect.Union(bounds, child.VisualBounds);
             }
 
             node.VisualBounds = bounds;
         }
 
-        private void BuildRecursive(Node node, StackingContext currentContext, PaintNode parentNode = null)
+        private void BuildRecursive(Node node, StackingContext currentContext, PaintNode parentNode, int depth)
         {
             if (node == null) return;
             // Only process Elements and TextNs
             if (!(node is Element) && !(node is Text)) return;
+
+            if (depth > 256) return; // Guard against stack overflow
 
             // Get Box and Style
             if (!_boxes.TryGetValue(node, out var box) || box == null)
@@ -123,7 +126,8 @@ namespace FenBrowser.FenEngine.Rendering
                 BorderRadius = ParseBorderRadius(style),
                 Transform = ParseTransform(style?.Transform),
                 BoxShadows = !string.IsNullOrEmpty(style?.BoxShadow) ? BoxShadowParsed.Parse(style.BoxShadow) : null,
-                CreatesStackingContext = DetermineCreatesStackingContext(style)
+                CreatesStackingContext = DetermineCreatesStackingContext(style),
+                ClipRect = (style?.Overflow?.ToLowerInvariant() == "hidden") ? box.PaddingBox : (SKRect?)null
             };
 
             // Link to parent (Build Tree) or Stacking Context (Layer)
@@ -189,7 +193,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 foreach (var child in elem.Children)
                 {
-                    BuildRecursive(child, contextForChildren, parentForChildren);
+                    BuildRecursive(child, contextForChildren, parentForChildren, depth + 1);
                 }
             }
         }
@@ -211,14 +215,14 @@ namespace FenBrowser.FenEngine.Rendering
         {
              if (style == null) return null;
              var br = style.BorderRadius;
-             if (br.TopLeft == 0 && br.TopRight == 0 && br.BottomRight == 0 && br.BottomLeft == 0) return null;
+             if (br.TopLeft.Value == 0 && br.TopRight.Value == 0 && br.BottomRight.Value == 0 && br.BottomLeft.Value == 0) return null;
              
              return new float[] 
              { 
-                 (float)br.TopLeft, 
-                 (float)br.TopRight, 
-                 (float)br.BottomRight, 
-                 (float)br.BottomLeft 
+                 (float)br.TopLeft.Value, 
+                 (float)br.TopRight.Value, 
+                 (float)br.BottomRight.Value, 
+                 (float)br.BottomLeft.Value 
              };
         }
 

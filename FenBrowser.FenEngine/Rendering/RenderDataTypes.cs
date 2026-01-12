@@ -26,7 +26,7 @@ namespace FenBrowser.FenEngine.Rendering
         public float FontSize { get; set; }
         public Thickness BorderThickness { get; set; }
         public SKColor? BorderColor { get; set; }
-        public CornerRadius BorderRadius { get; set; }
+        public CssCornerRadius BorderRadius { get; set; }
         public string TextAlign { get; set; } 
 
         // Pseudo-elements styling
