@@ -3,6 +3,7 @@ using System.Text.Json;
 using FenBrowser.DevTools.Core;
 using FenBrowser.DevTools.Core.Protocol;
 using FenBrowser.DevTools.Domains.DTOs;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.DevTools.Panels;
 
@@ -20,6 +21,7 @@ public class ConsolePanel : DevToolsPanelBase
     private readonly List<string> _history = new();
     private int _historyIndex = -1;
     private bool _inputFocused;
+    private bool _showBrowserLogs = true; // Toggle to show FenLogger entries
     
     private const float INPUT_HEIGHT = 28f;
     
@@ -41,7 +43,35 @@ public class ConsolePanel : DevToolsPanelBase
             {
                 AddEntry(msg);
             }
+            
+            // Subscribe to FenLogger for browser internal logs
+            LogManager.LogEntryAdded += OnLogEntryAdded;
         }
+    }
+    
+    private void OnLogEntryAdded(LogEntry entry)
+    {
+        if (!_showBrowserLogs) return;
+        
+        var level = entry.Level switch
+        {
+            LogLevel.Error => ConsoleLevel.Error,
+            LogLevel.Warn => ConsoleLevel.Warn,
+            LogLevel.Info => ConsoleLevel.Info,
+            LogLevel.Debug => ConsoleLevel.Debug,
+            _ => ConsoleLevel.Log
+        };
+        
+        // Format: [Category] Message
+        string msg = $"[{entry.Category}] {entry.Message}";
+        
+        _entries.Add(new ConsoleEntry(msg, level, entry.Timestamp, null, null));
+        
+        // Update scroll
+        MaxScrollY = Math.Max(0, _entries.Count * DevToolsTheme.ItemHeight - Bounds.Height + INPUT_HEIGHT + 20);
+        ScrollY = MaxScrollY; // Auto-scroll to bottom
+        
+        Invalidate();
     }
 
     private void OnProtocolEvent(string json)

@@ -45,7 +45,7 @@ namespace FenBrowser.FenEngine.Testing
             // layoutEngine.AllBoxes returns IEnumerable<KeyValuePair<...>>
             var boxes = layoutEngine.AllBoxes.ToDictionary(k => k.Key, v => v.Value);
             
-            var paintTree = NewPaintTreeBuilder.Build(doc, boxes, styles, viewportW, viewportH);
+            var paintTree = NewPaintTreeBuilder.Build(doc, boxes, styles, viewportW, viewportH, null);
 
             // Render
             using var surface = SKSurface.Create(new SKImageInfo((int)viewportW, (int)viewportH));
