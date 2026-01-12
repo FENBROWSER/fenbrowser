@@ -63,6 +63,21 @@ namespace FenBrowser.FenEngine.Scripting
             // _mini = new MiniJs.Engine();
         }
 
+
+
+        private FenBrowser.FenEngine.Core.Interfaces.IHistoryBridge _historyBridge;
+        
+        public void SetHistoryBridge(FenBrowser.FenEngine.Core.Interfaces.IHistoryBridge bridge)
+        {
+            _historyBridge = bridge;
+            if (_fenRuntime != null) _fenRuntime.SetHistoryBridge(bridge);
+        }
+
+        public void NotifyPopState(object state)
+        {
+             _fenRuntime?.NotifyPopState(state);
+        }
+
         private void InitRuntime()
         {
             _ctx = _ctx ?? new JsContext();

@@ -14,6 +14,8 @@ using FenBrowser.FenEngine.DevTools;
 using FenBrowser.FenEngine.Layout;
 using SkiaSharp;
 
+using FenBrowser.FenEngine.Core.Interfaces; // For IHistoryBridge
+
 namespace FenBrowser.FenEngine.Rendering
 {
     /// <summary>
@@ -179,7 +181,7 @@ namespace FenBrowser.FenEngine.Rendering
         Warning
     }
 
-    public sealed class BrowserHost : IBrowser, IDisposable
+    public sealed class BrowserHost : IBrowser, IDisposable, IHistoryBridge
     {
         private readonly CustomHtmlEngine _engine = new CustomHtmlEngine();
         private readonly ResourceManager _resources = new ResourceManager(new HttpClient());
@@ -188,7 +190,7 @@ namespace FenBrowser.FenEngine.Rendering
         private Uri _current;
         private bool _disposed;
         
-        private readonly List<Uri> _history = new List<Uri>();
+        private readonly List<HistoryEntry> _history = new List<HistoryEntry>();
         private int _historyIndex = -1;
         private bool _isNavigatingHistory;
         
@@ -240,6 +242,7 @@ namespace FenBrowser.FenEngine.Rendering
         {
             IsPrivate = isPrivate;
             _engineLoop = new FenBrowser.FenEngine.Core.EngineLoop(); // Phase 5: Initialize Loop
+            _engine.InitHistory(this); // Wire up history bridge
             
             // Initialize FontResolver for @font-face support
             // This allows Core.Css.CssComputed to use the Engine's FontRegistry
@@ -439,8 +442,19 @@ namespace FenBrowser.FenEngine.Rendering
         {
             if (!CanGoBack) return false;
             _historyIndex--;
+            var entry = _history[_historyIndex];
+
+            // If it's a pushState entry, we don't reload, just popstate
+            if (entry.IsPushState)
+            {
+                _current = entry.Url;
+                _engine.NotifyPopState(entry.State); // Notify JS
+                try { Navigated?.Invoke(this, _current); } catch { }
+                return true;
+            }
+
             _isNavigatingHistory = true;
-            try { return await NavigateAsync(_history[_historyIndex].AbsoluteUri); }
+            try { return await NavigateAsync(entry.Url.AbsoluteUri); }
             finally { _isNavigatingHistory = false; }
         }
 
@@ -448,8 +462,18 @@ namespace FenBrowser.FenEngine.Rendering
         {
             if (!CanGoForward) return false;
             _historyIndex++;
+            var entry = _history[_historyIndex];
+
+            if (entry.IsPushState)
+            {
+                _current = entry.Url;
+                _engine.NotifyPopState(entry.State); // Notify JS
+                try { Navigated?.Invoke(this, _current); } catch { }
+                return true;
+            }
+
             _isNavigatingHistory = true;
-            try { return await NavigateAsync(_history[_historyIndex].AbsoluteUri); }
+            try { return await NavigateAsync(entry.Url.AbsoluteUri); }
             finally { _isNavigatingHistory = false; }
         }
 
@@ -472,7 +496,8 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         var u = _history[i];
                         string currentMarker = (i == _historyIndex) ? " <span style='color:green; font-weight:bold;'>(Current)</span>" : "";
-                        sb.Append($"<li><a href='{u.AbsoluteUri}'>{u.AbsoluteUri}</a><div class='meta'>{u.Scheme}{currentMarker}</div></li>");
+                        string typeMarker = u.IsPushState ? " <span style='color:gray;'>(SPA)</span>" : "";
+                        sb.Append($"<li><a href='{u.Url.AbsoluteUri}'>{u.Url.AbsoluteUri}</a><div class='meta'>{u.Title ?? u.Url.Scheme}{currentMarker}{typeMarker}</div></li>");
                     }
                     if (_history.Count == 0) sb.Append("<li><em>No history yet.</em></li>");
                     
@@ -491,7 +516,7 @@ namespace FenBrowser.FenEngine.Rendering
                         {
                             _history.RemoveRange(_historyIndex + 1, _history.Count - (_historyIndex + 1));
                         }
-                        _history.Add(_current);
+                        _history.Add(new HistoryEntry(_current));
                         _historyIndex = _history.Count - 1;
                     }
 
@@ -688,7 +713,7 @@ pre {{
                     {
                         _history.RemoveRange(_historyIndex + 1, _history.Count - (_historyIndex + 1));
                     }
-                    _history.Add(uri);
+                    _history.Add(new HistoryEntry(uri));
                     _historyIndex = _history.Count - 1;
                 }
 
@@ -2150,6 +2175,102 @@ pre {{
 
             _disposed = true;
             try { _engine.Dispose(); } catch { }
+        }
+
+        // IHistoryBridge Implementation
+        public int Length => _history.Count;
+        public object State => (_historyIndex >= 0 && _historyIndex < _history.Count) ? _history[_historyIndex].State : null;
+
+        public void PushState(object state, string title, string url)
+        {
+            try
+            {
+                var newUri = string.IsNullOrEmpty(url) ? _current : new Uri(_current, url);
+                
+                // Truncate forward history
+                if (_historyIndex < _history.Count - 1)
+                {
+                    _history.RemoveRange(_historyIndex + 1, _history.Count - (_historyIndex + 1));
+                }
+
+                var entry = new HistoryEntry(newUri, title, state);
+                entry.IsPushState = true;
+                
+                _history.Add(entry);
+                _historyIndex = _history.Count - 1;
+                _current = newUri;
+                
+                // Notify UI of URL change without reload
+                try { Navigated?.Invoke(this, _current); } catch { }
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Error($"[BrowserHost] PushState failed: {ex.Message}", LogCategory.JavaScript);
+            }
+        }
+
+        public void ReplaceState(object state, string title, string url)
+        {
+            try
+            {
+                if (_historyIndex >= 0 && _historyIndex < _history.Count)
+                {
+                    var newUri = string.IsNullOrEmpty(url) ? _current : new Uri(_current, url);
+                    var entry = _history[_historyIndex];
+                    
+                    entry.State = state;
+                    if (title != null) entry.Title = title;
+                    entry.Url = newUri;
+                    
+                    _current = newUri;
+                    
+                    // Notify UI of URL change without reload
+                    try { Navigated?.Invoke(this, _current); } catch { }
+                }
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Error($"[BrowserHost] ReplaceState failed: {ex.Message}", LogCategory.JavaScript);
+            }
+        }
+
+        public void Go(int delta)
+        {
+            // Async void is generally bad, but this is an interface method called from JS bridge
+            // We'll wrap it in Task.Run to fire and forget
+            Task.Run(async () =>
+            {
+                int targetIndex = _historyIndex + delta;
+                if (targetIndex >= 0 && targetIndex < _history.Count)
+                {
+                    // Update: Determine direction
+                    if (delta == 0) 
+                    {
+                         await RefreshAsync();
+                         return;
+                    }
+                    
+                    // For single steps, use GoBack/Forward
+                    if (delta == -1) await GoBackAsync();
+                    else if (delta == 1) await GoForwardAsync();
+                    else
+                    {
+                        // TODO: Implement multi-step logic correctly regarding popped states
+                         _historyIndex = targetIndex;
+                         var entry = _history[_historyIndex];
+                         if (entry.IsPushState)
+                         {
+                             _current = entry.Url;
+                             _engine.NotifyPopState(entry.State);
+                             try { Navigated?.Invoke(this, _current); } catch { }
+                         }
+                         else
+                         {
+                            await NavigateAsync(_history[_historyIndex].Url.AbsoluteUri);
+                         }
+                    }
+                }
+            });
         }
     }
 }
