@@ -1,4 +1,5 @@
 using FenBrowser.Core.Dom;
+using FenBrowser.Core.Logging;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -468,7 +469,7 @@ namespace FenBrowser.Core.Parsing
                     // Strict non-nesting: if stack has 'a', pop until it's closed
                     if (StackHas("a"))
                     {
-                        FenLogger.Debug("[Parser] Closing nested <a>");
+                        FenLogger.Debug("[Parser] Closing nested <a>", LogCategory.HtmlParsing);
                         PopUntil("a");
                     }
                     InsertHtmlElement(st);
@@ -558,6 +559,8 @@ namespace FenBrowser.Core.Parsing
                     if (!StackHas("p"))
                     {
                         // Parse error: </p> without <p>. Create <p> and close it. (Implies <p></p>)
+                        if (DebugConfig.LogHtmlParse)
+                             FenLogger.Log("[HTML] Recovered </p> without open <p> (Inserted empty paragraph)", LogCategory.HtmlParsing);
                         InsertHtmlElement(new StartTagToken() { TagName = "p" });
                     }
                     // Close p
@@ -717,6 +720,8 @@ namespace FenBrowser.Core.Parsing
                       // We must temporarily change CurrentNode?
                       
                       // TODO: Implement Foster Parenting
+                      if (DebugConfig.LogHtmlParse)
+                          FenBrowser.Core.FenLogger.Warn($"[HTML] Foster Parenting required for token: {token.Type}", LogCategory.HtmlParsing);
                       return true; // Ignore for now
                  }
             }
@@ -855,7 +860,7 @@ namespace FenBrowser.Core.Parsing
         {
             var el = CreateElement(token);
             CurrentNode.AppendChild(el);
-            FenLogger.Debug($"[Parser] Pushing {el.TagName}_{el.GetHashCode()} to stack (Depth: {_openElements.Count})");
+            FenLogger.Debug($"[Parser] Pushing {el.TagName}_{el.GetHashCode()} to stack (Depth: {_openElements.Count})", LogCategory.HtmlParsing);
             _openElements.Push(el);
             return el;
         }
@@ -878,13 +883,20 @@ namespace FenBrowser.Core.Parsing
 
         private void ClosePElement()
         {
-            if (StackHas("p")) PopUntil("p");
+            if (StackHas("p"))
+            {
+                if (DebugConfig.LogHtmlParse)
+                    FenLogger.Log("[HTML] Auto-closed <p> (implied end tag)", LogCategory.HtmlParsing);
+                PopUntil("p");
+            }
         }
         
         private void GenerateImpliedEndTags(string except = null)
         {
             while ((CurrentNode as Element)?.TagName != except && IsImpliedEndTag((CurrentNode as Element)?.TagName))
             {
+                if (DebugConfig.LogHtmlParse)
+                    FenLogger.Log($"[HTML] Implied end tag for <{(CurrentNode as Element)?.TagName}>", LogCategory.HtmlParsing);
                 _openElements.Pop();
             }
         }
@@ -902,14 +914,14 @@ namespace FenBrowser.Core.Parsing
         private void PopUntil(string tagName)
         {
             var targetFound = _openElements.Any(e => string.Equals(e.TagName, tagName, StringComparison.OrdinalIgnoreCase));
-            FenLogger.Debug($"[Parser] PopUntil({tagName}). Target in stack: {targetFound}. Current top: {(_openElements.Count > 0 ? _openElements.Peek().TagName : "NULL")}");
+            FenLogger.Debug($"[Parser] PopUntil({tagName}). Target in stack: {targetFound}. Current top: {(_openElements.Count > 0 ? _openElements.Peek().TagName : "NULL")}", LogCategory.HtmlParsing);
             
             if (targetFound)
             {
                 while (_openElements.Count > 1)
                 {
                     var popped = _openElements.Pop();
-                    FenLogger.Debug($"[Parser] Popped {popped.TagName}_{popped.GetHashCode()}");
+                    FenLogger.Debug($"[Parser] Popped {popped.TagName}_{popped.GetHashCode()}", LogCategory.HtmlParsing);
                     if (string.Equals(popped.TagName, tagName, StringComparison.OrdinalIgnoreCase)) break;
                 }
             }

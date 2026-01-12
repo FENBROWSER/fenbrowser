@@ -57,13 +57,6 @@ namespace FenBrowser.Core.Engine
             ValidatePhaseTransition(_currentPhase, phase);
             _currentPhase = phase;
             _passIndex = 0;
-            
-            #if DEBUG
-             try {
-                System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
-                $"[EngineContext] Phase transition: {_currentPhase} → {phase}\r\n");
-             } catch {}
-            #endif
         }
         
         /// <summary>

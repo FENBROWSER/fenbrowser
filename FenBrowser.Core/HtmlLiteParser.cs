@@ -40,7 +40,7 @@ namespace FenBrowser.Core
         // Tags that contain non-HTML content that should be parsed as raw text until the closing tag.
         private static readonly HashSet<string> ForeignContentTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "math", "script", "style" // SVG handled normally to allow structure parsing
+            "math", "script", "style", "textarea", "title", "noscript", "template", "iframe"
         };
 
         // Formatting elements requiring adoption agency algorithm
@@ -311,7 +311,8 @@ namespace FenBrowser.Core
             if (string.IsNullOrEmpty(originalName))
             {
                 if (Eof()) { lowerName = string.Empty; return; }
-                _i++;
+                char c = Peek();
+                if (c != '>' && c != '/' && c != '<') _i++; // Only skip if it's not the end of the tag or start of new tag
                 lowerName = string.Empty;
                 return;
             }
@@ -333,7 +334,7 @@ namespace FenBrowser.Core
             while (!Eof())
             {
                 var c = Peek();
-                if (char.IsWhiteSpace(c) || c == '=' || c == '>' || c == '/' || c == '\0') break;
+                if (char.IsWhiteSpace(c) || c == '=' || c == '>' || c == '/' || c == '<' || c == '\0') break;
                 _i++;
             }
             var original = _html.Substring(start, _i - start);
@@ -354,7 +355,6 @@ namespace FenBrowser.Core
                 {
                     var cc = Peek();
                     if (cc == q) break;
-                    if (cc == '>') break; 
                     _i++;
                 }
                 var s = _html.Substring(st, System.Math.Max(0, _i - st));
@@ -366,7 +366,7 @@ namespace FenBrowser.Core
             while (!Eof())
             {
                 var ch = Peek();
-                if (char.IsWhiteSpace(ch) || ch == '>' || ch == '/' || ch == '\0') break;
+                if (char.IsWhiteSpace(ch) || ch == '>' || ch == '/' || ch == '<' || ch == '\0') break;
                 _i++;
             }
             rawValue = _html.Substring(start, _i - start);

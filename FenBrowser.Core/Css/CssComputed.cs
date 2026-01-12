@@ -71,7 +71,7 @@ namespace FenBrowser.Core.Css
         public Thickness Padding { get; set; }
         public Thickness BorderThickness { get; set; }
         public SKColor? BorderBrush { get; set; }
-        public CornerRadius BorderRadius { get; set; }
+        public CssCornerRadius BorderRadius { get; set; }
         
         // Border styles - solid, dashed, dotted, double, groove, ridge, inset, outset, none, hidden
         public string BorderStyleTop { get; set; } = "none";
@@ -147,13 +147,26 @@ namespace FenBrowser.Core.Css
 
         public string FontFamilyName { get; set; }
         private SKTypeface _fontFamily; // Changed to SKTypeface
+        public static System.Func<string, int, SKFontStyleSlant, SKTypeface> FontResolver { get; set; }
+
         public SKTypeface FontFamily
         {
             get
             {
                 if (_fontFamily == null && !string.IsNullOrEmpty(FontFamilyName))
                 {
-                    try { _fontFamily = SKTypeface.FromFamilyName(FontFamilyName); } catch { }
+                    try 
+                    { 
+                        if (FontResolver != null)
+                        {
+                            _fontFamily = FontResolver(FontFamilyName, FontWeight ?? 400, FontStyle ?? SKFontStyleSlant.Upright);
+                        }
+                        
+                        // Fallback to system font if resolver failed or returned null
+                        if (_fontFamily == null)
+                            _fontFamily = SKTypeface.FromFamilyName(FontFamilyName); 
+                    } 
+                    catch { }
                 }
                 return _fontFamily;
             }

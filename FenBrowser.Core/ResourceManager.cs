@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Reflection;
 using FenBrowser.Core.Compat;
+using FenBrowser.Core.Logging;
 using FenBrowser.Core.Network;
 using FenBrowser.Core.Network.Handlers;
 using FenBrowser.Core.Security;
@@ -361,7 +362,7 @@ namespace FenBrowser.Core
                     try { resp = await SendRequestTrackedAsync(req, cts.Token).ConfigureAwait(false); }
                     catch (Exception sendEx)
                     {
-                        Console.WriteLine($"[FetchTextError] send failed {current} ex={sendEx.Message}");
+                        FenLogger.Error($"[Network] Request failed: {current} - {sendEx.Message}", LogCategory.Network);
                         resp = null;
                     }
                     
@@ -388,7 +389,7 @@ namespace FenBrowser.Core
                 }
                 if (resp == null || !resp.IsSuccessStatusCode)
                 {
-                    Console.WriteLine($"[FetchTextFail] url={url} hops={hops} status={(resp!=null?(int)resp.StatusCode:0)}");
+                    FenLogger.Warn($"[Network] Request failed: {url} Status={(resp != null ? (int)resp.StatusCode : 0)} Hops={hops}", LogCategory.Network);
                     return null;
                 }
                 var finalUri = resp?.RequestMessage?.RequestUri ?? current ?? url;
@@ -396,14 +397,40 @@ namespace FenBrowser.Core
                 // NoteHsts(resp, finalUri ?? url); // Handled by HstsHandler
 
                 var ct = resp.Content != null && resp.Content.Headers != null && resp.Content.Headers.ContentType != null ? resp.Content.Headers.ContentType.MediaType : null;
+                var ctHeader = resp.Content?.Headers?.ContentType?.ToString();
+                
+                // --- Phase 2: Encoding-aware text decoding ---
                 string text = null;
-                try { text = await resp.Content.ReadAsStringAsync().ConfigureAwait(false); }
+                try 
+                { 
+                    // Read raw bytes first
+                    var bytes = await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+                    
+                    // MIME Sniff if declared type is missing or generic
+                    var effectiveMime = ct;
+                    if (string.IsNullOrEmpty(ct) || ct == "application/octet-stream")
+                    {
+                        effectiveMime = MimeSniffer.SniffMimeType(bytes, ct);
+                        System.Diagnostics.Debug.WriteLine($"[ResourceLoader] MIME sniffed: {ct} -> {effectiveMime} for {url}");
+                    }
+                    
+                    // Decode bytes to string using detected encoding
+                    text = EncodingSniffer.DecodeToUtf8(bytes, ctHeader);
+                    
+                    var detectedEncoding = EncodingSniffer.DetermineEncoding(bytes, ctHeader);
+                    System.Diagnostics.Debug.WriteLine($"[ResourceLoader] Encoding: {detectedEncoding.WebName} for {url}");
+                }
                 catch (Exception bodyEx)
                 {
                     try { System.Diagnostics.Debug.WriteLine("[FetchTextError] body read failed url=" + url + " ex=" + bodyEx.Message); } catch { }
                     text = null;
                 }
-                try { var _elapsed = DateTimeOffset.UtcNow - _startFetch; var _msg = "[FetchText] " + url + " in " + (int)_elapsed.TotalMilliseconds + "ms"; System.Diagnostics.Debug.WriteLine(_msg); if (LogSink != null) LogSink(_msg); } catch { }
+                try { 
+                    var _elapsed = DateTimeOffset.UtcNow - _startFetch; 
+                    var _msg = $"[Network] GET {url} → {(int)resp.StatusCode} in {(int)_elapsed.TotalMilliseconds}ms"; 
+                    FenLogger.Info(_msg, LogCategory.Network);
+                    if (LogSink != null) LogSink(_msg); 
+                } catch { }
 
                 if (resp != null)
                 {
@@ -413,6 +440,9 @@ namespace FenBrowser.Core
 
                 if (LooksTextual(ct))
                 {
+                    // [Verification] Register source truth
+                    FenBrowser.Core.Verification.ContentVerifier.RegisterSource(url?.ToString() ?? "unknown", text?.Length ?? 0, text?.GetHashCode() ?? 0);
+
                     // memory cache
                     var entry = new TextEntry { Body = text ?? string.Empty, ContentType = ct ?? string.Empty };
                     var pair = Tuple.Create(key, entry);
@@ -605,6 +635,9 @@ namespace FenBrowser.Core
                     return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = "Failed to read body: " + bodyEx.Message, FinalUri = finalUri };
                 }
 
+                // [Verification] Register source truth
+                FenBrowser.Core.Verification.ContentVerifier.RegisterSource(url?.ToString() ?? "unknown", text?.Length ?? 0, text?.GetHashCode() ?? 0);
+
                 return new FetchResult { 
                     Status = FetchStatus.Success, 
                     Content = text, 
@@ -677,6 +710,14 @@ namespace FenBrowser.Core
                     System.Diagnostics.Debug.WriteLine($"[FetchImage] file failed: {url} {ex.Message}");
                     return null;
                 }
+            }
+            
+            // Handle internal fen:// scheme - these are browser internal URLs, not fetchable
+            if (string.Equals(url.Scheme, "fen", StringComparison.OrdinalIgnoreCase))
+            {
+                // Internal URLs like fen://newtab/favicon.ico are not HTTP fetchable
+                // The UI layer should handle these with embedded resources
+                return null;
             }
 
             // Handle data URIs
@@ -785,7 +826,6 @@ namespace FenBrowser.Core
                     var msg = $"[FetchImageException] url={url} ex={ex.Message}";
                     System.Diagnostics.Debug.WriteLine(msg);
                     LogSink?.Invoke(msg);
-                    System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", msg + "\r\n");
                 } catch { }
                 return null;
             }

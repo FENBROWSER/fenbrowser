@@ -1,9 +1,15 @@
+using System.Collections.Generic;
+
 namespace FenBrowser.Core.Dom
 {
     public class Document : Element
     {
         public override NodeType NodeType => NodeType.Document;
         public override string NodeName => "#document";
+
+        // Top Layer elements (e.g. <dialog> opened with showModal)
+        // See HTML Spec: https://html.spec.whatwg.org/multipage/infrastructure.html#top-layer
+        public List<Element> TopLayer { get; } = new List<Element>();
 
         // Note: ActiveElement is inherited from Element base class
         
@@ -65,6 +71,18 @@ namespace FenBrowser.Core.Dom
 
         public QuirksMode Mode { get; set; } = QuirksMode.Quirks;
 
+        // --- Final Architecture: Orchestrator Hook ---
+        public event System.Action OnTreeDirty;
+        
+        /// <summary>
+        /// Called when any node in the tree is marked dirty. 
+        /// Signals the EngineLoop to schedule a frame update.
+        /// </summary>
+        public void NotifyTreeDirty()
+        {
+            OnTreeDirty?.Invoke();
+        }
+
         public override Node CloneNode(bool deep)
         {
             var doc = new Document();
@@ -79,6 +97,29 @@ namespace FenBrowser.Core.Dom
                 }
             }
             return doc;
+        }
+
+        public void DumpTree()
+        {
+            if (!FenBrowser.Core.Logging.DebugConfig.LogDomTree) return;
+            Console.WriteLine("=== DOM TREE DUMP ===");
+            DumpNode(this, 0);
+            Console.WriteLine("=====================");
+        }
+
+        private void DumpNode(Element node, int depth)
+        {
+            var indent = new string(' ', depth * 2);
+            var cls = node.GetAttribute("class") ?? "";
+            var id = node.Id ?? "";
+            
+            if (FenBrowser.Core.Logging.DebugConfig.ShouldLog(cls) || node.Tag == "body")
+            {
+                 Console.WriteLine($"[DOM] {indent}{node.Tag}#{id}.{cls}");
+            }
+            
+            foreach (var child in node.Children)
+                if (child is Element e) DumpNode(e, depth + 1);
         }
     }
 

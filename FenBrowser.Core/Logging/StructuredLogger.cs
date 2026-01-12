@@ -227,22 +227,68 @@ namespace FenBrowser.Core.Logging
         }
         
         /// <summary>
-        /// Dump raw HTML source to a file for debugging.
+        /// Dump raw HTML source fetched from network (CURL-like).
         /// </summary>
-        public static void DumpRawSource(string url, string htmlContent)
+        public static string DumpRawSource(string url, string htmlContent)
         {
-            if (!_globalEnabled) return;
+            if (!_globalEnabled) return null;
             
             try
             {
-                var fileName = $"raw_source_{DateTime.Now:yyyyMMdd_HHmmss}.html";
+                var fileName = $"network_fetch_{DateTime.Now:yyyyMMdd_HHmmss}.html";
                 var filePath = Path.Combine(_basePath, fileName);
-                File.WriteAllText(filePath, $"<!-- URL: {url} -->\n<!-- Dumped: {DateTime.Now:yyyy-MM-dd HH:mm:ss} -->\n{htmlContent}");
-                Info("Network", $"Raw source dumped to: {filePath}");
+                File.WriteAllText(filePath, $"<!-- URL: {url} -->\n<!-- Type: Network Fetch (Raw) -->\n{htmlContent}");
+                Info("Network", $"Raw network source dumped to: {filePath}");
+                return filePath;
             }
             catch (Exception ex)
             {
                 Error("Network", "Failed to dump raw source", ex);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Dump the engine's processed DOM source (Normalized HTML).
+        /// </summary>
+        public static string DumpEngineSource(string url, string htmlContent)
+        {
+            if (!_globalEnabled) return null;
+
+            try
+            {
+                var fileName = $"engine_source_{DateTime.Now:yyyyMMdd_HHmmss}.html";
+                var filePath = Path.Combine(_basePath, fileName);
+                File.WriteAllText(filePath, $"<!-- URL: {url} -->\n<!-- Type: Fen Engine Processed DOM -->\n{htmlContent}");
+                Info("Rendering", $"Engine source dumped to: {filePath}");
+                return filePath;
+            }
+            catch (Exception ex)
+            {
+                Error("Rendering", "Failed to dump engine source", ex);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Dump the final rendered text content to a file. Returns the absolute path.
+        /// </summary>
+        public static string DumpRenderedText(string url, string textContent)
+        {
+            if (!_globalEnabled) return null;
+
+            try
+            {
+                var fileName = $"rendered_text_{DateTime.Now:yyyyMMdd_HHmmss}.txt";
+                var filePath = Path.Combine(_basePath, fileName);
+                File.WriteAllText(filePath, $"URL: {url}\nDumped: {DateTime.Now:yyyy-MM-dd HH:mm:ss}\n----------------------------------\n{textContent}");
+                Info("Rendering", $"Rendered text dumped to: {filePath}");
+                return filePath;
+            }
+            catch (Exception ex)
+            {
+                Error("Rendering", "Failed to dump rendered text", ex);
+                return null;
             }
         }
         
