@@ -79,23 +79,16 @@ namespace FenBrowser.Host.Context
             // View Page Source (opens in new tab with view-source: protocol)
             items.Add(ContextMenuItem.Create("View Page Source", () => 
             {
-                System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ContextMenuBuilder] ViewPageSource: currentUrl='{currentUrl}' onViewPageSource={(onViewPageSource != null ? "set" : "null")}\r\n");
                 if (!string.IsNullOrEmpty(currentUrl) && onViewPageSource != null)
                 {
                     var viewSourceUrl = $"view-source:{currentUrl}";
-                    System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ContextMenuBuilder] Calling onViewPageSource with: '{viewSourceUrl}'\r\n");
                     onViewPageSource(viewSourceUrl);
-                }
-                else
-                {
-                    System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ContextMenuBuilder] ViewPageSource SKIPPED - currentUrl empty or callback null\r\n");
                 }
             }, "Ctrl+U"));
             
             // Inspect Element (shows element details)
             items.Add(ContextMenuItem.Create("Inspect", () => 
             {
-                System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ContextMenuBuilder] Inspect: hit.TagName='{hit.TagName}' onInspectElement={(onInspectElement != null ? "set" : "null")}\r\n");
                 onInspectElement?.Invoke(hit);
             }, "Ctrl+Shift+I"));
 

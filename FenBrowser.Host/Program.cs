@@ -38,7 +38,7 @@ public class Program
     private static int _logicalWidth = 1280;
     private static int _logicalHeight = 800;
     private static float _dpiScale = 1.0f;
-    private static string _currentUrl = "fen://newtab"; // Modern new tab page
+    private static string _currentUrl = "https://www.google.com"; // Test Google
     
     // Compositor and Root UI
     private static Compositor _compositor;
@@ -83,11 +83,8 @@ public class Program
         // Capture Main Thread ID for safe dispatching
         _mainThreadId = Environment.CurrentManagedThreadId;
         
-        // Initialize logging to absolute path to ensure visibility
-        FenBrowser.Core.FenLogger.Initialize(@"C:\Users\udayk\Videos\FENBROWSER\host_debug.txt");
-        
-        // Initialize StructuredLogger for module-specific diagnostics (CSS, Layout, Network)
-        StructuredLogger.Initialize(@"C:\Users\udayk\Videos\FENBROWSER\logs");
+        // Initialize logging from settings
+        FenBrowser.Core.Logging.LogManager.InitializeFromSettings();
         
         FenLogger.Info($"[Host] Starting FenBrowser.Host with URL: {_currentUrl}", LogCategory.General);
         

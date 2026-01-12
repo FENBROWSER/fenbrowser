@@ -39,6 +39,7 @@ public class BrowserIntegration
     private SKPicture _currentFrame;
     private readonly object _frameLock = new object();
     private readonly SKPictureRecorder _recorder = new SKPictureRecorder();
+    private bool _hasLoggedFrameNull = false; // To reduce warning spam
     
     // Last hit test result (for status bar display)
     private HitTestResult _lastHitTest = HitTestResult.None;
@@ -87,9 +88,27 @@ public class BrowserIntegration
         
         _browser.RepaintReady += (s, e) =>
         {
-            _needsRepaint = true;
-            _wakeEvent.Set(); // Wake engine thread to record new frame
-            NeedsRepaint?.Invoke(); // Signal UI to redraw using last frame
+            // CRITICAL FIX: Sync DOM immediately when RenderAsync fires RepaintReady
+            _root = _browser.GetDomRoot();
+            _styles = _browser.ComputedStyles;
+            
+            FenLogger.Info($"[BrowserIntegration] RepaintReady: Root={(_root?.TagName ?? "NULL")}, Styles={(_styles?.Count.ToString() ?? "NULL")}", LogCategory.Rendering);
+            
+            // CRITICAL: Explicit layout trigger chain after DOM build
+            // This is the mandatory sequence: MarkLayoutDirty + RunLayout + TryRecordFrame
+            // RecordFrame internally calls _renderer.Render which runs layout
+            if (_root != null && _lastViewportSize.Width > 0)
+            {
+                FenLogger.Info("[BrowserIntegration] Running explicit layout + frame after DOM build", LogCategory.Layout);
+                RecordFrame(_lastViewportSize);
+                NeedsRepaint?.Invoke(); // Signal UI to redraw with new frame
+            }
+            else
+            {
+                // Fallback: mark for async processing if viewport not ready
+                _needsRepaint = true;
+                _wakeEvent.Set();
+            }
         };
         
         _browser.TitleChanged += (s, title) => TitleChanged?.Invoke(title);
@@ -169,6 +188,9 @@ public class BrowserIntegration
                 // Sync latest state from browser host
                 _root = _browser.GetDomRoot();
                 _styles = _browser.ComputedStyles;
+                
+                // Debug: Log synced state
+                FenLogger.Info($"[EngineLoop] After sync: Root={(_root != null ? _root.TagName : "NULL")}, Styles={(_styles != null ? _styles.Count.ToString() : "NULL")}", LogCategory.Rendering);
                 
                 RecordFrame(_lastViewportSize);
             }
@@ -277,9 +299,12 @@ public class BrowserIntegration
             }
             else 
             {
-                 // Trace once per second to avoid spam?
-                 if (DateTime.Now.Second % 5 == 0) 
-                     FenLogger.Warn("[BrowserIntegration] Render: _currentFrame is null! Drawing Placeholder.", LogCategory.Rendering);
+                 // Log only once per session to avoid spam during startup
+                 if (!_hasLoggedFrameNull)
+                 {
+                     _hasLoggedFrameNull = true;
+                     FenLogger.Debug("[BrowserIntegration] Render: _currentFrame is null, drawing placeholder.", LogCategory.Rendering);
+                 }
             }
         }
         
@@ -293,12 +318,34 @@ public class BrowserIntegration
     /// </summary>
     public void RecordFrame(SKSize viewportSize)
     {
-        if (_root == null || _styles == null) 
+        // RELAXED GATING: Allow early structural frames
+        // Only skip when BOTH root AND styles are missing
+        if (_root == null && _styles == null) 
         {
-            FenLogger.Warn($"[BrowserIntegration] RecordFrame skipped: Root={_root != null}, Styles={_styles != null}", LogCategory.General);
-            _needsRepaint = false; // Stop the loop!
+            // STOP THE HOT LOOP: If we can't record, stop asking to repaint immediately.
+            // We will repaint again when state changes (RepaintReady/Loading/etc) trigger a wake.
+            _needsRepaint = false; 
+            FenLogger.Warn("[BrowserIntegration] RecordFrame skipped: no root and no styles. Clearing Repaint flag.", LogCategory.General);
+            return; 
+        }
+        
+        // Guard: Ensure we have a valid HTML element
+        string rootTag = _root?.TagName?.ToUpperInvariant() ?? "";
+        if (_root != null && rootTag != "HTML")
+        {
+            FenLogger.Warn($"[BrowserIntegration] RecordFrame skipped: root is '{rootTag}' not HTML", LogCategory.General);
             return;
         }
+        
+        // Create empty styles dictionary if null but root exists
+        if (_styles == null)
+        {
+            _styles = new Dictionary<Node, CssComputed>();
+            FenLogger.Info("[BrowserIntegration] Recording structural frame (no styles yet)", LogCategory.Rendering);
+        }
+        
+        // === DOM → Layout → Frame transition begins ===
+        FenLogger.Info($"[TRANSITION] DOM built (HTML). Running layout on real DOM. Viewport={viewportSize}", LogCategory.Layout);
         
         try
         {
@@ -683,7 +730,7 @@ public class BrowserIntegration
     /// Handle mouse click at window coordinates.
     /// Returns true if a navigable link was clicked.
     /// </summary>
-    public bool HandleClick(float windowX, float windowY, float viewportOffsetX = 0, float viewportOffsetY = 0)
+    public async Task<bool> HandleClick(float windowX, float windowY, float viewportOffsetX = 0, float viewportOffsetY = 0)
     {
         var result = PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
         
@@ -708,11 +755,62 @@ public class BrowserIntegration
             }
             
             LinkClicked?.Invoke(href);
-            _ = NavigateAsync(href);
+            await NavigateAsync(href);
             return true;
+        }
+
+        // Handle generic element click (Focus, etc)
+        if (result.NativeElement is FenBrowser.Core.Dom.Element nativeEl)
+        {
+             await _browser.HandleElementClick(nativeEl);
+        }
+        else if (!string.IsNullOrEmpty(result.ElementId))
+        {
+            var element = FindElementById(_root, result.ElementId);
+            if (element != null)
+            {
+                await _browser.HandleElementClick(element);
+            }
+        }
+        else
+        {
+            // Clicked nothing/background -> Clear focus
+            await _browser.HandleElementClick(null);
         }
         
         return false;
+    }
+
+    public async Task HandleKeyPress(string key)
+    {
+        await _browser.HandleKeyPress(key);
+    }
+    
+    public async Task HandleClipboardCommand(string command, string data = null)
+    {
+        await _browser.HandleClipboardCommand(command, data);
+    }
+    
+    public string GetSelectedText()
+    {
+        return _browser.GetSelectedText();
+    }
+    
+    public void DeleteSelection()
+    {
+        _browser.DeleteSelection();
+    }
+
+    private Element FindElementById(Element root, string id)
+    {
+        if (root == null) return null;
+        if (root.Id == id) return root;
+
+        foreach (var child in root.Descendants())
+        {
+            if (child is Element el && el.Id == id) return el;
+        }
+        return null;
     }
 }
 

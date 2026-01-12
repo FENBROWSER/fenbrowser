@@ -203,22 +203,16 @@ public class ContextMenuWidget : Widget
         }
         
         int index = GetItemIndex(x, y);
-        System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ContextMenu] Click at ({x},{y}) index={index}\r\n");
         if (index >= 0 && index < _items.Count)
         {
             var item = _items[index];
-            System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ContextMenu] Item '{item.Label}' IsSeparator={item.IsSeparator} IsEnabled={item.IsEnabled} HasOnClick={item.OnClick != null}\r\n");
             if (!item.IsSeparator && item.IsEnabled)
             {
                 try
                 {
                     item.OnClick?.Invoke();
-                    System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ContextMenu] OnClick invoked successfully for '{item.Label}'\r\n");
                 }
-                catch (Exception ex)
-                {
-                    System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[ContextMenu] OnClick ERROR: {ex.Message}\r\n");
-                }
+                catch { }
                 Hide();
             }
         }

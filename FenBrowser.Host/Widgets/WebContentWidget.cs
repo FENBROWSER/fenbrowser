@@ -122,9 +122,13 @@ public class WebContentWidget : Widget
         return this;
     }
 
+    public override bool CanFocus => true;
+
     public override void OnMouseDown(float x, float y, Silk.NET.Input.MouseButton button)
     {
         if (!Bounds.Contains(x, y)) return;
+        
+        RequestFocus();
         
         var activeTab = TabManager.Instance.ActiveTab;
         if (activeTab != null)
@@ -140,7 +144,98 @@ public class WebContentWidget : Widget
             }
             else
             {
-                activeTab.Browser.HandleClick(x, y, Bounds.Left, Bounds.Top);
+               _ = activeTab.Browser.HandleClick(x, y, Bounds.Left, Bounds.Top);
+            }
+        }
+    }
+
+    public override void OnKeyDown(Silk.NET.Input.Key key, bool ctrl, bool shift, bool alt)
+    {
+        var activeTab = TabManager.Instance.ActiveTab;
+        if (activeTab != null && !activeTab.Url.StartsWith("fen://settings", StringComparison.OrdinalIgnoreCase))
+        {
+            // Clipboard Shortcuts
+            if (ctrl)
+            {
+                if (key == Silk.NET.Input.Key.A)
+                {
+                    _ = activeTab.Browser.HandleClipboardCommand("SelectAll");
+                    return;
+                }
+                else if (key == Silk.NET.Input.Key.C)
+                {
+                     // Get selected text from Browser logic
+                     // Note: HandleClipboardCommand("Copy") is async/void, we need synchronous text or a callback.
+                     // But wait, the BrowserApi modification I prepared assumes the Host fetches text.
+                     // The BrowserApi.GetSelectedText() method I added is synchronous.
+                     string text = activeTab.Browser.GetSelectedText();
+                     if (!string.IsNullOrEmpty(text))
+                     {
+                         ClipboardHelper.SetText(text);
+                     }
+                     return;
+                }
+                else if (key == Silk.NET.Input.Key.X)
+                {
+                     // Cut = Copy + Delete
+                     string text = activeTab.Browser.GetSelectedText();
+                      if (!string.IsNullOrEmpty(text))
+                     {
+                         ClipboardHelper.SetText(text);
+                         activeTab.Browser.DeleteSelection();
+                     }
+                     return;
+                }
+                else if (key == Silk.NET.Input.Key.V)
+                {
+                    string text = ClipboardHelper.GetText();
+                    if (!string.IsNullOrEmpty(text))
+                    {
+                        _ = activeTab.Browser.HandleClipboardCommand("Paste", text);
+                    }
+                    return;
+                }
+            }
+
+            if (key == Silk.NET.Input.Key.Backspace)
+            {
+                _ = activeTab.Browser.HandleKeyPress("Backspace");
+            }
+            else if (key == Silk.NET.Input.Key.Enter)
+            {
+                _ = activeTab.Browser.HandleKeyPress("Enter");
+            }
+            else if (key == Silk.NET.Input.Key.Left)
+            {
+                _ = activeTab.Browser.HandleKeyPress("ArrowLeft");
+            }
+            else if (key == Silk.NET.Input.Key.Right)
+            {
+                _ = activeTab.Browser.HandleKeyPress("ArrowRight");
+            }
+            else if (key == Silk.NET.Input.Key.Home)
+            {
+                _ = activeTab.Browser.HandleKeyPress("Home");
+            }
+            else if (key == Silk.NET.Input.Key.End)
+            {
+                _ = activeTab.Browser.HandleKeyPress("End");
+            }
+            else if (key == Silk.NET.Input.Key.Delete)
+            {
+                _ = activeTab.Browser.HandleKeyPress("Delete");
+            }
+        }
+    }
+
+    public override void OnTextInput(char c, bool ctrl)
+    {
+        var activeTab = TabManager.Instance.ActiveTab;
+        if (activeTab != null && !activeTab.Url.StartsWith("fen://settings", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!char.IsControl(c))
+            {
+                _ = activeTab.Browser.HandleKeyPress(c.ToString());
             }
         }
     }
