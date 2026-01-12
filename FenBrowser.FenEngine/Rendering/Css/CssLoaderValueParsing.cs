@@ -17,12 +17,12 @@ namespace FenBrowser.FenEngine.Rendering
     {
         #region CSS Value Parsing
 
-        private static bool TryDouble(string s, out double v)
+        public static bool TryDouble(string s, out double v)
         {
             return double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v);
         }
 
-        private static bool TryPx(string s, out double px, double emBase = 16.0, double percentBase = 0, bool allowUnitless = false)
+        public static bool TryPx(string s, out double px, double emBase = 16.0, double percentBase = 0, bool allowUnitless = false)
         {
             px = 0;
             if (string.IsNullOrWhiteSpace(s)) return false;
@@ -66,6 +66,15 @@ namespace FenBrowser.FenEngine.Rendering
                 var num = s.Substring(0, s.Length - 2).Trim();
                 double v;
                 if (TryDouble(num, out v)) { px = v; return true; }
+                
+                // FALLBACK: Heavy-handed parse for robust engine behavior
+                // (Matches TryGapShorthand workaround logic)
+                if (double.TryParse(num, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v))
+                {
+                    px = v;
+                    return true;
+                }
+                
                 return false;
             }
 
@@ -220,7 +229,7 @@ namespace FenBrowser.FenEngine.Rendering
             return false;
         }
 
-        private static bool TryThickness(string s, out Thickness th, double emBase = 16.0)
+        public static bool TryThickness(string s, out Thickness th, double emBase = 16.0)
         {
             th = new Thickness(0);
             if (string.IsNullOrWhiteSpace(s)) return false;
@@ -286,12 +295,12 @@ namespace FenBrowser.FenEngine.Rendering
             return SKColors.Black;
         }
 
-        private static SKColor? TryColor(string css)
+        public static SKColor? TryColor(string css)
         {
             return CssParser.ParseColor(css);
         }
 
-        private static bool TryPercent(string s, out double pct)
+        public static bool TryPercent(string s, out double pct)
         {
             pct = 0;
             if (string.IsNullOrWhiteSpace(s)) return false;

@@ -14,27 +14,27 @@ namespace FenBrowser.FenEngine.Rendering.Css
     {
         #region Public API
 
-        public static bool Matches(Element element, CssSelector selector)
+        public static bool Matches(Element element, CssSelector selector, int depth = 0)
         {
-            if (selector == null) return false;
+            if (selector == null || depth > 64) return false;
             // Use pre-parsed chains if available
             if (selector.Chains != null && selector.Chains.Count > 0)
             {
-                return selector.Chains.Any(chain => MatchesChain(element, chain));
+                return selector.Chains.Any(chain => MatchesChain(element, chain, depth + 1));
             }
             // Fallback to raw parsing
-            return Matches(element, selector.Raw);
+            return Matches(element, selector.Raw, depth + 1);
         }
 
-        public static SelectorChain GetMatchingChain(Element element, CssSelector selector)
+        public static SelectorChain GetMatchingChain(Element element, CssSelector selector, int depth = 0)
         {
-            if (selector == null || element == null) return null;
+            if (selector == null || element == null || depth > 64) return null;
             if (selector.Chains != null && selector.Chains.Count > 0)
             {
                 SelectorChain best = null;
                 foreach (var chain in selector.Chains)
                 {
-                    if (MatchesChain(element, chain))
+                    if (MatchesChain(element, chain, depth + 1))
                     {
                         if (best == null || chain.Specificity.CompareTo(best.Specificity) > 0)
                             best = chain;
@@ -43,13 +43,13 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 return best;
             }
             // Fallback for raw string
-            if (Matches(element, selector.Raw))
+            if (Matches(element, selector.Raw, depth + 1))
             {
                  var chains = ParseSelectorList(selector.Raw);
                  SelectorChain best = null;
                  foreach (var chain in chains)
                  {
-                     if (MatchesChain(element, chain))
+                     if (MatchesChain(element, chain, depth + 2))
                      {
                          if (best == null || chain.Specificity.CompareTo(best.Specificity) > 0)
                             best = chain;
@@ -69,12 +69,12 @@ namespace FenBrowser.FenEngine.Rendering.Css
         /// <summary>
         /// Check if an element matches a selector string.
         /// </summary>
-        public static bool Matches(Element element, string selector)
+        public static bool Matches(Element element, string selector, int depth = 0)
         {
-            if (element == null || string.IsNullOrWhiteSpace(selector)) return false;
+            if (element == null || string.IsNullOrWhiteSpace(selector) || depth > 64) return false;
             
             var parsed = ParseSelectorList(selector);
-            return parsed.Any(chain => MatchesChain(element, chain));
+            return parsed.Any(chain => MatchesChain(element, chain, depth + 1));
         }
 
         /// <summary>
@@ -86,8 +86,8 @@ namespace FenBrowser.FenEngine.Rendering.Css
             var parsed = ParseSelectorList(selector);
             if (parsed.Count == 0) return (0, 0, 0);
             
-            // Return highest specificity among selector list
-            var s = parsed.Select(c => c.Specificity).OrderByDescending(x => x).First();
+            // CRITICAL FIX: Use FirstOrDefault to prevent "Sequence contains no elements" exception
+            var s = parsed.Select(c => c.Specificity).OrderByDescending(x => x).FirstOrDefault();
             return (s.A, s.B, s.C);
         }
 
@@ -326,18 +326,18 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
         #region Matching
 
-        private static bool MatchesChain(Element element, SelectorChain chain)
+        private static bool MatchesChain(Element element, SelectorChain chain, int depth = 0)
         {
-            if (chain == null || chain.Segments.Count == 0) return false;
-            return MatchesChainRecursive(element, chain, chain.Segments.Count - 1);
+            if (chain == null || chain.Segments.Count == 0 || depth > 64) return false;
+            return MatchesChainRecursive(element, chain, chain.Segments.Count - 1, depth + 1);
         }
 
-        private static bool MatchesChainRecursive(Element element, SelectorChain chain, int index)
+        private static bool MatchesChainRecursive(Element element, SelectorChain chain, int index, int depth)
         {
-            if (element == null) return false;
+            if (element == null || depth > 64) return false;
             
             var seg = chain.Segments[index];
-            if (!MatchesSegment(element, seg)) return false;
+            if (!MatchesSegment(element, seg, depth + 1)) return false;
 
             // Base case: matched the leftmost segment
             if (index == 0) return true;
@@ -349,7 +349,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 var ancestor = element.Parent as Element;
                 while (ancestor != null)
                 {
-                    if (MatchesChainRecursive(ancestor, chain, index - 1))
+                    if (MatchesChainRecursive(ancestor, chain, index - 1, depth + 1))
                         return true;
                     ancestor = ancestor.Parent as Element;
                 }
@@ -357,19 +357,19 @@ namespace FenBrowser.FenEngine.Rendering.Css
             }
             else if (combinator == '>') // Child
             {
-                return MatchesChainRecursive(element.Parent as Element, chain, index - 1);
+                return MatchesChainRecursive(element.Parent as Element, chain, index - 1, depth + 1);
             }
             else if (combinator == '+') // Adjacent Sibling
             {
                 var prev = GetPreviousSibling(element);
-                return MatchesChainRecursive(prev, chain, index - 1);
+                return MatchesChainRecursive(prev, chain, index - 1, depth + 1);
             }
             else if (combinator == '~') // General Sibling
             {
                 var prev = GetPreviousSibling(element);
                 while (prev != null)
                 {
-                    if (MatchesChainRecursive(prev, chain, index - 1))
+                    if (MatchesChainRecursive(prev, chain, index - 1, depth + 1))
                         return true;
                     prev = GetPreviousSibling(prev);
                 }
@@ -391,9 +391,9 @@ namespace FenBrowser.FenEngine.Rendering.Css
             return idx > 0 ? siblings[idx - 1] : null;
         }
 
-        private static bool MatchesSegment(Element el, SelectorSegment seg)
+        private static bool MatchesSegment(Element el, SelectorSegment seg, int depth)
         {
-            if (el == null) return false;
+            if (el == null || depth > 64) return false;
 
             // Tag
             if (!string.IsNullOrEmpty(seg.Tag) && seg.Tag != "*")
@@ -433,7 +433,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
             // Pseudo-classes
             foreach (var (name, args) in seg.PseudoClasses)
             {
-                if (!MatchesPseudoClass(el, name, args)) return false;
+                if (!MatchesPseudoClass(el, name, args, depth + 1)) return false;
             }
 
             return true;
@@ -462,8 +462,9 @@ namespace FenBrowser.FenEngine.Rendering.Css
             };
         }
 
-        private static bool MatchesPseudoClass(Element el, string name, string args)
+        private static bool MatchesPseudoClass(Element el, string name, string args, int depth)
         {
+            if (depth > 64) return false;
             return name.ToLowerInvariant() switch
             {
                 "first-child" => IsFirstChild(el),
@@ -471,9 +472,9 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 "only-child" => IsOnlyChild(el),
                 "empty" => el.Children == null || el.Children.Count == 0,
                 "root" => el.Parent == null || el.Tag?.ToUpperInvariant() == "HTML",
-                "not" => !Matches(el, args),
-                "is" or "where" => ParseSelectorList(args).Any(chain => MatchesChain(el, chain)),
-                "has" => el.Children?.OfType<Element>().Any(c => Matches(c, args)) == true,
+                "not" => !Matches(el, args, depth + 1),
+                "is" or "where" => ParseSelectorList(args).Any(chain => MatchesChain(el, chain, depth + 1)),
+                "has" => el.Children?.OfType<Element>().Any(c => Matches(c, args, depth + 1)) == true,
                 "nth-child" => MatchesNthChild(el, args),
                 "nth-last-child" => MatchesNthLastChild(el, args),
                 "checked" => el.Attr?.ContainsKey("checked") == true,

@@ -102,7 +102,7 @@ namespace FenBrowser.FenEngine.Rendering
         {
              try 
             {
-                if (viewport.Width > 0 && viewport.Height > 0 && tree.NodeCount > 20)
+                if (viewport.Width > 0 && viewport.Height > 0 && tree.NodeCount > 2)
                 {
                     using (var surface = SKSurface.Create(new SKImageInfo((int)viewport.Width, (int)viewport.Height)))
                     {
@@ -119,6 +119,7 @@ namespace FenBrowser.FenEngine.Rendering
                             using (var stream = System.IO.File.OpenWrite(@"C:\Users\udayk\Videos\FENBROWSER\debug_screenshot.png"))
                             {
                                 data.SaveTo(stream);
+                                FenBrowser.Core.Verification.ContentVerifier.RegisterScreenshot(@"C:\Users\udayk\Videos\FENBROWSER\debug_screenshot.png");
                             }
                         }
                     }
@@ -178,10 +179,18 @@ namespace FenBrowser.FenEngine.Rendering
             
             // Apply clip (PushClip does Save + Clip)
             bool pushedClip = false;
+            // Handle explicit ClipRect (base property)
             if (node.ClipRect.HasValue)
             {
                 FenLogger.Debug($"[SkiaRenderer] Pushing Clip: {node.ClipRect.Value} for {node.GetType().Name} (Bounds={node.Bounds})");
                 backend.PushClip(node.ClipRect.Value);
+                pushedClip = true;
+            }
+            // Handle ClipPaintNode specific path clip (e.g. border-radius)
+            else if (node is ClipPaintNode clipNode && clipNode.ClipPath != null)
+            {
+                // FenLogger.Debug($"[SkiaRenderer] Pushing Path Clip for {node.GetType().Name}");
+                backend.PushClip(clipNode.ClipPath);
                 pushedClip = true;
             }
             
@@ -195,6 +204,31 @@ namespace FenBrowser.FenEngine.Rendering
                 pushedOpacity = true;
             }
             
+            // Apply mask
+            bool pushedMask = false;
+            if (node is MaskPaintNode maskNode && maskNode.MaskBitmap != null)
+            {
+                 // Isolate content for masking
+                 backend.PushLayer(1.0f);
+                 pushedMask = true;
+            }
+
+            // Apply scroll offset
+            bool pushedScroll = false;
+            if (node is ScrollPaintNode scrollNode && (scrollNode.ScrollX != 0 || scrollNode.ScrollY != 0))
+            {
+                backend.PushTransform(SKMatrix.CreateTranslation(-scrollNode.ScrollX, -scrollNode.ScrollY));
+                pushedScroll = true;
+            }
+
+            // Apply sticky offset
+            bool pushedSticky = false;
+            if (node is StickyPaintNode stickyNode && (stickyNode.StickyOffset.X != 0 || stickyNode.StickyOffset.Y != 0))
+            {
+                backend.PushTransform(SKMatrix.CreateTranslation(stickyNode.StickyOffset.X, stickyNode.StickyOffset.Y));
+                pushedSticky = true;
+            }
+
             // Draw self based on node type
             DrawSelf(backend, node);
             
@@ -212,6 +246,18 @@ namespace FenBrowser.FenEngine.Rendering
             }
             
             // Restore state in reverse order
+            if (pushedMask)
+            {
+                 var maskNodePop = (MaskPaintNode)node;
+                 // Apply mask using DstIn
+                 using var maskImage = SKImage.FromBitmap(maskNodePop.MaskBitmap);
+                 backend.ApplyMask(maskImage, maskNodePop.Bounds);
+                 // Pop isolation layer
+                 backend.PopLayer();
+            }
+
+            if (pushedSticky) backend.PopLayer(); // Pop sticky transform
+            if (pushedScroll) backend.PopLayer(); // Pop scroll transform
             if (pushedOpacity) backend.PopLayer();
             if (pushedClip) backend.PopClip();
             if (pushedTransform) backend.PopLayer(); // PopLayer restores the Save from PushTransform
@@ -222,8 +268,8 @@ namespace FenBrowser.FenEngine.Rendering
         private void DrawHoverHighlight(IRenderBackend backend, PaintNodeBase node)
         {
             // Only draw hover for background nodes or top-level containers to avoid mess
-            if (!(node is BackgroundPaintNode) && !(node is ImagePaintNode) && !(node is BorderPaintNode)) return;
-
+            if (!(node is BackgroundPaintNode) && !(node is ImagePaintNode) && !(node is BorderPaintNode) && !(node is MaskPaintNode)) return;
+            
             var paintColor = new SKColor(255, 255, 255, 40); // Subtle white overlay
             
             if (node is BackgroundPaintNode bg && bg.BorderRadius != null && HasNonZeroRadius(bg.BorderRadius))
@@ -239,26 +285,30 @@ namespace FenBrowser.FenEngine.Rendering
 
         private void DrawFocusRing(IRenderBackend backend, PaintNodeBase node)
         {
+            // Prevent duplicate focus rings on content nodes
+            if (node is TextPaintNode) return;
+
             var ringColor = new SKColor(0, 120, 215, 200); // Windows-like blue
             float strokeWidth = 2.0f;
             
             var ringRect = node.Bounds;
             ringRect.Inflate(2, 2); // Slightly outside
 
-            if (node is BackgroundPaintNode bg && bg.BorderRadius != null && HasNonZeroRadius(bg.BorderRadius))
+            var borderStyle = BorderStyle.Uniform(strokeWidth, ringColor);
+            
+            SKPoint[] radius = null;
+            if (node is BackgroundPaintNode bg) radius = bg.BorderRadius;
+            else if (node is BorderPaintNode border) radius = border.BorderRadius;
+
+            if (radius != null && HasNonZeroRadius(radius))
             {
-                using var path = CreateRoundedRectPath(ringRect, bg.BorderRadius);
-                // Backend lacks generic DrawPathStroke, so we simulate or skip for now.
-                // Wait, IRenderBackend doesn't have DrawPathStroke yet?
-                // Assuming we use DrawPath with stroke color? No DrawPath is fill.
-                // Fallback to RectStroke for simplicity or add feature later.
-                // For now, draw rect stroke to avoid interface churn.
-                backend.DrawRectStroke(ringRect, ringColor, strokeWidth);
+                borderStyle.TopLeftRadius = new SKPoint(radius[0].X + 2, radius[0].Y + 2);
+                borderStyle.TopRightRadius = new SKPoint((radius.Length > 1 ? radius[1].X : radius[0].X) + 2, (radius.Length > 1 ? radius[1].Y : radius[0].Y) + 2);
+                borderStyle.BottomRightRadius = new SKPoint((radius.Length > 2 ? radius[2].X : radius[0].X) + 2, (radius.Length > 2 ? radius[2].Y : radius[0].Y) + 2);
+                borderStyle.BottomLeftRadius = new SKPoint((radius.Length > 3 ? radius[3].X : (radius.Length > 1 ? radius[1].X : radius[0].X)) + 2, (radius.Length > 3 ? radius[3].Y : (radius.Length > 1 ? radius[1].Y : radius[0].Y)) + 2);
             }
-            else
-            {
-                backend.DrawRectStroke(ringRect, ringColor, strokeWidth);
-            }
+            
+            backend.DrawBorder(ringRect, borderStyle);
         }
         
         /// <summary>
@@ -299,15 +349,21 @@ namespace FenBrowser.FenEngine.Rendering
                     break;
                     
                 case ClipPaintNode clip:
-                    ApplyClipPath(backend, clip);
+                    // handled in DrawNode wrapper
                     break;
                     
                 case BoxShadowPaintNode shadow:
                     DrawBoxShadow(backend, shadow);
                     break;
+                    
+                case CustomPaintNode custom:
+                    DrawCustom(backend, custom);
+                    break;
 
                 case StackingContextPaintNode _:
                 case OpacityGroupPaintNode _:
+                case ScrollPaintNode _:
+                case StickyPaintNode _:
                     // These are grouping nodes - no self-drawing
                     break;
             }
@@ -392,6 +448,17 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
         
+        private void DrawCustom(IRenderBackend backend, CustomPaintNode node)
+        {
+            if (node.PaintAction == null) return;
+            
+            // Get the canvas from the backend (assumed to be SkiaRenderBackend)
+            if (backend is SkiaRenderBackend skiaBackend && skiaBackend.Canvas != null)
+            {
+                node.PaintAction(skiaBackend.Canvas, node.Bounds);
+            }
+        }
+        
         private void DrawBorder(IRenderBackend backend, BorderPaintNode node)
         {
             if (node.Widths == null || node.Colors == null) return;
@@ -428,6 +495,29 @@ namespace FenBrowser.FenEngine.Rendering
         private void DrawText(IRenderBackend backend, TextPaintNode node)
         {
             if (node.Color.Alpha == 0) return;
+
+            // [DEBUG-LOGGING]
+            if (FenBrowser.Core.Logging.DebugConfig.LogPaintCommands)
+            {
+                string txt = !string.IsNullOrEmpty(node.FallbackText) ? node.FallbackText : (node.Glyphs?.Count > 0 ? $"[Glyphs:{node.Glyphs.Count}]" : "[Empty]");
+                if (txt.Contains("Google") || txt.Contains("Wiki") || txt.Contains("Reddit"))
+                     FenBrowser.Core.FenLogger.Debug($"[SKIA-RENDERER-DRAW] '{txt}' at {node.TextOrigin} Color={node.Color} Alpha={node.Color.Alpha} Glyphs={node.Glyphs?.Count ?? 0}");
+            }
+
+            bool isVertical = node.WritingMode == "vertical-rl";
+            SKCanvas canvas = null;
+            int saveCount = 0;
+
+            if (isVertical)
+            {
+                if (backend is FenBrowser.FenEngine.Rendering.Backends.SkiaRenderBackend skiaBackend)
+                {
+                    canvas = skiaBackend.Canvas;
+                    saveCount = canvas.Save();
+                    // Rotate 90 degrees around the text origin
+                    canvas.RotateDegrees(90, node.TextOrigin.X, node.TextOrigin.Y);
+                }
+            }
             
             // Fix: Access properties directly (node.Format doesn't exist)
             float fontSize = node.FontSize > 0 ? node.FontSize : 16f;
@@ -488,6 +578,11 @@ namespace FenBrowser.FenEngine.Rendering
             if (textWidth > 0 && node.TextDecorations != null)
             {
                 DrawTextDecorations(backend, node, textWidth, fontSize, node.Color);
+            }
+
+            if (canvas != null && saveCount > 0)
+            {
+                canvas.RestoreToCount(saveCount);
             }
         }
         
@@ -652,49 +747,21 @@ namespace FenBrowser.FenEngine.Rendering
         // UTILITY METHODS
         // ═══════════════════════════════════════════════════════════════════
         
-        private static bool HasNonZeroRadius(float[] radius)
+        private static bool HasNonZeroRadius(SKPoint[] radius)
         {
             if (radius == null || radius.Length < 4) return false;
-            return radius[0] > 0 || radius[1] > 0 || radius[2] > 0 || radius[3] > 0;
+            return radius[0].X > 0 || radius[0].Y > 0 || 
+                   radius[1].X > 0 || radius[1].Y > 0 || 
+                   radius[2].X > 0 || radius[2].Y > 0 || 
+                   radius[3].X > 0 || radius[3].Y > 0;
         }
         
-        private static SKPath CreateRoundedRectPath(SKRect bounds, float[] radius)
+        private static SKPath CreateRoundedRectPath(SKRect bounds, SKPoint[] radius)
         {
             var path = new SKPath();
-            
-            float tl = radius[0], tr = radius[1], br = radius[2], bl = radius[3];
-            
-            // CSS Spec: The sum of radii should be capped at the dimension
-            float scale = 1.0f;
-            float topSum = tl + tr;
-            float bottomSum = bl + br;
-            float leftSum = tl + bl;
-            float rightSum = tr + br;
-
-            if (topSum > bounds.Width) scale = System.Math.Min(scale, bounds.Width / topSum);
-            if (bottomSum > bounds.Width) scale = System.Math.Min(scale, bounds.Width / bottomSum);
-            if (leftSum > bounds.Height) scale = System.Math.Min(scale, bounds.Height / leftSum);
-            if (rightSum > bounds.Height) scale = System.Math.Min(scale, bounds.Height / rightSum);
-
-            if (scale < 1.0f)
-            {
-                tl *= scale; tr *= scale; br *= scale; bl *= scale;
-            }
-
-            path.MoveTo(bounds.Left + tl, bounds.Top);
-            path.LineTo(bounds.Right - tr, bounds.Top);
-            if (tr > 0) path.ArcTo(new SKRect(bounds.Right - tr * 2, bounds.Top, bounds.Right, bounds.Top + tr * 2), -90, 90, false);
-            
-            path.LineTo(bounds.Right, bounds.Bottom - br);
-            if (br > 0) path.ArcTo(new SKRect(bounds.Right - br * 2, bounds.Bottom - br * 2, bounds.Right, bounds.Bottom), 0, 90, false);
-            
-            path.LineTo(bounds.Left + bl, bounds.Bottom);
-            if (bl > 0) path.ArcTo(new SKRect(bounds.Left, bounds.Bottom - bl * 2, bounds.Left + bl * 2, bounds.Bottom), 90, 90, false);
-            
-            path.LineTo(bounds.Left, bounds.Top + tl);
-            if (tl > 0) path.ArcTo(new SKRect(bounds.Left, bounds.Top, bounds.Left + tl * 2, bounds.Top + tl * 2), 180, 90, false);
-            
-            path.Close();
+            var rrect = new SKRoundRect();
+            rrect.SetRectRadii(bounds, radius);
+            path.AddRoundRect(rrect);
             return path;
         }
     }

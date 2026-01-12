@@ -50,12 +50,55 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
                 }
             }
 
-            // Hidden Metadata Elements
             if (tag == "HEAD" || tag == "TITLE" || tag == "SCRIPT" || tag == "STYLE" || 
                 tag == "META" || tag == "LINK" || tag == "BASE" || tag == "NOSCRIPT" || tag == "TEMPLATE")
             {
                 if (style == null) style = new CssComputed();
                 style.Display = "none";
+            }
+
+            // Dialog
+            if (tag == "DIALOG")
+            {
+                if (style == null) style = new CssComputed();
+                bool isOpen = node.Attr != null && node.Attr.ContainsKey("open");
+                if (!isOpen)
+                {
+                     style.Display = "none";
+                }
+                else
+                {
+                     if (string.IsNullOrEmpty(style.Display)) style.Display = "block";
+                     
+                     bool hasBg = (style.BackgroundColor.HasValue && style.BackgroundColor.Value.Alpha > 0) || 
+                                  (style.Map != null && (style.Map.ContainsKey("background") || style.Map.ContainsKey("background-color")));
+                                  
+                     if (!hasBg) style.BackgroundColor = SKColors.White;
+                     if (style.Padding.Left == 0) style.Padding = new Thickness(24);
+                     if (style.BorderThickness.Left == 0) style.BorderThickness = new Thickness(2);
+                     if (style.BorderBrushColor == null) style.BorderBrushColor = SKColors.Black;
+                     if (style.ForegroundColor == null) style.ForegroundColor = SKColors.Black;
+                     
+                     if (node.Attr.ContainsKey("modal"))
+                     {
+                         if (string.IsNullOrEmpty(style.Position)) style.Position = "fixed";
+                         
+                         // Center using transform trick
+                         if (!style.Left.HasValue && !style.LeftPercent.HasValue) style.LeftPercent = 50;
+                         if (!style.Top.HasValue && !style.TopPercent.HasValue) style.TopPercent = 50;
+                         
+                         // Only set transform if not present (don't override user transform)
+                         if (string.IsNullOrEmpty(style.Transform)) style.Transform = "translate(-50%, -50%)";
+                         
+                         // Ensure Z-Index is high? But Top Layer painting handles visibility.
+                         // But for Layout, Z-Index helps? 
+                         // NewPaintTreeBuilder uses TopLayer list, so Z-Index is irrelevant for painting order there.
+                     }
+                     else
+                     {
+                         if (string.IsNullOrEmpty(style.Position)) style.Position = "absolute";
+                     }
+                }
             }
 
             // Generic Block Elements
@@ -76,6 +119,14 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
                     if (string.IsNullOrEmpty(style.AlignItems)) style.AlignItems = "center";
                     if (!style.FlexGrow.HasValue) style.FlexGrow = 1.0;
                 }
+            }
+
+            // Center Tag (Legacy)
+            if (tag == "CENTER")
+            {
+                if (style == null) style = new CssComputed();
+                if (string.IsNullOrEmpty(style.Display)) style.Display = "block";
+                if (style.TextAlign == null) style.TextAlign = SKTextAlign.Center;
             }
             
             // SVG
@@ -255,8 +306,13 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
                     : SKColors.White;
             }
 
-            // Border
-            if (style.BorderThickness.Top == 0 && style.BorderThickness.Left == 0)
+            // Border - only apply if CSS hasn't explicitly specified a border
+            bool cssSpecifiedBorder = style.Map != null && 
+                (style.Map.ContainsKey("border") || style.Map.ContainsKey("border-width") || 
+                 style.Map.ContainsKey("border-top-width") || style.Map.ContainsKey("border-left-width") ||
+                 style.Map.ContainsKey("border-style") || style.Map.ContainsKey("border: none") ||
+                 style.Map.ContainsKey("border: 0"));
+            if (!cssSpecifiedBorder && style.BorderThickness.Top == 0 && style.BorderThickness.Left == 0)
             {
                 style.BorderThickness = new Thickness(1);
                 style.BorderBrushColor = isButtonType 
@@ -273,12 +329,12 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
             }
 
             // Border radius
-            if (style.BorderRadius.TopLeft == 0)
+            if (style.BorderRadius.TopLeft.Value == 0 && style.BorderRadius.TopLeft.IsPercent == false)
             {
                 if (isButtonType)
-                    style.BorderRadius = new CornerRadius(4); // Reduced from 8 to match Google/Standard
+                    style.BorderRadius = new CssCornerRadius(4); // Reduced from 8 to match Google/Standard
                 else if (tag == "INPUT" || tag == "TEXTAREA")
-                    style.BorderRadius = new CornerRadius(4);
+                    style.BorderRadius = new CssCornerRadius(4);
             }
         }
     }

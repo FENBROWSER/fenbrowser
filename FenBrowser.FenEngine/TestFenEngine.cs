@@ -58,6 +58,30 @@ namespace FenBrowser.FenEngine.Tests
             runtime.ExecuteSimple("console.log(42)");
             runtime.ExecuteSimple("console.log(true)");
 
+            // Test 8: Architecture - Dirty Flag Propagation
+            Console.WriteLine("\nTest 8: Dirty Flag Propagation");
+            var doc = new FenBrowser.Core.Dom.Document();
+            var docEl = doc.CreateElement("HTML");
+            var body = doc.CreateElement("BODY");
+            var div = doc.CreateElement("DIV");
+            
+            doc.AppendChild(docEl);
+            docEl.AppendChild(body);
+            body.AppendChild(div);
+            
+            bool notified = false;
+            doc.OnTreeDirty += () => notified = true;
+            
+            // Mark leaf dirty
+            Console.WriteLine("Marking DIV dirty (Style)...");
+            div.MarkDirty(FenBrowser.Core.Dom.InvalidationKind.Style);
+
+            if (!div.StyleDirty) Console.WriteLine("✗ FAIL: Leaf StyleDirty not set");
+            else if (!body.ChildStyleDirty) Console.WriteLine("✗ FAIL: Parent ChildStyleDirty not set");
+            else if (!docEl.ChildStyleDirty) Console.WriteLine("✗ FAIL: Grandparent ChildStyleDirty not set");
+            else if (!notified) Console.WriteLine("✗ FAIL: Document OnTreeDirty not fired");
+            else Console.WriteLine("✓ PASS: Dirty propagation successful");
+
             Console.WriteLine("\n=== All Tests Complete ===");
             Console.ReadLine();
         }

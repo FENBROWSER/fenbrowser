@@ -11,6 +11,7 @@ using FenBrowser.Core.Security;
 using FenBrowser.FenEngine.Security; // Added
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.DevTools;
+using FenBrowser.FenEngine.Layout;
 using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Rendering
@@ -113,6 +114,10 @@ namespace FenBrowser.FenEngine.Rendering
         string GetRawHtml();
         void HighlightElement(Element element);
         void RemoveHighlight();
+
+        // Interactive
+        Task HandleElementClick(Element element);
+        Task HandleKeyPress(string key);
     }
 
     /// <summary>Represents a window rectangle (position and size)</summary>
@@ -189,6 +194,7 @@ namespace FenBrowser.FenEngine.Rendering
         
         // Map WebDriver Element IDs to LiteElements
         private readonly Dictionary<string, Element> _elementMap = new Dictionary<string, Element>();
+        private Action<string> _fontLoadedHandler;
 
         public event EventHandler<Uri> Navigated;
         public event EventHandler<string> NavigationFailed;
@@ -234,6 +240,10 @@ namespace FenBrowser.FenEngine.Rendering
         {
             IsPrivate = isPrivate;
             _engineLoop = new FenBrowser.FenEngine.Core.EngineLoop(); // Phase 5: Initialize Loop
+            
+            // Initialize FontResolver for @font-face support
+            // This allows Core.Css.CssComputed to use the Engine's FontRegistry
+            FenBrowser.Core.Css.CssComputed.FontResolver = FenBrowser.FenEngine.Rendering.FontRegistry.TryResolve;
             
             // Get HTTP/2 and Brotli enabled handler from factory
             var config = NetworkConfiguration.Instance;
@@ -398,6 +408,16 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 catch { }
             };
+
+            // Wire up FontRegistry
+             _fontLoadedHandler = (family) => {
+                 try {
+                     FenLogger.Debug($"[FontRegistry] Font loaded: {family}. Requesting repaint.", LogCategory.Rendering);
+                     var dom = _engine.GetActiveDom();
+                     if (dom != null) RepaintReady?.Invoke(this, dom);
+                 } catch {}
+            };
+            FontRegistry.FontLoaded += _fontLoadedHandler;
         }
 
         private CertificateInfo _lastCertificate;
@@ -603,10 +623,30 @@ pre {{
                 _current = uri;
                 try { FenLogger.Debug($"[BrowserApi] _current updated early to: {_current?.AbsoluteUri}", LogCategory.General); } catch {}
                 
-                // Dump raw HTML source for debugging
-                try { StructuredLogger.DumpRawSource(uri.AbsoluteUri, htmlToRender); } catch { }
-                
+                // Dump raw HTML source for debugging (CURL level)
+                try 
+                { 
+                    string dumpPath = StructuredLogger.DumpRawSource(uri.AbsoluteUri, htmlToRender); 
+                    if (!string.IsNullOrEmpty(dumpPath))
+                    {
+                        FenBrowser.Core.Verification.ContentVerifier.RegisterSourceFile(dumpPath);
+                    }
+                } catch { }
+
                 var elem = await _engine.RenderAsync(htmlToRender, uri, u => _resources.FetchTextAsync(u), u => _resources.FetchImageAsync(u), u => { _ = NavigateAsync(u.AbsoluteUri); });
+
+                // Dump Engine Source (Processed DOM level)
+                try
+                {
+                    var activeDom = _engine.ActiveDom;
+                    string engineSource = activeDom?.ToHtml() ?? "";
+                    string enginePath = StructuredLogger.DumpEngineSource(uri.AbsoluteUri, engineSource);
+                    if (!string.IsNullOrEmpty(enginePath))
+                    {
+                        FenBrowser.Core.Verification.ContentVerifier.RegisterEngineSourceFile(enginePath);
+                    }
+                }
+                catch { }
                 
                 // _current already set above
                 
@@ -617,6 +657,18 @@ pre {{
                 try { FenLogger.Debug($"[BrowserApi] _current now set to: {_current?.AbsoluteUri}. Firing RepaintReady...", LogCategory.General); } catch {}
                 
                 try { RepaintReady?.Invoke(this, elem); } catch { }
+
+                // Dump Rendered Text for side-by-side comparison (Phase 11)
+                try
+                {
+                    string textContent = GetTextContent();
+                    string renderedPath = StructuredLogger.DumpRenderedText(uri.AbsoluteUri, textContent);
+                    if (!string.IsNullOrEmpty(renderedPath))
+                    {
+                        FenBrowser.Core.Verification.ContentVerifier.RegisterRenderedFile(renderedPath);
+                    }
+                }
+                catch { }
 
                 // FIX: Force re-layout after delay to catch async JS DOM updates (Google blank screen fix)
                 // Increased delay to 1500ms to allow CSS stylesheets to fully load and settle,
@@ -1738,7 +1790,7 @@ pre {{
                         if (elementAtPoint != null)
                         {
                             // Trigger click behavior
-                            await SimulateClickOnElementAsync(elementAtPoint);
+                            await HandleElementClick(elementAtPoint);
                         }
                         break;
 
@@ -1765,7 +1817,7 @@ pre {{
                         {
                             _pressedKeys.Add(action.Value);
                             // Type key into focused element (simplified)
-                            await TypeKeyAsync(action.Value);
+                            await HandleKeyPress(action.Value);
                         }
                         break;
 
@@ -1784,14 +1836,121 @@ pre {{
 
         private Element FindElementAtPoint(double x, double y)
         {
-            // Find element at given coordinates (simplified - would need layout info)
-            // For now, return null as hit testing requires layout information
-            return null;
+            if (_engine == null || _engine.LastLayout == null || _engine.ActiveDom == null)
+            {
+                return null;
+            }
+
+            var layout = _engine.LastLayout;
+            
+            // Convert viewport coordinates to document coordinates by adding scroll offset
+            // NOTE: 'x' and 'y' are passed as viewport coordinates from PerformPointerActions
+            float docX = (float)x;
+            float docY = (float)y + layout.ScrollOffsetY;
+
+            // Simple Hit Testing: 
+            // Iterate the DOM tree (SelfAndDescendants matches draw order approximately parents -> children)
+            // We want the last element that contains the point (top-most visual).
+            // This handles nested elements naturally (e.g. text inside div).
+            
+            Element hit = null;
+
+            foreach (var node in _engine.ActiveDom.SelfAndDescendants())
+            {
+                if (layout.TryGetElementRect(node, out var geo))
+                {
+                    // Check if point is inside
+                    if (docX >= geo.Left && docX < geo.Right && 
+                        docY >= geo.Top && docY < geo.Bottom)
+                    {
+                        hit = node;
+                    }
+                }
+            }
+            
+            try { if (hit != null) FenLogger.Debug($"[BrowserApi] Hit test at ({docX},{docY}) found: {hit.Tag} (ID: {hit.Id})", LogCategory.General); } catch {}
+            
+            return hit;
         }
 
-        private async Task SimulateClickOnElementAsync(Element element)
+        private Element _focusedElement;
+
+        private int _cursorIndex = 0;
+        private int _selectionAnchor = -1;
+
+        public async Task HandleClipboardCommand(string command, string data = null)
         {
-            if (element == null) return;
+             if (_focusedElement == null) return;
+             var tag = _focusedElement.Tag?.ToLowerInvariant();
+             if (tag != "input" && tag != "textarea") return;
+             
+             var val = _focusedElement.GetAttribute("value") ?? "";
+             int start = _selectionAnchor != -1 ? Math.Min(_selectionAnchor, _cursorIndex) : _cursorIndex;
+             int end = _selectionAnchor != -1 ? Math.Max(_selectionAnchor, _cursorIndex) : _cursorIndex;
+             int len = end - start;
+             
+             switch (command.ToLowerInvariant())
+             {
+                 case "selectall":
+                     _selectionAnchor = 0;
+                     _cursorIndex = val.Length;
+                     try { RepaintReady?.Invoke(this, _engine.GetActiveDom()); } catch {}
+                     break;
+                     
+                 case "copy":
+                     // Host handles getting text via GetSelectedText
+                     break;
+                     
+                 case "paste":
+                     if (data != null)
+                     {
+                         if (len > 0) val = val.Remove(start, len);
+                         val = val.Insert(start, data);
+                         _cursorIndex = start + data.Length;
+                         _selectionAnchor = -1; // Clear selection
+                         _focusedElement.SetAttribute("value", val);
+                         try { RepaintReady?.Invoke(this, _engine.GetActiveDom()); } catch {}
+                     }
+                     break;
+             }
+        }
+        
+        public string GetSelectedText()
+        {
+             if (_focusedElement == null) return "";
+             var val = _focusedElement.GetAttribute("value") ?? "";
+             int start = _selectionAnchor != -1 ? Math.Min(_selectionAnchor, _cursorIndex) : _cursorIndex;
+             int end = _selectionAnchor != -1 ? Math.Max(_selectionAnchor, _cursorIndex) : _cursorIndex;
+             return end > start ? val.Substring(start, end - start) : "";
+        }
+        
+        public void DeleteSelection()
+        {
+             if (_focusedElement == null) return;
+             var val = _focusedElement.GetAttribute("value") ?? "";
+             int start = _selectionAnchor != -1 ? Math.Min(_selectionAnchor, _cursorIndex) : _cursorIndex;
+             int end = _selectionAnchor != -1 ? Math.Max(_selectionAnchor, _cursorIndex) : _cursorIndex;
+             
+             if (end > start)
+             {
+                 val = val.Remove(start, end - start);
+                 _cursorIndex = start;
+                 _selectionAnchor = -1;
+                 _focusedElement.SetAttribute("value", val);
+                 try { RepaintReady?.Invoke(this, _engine.GetActiveDom()); } catch {}
+             }
+        }
+
+        public async Task HandleElementClick(Element element)
+        {
+            _selectionAnchor = -1; // Reset selection
+            if (element == null) 
+            {
+                _focusedElement = null;
+                ElementStateManager.Instance.SetFocusedElement(null);
+                try { RepaintReady?.Invoke(this, _engine.GetActiveDom()); } catch {}
+                return;
+            }
             
             var tag = element.Tag?.ToLowerInvariant();
             
@@ -1809,19 +1968,126 @@ pre {{
                 (element.GetAttribute("type")?.ToLowerInvariant() == "submit" ||
                  element.GetAttribute("type")?.ToLowerInvariant() == "button")))
             {
-                // Would trigger form submission or click handler
+                 // Verify if this is a search button (simplified check)
+                 try { FenLogger.Debug($"[BrowserApi] Button clicked: {element.Tag}", LogCategory.General); } catch {}
             }
             // Handle input focus
             else if (tag == "input" || tag == "textarea")
             {
-                // Focus element for typing
+                _focusedElement = element;
+                ElementStateManager.Instance.SetFocusedElement(element);
+                
+                // Set cursor to end on focus
+                var val = element.GetAttribute("value") ?? "";
+                _cursorIndex = val.Length;
+                _selectionAnchor = -1;
+                
+                try { FenLogger.Debug($"[BrowserApi] Input focused: {element.Tag} (ID: {element.GetAttribute("id")})", LogCategory.General); } catch {}
+                
+                // Trigger a repaint to show caret (if we had one)
+                try { RepaintReady?.Invoke(this, _engine.GetActiveDom()); } catch {}
+            }
+            else
+            {
+                // Clicking elsewhere clears focus
+                _focusedElement = null;
+                ElementStateManager.Instance.SetFocusedElement(null);
+                
+                // Trigger repaint to clear focus ring
+                try { RepaintReady?.Invoke(this, _engine.GetActiveDom()); } catch {}
             }
         }
 
-        private Task TypeKeyAsync(string key)
+        public Task HandleKeyPress(string key)
         {
-            // Type into currently focused element (simplified)
-            // In a real implementation, would track focused element and append key
+            if (_focusedElement == null) return Task.CompletedTask;
+            
+            try
+            {
+                var tag = _focusedElement.Tag?.ToLowerInvariant();
+                if (tag == "input" || tag == "textarea") // Added textarea support
+                {
+                    var val = _focusedElement.GetAttribute("value") ?? "";
+                    
+                    // Normalize selection indices
+                    int start = _selectionAnchor != -1 ? Math.Min(_selectionAnchor, _cursorIndex) : _cursorIndex;
+                    int end = _selectionAnchor != -1 ? Math.Max(_selectionAnchor, _cursorIndex) : _cursorIndex;
+                    bool hasSelection = end > start;
+                    
+                    // Clamp cursor
+                    if (_cursorIndex > val.Length) _cursorIndex = val.Length;
+                    if (_cursorIndex < 0) _cursorIndex = 0;
+                    
+                    if (key == "Backspace")
+                    {
+                        if (hasSelection)
+                        {
+                            val = val.Remove(start, end - start);
+                            _cursorIndex = start;
+                            _selectionAnchor = -1;
+                        }
+                        else if (_cursorIndex > 0 && val.Length > 0)
+                        {
+                             val = val.Remove(_cursorIndex - 1, 1);
+                             _cursorIndex--;
+                        }
+                    }
+                    else if (key == "Delete")
+                    {
+                        if (hasSelection)
+                        {
+                             val = val.Remove(start, end - start);
+                             _cursorIndex = start;
+                             _selectionAnchor = -1;
+                        }
+                        else if (_cursorIndex < val.Length)
+                        {
+                            val = val.Remove(_cursorIndex, 1);
+                        }
+                    }
+                    else if (key == "ArrowLeft")
+                    {
+                        if (_cursorIndex > 0) _cursorIndex--;
+                        _selectionAnchor = -1;
+                    }
+                    else if (key == "ArrowRight")
+                    {
+                        if (_cursorIndex < val.Length) _cursorIndex++;
+                        _selectionAnchor = -1;
+                    }
+                    else if (key == "Home")
+                    {
+                        _cursorIndex = 0;
+                        _selectionAnchor = -1;
+                    }
+                    else if (key == "End")
+                    {
+                        _cursorIndex = val.Length;
+                        _selectionAnchor = -1;
+                    }
+                    else if (key.Length == 1) // Normal char
+                    {
+                        if (hasSelection)
+                        {
+                            val = val.Remove(start, end - start);
+                            _cursorIndex = start;
+                            _selectionAnchor = -1;
+                        }
+                        val = val.Insert(_cursorIndex, key);
+                        _cursorIndex++;
+                    }
+                    
+                    _focusedElement.SetAttribute("value", val);
+                    
+                    // Trigger Repaint
+                     try { RepaintReady?.Invoke(this, _engine.GetActiveDom()); } catch {}
+                }
+            }
+            catch (Exception ex)
+            {
+                 try { FenLogger.Error($"[BrowserApi] Error typing key: {ex.Message}", LogCategory.General); } catch {}
+            }
+            
             return Task.CompletedTask;
         }
 
@@ -1878,6 +2144,10 @@ pre {{
         public void Dispose()
         {
             if (_disposed) return;
+            
+            if (_fontLoadedHandler != null)
+                FontRegistry.FontLoaded -= _fontLoadedHandler;
+
             _disposed = true;
             try { _engine.Dispose(); } catch { }
         }

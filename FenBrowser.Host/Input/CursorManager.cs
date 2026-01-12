@@ -22,12 +22,16 @@ public static class CursorManager
     /// </summary>
     public static void UpdateCursor(IMouse mouse, FenCursorType cursor)
     {
-        // Throttle cursor updates
-        var now = DateTime.UtcNow;
-        if (cursor == _currentCursor && (now - _lastUpdate) < _throttleInterval)
+        // Only update and log when cursor actually changes
+        if (cursor == _currentCursor)
             return;
         
-        FenLogger.Info($"[Cursor] Updating to {cursor} (Previous: {_currentCursor})", LogCategory.General);
+        // Throttle cursor updates
+        var now = DateTime.UtcNow;
+        if ((now - _lastUpdate) < _throttleInterval)
+            return;
+        
+        FenLogger.Debug($"[Cursor] Changed: {_currentCursor} → {cursor}", LogCategory.Events);
         _currentCursor = cursor;
         _lastUpdate = now;
         

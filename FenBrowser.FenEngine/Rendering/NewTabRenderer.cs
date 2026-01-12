@@ -6,7 +6,6 @@ namespace FenBrowser.FenEngine.Rendering
     {
         public static string Render()
         {
-            // Simplified HTML/CSS for FenBrowser's layout engine
             return @"<!DOCTYPE html>
 <html>
 <head>
@@ -17,8 +16,24 @@ namespace FenBrowser.FenEngine.Rendering
             background-color: #1e293b;
             color: #f8fafc;
             margin: 0;
-            padding: 60px 20px;
-            text-align: center;
+            padding: 0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column; /* FIX: Column ensures width is constrained (Cross Axis) */
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .container {
+            max-width: 600px;
+            width: 100%;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center; /* Fix: Restore text alignment for children */
+            box-sizing: border-box;
+            padding: 0 20px;
         }
         
         .logo {
@@ -26,125 +41,139 @@ namespace FenBrowser.FenEngine.Rendering
             font-weight: bold;
             color: #3b82f6;
             margin-bottom: 10px;
+            text-align: center; /* Fix: Explicit alignment */
+            width: 100%;
         }
         
         .tagline {
             font-size: 14px;
             color: #94a3b8;
             margin-bottom: 40px;
+            text-align: center; /* Fix: Explicit alignment */
+            width: 100%;
         }
         
         .search-box {
-            width: 500px;
-            padding: 14px 20px;
+            display: block;
+            width: 100%;
+            max-width: 400px;
+            box-sizing: border-box;
+            padding: 12px 20px;
             border-radius: 24px;
-            border: 1px solid #475569;
             background-color: #334155;
             color: #f8fafc;
             font-size: 16px;
-            margin-bottom: 50px;
+            margin-bottom: 50px; /* Removed auto margins, relying on align-items: center */
+            text-align: center; /* Center text inside input */
+            height: 44px;
+            appearance: none;
+            border: none;
+            outline: 1px solid #475569;
         }
         
-        .sites-container {
-            margin: 0 auto;
-            width: 600px;
-        }
-
-        .site-row {
-            margin-bottom: 20px;
+        .sites-grid {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 16px;
+            width: 100%;
         }
         
         .site-link {
-            display: inline-block;
-            width: 120px;
-            padding: 16px 8px;
-            margin: 0 10px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center; /* Center content vertically in the box */
+            width: 100px;
+            height: 100px;
+            box-sizing: border-box;
+            padding: 10px;
             text-decoration: none;
-            color: #cbd5e1;
+            color: #e2e8f0; /* Brightened text color */
             background-color: #334155;
             border-radius: 12px;
-            vertical-align: top;
+            transition: background-color 0.2s, transform 0.1s;
+        }
+        
+        .site-link:hover {
+            background-color: #475569;
+            transform: translateY(-2px); /* Subtle hover lift */
         }
         
         .site-icon {
-            width: 48px;
-            height: 48px;
-            margin: 0 auto 10px auto;
-            border-radius: 10px;
-            font-size: 24px;
-            font-weight: bold;
-            line-height: 48px;
-            color: white;
+            width: 44px; /* Slightly smaller to fit text better */
+            height: 44px;
+            border-radius: 8px; 
+            margin-bottom: 8px;
+            object-fit: cover;
+            background-color: transparent;
         }
         
-        .google-bg { background-color: #4285f4; }
-        .youtube-bg { background-color: #ff0000; }
-        .facebook-bg { background-color: #1877f2; }
-        .github-bg { background-color: #333333; }
-        .wikipedia-bg { background-color: #636466; }
-        .reddit-bg { background-color: #ff4500; }
-        .twitter-bg { background-color: #1da1f2; }
-        .amazon-bg { background-color: #ff9900; }
-        
         .site-name {
-            font-size: 13px;
+            font-size: 12px;
+            color: #e2e8f0; /* Match link color */
+            margin-top: 4px;
+            font-family: Segoe UI, Arial, sans-serif; /* Restore primary font */
+            text-align: center;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            width: 100%;
+            display: block; /* Ensure block layout */
         }
 
         .footer {
             margin-top: 60px;
             font-size: 12px;
             color: #475569;
+            text-align: center;
         }
     </style>
 </head>
-<body>
-    <div class='logo'>FenBrowser</div>
-    <div class='tagline'>SECURE • PRIVATE • FAST</div>
-    
-    <div>
-        <input type='text' class='search-box' placeholder='Search the web or enter a URL...'>
-    </div>
-    
-    <div class='sites-container'>
-        <div class='site-row'>
+<body id='fen-newtab'>
+    <div class='container'>
+        <div class='logo'>FenBrowser</div>
+        <div class='tagline'>SECURE • PRIVATE • FAST</div>
+        
+        <input type='text' id='url-bar' class='search-box' placeholder='Search the web or enter a URL...'>
+        
+        <div class='sites-grid'>
             <a href='https://www.google.com' class='site-link'>
-                <div class='site-icon google-bg'>G</div>
+                <img src='https://www.google.com/s2/favicons?domain=www.google.com&sz=64' class='site-icon' />
                 <div class='site-name'>Google</div>
             </a>
             <a href='https://www.youtube.com' class='site-link'>
-                <div class='site-icon youtube-bg'>Y</div>
+                <img src='https://www.google.com/s2/favicons?domain=www.youtube.com&sz=64' class='site-icon' />
                 <div class='site-name'>YouTube</div>
             </a>
             <a href='https://www.facebook.com' class='site-link'>
-                <div class='site-icon facebook-bg'>f</div>
+                <img src='https://www.google.com/s2/favicons?domain=www.facebook.com&sz=64' class='site-icon' />
                 <div class='site-name'>Facebook</div>
             </a>
             <a href='https://github.com' class='site-link'>
-                <div class='site-icon github-bg'>G</div>
+                <img src='https://www.google.com/s2/favicons?domain=github.com&sz=64' class='site-icon' />
                 <div class='site-name'>GitHub</div>
             </a>
-        </div>
-        <div class='site-row'>
             <a href='https://www.wikipedia.org' class='site-link'>
-                <div class='site-icon wikipedia-bg'>W</div>
+                <img src='https://www.google.com/s2/favicons?domain=www.wikipedia.org&sz=64' class='site-icon' />
                 <div class='site-name'>Wikipedia</div>
             </a>
             <a href='https://www.reddit.com' class='site-link'>
-                <div class='site-icon reddit-bg'>R</div>
+                <img src='https://www.google.com/s2/favicons?domain=www.reddit.com&sz=64' class='site-icon' />
                 <div class='site-name'>Reddit</div>
             </a>
             <a href='https://twitter.com' class='site-link'>
-                <div class='site-icon twitter-bg'>X</div>
+                <img src='https://www.google.com/s2/favicons?domain=twitter.com&sz=64' class='site-icon' />
                 <div class='site-name'>X / Twitter</div>
             </a>
             <a href='https://www.amazon.com' class='site-link'>
-                <div class='site-icon amazon-bg'>a</div>
+                <img src='https://www.google.com/s2/favicons?domain=www.amazon.com&sz=64' class='site-icon' />
                 <div class='site-name'>Amazon</div>
             </a>
         </div>
+        
+        <div class='footer'>FenBrowser - Built for the modern web</div>
     </div>
-    
-    <div class='footer'>FenBrowser - Built for the modern web</div>
 </body>
 </html>";
         }

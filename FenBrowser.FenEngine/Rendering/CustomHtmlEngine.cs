@@ -565,13 +565,6 @@ namespace FenBrowser.FenEngine.Rendering
         {
             if (dom == null) return null;
             var _buildTreeStopwatch = System.Diagnostics.Stopwatch.StartNew();
-            
-            // DEBUG: Log DOM structure received
-            Console.WriteLine($"[BuildVisualTree] dom.Tag={dom.Tag}, Children={dom.Children.Count}");
-            foreach (var c in dom.Children.Take(5))
-            {
-                Console.WriteLine($"[BuildVisualTree]   child: {c.Tag} - {(c is Element e ? e.Text?.Substring(0, Math.Min(e.Text?.Length ?? 0, 30)) : c.NodeName)}");
-            }
 
             ConfigureMedia(viewportWidth);
 
@@ -590,7 +583,8 @@ namespace FenBrowser.FenEngine.Rendering
                 LastComputedStyles = await cssEngine.ComputeStylesAsync(dom, baseUri, cssFetcher, viewportWidth, viewportHeight);
                 FenLogger.Debug($"[PERF] CSS ComputeStyles: {_buildTreeStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
                 
-                // PERF: Disabled duplicate CSS computation for DevTools - was doubling work
+                // [Verification] Register success
+                FenBrowser.Core.Verification.ContentVerifier.RegisterCssState(false, LastComputedStyles.Count);
                 // try 
                 // {
                 //     var sourceResult = await CssLoader.ComputeWithResultAsync(dom, baseUri, cssFetcher, viewportWidth, viewportHeight, null);
@@ -734,17 +728,6 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 });
                 
-                // DEBUG: Log DOM structure
-                if (dom != null)
-                {
-                     Console.WriteLine($"[RenderAsync] Parsed DOM Root Children: {dom.Children.Count}");
-                     foreach(var child in dom.Children)
-                     {
-                         Console.WriteLine($"[RenderAsync] Child: {child.NodeType} {child.NodeName}");
-                     }
-                     Console.WriteLine($"[RenderAsync] DocumentElement: {dom.DocumentElement?.TagName}");
-                }
-
                 FenLogger.Debug("[RenderAsync] Parse complete", LogCategory.Rendering);
                 // Return DocumentElement (the HTML element), not the Document wrapper
                 return dom.DocumentElement ?? dom;
@@ -766,9 +749,15 @@ namespace FenBrowser.FenEngine.Rendering
                  var completedTask = await Task.WhenAny(cssTask, timeoutTask);
                  
                  if (completedTask == timeoutTask)
+                 {
                      FenLogger.Warn("[RenderAsync] CSS loading timed out after 10s", LogCategory.Rendering);
+                     FenBrowser.Core.Verification.ContentVerifier.RegisterCssState(true, 0);
+                 }
                  else
+                 {
                      FenLogger.Debug("[RenderAsync] CSS loading complete", LogCategory.Rendering);
+                     // Success will be registered later in BuildVisualTreeAsync (ComputeStylesAsync path)
+                 }
              }
              catch (Exception cssEx) 
              { 

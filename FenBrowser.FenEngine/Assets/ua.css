@@ -20,6 +20,7 @@ template {
 html {
   display: block;
   unicode-bidi: isolate;
+  height: 100%;
 }
 
 :root {
@@ -30,6 +31,7 @@ html {
 body {
   display: block;
   margin: 8px;
+  min-height: 100%;
   font-size: 16px;
   font-family: "Segoe UI", Roboto, Arial, sans-serif;
   line-height: 1.5;
@@ -392,8 +394,73 @@ center {
 }
 
 /* Embedded content */
-img, picture, svg, canvas, video, audio, object, embed, iframe, frame {
-    display: inline;
+img,
+picture,
+svg,
+canvas,
+video,
+audio,
+object,
+embed,
+iframe,
+frame {
+  display: inline;
 }
 
-textarea { display: inline-block; background-color: white; min-height: 1.2em; }
+textarea {
+  display: inline-block;
+  background-color: white;
+  min-height: 1.2em;
+}
+
+/* === Lists Attributes === */
+ol[type="1"],
+li[type="1"] {
+  list-style-type: decimal;
+}
+ol[type="a"],
+li[type="a"] {
+  list-style-type: lower-alpha;
+}
+ol[type="A"],
+li[type="A"] {
+  list-style-type: upper-alpha;
+}
+ol[type="i"],
+li[type="i"] {
+  list-style-type: lower-roman;
+}
+ol[type="I"],
+li[type="I"] {
+  list-style-type: upper-roman;
+}
+ul[type="disc"],
+li[type="disc"] {
+  list-style-type: disc;
+}
+ul[type="circle"],
+li[type="circle"] {
+  list-style-type: circle;
+}
+ul[type="square"],
+li[type="square"] {
+  list-style-type: square;
+}
+
+/* === SITE SPECIFIC FIXES === */
+/* Google Header Correction: Force header#gb to top of viewport to prevent improper nesting offset */
+header#gb {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+}
+
+/* Google Footer Correction: Force main wrapper to fill viewport and push footer down */
+div.L3eUgb {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+}
+

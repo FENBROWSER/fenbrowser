@@ -31,8 +31,15 @@ namespace FenBrowser.FenEngine.Adapters
     {
         /// <summary>
         /// The rendered picture (null if failed).
+        /// WARNING: May be invalid after SKSvg disposal - use Bitmap property instead.
         /// </summary>
         public SKPicture Picture { get; set; }
+        
+        /// <summary>
+        /// Pre-rendered bitmap (safe to use after SKSvg disposal).
+        /// This is the preferred way to access the rendered SVG.
+        /// </summary>
+        public SKBitmap Bitmap { get; set; }
         
         /// <summary>
         /// Natural width of the SVG.
@@ -98,10 +105,10 @@ namespace FenBrowser.FenEngine.Adapters
         /// </summary>
         public static SvgRenderLimits Default => new SvgRenderLimits
         {
-            MaxRecursionDepth = 32,
-            MaxFilterCount = 10,
-            MaxRenderTimeMs = 100,
-            MaxElementCount = 10000,
+            MaxRecursionDepth = 64,
+            MaxFilterCount = 20,
+            MaxRenderTimeMs = 2000,
+            MaxElementCount = 50000,
             AllowExternalReferences = false
         };
         

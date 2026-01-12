@@ -15,7 +15,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
         /// <summary>
         /// Paint background (color, gradient, or image).
         /// </summary>
-        public void PaintBackground(SKCanvas canvas, SKRect box, CssComputed style, byte opacity = 255)
+        public void PaintBackground(SKCanvas canvas, SKRect box, CssComputed style, byte opacity = 255, SKBlendMode blendMode = SKBlendMode.SrcOver)
         {
             if (style == null) return;
 
@@ -27,7 +27,8 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                 {
                     Color = new SKColor(color.Red, color.Green, color.Blue, (byte)(color.Alpha * opacity / 255)),
                     IsAntialias = true,
-                    Style = SKPaintStyle.Fill
+                    Style = SKPaintStyle.Fill,
+                    BlendMode = blendMode
                 };
 
                 DrawWithRadius(canvas, box, style.BorderRadius, paint);
@@ -151,13 +152,13 @@ namespace FenBrowser.FenEngine.Rendering.Painting
         /// <summary>
         /// Draw rectangle with border radius.
         /// </summary>
-        private void DrawWithRadius(SKCanvas canvas, SKRect rect, CornerRadius radius, SKPaint paint)
+        private void DrawWithRadius(SKCanvas canvas, SKRect rect, CssCornerRadius radius, SKPaint paint)
         {
-            if (radius.TopLeft > 0 || radius.TopRight > 0 || radius.BottomRight > 0 || radius.BottomLeft > 0)
+            if (radius.TopLeft.Value > 0 || radius.TopRight.Value > 0 || radius.BottomRight.Value > 0 || radius.BottomLeft.Value > 0)
             {
                 // Simplified: use uniform radius from top-left
-                float r = (float)Math.Max(radius.TopLeft, Math.Max(radius.TopRight, 
-                    Math.Max(radius.BottomRight, radius.BottomLeft)));
+                float r = (float)Math.Max(radius.TopLeft.Value, Math.Max(radius.TopRight.Value, 
+                    Math.Max(radius.BottomRight.Value, radius.BottomLeft.Value)));
                 canvas.DrawRoundRect(rect, r, r, paint);
             }
             else

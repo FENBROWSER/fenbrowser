@@ -52,6 +52,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             try
             {
+                // check properties
                 var props = typeof(SKColors).GetRuntimeProperties();
                 foreach (var p in props)
                 {
@@ -63,6 +64,21 @@ namespace FenBrowser.FenEngine.Rendering
                             _namedColors[p.Name] = c;
                         } 
                         catch { }
+                    }
+                }
+                
+                // check fields (SKColors typically uses static fields)
+                var fields = typeof(SKColors).GetRuntimeFields();
+                foreach (var f in fields)
+                {
+                    if (f.FieldType == typeof(SKColor) && f.IsStatic && f.IsPublic)
+                    {
+                        try
+                        {
+                            var c = (SKColor)f.GetValue(null);
+                            _namedColors[f.Name] = c;
+                        }
+                        catch {}
                     }
                 }
             }

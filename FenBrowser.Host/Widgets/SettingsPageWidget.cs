@@ -76,6 +76,15 @@ public class SettingsPageWidget : Widget
     private DropdownWidget _userAgentDropdown;
     private SwitchWidget _showDevTools;
     private SwitchWidget _enableLogging;
+    private TextInputWidget _logPathInput;
+    private DropdownWidget _logLevelDropdown;
+    // Log category switches
+    private SwitchWidget _logCatNetwork;
+    private SwitchWidget _logCatHtmlParsing;
+    private SwitchWidget _logCatCss;
+    private SwitchWidget _logCatJavaScript;
+    private SwitchWidget _logCatLayout;
+    private SwitchWidget _logCatRendering;
 
     // System Controls
     private SwitchWidget _hardwareAccelSwitch;
@@ -359,8 +368,61 @@ public class SettingsPageWidget : Widget
         _enableLogging.CheckedChanged += (val) => {
             BrowserSettings.Instance.Logging.EnableLogging = val;
             BrowserSettings.Instance.Save();
+            // Apply immediately to LogManager
+            FenBrowser.Core.Logging.LogManager.InitializeFromSettings();
         };
         AddChild(_enableLogging);
+        
+        _logPathInput = new TextInputWidget { Placeholder = "Log folder path" };
+        _logPathInput.Text = BrowserSettings.Instance.Logging.LogPath;
+        _logPathInput.TextChanged += (val) => {
+            BrowserSettings.Instance.Logging.LogPath = val;
+            BrowserSettings.Instance.Save();
+        };
+        AddChild(_logPathInput);
+        
+        _logLevelDropdown = new DropdownWidget();
+        _logLevelDropdown.Options = new List<string> { "Error", "Warn", "Info", "Debug", "Trace" };
+        _logLevelDropdown.SelectedIndex = BrowserSettings.Instance.Logging.MinimumLevel;
+        _logLevelDropdown.SelectionChanged += (idx, val) => {
+            BrowserSettings.Instance.Logging.MinimumLevel = idx;
+            BrowserSettings.Instance.Save();
+            FenBrowser.Core.Logging.LogManager.InitializeFromSettings();
+        };
+        AddChild(_logLevelDropdown);
+        
+        // Log category switches
+        var cats = BrowserSettings.Instance.Logging.EnabledCategories;
+        
+        _logCatNetwork = new SwitchWidget();
+        _logCatNetwork.IsChecked = (cats & (1 << 4)) != 0; // Network = 1 << 4
+        _logCatNetwork.CheckedChanged += (val) => UpdateLogCategory(4, val);
+        AddChild(_logCatNetwork);
+        
+        _logCatHtmlParsing = new SwitchWidget();
+        _logCatHtmlParsing.IsChecked = (cats & (1 << 13)) != 0; // HtmlParsing = 1 << 13
+        _logCatHtmlParsing.CheckedChanged += (val) => UpdateLogCategory(13, val);
+        AddChild(_logCatHtmlParsing);
+        
+        _logCatCss = new SwitchWidget();
+        _logCatCss.IsChecked = (cats & (1 << 2)) != 0; // CSS = 1 << 2
+        _logCatCss.CheckedChanged += (val) => UpdateLogCategory(2, val);
+        AddChild(_logCatCss);
+        
+        _logCatJavaScript = new SwitchWidget();
+        _logCatJavaScript.IsChecked = (cats & (1 << 3)) != 0; // JavaScript = 1 << 3
+        _logCatJavaScript.CheckedChanged += (val) => UpdateLogCategory(3, val);
+        AddChild(_logCatJavaScript);
+        
+        _logCatLayout = new SwitchWidget();
+        _logCatLayout.IsChecked = (cats & (1 << 6)) != 0; // Layout = 1 << 6
+        _logCatLayout.CheckedChanged += (val) => UpdateLogCategory(6, val);
+        AddChild(_logCatLayout);
+        
+        _logCatRendering = new SwitchWidget();
+        _logCatRendering.IsChecked = (cats & (1 << 1)) != 0; // Rendering = 1 << 1
+        _logCatRendering.CheckedChanged += (val) => UpdateLogCategory(1, val);
+        AddChild(_logCatRendering);
 
         // === System ===
         _hardwareAccelSwitch = new SwitchWidget();
@@ -402,6 +464,18 @@ public class SettingsPageWidget : Widget
             }
         };
         AddChild(_addBookmarkButton);
+    }
+    
+    private void UpdateLogCategory(int bit, bool enabled)
+    {
+        var current = BrowserSettings.Instance.Logging.EnabledCategories;
+        if (enabled)
+            current |= (1 << bit);
+        else
+            current &= ~(1 << bit);
+        BrowserSettings.Instance.Logging.EnabledCategories = current;
+        BrowserSettings.Instance.Save();
+        FenBrowser.Core.Logging.LogManager.InitializeFromSettings();
     }
 
     private void RefreshLayout()
@@ -599,6 +673,39 @@ public class SettingsPageWidget : Widget
                 
                 _enableLogging.IsVisible = true;
                 _enableLogging.Arrange(new SKRect(switchX, currentY + 8, switchX + 50, currentY + 32));
+                currentY += 60;
+                
+                _logPathInput.IsVisible = true;
+                _logPathInput.Arrange(new SKRect(contentLeft, currentY + 25, contentLeft + 400, currentY + 57));
+                currentY += 70;
+                
+                _logLevelDropdown.IsVisible = true;
+                _logLevelDropdown.Arrange(new SKRect(contentLeft, currentY + 25, contentLeft + 120, currentY + 57));
+                currentY += 80;
+                
+                // Log category switches (2 columns)
+                float col1X = contentLeft;
+                float col2X = contentLeft + 250;
+                
+                _logCatNetwork.IsVisible = true;
+                _logCatNetwork.Arrange(new SKRect(col1X + 100, currentY + 8, col1X + 150, currentY + 32));
+                
+                _logCatHtmlParsing.IsVisible = true;
+                _logCatHtmlParsing.Arrange(new SKRect(col2X + 100, currentY + 8, col2X + 150, currentY + 32));
+                currentY += 40;
+                
+                _logCatCss.IsVisible = true;
+                _logCatCss.Arrange(new SKRect(col1X + 100, currentY + 8, col1X + 150, currentY + 32));
+                
+                _logCatJavaScript.IsVisible = true;
+                _logCatJavaScript.Arrange(new SKRect(col2X + 100, currentY + 8, col2X + 150, currentY + 32));
+                currentY += 40;
+                
+                _logCatLayout.IsVisible = true;
+                _logCatLayout.Arrange(new SKRect(col1X + 100, currentY + 8, col1X + 150, currentY + 32));
+                
+                _logCatRendering.IsVisible = true;
+                _logCatRendering.Arrange(new SKRect(col2X + 100, currentY + 8, col2X + 150, currentY + 32));
                 break;
             
             case SettingsCategory.System:
@@ -892,6 +999,28 @@ public class SettingsPageWidget : Widget
                 currentY += 60;
                 canvas.DrawText("Debug Logging", contentLeft, currentY + 20, labelPaint);
                 canvas.DrawText("Enable detailed logging for debugging", contentLeft, currentY + 38, descPaint);
+                currentY += 60;
+                canvas.DrawText("Log save location", contentLeft, currentY + 18, labelPaint);
+                currentY += 70;
+                canvas.DrawText("Log level", contentLeft, currentY + 18, labelPaint);
+                canvas.DrawText("Filter by severity (Error, Warn, Info, Debug, Trace)", contentLeft, currentY + 36, descPaint);
+                currentY += 80;
+                
+                // Category labels in 2 columns
+                float col1X = contentLeft;
+                float col2X = contentLeft + 250;
+                canvas.DrawText("Log Categories:", contentLeft, currentY - 10, labelPaint);
+                
+                canvas.DrawText("Network", col1X, currentY + 20, labelPaint);
+                canvas.DrawText("HTML Parsing", col2X, currentY + 20, labelPaint);
+                currentY += 40;
+                
+                canvas.DrawText("CSS", col1X, currentY + 20, labelPaint);
+                canvas.DrawText("JavaScript", col2X, currentY + 20, labelPaint);
+                currentY += 40;
+                
+                canvas.DrawText("Layout", col1X, currentY + 20, labelPaint);
+                canvas.DrawText("Rendering", col2X, currentY + 20, labelPaint);
                 break;
             
             case SettingsCategory.System:

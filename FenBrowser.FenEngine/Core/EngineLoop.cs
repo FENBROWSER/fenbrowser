@@ -8,14 +8,16 @@ namespace FenBrowser.FenEngine.Core
 {
     /// <summary>
     /// Represents the main execution loop of the browser engine.
-    /// Orchestrates the sequence of: Tasks -> Microtasks -> Rendering -> Observers -> Animation.
-    /// Acts as the central heartbeat of the engine instance.
+    /// Orchestrates the sequence of: PumpEvents -> Style/Layout/Paint -> Present.
+    /// Enforces Frame Budget (16ms).
     /// </summary>
     public class EngineLoop
     {
         private Element _root;
-        private bool _layoutRequested;
         private readonly EventLoopCoordinator _coordinator;
+        private bool _treeIsDirty = false;
+        
+        private const double FrameBudgetMs = 16.0;
 
         public EngineLoop()
         {
@@ -25,53 +27,80 @@ namespace FenBrowser.FenEngine.Core
         public void SetRoot(Element root)
         {
             _root = root;
+            
+            // Sub to document dirty event if root is Document
+            if (_root is Document doc)
+            {
+                doc.OnTreeDirty += OnTreeDirty;
+            }
+            else if (_root?.OwnerDocument != null)
+            {
+                 _root.OwnerDocument.OnTreeDirty += OnTreeDirty;
+            }
+        }
+        
+        private void OnTreeDirty()
+        {
+            _treeIsDirty = true;
         }
 
         public void InvalidateLayout()
         {
-            _layoutRequested = true;
+            // Legacy hook - now just marks flag
+            _treeIsDirty = true;
             _coordinator.NotifyLayoutDirty();
         }
 
         /// <summary>
-        /// Executes a single frame/tick of the engine loop.
-        /// Should be called repeatedly by the host (e.g., via a timer or message loop).
+        /// Executes a single authoritative frame.
         /// </summary>
         public void RunFrame()
         {
-            // Delegate core processing to the coordinator, which implements the spec-compliant order.
-            // 1. Process one macro-task
-            // 2. Checkpoint Microtasks
-            // 3. Render (if dirty)
-            // 4. Observers
-            // 5. Animation Frames
-            
-            // Note: ProcessNextTask inside Coordinator handles the sequence for the most part,
-            // but we might want to ensure we drive it correctly here.
-            
-            // ProcessNextTask returns true if it did work (task execution).
-            // Even if it returns false (no task), we might need to run rendering/animation.
-            // But Coordinator.ProcessNextTask logic includes "ProcessRenderingUpdate()" in the false branch too.
-            // So calling ProcessNextTask once is roughly equivalent to one "tick" if a task exists, 
-            // or just a render check if no task exists.
-            
-            // However, spec says "event loop processing" happens continuously.
-            // Our "RunFrame" is a single pulse from the UI thread timer.
-            // We should arguably process *all* ready tasks or at least one, then render.
-            // For now, mapping 1:1 with Pulse to avoid freezing UI thread with too many tasks.
-            
+            var startTime = DateTime.Now;
+
             try
             {
-                _coordinator.ProcessNextTask();
+                // 1. Pump Events (User Input, Timers, Network, Microtasks)
+                // This delegates to Coordinator but we limit how much we process to avoid starving render
+                _coordinator.ProcessNextTask(); 
                 
-                // Ensure microtasks are drained even if ProcessNextTask didn't (e.g. exceptions or taskless path issues)
-                // verify: Coordinator.ProcessNextTask calls PerformMicrotaskCheckpoint.
-                // We'll trust the Coordinator.
+                // Ensure microtasks are drained before rendering
+                // _coordinator.PerformMicrotaskCheckpoint(); // Assumed handled by ProcessNextTask
+
+                // 2. Check Dirty Flags & Render
+                if (_treeIsDirty)
+                {
+                    PerformRendering();
+                }
+                
+                // 3. Check Frame Budget
+                var elapsed = (DateTime.Now - startTime).TotalMilliseconds;
+                if (elapsed > FrameBudgetMs)
+                {
+                   FenLogger.Warn($"[EngineLoop] Frame exceeded budget: {elapsed:F2}ms", LogCategory.Performance);
+                }
             }
             catch (Exception ex)
             {
                 FenLogger.Error($"[EngineLoop] Critical Error in RunFrame: {ex}", LogCategory.General);
             }
+        }
+        
+        private void PerformRendering()
+        {
+            if (_root == null) return;
+            
+            // Phase 1: Style Recalc (TODO: Traverse checking StyleDirty)
+            
+            // Phase 2: Layout (TODO: Traverse checking LayoutDirty)
+            
+            // Phase 3: Paint (TODO: Traverse checking PaintDirty)
+            
+            // For now, we just acknowledge the flag was handled to prevent infinite loop loops in logs,
+            // but in reality the legacy system (SkiaDomRenderer) acts on _coordinator.NotifyLayoutDirty() separately.
+            // As we refactor, we will move the calls here.
+            
+            _treeIsDirty = false;
         }
     }
 }

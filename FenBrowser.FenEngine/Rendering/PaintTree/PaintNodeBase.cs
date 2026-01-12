@@ -88,7 +88,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Border radius for rounded corners [topLeft, topRight, bottomRight, bottomLeft].
         /// </summary>
-        public float[] BorderRadius { get; init; }
+        public SKPoint[] BorderRadius { get; init; }
         
         public override void Accept(IPaintNodeVisitor visitor) => visitor.Visit(this);
     }
@@ -102,7 +102,7 @@ namespace FenBrowser.FenEngine.Rendering
         public float Spread { get; init; }
         public SKPoint Offset { get; init; }
         public SKColor Color { get; init; }
-        public float[] BorderRadius { get; init; }
+        public SKPoint[] BorderRadius { get; init; }
         public bool Inset { get; init; }
 
         public override void Accept(IPaintNodeVisitor visitor) => visitor.Visit(this);
@@ -132,7 +132,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Border radius for rounded corners [topLeft, topRight, bottomRight, bottomLeft].
         /// </summary>
-        public float[] BorderRadius { get; init; }
+        public SKPoint[] BorderRadius { get; init; }
         
         public override void Accept(IPaintNodeVisitor visitor) => visitor.Visit(this);
     }
@@ -178,6 +178,11 @@ namespace FenBrowser.FenEngine.Rendering
         /// Text decorations: "underline", "line-through", "overline"
         /// </summary>
         public System.Collections.Generic.IReadOnlyList<string> TextDecorations { get; init; }
+        
+        /// <summary>
+        /// Writing mode for text layout: "horizontal-tb", "vertical-rl", etc.
+        /// </summary>
+        public string WritingMode { get; init; } = "horizontal-tb";
         
         public override void Accept(IPaintNodeVisitor visitor) => visitor.Visit(this);
     }
@@ -241,6 +246,71 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public SKPath ClipPath { get; init; }
         
+        public override void Accept(IPaintNodeVisitor visitor) => visitor.Visit(this);
+    }
+    
+    /// <summary>
+    /// Paints custom content using a delegate.
+    /// Used for form controls like checkbox, radio, color picker, range slider.
+    /// </summary>
+    public sealed class CustomPaintNode : PaintNodeBase
+    {
+        /// <summary>
+        /// Custom paint action that draws to the canvas.
+        /// Parameters: (canvas, bounds)
+        /// </summary>
+        public System.Action<SKCanvas, SKRect> PaintAction { get; init; }
+        
+        public override void Accept(IPaintNodeVisitor visitor) => visitor.Visit(this);
+    }
+    
+    /// <summary>
+    /// Applies an alpha mask to children.
+    /// </summary>
+    public sealed class MaskPaintNode : PaintNodeBase
+    {
+        /// <summary>
+        /// The mask image (alpha channel used).
+        /// </summary>
+        public SKBitmap MaskBitmap { get; init; }
+        
+        /// <summary>
+        /// Mask sizing behavior (cover, contain, etc) - for now simplified to fill bounds.
+        /// </summary>
+        public string MaskSize { get; init; }
+        
+        public override void Accept(IPaintNodeVisitor visitor) => visitor.Visit(this);
+    }
+
+    /// <summary>
+    /// Applies a scroll offset (translation) to children.
+    /// Represents a container with overflow: scroll/auto.
+    /// </summary>
+    public sealed class ScrollPaintNode : PaintNodeBase
+    {
+        /// <summary>
+        /// Horizontal scroll offset.
+        /// </summary>
+        public float ScrollX { get; init; }
+
+        /// <summary>
+        /// Vertical scroll offset.
+        /// </summary>
+        public float ScrollY { get; init; }
+
+        public override void Accept(IPaintNodeVisitor visitor) => visitor.Visit(this);
+    }
+
+    /// <summary>
+    /// Applies a translation to simulate sticky positioning.
+    /// </summary>
+    public sealed class StickyPaintNode : PaintNodeBase
+    {
+        /// <summary>
+        /// The calculated sticky offset (deltas).
+        /// </summary>
+        public SKPoint StickyOffset { get; init; }
+
         public override void Accept(IPaintNodeVisitor visitor) => visitor.Visit(this);
     }
 }

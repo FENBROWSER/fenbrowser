@@ -106,8 +106,6 @@ namespace FenBrowser.Host.Widgets
         
         public override void Paint(SKCanvas canvas)
         {
-            System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[InspectorPopup] Paint called. IsVisible={IsVisible}, Bounds={Bounds}\r\n");
-            
             if (!IsVisible) return;
             
             var bounds = Bounds;
