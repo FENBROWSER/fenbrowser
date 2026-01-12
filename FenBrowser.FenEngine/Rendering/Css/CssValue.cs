@@ -63,13 +63,13 @@ namespace FenBrowser.FenEngine.Rendering.Css
         public override string ToString() => Keyword;
     }
 
-    public class CssLength : CssValue
+    public class CssLengthValue : CssValue
     {
         public override CssValueType Type => Unit == CssUnit.Percent ? CssValueType.Percentage : CssValueType.Length;
         public double Value { get; }
         public CssUnit Unit { get; }
 
-        public CssLength(double value, CssUnit unit)
+        public CssLengthValue(double value, CssUnit unit)
         {
             Value = value;
             Unit = unit;

@@ -11,6 +11,7 @@ namespace FenBrowser.FenEngine.Rendering
     public class CascadeEngine
     {
         private readonly CssStylesheet _stylesheet;
+        private readonly bool _logCascade;
         
         // PERF: Multi-level indexing for fast rule lookup
         private Dictionary<string, List<CssStyleRule>> _idIndex;     // #id rules
@@ -23,6 +24,7 @@ namespace FenBrowser.FenEngine.Rendering
         public CascadeEngine(CssStylesheet stylesheet)
         {
             _stylesheet = stylesheet;
+            _logCascade = FenBrowser.Core.Logging.DebugConfig.LogCssCascade;
         }
 
         private void EnsureIndex()
@@ -111,6 +113,18 @@ namespace FenBrowser.FenEngine.Rendering
 
             // 1. Gather all declarations from matching rules (priority order: ID > Classes > Tag > Universal)
             CollectMatches(element, results, pseudoElement);
+
+            if (_logCascade && results.Count > 0)
+            {
+                var uniqueSources = results.Select(r => new { r.SelectorText, Spec = r.Specificity, r.Origin }).Distinct().OrderBy(x => x.Spec).ToList();
+                var msg = new System.Text.StringBuilder();
+                msg.AppendLine($"[CASCADE] Element <{element.Tag}> matched {uniqueSources.Count} rules:");
+                foreach(var src in uniqueSources)
+                {
+                    msg.AppendLine($"   - [{src.Origin}] {src.SelectorText} :: {src.Spec}");
+                }
+                global::FenBrowser.Core.FenLogger.Log(msg.ToString().TrimEnd(), global::FenBrowser.Core.Logging.LogCategory.Cascade);
+            }
 
             // 2. Sort declarations
             results.Sort();
@@ -218,7 +232,8 @@ namespace FenBrowser.FenEngine.Rendering
                         Declaration = decl,
                         Origin = styleRule.Origin,
                         Specificity = matchedChain.Specificity,
-                        Order = styleRule.Order
+                        Order = styleRule.Order,
+                        SelectorText = styleRule.Selector.ToString()
                     });
                 }
             }
@@ -231,6 +246,7 @@ namespace FenBrowser.FenEngine.Rendering
         public CssOrigin Origin { get; set; }
         public Specificity Specificity { get; set; }
         public int Order { get; set; }
+        public string SelectorText { get; set; }
 
         public int CompareTo(MatchedDeclaration other)
         {

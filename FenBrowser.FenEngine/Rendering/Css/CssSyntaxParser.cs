@@ -20,8 +20,10 @@ namespace FenBrowser.FenEngine.Rendering.Css
             var sheet = new CssStylesheet();
             ConsumeToken(); // Prime
 
+            int loopCount = 0;
             while (_currentToken.Type != CssTokenType.EOF)
             {
+                if (loopCount++ > 100000) { break; }
                 if (_currentToken.Type == CssTokenType.Whitespace || _currentToken.Type == CssTokenType.Comment)
                 {
                     ConsumeToken();
@@ -125,8 +127,10 @@ namespace FenBrowser.FenEngine.Rendering.Css
             var declarations = new List<CssDeclaration>();
             ConsumeToken(); // {
 
+            int loopCount = 0;
             while (_currentToken.Type != CssTokenType.RightBrace && _currentToken.Type != CssTokenType.EOF)
             {
+                if (loopCount++ > 100000) break;
                 if (_currentToken.Type == CssTokenType.Whitespace || _currentToken.Type == CssTokenType.Semicolon)
                 {
                     ConsumeToken();
@@ -227,8 +231,10 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
             ConsumeToken(); // Opening
 
+            int loopCount = 0;
             while (_currentToken.Type != ending && _currentToken.Type != CssTokenType.EOF)
             {
+                if (loopCount++ > 100000) break;
                 if (_currentToken.Type == CssTokenType.LeftBrace || 
                     _currentToken.Type == CssTokenType.LeftParen || 
                     _currentToken.Type == CssTokenType.LeftBracket)
@@ -297,7 +303,8 @@ namespace FenBrowser.FenEngine.Rendering.Css
             // I will set `Specificity` to the MAX of the chains for metadata purposes, 
             // but `CascadeEngine` needs to be smarter.
             
-            var specificity = chains.Select(c => c.Specificity).OrderByDescending(s => s).First();
+            // CRITICAL FIX: Use FirstOrDefault to prevent "Sequence contains no elements" exception
+            var specificity = chains.Select(c => c.Specificity).OrderByDescending(s => s).FirstOrDefault();
 
             return new CssSelector
             {

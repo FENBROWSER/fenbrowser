@@ -75,17 +75,17 @@ namespace FenBrowser.FenEngine.Rendering.Css
             string unitPart = value.Substring(i).ToLowerInvariant();
             switch (unitPart)
             {
-                case "px": return new CssLength(num, CssUnit.Px);
-                case "em": return new CssLength(num, CssUnit.Em);
-                case "rem": return new CssLength(num, CssUnit.Rem);
-                case "%": return new CssLength(num, CssUnit.Percent);
-                case "vh": return new CssLength(num, CssUnit.Vh);
-                case "vw": return new CssLength(num, CssUnit.Vw);
-                case "deg": return new CssLength(num, CssUnit.Deg);
-                case "rad": return new CssLength(num, CssUnit.Rad);
-                case "s": return new CssLength(num, CssUnit.S);
-                case "ms": return new CssLength(num, CssUnit.Ms);
-                default: return new CssLength(num, CssUnit.None); // Or treat as number? Spec says dimension token with unknown unit.
+                case "px": return new CssLengthValue(num, CssUnit.Px);
+                case "em": return new CssLengthValue(num, CssUnit.Em);
+                case "rem": return new CssLengthValue(num, CssUnit.Rem);
+                case "%": return new CssLengthValue(num, CssUnit.Percent);
+                case "vh": return new CssLengthValue(num, CssUnit.Vh);
+                case "vw": return new CssLengthValue(num, CssUnit.Vw);
+                case "deg": return new CssLengthValue(num, CssUnit.Deg);
+                case "rad": return new CssLengthValue(num, CssUnit.Rad);
+                case "s": return new CssLengthValue(num, CssUnit.S);
+                case "ms": return new CssLengthValue(num, CssUnit.Ms);
+                default: return new CssLengthValue(num, CssUnit.None); // Or treat as number? Spec says dimension token with unknown unit.
             }
         }
 
