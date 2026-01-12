@@ -28,7 +28,7 @@ namespace FenBrowser.FenEngine.Scripting
     /// JavaScriptEngine - powered by FenEngine
     /// Provides JavaScript execution with DOM/Web APIs support
     /// </summary>
-    public sealed partial class JavaScriptEngine
+    public sealed partial class JavaScriptEngine : FenBrowser.FenEngine.Core.IDomBridge
     {
         public Func<Uri, Task<string>> FetchOverride { get; set; }
         
@@ -114,7 +114,7 @@ namespace FenBrowser.FenEngine.Scripting
 
 
             try { FenLogger.Debug("[JavaScriptEngine] InitRuntime: Creating FenRuntime...", LogCategory.JavaScript); } catch { }
-            _fenRuntime = new FenRuntime(context, _storageBackend);
+            _fenRuntime = new FenRuntime(context, _storageBackend, this);
             try { FenLogger.Debug("[JavaScriptEngine] InitRuntime: FenRuntime Created", LogCategory.JavaScript); } catch { }
             // Connect console messages to BrowserHost
             _fenRuntime.OnConsoleMessage = msg => 
@@ -136,6 +136,34 @@ namespace FenBrowser.FenEngine.Scripting
             
             // Register Fetch API
             FenBrowser.FenEngine.WebAPIs.FetchApi.Register(_fenRuntime.Context);
+        }
+        
+        // IDomBridge Implementation
+        public FenBrowser.FenEngine.Core.Interfaces.IValue GetElementById(string id)
+        {
+            if (_domRoot == null) return FenValue.Null;
+            var doc = new JsDocument(this, _domRoot);
+            var result = doc.getElementById(id);
+            return result is FenBrowser.FenEngine.Core.Interfaces.IObject obj ? FenValue.FromObject(obj) : FenValue.Null;
+        }
+
+        public FenBrowser.FenEngine.Core.Interfaces.IValue QuerySelector(string selector)
+        {
+             if (_domRoot == null) return FenValue.Null;
+             var doc = new JsDocument(this, _domRoot);
+             var result = doc.querySelector(selector);
+             return result is FenBrowser.FenEngine.Core.Interfaces.IObject obj ? FenValue.FromObject(obj) : FenValue.Null;
+        }
+
+        public void AddEventListener(string elementId, string eventName, FenBrowser.FenEngine.Core.Interfaces.IValue callback)
+        {
+             var elVal = GetElementById(elementId);
+             if (elVal.IsObject)
+             {
+                 AddEventListenerNative(
+                     new FenBrowser.FenEngine.Core.Interfaces.IValue[] { FenValue.FromString(eventName), callback },
+                     elVal.AsObject());
+             }
         }
 
         private void SetupModernAPIs()
@@ -345,16 +373,14 @@ namespace FenBrowser.FenEngine.Scripting
             _fenRuntime.SetGlobal("addEventListener", fnVal);
             
             // Also ensure document is on window
-            var doc = _fenRuntime.GetGlobal("document");
-            if (doc.IsObject)
-            {
-                var docObj = doc.AsObject();
-                try { FenLogger.Debug($"[SetupWindowEvents] document type: {docObj.GetType().Name}", LogCategory.JavaScript); } catch { }
-                winObj.Set("document", doc);
-                
-                // Note: DocumentWrapper now exposes addEventListener natively via Get/Has/Keys.
-                // We don't need to overwrite it here.
-            }
+            // Overwrite the specific default document with our wrapper
+            var docWrapper = new JsDocument(this, null); // Root will be resolved dynamically via DomRoot
+            var docVal = FenValue.FromObject(docWrapper);
+            _fenRuntime.SetGlobal("document", docVal);
+            winObj.Set("document", docVal);
+            
+             // Note: DocumentWrapper now exposes addEventListener natively via Get/Has/Keys.
+             // We don't need to overwrite it here.
         }
 
 

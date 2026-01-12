@@ -27,16 +27,18 @@ namespace FenBrowser.FenEngine.Core
         private readonly FenEnvironment _globalEnv;
         private readonly IExecutionContext _context;
         private readonly IStorageBackend _storageBackend;
+        private readonly IDomBridge _domBridge; // Bridge to Engine's DOM
         private readonly Dictionary<int, CancellationTokenSource> _activeTimers = new Dictionary<int, CancellationTokenSource>();
         private int _timerIdCounter = 1;
         private readonly object _timerLock = new object();
         private static readonly Random _mathRandom = new Random(); // Cached Random for Math.random()
 
-        public FenRuntime(IExecutionContext context = null, IStorageBackend storageBackend = null)
+        public FenRuntime(IExecutionContext context = null, IStorageBackend storageBackend = null, IDomBridge domBridge = null)
         {
             /* [PERF-REMOVED] */
             _context = context ?? new ExecutionContext();
             _storageBackend = storageBackend ?? new InMemoryStorageBackend();
+            _domBridge = domBridge;
 
             /* [PERF-REMOVED] */
             _globalEnv = new FenEnvironment();
@@ -113,6 +115,34 @@ namespace FenBrowser.FenEngine.Core
         private void InitializeBuiltins()
         {
             try { FenLogger.Debug("[FenRuntime] InitializeBuiltins called", LogCategory.JavaScript); } catch { }
+
+            // document object - Bridge to DOM
+            var document = new FenObject();
+            document.Set("getElementById", FenValue.FromFunction(new FenFunction("getElementById", (args, thisVal) =>
+            {
+                if (_domBridge == null) return FenValue.Null;
+                if (args.Length == 0) return FenValue.Null;
+                return _domBridge.GetElementById(args[0].ToString()) ?? FenValue.Null;
+            })));
+            document.Set("querySelector", FenValue.FromFunction(new FenFunction("querySelector", (args, thisVal) =>
+            {
+                if (_domBridge == null) return FenValue.Null;
+                if (args.Length == 0) return FenValue.Null;
+                return _domBridge.QuerySelector(args[0].ToString()) ?? FenValue.Null;
+            })));
+            document.Set("createElement", FenValue.FromFunction(new FenFunction("createElement", (args, thisVal) =>
+            {
+                // Basic stub: return object with tag
+                if (args.Length == 0) return FenValue.Null;
+                var el = new FenObject();
+                el.Set("tagName", FenValue.FromString(args[0].ToString().ToUpper()));
+                // In a real impl, this would need to callback to engine to create a real node
+                return FenValue.FromObject(el); 
+            })));
+            
+             // document.body / head (Stubs or getters if bridge supports)
+            
+            SetGlobal("document", FenValue.FromObject(document));
 
             // console object
             var console = new FenObject();
