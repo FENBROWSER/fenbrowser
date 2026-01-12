@@ -634,23 +634,35 @@ namespace FenBrowser.FenEngine.Layout
             // Vertical margins collapse with children if there's no border/padding
             // Root element (HTML) should NOT collapse with children, otherwise margins escape the document
             bool canCollapseWithChildren = (display == "block" || display == null) && tag != "HTML";
+            
             if (canCollapseWithChildren)
             {
-                if (pt == 0 && bt_top == 0)
+                // Top Margin Collapse
+                // Note: MeasureBlockInternal should return effective (collapsed) top margin if it collapsed with first child.
+                // But generally, MeasureBlock accumulates height assuming no collapse, then we check here.
+                // ACTUALLY: The correct way is:
+                // If we collapse with first child, the parent's effective top margin becomes Collapse(parent.marginTop, child.marginTop).
+                // The child's margin is visually "swallowed" into the parent's.
+                // Ideally, 'm.MarginTop' from MeasureBlock represents the child's top margin that bubble up.
+
+                if (MarginCollapseComputer.ShouldCollapseParentChildTop(style))
                 {
-                    mt = MarginCollapseComputer.CollapseMargin(mt, m.MarginTop);
+                    // Collapse parent's top with 1st child's top (m.MarginTop)
+                    mt = MarginCollapseComputer.Collapse(mt, m.MarginTop);
+                    // Child's margin is now part of 'mt', so don't add it to 'h'
                 }
                 else
                 {
-                    // FIX: MeasureBlockInternal already includes the top margin in ContentHeight
-                    // if PreventParentCollapse is true (which corresponds to pt > 0 || bt_top > 0).
-                    // So we do NOT add it to 'h' again.
-                    // h += m.MarginTop; 
+                    // No collapse (border/padding exists), so child margin contributes to content height
+                    h += m.MarginTop;
                 }
 
-                if (pb == 0 && bb == 0 && !isExplicitHeight)
+                // Bottom Margin Collapse
+                if (MarginCollapseComputer.ShouldCollapseParentChildBottom(style))
                 {
-                    mb = MarginCollapseComputer.CollapseMargin(mb, m.MarginBottom);
+                    // Collapse parent's bottom with last child's bottom (m.MarginBottom)
+                    mb = MarginCollapseComputer.Collapse(mb, m.MarginBottom);
+                    // Child's margin is part of 'mb'
                 }
                 else
                 {
@@ -1147,9 +1159,11 @@ namespace FenBrowser.FenEngine.Layout
 
                 if (isAbs)
                 {
-                     // Measure absolute elements against physical constraints
+                     // Measure absolute elements against physical constraints (or unconstrained)
                      // They are removed from flow, so we don't convert result to logical flow.
-                     MeasureNode(child, availableSize, depth + 1);
+                     // We store the 'intrinsic' size for the Arrange phase solver.
+                     var absMetrics = MeasureNode(child, availableSize, depth + 1);
+                     _desiredSizes[child] = new SKSize(absMetrics.MaxChildWidth, absMetrics.ContentHeight);
                      continue;
                 }
                 
@@ -1262,9 +1276,9 @@ namespace FenBrowser.FenEngine.Layout
                 }
             }
             
-            internalBlockMarginStart = marginTracker.PendingMargin;
-            internalBlockMarginEnd = marginTracker.LastBlockBottomMargin;
-            if (!marginTracker.HasContent) internalBlockMarginEnd = marginTracker.PendingMargin;
+            marginTracker.Finish(out float startMargin, out float endMargin);
+            internalBlockMarginStart = startMargin;
+            internalBlockMarginEnd = endMargin;
             logicalCurBlock += currentFloatBlockSize; 
             
             // Map Logical results back to LayoutMetrics (Physical interpretation slots)
@@ -1433,6 +1447,9 @@ namespace FenBrowser.FenEngine.Layout
 
                     if (isAbs)
                     {
+                        // Absolute elements are positioned relative to their containing block.
+                        // We delegate the resolution to ArrangeNodeCore which has access to the ancestor stack.
+                        // We pass finalRect (parent content box) as a placeholder, but it will be ignored/overwritten.
                         ArrangeNode(child, finalRect, depth + 1);
                         continue;
                     }

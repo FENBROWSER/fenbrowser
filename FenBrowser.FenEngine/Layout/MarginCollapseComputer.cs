@@ -1,385 +1,121 @@
-// =============================================================================
-// MarginCollapseComputer.cs
-// CSS 2.1 Margin Collapsing Algorithm
-// 
-// SPEC REFERENCE: CSS 2.1 §8.3.1 - Collapsing Margins
-//                 https://www.w3.org/TR/CSS21/box.html#collapsing-margins
-// 
-// MARGIN COLLAPSE RULES (per CSS 2.1):
-//   1. Adjoining margins of two or more boxes collapse
-//   2. Collapsed margin = max of participating margins (or algebraic sum if negative)
-//   3. Parent-first-child margins collapse if no separating content/padding/border
-//   4. Parent-last-child margins collapse if no separating content/padding/border/height
-//   5. Empty boxes collapse margins through themselves
-//   6. Clearance prevents collapse
-//   7. Margin collapse happens only for vertical margins in normal flow
-// 
-// STATUS: ✅ Fully Implemented
-// =============================================================================
-
 using System;
-using System.Collections.Generic;
-using FenBrowser.Core;
-using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom;
-using FenBrowser.Core.Logging;
+using FenBrowser.FenEngine.Rendering.Css; // For CssComputed if needed
+using FenBrowser.Core.Css; // For Thickness/Styles
 
 namespace FenBrowser.FenEngine.Layout
 {
     /// <summary>
-    /// Result of margin collapse computation for an element.
-    /// </summary>
-    public struct CollapsedMargins
-    {
-        /// <summary>Top margin after collapse consideration.</summary>
-        public float Top;
-
-        /// <summary>Bottom margin after collapse consideration.</summary>
-        public float Bottom;
-
-        /// <summary>True if top margin is potentially collapsible with parent.</summary>
-        public bool TopCollapsesWithParent;
-
-        /// <summary>True if bottom margin is potentially collapsible with parent.</summary>
-        public bool BottomCollapsesWithParent;
-
-        /// <summary>True if this element "collapses through" (empty box).</summary>
-        public bool CollapsesThrough;
-
-        /// <summary>Effective margin value (after all collapses).</summary>
-        public float EffectiveTop => TopCollapsesWithParent ? 0 : Top;
-        public float EffectiveBottom => BottomCollapsesWithParent ? 0 : Bottom;
-
-        public override string ToString()
-        {
-            return $"[Margins T={Top:F1} B={Bottom:F1} " +
-                   $"Tw/P={TopCollapsesWithParent} Bw/P={BottomCollapsesWithParent} " +
-                   $"Through={CollapsesThrough}]";
-        }
-    }
-
-    /// <summary>
-    /// Context for margin collapse computation.
-    /// </summary>
-    public class MarginCollapseContext
-    {
-        /// <summary>Previous sibling's bottom margin (for sibling collapse).</summary>
-        public float? PreviousSiblingBottomMargin;
-
-        /// <summary>Parent's top margin (for parent-child collapse).</summary>
-        public float ParentTopMargin;
-
-        /// <summary>True if parent has border-top or padding-top.</summary>
-        public bool ParentHasTopBorderOrPadding;
-
-        /// <summary>True if parent has border-bottom or padding-bottom.</summary>
-        public bool ParentHasBottomBorderOrPadding;
-
-        /// <summary>True if parent has explicit height.</summary>
-        public bool ParentHasExplicitHeight;
-
-        /// <summary>Accumulated collapsed margin from parent-first-child chain.</summary>
-        public float AccumulatedTopMargin;
-
-        /// <summary>True if there's any in-flow content before this element.</summary>
-        public bool HasPrecedingContent;
-    }
-
-    /// <summary>
-    /// Computes margin collapse per CSS 2.1 §8.3.1.
+    /// Implements CSS 2.1 Section 8.3.1 Collapsing margins.
+    /// Default rule: In CSS, the adjoining margins of two or more boxes (which might or might not be siblings) 
+    /// can combine to form a single margin. Margins that combine this way are said to collapse, 
+    /// and the resulting combined margin is called a collapsed margin.
     /// </summary>
     public static class MarginCollapseComputer
     {
         /// <summary>
-        /// Compute collapsed margins for an element.
+        /// Collapses two adjoining margins according to spec rules:
+        /// - If both positive, max(a, b)
+        /// - If both negative, min(a, b) (most negative)
+        /// - If one positive, one negative, a + b
         /// </summary>
-        public static CollapsedMargins ComputeCollapsedMargins(
-            Element element,
-            CssComputed style,
-            MarginCollapseContext context,
-            List<CollapsedMargins> childrenMargins = null)
+        public static float Collapse(float marginA, float marginB)
         {
-            var result = new CollapsedMargins();
-
-            // Parse margins from Thickness
-            float marginTop = (float)(style?.Margin.Top ?? 0);
-            float marginBottom = (float)(style?.Margin.Bottom ?? 0);
-
-            // Check if element establishes block formatting context (prevents collapse)
-            if (EstablishesBlockFormattingContext(style))
+            if (marginA >= 0 && marginB >= 0)
             {
-                result.Top = marginTop;
-                result.Bottom = marginBottom;
-                result.TopCollapsesWithParent = false;
-                result.BottomCollapsesWithParent = false;
-                result.CollapsesThrough = false;
-                return result;
+                return Math.Max(marginA, marginB);
             }
+            else if (marginA < 0 && marginB < 0)
+            {
+                return Math.Min(marginA, marginB);
+            }
+            else
+            {
+                return marginA + marginB;
+            }
+        }
 
-            // Check if element is empty (collapses through)
-            bool isEmpty = IsEmptyElement(element, style);
+        /// <summary>
+        /// Determines if a parent and its first child's top margins should collapse.
+        /// Rules: Collapses if no top border, no top padding, and the parent is in-flow block-level.
+        /// </summary>
+        public static bool ShouldCollapseParentChildTop(CssComputed parentStyle)
+        {
+            if (parentStyle == null) return true; // Default behavior
             
-            if (isEmpty)
-            {
-                // Empty boxes collapse margins through themselves
-                float collapsedMargin = CollapseMargin(marginTop, marginBottom);
-                result.Top = collapsedMargin;
-                result.Bottom = 0;
-                result.CollapsesThrough = true;
-                result.TopCollapsesWithParent = !context.ParentHasTopBorderOrPadding && !context.HasPrecedingContent;
-                result.BottomCollapsesWithParent = !context.ParentHasBottomBorderOrPadding;
-                return result;
-            }
-
-            // PARENT-FIRST-CHILD COLLAPSE
-            if (!context.ParentHasTopBorderOrPadding && !context.HasPrecedingContent)
-            {
-                result.TopCollapsesWithParent = true;
-                result.Top = CollapseMargin(context.AccumulatedTopMargin, marginTop);
-            }
-            else
-            {
-                result.Top = marginTop;
-                result.TopCollapsesWithParent = false;
-            }
-
-            // SIBLING MARGIN COLLAPSE
-            if (context.PreviousSiblingBottomMargin.HasValue)
-            {
-                float collapsed = CollapseMargin(context.PreviousSiblingBottomMargin.Value, marginTop);
-                result.Top = collapsed;
-            }
-
-            // PARENT-LAST-CHILD COLLAPSE
-            if (childrenMargins != null && childrenMargins.Count > 0)
-            {
-                var lastChildMargin = childrenMargins[^1];
-                if (lastChildMargin.BottomCollapsesWithParent)
-                {
-                    result.Bottom = CollapseMargin(marginBottom, lastChildMargin.Bottom);
-                }
-                else
-                {
-                    result.Bottom = marginBottom;
-                }
-            }
-            else
-            {
-                result.Bottom = marginBottom;
-            }
-
-            result.BottomCollapsesWithParent = !context.ParentHasBottomBorderOrPadding && 
-                                               !context.ParentHasExplicitHeight;
-
-            return result;
-        }
-
-        /// <summary>
-        /// Collapse two margin values according to CSS 2.1 rules.
-        /// </summary>
-        public static float CollapseMargin(float m1, float m2)
-        {
-            if (m1 >= 0 && m2 >= 0)
-                return Math.Max(m1, m2);
-            else if (m1 < 0 && m2 < 0)
-                return Math.Min(m1, m2);
-            else
-                return m1 + m2;
-        }
-
-        /// <summary>
-        /// Collapse multiple margin values.
-        /// </summary>
-        public static float CollapseMargins(params float[] margins)
-        {
-            if (margins == null || margins.Length == 0) return 0;
-            if (margins.Length == 1) return margins[0];
-
-            float result = margins[0];
-            for (int i = 1; i < margins.Length; i++)
-            {
-                result = CollapseMargin(result, margins[i]);
-            }
-            return result;
-        }
-
-        /// <summary>
-        /// Compute space between two adjacent siblings considering margin collapse.
-        /// </summary>
-        public static float ComputeSiblingGap(
-            float previousBottomMargin,
-            float currentTopMargin,
-            bool previousHasClearance = false)
-        {
-            if (previousHasClearance)
-                return previousBottomMargin + currentTopMargin;
-            return CollapseMargin(previousBottomMargin, currentTopMargin);
-        }
-
-        /// <summary>
-        /// Determines if clearance prevents margin collapse.
-        /// </summary>
-        public static bool HasClearance(CssComputed style, bool hasFloatsToClear)
-        {
-            if (style == null) return false;
-            var clear = style.Map?.GetValueOrDefault("clear", "none")?.ToLowerInvariant() ?? "none";
-            if (clear == "none") return false;
-            return hasFloatsToClear;
-        }
-
-        #region Private Helpers
-
-        private static bool EstablishesBlockFormattingContext(CssComputed style)
-        {
-            if (style == null) return false;
-
-            var floatVal = style.Float?.ToLowerInvariant() ?? "none";
-            if (floatVal != "none") return true;
-
-            var position = style.Position?.ToLowerInvariant() ?? "static";
-            if (position == "absolute" || position == "fixed") return true;
-
-            var display = style.Display?.ToLowerInvariant() ?? "block";
-            if (display == "inline-block" || display == "flow-root") return true;
+            // Cannot collapse if parent has border or padding
+            if (parentStyle.BorderThickness.Top > 0) return false;
+            if (parentStyle.Padding.Top > 0) return false;
+            
+            // Only blocks collapse
+            // Note: Flex/Grid/Table don't collapse margins with children
+            string display = parentStyle.Display?.ToLowerInvariant();
             if (display == "flex" || display == "inline-flex" || 
-                display == "grid" || display == "inline-grid") return true;
-            if (display == "table-caption" || display == "table-cell") return true;
-
-            var overflow = style.Overflow?.ToLowerInvariant() ?? "visible";
-            if (overflow != "visible" && overflow != "clip") return true;
-
-            if (style.Contain != null)
+                display == "grid" || display == "inline-grid" ||
+                display == "table" || display == "inline-block")
             {
-                if (style.Contain.Contains("layout") || style.Contain.Contains("content") || 
-                    style.Contain.Contains("strict"))
-                    return true;
+                return false;
             }
-
-            return false;
-        }
-
-        private static bool IsEmptyElement(Element element, CssComputed style)
-        {
-            if (style == null) return true;
-
-            // Has explicit height?
-            if ((style.Height ?? 0) > 0) return false;
-            if ((style.MinHeight ?? 0) > 0) return false;
-
-            // Has padding or border using Thickness?
-            if (style.Padding.Top > 0 || style.Padding.Bottom > 0) return false;
-            if (style.BorderThickness.Top > 0 || style.BorderThickness.Bottom > 0) return false;
-
-            // Has visible content?
-            if (element.Children != null)
-            {
-                foreach (var child in element.Children)
-                {
-                    if (child is Text text && !string.IsNullOrWhiteSpace(text.Data))
-                        return false;
-                    if (child is Element)
-                        return false;
-                }
-            }
+            
+            // Clearance, BFC creation also prevent collapse (simplified here)
+            if (parentStyle.Overflow != null && parentStyle.Overflow != "visible") return false;
+            if (parentStyle.Position == "absolute" || parentStyle.Position == "fixed") return false;
+            if (parentStyle.Float == "left" || parentStyle.Float == "right") return false;
 
             return true;
         }
 
-        #endregion
-    }
-
-    /// <summary>
-    /// Tracks margin state during block layout for proper collapse handling.
-    /// </summary>
-    public class MarginCollapseTracker
-    {
-        public float PendingMargin { get; private set; }
-        public bool HasContent { get; private set; }
-        public float LastBlockBottomMargin { get; private set; }
-        
         /// <summary>
-        /// If true, margins will not collapse with the parent's start edge 
-        /// (e.g. because of border or padding).
+        /// Determines if a parent and its last child's bottom margins should collapse.
+        /// Rules: Collapses if no bottom border/padding, and parent height is auto.
         /// </summary>
-        public bool PreventParentCollapse { get; set; }
-
-        public float AddMargin(float topMargin, float bottomMargin, bool isFirstChild, bool isEmpty)
+        public static bool ShouldCollapseParentChildBottom(CssComputed parentStyle)
         {
-            // Logic derived from CSS 2.1 8.3.1
+            if (parentStyle == null) return true;
+
+            if (parentStyle.BorderThickness.Bottom > 0) return false;
+            if (parentStyle.Padding.Bottom > 0) return false;
             
-            if (!HasContent)
+            // If parent has explicit height, margins don't collapse with bottom child 
+            // (Wait, spec says: "The bottom margin of an in-flow block-level element with a 'height' of 'auto' collapses with its last in-flow block-level child's bottom margin")
+            if (parentStyle.Height.HasValue || parentStyle.HeightPercent.HasValue || !string.IsNullOrEmpty(parentStyle.HeightExpression)) 
+                return false;
+
+            // Check BFC/Display types
+            string display = parentStyle.Display?.ToLowerInvariant();
+            if (display == "flex" || display == "inline-flex" || 
+                display == "grid" || display == "inline-grid" ||
+                display == "table" || display == "inline-block")
             {
-                // We are at the start of the block context (or only seen empty blocks so far)
-                // Collapse this top margin into the pending parent-start margin.
-                PendingMargin = MarginCollapseComputer.CollapseMargin(PendingMargin, topMargin);
-                
-                if (isEmpty)
-                {
-                    // Empty block at start collapses through.
-                    // Its bottom margin also collapses into the pending margin.
-                    PendingMargin = MarginCollapseComputer.CollapseMargin(PendingMargin, bottomMargin);
-                    return 0; 
-                }
-                else
-                {
-                    // First non-empty block.
-                    HasContent = true;
-                    LastBlockBottomMargin = bottomMargin;
-                    
-                    if (PreventParentCollapse) 
-                    {
-                        // Apply the accumulated margin immediately because it can't cross the parent barrier.
-                        float spacing = PendingMargin;
-                        PendingMargin = 0; // consumed
-                        return spacing;
-                    } 
-                    else 
-                    {
-                        // Bubble it up (keep in PendingMargin)
-                        return 0;
-                    }
-                }
+                return false;
             }
-            else
-            {
-                // We have preceding content. Only top margin of this element interacts with LastBlockBottomMargin.
-                
-                if (isEmpty)
-                {
-                    // Empty block in the middle.
-                    // It collapses "through". 
-                    // New LastBottom = Collapse(OldLastBottom, EmptyTop, EmptyBottom)
-                    float temp = MarginCollapseComputer.CollapseMargin(LastBlockBottomMargin, topMargin);
-                    LastBlockBottomMargin = MarginCollapseComputer.CollapseMargin(temp, bottomMargin);
-                    
-                    // No visual spacing added for the empty block itself; 
-                    // its "presence" is merged into the bottom margin of the previous block essentially.
-                    return 0;
-                }
-                else
-                {
-                    // Standard Sibling
-                    float spacing = MarginCollapseComputer.CollapseMargin(LastBlockBottomMargin, topMargin);
-                    LastBlockBottomMargin = bottomMargin;
-                    return spacing;
-                }
-            }
+
+            if (parentStyle.Overflow != null && parentStyle.Overflow != "visible") return false;
+            if (parentStyle.Position == "absolute" || parentStyle.Position == "fixed") return false;
+            if (parentStyle.Float == "left" || parentStyle.Float == "right") return false;
+
+            return true;
         }
 
-        public float FlushPendingMargin()
+        /// <summary>
+        /// Determines if an empty block's top and bottom margins collapse together (collapse through).
+        /// </summary>
+        public static bool ShouldCollapseThrough(CssComputed style, float contentHeight)
         {
-            var margin = PendingMargin;
-            PendingMargin = 0;
-            HasContent = true;
-            return margin;
-        }
+            if (style == null) return false;
+            
+            // Must have zero height, zero padding, zero border
+            // (Technically "computed" height 0, but we use measured content height here)
+            if (contentHeight > 0) return false;
+            
+            if (style.Padding.Top > 0 || style.Padding.Bottom > 0) return false;
+            if (style.BorderThickness.Top > 0 || style.BorderThickness.Bottom > 0) return false;
+            
+            if (style.MinHeight.HasValue && style.MinHeight.Value > 0) return false;
+            // Also explicit height > 0
+            if (style.Height.HasValue && style.Height.Value > 0) return false;
 
-        public void Reset()
-        {
-            PendingMargin = 0;
-            HasContent = false;
-            LastBlockBottomMargin = 0;
-            PreventParentCollapse = false;
+            return true;
         }
     }
 }
