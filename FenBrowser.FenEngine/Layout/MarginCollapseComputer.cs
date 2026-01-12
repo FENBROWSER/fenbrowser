@@ -296,33 +296,74 @@ namespace FenBrowser.FenEngine.Layout
         public float PendingMargin { get; private set; }
         public bool HasContent { get; private set; }
         public float LastBlockBottomMargin { get; private set; }
+        
+        /// <summary>
+        /// If true, margins will not collapse with the parent's start edge 
+        /// (e.g. because of border or padding).
+        /// </summary>
+        public bool PreventParentCollapse { get; set; }
 
         public float AddMargin(float topMargin, float bottomMargin, bool isFirstChild, bool isEmpty)
         {
-            float spacing = 0;
-
-            if (isFirstChild && !HasContent)
+            // Logic derived from CSS 2.1 8.3.1
+            
+            if (!HasContent)
             {
+                // We are at the start of the block context (or only seen empty blocks so far)
+                // Collapse this top margin into the pending parent-start margin.
                 PendingMargin = MarginCollapseComputer.CollapseMargin(PendingMargin, topMargin);
-                spacing = 0;
-            }
-            else if (!HasContent)
-            {
-                PendingMargin = MarginCollapseComputer.CollapseMargin(PendingMargin, topMargin);
-                spacing = 0;
+                
+                if (isEmpty)
+                {
+                    // Empty block at start collapses through.
+                    // Its bottom margin also collapses into the pending margin.
+                    PendingMargin = MarginCollapseComputer.CollapseMargin(PendingMargin, bottomMargin);
+                    return 0; 
+                }
+                else
+                {
+                    // First non-empty block.
+                    HasContent = true;
+                    LastBlockBottomMargin = bottomMargin;
+                    
+                    if (PreventParentCollapse) 
+                    {
+                        // Apply the accumulated margin immediately because it can't cross the parent barrier.
+                        float spacing = PendingMargin;
+                        PendingMargin = 0; // consumed
+                        return spacing;
+                    } 
+                    else 
+                    {
+                        // Bubble it up (keep in PendingMargin)
+                        return 0;
+                    }
+                }
             }
             else
             {
-                spacing = MarginCollapseComputer.CollapseMargin(LastBlockBottomMargin, topMargin);
-                LastBlockBottomMargin = 0;
+                // We have preceding content. Only top margin of this element interacts with LastBlockBottomMargin.
+                
+                if (isEmpty)
+                {
+                    // Empty block in the middle.
+                    // It collapses "through". 
+                    // New LastBottom = Collapse(OldLastBottom, EmptyTop, EmptyBottom)
+                    float temp = MarginCollapseComputer.CollapseMargin(LastBlockBottomMargin, topMargin);
+                    LastBlockBottomMargin = MarginCollapseComputer.CollapseMargin(temp, bottomMargin);
+                    
+                    // No visual spacing added for the empty block itself; 
+                    // its "presence" is merged into the bottom margin of the previous block essentially.
+                    return 0;
+                }
+                else
+                {
+                    // Standard Sibling
+                    float spacing = MarginCollapseComputer.CollapseMargin(LastBlockBottomMargin, topMargin);
+                    LastBlockBottomMargin = bottomMargin;
+                    return spacing;
+                }
             }
-
-            LastBlockBottomMargin = bottomMargin;
-
-            if (!isEmpty)
-                HasContent = true;
-
-            return spacing;
         }
 
         public float FlushPendingMargin()
@@ -338,6 +379,7 @@ namespace FenBrowser.FenEngine.Layout
             PendingMargin = 0;
             HasContent = false;
             LastBlockBottomMargin = 0;
+            PreventParentCollapse = false;
         }
     }
 }

@@ -40,7 +40,7 @@ namespace FenBrowser.Tests.Engine
             container.AppendChild(child1);
             container.AppendChild(child2);
 
-            var measureChild = new Func<Node, SKSize, int, LayoutMetrics>((n, size, d) => 
+            var measureChild = new Func<Node, SKSize, int, bool, LayoutMetrics>((n, size, d, shrink) => 
             {
                 return new LayoutMetrics { MaxChildWidth = 100, ContentHeight = 50 };
             });
@@ -77,7 +77,7 @@ namespace FenBrowser.Tests.Engine
             container.AppendChild(child1);
             container.AppendChild(child2);
 
-            var measureChild = new Func<Node, SKSize, int, LayoutMetrics>((n, size, d) => 
+            var measureChild = new Func<Node, SKSize, int, bool, LayoutMetrics>((n, size, d, shrink) => 
             {
                 return new LayoutMetrics { MaxChildWidth = 100, ContentHeight = 50 };
             });
@@ -111,7 +111,7 @@ namespace FenBrowser.Tests.Engine
             container.AppendChild(MockElement());
             container.AppendChild(MockElement());
 
-            var measureChild = new Func<Node, SKSize, int, LayoutMetrics>((n, size, d) => 
+            var measureChild = new Func<Node, SKSize, int, bool, LayoutMetrics>((n, size, d, shrink) => 
             {
                 return new LayoutMetrics { MaxChildWidth = 100, ContentHeight = 50 };
             });

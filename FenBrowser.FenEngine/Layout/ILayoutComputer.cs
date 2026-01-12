@@ -46,18 +46,19 @@ namespace FenBrowser.FenEngine.Layout
         IEnumerable<KeyValuePair<Node, BoxModel>> GetAllBoxes();
         
         // Measure specialized
-        LayoutMetrics MeasureBlock(Element element, SKSize availableSize);
-        LayoutMetrics MeasureFlex(Element element, SKSize availableSize);
-        LayoutMetrics MeasureGrid(Element element, SKSize availableSize);
+        LayoutMetrics MeasureBlock(Element element, SKSize availableSize, int depth);
+        LayoutMetrics MeasureFlex(Element element, SKSize availableSize, int depth);
+        LayoutMetrics MeasureGrid(Element element, SKSize availableSize, int depth);
         LayoutMetrics MeasureText(Node node, SKSize availableSize);
 
         // Arrange specialized
-        void ArrangeBlock(Element element, SKRect finalRect);
-        void ArrangeFlex(Element element, SKRect finalRect);
-        void ArrangeGrid(Element element, SKRect finalRect);
+        void ArrangeBlock(Element element, SKRect finalRect, int depth);
+        void ArrangeFlex(Element element, SKRect finalRect, int depth);
+        void ArrangeGrid(Element element, SKRect finalRect, int depth);
         void ArrangeText(Node node, SKRect finalRect);
 
         void DumpLayoutTree(Node root);
+        int GetZeroSizedCount();
     }
 
 

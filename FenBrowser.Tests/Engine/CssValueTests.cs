@@ -10,8 +10,8 @@ namespace FenBrowser.Tests.Engine
         public void ParseLength_Px()
         {
             var val = CssValueParser.Parse("10px");
-            Assert.IsType<CssLength>(val);
-            var len = (CssLength)val;
+            Assert.IsType<CssLengthValue>(val);
+            var len = (CssLengthValue)val;
             Assert.Equal(10, len.Value);
             Assert.Equal(CssUnit.Px, len.Unit);
         }
@@ -20,8 +20,8 @@ namespace FenBrowser.Tests.Engine
         public void ParseLength_Percent()
         {
             var val = CssValueParser.Parse("50%");
-            Assert.IsType<CssLength>(val);
-            var len = (CssLength)val;
+            Assert.IsType<CssLengthValue>(val);
+            var len = (CssLengthValue)val;
             Assert.Equal(50, len.Value);
             Assert.Equal(CssUnit.Percent, len.Unit); // Percent handled as unit in our parser
             Assert.Equal(CssValueType.Percentage, val.Type); // Type check
@@ -31,8 +31,8 @@ namespace FenBrowser.Tests.Engine
         public void ParseLength_Decimal()
         {
             var val = CssValueParser.Parse("1.5em");
-            Assert.IsType<CssLength>(val);
-            var len = (CssLength)val;
+            Assert.IsType<CssLengthValue>(val);
+            var len = (CssLengthValue)val;
             Assert.Equal(1.5, len.Value);
             Assert.Equal(CssUnit.Em, len.Unit);
         }
