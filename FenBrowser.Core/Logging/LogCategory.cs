@@ -29,6 +29,12 @@ namespace FenBrowser.Core.Logging
         FeatureGaps  = 1 << 16,  // Unsupported features summary reporting
         ServiceWorker= 1 << 17,  // ServiceWorker lifecycle and fetch events
         WebDriver    = 1 << 18,  // WebDriver server and commands
+        Cascade      = 1 << 19,  // CSS selector matching and cascade resolution
+        ComputedStyle= 1 << 20,  // Final style calculation per element
+        Text         = 1 << 21,  // Font selection, glyph shaping, measurement
+        Paint        = 1 << 22,  // Paint commands, clipping, z-index
+        Frame        = 1 << 23,  // Frame timing, orchestration, render loop
+        Verification = 1 << 24,  // Verification system logs (Source vs Rendered vs Visual)
         All          = int.MaxValue
     }
 

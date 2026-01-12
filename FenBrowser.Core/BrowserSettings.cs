@@ -40,6 +40,13 @@ namespace FenBrowser.Core
         public bool LogToDebug { get; set; } = true;
         public int MaxLogFileSizeMB { get; set; } = 10;
         public int MemoryBufferSize { get; set; } = 1000;
+        
+        /// <summary>
+        /// Path for log files. Defaults to FenBrowser app data folder.
+        /// </summary>
+        public string LogPath { get; set; } = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), 
+            "FenBrowser", "logs");
     }
 
     public class BrowserSettings
@@ -80,15 +87,7 @@ namespace FenBrowser.Core
         public bool ShowFavoritesBar 
         { 
             get => _showFavoritesBar; 
-            set 
-            {
-                _showFavoritesBar = value;
-                try {
-                System.IO.File.AppendAllText(
-                    System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FenBrowser", "click_debug.log"),
-                    $"[BrowserSettings] SET ShowFavoritesBar = {value}\n");
-                } catch {}
-            }
+            set => _showFavoritesBar = value;
         }
         private bool _showFavoritesBar = true;
         public bool ShowFavoritesButton { get; set; } = true;

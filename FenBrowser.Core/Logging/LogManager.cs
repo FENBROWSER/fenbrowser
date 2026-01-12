@@ -22,6 +22,11 @@ namespace FenBrowser.Core.Logging
         /// </summary>
         public static bool UseJsonFormat { get; set; } = false;
         
+        /// <summary>
+        /// Event fired when a log entry is added. Can be used by DevTools to show logs.
+        /// </summary>
+        public static event Action<LogEntry> LogEntryAdded;
+        
         private readonly ConcurrentQueue<LogEntry> _memoryBuffer = new ConcurrentQueue<LogEntry>();
         private readonly object _fileLock = new object();
         private readonly int _maxMemoryEntries = 1000;
@@ -31,22 +36,43 @@ namespace FenBrowser.Core.Logging
 
         private LogManager()
         {
-            try 
+            // Lazy initialization - log path is set later via InitializeFromSettings()
+            _logFilePath = null;
+        }
+        
+        /// <summary>
+        /// Initialize logging from BrowserSettings.
+        /// Should be called at app startup after settings are loaded.
+        /// </summary>
+        public static void InitializeFromSettings()
+        {
+            try
             {
-                // Hardcode path for reliability in this environment
-                var fenBrowserPath = @"C:\Users\udayk\Videos\FENBROWSER\logs";
-                if (!Directory.Exists(fenBrowserPath)) Directory.CreateDirectory(fenBrowserPath);
+                var settings = BrowserSettings.Instance.Logging;
+                var logPath = settings.LogPath;
                 
-                _logFilePath = Path.Combine(fenBrowserPath, $"fenbrowser_{DateTime.Now:yyyyMMdd_HHmmss}.log");
+                if (!Directory.Exists(logPath)) 
+                    Directory.CreateDirectory(logPath);
                 
-                // Write Header
-                File.WriteAllText(_logFilePath, $"[LogManager] Initialized at {DateTime.Now:O}\n[LogManager] System: {Environment.OSVersion}\n--------------------------------------------------\n");
+                Instance._logFilePath = Path.Combine(logPath, $"fenbrowser_{DateTime.Now:yyyyMMdd_HHmmss}.log");
+                
+                // Write header
+                File.WriteAllText(Instance._logFilePath, 
+                    $"╔══════════════════════════════════════════════════════════════════╗\n" +
+                    $"║  FenBrowser Log - {DateTime.Now:yyyy-MM-dd HH:mm:ss}                          ║\n" +
+                    $"║  System: {Environment.OSVersion}                                  \n" +
+                    $"╚══════════════════════════════════════════════════════════════════╝\n\n");
+                
+                // Apply settings
+                _isEnabled = settings.EnableLogging;
+                _enabledCategories = (LogCategory)settings.EnabledCategories;
+                _minimumLevel = (LogLevel)settings.MinimumLevel;
+                
+                System.Diagnostics.Debug.WriteLine($"[LogManager] Initialized at: {Instance._logFilePath}");
             }
             catch (Exception ex)
             {
-                // Fallback if logging initialization fails
-                System.Diagnostics.Debug.WriteLine($"ERROR: LogManager failed to initialize file sink: {ex.Message}");
-                _logFilePath = null; // Prevent further file operations if initialization failed
+                System.Diagnostics.Debug.WriteLine($"[LogManager] Failed to initialize: {ex.Message}");
             }
         }
 
@@ -82,12 +108,14 @@ namespace FenBrowser.Core.Logging
 
         /// <summary>
         /// Check if a category and level combination is enabled.
+        /// LogLevel: Error=0 (most critical) to Trace=4 (most verbose)
+        /// We log if: level <= minimumLevel (e.g., Error always logs, Debug only if min is Debug or Trace)
         /// </summary>
         public static bool IsEnabled(LogCategory category, LogLevel level)
         {
             if (!_isEnabled) return false;
-            if (!_enabledCategories.HasFlag(category)) return false;
-            return level <= _minimumLevel;
+            if (!_enabledCategories.HasFlag(category) && category != LogCategory.All) return false;
+            return (int)level <= (int)_minimumLevel;
         }
 
         /// <summary>
@@ -108,6 +136,9 @@ namespace FenBrowser.Core.Logging
                 };
 
                 Instance.WriteToSinks(entry);
+                
+                // Fire event for DevTools/UI subscribers
+                LogEntryAdded?.Invoke(entry);
             }
             catch
             {
@@ -123,16 +154,63 @@ namespace FenBrowser.Core.Logging
             Log(category, LogLevel.Error, message, exception);
         }
 
+        #region Performance Timing Aggregation
+        
+        private static readonly ConcurrentDictionary<string, PerfStats> _perfStats = new();
+        
         /// <summary>
-        /// Log a performance measurement.
+        /// Log a performance measurement and aggregate stats.
         /// </summary>
         public static void LogPerf(LogCategory category, string operation, long milliseconds)
         {
+            // Update aggregated stats
+            _perfStats.AddOrUpdate(operation, 
+                new PerfStats { Count = 1, TotalMs = milliseconds, MinMs = milliseconds, MaxMs = milliseconds },
+                (key, existing) =>
+                {
+                    existing.Count++;
+                    existing.TotalMs += milliseconds;
+                    if (milliseconds < existing.MinMs) existing.MinMs = milliseconds;
+                    if (milliseconds > existing.MaxMs) existing.MaxMs = milliseconds;
+                    return existing;
+                });
+            
             if (IsEnabled(category, LogLevel.Debug))
             {
                 Log(category, LogLevel.Debug, $"[PERF] {operation}: {milliseconds}ms");
             }
         }
+        
+        /// <summary>
+        /// Get aggregated performance statistics.
+        /// </summary>
+        public static string GetPerfSummary()
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("=== Performance Summary ===");
+            foreach (var kvp in _perfStats.OrderByDescending(x => x.Value.TotalMs))
+            {
+                var s = kvp.Value;
+                var avg = s.Count > 0 ? s.TotalMs / s.Count : 0;
+                sb.AppendLine($"{kvp.Key}: Count={s.Count}, Total={s.TotalMs}ms, Avg={avg}ms, Min={s.MinMs}ms, Max={s.MaxMs}ms");
+            }
+            return sb.ToString();
+        }
+        
+        /// <summary>
+        /// Clear performance statistics.
+        /// </summary>
+        public static void ClearPerfStats() => _perfStats.Clear();
+        
+        private class PerfStats
+        {
+            public int Count;
+            public long TotalMs;
+            public long MinMs;
+            public long MaxMs;
+        }
+        
+        #endregion
 
         #region Feature Failure Tracking
 
@@ -232,6 +310,7 @@ namespace FenBrowser.Core.Logging
 
             // Debug output
             System.Diagnostics.Debug.WriteLine(entry.ToString());
+            Console.WriteLine(entry.ToString()); // Added for stdout capture
         }
 
         private void WriteJsonToFile(LogEntry entry)

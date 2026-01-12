@@ -148,14 +148,6 @@ namespace FenBrowser.Core.Engine
                 ===========================
                 """;
             
-            // Log to file
-            try
-            {
-                System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", 
-                    $"\r\n{fullMessage}\r\n");
-            }
-            catch { /* Ignore logging failures */ }
-            
             // Crash loudly
             throw new EngineInvariantException(fullMessage);
         }

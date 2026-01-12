@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using FenBrowser.Core.Engine; // Phase protection
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core.Dom
 {
@@ -37,6 +38,88 @@ namespace FenBrowser.Core.Dom
 
         // --- DOM Level 3 Events ---
         private Dictionary<string, List<EventListenerEntry>> _eventListeners;
+
+        // --- Final Architecture: Dirty Flags ---
+        public bool StyleDirty { get; private set; }
+        public bool ChildStyleDirty { get; private set; }
+
+        public bool LayoutDirty { get; private set; }
+        public bool ChildLayoutDirty { get; private set; }
+
+        public bool PaintDirty { get; private set; }
+        public bool ChildPaintDirty { get; private set; }
+
+        /// <summary>
+        /// Marks this node as dirty for a specific subsystem and propagates "ChildDirty" up the tree.
+        /// </summary>
+        public void MarkDirty(InvalidationKind kind)
+        {
+            // 1. Mark Self
+            bool propagateStyle = false;
+            bool propagateLayout = false;
+            bool propagatePaint = false;
+
+            if ((kind & InvalidationKind.Style) != 0)
+            {
+                if (!StyleDirty) { StyleDirty = true; propagateStyle = true; }
+            }
+            if ((kind & InvalidationKind.Layout) != 0)
+            {
+                if (!LayoutDirty) { LayoutDirty = true; propagateLayout = true; }
+            }
+            if ((kind & InvalidationKind.Paint) != 0)
+            {
+                if (!PaintDirty) { PaintDirty = true; propagatePaint = true; }
+            }
+
+            // 2. Propagate "ChildDirty" up to Root
+            if (propagateStyle || propagateLayout || propagatePaint)
+            {
+                var parent = Parent;
+                while (parent != null)
+                {
+                    bool changed = false;
+                    if (propagateStyle && !parent.ChildStyleDirty)
+                    {
+                        parent.ChildStyleDirty = true;
+                        changed = true;
+                    }
+                    if (propagateLayout && !parent.ChildLayoutDirty)
+                    {
+                        parent.ChildLayoutDirty = true;
+                        changed = true;
+                    }
+                    if (propagatePaint && !parent.ChildPaintDirty)
+                    {
+                        parent.ChildPaintDirty = true;
+                        changed = true;
+                    }
+
+                    if (!changed) break; // Optimization: Path already marked
+                    parent = parent.Parent;
+                }
+                
+                // Notify EngineLoop (via Coordinator/OwnerDocument) that *something* is dirty.
+                // This ensures the loop knows to check the tree.
+                // Ideally, this just sets a global "TreeIsDirty" flag on the Engine.
+                OwnerDocument?.NotifyTreeDirty(); 
+            }
+        }
+        
+        /// <summary>
+        /// Clears dirty flags after processing.
+        /// </summary>
+        public void ClearDirty(InvalidationKind kind, bool subtree = false) 
+        {
+             if ((kind & InvalidationKind.Style) != 0) { StyleDirty = false; if(!subtree) ChildStyleDirty = false; }
+             if ((kind & InvalidationKind.Layout) != 0) { LayoutDirty = false; if(!subtree) ChildLayoutDirty = false; }
+             if ((kind & InvalidationKind.Paint) != 0) { PaintDirty = false; if(!subtree) ChildPaintDirty = false; }
+             
+             // Note: Clearing Child*Dirty correctly requires checking if *other* children are dirty, 
+             // which is O(N) children. 
+             // The Orchestrator's traversal handles clearing during the pass (bottom-up),
+             // so manual clearing is mostly for reset/testing.
+        }
 
         // --- MutationObserver integration ---
         [Obsolete("Use RegisterObserver/NotifyMutation instead")]
@@ -265,6 +348,13 @@ namespace FenBrowser.Core.Dom
             child.OwnerDocument = this is Document doc ? doc : this.OwnerDocument;
             Children.Add(child);
 
+            if (DebugConfig.LogDomTree)
+            {
+                 var el = child as Element;
+                 var idInfo = !string.IsNullOrEmpty(el?.Id) ? $"#{el.Id}" : "";
+                 FenLogger.Log($"[DOM] Append {child.NodeName}{idInfo} -> {this.NodeName}", LogCategory.DOM);
+            }
+
             // Notify MutationObserver
             NotifyMutation(new MutationRecord
             {
@@ -389,6 +479,9 @@ namespace FenBrowser.Core.Dom
         public void AddEventListener(string type, object callback, bool capture = false, bool once = false, bool passive = false)
         {
             if (string.IsNullOrEmpty(type) || callback == null) return;
+
+            if (DebugConfig.LogEventWiring)
+                 FenBrowser.Core.FenLogger.Log($"[Events] AddEventListener '{type}' on {NodeName} (Capture: {capture})", LogCategory.Events);
 
             if (_eventListeners == null)
                 _eventListeners = new Dictionary<string, List<EventListenerEntry>>(StringComparer.OrdinalIgnoreCase);

@@ -21,7 +21,7 @@ namespace FenBrowser.Core
             // Forward path to LogManager
             LogManager.Instance.SetLogFilePath(logFilePath);
             // Enable logging: LogManager.Initialize(enabled: true, categories: All, minLevel: Info)
-            LogManager.Initialize(true, LogCategory.General | LogCategory.Errors | LogCategory.Layout | LogCategory.Rendering, LogLevel.Debug);
+            LogManager.Initialize(true, LogCategory.All, LogLevel.Debug);
             LogManager.Log(LogCategory.General, LogLevel.Info, $"FenLogger initialized with path: {logFilePath}");
         }
 
