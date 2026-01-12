@@ -98,7 +98,65 @@ namespace FenBrowser.FenEngine.Layout
             expression = expression.Trim().ToLowerInvariant();
 
             // Simple parser
-            if (expression.StartsWith("calc")) return -1; // TODO: Implement calc
+            if (expression.StartsWith("calc"))
+            {
+                // Basic calc() support: "calc(100% - 20px)"
+                int start = expression.IndexOf('(');
+                int end = expression.LastIndexOf(')');
+                if (start > -1 && end > start)
+                {
+                    string inner = expression.Substring(start + 1, end - start - 1);
+                    
+                    // Very simple parser for "A op B"
+                    // Supports: 100% - 20px, 50vh - 10px
+                    // Does NOT support complex nesting yet
+                    
+                    var parts = inner.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    
+                    // Simple accumulation
+                    // ex: 100% - 20px
+                    // stack: [val]
+                    // op: -
+                    
+                    float currentVal = 0;
+                    string currentOp = "+";
+                    
+                    bool first = true;
+                    
+                    for (int i=0; i<parts.Length; i++)
+                    {
+                        string p = parts[i].Trim();
+                        if (p == "+" || p == "-" || p == "*" || p == "/")
+                        {
+                            currentOp = p;
+                        }
+                        else
+                        {
+                            float calcVal = EvaluateCssExpression(p, parentSize, viewportWidth, viewportHeight);
+                            if (calcVal != -1)
+                            {
+                                if (first) 
+                                {
+                                    currentVal = calcVal;
+                                    first = false;
+                                }
+                                else
+                                {
+                                    switch (currentOp)
+                                    {
+                                        case "+": currentVal += calcVal; break;
+                                        case "-": currentVal -= calcVal; break;
+                                        case "*": currentVal *= calcVal; break;
+                                        case "/": if (calcVal != 0) currentVal /= calcVal; break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return currentVal;
+                }
+                return -1; 
+            }
 
             if (expression.EndsWith("px"))
             {

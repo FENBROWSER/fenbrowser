@@ -447,20 +447,47 @@ li[type="square"] {
   list-style-type: square;
 }
 
-/* === SITE SPECIFIC FIXES === */
-/* Google Header Correction: Force header#gb to top of viewport to prevent improper nesting offset */
-header#gb {
+/* === Interactive Elements === */
+dialog {
+  display: none;
   position: absolute;
-  left: 0;
-  top: 0;
-  right: 0;
+  inset-inline-start: 0px;
+  inset-inline-end: 0px;
+  margin: auto;
+  border-width: medium;
+  border-style: solid;
+  color: CanvasText;
+  background-color: Canvas;
+  padding: 1em;
 }
 
-/* Google Footer Correction: Force main wrapper to fill viewport and push footer down */
-div.L3eUgb {
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
+dialog[open] {
+  display: block;
+}
+
+details {
+  display: block;
+}
+
+summary {
+  display: list-item;
+}
+
+/* === Form Elements === */
+optgroup {
+  font-family: inherit;
+  font-style: inherit;
+  font-weight: inherit;
+  font-weight: bolder;
+}
+
+option {
+  font-family: inherit;
+  font-style: inherit;
+  font-weight: inherit;
+}
+
+datalist {
+  display: none;
 }
 
