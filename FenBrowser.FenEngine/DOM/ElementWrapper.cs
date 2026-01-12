@@ -1131,6 +1131,14 @@ namespace FenBrowser.FenEngine.DOM
             {
                 _element.Attr["open"] = "";
                 _element.Attr["modal"] = ""; // Mark as modal for backdrop rendering
+                
+                // Add to Top Layer
+                if (_element.OwnerDocument is FenBrowser.Core.Dom.Document doc)
+                {
+                    if (!doc.TopLayer.Contains(_element))
+                        doc.TopLayer.Add(_element);
+                }
+
                 _context?.RequestRender?.Invoke();
             }
             return FenValue.Undefined;
@@ -1146,6 +1154,13 @@ namespace FenBrowser.FenEngine.DOM
             
             _element.Attr?.Remove("open");
             _element.Attr?.Remove("modal");
+            
+            // Remove from Top Layer
+            if (_element.OwnerDocument is FenBrowser.Core.Dom.Document doc)
+            {
+                doc.TopLayer.Remove(_element);
+            }
+
             _context?.RequestRender?.Invoke();
             return FenValue.Undefined;
         }

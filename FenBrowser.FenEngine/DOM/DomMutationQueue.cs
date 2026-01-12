@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using FenBrowser.FenEngine.Core;
+using FenBrowser.Core.Dom; // For InvalidationKind
 using FenBrowser.Core.Engine; // Phase enum
 
 namespace FenBrowser.FenEngine.DOM
@@ -16,17 +17,7 @@ namespace FenBrowser.FenEngine.DOM
         NodeRemove
     }
 
-    /// <summary>
-    /// Indicates which subsystems need invalidation after mutation.
-    /// </summary>
-    [Flags]
-    public enum InvalidationKind
-    {
-        None = 0,
-        Style = 1,      // CSS recalc needed
-        Layout = 2,     // Layout pass needed
-        Paint = 4       // Paint only (no layout change)
-    }
+    // InvalidationKind moved to FenBrowser.Core.Dom
 
     /// <summary>
     /// Represents a single DOM mutation to be applied.
@@ -146,6 +137,13 @@ namespace FenBrowser.FenEngine.DOM
                 try
                 {
                     applyAction?.Invoke(mutation);
+
+                    // --- Final Architecture: Granular Invalidation ---
+                    // Instead of just returning a global flag, we dirty the specific node.
+                    if (mutation.Target is FenBrowser.Core.Dom.Node node)
+                    {
+                        node.MarkDirty(mutation.Invalidation);
+                    }
                 }
                 catch
                 {
