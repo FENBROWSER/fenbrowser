@@ -16,16 +16,18 @@ namespace FenBrowser.FenEngine.Scripting
         internal sealed class JsDocument : IObject
         {
             private readonly JavaScriptEngine _e;
-            private Element _root;
+            // private Element _root; // Use _e.DomRoot instead
             private IObject _prototype = null;
             private JsDomElement _bodyCache = null;
             public object NativeObject { get; set; }
-            public JsDocument(JavaScriptEngine e, Element root) { _e = e; _root = root; }
+            public JsDocument(JavaScriptEngine e, Element root) { _e = e; /* _root = root; */ }
+
+            private Element Root => _e.DomRoot;
 
             public object getElementById(string id)
             {
-                if (string.IsNullOrEmpty(id) || _root == null) return null;
-                foreach (var n in _root.Descendants())
+                if (string.IsNullOrEmpty(id) || Root == null) return null;
+                foreach (var n in Root.Descendants())
                 {
                     if (n.Attr != null)
                     {
@@ -37,9 +39,9 @@ namespace FenBrowser.FenEngine.Scripting
 
             public object[] getElementsByTagName(string tag)
             {
-                if (string.IsNullOrEmpty(tag) || _root == null) return new object[0];
+                if (string.IsNullOrEmpty(tag) || Root == null) return new object[0];
                 var list = new List<object>();
-                foreach (var n in _root.Descendants().OfType<Element>())
+                foreach (var n in Root.Descendants().OfType<Element>())
                     if (!n.IsText && string.Equals(n.Tag, tag, StringComparison.OrdinalIgnoreCase))
                         list.Add(new JsDomElement(_e, n));
                 return list.ToArray();
@@ -47,12 +49,12 @@ namespace FenBrowser.FenEngine.Scripting
 
             public object[] getElementsByClassName(string className)
             {
-                if (string.IsNullOrWhiteSpace(className) || _root == null) return new object[0];
+                if (string.IsNullOrWhiteSpace(className) || Root == null) return new object[0];
                 var targetClasses = className.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
                 if (targetClasses.Length == 0) return new object[0];
 
                 var list = new List<object>();
-                foreach (var n in _root.Descendants().OfType<Element>())
+                foreach (var n in Root.Descendants().OfType<Element>())
                 {
                     if (n.Attr != null && n.Attr.TryGetValue("class", out var cls) && !string.IsNullOrWhiteSpace(cls))
                     {
@@ -81,7 +83,7 @@ namespace FenBrowser.FenEngine.Scripting
 
             public object[] querySelectorAll(string sel)
             {
-                if (string.IsNullOrWhiteSpace(sel) || _root == null) return new object[0];
+                if (string.IsNullOrWhiteSpace(sel) || Root == null) return new object[0];
                 sel = sel.Trim();
                 var list = new List<object>();
                 if (sel.StartsWith("#"))
@@ -93,7 +95,7 @@ namespace FenBrowser.FenEngine.Scripting
                 else if (sel.StartsWith("."))
                 {
                     var cls = sel.Substring(1);
-                    foreach (var n in _root.Descendants().OfType<Element>())
+                    foreach (var n in Root.Descendants().OfType<Element>())
                     {
                         string v;
                         if (n.Attr != null && n.Attr.TryGetValue("class", out v) && !string.IsNullOrWhiteSpace(v))
@@ -109,7 +111,7 @@ namespace FenBrowser.FenEngine.Scripting
                     if (sel.Contains(" "))
                     {
                         var parts = sel.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                        var current = new List<Element> { _root };
+                        var current = new List<Element> { Root };
                         foreach (var p in parts)
                         {
                             var next = new List<Element>();
@@ -122,7 +124,7 @@ namespace FenBrowser.FenEngine.Scripting
                     }
                     else
                     {
-                        foreach (var n in _root.Descendants().OfType<Element>()) if (MatchesSimpleSelector(n, sel)) list.Add(new JsDomElement(_e, n));
+                        foreach (var n in Root.Descendants().OfType<Element>()) if (MatchesSimpleSelector(n, sel)) list.Add(new JsDomElement(_e, n));
                     }
                 }
                 return list.ToArray();
@@ -215,8 +217,8 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 get
                 {
-                    foreach (var n in _root.Children.OfType<Element>()) if (n.Tag == "body") return new JsDomElement(_e, n);
-                    return new JsDomElement(_e, _root);
+                    foreach (var n in Root.Children.OfType<Element>()) if (n.Tag == "body") return new JsDomElement(_e, n);
+                    return new JsDomElement(_e, Root);
                 }
             }
 
@@ -275,11 +277,11 @@ namespace FenBrowser.FenEngine.Scripting
                     case "body":
                         if (_bodyCache == null)
                         {
-                            foreach (var n in _root.Children.OfType<Element>())
+                            foreach (var n in Root.Children.OfType<Element>())
                             {
                                 if (n.Tag == "body") { _bodyCache = new JsDomElement(_e, n); break; }
                             }
-                            if (_bodyCache == null) _bodyCache = new JsDomElement(_e, _root);
+                            if (_bodyCache == null) _bodyCache = new JsDomElement(_e, Root);
                         }
                         return FenValue.FromObject(_bodyCache);
                     case "getElementById": return FenValue.FromFunction(new FenFunction("getElementById", (args, _) => {
