@@ -57,6 +57,21 @@ namespace FenBrowser.FenEngine.Rendering
         public event Func<string, JsPermissions, Task<bool>> PermissionRequested; // Permission API event
         public bool EnableJavaScript { get; set; } = true;
 
+
+        private FenBrowser.FenEngine.Core.Interfaces.IHistoryBridge _historyBridge;
+
+        public void InitHistory(FenBrowser.FenEngine.Core.Interfaces.IHistoryBridge bridge)
+        {
+            _historyBridge = bridge;
+            if (_activeJs != null) _activeJs.SetHistoryBridge(bridge);
+        }
+
+        public void NotifyPopState(object state)
+        {
+             _activeJs?.NotifyPopState(state);
+        }
+
+
         public void HighlightElement(Element element)
         {
             if (element == null)
@@ -1029,6 +1044,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 _activeJs = SetupJavaScriptEngine(baseUri, onNavigate, allowJs, fetchExternalCssAsync);
+                if (_activeJs != null && _historyBridge != null) _activeJs.SetHistoryBridge(_historyBridge);
                 FenLogger.Debug($"[PERF] JS Setup: {_pageLoadStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
 
                 var cssFetcher = fetchExternalCssAsync ?? (async _ => { await Task.CompletedTask; return string.Empty; });

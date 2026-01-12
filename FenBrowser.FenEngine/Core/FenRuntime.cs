@@ -28,17 +28,20 @@ namespace FenBrowser.FenEngine.Core
         private readonly IExecutionContext _context;
         private readonly IStorageBackend _storageBackend;
         private readonly IDomBridge _domBridge; // Bridge to Engine's DOM
+        private IHistoryBridge _historyBridge;
+
         private readonly Dictionary<int, CancellationTokenSource> _activeTimers = new Dictionary<int, CancellationTokenSource>();
         private int _timerIdCounter = 1;
         private readonly object _timerLock = new object();
         private static readonly Random _mathRandom = new Random(); // Cached Random for Math.random()
 
-        public FenRuntime(IExecutionContext context = null, IStorageBackend storageBackend = null, IDomBridge domBridge = null)
+        public FenRuntime(IExecutionContext context = null, IStorageBackend storageBackend = null, IDomBridge domBridge = null, IHistoryBridge historyBridge = null)
         {
             /* [PERF-REMOVED] */
             _context = context ?? new ExecutionContext();
             _storageBackend = storageBackend ?? new InMemoryStorageBackend();
             _domBridge = domBridge;
+            _historyBridge = historyBridge;
 
             /* [PERF-REMOVED] */
             _globalEnv = new FenEnvironment();
@@ -57,6 +60,41 @@ namespace FenBrowser.FenEngine.Core
         {
             get => _context.RequestRender;
             set => _context.SetRequestRender(value);
+        }
+
+        public void SetHistoryBridge(IHistoryBridge bridge) => _historyBridge = bridge;
+
+        public void NotifyPopState(object state)
+        {
+            try
+            {
+                FenLogger.Debug($"[FenRuntime] NotifyPopState: {state}", LogCategory.Events);
+                if (_windowEventListeners.ContainsKey("popstate"))
+                {
+                    var eventObj = new FenObject();
+                    eventObj.Set("type", FenValue.FromString("popstate"));
+                    eventObj.Set("state", state != null ? ConvertNativeToFenValue(state) : FenValue.Null);
+                    eventObj.Set("bubbles", FenValue.FromBoolean(false));
+                    eventObj.Set("cancelable", FenValue.FromBoolean(false));
+                    
+                    var args = new IValue[] { FenValue.FromObject(eventObj) };
+                    
+                    // Dispatch to all listeners
+                    // Copy list to avoid concurrent modification issues
+                    var listeners = _windowEventListeners["popstate"].ToList();
+                    foreach (var callback in listeners)
+                    {
+                        if (callback.IsFunction) 
+                            ExecuteFunction(callback.AsFunction() as FenFunction, args);
+                    }
+                }
+                
+                // TODO: Also support 'onpopstate' property on window/body
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Error($"[FenRuntime] NotifyPopState error: {ex.Message}", LogCategory.JavaScript);
+            }
         }
 
         public IExecutionContext Context => _context;
@@ -529,6 +567,87 @@ namespace FenBrowser.FenEngine.Core
             location.Set("pathname", FenValue.FromString("/"));
             SetGlobal("location", FenValue.FromObject(location));
 
+            // history object
+            var history = new FenObject();
+            history.Set("length", FenValue.FromNumber(_historyBridge?.Length ?? 1));
+            history.Set("state", FenValue.Null); // Initial state
+            
+            // Getters for state and length that query the bridge dynamicall if possible?
+            // Since we can't easily do getters on FenObject yet (unless we use DefineProperty which isn't fully exposed via Set),
+            // we'll rely on methods updates or proxied access. 
+            // Ideally FenObject should support property descriptors.
+            // For now, simple methods are key.
+            
+            history.Set("pushState", FenValue.FromFunction(new FenFunction("pushState", (args, thisVal) =>
+            {
+                if (args.Length >= 2)
+                {
+                    var state = args[0].AsObject(); // Or generic value? History supports any serializable.
+                    // For now assuming object or primitive.
+                    object stateObj = null;
+                    if (args[0].IsObject) stateObj = args[0].AsObject(); // Simplified
+                    else if (args[0].IsString) stateObj = args[0].ToString();
+                    else if (args[0].IsNumber) stateObj = args[0].ToNumber();
+                    else if (args[0].IsBoolean) stateObj = args[0].ToBoolean();
+                    
+                    var title = args[1].ToString();
+                    var url = args.Length > 2 ? args[2].ToString() : null;
+                    
+                    _historyBridge?.PushState(stateObj, title, url);
+                    
+                    // Update local history object state immediately?
+                    // Ideally bridge syncs back but for now:
+                    history.Set("state", args[0]); 
+                    history.Set("length", FenValue.FromNumber(_historyBridge?.Length ?? 1));
+                }
+                return FenValue.Undefined;
+            })));
+
+            history.Set("replaceState", FenValue.FromFunction(new FenFunction("replaceState", (args, thisVal) =>
+            {
+                if (args.Length >= 2)
+                {
+                    object stateObj = null;
+                    if (args[0].IsObject) stateObj = args[0].AsObject();
+                    else if (args[0].IsString) stateObj = args[0].ToString();
+                    
+                    var title = args[1].ToString();
+                    var url = args.Length > 2 ? args[2].ToString() : null;
+                    
+                    _historyBridge?.ReplaceState(stateObj, title, url);
+                    history.Set("state", args[0]);
+                }
+                return FenValue.Undefined;
+            })));
+
+            history.Set("go", FenValue.FromFunction(new FenFunction("go", (args, thisVal) =>
+            {
+                if (args.Length > 0)
+                {
+                    int delta = (int)args[0].ToNumber();
+                    _historyBridge?.Go(delta);
+                }
+                else
+                {
+                    _historyBridge?.Go(0); // reload
+                }
+                return FenValue.Undefined;
+            })));
+
+            history.Set("back", FenValue.FromFunction(new FenFunction("back", (args, thisVal) =>
+            {
+                _historyBridge?.Go(-1);
+                return FenValue.Undefined;
+            })));
+            
+            history.Set("forward", FenValue.FromFunction(new FenFunction("forward", (args, thisVal) =>
+            {
+                _historyBridge?.Go(1);
+                return FenValue.Undefined;
+            })));
+
+            SetGlobal("history", FenValue.FromObject(history));
+
             // screen object - Privacy-focused (use common resolution to prevent fingerprinting)
             var screen = new FenObject();
             screen.Set("width", FenValue.FromNumber(1920));      // Common resolution
@@ -556,6 +675,7 @@ namespace FenBrowser.FenEngine.Core
             window.Set("screen", FenValue.FromObject(screen));
             window.Set("localStorage", FenValue.FromObject(localStorage));
             window.Set("sessionStorage", FenValue.FromObject(sessionStorage));
+            window.Set("history", FenValue.FromObject(history));
             // Viewport properties - Privacy: use common resolution
             window.Set("innerWidth", FenValue.FromNumber(1920));
             window.Set("innerHeight", FenValue.FromNumber(1080));
@@ -5219,6 +5339,45 @@ namespace FenBrowser.FenEngine.Core
              })));
 
             return FenValue.FromObject(promise);
+        }
+
+        private FenValue ConvertNativeToFenValue(object obj)
+        {
+            if (obj == null) return FenValue.Null;
+            if (obj is bool b) return FenValue.FromBoolean(b);
+            if (obj is string s) return FenValue.FromString(s);
+            if (obj is int i) return FenValue.FromNumber(i);
+            if (obj is double d) return FenValue.FromNumber(d);
+            if (obj is float f) return FenValue.FromNumber(f);
+            if (obj is long l) return FenValue.FromNumber(l);
+            if (obj is IObject io) return FenValue.FromObject(io);
+
+            // Handle Dictionary as JS Object
+            if (obj is System.Collections.IDictionary dict)
+            {
+                var fenObj = new FenObject();
+                foreach (System.Collections.DictionaryEntry entry in dict)
+                {
+                    fenObj.Set(entry.Key.ToString(), ConvertNativeToFenValue(entry.Value));
+                }
+                return FenValue.FromObject(fenObj);
+            }
+
+            // Handle List/Array as JS Array (Object with length)
+            if (obj is System.Collections.IEnumerable list)
+            {
+                var fenObj = new FenObject();
+                int index = 0;
+                foreach (var item in list)
+                {
+                    fenObj.Set(index.ToString(), ConvertNativeToFenValue(item));
+                    index++;
+                }
+                fenObj.Set("length", FenValue.FromNumber(index));
+                return FenValue.FromObject(fenObj);
+            }
+
+            return FenValue.Null;
         }
 
         #endregion
