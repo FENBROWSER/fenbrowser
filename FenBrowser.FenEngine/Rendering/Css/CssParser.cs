@@ -20,6 +20,88 @@ namespace FenBrowser.FenEngine.Rendering
         public static double? MediaDppx { get; set; }
         public static string MediaPrefersColorScheme { get; set; }
 
+        /// <summary>
+        /// Evaluates a media query condition string against the current viewport state.
+        /// Supports basic conditions: screen, all, min-width, max-width, and.
+        /// </summary>
+        public static bool EvaluateMediaQuery(string condition)
+        {
+            if (string.IsNullOrWhiteSpace(condition)) return true; // Empty condition implies 'all'
+
+            condition = condition.ToLowerInvariant().Trim();
+
+            // Handle "only" prefix (ignore it)
+            if (condition.StartsWith("only ")) condition = condition.Substring(5).Trim();
+
+            // Handle media types
+            if (condition.StartsWith("print")) return false; // We are screen
+            if (condition.StartsWith("screen")) 
+            {
+                // Strip 'screen' and optional 'and'
+                condition = condition.Substring(6).Trim();
+                if (condition.StartsWith("and")) condition = condition.Substring(3).Trim();
+                else if (condition.Length > 0) return true; // Just "screen"
+            }
+            else if (condition.StartsWith("all"))
+            {
+                 condition = condition.Substring(3).Trim();
+                 if (condition.StartsWith("and")) condition = condition.Substring(3).Trim();
+            }
+
+            if (string.IsNullOrWhiteSpace(condition)) return true;
+
+            // Simple AND parser - specialized split needed to respect parens? 
+            // For now, assume simple "feature and feature"
+            var parts = condition.Split(new[] { " and " }, StringSplitOptions.RemoveEmptyEntries);
+            
+            foreach (var part in parts)
+            {
+                if (!EvaluateMediaFeature(part.Trim())) return false;
+            }
+
+            return true;
+        }
+
+        private static bool EvaluateMediaFeature(string feature)
+        {
+            feature = feature.Trim();
+            if (feature.StartsWith("(") && feature.EndsWith(")"))
+                feature = feature.Substring(1, feature.Length - 2).Trim();
+
+            int colon = feature.IndexOf(':');
+            if (colon < 0) return true; // Valid feature without value?
+
+            string name = feature.Substring(0, colon).Trim();
+            string val = feature.Substring(colon + 1).Trim();
+
+            double pxVal = 0;
+            if (val.EndsWith("px")) double.TryParse(val.TrimEnd('p', 'x'), NumberStyles.Float, CultureInfo.InvariantCulture, out pxVal);
+            // Handle em/rem broadly if needed, for now assumepx
+            
+            if (name == "min-width")
+            {
+                if (MediaViewportWidth.HasValue) return MediaViewportWidth.Value >= pxVal;
+                return true; // Default to true if unknown? Or false? Let's say true to be safe
+            }
+            if (name == "max-width")
+            {
+                if (MediaViewportWidth.HasValue) return MediaViewportWidth.Value <= pxVal;
+                return true;
+            }
+             if (name == "min-height")
+            {
+                if (MediaViewportHeight.HasValue) return MediaViewportHeight.Value >= pxVal;
+                return true; 
+            }
+            if (name == "max-height")
+            {
+                 if (MediaViewportHeight.HasValue) return MediaViewportHeight.Value <= pxVal;
+                 return true;
+            }
+
+            return true; // Unknown feature, assume match
+        }
+
         private static readonly Dictionary<string, SKColor> _namedColors 
             = new Dictionary<string, SKColor>(StringComparer.OrdinalIgnoreCase);
 

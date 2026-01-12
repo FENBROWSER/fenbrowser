@@ -1342,8 +1342,8 @@ namespace FenBrowser.FenEngine.Rendering
             
              try { if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_full_css.txt", "\n--- NEW CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch {}
 
-            // Flatten basic media (Regex-based) - Keeping this for now as simplified media handling
-            text = FlattenBasicMedia(text, viewportWidth, log);
+            // FlattenBasicMedia REMOVED: Now handled by proper parsing in CssSyntaxParser + Recursive processing below
+            // text = FlattenBasicMedia(text, viewportWidth, log);
             
             // Extract non-standard/unimplemented blocks to avoid parser errors
             text = ExtractKeyframes(text, log);
@@ -1355,22 +1355,41 @@ namespace FenBrowser.FenEngine.Rendering
              try { if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_full_css.txt", "\n--- PROCESSED CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch {}
 
             // New Pipeline: Tokenize -> Parse
-            // New Pipeline: Tokenize -> Parse
             var tokenizer = new CssTokenizer(text);
             var parser = new CssSyntaxParser(tokenizer);
             var sheet = parser.ParseStylesheet();
 
             int ruleIndexInsideSheet = 0;
-            foreach (var rule in sheet.Rules)
+            
+            // Recursive helper to flatten media rules into the main list
+            void ProcessRuleList(IEnumerable<NewCss.CssRule> inputRules)
             {
-                rule.BaseUri = baseForUrls;
-                rule.Origin = origin; 
-                if (rule is NewCss.CssStyleRule styleRule)
+                foreach (var rule in inputRules)
                 {
-                    styleRule.Order = (sourceOrder * 10000) + ruleIndexInsideSheet++;
+                    if (rule is NewCss.CssMediaRule mediaRule)
+                    {
+                        // Evaluate condition
+                        bool matches = CssParser.EvaluateMediaQuery(mediaRule.Condition);
+                        if (matches)
+                        {
+                            // Flatten inner rules into the main stream
+                            ProcessRuleList(mediaRule.Rules);
+                        }
+                    }
+                    else
+                    {
+                        rule.BaseUri = baseForUrls;
+                        rule.Origin = origin; 
+                        if (rule is NewCss.CssStyleRule styleRule)
+                        {
+                            styleRule.Order = (sourceOrder * 10000) + ruleIndexInsideSheet++;
+                        }
+                        rules.Add(rule);
+                    }
                 }
-                rules.Add(rule);
             }
+            
+            ProcessRuleList(sheet.Rules);
             
             try { if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CssLoader] Parsed {rules.Count} rules from block of length {text.Length}\r\n"); } catch {}
 

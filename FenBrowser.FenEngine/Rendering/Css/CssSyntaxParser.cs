@@ -60,16 +60,49 @@ namespace FenBrowser.FenEngine.Rendering.Css
             if (name.Equals("media", StringComparison.OrdinalIgnoreCase))
             {
                 var mediaRule = new CssMediaRule();
-                // Parse condition... TODO
+                
+                // 1. Consume condition (up to the opening brace)
+                var conditionTokens = new List<CssToken>();
                 while (_currentToken.Type != CssTokenType.LeftBrace && _currentToken.Type != CssTokenType.Semicolon && _currentToken.Type != CssTokenType.EOF)
                 {
+                    conditionTokens.Add(_currentToken);
                     ConsumeToken();
                 }
+                
+                // Flatten tokens to string for the condition
+                mediaRule.Condition = string.Join("", conditionTokens.Select(t => t.ToStringValue())).Trim();
 
+                // 2. Consume block content
                 if (_currentToken.Type == CssTokenType.LeftBrace)
                 {
-                    ConsumeSimpleBlock(); // This consumes the brace and content
-                    // TODO: Recurse parse rules inside block
+                    ConsumeToken(); // {
+                    
+                    // Recursively parse rules inside the block
+                    // We can reuse the loop logic from ParseStylesheet but stopping at RightBrace
+                    while (_currentToken.Type != CssTokenType.RightBrace && _currentToken.Type != CssTokenType.EOF)
+                    {
+                         if (_currentToken.Type == CssTokenType.Whitespace || _currentToken.Type == CssTokenType.Comment)
+                        {
+                            ConsumeToken();
+                            continue;
+                        }
+
+                        if (_currentToken.Type == CssTokenType.AtKeyword)
+                        {
+                            var subRule = ConsumeAtRule();
+                            if (subRule != null) mediaRule.Rules.Add(subRule);
+                        }
+                        else
+                        {
+                            var subRule = ConsumeQualifiedRule();
+                            if (subRule != null) mediaRule.Rules.Add(subRule);
+                        }
+                    }
+                    
+                    if (_currentToken.Type == CssTokenType.RightBrace)
+                    {
+                        ConsumeToken(); // }
+                    }
                 }
                 return mediaRule;
             }
