@@ -1,8 +1,10 @@
-using System;
+﻿using System;
+using System.Runtime.CompilerServices;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using FenBrowser.Core;
+using FenBrowser.FenEngine.Layout.Coordinates;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom;
 using FenBrowser.Core.Logging;
@@ -19,7 +21,7 @@ namespace FenBrowser.FenEngine.Layout
     /// REVISED: Added User Agent (UA) Default Styles to fix missing margins/padding.
     ///          Improved Heuristics for "Example Domain" centering.
     /// </summary>
-    public class MinimalLayoutComputer : ILayoutComputer
+    public partial class MinimalLayoutComputer : ILayoutComputer
     {
         private const float DefaultFontSize = 16f;
         private readonly ConcurrentDictionary<Node, BoxModel> _boxes = new ConcurrentDictionary<Node, BoxModel>();
@@ -35,10 +37,19 @@ namespace FenBrowser.FenEngine.Layout
         // Cache for inline layout results
         private readonly Dictionary<Element, InlineLayoutResult> _inlineCache = new Dictionary<Element, InlineLayoutResult>();
         
+        // Cache for table states
+        private readonly ConditionalWeakTable<Element, TableLayoutComputer.TableGridState> _tableStates = new ConditionalWeakTable<Element, TableLayoutComputer.TableGridState>();
+        
         // Track ancestors during Arrange for absolute positioning CB resolution
         private readonly Dictionary<Node, SKRect> _ancestorRects = new Dictionary<Node, SKRect>();
         private readonly Dictionary<Node, (float Top, float Bottom)> _effectiveMargins = new Dictionary<Node, (float Top, float Bottom)>();
+        
+        // Stack of active Float Exclusions for each Block Formatting Context (BFC)
+        // Root is pushed in constructor.
+        private readonly Stack<List<FloatExclusion>> _activeBfcFloats = new Stack<List<FloatExclusion>>();
+        
         private readonly string _baseUri;
+        private int _zeroSizedCount = 0;
 
         public MinimalLayoutComputer(IReadOnlyDictionary<Node, CssComputed> styles, float viewportWidth, float viewportHeight, string baseUri = null)
         {
@@ -46,6 +57,9 @@ namespace FenBrowser.FenEngine.Layout
             _viewportWidth = viewportWidth > 0 ? viewportWidth : 1920;
             _viewportHeight = viewportHeight > 0 ? viewportHeight : 1080;
             _baseUri = baseUri;
+            
+            // Push Root BFC
+            _activeBfcFloats.Push(new List<FloatExclusion>());
         }
 
         // Get computed style for a node - UA defaults now handled by ua.css
@@ -83,6 +97,19 @@ namespace FenBrowser.FenEngine.Layout
             if (node is Element elem)
             {
                 string tag = elem.TagName.ToUpperInvariant();
+                
+                // Handle children of closed <details> - hide non-summary elements
+                if (elem.Parent is Element parentEl && parentEl.TagName?.ToUpperInvariant() == "DETAILS")
+                {
+                    bool isOpen = parentEl.HasAttribute("open");
+                    bool isSummary = tag == "SUMMARY";
+                    
+                    // If details is closed and this is not the summary, hide it
+                    if (!isOpen && !isSummary && style.Display != "none")
+                    {
+                        style.Display = "none";
+                    }
+                }
                 
                 // BODY defaults
                 if (tag == "BODY")
@@ -136,6 +163,31 @@ namespace FenBrowser.FenEngine.Layout
                 {
                     if (style.Display == null) style.Display = "inline-block";
                 }
+                // Ruby annotation elements
+                else if (tag == "RUBY")
+                {
+                    if (style.Display == null) style.Display = "ruby";
+                }
+                else if (tag == "RT")
+                {
+                    if (style.Display == null) style.Display = "ruby-text";
+                    if (style.FontSize == null || style.FontSize < 1) 
+                    {
+                        // RT text is typically 50% of base font size
+                        var parentStyle = GetStyle(elem.ParentElement);
+                        double parentFontSize = parentStyle?.FontSize ?? 16.0;
+                        style.FontSize = parentFontSize * 0.5;
+                    }
+                }
+                else if (tag == "RP")
+                {
+                    // RP (ruby parenthesis) should be hidden in supporting browsers
+                    if (style.Display == null) style.Display = "none";
+                }
+                else if (tag == "RB")
+                {
+                    if (style.Display == null) style.Display = "ruby-base";
+                }
                 // Inline elements
                 else if (tag == "SPAN" || tag == "A" || tag == "B" || tag == "I" || tag == "STRONG" || tag == "EM" || tag == "BR")
                 {
@@ -147,7 +199,7 @@ namespace FenBrowser.FenEngine.Layout
                     if (style.Display == null) style.Display = "inline";
                 }
                 // Metadata elements - Force hide if not specified
-                else if (tag == "HEAD" || tag == "STYLE" || tag == "SCRIPT" || tag == "TITLE" || tag == "META" || tag == "LINK" || tag == "BASE")
+                else if (tag == "HEAD" || tag == "STYLE" || tag == "SCRIPT" || tag == "TITLE" || tag == "META" || tag == "LINK" || tag == "BASE" || tag == "TEMPLATE" || tag == "NOSCRIPT")
                 {
                     if (style.Display == null) style.Display = "none";
                 }
@@ -155,10 +207,59 @@ namespace FenBrowser.FenEngine.Layout
                 else if (style.Display == null)
                 {
                     if (tag == "DIV" || tag == "SECTION" || tag == "ARTICLE" || tag == "HEADER" || tag == "FOOTER" || tag == "NAV" || tag == "MAIN" ||
-                        tag == "UL" || tag == "OL" || tag == "LI" || tag == "DL" || tag == "DT" || tag == "DD" ||
-                        tag == "FORM" || tag == "FIELDSET" || tag == "TABLE" || tag == "BLOCKQUOTE" || tag == "PRE" || tag == "FIGURE" || tag == "ADDRESS" || tag == "HR")
+                        tag == "DL" || tag == "DT" || tag == "DD" ||
+                        tag == "FORM" || tag == "FIELDSET" || tag == "TABLE" || tag == "BLOCKQUOTE" || tag == "PRE" || tag == "FIGURE" || tag == "ADDRESS" || tag == "HR" ||
+                        tag == "DETAILS" || tag == "FIGCAPTION" || tag == "DIALOG")
                     {
                         style.Display = "block";
+                    }
+                    else if (tag == "UL")
+                    {
+                        style.Display = "block";
+                        if (style.ListStyleType == null) style.ListStyleType = "disc";
+                        if (style.Padding.Left == 0) style.Padding = new Thickness(40, 0, 0, 0);
+                    }
+                    else if (tag == "OL")
+                    {
+                        style.Display = "block";
+                        if (style.ListStyleType == null) style.ListStyleType = "decimal";
+                        if (style.Padding.Left == 0) style.Padding = new Thickness(40, 0, 0, 0);
+                    }
+                    else if (tag == "LI")
+                    {
+                        style.Display = "list-item";
+                        // Inherit list-style-type from parent
+                        if (style.ListStyleType == null && elem.Parent is Element parentList)
+                        {
+                            string parentTag = parentList.TagName?.ToUpperInvariant();
+                            if (parentTag == "OL") style.ListStyleType = "decimal";
+                            else if (parentTag == "UL") style.ListStyleType = "disc";
+                        }
+                    }
+                    else if (tag == "SUMMARY")
+                    {
+                        // Summary is display: list-item with disclosure marker
+                        style.Display = "list-item";
+                        if (style.ListStyleType == null) style.ListStyleType = "disclosure-closed";
+                    }
+                    else if (tag == "MARK")
+                    {
+                        // Mark is inline with yellow background
+                        style.Display = "inline";
+                        if (style.BackgroundColor == null) style.BackgroundColor = new SkiaSharp.SKColor(255, 255, 0); // Yellow
+                    }
+                    else if (tag == "PROGRESS" || tag == "METER" || tag == "OUTPUT")
+                    {
+                        style.Display = "inline-block";
+                    }
+                    else if (tag == "CAPTION")
+                    {
+                        style.Display = "table-caption";
+                    }
+                    else if (tag == "WBR")
+                    {
+                        // WBR is a word break opportunity - treated as inline with zero width
+                        style.Display = "inline";
                     }
                 }
             }
@@ -203,13 +304,11 @@ namespace FenBrowser.FenEngine.Layout
         public LayoutMetrics Measure(Node node, SKSize availableSize)
         {
             if (node == null) return new LayoutMetrics();
-            FenLogger.Debug($"[MinimalLayoutComputer] Measure node={node.Tag ?? "#text"} available={availableSize}", LogCategory.Rendering);
             
             _traversedCount = 0;
             _textLines.Clear(); 
             _inlineCache.Clear(); 
-            var m = MeasureNode(node, availableSize, 1);
-            return m; 
+            return MeasureNode(node, availableSize, 0); 
         }
 
         public void Arrange(Node node, SKRect finalRect)
@@ -217,39 +316,53 @@ namespace FenBrowser.FenEngine.Layout
             if (node == null) return;
             FenLogger.Debug($"[MinimalLayoutComputer] Arrange node={node.Tag ?? "#text"} rect={finalRect}", LogCategory.Rendering);
             
-            FenLogger.Debug($"[MinimalLayoutComputer] Arrange node={node.Tag ?? "#text"} rect={finalRect}", LogCategory.Rendering);
-            
             _traversedCount = 0;
             _ancestorRects.Clear();
-            ArrangeNode(node, finalRect, 1);
+            ArrangeNode(node, finalRect, 0); // Start at 0
         }
 
-        private LayoutMetrics MeasureNode(Node node, SKSize availableSize, int depth)
+        private LayoutMetrics MeasureNode(Node node, SKSize availableSize, int depth, bool shrinkToFit = false)
         {
-            if (node == null) return new LayoutMetrics();
-            if (depth > 100) return new LayoutMetrics();
+            try
+            {
+                if (node == null) return new LayoutMetrics();
+                if (depth > 80) return new LayoutMetrics();
 
             var style = GetStyle(node);
             bool isHidden = ShouldHide(node, style);
-            
-            // DIAGNOSTIC: Trace tree traversal
-            if (depth < 10 && node is Element el)
-            {
-                 string tags = el.TagName;
-                 string cls = el.GetAttribute("class") ?? "";
-                 string ids = el.GetAttribute("id") ?? "";
-                 string indent = new string(' ', depth * 2);
-                 string hiddenStr = isHidden ? "[HIDDEN]" : "[VISIBLE]";
-                 /* [PERF-REMOVED] */
-            }
-
             if (isHidden) return new LayoutMetrics();
+
+            // (V6: Removed V5 logging block)
 
             float w = 0, h = 0;
             string tag = (node as Element)?.TagName?.ToUpperInvariant() ?? (node.IsText ? "#text" : "");
             
             bool isExplicitWidth = false;
             bool isExplicitHeight = false;
+            
+            // ========== ENGINE-LEVEL ICB INVARIANT ==========
+            // The Initial Containing Block (ICB) is the viewport.
+            // Root elements (HTML at depth 0) MUST resolve against viewport dimensions.
+            // This is NOT optional - the layout engine enforces this.
+            // ================================================
+            bool isRootElement = (depth == 0 && tag == "HTML");
+            bool isBodyElement = (depth == 1 && tag == "BODY");
+            
+            // Diagnostic: Log root element detection
+            if (depth <= 1)
+            {
+                FenLogger.Log($"[ICB-DIAG] depth={depth} tag={tag} isRoot={isRootElement} viewport={_viewportHeight}", LogCategory.Layout);
+            }
+            
+            // For root elements, ensure availableSize always includes viewport height
+            if (isRootElement)
+            {
+                FenLogger.Log($"[ICB] Root element detected. Forcing availableSize to viewport: {_viewportWidth}x{_viewportHeight}", LogCategory.Layout);
+                availableSize = new SKSize(
+                    availableSize.Width > 0 ? availableSize.Width : _viewportWidth,
+                    _viewportHeight // Root ALWAYS gets viewport height as its available height
+                );
+            }
 
             if (style != null)
             {
@@ -274,11 +387,123 @@ namespace FenBrowser.FenEngine.Layout
                     h = (float)style.Height.Value; 
                     isExplicitHeight = true; 
                 }
+                else if (!string.IsNullOrEmpty(style.HeightExpression))
+                {
+                    // Height expression (e.g., calc(), vh, vmin, etc.)
+                    h = LayoutHelper.EvaluateCssExpression(style.HeightExpression, availableSize.Height, _viewportWidth, _viewportHeight);
+                    isExplicitHeight = true;
+                }
+                else if (style.HeightPercent.HasValue)
+                {
+                    // FIX: Process Height Percentage
+                    // ROOT ELEMENT SPECIAL CASE: For <html> and <body>, resolve against viewport
+                    float parentHeight = availableSize.Height;
+                    
+                    // Root elements (html/body) with height: 100% should ALWAYS get viewport height
+                    if ((isRootElement || isBodyElement) && (float.IsInfinity(parentHeight) || parentHeight <= 0))
+                    {
+                        parentHeight = _viewportHeight;
+                    }
+                    
+                    if (!float.IsInfinity(parentHeight) && parentHeight > 0)
+                    {
+                        h = (float)style.HeightPercent.Value / 100f * parentHeight;
+                        isExplicitHeight = true;
+                    }
+                }
+                // CRITICAL ICB RULE: Root element (HTML) height = viewport when auto
+                // This is NOT optional. This is the Initial Containing Block invariant.
+                // Without this, percentage heights on children (body, main content) fail.
+                else if (isRootElement)
+                {
+                    // html.height is auto -> html.height = ICB.height (viewport)
+                    h = _viewportHeight;
+                    isExplicitHeight = true;
+                    FenLogger.Log($"[ICB] HTML height auto -> forced to viewport: {_viewportHeight}px", LogCategory.Layout);
+                }
+            }
+
+            // Min/Max Constraints
+            float minW = 0, maxW = float.PositiveInfinity;
+            float minH = 0, maxH = float.PositiveInfinity;
+            
+            if (style != null)
+            {
+                // FIX: Evaluate ALL min/max expressions (width and height)
+                // MinWidth
+                if (style.MinWidth.HasValue) minW = (float)style.MinWidth.Value;
+                else if (style.MinWidthExpression != null) 
+                    minW = LayoutHelper.EvaluateCssExpression(style.MinWidthExpression, availableSize.Width, _viewportWidth, _viewportHeight);
+                
+                // MaxWidth
+                if (style.MaxWidth.HasValue) maxW = (float)style.MaxWidth.Value;
+                else if (style.MaxWidthExpression != null) 
+                    maxW = LayoutHelper.EvaluateCssExpression(style.MaxWidthExpression, availableSize.Width, _viewportWidth, _viewportHeight);
+
+                // MinHeight - CRITICAL FIX: Was missing expression evaluation
+                // This fixes body { min-height: 100% } not working
+                if (style.MinHeight.HasValue) minH = (float)style.MinHeight.Value;
+                else if (style.MinHeightExpression != null)
+                {
+                    // For percentage min-height, resolve against parent's height (availableSize.Height)
+                    // If availableSize.Height is infinite, use viewport height as fallback
+                    float resolveAgainst = float.IsInfinity(availableSize.Height) ? _viewportHeight : availableSize.Height;
+                    minH = LayoutHelper.EvaluateCssExpression(style.MinHeightExpression, resolveAgainst, _viewportWidth, _viewportHeight);
+                }
+                
+                // CRITICAL: Root element (HTML) must be at least viewport height
+                // This is the ICB invariant - never allow root height to default to content-only
+                if (isRootElement && minH < _viewportHeight)
+                {
+                    minH = _viewportHeight;
+                }
+                
+                // MaxHeight - CRITICAL FIX: Was missing expression evaluation
+                if (style.MaxHeight.HasValue) maxH = (float)style.MaxHeight.Value;
+                else if (style.MaxHeightExpression != null)
+                {
+                    float resolveAgainst = float.IsInfinity(availableSize.Height) ? _viewportHeight : availableSize.Height;
+                    maxH = LayoutHelper.EvaluateCssExpression(style.MaxHeightExpression, resolveAgainst, _viewportWidth, _viewportHeight);
+                }
+                
+                // Clamp explicit (or implicit) width/height to constraints immediately
+                // Note: If w is 0 (auto), we apply constraints later after measurement, 
+                // BUT for childConstraint calculation, determining 'w' now helps.
+                if (isExplicitWidth)
+                {
+                    w = Math.Max(minW, Math.Min(w, maxW));
+                }
+                
+                if (isExplicitHeight)
+                {
+                    h = Math.Max(minH, Math.Min(h, maxH));
+                }
             }
 
             SKSize childConstraint = availableSize;
+            // Only cap to viewport if we are measuring (intrinsic sizing) with infinite constraint
             if (float.IsInfinity(childConstraint.Width) || childConstraint.Width > 1e6f)
                 childConstraint.Width = _viewportWidth > 0 ? _viewportWidth : 800;
+
+            // CRITICAL FIX: If THIS element has an explicit height (e.g. html { height: 100% }),
+            // pass that resolved height to children so they can resolve THEIR percentage heights.
+            // This establishes the CSS height chain: viewport → html → body → content
+            if (isExplicitHeight && h > 0)
+            {
+                // Use the resolved height (after min/max constraints) for children
+                float childAvailableHeight = h;
+                
+                // Subtract padding/border to get content box height for children
+                if (style != null)
+                {
+                    var p = style.Padding;
+                    var b = style.BorderThickness;
+                    childAvailableHeight -= (float)(p.Top + p.Bottom + b.Top + b.Bottom);
+                    if (childAvailableHeight < 0) childAvailableHeight = 0;
+                }
+                
+                childConstraint = new SKSize(childConstraint.Width, childAvailableHeight);
+            }
 
             if (w > 0) 
             {
@@ -291,40 +516,63 @@ namespace FenBrowser.FenEngine.Layout
                    if (style.BoxSizing == "border-box")
                         contentW -= (float)(p.Left + p.Right + b.Left + b.Right);
                 }
-                childConstraint = new SKSize(Math.Max(0, contentW), availableSize.Height);
+                childConstraint = new SKSize(Math.Max(0, contentW), childConstraint.Height);
             }
+
 
             LayoutMetrics m;
             
-            bool shouldFillViewport = (tag == "HTML" || tag == "BODY" || depth == 1);
+            // REMOVED: shouldFillViewport hack. Root elements should respect CSS.
+            bool shouldFillViewport = false;
             string id = (node as Element)?.GetAttribute("id")?.ToLowerInvariant();
-            if (tag == "IMG") {
+            if (tag == "IMG" || tag == "SVG" || tag.EndsWith(":SVG")) {
                    var s = GetStyle(node as Element);
                    var p = node.Parent as Element;
-                   FenLogger.Debug($"[IMG-TRACE] id={id} Opacity={s?.Opacity} Vis={s?.Visibility} Parent={p?.TagName} ParentClass={p?.GetAttribute("class")}");
+                   FenLogger.Debug($"[IMG-TRACE] Tag={tag} id={id} Opacity={s?.Opacity} Vis={s?.Visibility} Parent={p?.TagName} ParentClass={p?.GetAttribute("class")}");
                 }
-            bool isNewTab = (tag == "BODY" && id == "fen-newtab");
-
+            // REMOVED: isNewTab hack - flexbox now works generically
             string display = style?.Display?.ToLowerInvariant();
-            if (isNewTab) display = "flex";
 
             var elem = node as Element;
             
-
-            
-            if (display == "flex" || display == "inline-flex") 
-                m = MeasureFlexInternal(elem, childConstraint, (display == "flex" && elem.TagName == "BODY"), depth, node); 
-            else if (display == "grid")
-                m = MeasureGrid(elem, childConstraint);
-            else if (tag == "IMG" || tag == "SVG") 
+            if (tag == "IMG" || tag == "SVG" || tag.EndsWith(":SVG")) 
                 m = MeasureImage(elem, childConstraint);
             else if (tag == "INPUT")
-                m = MeasureInput(elem, childConstraint);
-            else if (tag == "TEXTAREA") {
-                m = MeasureInput(elem, childConstraint); 
-            }
+                m = MeasureInput(elem, childConstraint, depth + 1);
+            else if (tag == "TEXTAREA") 
+                m = MeasureInput(elem, childConstraint, depth + 1); 
             else if (tag == "BUTTON")
-                m = MeasureButton(elem, childConstraint, depth);
+                m = MeasureButton(elem, childConstraint, depth + 1);
+            else if (tag == "VIDEO")
+                m = MeasureVideo(elem, childConstraint);
+            else if (tag == "AUDIO")
+                m = MeasureAudio(elem, childConstraint);
+            else if (tag == "IFRAME")
+                m = MeasureIframe(elem, childConstraint);
+            else if (tag == "PROGRESS")
+                m = MeasureProgress(elem, childConstraint);
+            else if (tag == "METER")
+                m = MeasureMeter(elem, childConstraint);
+            else if (display == "flex" || display == "inline-flex") 
+            {
+                m = MeasureFlexInternal(elem, childConstraint, (display == "flex" && elem.TagName == "BODY"), depth + 1, node);
+                
+                // Fix: display:flex (block-level) should default to available width if not explicit, just like display:block
+                if (display == "flex" && !isExplicitWidth && !float.IsInfinity(availableSize.Width))
+                {
+                    m.MaxChildWidth = Math.Max(m.MaxChildWidth, availableSize.Width);
+                }
+            } 
+            else if (display == "grid")
+                m = MeasureGrid(elem, childConstraint, depth + 1);
+            else if (IsMultiColumn(style))
+                m = MeasureMultiColumn(elem, childConstraint, depth + 1);
+            else if (tag == "TABLE")
+            {
+                m = TableLayoutComputer.Measure(elem, childConstraint, _styles, (n, s, d) => MeasureNode(n, s, d), depth + 1, out var tableState);
+                _tableStates.AddOrUpdate(elem, tableState);
+            }
+
             else if (node.IsText) 
             {
                 // DIAGNOSTIC: Trace text nodes containing 'ai'
@@ -341,20 +589,14 @@ namespace FenBrowser.FenEngine.Layout
                 m = MeasureText(node, childConstraint);
             }
             else 
-                m = MeasureBlockInternal(elem, childConstraint, depth, node);
+                m = MeasureBlock(elem, childConstraint, depth + 1);
 
             // DIAGNOSTIC: Log measurement result
             if (depth < 10 && elem != null)
             {
                 string childInfo = "";
                 if (elem.Children != null) childInfo = $"children={elem.Children.Count}";
-                
-                // Only log for interesting elements to reduce noise
-                string cls = elem.GetAttribute("class") ?? "";
-                if (tag == "A" || tag == "IMG" || tag == "BUTTON" || tag == "INPUT" || cls.Contains("gb"))
-                {
-                     /* [PERF-REMOVED] */
-                }
+                // (V5: Removed logging block moved to start)
             }
 
             if (w <= 0 && !isExplicitWidth) w = m.MaxChildWidth;
@@ -400,7 +642,10 @@ namespace FenBrowser.FenEngine.Layout
                 }
                 else
                 {
-                    h += m.MarginTop;
+                    // FIX: MeasureBlockInternal already includes the top margin in ContentHeight
+                    // if PreventParentCollapse is true (which corresponds to pt > 0 || bt_top > 0).
+                    // So we do NOT add it to 'h' again.
+                    // h += m.MarginTop; 
                 }
 
                 if (pb == 0 && bb == 0 && !isExplicitHeight)
@@ -432,44 +677,128 @@ namespace FenBrowser.FenEngine.Layout
 
             if (shouldFillViewport)
             {
-                if (h < availableSize.Height && !float.IsInfinity(availableSize.Height)) h = availableSize.Height;
-                if (w < availableSize.Width && !float.IsInfinity(availableSize.Width)) w = availableSize.Width;
+               // Removed forced expansion
             }
-            // ... (rest of blocking logic)
             else
             {
                 bool isBlock = (display == "block" || display == null); 
                 bool isFloat = style?.Float?.ToLowerInvariant() == "left";
                 
-                if (!isExplicitWidth && isBlock && !node.IsText && tag != "IMG" && !isFloat) 
+                if (!isExplicitWidth && isBlock && !node.IsText && tag != "IMG" && !isFloat && 
+                    tag != "BUTTON" && tag != "INPUT" && tag != "TEXTAREA" && tag != "SELECT" && tag != "LABEL") 
                 {
-                     float usedWidth = childConstraint.Width - (ml + mr);
-                     if (style != null && style.BoxSizing != "border-box")
+                     // CRITICAL FIX for Flex Center Alignment:
+                     // If shrinkToFit is true, we skip this eager block expansion.
+                     // This allows blocks in column flex containers (with align-items:center) 
+                     // to report their content size instead of stretching to container width.
+                     if (!shrinkToFit)
                      {
+                         // Use availableSize, not childConstraint (which already has padding subtracted)
+                         float usedWidth = availableSize.Width - (ml + mr);
+                         if (style != null && style.BoxSizing != "border-box")
+                         {
                          // FIX: Subtract Horizontal Padding/Border (Left+Right)
                          float paddingH = (float)(style.Padding.Left + style.Padding.Right);
                          float borderH = (float)(style.BorderThickness.Left + style.BorderThickness.Right);
                          usedWidth -= (paddingH + borderH);
                      }
 
-                     w = Math.Max(0, usedWidth);
+                     w = float.IsInfinity(usedWidth) ? m.MaxChildWidth : Math.Max(0, usedWidth);
+                     }
                 }
                 else if (w <= 0 && !node.IsText) 
                 {
                      bool isInlineBlock = (display == "inline-block" || display == "inline");
                      if (!isFloat && !isInlineBlock) {
-                         float usedWidth = childConstraint.Width - (ml + mr);
+                         // Use availableSize, not childConstraint (which already has padding subtracted)
+                         float usedWidth = availableSize.Width - (ml + mr);
+                         
+                         // DEBUG: Trace width calc for specific elements
+                         bool isDebugTarget = false;
+                         string dbgTag = node is Element el ? el.TagName : "NODE";
+                         string dbgClass = node is Element el2 ? el2.GetAttribute("class") : "";
+                         string dbgStyle = node is Element el3 ? el3.GetAttribute("style") : "";
+                         
+                         if (dbgClass != null && dbgClass.Contains("test-case")) isDebugTarget = true;
+                         if (dbgStyle != null && dbgStyle.Contains("#ffc")) isDebugTarget = true;
+                         if (dbgClass != null && dbgClass.Contains("label")) isDebugTarget = true;
+
+
                          if (style != null && style.BoxSizing != "border-box")
                          {
                              var p = style.Padding;
                              var b = style.BorderThickness;
+                             
+                             if (isDebugTarget)
+                             {
+                                 FenLogger.Debug($"[WIDTH-TRACE] {dbgTag} class='{dbgClass}' style='{dbgStyle}' Available={availableSize.Width} Margins={ml}+{mr} Padding={p.Left}+{p.Right} Border={b.Left}+{b.Right}");
+                             }
+                             
                              usedWidth -= (float)(p.Left + p.Right + b.Left + b.Right);
+                             
+                             if (isDebugTarget)
+                             {
+                                 FenLogger.Debug($"[WIDTH-TRACE] FinalUsedWidth={usedWidth} (Rendered={usedWidth + p.Left + p.Right + b.Left + b.Right})");
+                             }
                          }
-                         w = Math.Max(0, usedWidth);
+                         w = float.IsInfinity(usedWidth) ? m.MaxChildWidth : Math.Max(0, usedWidth);
                      } 
                 }
             }
 
+            // Apply Min/Max Constraints on final calculated dimensions (on Content Box)
+            w = Math.Max(minW, Math.Min(w, maxW));
+            /* ActualHeight tracks overflow, but ContentHeight (h) should respect sizing constraints for block flow */
+            h = Math.Max(minH, Math.Min(h, maxH));
+            
+            // FIX: If content-box, we must add padding/border back to w/h for the LayoutMetrics 
+            // because ArrangeBlock expects the full BorderBox size to allocate space.
+            // ALSO FIX: If !isExplicitWidth (Auto Width), 'w' is derived from content measurement (e.g. flex children).
+            // We must add padding/border to get the physical BorderBox size, regardless of box-sizing.
+            if (style != null && (style.BoxSizing != "border-box" || !isExplicitWidth))
+            {
+                 var p = style.Padding;
+                 var b = style.BorderThickness;
+                 
+                 // If !isExplicitWidth, w is content width (from children). Add padding/border.
+                 // If content-box, w is content width. Add padding/border.
+                 // Result: w becomes BorderBox width.
+                 
+                 w += (float)(p.Left + p.Right + b.Left + b.Right);
+                 h += (float)(p.Top + p.Bottom + b.Top + b.Bottom);
+            }
+            
+            // ============================================================
+            // CRITICAL ICB OVERRIDE: HTML and BODY MUST have height = viewport
+            // This is non-negotiable. Without this, justify-content fails.
+            // ============================================================
+            if (depth == 0 && tag == "HTML")
+            {
+                if (h < _viewportHeight)
+                {
+                    FenLogger.Log($"[ICB] OVERRIDE: HTML height {h}px < viewport {_viewportHeight}px. Forcing to viewport.", LogCategory.Layout);
+                    h = _viewportHeight;
+                }
+                if (w < _viewportWidth)
+                {
+                    w = _viewportWidth;
+                }
+            }
+            // BODY must also stretch to viewport for flex centering to work
+            // BODY can be at depth 1 or 2 depending on HEAD presence
+            else if (depth <= 2 && tag == "BODY")
+            {
+                if (h < _viewportHeight)
+                {
+                    FenLogger.Log($"[ICB] OVERRIDE: BODY height {h}px < viewport {_viewportHeight}px. Forcing to viewport.", LogCategory.Layout);
+                    h = _viewportHeight;
+                }
+                if (w < _viewportWidth)
+                {
+                    w = _viewportWidth;
+                }
+            }
+            
             var size = new SKSize(w, h);
             _desiredSizes[node] = size;
             _effectiveMargins[node] = (mt, mb); // Store effective margins
@@ -482,11 +811,30 @@ namespace FenBrowser.FenEngine.Layout
                 MarginTop = mt,
                 MarginBottom = mb
             };
+            }
+            catch (Exception ex)
+            {
+                 FenLogger.Error($"[CRASH-GUARD] MeasureNode crashed for {node?.Tag ?? "null"}: {ex.Message}", LogCategory.General);
+                 return new LayoutMetrics();
+            }
         }
 
         private void ArrangeNode(Node node, SKRect finalRect, int depth)
         {
             if (node == null) return;
+            if (depth > 60) return; // Aggressive StackOverflow Guard
+            
+            if (FenBrowser.Core.Logging.DebugConfig.LogLayoutConstraints && depth < 20)
+            {
+                 string tag = (node as Element)?.TagName ?? node.NodeType.ToString();
+                 var e = node as Element;
+                 string cls = e?.GetAttribute("class");
+                 // Filter spam
+                 if (tag != "Text" && (string.IsNullOrEmpty(cls) || FenBrowser.Core.Logging.DebugConfig.ShouldLog(cls)))
+                 {
+                     global::FenBrowser.Core.FenLogger.Log($"[LAYOUT-BOX] {new string(' ', depth)}{tag} Rect={finalRect} {(cls != null ? "."+cls : "")}", LogCategory.Layout);
+                 }
+            }
             
 
 
@@ -502,61 +850,86 @@ namespace FenBrowser.FenEngine.Layout
         }
 
         private ContainingBlock ResolveContainingBlock(Node node)
+    {
+        var style = GetStyle(node);
+        if (style?.Position?.ToLowerInvariant() == "fixed")
         {
-            var style = GetStyle(node);
-            if (style?.Position?.ToLowerInvariant() == "fixed")
-            {
-                 return new ContainingBlock
-                {
-                    Node = null, Width = _viewportWidth, Height = _viewportHeight, X = 0, Y = 0,
-                    IsInitial = true, PaddingBox = new SKRect(0, 0, _viewportWidth, _viewportHeight)
-                };
-            }
-
-            var p = node.Parent;
-            while (p != null)
-            {
-                var pStyle = GetStyle(p);
-                string pos = pStyle?.Position?.ToLowerInvariant() ?? "static";
-                if (pos != "static")
-                {
-                    if (_ancestorRects.TryGetValue(p, out var rect))
-                    {
-                        var border = pStyle.BorderThickness;
-                        float cbX = rect.Left + (float)border.Left;
-                        float cbY = rect.Top + (float)border.Top;
-                        float cbW = Math.Max(0, rect.Width - (float)(border.Left + border.Right));
-                        float cbH = Math.Max(0, rect.Height - (float)(border.Top + border.Bottom));
-
-                        return new ContainingBlock
-                        {
-                            Node = p, X = cbX, Y = cbY, Width = cbW, Height = cbH,
-                            IsInitial = false, PaddingBox = new SKRect(cbX, cbY, cbX + cbW, cbY + cbH)
-                        };
-                    }
-                }
-                p = p.Parent;
-            }
-
-            return new ContainingBlock
+             return new ContainingBlock
             {
                 Node = null, Width = _viewportWidth, Height = _viewportHeight, X = 0, Y = 0,
                 IsInitial = true, PaddingBox = new SKRect(0, 0, _viewportWidth, _viewportHeight)
             };
         }
 
+        var p = node.Parent;
+        int loopCount = 0;
+        while (p != null)
+        {
+            var pStyle = GetStyle(p);
+            string pos = pStyle?.Position?.ToLowerInvariant() ?? "static";
+            if (pos != "static")
+            {
+                // _ancestorRects stores the element's BorderBox (passed as finalRect to ArrangeNode).
+                // For absolute positioning, we need PaddingBox. 
+                // PaddingBox = BorderBox inset by border.
+                if (_ancestorRects.TryGetValue(p, out var borderRect))
+                {
+                    var border = pStyle?.BorderThickness ?? new Thickness(0);
+                    float bl = (float)border.Left, bt = (float)border.Top;
+                    float br = (float)border.Right, bb = (float)border.Bottom;
+                    
+                    // PaddingBox is BorderBox inset by border
+                    float cbX = borderRect.Left + bl;
+                    float cbY = borderRect.Top + bt;
+                    float cbW = Math.Max(0, borderRect.Width - bl - br);
+                    float cbH = Math.Max(0, borderRect.Height - bt - bb);
+
+                    return new ContainingBlock
+                    {
+                        Node = p, X = cbX, Y = cbY, Width = cbW, Height = cbH,
+                        IsInitial = false, PaddingBox = new SKRect(cbX, cbY, cbX + cbW, cbY + cbH)
+                    };
+                }
+            }
+            p = p.Parent;
+            
+            // Loop Guard
+            loopCount++;
+            if (loopCount > 1000)
+            {
+                FenLogger.Error($"[LAYOUT-LOOP] ResolveContainingBlock hit iteration limit for node {node?.Tag}", LogCategory.Layout);
+                break;
+            }
+        }
+
+        return new ContainingBlock
+        {
+            Node = null, Width = _viewportWidth, Height = _viewportHeight, X = 0, Y = 0,
+            IsInitial = true, PaddingBox = new SKRect(0, 0, _viewportWidth, _viewportHeight)
+        };
+    }
         private void ArrangeNodeCore(Node node, SKRect finalRect, int depth)
         {
             if (node == null) return;
             if (depth > 100) return;
 
             var style = GetStyle(node);
-            if (node is Element eDebug && eDebug.TagName == "IMG")
+             if (node is Element eDebug)
             {
-                FenLogger.Debug($"[ARRANGE-CORE-IMG] Id={eDebug.GetAttribute("id")} ShouldHide={ShouldHide(node, style)} Rect={finalRect} StyleDisp={style?.Display}");
+                 if (eDebug.TagName == "IMG" || eDebug.TagName == "SVG" || eDebug.TagName.EndsWith(":SVG"))
+                 {
+                     FenLogger.Debug($"[ARRANGE-CORE] Tag={eDebug.TagName} Id={eDebug.GetAttribute("id")} ShouldHide={ShouldHide(node, style)} Rect={finalRect} StyleDisp={style?.Display}");
+                 }
             }
 
+
             if (ShouldHide(node, style)) return;
+
+            // Tracking for verification
+            if (node is Element && (finalRect.Width <= 0 || finalRect.Height <= 0))
+            {
+                _zeroSizedCount++;
+            }
 
             string position = style?.Position?.ToLowerInvariant();
             if (position == "absolute" || position == "fixed")
@@ -601,8 +974,15 @@ namespace FenBrowser.FenEngine.Layout
             float bL = (float)box.Border.Left, bT = (float)box.Border.Top, bR = (float)box.Border.Right, bB = (float)box.Border.Bottom;
             float pL = (float)box.Padding.Left, pT = (float)box.Padding.Top, pR = (float)box.Padding.Right, pB = (float)box.Padding.Bottom;
             
-            box.PaddingBox = new SKRect(box.BorderBox.Left + bL, box.BorderBox.Top + bT, box.BorderBox.Right - bR, box.BorderBox.Bottom - bB);
-            box.ContentBox = new SKRect(box.PaddingBox.Left + pL, box.PaddingBox.Top + pT, box.PaddingBox.Right - pR, box.PaddingBox.Bottom - pB);
+            // CRITICAL FIX: Clamp box dimensions to prevent negative sizes when padding/border exceeds available space
+            // This fixes FLEX-FAIL and negative dimension SPEC-WARN errors
+            float paddingRight = Math.Max(box.BorderBox.Left + bL, box.BorderBox.Right - bR);
+            float paddingBottom = Math.Max(box.BorderBox.Top + bT, box.BorderBox.Bottom - bB);
+            box.PaddingBox = new SKRect(box.BorderBox.Left + bL, box.BorderBox.Top + bT, paddingRight, paddingBottom);
+            
+            float contentRight = Math.Max(box.PaddingBox.Left + pL, box.PaddingBox.Right - pR);
+            float contentBottom = Math.Max(box.PaddingBox.Top + pT, box.PaddingBox.Bottom - pB);
+            box.ContentBox = new SKRect(box.PaddingBox.Left + pL, box.PaddingBox.Top + pT, contentRight, contentBottom);
 
             if (node.IsText && _textLines.TryGetValue(node, out var computedLines))
             {
@@ -611,24 +991,34 @@ namespace FenBrowser.FenEngine.Layout
 
             _boxes[node] = box;
 
+    // DEBUG: Trace test-case and sibling positioning
+    if (node is Element tcElem)
+    {
+        var cls = tcElem.GetAttribute("class");
+        if (cls != null && (cls.Contains("test-case") || cls == "label" || cls == "sibling" || cls == "ref"))
+        {
+            System.Console.WriteLine($"[POSITION] Class={cls} BorderBox={box.BorderBox}");
+        }
+    }
+
             string tag = (node as Element)?.TagName?.ToUpperInvariant() ?? "";
             string id = (node as Element)?.GetAttribute("id")?.ToLowerInvariant();
-            bool isNewTab = (tag == "BODY" && id == "fen-newtab");
-
-            string display = style?.Display?.ToLowerInvariant();
-            if (isNewTab) display = "flex"; 
+            // REMOVED: isNewTab hack - flexbox now works generically
+            string display = style?.Display?.ToLowerInvariant(); 
             
- 
-
             var elem = node as Element;
             if (display == "flex" || display == "inline-flex") 
-                ArrangeFlex(elem, box.ContentBox, depth, style, elem.Children);
+                ArrangeFlex(elem, box.ContentBox, depth + 1, style, elem.Children);
             else if (display == "grid")
-                ArrangeGrid(elem, box.ContentBox);
+                ArrangeGrid(elem, box.ContentBox, depth + 1);
+            else if (IsMultiColumn(style) && elem != null)
+                ArrangeMultiColumn(elem, box.ContentBox);
+            else if (tag == "TABLE")
+                ComputeTableLayout(elem, box.ContentBox, depth + 1);
             else if (node.IsText) 
                 ArrangeText(node, box.ContentBox);
             else 
-                ArrangeBlockInternal(elem, box.ContentBox, depth, node);
+                ArrangeBlockInternal(elem, box.ContentBox, depth + 1, node);
         }
 
         private LayoutMetrics MeasureBlockInternal(Element element, SKSize availableSize, int depth, Node fallbackNode)
@@ -642,43 +1032,104 @@ namespace FenBrowser.FenEngine.Layout
             }
 
             // IFC CHECK
+            if (depth < 6 && element != null)
+            {
+                 FenLogger.Debug($"[MEASURE-BLOCK-ENTRY] Tag={element.TagName} Class={element.GetAttribute("class")} Children={childrenSource.Count()}");
+            }
+
             bool useIFC = false;
+            bool hasBlock = false;
+            bool hasInline = false;
+            
             foreach (var c in childrenSource)
             {
-                bool isInline = IsInlineLevel(c);
-                if (element != null && (element.GetAttribute("class") == "o3j99" || element.TagName == "A"))
-                {
-                   // FenLogger.Debug($"[IFC-TRACE] Container={element.TagName}.{element.GetAttribute("class")} Child={c.NodeName} IsInline={isInline}");
-                }
-                
-                if (isInline) 
-                {
-                     if (c is Text t && string.IsNullOrWhiteSpace(t.Data)) continue;
-                     useIFC = true; 
-                     break; 
-                }
+                 if (element != null && element.GetAttribute("class") == "container")
+                 {
+                      FenLogger.Debug($"[MEASURE-BLOCK-PRE-CHECK] Container Child: {c.NodeType} {(c as Element)?.TagName}");
+                 }
+
+                 if (c is Text t && string.IsNullOrWhiteSpace(t.Data)) continue;
+                 
+                 bool isInline = IsInlineLevel(c);
+                 if (isInline) hasInline = true;
+                 else hasBlock = true;
             }
+            
+            // Only use IFC if we have inline content and NO block content
+            useIFC = hasInline && !hasBlock;
 
 
             if (useIFC && element != null)
             {
                 FenLogger.Debug($"[IFC-DECISION] Using Inline Layout for {element.TagName}", LogCategory.Rendering);
-                return MeasureInlineContext(element, availableSize);
+                return MeasureInlineContext(element, availableSize, depth);
             }
 
-            float curY = 0;
-            float maxW = 0;
-            float maxActualBottom = 0; // Track actual overflow
-            float lastMB = 0;
+            string writingMode = GetStyle(element)?.WritingMode ?? "horizontal-tb";
+            LogicalSize logicalAvailable = WritingModeConverter.ToLogical(availableSize, writingMode);
+
+            float logicalCurBlock = 0;
+            float logicalMaxInline = 0;
+            float logicalMaxActualBlockEnd = 0; 
+            float lastBlockMargin = 0;
             bool first = true;
             
-            // Float tracking
-            float floatX = 0;
-            float currentFloatHeight = 0;
-            float availableW = availableSize.Width;
+            // Float tracking (Logical)
+            float floatInlineCursor = 0; 
+            float currentFloatBlockSize = 0;
+            float logicalAvailableInline = logicalAvailable.Inline;
 
-            float internalMT = 0;
-            float internalMB = 0;
+            // FIX: Subtract padding/border from available inline size for children
+            // This ensures children are constrained by the parent's padding (e.g. body padding)
+            var blockStyle = GetStyle(element ?? fallbackNode as Element);
+            if (blockStyle != null)
+            {
+                 // Reuse ToLogicalMargin since Padding/BorderThickness are also Thickness objects
+                 var logPadding = WritingModeConverter.ToLogicalMargin(blockStyle.Padding, writingMode);
+                 var logBorder = WritingModeConverter.ToLogicalMargin(blockStyle.BorderThickness, writingMode);
+                 
+                 float inlineOffset = logPadding.InlineStart + logPadding.InlineEnd + 
+                                      logBorder.InlineStart + logBorder.InlineEnd;
+                                      
+                 if (!float.IsInfinity(logicalAvailableInline))
+                 {
+                    logicalAvailableInline = Math.Max(0, logicalAvailableInline - inlineOffset);
+                 }
+
+                 // FIX: Respect Explicit Width/MaxWidth of the container itself
+                 // If the container has max-width: 600px, children must be constrained to 600px, not 1920px.
+                 bool isBorderBox = blockStyle.BoxSizing == "border-box";
+
+                 if (blockStyle.Width.HasValue)
+                 {
+                      float contentW = (float)blockStyle.Width.Value;
+                      if (isBorderBox) contentW -= inlineOffset;
+                      logicalAvailableInline = contentW;
+                 }
+                 
+                 if (blockStyle.MaxWidth.HasValue)
+                 {
+                      float contentMax = (float)blockStyle.MaxWidth.Value;
+                      if (isBorderBox) contentMax -= inlineOffset;
+                      if (!float.IsInfinity(logicalAvailableInline) && contentMax < logicalAvailableInline)
+                      {
+                          logicalAvailableInline = contentMax;
+                      }
+                      else if (float.IsInfinity(logicalAvailableInline))
+                      {
+                          // If available was infinite, but we have max-width, use it!
+                          logicalAvailableInline = contentMax;
+                      }
+                 }
+            }
+
+            float internalBlockMarginStart = 0;
+            float internalBlockMarginEnd = 0;
+            
+            var style = GetStyle(element);
+            float measurePt = (float)(style?.Padding.Top ?? 0);
+            float measureBt = (float)(style?.BorderThickness.Top ?? 0);
+            var marginTracker = new MarginCollapseTracker { PreventParentCollapse = measurePt > 0 || measureBt > 0 };
 
             foreach (var child in childrenSource)
             {
@@ -690,119 +1141,174 @@ namespace FenBrowser.FenEngine.Layout
                     continue;
                 }
                 
-                // RESTORED: Position check
+                // Position check
                 string pos = childStyle?.Position?.ToLowerInvariant();
                 bool isAbs = pos == "absolute" || pos == "fixed";
 
                 if (isAbs)
                 {
+                     // Measure absolute elements against physical constraints
+                     // They are removed from flow, so we don't convert result to logical flow.
+                     MeasureNode(child, availableSize, depth + 1);
                      continue;
                 }
                 
-                LayoutMetrics childSize;
+                LayoutMetrics childMetrics;
 
-                if (childStyle.Display == "block" || childStyle.Display == "flex" || childStyle.Display == "grid")
+                if (childStyle != null && (childStyle.Display == "block" || childStyle.Display == "flex" || childStyle.Display == "grid"))
                 {
                     // BLOCK/FLEX/GRID LAYOUT
-                    // Calculate available width for child, considering margins
-                    float childML = (float)(childStyle.Margin.Left);
-                    float childMR = (float)(childStyle.Margin.Right);
-                    float childWidthConstraints = availableW - childML - childMR;
-                    if (childWidthConstraints < 0) childWidthConstraints = 0;
+                    // Margins in Physical
+                    float childML = (float)childStyle.Margin.Left;
+                    float childMR = (float)childStyle.Margin.Right;
+                    float childMT = (float)childStyle.Margin.Top;
+                    float childMB = (float)childStyle.Margin.Bottom;
+                    
+                    // Convert margins to Logical to interact with flow
+                    var logicalMargin = WritingModeConverter.ToLogicalMargin(childStyle.Margin, writingMode);
+                    
+                    float childInlineConstraint = logicalAvailableInline - logicalMargin.InlineSum;
+                    if (childInlineConstraint < 0) childInlineConstraint = 0;
 
-                    // Pass constrained width
-                    childSize = MeasureNode(child, new SKSize(childWidthConstraints, availableSize.Height), depth + 1);
+                    // Measure Child (Physical Constraint constructed from Logical)
+                    var physicalConstraint = WritingModeConverter.ToPhysical(
+                        new LogicalSize(childInlineConstraint, logicalAvailable.Block), 
+                        writingMode);
+                        
+                    childMetrics = MeasureNode(child, physicalConstraint, depth + 1);
 
-                    // Re-add margins for flow logic
-                    float fullChildW = childSize.MaxChildWidth + childML + childMR;
-                    maxW = Math.Max(maxW, fullChildW);
+                    // Child returns Physical Metrics. Convert to Logical.
+                    var childPhysicalSize = new SKSize(childMetrics.MaxChildWidth, childMetrics.ContentHeight);
+                    var childLogicalSize = WritingModeConverter.ToLogical(childPhysicalSize, writingMode);
+                    
+                    float fullChildInline = childLogicalSize.Inline + logicalMargin.InlineSum;
+                    logicalMaxInline = Math.Max(logicalMaxInline, fullChildInline);
                 }
                 else
                 {
-                   // Other types (inline-block etc or fallback)
-                   childSize = MeasureNode(child, availableSize, depth + 1);
-                   maxW = Math.Max(maxW, childSize.MaxChildWidth);
+                   // Fallback / Inline-Block
+                   childMetrics = MeasureNode(child, availableSize, depth + 1);
+                   var childPhysicalSize = new SKSize(childMetrics.MaxChildWidth, childMetrics.ContentHeight);
+                   var childLogicalSize = WritingModeConverter.ToLogical(childPhysicalSize, writingMode);
+                   
+                   logicalMaxInline = Math.Max(logicalMaxInline, childLogicalSize.Inline);
                 }
 
-                // Restore original MeasureNode call for non-block logic if needed, but the above block covers most.
-                // However, the original code inside the loop was:
-                // var childSize = MeasureNode(child, availableSize, depth + 1);
-                
-                // Let's stick closer to the original structure but apply the constraint.
-                // We need to fetch style first.
-                // Moved logic to before MeasureNode call.
-                
-                bool isFloat = childStyle?.Float?.ToLowerInvariant() == "left";
+                bool isFloat = childStyle?.Float?.ToLowerInvariant() == "left"; 
+
+                // Determine Child Metrics in Logical Space
+                var childPhysSize = new SKSize(childMetrics.MaxChildWidth, childMetrics.ContentHeight);
+                var childLogSize = WritingModeConverter.ToLogical(childPhysSize, writingMode);
+                var logMargin = WritingModeConverter.ToLogicalMargin(childStyle?.Margin ?? new Thickness(0), writingMode);
 
                 if (isFloat)
                 {
-                    // Float Logic: No margin collapsing
-                    float mt = childSize.MarginTop;
-                    float mb = childSize.MarginBottom;
-                    float ml = (float)(childStyle?.Margin.Left ?? 0);
-                    float mr = (float)(childStyle?.Margin.Right ?? 0);
+                    float mt = logMargin.BlockStart;
+                    float mb = logMargin.BlockEnd;
+                    float ml = logMargin.InlineStart;
+                    float mr = logMargin.InlineEnd;
                     
-                    float fullChildW = childSize.MaxChildWidth + ml + mr;
-                    float fullChildH = childSize.ContentHeight + mt + mb;
+                    float fullChildInline = childLogSize.Inline + ml + mr;
+                    float fullChildBlock = childLogSize.Block + mt + mb;
                     
-                    if (floatX + fullChildW > availableW && floatX > 0)
+                    if (floatInlineCursor + fullChildInline > logicalAvailableInline && floatInlineCursor > 0)
                     {
-                        curY += currentFloatHeight;
-                        floatX = 0;
-                        currentFloatHeight = 0;
+                        logicalCurBlock += currentFloatBlockSize;
+                        floatInlineCursor = 0;
+                        currentFloatBlockSize = 0;
                     }
                     
-                    floatX += fullChildW;
-                    currentFloatHeight = Math.Max(currentFloatHeight, fullChildH);
+                    floatInlineCursor += fullChildInline;
+                    currentFloatBlockSize = Math.Max(currentFloatBlockSize, fullChildBlock);
                     
-                    float childActualH = childSize.ActualHeight + mt + mb;
-                    maxActualBottom = Math.Max(maxActualBottom, (curY + childActualH)); 
-                    maxW = Math.Max(maxW, floatX);
+                    logicalMaxInline = Math.Max(logicalMaxInline, floatInlineCursor);
                 }
                 else
                 {
                     // Block Logic
-                    if (floatX > 0)
+                    if (floatInlineCursor > 0)
                     {
-                        curY += currentFloatHeight;
-                        floatX = 0;
-                        currentFloatHeight = 0;
+                        logicalCurBlock += currentFloatBlockSize;
+                        floatInlineCursor = 0;
+                        currentFloatBlockSize = 0;
                         first = true;
-                        lastMB = 0;
                     }
 
-                    maxW = Math.Max(maxW, childSize.MaxChildWidth);
+                    logicalMaxInline = Math.Max(logicalMaxInline, childLogSize.Inline);
                     
-                    float mt = childSize.MarginTop;
-                    float mb = childSize.MarginBottom;
+                    float mt = logMargin.BlockStart;
+                    float mb = logMargin.BlockEnd;
                     
-                    if (first) {
-                        internalMT = mt; // First child margin TOP
-                        first = false;
-                    } else {
-                        float collapsedMargin = MarginCollapseComputer.CollapseMargin(lastMB, mt);
-                        curY += collapsedMargin;
+                    // Box Model Phase 16.3: Use MarginCollapseTracker
+                    bool childIsEmpty = (childLogSize.Block == 0 && childLogSize.Inline == 0 && !isFloat); 
+                    
+                    
+                    float spacing = marginTracker.AddMargin(mt, mb, first, childIsEmpty);
+                    
+                    if (first) { 
+                         first = false;
+                    }
+
+                    // Log layout progression
+                    // Log layout progression
+                    // Log layout progression
+                    if (depth < 6 && element != null)
+                    {
+                         FenLogger.Debug($"[MEASURE-BLOCK-LOOP] Tag={element.TagName} Child={child.NodeType} H={childLogSize.Block} Spacing={spacing} CurBlock={logicalCurBlock}->{logicalCurBlock+spacing+childLogSize.Block}");
                     }
                     
-                    float childActualBottom = curY + childSize.ActualHeight;
-                    maxActualBottom = Math.Max(maxActualBottom, childActualBottom);
-
-                    curY += childSize.ContentHeight; 
-                    lastMB = mb;
+                    logicalCurBlock += spacing;
+                    logicalCurBlock += childLogSize.Block;
                 }
             }
             
-            internalMB = lastMB; // Last child margin BOTTOM
-            curY += currentFloatHeight; 
+            internalBlockMarginStart = marginTracker.PendingMargin;
+            internalBlockMarginEnd = marginTracker.LastBlockBottomMargin;
+            if (!marginTracker.HasContent) internalBlockMarginEnd = marginTracker.PendingMargin;
+            logicalCurBlock += currentFloatBlockSize; 
             
-            maxActualBottom = Math.Max(maxActualBottom, curY);
-
+            // Map Logical results back to LayoutMetrics (Physical interpretation slots)
+            // Note: LayoutMetrics fields are named poorly for vertical text, but we map strictly:
+            // ContentHeight -> Block Size
+            // MaxChildWidth -> Inline Size
+            // MarginTop -> BlockStart Margin
+            // MarginBottom -> BlockEnd Margin
+            
+            // If the caller expects Physical, we should arguably convert back. 
+            // BUT: Margin collapsing happens recursively. 
+            // If parent is also vertical, it expects 'ContentHeight' to be BlockSize (Width).
+            // If parent is horizontal, it expects 'ContentHeight' to be Height.
+            
+            // DECISION: LayoutMetrics is CONTEXT-DEPENDENT. It returns "Size in Flow Axis" and "Size in Cross Axis"?
+            // No, existing code uses .ContentHeight as Y-size.
+            // If I return BlockSize as ContentHeight for vertical-rl, parent (horizontal) sees it as Height (Y).
+            // But BlockSize for vertical-rl IS Width (X)!
+            // ERROR: If I don't convert back, I break orthogonal flows.
+            
+            // FIX: Convert back to PHYSICAL dimensions.
+            var finalLogSize = new LogicalSize(logicalMaxInline, logicalCurBlock);
+            var finalPhysSize = WritingModeConverter.ToPhysical(finalLogSize, writingMode);
+            
+            // MarginTop/Bottom are problematic semantics. 
+            // If vertical-rl, BlockStart margin is Right.
+            // LayoutMetrics has no MarginRight field?
+            // Existing ILayoutComputer definition has MarginTop/MarginBottom.
+            // It seems the engine ONLY supports vertical margin collapsing.
+            // I will map BlockStart/End to MarginTop/Bottom to preserve collapsing behavior *if* the parent understands it.
+            // But if parent is horizontal, it will see MarginTop as Top.
+            // If child is vertical-rl, its "BlockStart" is Right. 
+            // Collapsing Right margin with Parent Top margin is WRONG.
+            // Orthogonal flows should NOT collapse margins.
+            
+            // If orthogonal, we should probably zero out the collapsible margins returned or handle them carefully.
+            // For this phase, I will return them as is, assuming homogeneous writing mode for deep trees.
+            
             return new LayoutMetrics { 
-                ContentHeight = curY, 
-                ActualHeight = maxActualBottom, 
-                MaxChildWidth = maxW,
-                MarginTop = internalMT,
-                MarginBottom = internalMB
+                ContentHeight = finalPhysSize.Height, 
+                ActualHeight = finalPhysSize.Height, 
+                MaxChildWidth = finalPhysSize.Width,
+                MarginTop = internalBlockMarginStart,
+                MarginBottom = internalBlockMarginEnd
             };
         }
 
@@ -811,39 +1317,68 @@ namespace FenBrowser.FenEngine.Layout
             var childrenSource = element?.Children ?? fallbackNode?.Children;
             if (childrenSource == null) return;
 
-            // IFC CHECK
+            // DEBUG: Trace BODY content box
+            if (element?.TagName == "BODY")
+            {
+                System.Console.WriteLine($"[BODY-ARRANGE] ContentBox={finalRect}");
+                var firstChild = childrenSource.FirstOrDefault(c => c is Element);
+                if (firstChild is Element fe)
+                {
+                    var fStyle = GetStyle(fe);
+                    System.Console.WriteLine($"[BODY-FIRST-CHILD] Tag={fe.TagName} Class={fe.GetAttribute("class")} MarginTop={fStyle?.Margin.Top}");
+                }
+            }
+            
+            var parentStyle = element != null ? GetStyle(element) : null;
+
+            // BFC Logic: Determine if this block establishes a new BFC
+            bool newBfc = false;
+            if (element != null && parentStyle != null)
+            {
+                // Float, Absolute, Inline-Block, Table-Cell, Overflow!=visible
+                if ((parentStyle.Float?.ToLowerInvariant() is string f && (f == "left" || f == "right")) ||
+                    (parentStyle.Position?.ToLowerInvariant() is string p && (p == "absolute" || p == "fixed")) ||
+                    (parentStyle.Display?.ToLowerInvariant() is string d && (d == "inline-block" || d == "table-cell")) ||
+                    (parentStyle.Overflow?.ToLowerInvariant() is string o && o != "visible"))
+                {
+                    newBfc = true;
+                }
+            }
+            
+            IDisposable bfcScope = null;
+            if (newBfc)
+            {
+                bfcScope = new BfcScope(this);
+            }
+
+            try 
+            {
+
             // IFC CHECK
             if (element != null)
             {
                 if (_inlineCache.ContainsKey(element))
-            {
-                // FenLogger.Debug($"[IFC-CACHE-HIT] Element={element.TagName} Hash={element.GetHashCode()}", LogCategory.Rendering);
-                ArrangeInlineContext(element, finalRect);
-                return;
-            }
-            else
-            {
-                 // Trace miss
-                 // FenLogger.Debug($"[IFC-CACHE-MISS] Element={element.TagName} Hash={element.GetHashCode()} CacheCount={_inlineCache.Count}", LogCategory.Rendering);
-            }    }
+                {
+                    // FenLogger.Debug($"[IFC-CACHE-HIT] Element={element.TagName} Hash={element.GetHashCode()}", LogCategory.Rendering);
+                    ArrangeInlineContext(element, finalRect, depth);
+                    return; 
+                }
                 else
+                {
+                     // Trace miss
+                     // FenLogger.Debug($"[IFC-CACHE-MISS] Element={element.TagName} Hash={element.GetHashCode()} CacheCount={_inlineCache.Count}", LogCategory.Rendering);
+                }    
+            }    else
                 {
                     // Debug why it missed if we expected it
                    // FenLogger.Debug($"[IFC-CACHE-MISS] {element.TagName} falling back to Block Layout", LogCategory.Rendering);
                 }
             
-            float curY = finalRect.Top;
-            float lastMB = 0;
-            bool first = true;
 
-            var parentStyle = element != null ? GetStyle(element) : null;
+
+
             
-            // Debug Logging for Flexbox
-            if (element != null && (element.GetAttribute("class")?.Contains("flex") == true))
-            {
-                 System.IO.File.AppendAllText(@"c:\Users\udayk\Videos\FENBROWSER\debug_flex.txt", 
-                    $"Tag={element.TagName} Class={element.GetAttribute("class")} Display='{parentStyle?.Display}'\r\n");
-            }
+
 
             // Check for Flexbox
             if (parentStyle != null && (parentStyle.Display == "flex" || parentStyle.Display == "inline-flex"))
@@ -864,21 +1399,32 @@ namespace FenBrowser.FenEngine.Layout
                  }
             }
 
+            string writingMode = parentStyle?.WritingMode ?? "horizontal-tb";
+
             float pt = (float)(parentStyle?.Padding.Top ?? 0);
             float bt_top = (float)(parentStyle?.BorderThickness.Top ?? 0);
-            float pl = (float)(parentStyle?.Padding.Left ?? 0);
-            float bl = (float)(parentStyle?.BorderThickness.Left ?? 0);
-
-            // Float tracking
-            float floatX = finalRect.Left + pl + bl;
-            float floatRowTop = curY;
-            float currentFloatHeight = 0;
-            float availableW = finalRect.Width;
+            
+            // FIX: finalRect IS ALREADY the ContentBox (padding already subtracted in ArrangeNodeCore).
+            // We should NOT subtract padding again here.
+            // The contentBox IS finalRect.
+            var contentBox = finalRect;
+            
+            var logicalContentSize = WritingModeConverter.ToLogical(contentBox.Size, writingMode);
+            var logicalAvailableInline = logicalContentSize.Inline;
+            
+            float logicalCurBlock = 0;
+            float floatInlineCursor = 0;
+            float currentFloatBlockSize = 0;
+            
+            var marginTracker = new MarginCollapseTracker { PreventParentCollapse = pt > 0 || bt_top > 0 };
+            bool first = true;
 
             foreach (var child in childrenSource)
             {
                 var childStyle = GetStyle(child);
                 if (ShouldHide(child, childStyle)) continue;
+
+                if (child is Text txt && string.IsNullOrWhiteSpace(txt.Data)) continue;
                 
                 if (_desiredSizes.TryGetValue(child, out var size))
                 {
@@ -890,114 +1436,157 @@ namespace FenBrowser.FenEngine.Layout
                         ArrangeNode(child, finalRect, depth + 1);
                         continue;
                     }
-
-                    bool isFloat = childStyle?.Float?.ToLowerInvariant() == "left";
                     
-                    float mt = (float)childStyle.Margin.Top;
-                    float mb = (float)childStyle.Margin.Bottom;
-                    float ml = (float)childStyle.Margin.Left;
-                    float mr = (float)childStyle.Margin.Right;
-
-                    // Use effective margins if available (calculated during Measure)
+                    var childLogSize = WritingModeConverter.ToLogical(size, writingMode);
+                    var childLogMargin = WritingModeConverter.ToLogicalMargin(childStyle?.Margin ?? new Thickness(0), writingMode);
+                    
                     if (_effectiveMargins.TryGetValue(child, out var eff))
                     {
-                        mt = eff.Top;
-                        mb = eff.Bottom;
+                        childLogMargin.BlockStart = eff.Top;
+                        childLogMargin.BlockEnd = eff.Bottom;
                     }
 
+                    bool isFloat = childStyle?.Float?.ToLowerInvariant() == "left";
 
-
-                    if (child is Element el)
-                    {
-                         try { 
-                             var fs = childStyle?.FontSize ?? 0;
-                             var m = childStyle?.Margin;
-                             var p = childStyle?.Padding;
-                             // Simplified logging to avoid build errors
-                             System.IO.File.AppendAllText(@"c:\Users\udayk\Videos\FENBROWSER\layout_compliance_log.txt", 
-                             $"tag={el.Tag} fs={fs:F2} margin={m} padding={p} class='{el.GetAttribute("class")}'\r\n"); 
-                         } catch {}
-                    }
-
-
-
-
-
+                    LogicalRect childLogRect;
                     
                     if (isFloat)
                     {
-                        float borderBoxW = size.Width;
-                        float borderBoxH = size.Height;
-                        float fullChildW = borderBoxW + ml + mr;
-                        float fullChildH = borderBoxH + mt + mb;
+                        float mt = childLogMargin.BlockStart;
+                        float mb = childLogMargin.BlockEnd;
+                        float ml = childLogMargin.InlineStart;
+                        float mr = childLogMargin.InlineEnd;
                         
-                        if (floatX + fullChildW > finalRect.Right + 0.1f && floatX > finalRect.Left + pl + bl)
+                        float fullChildInline = childLogSize.Inline + ml + mr;
+                        float fullChildBlock = childLogSize.Block + mt + mb;
+                        
+                        if (floatInlineCursor + fullChildInline > logicalAvailableInline && floatInlineCursor > 0)
                         {
-                            curY += currentFloatHeight;
-                            floatRowTop = curY;
-                            floatX = finalRect.Left + pl + bl;
-                            currentFloatHeight = 0;
+                            logicalCurBlock += currentFloatBlockSize;
+                            floatInlineCursor = 0;
+                            currentFloatBlockSize = 0;
                         }
-
-                        float childX = floatX + ml;
-                        float childY = floatRowTop + mt; 
                         
-                        var childRect = new SKRect(childX, childY, childX + borderBoxW, childY + borderBoxH);
-                        ArrangeNode(child, childRect, depth + 1);
+                        childLogRect = new LogicalRect(
+                            floatInlineCursor + ml,
+                            logicalCurBlock + mt,
+                            childLogSize.Inline,
+                            childLogSize.Block
+                        );
+                        
+                        floatInlineCursor += fullChildInline;
+                        currentFloatBlockSize = Math.Max(currentFloatBlockSize, fullChildBlock);
+                        
+                        // Register Float Exclusion
+                        var childPhysRel = WritingModeConverter.ToPhysicalRect(childLogRect, contentBox.Size, writingMode);
+                        var childPhysAbs = new SKRect(
+                             childPhysRel.Left + contentBox.Left,
+                             childPhysRel.Top + contentBox.Top,
+                             childPhysRel.Right + contentBox.Left,
+                             childPhysRel.Bottom + contentBox.Top
+                        );
+                        
+                        ArrangeNode(child, childPhysAbs, depth + 1);
 
-                        floatX += fullChildW;
-                        currentFloatHeight = Math.Max(currentFloatHeight, fullChildH);
+                        var exc = FloatExclusion.CreateFromStyle(childPhysAbs, isFloat, childStyle);
+                        if (_activeBfcFloats.Count > 0) _activeBfcFloats.Peek().Add(exc);
                     }
                     else
                     {
-                        // Block Logic
-                        if (floatX > finalRect.Left + pl + bl)
+                        if (floatInlineCursor > 0)
                         {
-                            curY += currentFloatHeight;
-                            floatRowTop = curY;
-                            floatX = finalRect.Left + pl + bl; 
-                            currentFloatHeight = 0;
-                            first = true;
-                            lastMB = 0;
+                            logicalCurBlock += currentFloatBlockSize;
+                            floatInlineCursor = 0;
+                            currentFloatBlockSize = 0;
+                            // Preceding floats don't prevent margin collapse of 'real' blocks usually, 
+                            // but for simplified layout we might want to say 'we have content'.
+                            // However, strictly, floats are out of flow.
+                            // We'll mimic MeasureBlockInternal logic:
+                            first = true; 
                         }
+                        
+                        float mt = childLogMargin.BlockStart;
+                        float mb = childLogMargin.BlockEnd;
+                        float ml = childLogMargin.InlineStart;
+                        
+                        bool childIsEmpty = (childLogSize.Block == 0 && childLogSize.Inline == 0 && !isFloat);
+                        float spacing = marginTracker.AddMargin(mt, mb, first, childIsEmpty);
+                        if (first) first = false;
+                        
+                        logicalCurBlock += spacing;
 
-                        if (first) {
-                            // If parent has padding/border, margin collapse is blocked for the first child (wrt parent top)
-                            // The child should start at padding box top (+ margin if not collapsed)
-                            bool canCollapse = (pt == 0 && bt_top == 0 && element?.TagName != "HTML");
+                        if (element?.GetAttribute("class") == "container")
+                        {
+                             FenLogger.Debug($"[ARRANGE-BLOCK-LOOP] Child={childStyle?.Display} BoxH={childLogSize.Block} Spacing={spacing} CurBlock={logicalCurBlock}");
+                        }
+                        
+                        // Implement margin: auto for block-level elements
+                        float autoMarginOffset = 0;
+                        if (!isFloat && (childStyle?.Display == "block" || childStyle?.Display == "table" || childStyle?.Display == "flex"))
+                        {
+                            bool leftAuto = childStyle?.MarginLeftAuto == true;
+                            bool rightAuto = childStyle?.MarginRightAuto == true;
                             
-                            if (canCollapse) {
-                                // Collapsed with parent - child starts at curY (which is BorderTop)
-                                // But if collapsed, the margin bubbled up.
-                            } else {
-                                // Not collapsed. Child starts after padding/border + margin
-                                curY += pt + bt_top + mt;
+                            if (leftAuto || rightAuto)
+                            {
+                                float freeSpace = logicalAvailableInline - childLogSize.Inline;
+                                if (freeSpace > 0)
+                                {
+                                    if (leftAuto && rightAuto) autoMarginOffset = freeSpace / 2;
+                                    else if (leftAuto) autoMarginOffset = freeSpace;
+                                }
                             }
-                            first = false;
-                        } else {
-                            float collapsedMargin = MarginCollapseComputer.CollapseMargin(lastMB, mt);
-                            curY += collapsedMargin;
                         }
 
-                        float childX = finalRect.Left + pl + bl + ml;
-                        float borderBoxW = size.Width;
-                        float borderBoxH = size.Height;
+                        childLogRect = new LogicalRect(
+                            ml + autoMarginOffset,
+                            logicalCurBlock,
+                            childLogSize.Inline,
+                            childLogSize.Block
+                        );
+
+
+
                         
-                        var childRect = new SKRect(childX, curY, childX + borderBoxW, curY + borderBoxH);
-                        // DEBUG: Trace large vertical gaps
-                        if ((borderBoxH > 500 && child.NodeName != "BODY") && child is Element cEle)
+                        var childPhysRel = WritingModeConverter.ToPhysicalRect(childLogRect, contentBox.Size, writingMode);
+                        
+
+
+                        var childPhysAbs = new SKRect(
+                            childPhysRel.Left + contentBox.Left,
+                            childPhysRel.Top + contentBox.Top,
+                            childPhysRel.Right + contentBox.Left,
+                            childPhysRel.Bottom + contentBox.Top
+                        );
+                        
+                        ArrangeNode(child, childPhysAbs, depth + 1);
+                        
+                        if (element?.GetAttribute("class") == "container")
                         {
-                            // FenLogger.Debug($"[LAYOUT-GAP] Inside <{element?.TagName}> -> Child <{cEle.TagName} id='{cEle.GetAttribute("id")}' class='{cEle.GetAttribute("class")}'> H={borderBoxH} MT={mt} MB={mb} Y={curY}");
+                             FenLogger.Debug($"[ARRANGE-BLOCK-LOOP-END] CurBlock={logicalCurBlock}->{logicalCurBlock+childLogSize.Block} ChildH={childLogSize.Block}");
                         }
-                        ArrangeNode(child, childRect, depth + 1);
-                        
-                        curY = childRect.Bottom;
-                        lastMB = mb;
-                        floatRowTop = curY + mb; 
+                        logicalCurBlock += childLogSize.Block;
                     }
                 }
             }
             // End
+
+
+
+
+
+
+
+
+
+
+                    
+
+            }
+            finally
+            {
+                bfcScope?.Dispose();
+            }
         }
         
         private LayoutMetrics MeasureFlexInternal(Element element, SKSize availableSize, bool isCenteredRoot, int depth, Node fallbackNode = null)
@@ -1005,10 +1594,21 @@ namespace FenBrowser.FenEngine.Layout
             var target = element ?? fallbackNode as Element; // Ensure Element
             if (target == null) return new LayoutMetrics();
             
+            // V8 DIAGNOSTICS
+            string dbgCls = target.GetAttribute("class") ?? "";
+            if (target.TagName == "DIV" && dbgCls.Contains("sites-grid"))
+            {
+                 FenLogger.Debug($"[FLEX-ENTRY-V8] Measuring .sites-grid Children={target.Children.Count} Avail={availableSize.Width}x{availableSize.Height}", LogCategory.Rendering);
+                 foreach(var c in target.Children) {
+                    var cEl = c as Element;
+                    FenLogger.Debug($"  - Child <{cEl?.TagName} class='{cEl?.GetAttribute("class")}'>", LogCategory.Rendering);
+                 }
+            }
+
             return CssFlexLayout.Measure(
                 target, 
                 availableSize, 
-                MeasureNode, 
+                (n, s, d, shrink) => MeasureNode(n, s, d, shrink), 
                 GetStyle, 
                 ShouldHide, 
                 depth);
@@ -1018,16 +1618,48 @@ namespace FenBrowser.FenEngine.Layout
 
         private LayoutMetrics MeasureButton(Element element, SKSize availableSize, int depth)
         {
-            // Buttons are like inline-blocks but with default padding/border (handled in UA styles eventually)
-            // But we need to ensure they measure their text content.
-            // Treat as essentially a block for measurement purposes
-            return MeasureBlockInternal(element, availableSize, depth, element);
+            // Buttons should use shrink-to-fit sizing (like inline-blocks)
+            // Measure with unconstrained width to get intrinsic content size
+            var shrinkConstraint = new SKSize(float.PositiveInfinity, availableSize.Height);
+            var m = MeasureBlockInternal(element, shrinkConstraint, depth, element);
+            
+            // Ensure buttons have reasonable minimum dimensions
+            if (m.MaxChildWidth < 10)
+            {
+                // Try to get text content width
+                string textContent = element.TextContent?.Trim() ?? "";
+                if (!string.IsNullOrEmpty(textContent))
+                {
+                    m.MaxChildWidth = Math.Max(m.MaxChildWidth, textContent.Length * 8f + 20); // Rough estimate
+                }
+                else
+                {
+                    m.MaxChildWidth = Math.Max(m.MaxChildWidth, 60); // Default min button width
+                }
+            }
+            
+            // Cap button width to available space if specified
+            if (!float.IsInfinity(availableSize.Width) && m.MaxChildWidth > availableSize.Width)
+            {
+                m.MaxChildWidth = availableSize.Width;
+            }
+            
+            // Ensure minimum height for buttons
+            if (m.ContentHeight < 20)
+            {
+                m.ContentHeight = 36; // Typical button height
+                m.ActualHeight = 36;
+            }
+            
+            return m;
         }
 
         private void ArrangeFlexInternal(Element element, SKRect finalRect, bool isCenteredRoot, int depth, Node fallbackNode = null)
         {
             var target = element ?? fallbackNode as Element;
             if (target == null) return;
+            
+
             
             CssFlexLayout.Arrange(
                 target, 
@@ -1047,26 +1679,78 @@ namespace FenBrowser.FenEngine.Layout
             if (node is Text) return true;
             var style = GetStyle(node);
             string d = style?.Display?.ToLowerInvariant();
-            return d == "inline" || d == "inline-block" || node.NodeName == "SPAN" || node.NodeName == "A" || node.NodeName == "B" || node.NodeName == "I" || node.NodeName == "IMG";
+            
+            // FIX: If display is explicitly set, use it. Do not fall back to Tag check.
+            if (!string.IsNullOrEmpty(d))
+            {
+                return d == "inline" || d == "inline-block" || d == "inline-flex" || d == "inline-grid" || d == "inline-table";
+            }
+            
+            // Fallback for default display
+            string tag = (node as Element)?.TagName?.ToUpperInvariant() ?? "";
+            return tag == "SPAN" || tag == "A" || tag == "B" || tag == "I" || tag == "IMG" || tag == "SVG" || tag == "INPUT" || tag == "BUTTON" || tag == "CANVAS" || tag == "SMALL" || tag == "CODE" || 
+                   tag == "STRONG" || tag == "EM" || tag == "LABEL" || tag == "BR" || tag == "PICTURE" || tag == "TIME" || tag == "MARK" || tag == "KBD" || tag == "ABBR" || tag == "Q" || 
+                   tag == "CITE" || tag == "SUB" || tag == "SUP" || tag == "DFN" || tag == "IFRAME";
         }
 
-        private LayoutMetrics MeasureInput(Element element, SKSize availableSize)
+        private LayoutMetrics MeasureInput(Element element, SKSize availableSize, int depth)
         {
-             // Input needs intrinsic size if not specified
-             // Default approximately 150x20
-             // But for Google search bar, it relies on width: 100% usually?
-             // Let's assume standard block measure first? No, inputs are atomic replaced elements generally.
+             if (depth > 80) return new LayoutMetrics();
+             
+             // Get input type
+             string inputType = element.GetAttribute("type")?.ToLowerInvariant() ?? "text";
              
              // Inspect style
              var style = GetStyle(element);
              float w = 150;
              float h = 20;
              
+             // Type-specific default sizes
+             switch (inputType)
+             {
+                 case "checkbox":
+                     w = 13; h = 13;
+                     break;
+                 case "radio":
+                     w = 13; h = 13;
+                     break;
+                 case "color":
+                     w = 44; h = 23;
+                     break;
+                 case "range":
+                     w = 129; h = 21;
+                     break;
+                 case "submit":
+                 case "button":
+                 case "reset":
+                     w = 80; h = 25;
+                     LayoutHelper.MeasureInputButtonText(element, style, ref w, ref h);
+                     break;
+                 case "date":
+                 case "datetime-local":
+                     w = 200; h = 25; // Date picker with calendar icon
+                     break;
+                 case "time":
+                     w = 120; h = 25; // Time picker
+                     break;
+                 case "number":
+                     w = 100; h = 25; // Number with spinbox
+                     break;
+                 case "file":
+                     w = 250; h = 25; // File input with button
+                     break;
+                 default:
+                     // text, password, email, etc. - standard sizing
+                     w = 150; h = 20;
+                     break;
+             }
+             
              if (element.TagName == "TEXTAREA") {
-                 h = 40; // Default taller for textarea
+                 h = 40;
                  w = 300;
              }
              
+             // Override with explicit CSS if specified
              if (style != null)
              {
                  if (style.Width.HasValue) w = (float)style.Width.Value;
@@ -1075,19 +1759,170 @@ namespace FenBrowser.FenEngine.Layout
              
              return new LayoutMetrics { ContentHeight = h, MaxChildWidth = w };
         }
+        
+        private LayoutMetrics MeasureVideo(Element element, SKSize availableSize)
+        {
+            // Default video size: 300x150 (HTML5 spec)
+            var style = GetStyle(element);
+            float w = 300;
+            float h = 150;
+            
+            // Check for explicit width/height attributes
+            string widthAttr = element.GetAttribute("width");
+            string heightAttr = element.GetAttribute("height");
+            
+            if (!string.IsNullOrEmpty(widthAttr) && float.TryParse(widthAttr, out float aw)) w = aw;
+            if (!string.IsNullOrEmpty(heightAttr) && float.TryParse(heightAttr, out float ah)) h = ah;
+            
+            // Override with CSS if specified
+            if (style != null)
+            {
+                if (style.Width.HasValue) w = (float)style.Width.Value;
+                if (style.Height.HasValue) h = (float)style.Height.Value;
+            }
+            
+            return new LayoutMetrics { ContentHeight = h, MaxChildWidth = w };
+        }
+        
+        private LayoutMetrics MeasureAudio(Element element, SKSize availableSize)
+        {
+            // Default audio controls size: 300x32
+            var style = GetStyle(element);
+            float w = 300;
+            float h = 32;
+            
+            // If no controls attribute, audio is invisible
+            if (!element.HasAttribute("controls"))
+            {
+                return new LayoutMetrics { ContentHeight = 0, MaxChildWidth = 0 };
+            }
+            
+            // Override with CSS if specified
+            if (style != null)
+            {
+                if (style.Width.HasValue) w = (float)style.Width.Value;
+                if (style.Height.HasValue) h = (float)style.Height.Value;
+            }
+            
+            return new LayoutMetrics { ContentHeight = h, MaxChildWidth = w };
+        }
+        
+        private LayoutMetrics MeasureIframe(Element element, SKSize availableSize)
+        {
+            // Default iframe size: 300x150 (HTML5 spec)
+            var style = GetStyle(element);
+            float w = 300;
+            float h = 150;
+            
+            // Check for explicit width/height attributes
+            string widthAttr = element.GetAttribute("width");
+            string heightAttr = element.GetAttribute("height");
+            
+            if (!string.IsNullOrEmpty(widthAttr) && float.TryParse(widthAttr, out float aw)) w = aw;
+            if (!string.IsNullOrEmpty(heightAttr) && float.TryParse(heightAttr, out float ah)) h = ah;
+            
+            // Override with CSS if specified
+            if (style != null)
+            {
+                if (style.Width.HasValue) w = (float)style.Width.Value;
+                if (style.Height.HasValue) h = (float)style.Height.Value;
+            }
+            
+            return new LayoutMetrics { ContentHeight = h, MaxChildWidth = w };
+        }
+        
+        private LayoutMetrics MeasureProgress(Element element, SKSize availableSize)
+        {
+            // Default progress bar size: 150x15
+            var style = GetStyle(element);
+            float w = 150;
+            float h = 15;
+            
+            if (style != null)
+            {
+                if (style.Width.HasValue) w = (float)style.Width.Value;
+                if (style.Height.HasValue) h = (float)style.Height.Value;
+            }
+            
+            return new LayoutMetrics { ContentHeight = h, MaxChildWidth = w };
+        }
+        
+        private LayoutMetrics MeasureMeter(Element element, SKSize availableSize)
+        {
+            // Default meter size: 80x15
+            var style = GetStyle(element);
+            float w = 80;
+            float h = 15;
+            
+            if (style != null)
+            {
+                if (style.Width.HasValue) w = (float)style.Width.Value;
+                if (style.Height.HasValue) h = (float)style.Height.Value;
+            }
+            
+            return new LayoutMetrics { ContentHeight = h, MaxChildWidth = w };
+        }
+        
+        private LayoutMetrics MeasureDetails(Element element, SKSize availableSize, int depth)
+        {
+            // Details element: only show summary when closed, all children when open
+            bool isOpen = element.HasAttribute("open");
+            float totalHeight = 0;
+            float maxWidth = 0;
+            
+            if (element.Children != null)
+            {
+                foreach (var child in element.Children)
+                {
+                    if (child is Element childEl)
+                    {
+                        bool isSummary = childEl.TagName?.ToUpperInvariant() == "SUMMARY";
+                        
+                        // Always show summary, only show other children if open
+                        if (isSummary || isOpen)
+                        {
+                            var childMetrics = MeasureNode(child, availableSize, depth);
+                            totalHeight += childMetrics.ContentHeight;
+                            maxWidth = Math.Max(maxWidth, childMetrics.MaxChildWidth);
+                        }
+                    }
+                }
+            }
+            
+            return new LayoutMetrics { ContentHeight = totalHeight, MaxChildWidth = maxWidth };
+        }
 
-        private LayoutMetrics MeasureInlineContext(Element container, SKSize availableSize)
+        private LayoutMetrics MeasureInlineContext(Element container, SKSize availableSize, int depth)
         {
             if (container.TagName == "A" || container.GetAttribute("class") == "o3j99")
             {
                // FenLogger.Debug($"[MEASURE-INLINE-ENTRY] {container.TagName}");
             }
 
+            var style = GetStyle(container);
+            float constrainedW = availableSize.Width;
+            float constrainedH = availableSize.Height;
+
+            if (style != null)
+            {
+                if (style.Width.HasValue) constrainedW = (float)style.Width.Value;
+                if (style.Height.HasValue) constrainedH = (float)style.Height.Value;
+                // If vertical-rl, and height is not set but max-height is, use that?
+                // For now, explicit height is critical for the test case.
+            }
+
             var result = InlineLayoutComputer.Compute(
                 container, 
-                availableSize, 
+                new SKSize(constrainedW, constrainedH), 
                 GetStyle, 
-                (elem, sz) => MeasureNode(elem, sz, 0) // Callback for atomic measuring
+                (elem, sz, d) => {
+                    var m = MeasureNode(elem, sz, d);
+                    _desiredSizes[elem] = new SKSize(m.MaxChildWidth, m.ContentHeight);
+                    // FenLogger.Debug($"[FLEX-CACHE] Stored {elem.TagName} Size={m.MaxChildWidth}x{m.ContentHeight}");
+                    return m;
+                },
+                depth,
+                (_activeBfcFloats.Count > 0 ? _activeBfcFloats.Peek() : null)
             );
             
             if (container.TagName == "A" || container.GetAttribute("class") == "o3j99")
@@ -1109,9 +1944,38 @@ namespace FenBrowser.FenEngine.Layout
             return result.Metrics;
         }
 
-        private void ArrangeInlineContext(Element container, SKRect finalRect)
+        private void ArrangeInlineContext(Element container, SKRect finalRect, int depth)
         {
             if (!_inlineCache.TryGetValue(container, out var result)) return;
+
+            // CRITICAL FIX: If finalRect.Width differs from what was used during Measure,
+            // re-run inline layout with the actual width to get correct text-align positioning.
+            // This is especially important for table cells measured with infinity width.
+            float measureWidth = result.Metrics.MaxChildWidth; // The width used during measure
+            float arrangeWidth = finalRect.Width;
+            
+            if (arrangeWidth > 0 && !float.IsInfinity(arrangeWidth) && Math.Abs(arrangeWidth - measureWidth) > 1)
+            {
+                // Re-run inline layout with actual width for proper text-align
+                // Also pass current Height constraint (or positive infinity if unconstrained)
+                // If vertical-rl, arrangeWidth is the Physical Width (Logical Height).
+                // We need to preserve the Logical Width (Physical Height) constraint too.
+                var newResult = InlineLayoutComputer.Compute(
+                    container,
+                    new SKSize(arrangeWidth, finalRect.Height),
+                    GetStyle,
+                    (elem, sz, d) => MeasureNode(elem, sz, d),
+                    depth
+                );
+                _inlineCache[container] = newResult;
+                result = newResult;
+                
+                // Also update _textLines with new positions
+                foreach (var kvp in result.TextLines)
+                {
+                    _textLines[kvp.Key] = kvp.Value;
+                }
+            }
 
             // Arrange Atomic Elements
             foreach (var kvp in result.ElementRects)
@@ -1132,7 +1996,7 @@ namespace FenBrowser.FenEngine.Layout
                      FenLogger.Debug($"[ARRANGE-INLINE-IMG] Container={container.TagName} Child=IMG Rect={finalChildRect}");
                 }
 
-                ArrangeNode(child, finalChildRect, 0); // Recursively arrange content of inline-blocks
+                ArrangeNode(child, finalChildRect, depth + 1); // Recursively arrange content of inline-blocks
             }
             // Text lines are already in _textLines, which ArrangeNode(Text) will pick up automatically
             // But wait, ArrangeNode is called for CHILDREN.
@@ -1144,13 +2008,14 @@ namespace FenBrowser.FenEngine.Layout
             // Simple approach: Iterate children of container. If found in ElementRects, arrange. 
             // If Text, call ArrangeText (which does nothing but is good for consistency).
             
-            void ProcessChildren(Node n) {
+            void ProcessChildren(Node n, int currentDepth) {
+                if (currentDepth > 80) return;
                 if (n is Element e && e.Children != null) {
                     foreach(var c in e.Children) {
                         if (result.ElementRects.TryGetValue(c, out var r)) {
                            // It's an atomic element we placed
                            var absR = new SKRect(finalRect.Left + r.Left, finalRect.Top + r.Top, finalRect.Left + r.Right, finalRect.Top + r.Bottom);
-                           ArrangeNode(c, absR, 0);
+                           ArrangeNode(c, absR, currentDepth + 1);
                         } else if (c is Text) {
                            // Text lines are relative to result.Origin (0,0). 
                            // In BoxModel, lines are relative to ContentBox.
@@ -1168,39 +2033,39 @@ namespace FenBrowser.FenEngine.Layout
                            // If line.Origin is (10, 10) relative to IFC start.
                            // And box.ContentBox is the IFC container absolute rect.
                            // Then it works!
-                           ArrangeNode(c, finalRect, 0);
+                           ArrangeNode(c, finalRect, currentDepth + 1);
                         } else {
                            // Nested inline (span, etc).
                            // Ensure the inline container itself gets a box so PaintTreeBuilder can traverse it.
                            // We use the container's rect as a placeholder box.
-                           ArrangeNode(c, finalRect, 0);
+                           ArrangeNode(c, finalRect, currentDepth + 1);
                            
                            // Recursively visit children to ensure they also get processed (if they are atomic or text)
-                           ProcessChildren(c);
+                           ProcessChildren(c, currentDepth + 1);
                         }
                     }
                 }
             }
-            ProcessChildren(container);
+            ProcessChildren(container, depth);
         }
 
         // ------------------------------------
 
 
         // Adapter methods for ILayoutComputer interface
-        public LayoutMetrics MeasureFlex(Element element, SKSize s) 
+        public LayoutMetrics MeasureFlex(Element element, SKSize s, int depth) 
         {
-             return MeasureBlockInternal(element, s, 1, element);
+             return MeasureFlexInternal(element, s, false, depth);
         }
 
-        public void ArrangeFlex(Element element, SKRect r) 
+        public void ArrangeFlex(Element element, SKRect r, int depth) 
         {
              var style = GetStyle(element);
              var children = element.Children;
-             ArrangeFlex(element, r, 1, style, children);
+             ArrangeFlex(element, r, depth, style, children);
         }
         
-        public LayoutMetrics MeasureBlock(Element element, SKSize s) 
+        public LayoutMetrics MeasureBlock(Element element, SKSize s, int depth) 
         {
             // Detect Inline Formatting Context
             // If any child is inline, we should use Inline Layout.
@@ -1225,20 +2090,20 @@ namespace FenBrowser.FenEngine.Layout
             }
             if (useIFC) {
                 /* [PERF-REMOVED] */
-                return MeasureInlineContext(element, s);
+                return MeasureInlineContext(element, s, depth);
             }
             else {
                 /* [PERF-REMOVED] */
-                return MeasureBlockInternal(element, s, 0, element);
+                return MeasureBlockInternal(element, s, depth, element);
             }
         }
 
-        public void ArrangeBlock(Element element, SKRect r) 
+        public void ArrangeBlock(Element element, SKRect r, int depth) 
         {
             if (element != null && _inlineCache.ContainsKey(element))
-                ArrangeInlineContext(element, r);
+                ArrangeInlineContext(element, r, depth);
             else
-                ArrangeBlockInternal(element, r, 0, element);
+                ArrangeBlockInternal(element, r, depth, element);
         }
 
         public void ArrangeText(Node node, SKRect finalRect) { }
@@ -1319,7 +2184,49 @@ namespace FenBrowser.FenEngine.Layout
             // But usually we want to know the intrinsic ratio if one dim is missing.
             
             float intW = 0, intH = 0;
-            if (elem != null)
+            
+            // Special handling for Inline SVG
+            if (elem != null && elem.TagName == "SVG")
+            {
+                // SVGs default to 300x150 in browsers if no size is specified
+                intW = 300;
+                intH = 150;
+                
+                string viewBox = elem.GetAttribute("viewBox") ?? elem.GetAttribute("viewbox");
+                if (!string.IsNullOrEmpty(viewBox))
+                {
+                    var parts = viewBox.Split(new[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries);
+                    // viewBox="min-x min-y width height"
+                    if (parts.Length == 4)
+                    {
+                        if (float.TryParse(parts[2], out float vbW) && float.TryParse(parts[3], out float vbH))
+                        {
+                            // Use abs() as some viewBox have negative coordinates for translation
+                            intW = Math.Abs(vbW);
+                            intH = Math.Abs(vbH);
+                            FenLogger.Debug($"[SVG-VIEWBOX] Parsed viewBox '{viewBox}' => {intW}x{intH}");
+                        }
+                    }
+                }
+                
+                // Apply width/height HTML attributes for SVGs if viewBox didn't yield good sizes
+                if ((intW <= 0 || intH <= 0) || (intW > 900 || intH > 900))
+                {
+                    // Look for explicit width/height attributes which often contain smaller display size
+                    string svgW = elem.GetAttribute("width");
+                    string svgH = elem.GetAttribute("height");
+                    
+                    if (!string.IsNullOrEmpty(svgW) && float.TryParse(svgW.Replace("px", ""), out float aw))
+                        intW = aw;
+                    if (!string.IsNullOrEmpty(svgH) && float.TryParse(svgH.Replace("px", ""), out float ah))
+                        intH = ah;
+                }
+                
+                // Default for small icons if still no size
+                if (intW <= 0) intW = 24;
+                if (intH <= 0) intH = 24;
+            }
+            else if (elem != null)
             {
                 string src = elem.GetAttribute("src");
                 if (!string.IsNullOrEmpty(src))
@@ -1437,6 +2344,8 @@ namespace FenBrowser.FenEngine.Layout
             // CSS display:none and visibility:hidden always take precedence
             if (style?.Display == "none" || style?.Visibility == "hidden") 
             {
+                // (V8 Removed)
+                
                 // DIAGNOSTIC: Log elements hidden via CSS
                 if (node is Element el)
                 {
@@ -1450,12 +2359,25 @@ namespace FenBrowser.FenEngine.Layout
             }
             
             // Check element-specific hiding rules
-            if (node is Element e)
-            {
-                string tag = e.TagName.ToLowerInvariant();
+        if (node is Element e)
+        {
+            string tag = e.TagName.ToLowerInvariant();
+            
+            // Hide elements used for screen-reader text or hidden by common UI utilities
+            string cls = e.GetAttribute("class") ?? "";
+            if (cls.Contains("sr-only") || cls.Contains("visually-hidden") || cls.Contains("v-hidden") || 
+                cls.Contains("vH") || cls.Contains("inv") || cls.Contains("skip-to-content") || 
+                cls.Contains("AppHeader-skipLink") || cls.Contains("show-on-focus") || cls.Contains("p-none-sr")) return true;
+            
+            // Handle aria-hidden
+            if (e.GetAttribute("aria-hidden") == "true") return true;
+
+            // Never hide html/body
+            if (tag == "html" || tag == "body") return false;
                 
-                // Never hide html/body
-                if (tag == "html" || tag == "body") return false;
+                // Explicitly hide metadata/invisible tags
+                if (tag == "head" || tag == "script" || tag == "style" || tag == "template" || tag == "link" || tag == "meta" || tag == "title" || tag == "noscript")
+                    return true;
                 
                 // Hide hidden inputs
                 if (tag == "input")
@@ -1472,7 +2394,7 @@ namespace FenBrowser.FenEngine.Layout
                 }
                 
                 // Replaced elements (inputs, images, etc) are generally visible
-                bool isReplaced = tag == "input" || tag == "img" || tag == "button" || tag == "hr" || tag == "svg" || tag == "iframe";
+                bool isReplaced = tag == "input" || tag == "img" || tag == "button" || tag == "hr" || tag == "svg" || tag == "iframe" || tag == "canvas" || tag == "video";
                 if (isReplaced) return false;
                 
                 // Check for content or explicit styling
@@ -1491,11 +2413,10 @@ namespace FenBrowser.FenEngine.Layout
                 
                 if (!hasContent && !hasExplicitSize && !hasVisuals) 
                 {
-                    // DIAGNOSTIC: Log elements hidden due to "no content/size/visuals" rule
-                    if (tag == "a" || tag == "img" || tag == "video" || tag == "svg" || tag == "footer" || tag == "header" || (e.GetAttribute("class")?.Contains("gb") ?? false))
-                    {
-                         /* [PERF-REMOVED] */
-                    }
+                    // Never hide container-like spans/divs that might be flex/grid items with future content
+                    if (tag == "div" || tag == "span" || tag == "section" || tag == "article" || tag == "nav" || tag == "header" || tag == "footer")
+                        return false;
+
                     return true;
                 }
             } 
@@ -1511,156 +2432,16 @@ namespace FenBrowser.FenEngine.Layout
             return false;
         }
 
-        public LayoutMetrics MeasureGrid(Element e, SKSize constraints)
+        // REMOVED: Old CssGridLayout-based MeasureGrid and ArrangeGrid stubs
+        // Now using GridLayoutComputer at end of class
+
+        public void ComputeTableLayout(Element element, SKRect contentRect, int depth)
         {
-            // [HACK CLEANUP] Using robust CssGridLayout from Rendering namespace
-            if (e == null) return new LayoutMetrics();
-            if (!_styles.TryGetValue(e, out var style)) return MeasureBlock(e, constraints);
-
-            float width = constraints.Width;
-            float height = 0;
-
-            // 1. Resolve Container Dimensions
-            bool isExplicitWidth = GetExplicitPixelValue(style.Width, _viewportWidth, out float explicitW);
-            bool isExplicitHeight = GetExplicitPixelValue(style.Height, _viewportHeight, out float explicitH);
-            
-            if (isExplicitWidth) width = explicitW;
-            
-            // 2. Setup Grid Engine
-            var grid = new CssGridLayout
+            if (_tableStates.TryGetValue(element, out var state))
             {
-                ContainerWidth = width,
-                ContainerHeight = isExplicitHeight ? explicitH : 0, // 0 for auto-height calculation
-                ColumnGap = GetExplicitPixelValue(style.Gap, width, out float cGap) ? cGap : 0,
-                RowGap = cGap,
-                JustifyItems = style.Map.TryGetValue("justify-items", out var ji) ? ji : "stretch",
-                AlignItems = style.Map.TryGetValue("align-items", out var ai) ? ai : "stretch",
-                JustifyContent = style.Map.TryGetValue("justify-content", out var jc) ? jc : "start",
-                AlignContent = style.Map.TryGetValue("align-content", out var ac) ? ac : "start"
-            };
-
-            // Setup measure callback for auto tracks
-            grid.MeasureChild = (child) => 
-            {
-                // Measure with infinite constraints to get intrinsic size
-                // We increment depth to avoid infinite recursion if structure is deep
-                // Note: using 'constraints' width might be better than infinite if we want wrapped text size?
-                // But specifically for 'auto' track sizing, we usually want max-content.
-                // Using infinite width gives max-content.
-                var m = MeasureNode(child, new SKSize(float.PositiveInfinity, float.PositiveInfinity), 1); // Use safe depth
-                // MeasureGrid definition at line 955: public LayoutMetrics MeasureGrid(Element e, SKSize constraints)
-                // It does NOT take depth. I should update signature or assume specific depth.
-                // Let's assume depth is not critical or pass a safe value.
-                // However, MeasureNode checks depth > 100.
-                return new SKSize(m.MaxChildWidth, m.ContentHeight);
-            };
-
-            // 3. Configure Template
-            if (style.Map.TryGetValue("grid-template-columns", out var cols)) grid.SetTemplateColumns(cols);
-            else grid.SetTemplateColumns("none");
-            
-            if (style.Map.TryGetValue("grid-template-rows", out var rows)) grid.SetTemplateRows(rows);
-            else grid.SetTemplateRows("none");
-
-            if (style.Map.TryGetValue("grid-template-areas", out var areas)) grid.SetTemplateAreas(areas);
-
-            // 4. Add Items
-            if (e.Children != null)
-            {
-                foreach (var child in e.Children)
-                {
-                    if (child is Element childEl && _styles.TryGetValue(childEl, out var childStyle))
-                    {
-                        grid.AddItem(childEl, childStyle);
-                    }
-                }
-            }
-
-            // 5. Compute Layout
-            // We pass Container Dimensions and axis info implicitly handled by ComputeLayout now calling CalculateTrackStarts
-            var placements = grid.ComputeLayout(0, 0).ToList();
-            
-            if(isExplicitHeight)
-            {
-                height = explicitH;
-            }
-            else
-            {
-                // Auto-height: Find bottom-most item
-                foreach(var p in placements)
-                {
-                    if (p.rect.Bottom > height) height = p.rect.Bottom;
-                }
-            }
-
-            return new LayoutMetrics { ContentHeight = height, ActualHeight = height };
-        }
-
-        public void ArrangeGrid(Element e, SKRect rect)
-        {
-            if (e == null) return;
-            if (!_styles.TryGetValue(e, out var style)) 
-            {
-                ArrangeBlock(e, rect);
-                return;
-            }
-
-            // 1. Re-setup Grid (Logic duplicated)
-             var grid = new CssGridLayout
-            {
-                ContainerWidth = rect.Width,
-                ContainerHeight = rect.Height,
-                ColumnGap = GetExplicitPixelValue(style.Gap, rect.Width, out float cGap) ? cGap : 0,
-                RowGap = cGap,
-                JustifyItems = style.Map.TryGetValue("justify-items", out var ji) ? ji : "stretch",
-                AlignItems = style.Map.TryGetValue("align-items", out var ai) ? ai : "stretch"
-            };
-            
-            grid.MeasureChild = (child) => 
-            {
-                var m = MeasureNode(child, new SKSize(float.PositiveInfinity, float.PositiveInfinity), 1);
-                return new SKSize(m.MaxChildWidth, m.ContentHeight);
-            };
-
-            if (style.Map.TryGetValue("grid-template-columns", out var cols)) grid.SetTemplateColumns(cols);
-            if (style.Map.TryGetValue("grid-template-rows", out var rows)) grid.SetTemplateRows(rows);
-            if (style.Map.TryGetValue("grid-template-areas", out var areas)) grid.SetTemplateAreas(areas);
-
-            if (e.Children != null)
-            {
-                foreach (var child in e.Children)
-                {
-                    if (child is Element childEl && _styles.TryGetValue(childEl, out var childStyle))
-                    {
-                        grid.AddItem(childEl, childStyle);
-                    }
-                }
-            }
-
-            // 2. Compute Final Positions relative to Grid Container (rect.Left, rect.Top)
-            var placements = grid.ComputeLayout(rect.Left, rect.Top);
-
-            // 3. Arrange Children
-            foreach (var (childEl, childRect) in placements)
-            {
-                // Recursively arrange child
-                // Note: We might need to call Measure on child again if its size depends on the grid cell?
-                // CssGridLayout computed the cell 'childRect'.
-                // If the child is 'stretch', it should fill that rect.
-                
-                // Store the calculated box
-                var box = _boxes.GetOrAdd(childEl, new BoxModel());
-                box.ContentBox = childRect; 
-                // We're bypassing standard ArrangeBlock/MeasureBlock logic which sets PaddingBox/BorderBox...
-                // Ideally, we should call 'Arrange' on the child type. 
-                // But Arrange usually CALCULATES position. Here we are GIVEN position.
-                // We just need to persist it.
-                
-                // Dispatch recursion for grandchildren
-                ArrangeNode(childEl, childRect, 1);
+                TableLayoutComputer.Arrange(element, contentRect, state, _styles, _boxes, ArrangeNode, depth);
             }
         }
-        public LayoutMetrics ComputeTableLayout(Element e, BoxModel b, float x, float y, float w, float h, int d) => new LayoutMetrics();
         public LayoutMetrics ComputeAbsoluteLayout(Element e, BoxModel b, float x, float y, float w, float h, int d)
         {
             if (e == null) return new LayoutMetrics();
@@ -1753,227 +2534,28 @@ namespace FenBrowser.FenEngine.Layout
 
         private void ArrangeFlex(Element element, SKRect finalRect, int depth, CssComputed style, IEnumerable<Node> children)
         {
-             // 1. Setup Flex Context
-             bool isRow = style.FlexDirection != "column"; // defaulting to row
-             FenLogger.Debug($"[FLEX-ARRANGE] Tag={element.TagName} Children={children.Count()} IsRow={isRow} Wrap={style.FlexWrap}");
-             bool wrap = style.FlexWrap == "wrap";
+             // CRITICAL FIX: Clamp infinite finalRect dimensions to prevent infinite child coordinates
+             // Use viewport width/height as fallback instead of arbitrary large value
+             var safeRect = finalRect;
+             float safeWidth = float.IsInfinity(finalRect.Width) || float.IsNaN(finalRect.Width) ? _viewportWidth : finalRect.Width;
+             float safeHeight = float.IsInfinity(finalRect.Height) || float.IsNaN(finalRect.Height) ? _viewportHeight : finalRect.Height;
+             float safeLeft = float.IsInfinity(finalRect.Left) || float.IsNaN(finalRect.Left) ? 0f : finalRect.Left;
+             float safeTop = float.IsInfinity(finalRect.Top) || float.IsNaN(finalRect.Top) ? 0f : finalRect.Top;
+             safeRect = new SKRect(safeLeft, safeTop, safeLeft + safeWidth, safeTop + safeHeight);
              
-             // Padding / Border
-             float pt = (float)style.Padding.Top;
-             float pb = (float)style.Padding.Bottom;
-             float pl = (float)style.Padding.Left;
-             float pr = (float)style.Padding.Right;
-             float bt = (float)style.BorderThickness.Top;
-             float bb = (float)style.BorderThickness.Bottom;
-             float bl = (float)style.BorderThickness.Left;
-             float br = (float)style.BorderThickness.Right;
-
-             float contentX = finalRect.Left + pl + bl;
-             float contentY = finalRect.Top + pt + bt;
-             float contentW = Math.Max(0, finalRect.Width - pl - pr - bl - br);
-             float contentH = Math.Max(0, finalRect.Height - pt - pb - bt - bb); 
-
-             // 2. Filter & Measure Items (using existing _desiredSizes)
-             var items = new List<FlexItem>();
-             foreach (var c in children)
-             {
-                 var cStyle = GetStyle(c);
-                 if (ShouldHide(c, cStyle)) continue;
-                 
-                 var pos = cStyle.Position?.ToLowerInvariant();
-                 if (pos == "absolute" || pos == "fixed") {
-                      ArrangeNode(c, finalRect, depth + 1); 
-                      continue;
-                 }
-                 
-                 SKSize size;
-                 if (!_desiredSizes.TryGetValue(c, out size)) {
-                     continue;
-                 }
-                 
-                 // Read flex-grow from style (default to 0)
-                 double flexGrow = cStyle.FlexGrow ?? 0;
-                 
-                 // Calculate initial main size (width for row, height for column)
-                 float initialMainSize = isRow ? 
-                     (size.Width + (float)cStyle.Margin.Left + (float)cStyle.Margin.Right) :
-                     (size.Height + (float)cStyle.Margin.Top + (float)cStyle.Margin.Bottom);
-                 
-                 items.Add(new FlexItem { 
-                     Node = c, 
-                     Style = cStyle, 
-                     Size = size, 
-                     FlexGrow = flexGrow,
-                     ExpandedMainSize = initialMainSize
-                 });
-             }
-
-             // 3. Line Breaking (Flex Wrap)
-             var lines = new List<FlexLine>();
-             var currentLine = new FlexLine();
-             float mainPos = 0;
-             
-             foreach (var item in items)
-             {
-                 // Calculate item main size (width + margin)
-                 float itemMainSize = isRow ? 
-                      (item.Size.Width + (float)item.Style.Margin.Left + (float)item.Style.Margin.Right) :
-                      (item.Size.Height + (float)item.Style.Margin.Top + (float)item.Style.Margin.Bottom);
-
-                 if (wrap && mainPos + itemMainSize > (isRow ? contentW : contentH) && currentLine.Items.Count > 0)
-                 {
-                     lines.Add(currentLine);
-                     currentLine = new FlexLine();
-                     mainPos = 0;
-                 }
-
-                 currentLine.Items.Add(item);
-                 currentLine.MainSize += itemMainSize;
-                 
-                 // Cross size
-                 float itemCrossSize = isRow ?
-                      (item.Size.Height + (float)item.Style.Margin.Top + (float)item.Style.Margin.Bottom) :
-                      (item.Size.Width + (float)item.Style.Margin.Left + (float)item.Style.Margin.Right);
-                 currentLine.CrossSize = Math.Max(currentLine.CrossSize, itemCrossSize);
-                 
-                 mainPos += itemMainSize;
-             }
-             if (currentLine.Items.Count > 0) lines.Add(currentLine);
-
-             // 3.5. FLEX-GROW DISTRIBUTION: Distribute remaining space to items with flex-grow > 0
-             float mainAxisSize = isRow ? contentW : contentH;
-             foreach (var line in lines)
-             {
-                 double totalFlexGrow = 0;
-                 foreach (var item in line.Items)
-                 {
-                     totalFlexGrow += item.FlexGrow;
-                 }
-                 
-                 if (totalFlexGrow > 0)
-                 {
-                     float remainingSpace = mainAxisSize - line.MainSize;
-                     if (remainingSpace > 0)
-                     {
-                         float totalExpansion = 0;
-                         foreach (var item in line.Items)
-                         {
-                             if (item.FlexGrow > 0)
-                             {
-                                 float expansion = (float)(item.FlexGrow / totalFlexGrow * remainingSpace);
-                                 item.ExpandedMainSize += expansion;
-                                 totalExpansion += expansion;
-                             }
-                         }
-                         // Update line.MainSize to reflect the expanded total
-                         line.MainSize += totalExpansion;
-                     }
-                 }
-             }
-
-             // 4. Arrange Lines
-             float crossPos = isRow ? contentY : contentX;
-             
-             foreach (var line in lines)
-             {
-                 // 5. Arrange Items in Line (Justify Content)
-                 float spaceRemaining = (isRow ? contentW : contentH) - line.MainSize;
-                 float startMain = isRow ? contentX : contentY;
-                 float gap = 0;
-                 
-                 var justify = style.JustifyContent?.ToLowerInvariant() ?? "flex-start";
-                 if (justify == "center")
-                 {
-                     startMain += spaceRemaining / 2;
-                 }
-                 else if (justify == "flex-end")
-                 {
-                     startMain += spaceRemaining;
-                 }
-                 else if (justify == "space-between" && line.Items.Count > 1)
-                 {
-                     gap = spaceRemaining / (line.Items.Count - 1);
-                 }
-                 else if (justify == "space-around" && line.Items.Count > 0)
-                 {
-                     float halfGap = (spaceRemaining / line.Items.Count) / 2;
-                     startMain += halfGap;
-                     gap = halfGap * 2;
-                 }
-
-                 // Align Items (Cross Axis per item)
-                 var align = style.AlignItems?.ToLowerInvariant() ?? "stretch";
-
-                 float lineMainPos = startMain;
-                 foreach (var item in line.Items)
-                 {
-                      // Use ExpandedMainSize which includes flex-grow expansion
-                      float itemMain = item.ExpandedMainSize;
-                      
-                      // Calculate the content size (without margins) - expanded if flex-grow was applied
-                      float itemContentWidth = item.Size.Width;
-                      float itemContentHeight = item.Size.Height;
-                      
-                      // If flex-grow expanded this item, increase the content dimension
-                      if (item.FlexGrow > 0)
-                      {
-                          float originalMainSize = isRow ? 
-                              (item.Size.Width + (float)item.Style.Margin.Left + (float)item.Style.Margin.Right) :
-                              (item.Size.Height + (float)item.Style.Margin.Top + (float)item.Style.Margin.Bottom);
-                          float expansion = item.ExpandedMainSize - originalMainSize;
-                          if (expansion > 0)
-                          {
-                              if (isRow)
-                                  itemContentWidth += expansion;
-                              else
-                                  itemContentHeight += expansion;
-                          }
-                      }
-
-                      // Determine Cross Position
-                      float itemCross = 0;
-            
-                      float myCrossIdx = isRow ? 
-                          (item.Size.Height + (float)item.Style.Margin.Top + (float)item.Style.Margin.Bottom) :
-                          (item.Size.Width + (float)item.Style.Margin.Left + (float)item.Style.Margin.Right);
-                          
-                      float availableCross = line.CrossSize; 
-                      
-                      float crossOffset = 0;
-                      if (align == "center")
-                      {
-                          crossOffset = (availableCross - myCrossIdx) / 2;
-                      }
-                      else if (align == "flex-end")
-                      {
-                          crossOffset = availableCross - myCrossIdx;
-                      }
-                      
-                      // Position Item
-                      float finalX, finalY;
-                      float ml = (float)item.Style.Margin.Left;
-                      float mt = (float)item.Style.Margin.Top;
-                      
-                      if (isRow)
-                      {
-                          finalX = lineMainPos + ml;
-                          finalY = crossPos + crossOffset + mt;
-                      }
-                      else
-                      {
-                          finalX = crossPos + crossOffset + ml;
-                          finalY = lineMainPos + mt;
-                      }
-                      
-                      var childRect = new SKRect(finalX, finalY, finalX + itemContentWidth, finalY + itemContentHeight);
-                      ArrangeNode(item.Node, childRect, depth + 1);
-
-                      lineMainPos += itemMain + gap;
-                 }
-                 
-                 crossPos += line.CrossSize;
-             }
+             // Delegate to shared implementation (CssFlexLayout.cs)
+             // finalRect here is actually calculation contentBox passed from ArrangeNodeCore
+             CssFlexLayout.Arrange(
+                 element,
+                 safeRect,
+                 (n, r, d) => ArrangeNode(n, r, d),
+                 GetStyle,
+                 (n) => _desiredSizes.TryGetValue(n, out var s) ? s : SKSize.Empty,
+                 ShouldHide,
+                 depth);
         }
+
+
 
         private class FlexItem
         {
@@ -1981,7 +2563,8 @@ namespace FenBrowser.FenEngine.Layout
             public CssComputed Style;
             public SKSize Size;
             public double FlexGrow; // flex-grow value (0 by default)
-            public float ExpandedMainSize; // Size after flex-grow distribution
+            public double FlexShrink; // flex-shrink value (1 by default)
+            public float ExpandedMainSize; // Size after flex-grow/shrink distribution
         }
 
         private class FlexLine
@@ -1991,5 +2574,52 @@ namespace FenBrowser.FenEngine.Layout
             public float CrossSize = 0;
         }
 
+        // ===================================================================
+        // CSS GRID LAYOUT
+        // ===================================================================
+
+        /// <summary>
+        /// Measure a CSS Grid container
+        /// </summary>
+        public LayoutMetrics MeasureGrid(Element element, SKSize availableSize, int depth)
+        {
+            if (element == null) return new LayoutMetrics();
+            return GridLayoutComputer.Measure(element, availableSize, _styles, depth);
+        }
+
+        /// <summary>
+        /// Arrange children within a CSS Grid container
+        /// </summary>
+        public void ArrangeGrid(Element element, SKRect bounds, int depth)
+        {
+            if (element == null) return;
+            
+            GridLayoutComputer.Arrange(
+                element,
+                bounds,
+                _styles,
+                _boxes,
+                depth,
+                (node, rect, d) => ArrangeNode(node, rect, d) // Delegate child arrangement
+            );
+        }
+
+        private struct BfcScope : IDisposable
+        {
+            private MinimalLayoutComputer _computer;
+            public BfcScope(MinimalLayoutComputer computer)
+            {
+                _computer = computer;
+                _computer._activeBfcFloats.Push(new List<FloatExclusion>());
+            }
+            public void Dispose()
+            {
+                if (_computer._activeBfcFloats.Count > 0)
+                    _computer._activeBfcFloats.Pop();
+            }
+        }
+
+        public int GetZeroSizedCount() => _zeroSizedCount;
     }
 }
+

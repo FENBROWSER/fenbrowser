@@ -14,105 +14,149 @@ namespace FenBrowser.FenEngine.Layout
     {
         private const float DefaultFontSize = 16f;
 
-        /// <summary>
-        /// Computes the layout for a text node, wrapping lines as needed.
-        /// Returns the metrics (Width, Height) and populates the BoxModel's Lines property if provided boxes are mutable.
-        /// But since BoxModel is created by caller, we return a list of lines.
-        /// </summary>
         public static (LayoutMetrics Metrics, List<ComputedTextLine> Lines) ComputeTextLayout(
             Node node, 
             CssComputed style, 
             SKSize availableSize, 
             float viewportWidth)
         {
-            if (!(node is Text textNode) || string.IsNullOrWhiteSpace(textNode.Data))
+            if (!(node is Text textNode) || string.IsNullOrEmpty(textNode.Data))
                 return (new LayoutMetrics(), new List<ComputedTextLine>());
 
             // 1. Setup Paint
             using var paint = new SKPaint();
             paint.TextSize = (float)(style?.FontSize ?? DefaultFontSize);
-            // Use TextLayoutHelper from existing code or resolve manually
             paint.Typeface = TextLayoutHelper.ResolveTypeface(style?.FontFamilyName, textNode.Data, style?.FontWeight ?? 400, (style?.FontStyle == SKFontStyleSlant.Italic) ? SKFontStyleSlant.Italic : SKFontStyleSlant.Upright);
             paint.IsAntialias = true;
 
             var fm = paint.FontMetrics;
             float fontHeight = fm.Descent - fm.Ascent;
-            float lineHeight = fontHeight; // Natural line height
-            // Apply line-height CSS if present
+            
+            // Standard browser "normal" line-height is typically around 1.2 * fontSize
+            // Skia's fontHeight (Descent - Ascent) can be significantly larger for some fonts, 
+            // causing excessive spacing. We enforce 1.2em as default to match Chrome/Edge.
+            float fontSize = paint.TextSize;
+            float lineHeight = fontSize * 1.2f; 
+
             if (style?.LineHeight.HasValue == true)
             {
-                if (style.LineHeight.Value < 5.0)
-                    lineHeight *= (float)style.LineHeight.Value;
-                else
-                    lineHeight = (float)style.LineHeight.Value;
+                // If LineHeight is a multiplier (e.g. 1.5), multiply by fontSize (not fontHeight, to be consistent)
+                // Or standard CSS says multiplier is relative to font-size.
+                // But existing logic seemingly treated it relative to itself?
+                // If value < 5.0, assume multiplier.
+                lineHeight = (float)(style.LineHeight.Value < 5.0 ? style.LineHeight.Value * fontSize : style.LineHeight.Value);
             }
 
-            // FIX: Implement "Half-Leading" vertical distribution
-            // This centers the text within the line-height.
+            // Recalculate leading to center the text content within the line box
             float leading = (lineHeight - fontHeight) / 2;
             float baselineOffset = -fm.Ascent + leading;
 
-            string text = textNode.Data;
-            // Collapse whitespace (basic standard text handling)
-            // Note: 'white-space: pre' would skip this. Assuming 'normal' for now.
-            var words = SplitIntoWords(text);
-            
+            // 2. Resolve White-Space Mode
+            string ws = style?.WhiteSpace?.ToLowerInvariant() ?? "normal";
+            bool collapseWhitespace = (ws == "normal" || ws == "nowrap" || ws == "pre-line");
+            bool preserveNewlines = (ws == "pre" || ws == "pre-wrap" || ws == "pre-line");
+            bool allowWrap = (ws == "normal" || ws == "pre-wrap" || ws == "pre-line");
+
+            // 3. Tokenize
+            var tokens = Tokenize(textNode.Data, collapseWhitespace, preserveNewlines);
+
             float maxLineWidth = availableSize.Width;
-            if (float.IsInfinity(maxLineWidth)) maxLineWidth = viewportWidth; // Fallback to viewport if infinite
+            if (float.IsInfinity(maxLineWidth)) maxLineWidth = 1000000;
 
             var lines = new List<ComputedTextLine>();
             float currentY = 0;
             
-            // 2. Greedy Line Breaking
-            // Accumulate words into lines
-            var currentLineWords = new List<string>();
+            var currentLineTokens = new List<TextToken>();
             float currentWidth = 0;
+            
             float spaceWidth = paint.MeasureText(" ");
 
-            foreach (var word in words)
+            void FlushLine()
             {
-                float wordWidth = paint.MeasureText(word);
-                // DIAGNOSTIC: Trace text width
-                if (word.StartsWith("About") || word.StartsWith("Store"))
+                if (currentLineTokens.Count == 0 && lines.Count > 0) return; // Don't flush empty unless it's a forced empty line
+                
+                // Construct string
+                var sb = new System.Text.StringBuilder();
+                for(int i=0; i<currentLineTokens.Count; i++)
                 {
-                     /* [PERF-REMOVED] */
+                    sb.Append(currentLineTokens[i].Text);
                 }
                 
-                // If adding this word exceeds width (and it's not the first word), break line
-                if (currentLineWords.Count > 0 && (currentWidth + spaceWidth + wordWidth) > maxLineWidth)
+                lines.Add(new ComputedTextLine
                 {
-                    // Flush current line
-                    lines.Add(CreateLine(currentLineWords, currentWidth, currentY, lineHeight, baselineOffset));
-                    
-                    // Reset for new line
-                    currentLineWords.Clear();
-                    currentLineWords.Add(word);
-                    currentWidth = wordWidth;
-                    currentY += lineHeight;
+                    Text = sb.ToString(),
+                    Width = currentWidth,
+                    Height = lineHeight,
+                    Origin = new SKPoint(0, currentY),
+                    Baseline = baselineOffset
+                });
+                
+                currentLineTokens.Clear();
+                currentWidth = 0;
+                currentY += lineHeight;
+            }
+
+            foreach (var token in tokens)
+            {
+                if (token.IsNewline)
+                {
+                    // Forces a line break
+                    FlushLine();
+                    continue;
+                }
+
+                float tokenWidth;
+                if (token.IsWhitespace && collapseWhitespace)
+                {
+                     // Collapsed whitespace is usually a single space
+                     tokenWidth = spaceWidth;
                 }
                 else
                 {
-                    if (currentLineWords.Count > 0) currentWidth += spaceWidth;
-                    currentLineWords.Add(word);
-                    currentWidth += wordWidth;
+                    tokenWidth = paint.MeasureText(token.Text);
+                }
+
+                // Check Wrap
+                bool shouldWrap = allowWrap && (currentWidth + tokenWidth > maxLineWidth) && currentLineTokens.Count > 0;
+                
+                if (shouldWrap)
+                {
+                    // If current token is a space and we are at EOL, we might ignore it or wrap it to next line (which becomes invisible trailing space)
+                    // Standard: if wrap happens at space, space spills or disappears.
+                    // Simplified: Flush then add.
+                    FlushLine();
+                }
+                
+                // Add Token
+                // Special handling for collapsed whitespace token -> ensure it renders as " "
+                if (collapseWhitespace && token.IsWhitespace)
+                {
+                    // If line is empty, leading whitespace might be ignored (in normal flow logic, strictly speaking yes, but simplified here)
+                    // Also consecutive spaces are already collapsed by Tokenizer if collapseWhitespace=true?
+                    // Actually let's assume Tokenizer handles collapsing contiguous spaces into one token.
+                    currentLineTokens.Add(new TextToken { Text = " ", IsWhitespace = true });
+                    currentWidth += spaceWidth;
+                }
+                else
+                {
+                    currentLineTokens.Add(token);
+                    currentWidth += tokenWidth;
                 }
             }
             
             // Flush last line
-            if (currentLineWords.Count > 0)
+            if (currentLineTokens.Count > 0)
             {
-                lines.Add(CreateLine(currentLineWords, currentWidth, currentY, lineHeight, baselineOffset));
-                currentY += lineHeight;
+                FlushLine();
             }
 
-            // 3. Compute Metrics
+            // 4. Compute Metrics
             float finalWidth = 0;
             foreach (var line in lines) finalWidth = Math.Max(finalWidth, line.Width);
-            
-            // Handle Alignment (Post-process)
+
+            // Alignment
             if (style?.TextAlign == SKTextAlign.Center || style?.TextAlign == SKTextAlign.Right)
             {
-                // Re-adjust Origins
                 for (int i = 0; i < lines.Count; i++)
                 {
                     var line = lines[i];
@@ -121,7 +165,7 @@ namespace FenBrowser.FenEngine.Layout
                     {
                         if (style.TextAlign == SKTextAlign.Center) line.Origin.X += remaining / 2;
                         else if (style.TextAlign == SKTextAlign.Right) line.Origin.X += remaining;
-                        lines[i] = line; // Struct update
+                        lines[i] = line;
                     }
                 }
             }
@@ -134,29 +178,79 @@ namespace FenBrowser.FenEngine.Layout
             }, lines);
         }
 
-        private static List<string> SplitIntoWords(string text)
+        private struct TextToken
         {
-            var list = new List<string>();
-            if (string.IsNullOrEmpty(text)) return list;
-            
-            // Naive split by whitespace. 
-            // Better: Preserve trailing punctuation attached to words.
-            // Even better: Use BreakIterator (too complex for now).
-            // Basic approach: Split by space, tab, newline.
-            var parts = text.Split(new char[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-            return new List<string>(parts);
+            public string Text;
+            public bool IsWhitespace;
+            public bool IsNewline;
         }
 
-        private static ComputedTextLine CreateLine(List<string> words, float width, float y, float height, float baseline)
+        private static List<TextToken> Tokenize(string text, bool collapseWhitespace, bool preserveNewlines)
         {
-            return new ComputedTextLine
+            var tokens = new List<TextToken>();
+            if (string.IsNullOrEmpty(text)) return tokens;
+
+            int i = 0;
+            while (i < text.Length)
             {
-                Text = string.Join(" ", words),
-                Width = width,
-                Height = height,
-                Origin = new SKPoint(0, y), // X is 0 relative to content box initially
-                Baseline = baseline
-            };
+                char c = text[i];
+                
+                if (c == '\r' || c == '\n')
+                {
+                    if (preserveNewlines)
+                    {
+                        tokens.Add(new TextToken { Text = "\n", IsNewline = true });
+                    }
+                    else if (collapseWhitespace)
+                    {
+                        // Treat as space (if previous wasn't space, or just loop to next char to merge)
+                        // Look ahead to merge with spaces?
+                        // Simplified: Treat as space.
+                        // But we want to merge runs of whitespace+newlines into single space.
+                    }
+                    
+                    // Consume sequence of newlines/whitespace if collapsing
+                    if (collapseWhitespace)
+                    {
+                         // Check previous token. If space, ignore this. Else add space.
+                         var last = tokens.Count > 0 ? tokens[tokens.Count - 1] : new TextToken();
+                         if (!last.IsWhitespace) 
+                         {
+                             tokens.Add(new TextToken { Text = " ", IsWhitespace = true });
+                         }
+                    }
+                    i++;
+                }
+                else if (char.IsWhiteSpace(c))
+                {
+                    // Tab or Space
+                    if (collapseWhitespace)
+                    {
+                        var last = tokens.Count > 0 ? tokens[tokens.Count - 1] : new TextToken();
+                        if (!last.IsWhitespace)
+                            tokens.Add(new TextToken { Text = " ", IsWhitespace = true });
+                        i++;
+                    }
+                    else
+                    {
+                        // Preserve exact whitespace char
+                        tokens.Add(new TextToken { Text = c.ToString(), IsWhitespace = true });
+                        i++;
+                    }
+                }
+                else
+                {
+                    // Word boundary
+                    int start = i;
+                    while (i < text.Length && !char.IsWhiteSpace(text[i]) && text[i] != '\r' && text[i] != '\n')
+                    {
+                        i++;
+                    }
+                    string word = text.Substring(start, i - start);
+                    tokens.Add(new TextToken { Text = word, IsWhitespace = false });
+                }
+            }
+            return tokens;
         }
     }
 }

@@ -1,5 +1,7 @@
 using SkiaSharp;
 using FenBrowser.Core;
+using FenBrowser.FenEngine.Layout.Coordinates;
+using System.Collections.Generic;
 
 namespace FenBrowser.FenEngine.Layout
 {
@@ -84,6 +86,20 @@ namespace FenBrowser.FenEngine.Layout
         /// Transform for this element.
         /// </summary>
         public TransformParsed Transform;
+
+        // --- Phase 3: Logical Axis Support ---
+        
+        /// <summary>
+        /// The content box in logical (flow-relative) coordinates.
+        /// Used internally for layout calculations to support writing modes.
+        /// </summary>
+        public Coordinates.LogicalRect LogicalContentBox;
+        
+        /// <summary>
+        /// The writing mode of this element (horizontal-tb, vertical-rl, etc.).
+        /// Determines how logical coordinates map to physical.
+        /// </summary>
+        public string WritingMode = "horizontal-tb";
 
         /// <summary>
         /// Computed text lines (if this is a text node).
