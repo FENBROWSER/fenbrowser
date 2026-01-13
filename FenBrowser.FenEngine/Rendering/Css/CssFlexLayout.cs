@@ -310,7 +310,9 @@ namespace FenBrowser.FenEngine.Rendering.Css
         {
             var style = getStyle(container);
             bool isRow = !(style?.FlexDirection?.ToLowerInvariant().Contains("column") ?? false);
-            bool isWrap = (style?.FlexWrap?.ToLowerInvariant() ?? "nowrap") != "nowrap";
+            string flexWrap = style?.FlexWrap?.ToLowerInvariant() ?? "nowrap";
+            bool isWrap = flexWrap != "nowrap";
+            bool isWrapReverse = flexWrap == "wrap-reverse";
             
             float rowGap = (float)(style?.RowGap ?? style?.Gap ?? 0);
             float colGap = (float)(style?.ColumnGap ?? style?.Gap ?? 0);
@@ -520,6 +522,8 @@ namespace FenBrowser.FenEngine.Rendering.Css
             float crossPos = (isRow ? contentBox.Top : contentBox.Left) + crossStartOffset;
             
             // 5. Final Arrangement Loop
+            if (isWrapReverse) lines.Reverse();
+
             foreach (var line in lines)
             {
                 float lineCrossSize = line.CrossSize;
