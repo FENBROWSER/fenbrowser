@@ -85,6 +85,16 @@ public class Program
         
         // Initialize logging from settings
         FenBrowser.Core.Logging.LogManager.InitializeFromSettings();
+
+        // Override with command line args
+        if (args.Contains("--log-level") && args.Length > Array.IndexOf(args, "--log-level") + 1)
+        {
+            var levelStr = args[Array.IndexOf(args, "--log-level") + 1];
+            if (Enum.TryParse<FenBrowser.Core.Logging.LogLevel>(levelStr, true, out var level))
+            {
+                FenBrowser.Core.Logging.LogManager.Initialize(true, FenBrowser.Core.Logging.LogCategory.All, level);
+            }
+        }
         
         FenLogger.Info($"[Host] Starting FenBrowser.Host with URL: {_currentUrl}", LogCategory.General);
         
