@@ -363,10 +363,13 @@ namespace FenBrowser.FenEngine.Rendering
                         List<NewCss.CssRule> parsed;
                         lock (_parsedRulesCache)
                         {
-                            if (!_parsedRulesCache.TryGetValue(blob.CssText, out parsed))
+                            // Pre-process for @font-face
+                            string processedCss = ExtractFontFace(blob.CssText, blob.BaseUri, log);
+
+                            if (!_parsedRulesCache.TryGetValue(processedCss, out parsed))
                             {
-                                parsed = ParseRules(blob.CssText, blob.SourceOrder, blob.BaseUri, viewportWidth, log, MapToNewCssOrigin(blob.Origin));
-                                _parsedRulesCache[blob.CssText] = parsed;
+                                parsed = ParseRules(processedCss, blob.SourceOrder, blob.BaseUri, viewportWidth, log, MapToNewCssOrigin(blob.Origin));
+                                _parsedRulesCache[processedCss] = parsed;
                             }
                         }
                         lock (allRules) allRules.AddRange(parsed);
@@ -881,7 +884,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Extract and register @font-face rules from CSS text
         /// </summary>
-        private static string ExtractFontFace(string text, Action<string> log)
+        private static string ExtractFontFace(string text, Uri baseUri, Action<string> log)
         {
             if (string.IsNullOrEmpty(text)) return text;
             if (text.IndexOf("@font-face", StringComparison.OrdinalIgnoreCase) < 0) return text;
@@ -923,7 +926,7 @@ namespace FenBrowser.FenEngine.Rendering
                 string fontFaceBody = text.Substring(braceOpen + 1, braceClose - braceOpen - 1);
                 try
                 {
-                    FontRegistry.ParseAndRegister(fontFaceBody);
+                    FontRegistry.ParseAndRegister(fontFaceBody, baseUri);
                     log?.Invoke($"[CSS] Registered @font-face");
                 }
                 catch (Exception ex)
@@ -1347,7 +1350,7 @@ namespace FenBrowser.FenEngine.Rendering
             
             // Extract non-standard/unimplemented blocks to avoid parser errors
             text = ExtractKeyframes(text, log);
-            text = ExtractFontFace(text, log);
+            text = ExtractFontFace(text, baseForUrls, log);
             text = FlattenSupports(text, log);
             text = ExtractLayers(text, log);
             text = FlattenContainerQueries(text, (float)(viewportWidth ?? 1024), log);
@@ -1778,6 +1781,9 @@ private static double? ExtractPx(string text, string prop)
                 css.OverflowX = Safe(DictGet(css.Map, "overflow-x"))?.ToLowerInvariant() ?? css.Overflow;
                 css.OverflowY = Safe(DictGet(css.Map, "overflow-y"))?.ToLowerInvariant() ?? css.Overflow;
 
+                // ACID2 FIX: Visibility property - critical for hiding elements
+                css.Visibility = Safe(DictGet(css.Map, "visibility"))?.ToLowerInvariant();
+
                 // Box Model
                 css.BoxSizing = Safe(DictGet(css.Map, "box-sizing"))?.ToLowerInvariant();
             }
@@ -2003,6 +2009,20 @@ private static double? ExtractPx(string text, string prop)
             {
                 if (css.Gap.HasValue) css.ColumnGap = css.Gap;
                 else if (css.RowGap.HasValue) css.ColumnGap = css.RowGap;
+            }
+
+            // INHERITANCE: Visibility
+            // Visibility is an inherited property. If not specified, take from parent.
+            if (string.IsNullOrEmpty(css.Visibility))
+            {
+                 if (parentCss != null && !string.IsNullOrEmpty(parentCss.Visibility))
+                 {
+                     css.Visibility = parentCss.Visibility;
+                 }
+                 else
+                 {
+                     css.Visibility = "visible";
+                 }
             }
 
             var fgColor = TryColor(DictGet(css.Map, "color"));

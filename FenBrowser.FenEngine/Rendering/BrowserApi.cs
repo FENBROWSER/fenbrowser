@@ -412,13 +412,16 @@ namespace FenBrowser.FenEngine.Rendering
                 catch { }
             };
 
-            // Wire up FontRegistry
-             _fontLoadedHandler = (family) => {
-                 try {
-                     FenLogger.Debug($"[FontRegistry] Font loaded: {family}. Requesting repaint.", LogCategory.Rendering);
-                     var dom = _engine.GetActiveDom();
-                     if (dom != null) RepaintReady?.Invoke(this, dom);
-                 } catch {}
+            // Wire up FontRegistry to trigger RepaintReady when fonts finish loading
+            _fontLoadedHandler = (family) =>
+            {
+                try
+                {
+                    FenLogger.Debug($"[FontRegistry-Repaint] Triggering repaint after font load: {family}", LogCategory.Rendering);
+                    // Trigger layout recalculation by raising RepaintReady
+                    RepaintReady?.Invoke(this, null);
+                }
+                catch { }
             };
             FontRegistry.FontLoaded += _fontLoadedHandler;
         }

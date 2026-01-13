@@ -47,6 +47,7 @@ namespace FenBrowser.FenEngine.Rendering
             public string Stretch { get; set; }         
             public string FeatureSettings { get; set; } 
             public string VariationSettings { get; set; } 
+            public Uri BaseUri { get; set; } // Added for relative path resolution
         }
 
         /// <summary>
@@ -145,7 +146,18 @@ namespace FenBrowser.FenEngine.Rendering
                     var urlMatch = Regex.Match(src, @"url\s*\(\s*([""']?)([^)""']+)\1\s*\)", RegexOptions.IgnoreCase);
                     if (urlMatch.Success) url = urlMatch.Groups[2].Value;
 
-                    if (Uri.TryCreate(url, UriKind.Absolute, out var uri))
+                    Uri uri;
+                    // Try exact absolute
+                    if (!Uri.TryCreate(url, UriKind.Absolute, out uri))
+                    {
+                        // Try relative to BaseUri
+                        if (descriptor.BaseUri != null)
+                        {
+                            Uri.TryCreate(descriptor.BaseUri, url, out uri);
+                        }
+                    }
+
+                    if (uri != null)
                     {
                         // Only download from HTTP/HTTPS - skip unsupported schemes like file://
                         if (uri.Scheme == "http" || uri.Scheme == "https")
@@ -205,14 +217,14 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Parse @font-face block and register it
         /// </summary>
-        public static void ParseAndRegister(string fontFaceBlock)
+        public static void ParseAndRegister(string fontFaceBlock, Uri baseUri = null)
         {
             if (string.IsNullOrWhiteSpace(fontFaceBlock))
                 return;
 
             try
             {
-                var descriptor = new FontFaceDescriptor();
+                var descriptor = new FontFaceDescriptor { BaseUri = baseUri };
 
                 // Parse font-family
                 var familyMatch = Regex.Match(fontFaceBlock, @"font-family\s*:\s*([""']?)([^;""']+)\1", RegexOptions.IgnoreCase);
