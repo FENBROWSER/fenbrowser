@@ -242,6 +242,11 @@ namespace FenBrowser.FenEngine.Rendering.Css
             // Stringify value (Basic support)
             string valueStr = string.Join("", valueTokens.Select(t => t.ToStringValue())); // Need simple ToString helper
 
+            if (property == "visibility")
+            {
+                global::FenBrowser.Core.FenLogger.Log($"[CssSyntaxParser] Parsed declaration: {property}: {valueStr.Trim()} (Important: {important})", global::FenBrowser.Core.Logging.LogCategory.CSS, global::FenBrowser.Core.Logging.LogLevel.Debug);
+            }
+
             return new CssDeclaration 
             {
                 Property = property,
