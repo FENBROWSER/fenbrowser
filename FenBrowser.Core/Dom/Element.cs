@@ -14,7 +14,15 @@ namespace FenBrowser.Core.Dom
 
         public string TagName { get; private set; }
 
-        // Attribute storage
+        // Attribute storage - DOM Living Standard §4.10
+        private readonly NamedNodeMap _attributes;
+        
+        /// <summary>
+        /// DOM spec: Returns a NamedNodeMap containing the attributes of this element.
+        /// </summary>
+        public NamedNodeMap NamedAttributes => _attributes;
+
+        // Legacy attribute storage (for backward compatibility)
         public Dictionary<string, string> Attributes { get; private set; }
         public Dictionary<string, string> AttributesRaw { get; private set; }
         private readonly Dictionary<string, string> _attrOriginalNames;
@@ -25,6 +33,7 @@ namespace FenBrowser.Core.Dom
             Attributes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             AttributesRaw = new Dictionary<string, string>(StringComparer.Ordinal);
             _attrOriginalNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            _attributes = new NamedNodeMap(this);
         }
 
         // ---- Backward Compatibility Aliases (for LiteElement migration) ----
@@ -208,6 +217,17 @@ namespace FenBrowser.Core.Dom
             _attrOriginalNames[key] = originalName;
             AttributesRaw[originalName] = val;
             
+            // Update NamedNodeMap (DOM spec compliant)
+            var existingAttr = _attributes.GetNamedItem(key);
+            if (existingAttr != null)
+            {
+                existingAttr.Value = val;
+            }
+            else
+            {
+                _attributes.SetNamedItem(new Attr(key, val));
+            }
+            
             // Notify MutationObserver (Attributes)
             NotifyMutation(new MutationRecord
             {
@@ -235,6 +255,12 @@ namespace FenBrowser.Core.Dom
             var removed = Attributes.Remove(key);
             if (!string.IsNullOrEmpty(original)) AttributesRaw.Remove(original);
             _attrOriginalNames.Remove(key);
+            
+            // Update NamedNodeMap (DOM spec compliant)
+            if (removed && _attributes.Contains(key))
+            {
+                try { _attributes.RemoveNamedItem(key); } catch { }
+            }
             
             if (removed)
                 NotifyMutation(new MutationRecord

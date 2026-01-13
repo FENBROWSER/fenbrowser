@@ -123,6 +123,31 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "font-size":
                      if (CssLoader.TryPx(value, out double fs)) style.FontSize = fs;
                      break;
+                     
+                // ACID2 FIX: Add visibility, display, position, overflow
+                case "display":
+                    style.Display = value;
+                    break;
+                    
+                case "visibility":
+                    style.Visibility = value;
+                    break;
+                    
+                case "position":
+                    style.Position = value;
+                    break;
+                    
+                case "overflow":
+                    style.Overflow = value;
+                    break;
+                    
+                case "overflow-x":
+                    style.OverflowX = value;
+                    break;
+                    
+                case "overflow-y":
+                    style.OverflowY = value;
+                    break;
             }
         }
     }

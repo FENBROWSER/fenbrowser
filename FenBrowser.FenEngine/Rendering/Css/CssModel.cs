@@ -35,6 +35,11 @@ namespace FenBrowser.FenEngine.Rendering.Css
         public List<CssRule> Rules { get; } = new List<CssRule>();
     }
 
+    public class CssFontFaceRule : CssRule
+    {
+        public List<CssDeclaration> Declarations { get; } = new List<CssDeclaration>();
+    }
+
     public class CssDeclaration
     {
         public string Property { get; set; } // Normalized to lowercase

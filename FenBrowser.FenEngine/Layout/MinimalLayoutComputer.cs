@@ -91,6 +91,14 @@ namespace FenBrowser.FenEngine.Layout
                     style.AlignContent = mapAlignContent;
                 if (style.Position == null && style.Map.TryGetValue("position", out var mapPos))
                     style.Position = mapPos;
+                    
+                // ACID2 FIX: Sync overflow properties for clipping
+                if (style.Overflow == null && style.Map.TryGetValue("overflow", out var mapOverflow))
+                    style.Overflow = mapOverflow;
+                if (style.OverflowX == null && style.Map.TryGetValue("overflow-x", out var mapOverflowX))
+                    style.OverflowX = mapOverflowX;
+                if (style.OverflowY == null && style.Map.TryGetValue("overflow-y", out var mapOverflowY))
+                    style.OverflowY = mapOverflowY;
             }
             
             // Inject defaults when CSS doesn't provide them (ua.css em parsing may fail)
@@ -2358,8 +2366,10 @@ namespace FenBrowser.FenEngine.Layout
         {
             if (node == null) return true;
             
-            // CSS display:none and visibility:hidden always take precedence
-            if (style?.Display == "none" || style?.Visibility == "hidden") 
+            // CSS display:none always takes precedence (removes from layout tree entirely)
+            // Note: visibility:hidden elements MUST still generate boxes and take up space, 
+            // so we do NOT check visibility here. That is handled in PaintTreeBuilder.
+            if (style?.Display == "none") 
             {
                 // (V8 Removed)
                 

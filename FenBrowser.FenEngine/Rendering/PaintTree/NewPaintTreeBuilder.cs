@@ -161,7 +161,16 @@ namespace FenBrowser.FenEngine.Rendering
             if (!_boxes.TryGetValue(node, out var box) || box == null) return;
             
             // Get computed style
-            _styles.TryGetValue(node, out var style);
+            // If node is Text, use parent's style
+            CssComputed style = null;
+            if (node.NodeType == NodeType.Text && node.Parent != null)
+            {
+                _styles.TryGetValue(node.Parent, out style);
+            }
+            else
+            {
+                _styles.TryGetValue(node, out style);
+            }
 
             // ABSOLUTE POSITION ESCAPE LOGIC
             // If this node is absolute, and we have a valid escape context (from a static parent), use it.
@@ -171,7 +180,7 @@ namespace FenBrowser.FenEngine.Rendering
                  escapeContext = null; 
             }
             
-            // Skip hidden elements
+            // Skip hidden elements (display: none)
             if (ShouldHide(node, style)) {
                  if (FenBrowser.Core.Logging.DebugConfig.LogPaintCommands && depth < 20)
                      global::FenBrowser.Core.FenLogger.Log($"[PAINT-SKIP] {(node as Element)?.TagName} Reason=ShouldHide", FenBrowser.Core.Logging.LogCategory.Paint);
@@ -193,12 +202,23 @@ namespace FenBrowser.FenEngine.Rendering
                  {
                      string scInfo = createsStackingContext ? $" SC=True Z={zIndex}" : "";
                      string clipInfo = (style?.Overflow == "hidden" || style?.OverflowX == "hidden") ? " Clipped=True" : "";
-                     global::FenBrowser.Core.FenLogger.Log($"[PAINT-NODE] {new string(' ', depth)}{(node as Element)?.TagName} {scInfo}{clipInfo} Rect={box.BorderBox}", LogCategory.Paint);
+                     string visInfo = (style?.Visibility == "hidden") ? " Vis=Hidden" : "";
+                     global::FenBrowser.Core.FenLogger.Log($"[PAINT-NODE] {new string(' ', depth)}{(node as Element)?.TagName} {scInfo}{clipInfo}{visInfo} Rect={box.BorderBox}", LogCategory.Paint);
                  }
             }
             
             // Build paint nodes for this element
-            var paintNodes = BuildPaintNodesForElement(node, box, style);
+            // VISIBILITY CHECK: If visibility is hidden, we do NOT generate visual paint nodes for this element
+            // However, we MUST still traverse children (as they might be visible) and handle stacking contexts/opacity/overflow.
+            List<PaintNodeBase> paintNodes = null;
+            if (style?.Visibility != "hidden")
+            {
+                paintNodes = BuildPaintNodesForElement(node, box, style);
+            }
+            else
+            {
+                paintNodes = new List<PaintNodeBase>(); // Empty list for invisible element
+            }
             
             // Handle Sticky Positioning
             if (style?.Position?.ToLowerInvariant() == "sticky")
