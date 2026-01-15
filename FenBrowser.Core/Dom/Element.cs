@@ -189,87 +189,115 @@ namespace FenBrowser.Core.Dom
 
         public override string GetAttribute(string name)
         {
-            if (Attributes == null || string.IsNullOrWhiteSpace(name)) return null;
-            return Attributes.TryGetValue(name, out var v) ? v : null;
+            var attr = GetAttributeNode(name);
+            return attr?.Value;
         }
 
         public override void SetAttribute(string name, string value)
         {
             if (string.IsNullOrWhiteSpace(name)) return;
             
-            // Phase Guard: No DOM writes during Layout/Paint
-            EngineContext.Current.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
-
-            var trimmed = name.Trim();
-            var key = trimmed.ToLowerInvariant();
-            var val = value ?? string.Empty;
-
-            string previousOriginal;
-            _attrOriginalNames.TryGetValue(key, out previousOriginal);
-            var originalName = string.IsNullOrEmpty(previousOriginal) ? trimmed : previousOriginal;
-
-            if (!string.Equals(previousOriginal, originalName, StringComparison.Ordinal) && !string.IsNullOrEmpty(previousOriginal))
-            {
-                AttributesRaw.Remove(previousOriginal);
-            }
-
-            Attributes[key] = val;
-            _attrOriginalNames[key] = originalName;
-            AttributesRaw[originalName] = val;
+            // Phase Guard handled in SetAttributeNode
             
-            // Update NamedNodeMap (DOM spec compliant)
-            var existingAttr = _attributes.GetNamedItem(key);
-            if (existingAttr != null)
+            var key = name.Trim().ToLowerInvariant();
+            var existing = _attributes.GetNamedItem(key);
+            
+            if (existing != null)
             {
-                existingAttr.Value = val;
+                existing.Value = value ?? "";
+                SetAttributeNode(existing);
             }
             else
             {
-                _attributes.SetNamedItem(new Attr(key, val));
+                SetAttributeNode(new Attr(name.Trim(), value ?? ""));
             }
+        }
+
+        public override bool HasAttribute(string name)
+        {
+            return GetAttributeNode(name) != null;
+        }
+
+        public override bool RemoveAttribute(string name)
+        {
+            var attr = GetAttributeNode(name);
+            if (attr != null)
+            {
+                RemoveAttributeNode(attr);
+                return true;
+            }
+            return false;
+        }
+
+        public Attr GetAttributeNode(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return null;
+            return _attributes.GetNamedItem(name);
+        }
+
+        public Attr SetAttributeNode(Attr newAttr)
+        {
+            if (newAttr == null) return null;
             
-            // Notify MutationObserver (Attributes)
+            // Phase Guard
+            EngineContext.Current.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
+
+            if (newAttr.OwnerElement != null && newAttr.OwnerElement != this)
+                throw new DomException("InUseAttributeError", "Attribute is already in use by another element");
+
+            var result = _attributes.SetNamedItem(newAttr);
+            
+            // Sync Legacy Dictionaries
+            SyncAttributeToLegacyStorage(newAttr);
+            
+            NotifyMutation(new MutationRecord
+            {
+                Type = "attributes",
+                Target = this,
+                AttributeName = newAttr.Name.ToLowerInvariant()
+            });
+
+            return result;
+        }
+
+        public Attr RemoveAttributeNode(Attr oldAttr)
+        {
+            if (oldAttr == null) throw new ArgumentNullException(nameof(oldAttr));
+            if (oldAttr.OwnerElement != this) 
+                throw new DomException("NotFoundError", "Attribute does not belong to this element");
+
+            // Phase Guard
+            EngineContext.Current.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
+
+            _attributes.RemoveNamedItem(oldAttr.Name);
+            
+            // Sync Legacy Dictionaries
+            var key = oldAttr.Name.Trim().ToLowerInvariant();
+            Attributes.Remove(key);
+            AttributesRaw.Remove(oldAttr.Name); // Or check original names?
+            _attrOriginalNames.Remove(key);
+            
             NotifyMutation(new MutationRecord
             {
                 Type = "attributes",
                 Target = this,
                 AttributeName = key
             });
+
+            return oldAttr;
         }
 
-        public override bool HasAttribute(string name)
+        private void SyncAttributeToLegacyStorage(Attr attr)
         {
-            return Attributes.ContainsKey(name);
-        }
-
-        public override bool RemoveAttribute(string name)
-        {
-             if (string.IsNullOrWhiteSpace(name)) return false;
-
-            // Phase Guard
-            EngineContext.Current.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
-
-            var key = name.Trim().ToLowerInvariant();
-            string original;
-            _attrOriginalNames.TryGetValue(key, out original);
-            var removed = Attributes.Remove(key);
-            if (!string.IsNullOrEmpty(original)) AttributesRaw.Remove(original);
-            _attrOriginalNames.Remove(key);
+            if (attr == null) return;
+            var key = attr.Name.Trim().ToLowerInvariant();
+            var originalName = attr.Name;
             
-            // Update NamedNodeMap (DOM spec compliant)
-            if (removed && _attributes.Contains(key))
-            {
-                try { _attributes.RemoveNamedItem(key); } catch { }
-            }
+            // Handle rename collision if needed (ignored for now)
             
-            if (removed)
-                NotifyMutation(new MutationRecord
-                {
-                    Type = "attributes",
-                    Target = this,
-                    AttributeName = key
-                });
-            return removed;
+            Attributes[key] = attr.Value;
+            AttributesRaw[originalName] = attr.Value;
+            _attrOriginalNames[key] = originalName;
         }
 
         // Shadow DOM support

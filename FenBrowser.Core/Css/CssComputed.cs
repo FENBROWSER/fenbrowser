@@ -1,6 +1,7 @@
 using SkiaSharp;
 using FenBrowser.Core;
 using System.Collections.Generic;
+using FenBrowser.Core.Dom;
 
 namespace FenBrowser.Core.Css
 {
@@ -22,7 +23,7 @@ namespace FenBrowser.Core.Css
         public CssComputed FirstLetter { get; set; }  // ::first-letter pseudo-element styles
         
         // Cache for virtual DOM node used in Rendering
-        public object PseudoElementInstance { get; set; }
+        public PseudoElement PseudoElementInstance { get; set; }
 
         public CssComputed()
         {
@@ -58,6 +59,9 @@ namespace FenBrowser.Core.Css
         public string BackgroundClip { get; set; }    // border-box, padding-box, content-box
         public string BackgroundOrigin { get; set; }  // border-box, padding-box, content-box
         public string BackgroundRepeat { get; set; }  // repeat, no-repeat, repeat-x, repeat-y
+        
+        // Visibility
+        public string Visibility { get; set; }        // visible, hidden, collapse
         public string BackgroundImage { get; set; }   // url, gradient, etc.
         public string BackgroundSize { get; set; }    // cover, contain, auto, px, %
         public string BackgroundPosition { get; set; } // center, top left, 50% 50%, etc.
@@ -122,6 +126,8 @@ namespace FenBrowser.Core.Css
         public string FlexDirection { get; set; }
         public string FlexWrap { get; set; }
         public string JustifyContent { get; set; }
+        public string JustifyItems { get; set; } // Grid/Flex Item Alignment
+        public string JustifySelf { get; set; }  // Individual Item Alignment
         public string AlignItems { get; set; }
         public string AlignSelf { get; set; }
         public string AlignContent { get; set; }
@@ -297,7 +303,7 @@ namespace FenBrowser.Core.Css
         public string EmptyCells { get; set; }               // show, hide
         
         // Visibility & Display
-        public string Visibility { get; set; }               // visible, hidden, collapse
+
         public string BackfaceVisibilityVal { get; set; }    // visible, hidden (for 3D)
         public string Appearance { get; set; }               // none, auto, button, textfield, etc.
         
