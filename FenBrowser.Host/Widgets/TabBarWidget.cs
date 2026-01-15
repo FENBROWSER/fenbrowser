@@ -46,12 +46,23 @@ public class TabBarWidget : Widget
     /// </summary>
     public event Action CloseRequested;
     
+    /// <summary>
+    /// Event when tabs are reordered via drag-and-drop.
+    /// </summary>
+    public event Action<BrowserTab, int> TabReordered;
+    
     private readonly ButtonWidget _newTabButton;
     private readonly ButtonWidget _minimizeButton;
     private readonly ButtonWidget _maximizeButton;
     private readonly ButtonWidget _closeButton;
     
     private const float WINDOW_CONTROL_WIDTH = 38;
+    
+    // --- Drag-and-Drop State (10/10) ---
+    private int _draggingTabIndex = -1;
+    private float _dragStartX;
+    private float _dragOffsetX;
+    private bool _isDragging;
     
     public TabBarWidget()
     {
@@ -284,4 +295,95 @@ public class TabBarWidget : Widget
         path.LineTo(0, 8);
         return path;
     }
+    
+    // --- Drag-and-Drop Tab Reordering (10/10) ---
+    
+    /// <summary>
+    /// Begin dragging a tab at the given mouse position.
+    /// </summary>
+    public void BeginTabDrag(float x, float y)
+    {
+        // Find which tab was clicked
+        for (int i = 0; i < _tabWidgets.Count; i++)
+        {
+            if (_tabWidgets[i].Bounds.Contains(x, y))
+            {
+                _draggingTabIndex = i;
+                _dragStartX = x;
+                _dragOffsetX = x - _tabWidgets[i].Bounds.Left;
+                _isDragging = true;
+                return;
+            }
+        }
+    }
+    
+    /// <summary>
+    /// Update the tab position during drag.
+    /// </summary>
+    public void UpdateTabDrag(float x)
+    {
+        if (!_isDragging || _draggingTabIndex < 0) return;
+        
+        // Calculate new position
+        float draggedTabX = x - _dragOffsetX;
+        
+        // Find target index based on position
+        int targetIndex = 0;
+        float checkX = Bounds.Left + 4 - _scrollOffset;
+        
+        for (int i = 0; i < _tabWidgets.Count; i++)
+        {
+            float tabWidth = _tabWidgets[i].PreferredWidth;
+            float tabCenter = checkX + tabWidth / 2;
+            
+            if (draggedTabX > tabCenter)
+            {
+                targetIndex = i + 1;
+            }
+            
+            checkX += tabWidth + 2;
+        }
+        
+        // Clamp to valid range
+        targetIndex = Math.Max(0, Math.Min(_tabWidgets.Count - 1, targetIndex));
+        
+        // Perform swap if needed
+        if (targetIndex != _draggingTabIndex)
+        {
+            var tab = _tabWidgets[_draggingTabIndex];
+            _tabWidgets.RemoveAt(_draggingTabIndex);
+            _tabWidgets.Insert(targetIndex, tab);
+            _draggingTabIndex = targetIndex;
+            
+            InvalidateLayout();
+            Invalidate();
+        }
+    }
+    
+    /// <summary>
+    /// End the tab drag operation.
+    /// </summary>
+    public void EndTabDrag()
+    {
+        if (_isDragging && _draggingTabIndex >= 0)
+        {
+            var tab = _tabWidgets[_draggingTabIndex].Tab;
+            TabReordered?.Invoke(tab, _draggingTabIndex);
+        }
+        
+        _isDragging = false;
+        _draggingTabIndex = -1;
+        InvalidateLayout();
+        Invalidate();
+    }
+    
+    /// <summary>
+    /// Check if currently dragging a tab.
+    /// </summary>
+    public bool IsDraggingTab => _isDragging;
+    
+    /// <summary>
+    /// Get the currently dragged tab index, or -1 if not dragging.
+    /// </summary>
+    public int DraggingTabIndex => _draggingTabIndex;
 }
