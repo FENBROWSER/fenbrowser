@@ -174,14 +174,29 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 try
                 {
-                    // PRIORITY 1: Development path (hardcoded for debugging)
-                    var devPath = @"c:\Users\udayk\Videos\FENBROWSER\FenBrowser.FenEngine\Assets\ua.css";
-                    if (File.Exists(devPath))
-                    {
-                        uaCss = File.ReadAllText(devPath);
-                        System.Diagnostics.Debug.WriteLine($"[CssLoader] Loaded UA stylesheet from: {devPath} ({uaCss.Length} chars)");
+                    // PRIORITY 1: Development path (hardcoded)
+                    var devPaths = new[] {
+                        @"c:\Users\udayk\Videos\FENBROWSER\FenBrowser.FenEngine\Assets\ua.css",
+                        Path.Combine(Directory.GetCurrentDirectory(), @"..\..\..\..\FenBrowser.FenEngine\Assets\ua.css"), 
+                        Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"Credits\ua.css"), // unlikely
+                        Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"ua.css")
+                    };
+                    
+                    bool loaded = false;
+                    foreach (var path in devPaths) {
+                        var p = Path.GetFullPath(path);
+                        if (System.IO.File.Exists(p)) {
+                             uaCss = System.IO.File.ReadAllText(p);
+                             System.Diagnostics.Debug.WriteLine($"[CssLoader] Loaded UA stylesheet from: {p}");
+                             Console.WriteLine($"[CssLoader] Loaded UA stylesheet from: {p}");
+                             loaded = true;
+                             break;
+                        } else {
+                             Console.WriteLine($"[CssLoader] UA File NOT FOUND at: {p}");
+                        }
                     }
-                    else
+                    
+                    if (!loaded)
                     {
                         // Fallback: try assembly path
                         var assemblyDir = Path.GetDirectoryName(typeof(CssLoader).Assembly.Location);
@@ -189,13 +204,18 @@ namespace FenBrowser.FenEngine.Rendering
                         if (File.Exists(uaCssPath))
                         {
                             uaCss = File.ReadAllText(uaCssPath);
-                            System.Diagnostics.Debug.WriteLine($"[CssLoader] Loaded UA stylesheet from assembly: {uaCssPath}");
+                            Console.WriteLine($"[CssLoader] Loaded UA stylesheet from assembly: {uaCssPath}");
+                        }
+                        else
+                        {
+                             Console.WriteLine($"[CssLoader] UA File NOT FOUND at assembly: {uaCssPath}");
                         }
                     }
                 }
                 catch (Exception readEx)
                 {
                     System.Diagnostics.Debug.WriteLine($"[CssLoader] Failed to read UA file: {readEx.Message}. Using fallback.");
+                    Console.WriteLine($"[CssLoader] Failed to read UA file: {readEx.Message}");
                     /* [PERF-REMOVED] */
                 }
                 
@@ -1730,9 +1750,12 @@ private static double? ExtractPx(string text, string prop)
                 // Populate core display/positioning properties from the map
                 css.Display = Safe(DictGet(css.Map, "display"))?.ToLowerInvariant();
                 css.Position = Safe(DictGet(css.Map, "position"))?.ToLowerInvariant();
+                css.Visibility = Safe(DictGet(css.Map, "visibility"))?.ToLowerInvariant(); // Add Visibility
                 css.FlexDirection = Safe(DictGet(css.Map, "flex-direction"))?.ToLowerInvariant();
                 css.FlexWrap = Safe(DictGet(css.Map, "flex-wrap"))?.ToLowerInvariant();
                 css.JustifyContent = Safe(DictGet(css.Map, "justify-content"))?.ToLowerInvariant();
+                css.JustifyItems = Safe(DictGet(css.Map, "justify-items"))?.ToLowerInvariant();
+                css.JustifySelf = Safe(DictGet(css.Map, "justify-self"))?.ToLowerInvariant();
                 css.AlignItems = Safe(DictGet(css.Map, "align-items"))?.ToLowerInvariant();
                 css.AlignContent = Safe(DictGet(css.Map, "align-content"))?.ToLowerInvariant();
                 css.AlignSelf = Safe(DictGet(css.Map, "align-self"))?.ToLowerInvariant();
@@ -1746,6 +1769,22 @@ private static double? ExtractPx(string text, string prop)
                 css.GridArea = Safe(DictGet(css.Map, "grid-area"));
                 css.GridColumnStart = Safe(DictGet(css.Map, "grid-column-start"));
                 css.GridColumnEnd = Safe(DictGet(css.Map, "grid-column-end"));
+                
+                // Gaps (row-gap, column-gap, gap, grid-gap shorthand)
+                var rawRowGap = Safe(DictGet(css.Map, "row-gap")) ?? Safe(DictGet(css.Map, "grid-row-gap"));
+                var rawColGap = Safe(DictGet(css.Map, "column-gap")) ?? Safe(DictGet(css.Map, "grid-column-gap"));
+                var rawGap = Safe(DictGet(css.Map, "gap")) ?? Safe(DictGet(css.Map, "grid-gap"));
+
+                if (!string.IsNullOrEmpty(rawGap)) 
+                {
+                    var parts = rawGap.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length >= 1) rawRowGap = parts[0];
+                    if (parts.Length >= 2) rawColGap = parts[1];
+                    else if (parts.Length == 1) rawColGap = parts[0];
+                }
+
+                css.RowGap = ParseGapValue(rawRowGap);
+                css.ColumnGap = ParseGapValue(rawColGap);
                 css.GridRowStart = Safe(DictGet(css.Map, "grid-row-start"));
                 css.GridRowEnd = Safe(DictGet(css.Map, "grid-row-end"));
                 
@@ -2456,6 +2495,11 @@ private static double? ExtractPx(string text, string prop)
             css.AlignItems = Safe(DictGet(css.Map, "align-items"));
             css.AlignContent = Safe(DictGet(css.Map, "align-content"));
             css.ListStyleType = Safe(DictGet(css.Map, "list-style-type"));
+
+            // Generated Content & Counters
+            css.Content = Safe(DictGet(css.Map, "content"));
+            css.CounterReset = Safe(DictGet(css.Map, "counter-reset"));
+            css.CounterIncrement = Safe(DictGet(css.Map, "counter-increment"));
 
             double fG, fS, fB;
             if (TryFlexShorthand(DictGet(css.Map, "flex"), out fG, out fS, out fB))
@@ -4670,7 +4714,22 @@ private static double? ExtractPx(string text, string prop)
             if (n.Attr != null) n.Attr.TryGetValue(attrName, out attrVal);
             return attrVal ?? "";
         });
-}
+    }
+
+    private static double? ParseGapValue(string val)
+    {
+        if (string.IsNullOrWhiteSpace(val)) return null;
+        val = val.Trim();
+        if (val.EndsWith("px", StringComparison.OrdinalIgnoreCase)) 
+        {
+             if (double.TryParse(val.Substring(0, val.Length - 2), out double px)) return px;
+        }
+        if (val.All(char.IsDigit)) 
+        {
+             if (double.TryParse(val, out double d)) return d;
+        }
+        return 0; 
+    }
 }
 }
 
