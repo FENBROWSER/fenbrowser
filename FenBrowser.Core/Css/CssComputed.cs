@@ -327,5 +327,151 @@ namespace FenBrowser.Core.Css
         public string Inset { get; set; }                    // Shorthand for positioning
         public string InsetBlock { get; set; }               // top + bottom in logical terms
         public string InsetInline { get; set; }              // left + right in logical terms
+        
+        // --- CSS Custom Properties (Variables) Resolution - 10/10 Spec ---
+        
+        /// <summary>
+        /// Get a CSS custom property value from this computed style.
+        /// Syntax: --property-name
+        /// </summary>
+        public string GetVariable(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return null;
+            
+            // Ensure name starts with --
+            var key = name.StartsWith("--") ? name : "--" + name;
+            return CustomProperties.TryGetValue(key, out var value) ? value : null;
+        }
+        
+        /// <summary>
+        /// Set a CSS custom property value.
+        /// </summary>
+        public void SetVariable(string name, string value)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return;
+            
+            var key = name.StartsWith("--") ? name : "--" + name;
+            if (string.IsNullOrWhiteSpace(value))
+                CustomProperties.Remove(key);
+            else
+                CustomProperties[key] = value;
+        }
+        
+        /// <summary>
+        /// Resolve a CSS value that may contain var() references.
+        /// Recursively resolves up to 10 levels to prevent infinite loops.
+        /// </summary>
+        /// <param name="value">The CSS value potentially containing var() functions.</param>
+        /// <param name="parent">Parent CssComputed for inheritance chain (optional).</param>
+        /// <returns>Resolved value with all var() replaced, or fallback/original if not resolvable.</returns>
+        public string ResolveVariable(string value, CssComputed parent = null)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return value;
+            if (!value.Contains("var(")) return value;
+            
+            return ResolveVariableInternal(value, parent, 0);
+        }
+        
+        private string ResolveVariableInternal(string value, CssComputed parent, int depth)
+        {
+            if (depth > 10) return value; // Circuit breaker for infinite recursion
+            if (!value.Contains("var(")) return value;
+            
+            var result = value;
+            int safetyLimit = 50; // Prevent infinite loops in malformed CSS
+            
+            while (result.Contains("var(") && safetyLimit-- > 0)
+            {
+                int start = result.IndexOf("var(");
+                if (start < 0) break;
+                
+                // Find matching closing paren
+                int depth2 = 1;
+                int end = start + 4;
+                while (end < result.Length && depth2 > 0)
+                {
+                    if (result[end] == '(') depth2++;
+                    else if (result[end] == ')') depth2--;
+                    end++;
+                }
+                
+                if (depth2 != 0) break; // Malformed - unmatched parens
+                
+                string varContent = result.Substring(start + 4, end - start - 5).Trim();
+                
+                // Parse var(--name) or var(--name, fallback)
+                string varName, fallback = null;
+                int commaIdx = FindFallbackComma(varContent);
+                if (commaIdx >= 0)
+                {
+                    varName = varContent.Substring(0, commaIdx).Trim();
+                    fallback = varContent.Substring(commaIdx + 1).Trim();
+                }
+                else
+                {
+                    varName = varContent.Trim();
+                }
+                
+                // Resolve variable value
+                string resolved = GetVariable(varName);
+                
+                // Try parent chain if not found locally
+                if (resolved == null && parent != null)
+                {
+                    resolved = parent.GetVariable(varName);
+                }
+                
+                // Use fallback if still not found
+                if (resolved == null)
+                {
+                    resolved = fallback ?? "";
+                }
+                
+                // Recursively resolve if the resolved value also contains var()
+                if (resolved.Contains("var("))
+                {
+                    resolved = ResolveVariableInternal(resolved, parent, depth + 1);
+                }
+                
+                // Replace the var(...) with the resolved value
+                result = result.Substring(0, start) + resolved + result.Substring(end);
+            }
+            
+            return result;
+        }
+        
+        /// <summary>
+        /// Find the comma separating variable name from fallback, accounting for nested parens.
+        /// </summary>
+        private static int FindFallbackComma(string content)
+        {
+            int parenDepth = 0;
+            for (int i = 0; i < content.Length; i++)
+            {
+                char c = content[i];
+                if (c == '(') parenDepth++;
+                else if (c == ')') parenDepth--;
+                else if (c == ',' && parenDepth == 0) return i;
+            }
+            return -1;
+        }
+        
+        /// <summary>
+        /// Inherit custom properties from a parent computed style.
+        /// CSS custom properties are inherited by default.
+        /// </summary>
+        public void InheritCustomProperties(CssComputed parent)
+        {
+            if (parent?.CustomProperties == null) return;
+            
+            foreach (var kv in parent.CustomProperties)
+            {
+                // Don't override if already set locally
+                if (!CustomProperties.ContainsKey(kv.Key))
+                {
+                    CustomProperties[kv.Key] = kv.Value;
+                }
+            }
+        }
     }
 }
