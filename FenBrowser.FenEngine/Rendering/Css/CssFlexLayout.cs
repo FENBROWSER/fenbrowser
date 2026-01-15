@@ -69,7 +69,8 @@ namespace FenBrowser.FenEngine.Rendering.Css
             Func<Node, SKSize, int, bool, LayoutMetrics> measureChild,
             Func<Node, CssComputed> getStyle,
             Func<Node, CssComputed, bool> shouldHide,
-            int depth)
+            int depth,
+            IEnumerable<Node> childrenSource = null)
         {
             var style = getStyle(container);
             // ... (keep existing setup logic) ...
@@ -82,7 +83,8 @@ namespace FenBrowser.FenEngine.Rendering.Css
             float mainGap = isRow ? colGap : rowGap;
             float crossGap = isRow ? rowGap : colGap;
 
-            var children = container.Children.Where(c => 
+            var source = childrenSource ?? container.Children;
+            var children = source.Where(c => 
             {
                 if (c is Text t && !string.IsNullOrWhiteSpace(t.Data)) return true;
                 return !shouldHide(c, getStyle(c));
@@ -306,7 +308,8 @@ namespace FenBrowser.FenEngine.Rendering.Css
             Func<Node, CssComputed> getStyle,
              Func<Node, SKSize> getDesiredSize, 
             Func<Node, CssComputed, bool> shouldHide,
-            int depth)
+            int depth,
+            IEnumerable<Node> childrenSource = null)
         {
             var style = getStyle(container);
             bool isRow = !(style?.FlexDirection?.ToLowerInvariant().Contains("column") ?? false);
@@ -326,7 +329,8 @@ namespace FenBrowser.FenEngine.Rendering.Css
             // Spec compliance check
             SpecComplianceLogger.LogContentBox(container.TagName ?? "unknown", container.Id ?? "", contentBox.Width, contentBox.Height);
 
-            var children = container.Children.Where(c => 
+            var source = childrenSource ?? container.Children;
+            var children = source.Where(c => 
             {
                 if (c is Text t && !string.IsNullOrWhiteSpace(t.Data)) return true;
                 return !shouldHide(c, getStyle(c));

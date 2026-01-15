@@ -491,12 +491,27 @@ namespace FenBrowser.FenEngine.Rendering
             if (node is Element e && (e.TagName?.ToUpperInvariant() == "TEXTAREA" || e.TagName?.ToUpperInvariant() == "INPUT"))
                 return;
 
+            CssComputed style = null;
+            if (node is Element el) _styles.TryGetValue(el, out style);
+
+            // 1. ::before
+            if (style?.Before?.PseudoElementInstance != null)
+            {
+                BuildRecursive(style.Before.PseudoElementInstance, context, depth + 1, escapeContext);
+            }
+
             if (node != null && node.Children != null)
             {
                 foreach (var child in node.Children)
                 {
                     BuildRecursive(child, context, depth + 1, escapeContext);
                 }
+            }
+
+            // 2. ::after
+            if (style?.After?.PseudoElementInstance != null)
+            {
+                BuildRecursive(style.After.PseudoElementInstance, context, depth + 1, escapeContext);
             }
         }
         
@@ -2414,8 +2429,7 @@ namespace FenBrowser.FenEngine.Rendering
             
             // Use string comparison for Display and Visibility
             if (style != null && string.Equals(style.Display, "none", StringComparison.OrdinalIgnoreCase)) return true;
-            if (style != null && (string.Equals(style.Visibility, "hidden", StringComparison.OrdinalIgnoreCase) || 
-                                 string.Equals(style.Visibility, "collapse", StringComparison.OrdinalIgnoreCase))) return true;
+            // Visibility: hidden check removed (handled in BuildRecursive to allow children)
             
             string tag = node.NodeName?.ToUpperInvariant();
             return tag == "HEAD" || tag == "SCRIPT" || tag == "STYLE" || tag == "META" || tag == "LINK" || tag == "TITLE" || tag == "NOSCRIPT" || tag == "IFRAME";
