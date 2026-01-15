@@ -66,6 +66,14 @@ public class BrowserIntegration
     public event Action<HitTestResult> HitTestChanged;
     public event Action<float, float> ScrollChanged;
     
+    // --- NEW: Structured Navigation Events (10/10) ---
+    public event Action<NavigationEventArgs> OnNavigationStarted;
+    public event Action<NavigationEventArgs> OnNavigationCompleted;
+    public event Action<NavigationErrorArgs> OnNavigationFailed;
+    
+    // --- Scroll Physics ---
+    private readonly ScrollPhysics _scrollPhysics = new();
+    
     public BrowserIntegration()
     {
         _browser = new BrowserHost();
@@ -812,5 +820,149 @@ public class BrowserIntegration
         }
         return null;
     }
+    
+    // --- NEW: Smooth Scroll with Physics (10/10) ---
+    
+    /// <summary>
+    /// Apply smooth scroll with momentum physics.
+    /// Call this each frame to animate scroll deceleration.
+    /// </summary>
+    public void UpdateScrollPhysics(double deltaTime)
+    {
+        if (_scrollPhysics.IsAnimating)
+        {
+            _scrollPhysics.Update((float)deltaTime);
+            var newScrollY = _scrollPhysics.CurrentPosition;
+            
+            // Clamp to valid range
+            float maxScroll = Math.Max(0, _contentHeight - _lastViewportSize.Height);
+            newScrollY = Math.Max(0, Math.Min(maxScroll, newScrollY));
+            
+            if (Math.Abs(newScrollY - _scrollY) > 0.5f)
+            {
+                _scrollY = newScrollY;
+                _needsRepaint = true;
+                ScrollChanged?.Invoke(_scrollY, _contentHeight);
+            }
+        }
+    }
+    
+    /// <summary>
+    /// Start smooth scrolling with momentum.
+    /// </summary>
+    public void StartMomentumScroll(float velocity)
+    {
+        _scrollPhysics.StartMomentum(_scrollY, velocity);
+    }
+    
+    /// <summary>
+    /// Stop any ongoing smooth scroll animation.
+    /// </summary>
+    public void StopMomentumScroll()
+    {
+        _scrollPhysics.Stop();
+    }
 }
 
+// --- Navigation Event Args (10/10 Spec) ---
+
+/// <summary>
+/// Event arguments for navigation events.
+/// </summary>
+public class NavigationEventArgs
+{
+    public string Url { get; set; }
+    public NavigationType Type { get; set; }
+    public DateTime Timestamp { get; set; } = DateTime.UtcNow;
+    public string Title { get; set; }
+    public bool IsRedirect { get; set; }
+}
+
+/// <summary>
+/// Type of navigation.
+/// </summary>
+public enum NavigationType
+{
+    Link,
+    Typed,
+    Reload,
+    BackForward,
+    FormSubmit,
+    Other
+}
+
+/// <summary>
+/// Event arguments for navigation errors.
+/// </summary>
+public class NavigationErrorArgs
+{
+    public string Url { get; set; }
+    public string ErrorCode { get; set; }
+    public string ErrorMessage { get; set; }
+    public Exception Exception { get; set; }
+    public DateTime Timestamp { get; set; } = DateTime.UtcNow;
+}
+
+// --- Scroll Physics (10/10 Spec) ---
+
+/// <summary>
+/// Smooth scrolling physics with momentum and deceleration.
+/// </summary>
+public class ScrollPhysics
+{
+    public float CurrentPosition { get; private set; }
+    public float Velocity { get; private set; }
+    public float Deceleration { get; set; } = 0.95f;
+    public float MinVelocity { get; set; } = 0.5f;
+    public bool IsAnimating { get; private set; }
+    
+    /// <summary>
+    /// Start momentum scrolling from current position with initial velocity.
+    /// </summary>
+    public void StartMomentum(float startPosition, float velocity)
+    {
+        CurrentPosition = startPosition;
+        Velocity = velocity;
+        IsAnimating = Math.Abs(velocity) > MinVelocity;
+    }
+    
+    /// <summary>
+    /// Update physics for this frame.
+    /// </summary>
+    public void Update(float deltaTime)
+    {
+        if (!IsAnimating) return;
+        
+        // Apply velocity
+        CurrentPosition += Velocity * deltaTime * 60f; // Normalize to 60fps
+        
+        // Apply deceleration (friction)
+        Velocity *= Deceleration;
+        
+        // Stop when velocity is negligible
+        if (Math.Abs(Velocity) < MinVelocity)
+        {
+            Velocity = 0;
+            IsAnimating = false;
+        }
+    }
+    
+    /// <summary>
+    /// Immediately stop scrolling animation.
+    /// </summary>
+    public void Stop()
+    {
+        Velocity = 0;
+        IsAnimating = false;
+    }
+    
+    /// <summary>
+    /// Set position directly (for programmatic scrolling).
+    /// </summary>
+    public void SetPosition(float position)
+    {
+        CurrentPosition = position;
+        Velocity = 0;
+        IsAnimating = false;
+    }
+}
