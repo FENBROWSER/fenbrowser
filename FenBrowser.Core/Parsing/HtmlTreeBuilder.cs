@@ -79,6 +79,9 @@ namespace FenBrowser.Core.Parsing
             AfterAfterFrameset
         }
 
+        // Template Insertion Mode Stack
+        private readonly Stack<InsertionMode> _templateInsertionModes = new Stack<InsertionMode>();
+
         private void ProcessToken(HtmlToken token)
         {
             // Simplified dispatch based on mode
@@ -101,28 +104,49 @@ namespace FenBrowser.Core.Parsing
                     case InsertionMode.InHead:
                         processed = HandleInHead(token);
                         break;
+                    case InsertionMode.InHeadNoscript:
+                         processed = HandleInHeadNoscript(token);
+                         break;
                     case InsertionMode.AfterHead:
                         processed = HandleAfterHead(token);
                         break;
                     case InsertionMode.InBody:
                         processed = HandleInBody(token);
                         break;
-                    case InsertionMode.AfterBody:
-                         processed = HandleAfterBody(token);
-                         break;
-                    case InsertionMode.AfterAfterBody:
-                         processed = HandleAfterAfterBody(token);
-                         break;
-                    case InsertionMode.InTable:
-                         processed = HandleInTable(token);
-                         break;
                     case InsertionMode.Text:
-                         processed = HandleText(token);
-                         break;
-                    // TODO: Implement other modes
+                        processed = HandleText(token);
+                        break;
+                    case InsertionMode.InTable:
+                        processed = HandleInTable(token);
+                        break;
+                    case InsertionMode.InTableBody:
+                        processed = HandleInTableBody(token);
+                        break;
+                    case InsertionMode.InRow:
+                        processed = HandleInRow(token);
+                        break;
+                    case InsertionMode.InCell:
+                        processed = HandleInCell(token);
+                        break;
+                    case InsertionMode.InCaption:
+                        processed = HandleInCaption(token);
+                        break;
+                    case InsertionMode.InColumnGroup:
+                        processed = HandleInColumnGroup(token);
+                        break;
+                    case InsertionMode.InTemplate:
+                        processed = HandleInTemplate(token);
+                        break;
+                    case InsertionMode.AfterBody:
+                        processed = HandleAfterBody(token);
+                        break;
+                    case InsertionMode.AfterAfterBody:
+                        processed = HandleAfterAfterBody(token);
+                        break;
                     default:
-                        // Fallback to InBody or ignore
-                         processed = HandleInBody(token); 
+                        if (DebugConfig.LogHtmlParse)
+                            FenBrowser.Core.FenLogger.Warn($"[HTML] Unhandled Mode: {_insertionMode} for token {token.Type}", LogCategory.HtmlParsing);
+                        processed = HandleInBody(token); // Fallback
                         break;
                 }
             }
@@ -157,6 +181,100 @@ namespace FenBrowser.Core.Parsing
             // Switch to BeforeHtml and Reprocess
             SwitchTo(InsertionMode.BeforeHtml);
             return false; // Reprocess
+        }
+
+        private bool HandleInTemplate(HtmlToken token)
+        {
+            if (token is CharacterToken || token is CommentToken || token is DoctypeToken)
+            {
+                return HandleInBody(token);
+            }
+            
+            if (token is StartTagToken st)
+            {
+                if (st.TagName == "base" || st.TagName == "basefont" || st.TagName == "bgsound" || st.TagName == "link" || st.TagName == "meta" || st.TagName == "noframes" || st.TagName == "script" || st.TagName == "style" || st.TagName == "template" || st.TagName == "title")
+                {
+                    return HandleInHead(token);
+                }
+                
+                // Pop template mode and push new one based on tag?
+                // Simplified: Just process in InBody for now, but handle 'template' end tag.
+                // The spec for InTemplate is complex (dispatch to current template insertion mode).
+                // We'll mimic this by checking the stack.
+                
+                if (_templateInsertionModes.Count > 0)
+                {
+                    var currentTemplateMode = _templateInsertionModes.Peek();
+                    // Dispatch to that mode?
+                    // We can't easily recurse ProcessToken without changing _insertionMode.
+                    // But changing _insertionMode changes it for everyone.
+                    // So we effectively temporarily switch mode?
+                    
+                    var oldMode = _insertionMode;
+                    _insertionMode = currentTemplateMode;
+                    // Process
+                    // BUT avoiding infinite recursion if it comes back here.
+                    // For now, let's treat InTemplate as InBody for content.
+                    return HandleInBody(token);
+                }
+            }
+            
+            if (token is EndTagToken et)
+            {
+                if (et.TagName == "template")
+                {
+                    if (!InScope("template", new[] { "html" })) 
+                    {
+                        return true; // Error
+                    }
+                    GenerateImpliedEndTags();
+                    if ((CurrentNode as Element)?.TagName != "template") { /* Parse error */ }
+                    PopUntil("template");
+                    ClearActiveFormattingElementsMarker();
+                    if (_templateInsertionModes.Count > 0) _templateInsertionModes.Pop();
+                    ResetInsertionMode();
+                    return true;
+                }
+            }
+            
+            if (token is EofToken)
+            {
+                if (!InScope("template", new[] { "html" }))
+                {
+                    // Stop parsing
+                     return true; 
+                }
+                // Error
+                PopUntil("template");
+                ClearActiveFormattingElementsMarker();
+                if (_templateInsertionModes.Count > 0) _templateInsertionModes.Pop();
+                ResetInsertionMode();
+                return false; // Reprocess
+            }
+            
+            return HandleInBody(token);
+        }
+
+        private bool HandleInHeadNoscript(HtmlToken token)
+        {
+             if (token is EndTagToken et && et.TagName == "noscript")
+             {
+                 _openElements.Pop();
+                 SwitchTo(InsertionMode.InHead);
+                 return true;
+             }
+             if (token is CharacterToken ct && string.IsNullOrWhiteSpace(ct.Data))
+             {
+                 return HandleInHead(token);
+             }
+             if (token is StartTagToken st && (st.TagName == "basefont" || st.TagName == "bgsound" || st.TagName == "link" || st.TagName == "meta" || st.TagName == "noframes" || st.TagName == "style"))
+             {
+                 return HandleInHead(token); 
+             }
+             // Anything else -> Error, pop noscript, reprocess
+             _openElements.Pop();
+             SwitchTo(InsertionMode.InHead);
+             return false;
         }
         
         private bool HandleBeforeHtml(HtmlToken token)
@@ -649,84 +767,553 @@ namespace FenBrowser.Core.Parsing
              return false;
         }
         
+        // --- Table Insertion Modes ---
+
         private bool HandleInTable(HtmlToken token)
         {
-            // Simplified table handling (Foster Parenting is hard)
-            // If tag is expected in table (tr, td, tbody, thead, tfoot, caption, colgroup), process
-            // Else "Foster Parent" -> Move token to Before(Table)
-            
-            if (token is CharacterToken || token is StartTagToken || token is EndTagToken)
+            if (token is CharacterToken ct)
             {
-                 // Check if it's table stuff
-                 bool actsLikeTable = false;
-                 string tag = "";
-                 if (token is StartTagToken s) tag = s.TagName;
-                 if (token is EndTagToken e) tag = e.TagName;
-                 
-                 if (tag == "tr" || tag == "td" || tag == "th" || tag == "tbody" || tag == "thead" || tag == "tfoot" || tag == "caption" || tag == "colgroup" || tag == "col" || tag == "table")
+                if (IsTableWhitespace(ct))
+                {
+                    // In Table Text (pending whitespace)
+                    InsertCharacter(ct);
+                    return true;
+                }
+                // Anything else -> Foster Parent
+                // Fallthrough to Foster Parenting below
+            }
+
+            if (token is CommentToken comment)
+            {
+                CurrentNode.AppendChild(new Comment(comment.Data));
+                return true;
+            }
+
+            if (token is DoctypeToken) return true; // Ignore
+
+            if (token is StartTagToken st)
+            {
+                if (st.TagName == "caption")
+                {
+                    ClearStackBackToTableContext();
+                    InsertHtmlElement(st); // Marker
+                    InsertHtmlElement(st);
+                    SwitchTo(InsertionMode.InCaption);
+                    return true;
+                }
+                if (st.TagName == "colgroup")
+                {
+                    ClearStackBackToTableContext();
+                    InsertHtmlElement(st);
+                    SwitchTo(InsertionMode.InColumnGroup);
+                    return true;
+                }
+                if (st.TagName == "col")
+                {
+                    ClearStackBackToTableContext();
+                    InsertHtmlElement(new StartTagToken { TagName = "colgroup" });
+                    SwitchTo(InsertionMode.InColumnGroup);
+                    return false; // Reprocess col
+                }
+                if (st.TagName == "tbody" || st.TagName == "tfoot" || st.TagName == "thead")
+                {
+                    ClearStackBackToTableContext();
+                    InsertHtmlElement(st);
+                    SwitchTo(InsertionMode.InTableBody);
+                    return true;
+                }
+                if (st.TagName == "td" || st.TagName == "th" || st.TagName == "tr")
+                {
+                    ClearStackBackToTableContext();
+                    InsertHtmlElement(new StartTagToken { TagName = "tbody" });
+                    SwitchTo(InsertionMode.InTableBody);
+                    return false; // Reprocess
+                }
+                
+                if (st.TagName == "table")
+                {
+                    // Parse error -> check scope closure
+                    if (!InTableScope("table"))
+                    {
+                         // ignore
+                         return true;
+                    }
+                    PopUntil("table");
+                    // Reprocess "table" in ResetInsertionMode (Back to InBody probably?)
+                    // Simplified: treat as end of table, then reprocess
+                    // But spec says: "Act as if an end tag token with tag name 'table' had been seen, then... process the token in InBody"
+                    // So we close current, then reprocess `st`
+                    return HandleInTable(new EndTagToken { TagName = "table" }) ? HandleInBody(token) : false;
+                }
+
+                if (st.TagName == "style" || st.TagName == "script" || st.TagName == "template")
+                {
+                    return HandleInHead(token);
+                }
+                
+                if (st.TagName == "input")
+                {
+                    // Special case: if hidden, append to table. Else foster parent.
+                    bool hidden = false;
+                    var type = st.Attributes.FirstOrDefault(a => a.Name.Equals("type", StringComparison.OrdinalIgnoreCase))?.Value;
+                    if (string.Equals(type, "hidden", StringComparison.OrdinalIgnoreCase))
+                    {
+                        InsertHtmlElement(st);
+                        _openElements.Pop();
+                        return true;
+                    }
+                }
+                
+                if (st.TagName == "form")
+                {
+                    // Parse error
+                    if (_formElement != null) return true; // Ignore
+                    _formElement = InsertHtmlElement(st);
+                    _openElements.Pop(); // Immediately pop
+                    return true;
+                }
+            }
+            
+            if (token is EndTagToken et)
+            {
+                if (et.TagName == "table")
+                {
+                    if (!InTableScope("table"))
+                    {
+                        // Error
+                        return true;
+                    }
+                    PopUntil("table");
+                    ResetInsertionMode();
+                    return true;
+                }
+                
+                if (et.TagName == "body" || et.TagName == "caption" || et.TagName == "col" || et.TagName == "colgroup" || et.TagName == "html" || et.TagName == "tbody" || et.TagName == "td" || et.TagName == "tfoot" || et.TagName == "th" || et.TagName == "thead" || et.TagName == "tr")
+                {
+                    // Parse error -> ignore
+                    return true;
+                }
+            }
+            
+            if (token is EofToken)
+            {
+                return HandleInBody(token); // Propagate up
+            }
+
+            // --- Foster Parenting ---
+            // "Enable foster parenting, process the token using the rules for the In Body insertion mode"
+            return FosterParent(token);
+        }
+
+        private bool HandleInTableBody(HtmlToken token)
+        {
+             if (token is StartTagToken st)
+             {
+                 if (st.TagName == "tr")
                  {
-                      actsLikeTable = true;
+                     ClearStackBackToTableBodyContext();
+                     InsertHtmlElement(st);
+                     SwitchTo(InsertionMode.InRow);
+                     return true;
                  }
-                 
-                 if (actsLikeTable)
+                 if (st.TagName == "th" || st.TagName == "td")
                  {
-                      // Normal processing? No, specialized.
-                      // ... huge switch case ...
-                      // For now, if table structure, append to current (which is table)
-                      // BUT 'tr' inside 'table' implies 'tbody'.
-                      if (tag == "tr" && (CurrentNode as Element)?.TagName == "table" && token is StartTagToken)
-                      {
-                          InsertHtmlElement(new StartTagToken() { TagName = "tbody" });
-                          // Reprocess
-                          return false;
-                      }
-                      
-                      // For now, allow simplified table nesting
-                      // TODO: strict table state machine
-                      // For now, allow simplified table nesting
-                      // TODO: strict table state machine
-                      
-                      if (token is StartTagToken st) 
-                      {
-                          string t = st.TagName;
-                          if (t == "tr") 
-                          {
-                              if (StackHas("tr")) PopUntil("tr");
-                          }
-                          if (t == "td")
-                          {
-                              if (StackHas("td")) PopUntil("td");
-                              if (StackHas("th")) PopUntil("th");
-                          }
-                          if (t == "th")
-                          {
-                              if (StackHas("td")) PopUntil("td");
-                              if (StackHas("th")) PopUntil("th");
-                          }
-                          
-                          InsertHtmlElement(st);
-                      }
-                      if (token is EndTagToken) { if (StackHas(tag)) PopUntil(tag); }
-                      return true;
+                     ClearStackBackToTableBodyContext();
+                     InsertHtmlElement(new StartTagToken { TagName = "tr" });
+                     SwitchTo(InsertionMode.InRow);
+                     return false; // Reprocess
                  }
-                 else
+                 if (st.TagName == "caption" || st.TagName == "col" || st.TagName == "colgroup" || st.TagName == "tbody" || st.TagName == "tfoot" || st.TagName == "thead" || st.TagName == "table")
                  {
-                      // Foster Parenting!
-                      // "Process the token using the rules for the In Body insertion mode, with the foster parenting flag set to true."
-                      // Foster parenting means: insert into the table's parent, before the table.
-                      
-                      // Simplified: Just switch to InBody, process, then switch back?
-                      // No, InBody would append to CurrentNode (table), which is wrong.
-                      // We must temporarily change CurrentNode?
-                      
-                      // TODO: Implement Foster Parenting
-                      if (DebugConfig.LogHtmlParse)
-                          FenBrowser.Core.FenLogger.Warn($"[HTML] Foster Parenting required for token: {token.Type}", LogCategory.HtmlParsing);
-                      return true; // Ignore for now
+                     // Close body
+                     if (!InTableScope("tbody") && !InTableScope("thead") && !InTableScope("tfoot"))
+                     {
+                         // Error
+                         return true; 
+                     }
+                     ClearStackBackToTableBodyContext();
+                     _openElements.Pop(); // Pop body
+                     SwitchTo(InsertionMode.InTable);
+                     return false; // Reprocess
+                 }
+             }
+             
+             if (token is EndTagToken et)
+             {
+                 if (et.TagName == "tbody" || et.TagName == "tfoot" || et.TagName == "thead")
+                 {
+                     if (!InTableScope(et.TagName)) return true; // Error
+                     ClearStackBackToTableBodyContext();
+                     _openElements.Pop();
+                     SwitchTo(InsertionMode.InTable);
+                     return true;
+                 }
+                 if (et.TagName == "table")
+                 {
+                      if (!InTableScope("tbody") && !InTableScope("thead") && !InTableScope("tfoot"))
+                     {
+                         // Error
+                         return true; 
+                     }
+                     ClearStackBackToTableBodyContext();
+                     _openElements.Pop();
+                     SwitchTo(InsertionMode.InTable);
+                     return false; // Reprocess
+                 }
+             }
+             
+             return HandleInTable(token); // Anything else -> processed in InTable (which might foster parent)
+        }
+
+        private bool HandleInRow(HtmlToken token)
+        {
+             if (token is StartTagToken st)
+             {
+                 if (st.TagName == "th" || st.TagName == "td")
+                 {
+                     ClearStackBackToTableRowContext();
+                     InsertHtmlElement(st);
+                     SwitchTo(InsertionMode.InCell);
+                     _activeFormattingElements.Add(null); // Marker
+                     return true;
+                 }
+                 if (st.TagName == "caption" || st.TagName == "col" || st.TagName == "colgroup" || st.TagName == "tbody" || st.TagName == "tfoot" || st.TagName == "thead" || st.TagName == "tr" || st.TagName == "table")
+                 {
+                     if (!InTableScope("tr")) return true; // Error
+                     ClearStackBackToTableRowContext();
+                     _openElements.Pop(); // Pop tr
+                     SwitchTo(InsertionMode.InTableBody);
+                     return false; // Reprocess
+                 }
+             }
+             
+             if (token is EndTagToken et)
+             {
+                 if (et.TagName == "tr")
+                 {
+                     if (!InTableScope("tr")) return true; // Ignore
+                     ClearStackBackToTableRowContext();
+                     _openElements.Pop(); // Pop tr
+                     SwitchTo(InsertionMode.InTableBody);
+                     return true;
+                 }
+                 if (et.TagName == "table")
+                 {
+                      if (!InTableScope("tr")) return true;
+                      ClearStackBackToTableRowContext();
+                      _openElements.Pop(); // Pop tr
+                      SwitchTo(InsertionMode.InTableBody);
+                      return false; // Reprocess
+                 }
+                 if (et.TagName == "tbody" || et.TagName == "tfoot" || et.TagName == "thead")
+                 {
+                      if (!InTableScope(et.TagName)) return true; // Error
+                      if (!InTableScope("tr")) return true; // Error
+                      ClearStackBackToTableRowContext();
+                      _openElements.Pop(); // Pop tr
+                      SwitchTo(InsertionMode.InTableBody);
+                      return false; // Reprocess
+                 }
+             }
+
+             return HandleInTable(token);
+        }
+        
+        private bool HandleInCell(HtmlToken token)
+        {
+            if (token is StartTagToken st)
+            {
+                 if (st.TagName == "td" || st.TagName == "th" || st.TagName == "caption" || st.TagName == "col" || st.TagName == "colgroup" || st.TagName == "tbody" || st.TagName == "tfoot" || st.TagName == "thead" || st.TagName == "tr")
+                 {
+                     if (!InTableScope("td") && !InTableScope("th")) 
+                     {
+                         // Parse error: open cell not found (shouldn't happen in InCell mode unless stack corrupted or manipulated)
+                         return true; 
+                     }
+                     CloseCell();
+                     return false; // Reprocess
                  }
             }
+
+            if (token is EndTagToken et)
+            {
+                if (et.TagName == "td" || et.TagName == "th")
+                {
+                    if (!InTableScope(et.TagName)) return true; // Ignore
+                    GenerateImpliedEndTags();
+                    if ((CurrentNode as Element)?.TagName != et.TagName)
+                    {
+                        // Parse error
+                    }
+                    PopUntil(et.TagName);
+                    ClearActiveFormattingElementsMarker();
+                    SwitchTo(InsertionMode.InRow);
+                    return true;
+                }
+                if (et.TagName == "body" || et.TagName == "caption" || et.TagName == "col" || et.TagName == "colgroup" || et.TagName == "html")
+                {
+                    // Parse error -> ignore
+                    return true;
+                }
+                if (et.TagName == "table" || et.TagName == "tbody" || et.TagName == "tfoot" || et.TagName == "thead" || et.TagName == "tr")
+                {
+                    if (!InTableScope(et.TagName)) return true; // Error
+                    CloseCell();
+                    return false; // Reprocess
+                }
+            }
+            
+            return HandleInBody(token);
+        }
+        
+        private void CloseCell()
+        {
+            GenerateImpliedEndTags();
+            if (CurrentTag != "td" && CurrentTag != "th")
+            {
+                 // Error
+            }
+            while (CurrentTag != "td" && CurrentTag != "th" && _openElements.Count > 0)
+            {
+                _openElements.Pop();
+            }
+             if (_openElements.Count > 0) _openElements.Pop();
+             ClearActiveFormattingElementsMarker();
+             SwitchTo(InsertionMode.InRow);
+        }
+        
+        // --- Foster Parenting Logic ---
+        private bool FosterParent(HtmlToken token)
+        {
+            // Find the table element in the stack
+            Element table = null;
+            // Iterate reverse?
+            foreach (var el in _openElements)
+            {
+                if (string.Equals(el.TagName, "table", StringComparison.OrdinalIgnoreCase)) 
+                {
+                    table = el;
+                    break; 
+                }
+            }
+            if (table == null) return HandleInBody(token); // Should not happen in InTable mode
+
+            Node parent = table.Parent;
+            Node nextSibling = table; // We insert before table
+            
+            if (parent == null)
+            {
+                // Table popped off stack? fallback to previous element in stack.
+                // Spec says: use element before table in stack.
+                parent = _openElements.SkipWhile(e => e != table).Skip(1).FirstOrDefault(); 
+                if (parent == null) parent = _document; // Fallback
+                nextSibling = null; // Append
+            }
+            
+            // Temporary divert inserts to parent
+            var originalNode = CurrentNode;
+            
+            // How to implement redirect? Code uses `InsertHtmlElement` which uses `CurrentNode`.
+            // We can't easily change `CurrentNode` (it's peek of stack).
+            // We have to manual insert.
+            
+            if (token is CharacterToken ct)
+            {
+                // Attempt to coalesce with previous text node
+                Node prev = null;
+                if (nextSibling != null)
+                {
+                    var idx = parent.Children.IndexOf(nextSibling);
+                    if (idx > 0) prev = parent.Children[idx - 1];
+                }
+                else
+                {
+                    prev = parent.Children.LastOrDefault();
+                }
+
+                if (prev is Text txt)
+                {
+                    txt.Data += ct.Data;
+                    return true;
+                }
+
+                var text = new Text(ct.Data);
+                if (nextSibling != null && parent != null)
+                    parent.InsertBefore(text, nextSibling);
+                else
+                    parent?.AppendChild(text);
+                return true;
+            }
+            
+            if (token is StartTagToken st)
+            {
+                // Create element but don't push to stack?
+                // Wait, if it's a start tag, we might enter a new mode or push to stack.
+                // Spec says: "Process token using In Body... with foster parenting flag"
+                // This means when InBody inserts an element, it should foster parent it.
+                // This arch is hard to retrofit.
+                
+                // SIMPLIFIED FOSTER PARENTING:
+                // Only handle text and basic void elements. 
+                // Complex elements inside improper table context are hard.
+                if (DebugConfig.LogHtmlParse)
+                     FenBrowser.Core.FenLogger.Warn($"[HTML] Simple Foster Parent for {st.TagName}", LogCategory.HtmlParsing);
+                     
+                var el = new Element(st.TagName);
+                foreach(var a in st.Attributes) el.SetAttribute(a.Name, a.Value);
+                
+                 if (nextSibling != null && parent != null)
+                    parent.InsertBefore(el, nextSibling);
+                else
+                    parent?.AppendChild(el);
+                    
+                // If not void, we should push it to stack?
+                // But then it's in stack but its parent is ouside table.
+                if (!HtmlParser.IsVoid(st.TagName))
+                {
+                    _openElements.Push(el);
+                }
+                return true;
+            }
+            
             return true;
         }
+
+        private bool HandleInCaption(HtmlToken token)
+        {
+            if (token is EndTagToken et && et.TagName == "caption")
+            {
+                if (!InTableScope("caption")) return true; // Error
+                GenerateImpliedEndTags();
+                if ((CurrentNode as Element)?.TagName != "caption") { /* Parse error */ }
+                PopUntil("caption");
+                ClearActiveFormattingElementsMarker();
+                SwitchTo(InsertionMode.InTable);
+                return true;
+            }
+            if (token is StartTagToken st && (st.TagName == "caption" || st.TagName == "col" || st.TagName == "colgroup" || st.TagName == "tbody" || st.TagName == "td" || st.TagName == "tfoot" || st.TagName == "th" || st.TagName == "thead" || st.TagName == "tr"))
+            {
+                 if (!InTableScope("caption")) return true; // Error
+                 GenerateImpliedEndTags();
+                 PopUntil("caption");
+                 ClearActiveFormattingElementsMarker();
+                 SwitchTo(InsertionMode.InTable);
+                 return false; // Reprocess
+            }
+            if (token is EndTagToken et2 && et2.TagName == "table")
+            {
+                 if (!InTableScope("caption")) return true; // Error
+                 GenerateImpliedEndTags();
+                 PopUntil("caption");
+                 ClearActiveFormattingElementsMarker();
+                 SwitchTo(InsertionMode.InTable);
+                 return false; // Reprocess
+            }
+            return HandleInBody(token);
+        }
+
+        private bool HandleInColumnGroup(HtmlToken token)
+        {
+             if (token is CharacterToken ct && IsTableWhitespace(ct))
+             {
+                 InsertCharacter(ct);
+                 return true;
+             }
+             if (token is CommentToken c)
+             {
+                 CurrentNode.AppendChild(new Comment(c.Data));
+                 return true;
+             }
+             if (token is DoctypeToken) return true;
+             if (token is StartTagToken st)
+             {
+                 if (st.TagName == "html") return HandleInBody(token);
+                 if (st.TagName == "col")
+                 {
+                     InsertHtmlElement(st);
+                     _openElements.Pop(); // Col is void
+                     // Attributes acknowledgment
+                     return true;
+                 }
+                 if (st.TagName == "template") return HandleInHead(token);
+             }
+             if (token is EndTagToken et && et.TagName == "colgroup")
+             {
+                 if ((CurrentNode as Element)?.TagName != "colgroup") { /* Parse error */ }
+                 _openElements.Pop();
+                 SwitchTo(InsertionMode.InTable);
+                 return true;
+             }
+             if (token is EofToken) return HandleInBody(token);
+             
+             // Anything else: pop colgroup, reprocess
+             if ((CurrentNode as Element)?.TagName != "colgroup") { /* Parse error */ }
+             _openElements.Pop();
+             SwitchTo(InsertionMode.InTable);
+             return false;
+        }
+
+        private bool IsTableWhitespace(CharacterToken ct)
+        {
+            // ASCII whitespace
+            return string.IsNullOrWhiteSpace(ct.Data);
+        }
+
+        private bool InScope(string tagName, string[] scopeLimits)
+        {
+            foreach (var node in _openElements) // Iterates top to bottom? C# stack enumerates top-down (LIFO)
+            {
+                if (node is Element el)
+                {
+                    if (string.Equals(el.TagName, tagName, StringComparison.OrdinalIgnoreCase)) return true;
+                    if (scopeLimits.Any(s => string.Equals(s, el.TagName, StringComparison.OrdinalIgnoreCase))) return false;
+                }
+            }
+            return false;
+        }
+        
+        private bool InTableScope(string tagName)
+        {
+            return InScope(tagName, new[] { "html", "table", "template" }); // Table scope limits
+        }
+        
+        private void ClearStackBackToTableContext()
+        {
+            while (CurrentTag != "table" && CurrentTag != "template" && CurrentTag != "html" && _openElements.Count > 0)
+            {
+                _openElements.Pop();
+            }
+        }
+        
+        private void ClearStackBackToTableBodyContext()
+        {
+            while (CurrentTag != "tbody" && CurrentTag != "tfoot" && CurrentTag != "thead" && CurrentTag != "template" && CurrentTag != "html" && _openElements.Count > 0)
+            {
+                _openElements.Pop();
+            }
+        }
+        
+        private void ClearStackBackToTableRowContext()
+        {
+            while (CurrentTag != "tr" && CurrentTag != "template" && CurrentTag != "html" && _openElements.Count > 0)
+            {
+                _openElements.Pop();
+            }
+        }
+        
+        private void ClearActiveFormattingElementsMarker()
+        {
+            while (_activeFormattingElements.Count > 0)
+            {
+                var entry = _activeFormattingElements[_activeFormattingElements.Count - 1];
+                _activeFormattingElements.RemoveAt(_activeFormattingElements.Count - 1);
+                if (entry == null) break;
+            }
+        }
+        
+        private string CurrentTag => (CurrentNode as Element)?.TagName?.ToLowerInvariant();
+
+        private void IgnoreToken(HtmlToken token) { } // No-op
 
         private bool HandleText(HtmlToken token)
         {
@@ -752,6 +1339,35 @@ namespace FenBrowser.Core.Parsing
         }
 
         // --- Helpers ---
+
+        private void ResetInsertionMode()
+        {
+            // Simplified Reset logic based on stack
+             foreach (var node in _openElements) // Top to bottom?
+            {
+                var el = node as Element;
+                if (el == null) continue;
+                var tagName = el.TagName;
+                
+                if (tagName.Equals("select", StringComparison.OrdinalIgnoreCase)) { SwitchTo(InsertionMode.InSelect); return; }
+                if (tagName.Equals("td", StringComparison.OrdinalIgnoreCase) || tagName.Equals("th", StringComparison.OrdinalIgnoreCase)) { SwitchTo(InsertionMode.InCell); return; }
+                if (tagName.Equals("tr", StringComparison.OrdinalIgnoreCase)) { SwitchTo(InsertionMode.InRow); return; }
+                if (tagName.Equals("tbody", StringComparison.OrdinalIgnoreCase) || tagName.Equals("thead", StringComparison.OrdinalIgnoreCase) || tagName.Equals("tfoot", StringComparison.OrdinalIgnoreCase)) { SwitchTo(InsertionMode.InTableBody); return; }
+                if (tagName.Equals("caption", StringComparison.OrdinalIgnoreCase)) { SwitchTo(InsertionMode.InCaption); return; }
+                if (tagName.Equals("colgroup", StringComparison.OrdinalIgnoreCase)) { SwitchTo(InsertionMode.InColumnGroup); return; }
+                if (tagName.Equals("table", StringComparison.OrdinalIgnoreCase)) { SwitchTo(InsertionMode.InTable); return; }
+                if (tagName.Equals("template", StringComparison.OrdinalIgnoreCase)) { 
+                     // TODO: Current template insertion mode
+                     SwitchTo(InsertionMode.InBody); // Simplified
+                     return;
+                }
+                if (tagName.Equals("head", StringComparison.OrdinalIgnoreCase)) { SwitchTo(InsertionMode.InBody); return; } 
+                if (tagName.Equals("body", StringComparison.OrdinalIgnoreCase)) { SwitchTo(InsertionMode.InBody); return; }
+                if (tagName.Equals("frameset", StringComparison.OrdinalIgnoreCase)) { SwitchTo(InsertionMode.InFrameset); return; }
+                if (tagName.Equals("html", StringComparison.OrdinalIgnoreCase)) { SwitchTo(InsertionMode.InBody); return; }
+            }
+             SwitchTo(InsertionMode.InBody);
+        }
         
         private Node CurrentNode => _openElements.Count > 0 ? _openElements.Peek() : _document;
         
@@ -893,17 +1509,36 @@ namespace FenBrowser.Core.Parsing
         
         private void GenerateImpliedEndTags(string except = null)
         {
-            while ((CurrentNode as Element)?.TagName != except && IsImpliedEndTag((CurrentNode as Element)?.TagName))
+            while ((CurrentNode as Element)?.TagName != null)
             {
-                if (DebugConfig.LogHtmlParse)
-                    FenLogger.Log($"[HTML] Implied end tag for <{(CurrentNode as Element)?.TagName}>", LogCategory.HtmlParsing);
-                _openElements.Pop();
+                 string currentTag = (CurrentNode as Element).TagName;
+                 if (except != null && string.Equals(currentTag, except, StringComparison.OrdinalIgnoreCase)) break;
+                 
+                 if (IsImpliedEndTag(currentTag))
+                 {
+                    if (DebugConfig.LogHtmlParse)
+                        FenLogger.Log($"[HTML] Implied end tag for <{currentTag}>", LogCategory.HtmlParsing);
+                    _openElements.Pop();
+                 }
+                 else
+                 {
+                     break;
+                 }
             }
         }
         
         private bool IsImpliedEndTag(string tag)
         {
-             return tag == "dd" || tag == "dt" || tag == "li" || tag == "optgroup" || tag == "option" || tag == "p" || tag == "rb" || tag == "rp" || tag == "rt" || tag == "rtc";
+             return string.Equals(tag, "dd", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(tag, "dt", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(tag, "li", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(tag, "optgroup", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(tag, "option", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(tag, "p", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(tag, "rb", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(tag, "rp", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(tag, "rt", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(tag, "rtc", StringComparison.OrdinalIgnoreCase);
         }
         
         private bool StackHas(string tagName)
