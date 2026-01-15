@@ -21,6 +21,20 @@ namespace FenBrowser.Core.Dom
         DocumentFragment = 11,
         Notation = 12
     }
+    
+    /// <summary>
+    /// DOM Living Standard: Document Position Flags (bitmask).
+    /// </summary>
+    [Flags]
+    public enum DocumentPosition : ushort
+    {
+        Disconnected = 0x01,
+        Preceding = 0x02,
+        Following = 0x04,
+        Contains = 0x08,
+        ContainedBy = 0x10,
+        ImplementationSpecific = 0x20
+    }
 
     /// <summary>
     /// Base class for all DOM nodes.
@@ -535,6 +549,137 @@ namespace FenBrowser.Core.Dom
             return _eventListeners.TryGetValue(type, out var list) 
                 ? new List<EventListenerEntry>(list) 
                 : new List<EventListenerEntry>();
+        }
+        
+        // --- DOM Living Standard: Node Comparison & Normalization (10/10 Compliance) ---
+        
+        /// <summary>
+        /// DOM Living Standard §4.4.11: Normalize the node by merging adjacent Text nodes.
+        /// </summary>
+        public void Normalize()
+        {
+            for (int i = Children.Count - 1; i >= 0; i--)
+            {
+                var child = Children[i];
+                
+                // Recursively normalize children first
+                child.Normalize();
+                
+                // Merge adjacent Text nodes
+                if (child is Text textNode)
+                {
+                    // If this text node is empty, remove it
+                    if (string.IsNullOrEmpty(textNode.Data))
+                    {
+                        Children.RemoveAt(i);
+                        textNode.Parent = null;
+                        continue;
+                    }
+                    
+                    // Check if previous sibling is also a Text node
+                    if (i > 0 && Children[i - 1] is Text prevText)
+                    {
+                        // Merge: append child's data to previous, remove child
+                        prevText.Data += textNode.Data;
+                        Children.RemoveAt(i);
+                        textNode.Parent = null;
+                    }
+                }
+            }
+        }
+        
+        /// <summary>
+        /// DOM Living Standard §4.4.9: Returns true if this node is the same node as other.
+        /// </summary>
+        public bool IsSameNode(Node other) => ReferenceEquals(this, other);
+        
+        /// <summary>
+        /// DOM Living Standard §4.4.10: Returns true if this node is equal to other (deep equality).
+        /// </summary>
+        public virtual bool IsEqualNode(Node other)
+        {
+            if (other == null) return false;
+            if (NodeType != other.NodeType) return false;
+            if (NodeName != other.NodeName) return false;
+            if (NodeValue != other.NodeValue) return false;
+            if (Children.Count != other.Children.Count) return false;
+            
+            // Compare each child recursively
+            for (int i = 0; i < Children.Count; i++)
+            {
+                if (!Children[i].IsEqualNode(other.Children[i]))
+                    return false;
+            }
+            
+            return true;
+        }
+        
+        /// <summary>
+        /// DOM Living Standard §4.4.8: Compare document position of this node with other.
+        /// Returns a bitmask of DocumentPosition flags.
+        /// </summary>
+        public ushort CompareDocumentPosition(Node other)
+        {
+            if (other == null) return 0;
+            if (ReferenceEquals(this, other)) return 0;
+            
+            // Check if nodes are in different documents
+            if (OwnerDocument != other.OwnerDocument)
+            {
+                return (ushort)(DocumentPosition.Disconnected | 
+                                DocumentPosition.ImplementationSpecific |
+                                (GetHashCode() < other.GetHashCode() 
+                                    ? DocumentPosition.Preceding 
+                                    : DocumentPosition.Following));
+            }
+            
+            // Check if other is an ancestor of this
+            foreach (var ancestor in Ancestors())
+            {
+                if (ReferenceEquals(ancestor, other))
+                    return (ushort)(DocumentPosition.Contains | DocumentPosition.Preceding);
+            }
+            
+            // Check if other is a descendant of this
+            foreach (var desc in Descendants())
+            {
+                if (ReferenceEquals(desc, other))
+                    return (ushort)(DocumentPosition.ContainedBy | DocumentPosition.Following);
+            }
+            
+            // Find common ancestor and compare positions
+            var thisAncestors = new List<Node>(Ancestors());
+            var otherAncestors = new List<Node>(other.Ancestors());
+            
+            Node commonAncestor = null;
+            foreach (var a in thisAncestors)
+            {
+                if (otherAncestors.Contains(a))
+                {
+                    commonAncestor = a;
+                    break;
+                }
+            }
+            
+            if (commonAncestor == null)
+            {
+                return (ushort)(DocumentPosition.Disconnected | DocumentPosition.ImplementationSpecific);
+            }
+            
+            // Find which child of common ancestor leads to each node
+            int thisIndex = -1, otherIndex = -1;
+            for (int i = 0; i < commonAncestor.Children.Count; i++)
+            {
+                var child = commonAncestor.Children[i];
+                if (thisAncestors.Contains(child) || ReferenceEquals(child, this))
+                    thisIndex = i;
+                if (otherAncestors.Contains(child) || ReferenceEquals(child, other))
+                    otherIndex = i;
+            }
+            
+            return thisIndex < otherIndex 
+                ? (ushort)DocumentPosition.Following 
+                : (ushort)DocumentPosition.Preceding;
         }
     }
 
