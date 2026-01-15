@@ -62,10 +62,19 @@ namespace FenBrowser.FenEngine.Layout
             _activeBfcFloats.Push(new List<FloatExclusion>());
         }
 
+        // --- INTERNAL WRAPPERS FOR ALGORITHMS ---
+        internal LayoutMetrics MeasureInlineContextInternal(Element element, SKSize availableSize, int depth) => MeasureInlineContext(element, availableSize, depth);
+        internal void ArrangeBlockInternalInternal(Element element, SKRect finalRect, int depth, Node fallbackNode) => ArrangeBlockInternal(element, finalRect, depth, fallbackNode);
+
+        /// <summary>
+        /// Gets the computed style for the given node.
+        /// </summary>
+        internal CssComputed GetStyleInternal(Node node) => GetStyle(node);
         // Get computed style for a node - UA defaults now handled by ua.css
         private CssComputed GetStyle(Node node)
         {
             if (node == null) return null;
+            if (node is PseudoElement pe) return pe.ComputedStyle;
             if (!_styles.TryGetValue(node, out var style) || style == null)
             {
                 if (node.IsText) return null; // Allow inheritance from parent
@@ -101,175 +110,23 @@ namespace FenBrowser.FenEngine.Layout
                     style.OverflowY = mapOverflowY;
             }
             
-            // Inject defaults when CSS doesn't provide them (ua.css em parsing may fail)
+            // (UA Defaults are now handled by ua.css loaded in CssLoader)
+            // Note: Special handling for DETAILS/SUMMARY visibility might be needed here if CSS selectors 
+            // for :not([open]) are not fully supported yet.
             if (node is Element elem)
             {
-                string tag = elem.TagName.ToUpperInvariant();
-                
-                // Handle children of closed <details> - hide non-summary elements
-                if (elem.Parent is Element parentEl && parentEl.TagName?.ToUpperInvariant() == "DETAILS")
-                {
-                    bool isOpen = parentEl.HasAttribute("open");
-                    bool isSummary = tag == "SUMMARY";
-                    
-                    // If details is closed and this is not the summary, hide it
-                    if (!isOpen && !isSummary && style.Display != "none")
-                    {
-                        style.Display = "none";
-                    }
-                }
-                
-                // BODY defaults
-                if (tag == "BODY")
-                {
-                    if (style.Display == null) style.Display = "block";
-                    if (style.Margin.Top == 0 && style.Margin.Bottom == 0 && style.Margin.Left == 0 && style.Margin.Right == 0)
-                        style.Margin = new Thickness(8);
-                    if (style.FontSize == null || style.FontSize < 1) style.FontSize = 16.0;
-                    if (style.ForegroundColor == null) style.ForegroundColor = SKColors.Black;
-                    if (string.IsNullOrEmpty(style.FontFamilyName)) style.FontFamilyName = "sans-serif";
-                    SetBackgroundColor(style, 0xFFFFFFFF);
-                }
-                // Headings with bold and proper sizes
-                else if (tag == "H1")
-                {
-                    if (style.Display == null) style.Display = "block";
-                    if (style.Margin.Top == 0 && style.Margin.Bottom == 0) style.Margin = new Thickness(0, 21, 0, 21);
-                    if (style.FontWeight == null || style.FontWeight == 0) style.FontWeight = 700;
-                    if (style.FontSize == null || style.FontSize < 1) style.FontSize = 32.0;
-                }
-                // [FIX] Ensure embedded content has display style (force inline-block for containers to ensure boxes)
-                else if (tag == "PICTURE")
-                {
-                    if (style.Display == null) style.Display = "inline-block";
-                }
-                else if (tag == "IMG" || tag == "SVG" || tag == "VIDEO" || tag == "CANVAS")
-                {
-                    if (style.Display == null) style.Display = "inline-block";
-                }
-                else if (tag == "H2")
-                {
-                    if (style.Display == null) style.Display = "block";
-                    if (style.Margin.Top == 0 && style.Margin.Bottom == 0) style.Margin = new Thickness(0, 20, 0, 20);
-                    if (style.FontWeight == null || style.FontWeight == 0) style.FontWeight = 700;
-                    if (style.FontSize == null || style.FontSize < 1) style.FontSize = 24.0;
-                }
-                else if (tag == "H3")
-                {
-                    if (style.Display == null) style.Display = "block";
-                    if (style.Margin.Top == 0 && style.Margin.Bottom == 0) style.Margin = new Thickness(0, 18, 0, 18);
-                    if (style.FontWeight == null || style.FontWeight == 0) style.FontWeight = 700;
-                    if (style.FontSize == null || style.FontSize < 1) style.FontSize = 18.7;
-                }
-                else if (tag == "P")
-                {
-                    if (style.Display == null) style.Display = "block";
-                    if (style.Margin.Top == 0 && style.Margin.Bottom == 0) style.Margin = new Thickness(0, 16, 0, 16);
-                }
-                // Form controls - default to inline-block
-                else if (tag == "BUTTON" || tag == "INPUT" || tag == "SELECT" || tag == "TEXTAREA")
-                {
-                    if (style.Display == null) style.Display = "inline-block";
-                }
-                // Ruby annotation elements
-                else if (tag == "RUBY")
-                {
-                    if (style.Display == null) style.Display = "ruby";
-                }
-                else if (tag == "RT")
-                {
-                    if (style.Display == null) style.Display = "ruby-text";
-                    if (style.FontSize == null || style.FontSize < 1) 
-                    {
-                        // RT text is typically 50% of base font size
-                        var parentStyle = GetStyle(elem.ParentElement);
-                        double parentFontSize = parentStyle?.FontSize ?? 16.0;
-                        style.FontSize = parentFontSize * 0.5;
-                    }
-                }
-                else if (tag == "RP")
-                {
-                    // RP (ruby parenthesis) should be hidden in supporting browsers
-                    if (style.Display == null) style.Display = "none";
-                }
-                else if (tag == "RB")
-                {
-                    if (style.Display == null) style.Display = "ruby-base";
-                }
-                // Inline elements
-                else if (tag == "SPAN" || tag == "A" || tag == "B" || tag == "I" || tag == "STRONG" || tag == "EM" || tag == "BR")
-                {
-                    if (style.Display == null) style.Display = "inline";
-                }
-                // Replaced elements
-                else if (tag == "IMG" || tag == "VIDEO" || tag == "IFRAME" || tag == "CANVAS" || tag == "SVG")
-                {
-                    if (style.Display == null) style.Display = "inline";
-                }
-                // Metadata elements - Force hide if not specified
-                else if (tag == "HEAD" || tag == "STYLE" || tag == "SCRIPT" || tag == "TITLE" || tag == "META" || tag == "LINK" || tag == "BASE" || tag == "TEMPLATE" || tag == "NOSCRIPT")
-                {
-                    if (style.Display == null) style.Display = "none";
-                }
-                // Other block elements
-                else if (style.Display == null)
-                {
-                    if (tag == "DIV" || tag == "SECTION" || tag == "ARTICLE" || tag == "HEADER" || tag == "FOOTER" || tag == "NAV" || tag == "MAIN" ||
-                        tag == "DL" || tag == "DT" || tag == "DD" ||
-                        tag == "FORM" || tag == "FIELDSET" || tag == "TABLE" || tag == "BLOCKQUOTE" || tag == "PRE" || tag == "FIGURE" || tag == "ADDRESS" || tag == "HR" ||
-                        tag == "DETAILS" || tag == "FIGCAPTION" || tag == "DIALOG")
-                    {
-                        style.Display = "block";
-                    }
-                    else if (tag == "UL")
-                    {
-                        style.Display = "block";
-                        if (style.ListStyleType == null) style.ListStyleType = "disc";
-                        if (style.Padding.Left == 0) style.Padding = new Thickness(40, 0, 0, 0);
-                    }
-                    else if (tag == "OL")
-                    {
-                        style.Display = "block";
-                        if (style.ListStyleType == null) style.ListStyleType = "decimal";
-                        if (style.Padding.Left == 0) style.Padding = new Thickness(40, 0, 0, 0);
-                    }
-                    else if (tag == "LI")
-                    {
-                        style.Display = "list-item";
-                        // Inherit list-style-type from parent
-                        if (style.ListStyleType == null && elem.Parent is Element parentList)
-                        {
-                            string parentTag = parentList.TagName?.ToUpperInvariant();
-                            if (parentTag == "OL") style.ListStyleType = "decimal";
-                            else if (parentTag == "UL") style.ListStyleType = "disc";
-                        }
-                    }
-                    else if (tag == "SUMMARY")
-                    {
-                        // Summary is display: list-item with disclosure marker
-                        style.Display = "list-item";
-                        if (style.ListStyleType == null) style.ListStyleType = "disclosure-closed";
-                    }
-                    else if (tag == "MARK")
-                    {
-                        // Mark is inline with yellow background
-                        style.Display = "inline";
-                        if (style.BackgroundColor == null) style.BackgroundColor = new SkiaSharp.SKColor(255, 255, 0); // Yellow
-                    }
-                    else if (tag == "PROGRESS" || tag == "METER" || tag == "OUTPUT")
-                    {
-                        style.Display = "inline-block";
-                    }
-                    else if (tag == "CAPTION")
-                    {
-                        style.Display = "table-caption";
-                    }
-                    else if (tag == "WBR")
-                    {
-                        // WBR is a word break opportunity - treated as inline with zero width
-                        style.Display = "inline";
-                    }
-                }
+                 // Handle children of closed <details> - hide non-summary elements
+                 // This is effectively: details:not([open]) > :not(summary) { display: none; }
+                 if (elem.Parent is Element parentEl && string.Equals(parentEl.TagName, "DETAILS", StringComparison.OrdinalIgnoreCase))
+                 {
+                     bool isOpen = parentEl.HasAttribute("open");
+                     bool isSummary = string.Equals(elem.TagName, "SUMMARY", StringComparison.OrdinalIgnoreCase);
+                     
+                     if (!isOpen && !isSummary && style.Display != "none")
+                     {
+                         style.Display = "none";
+                     }
+                 }
             }
             return style;
         }
@@ -298,6 +155,60 @@ namespace FenBrowser.FenEngine.Layout
                 }
             } catch {}
         }
+
+        internal IEnumerable<Node> GetChildrenWithPseudosInternal(Element element, Node fallbackNode) => GetChildrenWithPseudos(element, fallbackNode);
+        private IEnumerable<Node> GetChildrenWithPseudos(Element element, Node fallbackNode = null)
+        {
+            var children = element?.Children ?? fallbackNode?.Children;
+            if (element == null) 
+            {
+                if (children != null) foreach (var c in children) yield return c;
+                yield break;
+            }
+
+            var style = GetStyle(element);
+            
+            // Before
+            if (style != null && style.Before != null && IsVisiblePseudo(style.Before))
+            {
+                 if (style.Before.PseudoElementInstance == null)
+                 {
+                     style.Before.PseudoElementInstance = new PseudoElement(element, "before", style.Before);
+                     if (!string.IsNullOrEmpty(style.Before.Content) && style.Before.Content != "none" && !style.Before.Content.Contains("url("))
+                     {
+                         string text = style.Before.Content.Trim('"', '\'');
+                         style.Before.PseudoElementInstance.AppendChild(new Text(text));
+                     }
+                 }
+                 yield return style.Before.PseudoElementInstance;
+            }
+
+            if (children != null)
+            {
+                foreach(var c in children) yield return c;
+            }
+
+            // After
+            if (style != null && style.After != null && IsVisiblePseudo(style.After))
+            {
+                 if (style.After.PseudoElementInstance == null)
+                 {
+                     style.After.PseudoElementInstance = new PseudoElement(element, "after", style.After);
+                     if (!string.IsNullOrEmpty(style.After.Content) && style.After.Content != "none" && !style.After.Content.Contains("url("))
+                     {
+                         string text = style.After.Content.Trim('"', '\'');
+                         style.After.PseudoElementInstance.AppendChild(new Text(text));
+                     }
+                 }
+                 yield return style.After.PseudoElementInstance;
+            }
+        }
+
+        private static bool IsVisiblePseudo(CssComputed pseudoStyle)
+        {
+            return !string.IsNullOrEmpty(pseudoStyle.Content) && pseudoStyle.Content != "none";
+        }
+        
         private void SetProperty(CssComputed style, string name, object val) {
              try {
                 var prop = style.GetType().GetProperty(name);
@@ -329,6 +240,12 @@ namespace FenBrowser.FenEngine.Layout
             ArrangeNode(node, finalRect, 0); // Start at 0
         }
 
+        internal void SetDesiredSize(Node node, SKSize size)
+        {
+             _desiredSizes[node] = size;
+        }
+
+        public LayoutMetrics MeasureNodePublic(Node node, SKSize availableSize, int depth) => MeasureNode(node, availableSize, depth);
         private LayoutMetrics MeasureNode(Node node, SKSize availableSize, int depth, bool shrinkToFit = false)
         {
             try
@@ -597,7 +514,19 @@ namespace FenBrowser.FenEngine.Layout
                 m = MeasureText(node, childConstraint);
             }
             else 
-                m = MeasureBlock(elem, childConstraint, depth + 1);
+            {
+                // Refactored to use BlockLayoutAlgorithm (Strategy Pattern)
+                var context = new FenBrowser.FenEngine.Layout.Algorithms.LayoutContext
+                {
+                    Node = elem,
+                    Style = style, // Available in scope
+                    AvailableSize = childConstraint,
+                    Depth = depth + 1,
+                    Computer = this,
+                    FallbackNode = node
+                };
+                m = new FenBrowser.FenEngine.Layout.Algorithms.BlockLayoutAlgorithm().Measure(context); 
+            }
 
             // DIAGNOSTIC: Log measurement result
             if (depth < 10 && elem != null)
@@ -1043,7 +972,8 @@ namespace FenBrowser.FenEngine.Layout
 
         private LayoutMetrics MeasureBlockInternal(Element element, SKSize availableSize, int depth, Node fallbackNode)
         {
-            var childrenSource = element?.Children ?? fallbackNode?.Children;
+            // PSEUDO-ELEMENT AWARENESS
+            var childrenSource = GetChildrenWithPseudos(element, fallbackNode).ToList();
             if (childrenSource == null) return new LayoutMetrics();
 
             if (element != null && (element.TagName == "A" || element.GetAttribute("class") == "o3j99"))
@@ -1336,7 +1266,7 @@ namespace FenBrowser.FenEngine.Layout
 
         private void ArrangeBlockInternal(Element element, SKRect finalRect, int depth, Node fallbackNode)
         {
-            var childrenSource = element?.Children ?? fallbackNode?.Children;
+            var childrenSource = GetChildrenWithPseudos(element, fallbackNode).ToList();
             if (childrenSource == null) return;
 
             // DEBUG: Trace BODY content box
@@ -1636,7 +1566,8 @@ namespace FenBrowser.FenEngine.Layout
                 (n, s, d, shrink) => MeasureNode(n, s, d, shrink), 
                 GetStyle, 
                 ShouldHide, 
-                depth);
+                depth,
+                GetChildrenWithPseudos(target, fallbackNode));
         }
 
 
@@ -1693,12 +1624,14 @@ namespace FenBrowser.FenEngine.Layout
                 GetStyle, 
                 (n) => _desiredSizes.TryGetValue(n, out var s) ? s : SKSize.Empty,
                 ShouldHide, 
-                depth);
+                depth,
+                GetChildrenWithPseudos(target, fallbackNode));
         }
 
 
         // --- INLINE FORMATTING CONTEXT ---
 
+        internal bool IsInlineLevelInternal(Node node) => IsInlineLevel(node);
         private bool IsInlineLevel(Node node)
         {
             if (node is Text) return true;
@@ -2611,7 +2544,7 @@ namespace FenBrowser.FenEngine.Layout
         public LayoutMetrics MeasureGrid(Element element, SKSize availableSize, int depth)
         {
             if (element == null) return new LayoutMetrics();
-            return GridLayoutComputer.Measure(element, availableSize, _styles, depth);
+            return GridLayoutComputer.Measure(element, availableSize, _styles, depth, GetChildrenWithPseudos(element));
         }
 
         /// <summary>
@@ -2627,7 +2560,8 @@ namespace FenBrowser.FenEngine.Layout
                 _styles,
                 _boxes,
                 depth,
-                (node, rect, d) => ArrangeNode(node, rect, d) // Delegate child arrangement
+                (node, rect, d) => ArrangeNode(node, rect, d), // Delegate child arrangement
+                GetChildrenWithPseudos(element)
             );
         }
 

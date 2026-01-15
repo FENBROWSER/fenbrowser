@@ -21,6 +21,7 @@ using System;
 using FenBrowser.Core;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom;
+using FenBrowser.FenEngine.Rendering;
 
 namespace FenBrowser.FenEngine.Layout
 {
@@ -100,9 +101,18 @@ namespace FenBrowser.FenEngine.Layout
             ref AbsoluteLayoutResult result)
         {
             // Parse position values
-            float? left = ParseLengthOrAuto(style.Left, cbWidth);
-            float? right = ParseLengthOrAuto(style.Right, cbWidth);
-            float? width = ParseLengthOrAuto(style.Width, cbWidth);
+            // 1. Try explicit pixel value
+            // 2. Try percentage value
+            // 3. Auto
+            float? left = style.Left.HasValue ? (float)style.Left.Value : 
+                          style.LeftPercent.HasValue ? (float)(style.LeftPercent.Value * cbWidth / 100f) : (float?)null;
+            
+            float? right = style.Right.HasValue ? (float)style.Right.Value : 
+                           style.RightPercent.HasValue ? (float)(style.RightPercent.Value * cbWidth / 100f) : (float?)null;
+            
+            float? width = style.Width.HasValue ? (float)style.Width.Value : 
+                           style.WidthPercent.HasValue ? (float)(style.WidthPercent.Value * cbWidth / 100f) : 
+                           !string.IsNullOrEmpty(style.WidthExpression) ? LayoutHelper.EvaluateCssExpression(style.WidthExpression, cbWidth, (float)(CssParser.MediaViewportWidth ?? 0), (float)(CssParser.MediaViewportHeight ?? 0)) : (float?)null;
             
             // Use Thickness properties for margin, padding, border
             float? marginLeft = style.MarginLeftAuto ? null : (float?)(style.Margin.Left);
@@ -139,20 +149,20 @@ namespace FenBrowser.FenEngine.Layout
             }
             else if (!width.HasValue && !left.HasValue && !right.HasValue)
             {
-                w = intrinsicWidth > 0 ? intrinsicWidth : cbWidth - fixedSpace - ml - mr;
+                w = intrinsicWidth > 0 ? intrinsicWidth : Math.Max(0, cbWidth - fixedSpace - ml - mr); // Fix: don't go negative if container small
                 l = 0;
                 r = cbWidth - l - ml - fixedSpace - w - mr;
                 result.WidthWasAuto = true;
             }
             else if (!width.HasValue && !left.HasValue)
             {
-                w = intrinsicWidth > 0 ? intrinsicWidth : cbWidth - fixedSpace - ml - mr - r;
+                w = intrinsicWidth > 0 ? intrinsicWidth : Math.Max(0, cbWidth - fixedSpace - ml - mr - r);
                 l = cbWidth - ml - fixedSpace - w - mr - r;
                 result.WidthWasAuto = true;
             }
             else if (!width.HasValue && !right.HasValue)
             {
-                w = intrinsicWidth > 0 ? intrinsicWidth : cbWidth - fixedSpace - l - ml - mr;
+                w = intrinsicWidth > 0 ? intrinsicWidth : Math.Max(0, cbWidth - fixedSpace - l - ml - mr);
                 r = cbWidth - l - ml - fixedSpace - w - mr;
                 result.WidthWasAuto = true;
             }
@@ -203,9 +213,15 @@ namespace FenBrowser.FenEngine.Layout
             ref AbsoluteLayoutResult result)
         {
             // Parse position values
-            float? top = ParseLengthOrAuto(style.Top, cbHeight);
-            float? bottom = ParseLengthOrAuto(style.Bottom, cbHeight);
-            float? height = ParseLengthOrAuto(style.Height, cbHeight);
+            float? top = style.Top.HasValue ? (float)style.Top.Value : 
+                         style.TopPercent.HasValue ? (float)(style.TopPercent.Value * cbHeight / 100f) : (float?)null;
+                         
+            float? bottom = style.Bottom.HasValue ? (float)style.Bottom.Value : 
+                            style.BottomPercent.HasValue ? (float)(style.BottomPercent.Value * cbHeight / 100f) : (float?)null;
+                            
+            float? height = style.Height.HasValue ? (float)style.Height.Value : 
+                            style.HeightPercent.HasValue ? (float)(style.HeightPercent.Value * cbHeight / 100f) : 
+                            !string.IsNullOrEmpty(style.HeightExpression) ? LayoutHelper.EvaluateCssExpression(style.HeightExpression, cbHeight, (float)(CssParser.MediaViewportWidth ?? 0), (float)(CssParser.MediaViewportHeight ?? 0)) : (float?)null;
             
             // Use Thickness properties - margins are always explicit for top/bottom (no auto support in vertical)
             float marginTop = (float)(style.Margin.Top);
@@ -264,13 +280,13 @@ namespace FenBrowser.FenEngine.Layout
             }
             else if (!height.HasValue && !top.HasValue)
             {
-                h = intrinsicHeight > 0 ? intrinsicHeight : cbHeight - fixedSpace - mt - mb - b;
+                h = intrinsicHeight > 0 ? intrinsicHeight : Math.Max(0, cbHeight - fixedSpace - mt - mb - b);
                 t = cbHeight - mt - fixedSpace - h - mb - b;
                 result.HeightWasAuto = true;
             }
             else if (!height.HasValue && !bottom.HasValue)
             {
-                h = intrinsicHeight > 0 ? intrinsicHeight : cbHeight - fixedSpace - t - mt - mb;
+                h = intrinsicHeight > 0 ? intrinsicHeight : Math.Max(0, cbHeight - fixedSpace - t - mt - mb);
                 b = cbHeight - t - mt - fixedSpace - h - mb;
                 result.HeightWasAuto = true;
             }
@@ -306,16 +322,30 @@ namespace FenBrowser.FenEngine.Layout
             ContainingBlock cb,
             ref AbsoluteLayoutResult result)
         {
-            float minWidth = (float)(style.MinWidth ?? 0);
-            float maxWidth = style.MaxWidth.HasValue ? (float)style.MaxWidth.Value : float.MaxValue;
+            float minWidth = 0;
+            if (style.MinWidth.HasValue) minWidth = (float)style.MinWidth.Value;
+            else if (style.MinWidthExpression != null) 
+                 minWidth = LayoutHelper.EvaluateCssExpression(style.MinWidthExpression, cb.Width, (float)(CssParser.MediaViewportWidth ?? 0), (float)(CssParser.MediaViewportHeight ?? 0));
+                 
+            float maxWidth = float.MaxValue;
+            if (style.MaxWidth.HasValue) maxWidth = (float)style.MaxWidth.Value;
+            else if (style.MaxWidthExpression != null)
+                 maxWidth = LayoutHelper.EvaluateCssExpression(style.MaxWidthExpression, cb.Width, (float)(CssParser.MediaViewportWidth ?? 0), (float)(CssParser.MediaViewportHeight ?? 0));
 
             if (result.Width < minWidth)
                 result.Width = minWidth;
             else if (maxWidth > 0 && result.Width > maxWidth)
                 result.Width = maxWidth;
 
-            float minHeight = (float)(style.MinHeight ?? 0);
-            float maxHeight = style.MaxHeight.HasValue ? (float)style.MaxHeight.Value : float.MaxValue;
+            float minHeight = 0;
+            if (style.MinHeight.HasValue) minHeight = (float)style.MinHeight.Value;
+            else if (style.MinHeightExpression != null)
+                 minHeight = LayoutHelper.EvaluateCssExpression(style.MinHeightExpression, cb.Height, (float)(CssParser.MediaViewportWidth ?? 0), (float)(CssParser.MediaViewportHeight ?? 0));
+                 
+            float maxHeight = float.MaxValue;
+            if (style.MaxHeight.HasValue) maxHeight = (float)style.MaxHeight.Value;
+            else if (style.MaxHeightExpression != null)
+                 maxHeight = LayoutHelper.EvaluateCssExpression(style.MaxHeightExpression, cb.Height, (float)(CssParser.MediaViewportWidth ?? 0), (float)(CssParser.MediaViewportHeight ?? 0));
 
             if (result.Height < minHeight)
                 result.Height = minHeight;
