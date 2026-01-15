@@ -1,102 +1,123 @@
+using System;
+using System.Collections.Generic;
 using FenBrowser.Core.Dom;
 using FenBrowser.Core.Css;
 using FenBrowser.Core; // For Thickness
+using FenBrowser.FenEngine.Layout;
+using SkiaSharp;
 using Xunit;
 
 namespace FenBrowser.Tests.Layout
 {
-    /// <summary>
-    /// Tests for block layout correctness.
-    /// Verifies BFC rules, margin collapsing, and block box behavior.
-    /// </summary>
     public class BlockLayoutTests
     {
-        private Element CreateElement(string tag, params Node[] children)
-        {
-            var element = new Element(tag);
-            foreach (var child in children)
-            {
-                element.Children.Add(child);
-            }
-            return element;
-        }
-
         [Fact]
-        public void BlockElement_TakesFullWidth()
+        public void VerticalStacking_BlocksStackVertically()
         {
-            // Arrange: <div> without width
-            var div = CreateElement("DIV");
-            var style = new CssComputed { Display = "block" };
-
-            // Assert: Display is block (takes full available width)
-            Assert.Equal("block", style.Display);
-        }
-
-        [Fact]
-        public void MarginCollapsing_AdjacentSiblings_LargerWins()
-        {
-            // Arrange: Two adjacent divs
-            // <div style="margin-bottom:20px">A</div>
-            // <div style="margin-top:30px">B</div>
-            // Expected: 30px gap (not 50px)
+            // divs are block-level, should stack.
+            var container = LayoutTestHelper.CreateBlockContainer(3, 100, 50); // 3 items 100x50
+            var style = new CssComputed { Display = "block", Width = 500, Height = 500 };
             
-            var style1 = new CssComputed();
-            style1.Margin = new Thickness(0, 0, 0, 20); // bottom 20
+            var styles = LayoutTestHelper.CreateStyles(container, style);
+            foreach(var child in container.Children)
+                styles[child] = new CssComputed { Display = "block", Width = 100, Height = 50 };
+
+            var computer = LayoutTestHelper.CreateComputer(container, styles);
+            computer.Measure(container, new SKSize(500, 500));
+            computer.Arrange(container, new SKRect(0, 0, 500, 500));
+
+            var c0 = computer.GetBox(container.Children[0]);
+            var c1 = computer.GetBox(container.Children[1]);
+            var c2 = computer.GetBox(container.Children[2]);
+
+            // X = 0 (default alignment)
+            Assert.Equal(0, c0.ContentBox.Left);
+            Assert.Equal(0, c1.ContentBox.Left);
+            Assert.Equal(0, c2.ContentBox.Left);
+
+            // Y = Stacking
+            Assert.Equal(0, c0.ContentBox.Top);
+            Assert.Equal(50, c1.ContentBox.Top);
+            Assert.Equal(100, c2.ContentBox.Top);
+        }
+
+        [Fact]
+        public void MarginCollapsing_Siblings_LargerWins()
+        {
+            // Div A: Margin-Bottom 20
+            // Div B: Margin-Top 30
+            // Gap should be 30.
             
-            var style2 = new CssComputed();
-            style2.Margin = new Thickness(0, 30, 0, 0); // top 30
+            var container = new Element("div");
+            var item1 = new Element("div");
+            var item2 = new Element("div");
+            container.AppendChild(item1);
+            container.AppendChild(item2);
+
+            var style = new CssComputed { Display = "block", Width = 500 };
+            var styles = LayoutTestHelper.CreateStyles(container, style);
             
-            // Collapsed margin should be max(20, 30) = 30
-            var collapsed = System.Math.Max(20, 30);
-            Assert.Equal(30, collapsed);
+            styles[item1] = new CssComputed { Display = "block", Height = 50, Margin = new Thickness(0,0,0,20) };
+            styles[item2] = new CssComputed { Display = "block", Height = 50, Margin = new Thickness(0,30,0,0) };
+
+            var computer = LayoutTestHelper.CreateComputer(container, styles);
+            computer.Measure(container, new SKSize(500, 600));
+            computer.Arrange(container, new SKRect(0, 0, 500, 600));
+
+            var c0 = computer.GetBox(item1);
+            var c1 = computer.GetBox(item2);
+
+            Assert.Equal(0, c0.ContentBox.Top);
+            // Item 1 ends at 50.
+            // Gap is Max(20, 30) = 30.
+            // Item 2 starts at 50 + 30 = 80.
+            Assert.Equal(80, c1.ContentBox.Top);
         }
 
         [Fact]
-        public void BFC_RootElementEstablishesBFC()
+        public void AutoWidth_BlockTakesAvailableWidth()
         {
-            // Root element always establishes new BFC
-            var html = CreateElement("HTML");
-            Assert.Equal("HTML", html.Tag);
+            var container = new Element("div");
+            var child = new Element("div");
+            container.AppendChild(child);
+
+            // Container fixed width
+            var styles = LayoutTestHelper.CreateStyles(container, new CssComputed { Display = "block", Width = 400 });
+            // Child auto width (default)
+            styles[child] = new CssComputed { Display = "block", Height = 50 }; 
+
+            var computer = LayoutTestHelper.CreateComputer(container, styles);
+            computer.Measure(container, new SKSize(400, 600));
+            computer.Arrange(container, new SKRect(0, 0, 400, 600));
+
+            var cBox = computer.GetBox(child);
+            
+            // Should fill 400px
+            Assert.Equal(400, cBox.ContentBox.Width);
         }
 
         [Fact]
-        public void BFC_FloatEstablishesBFC()
+        public void AutoWidth_WithMargins_RespectsConstraint()
         {
-            // Float creates new BFC
-            var style = new CssComputed { Float = "left" };
-            Assert.Equal("left", style.Float);
-        }
+            // Parent 400px.
+            // Child Margin-Left 10, Margin-Right 20.
+            // Child Width should be 400 - 10 - 20 = 370.
+            
+            var container = new Element("div");
+            var child = new Element("div");
+            container.AppendChild(child);
 
-        [Fact]
-        public void BFC_OverflowHiddenEstablishesBFC()
-        {
-            // overflow: hidden creates new BFC
-            var style = new CssComputed { Overflow = "hidden" };
-            Assert.Equal("hidden", style.Overflow);
-        }
+            var styles = LayoutTestHelper.CreateStyles(container, new CssComputed { Display = "block", Width = 400 });
+            styles[child] = new CssComputed { Display = "block", Height = 50, Margin = new Thickness(10, 0, 20, 0) };
 
-        [Fact]
-        public void BFC_AbsolutePositionEstablishesBFC()
-        {
-            // position: absolute creates new BFC
-            var style = new CssComputed { Position = "absolute" };
-            Assert.Equal("absolute", style.Position);
-        }
+            var computer = LayoutTestHelper.CreateComputer(container, styles);
+            computer.Measure(container, new SKSize(400, 600));
+            computer.Arrange(container, new SKRect(0, 0, 400, 600));
 
-        [Fact]
-        public void BoxSizing_ContentBox_WidthExcludesPadding()
-        {
-            // box-sizing: content-box (default)
-            var style = new CssComputed { BoxSizing = "content-box" };
-            Assert.Equal("content-box", style.BoxSizing);
-        }
+            var cBox = computer.GetBox(child);
 
-        [Fact]
-        public void BoxSizing_BorderBox_WidthIncludesPadding()
-        {
-            // box-sizing: border-box
-            var style = new CssComputed { BoxSizing = "border-box" };
-            Assert.Equal("border-box", style.BoxSizing);
+            Assert.Equal(370, cBox.ContentBox.Width);
+            Assert.Equal(10, cBox.ContentBox.Left); // Relative to parent 0
         }
     }
 }
