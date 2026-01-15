@@ -153,13 +153,18 @@ namespace FenBrowser.Core.Dom
             set => SetAttribute("id", value);
         }
 
-        public IEnumerable<string> ClassList
+        private DOMTokenList _classList;
+        
+        /// <summary>
+        /// DOM Living Standard: Returns a DOMTokenList for the class attribute.
+        /// 10/10 Spec: Full DOMTokenList API (add, remove, toggle, replace, contains).
+        /// </summary>
+        public DOMTokenList ClassList 
         {
             get
             {
-                var v = GetAttribute("class");
-                if (string.IsNullOrEmpty(v)) return Enumerable.Empty<string>();
-                return v.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                _classList ??= new DOMTokenList(this, "class");
+                return _classList;
             }
         }
 
@@ -469,6 +474,179 @@ namespace FenBrowser.Core.Dom
                 stack.Push(n is Element e ? e.TagName : n.NodeName);
             }
             return string.Join(" > ", stack);
+        }
+        
+        // --- DOM Living Standard: Selector Methods (10/10 Spec) ---
+        
+        /// <summary>
+        /// DOM Living Standard: Returns true if this element matches the given CSS selector.
+        /// </summary>
+        public bool Matches(string selector)
+        {
+            if (string.IsNullOrWhiteSpace(selector)) return false;
+            
+            // Use existing internal Matches helper
+            return MatchesSimpleSelector(this, selector);
+        }
+        
+        /// <summary>
+        /// DOM Living Standard: Returns the closest ancestor (or self) that matches the selector.
+        /// </summary>
+        public Element Closest(string selector)
+        {
+            if (string.IsNullOrWhiteSpace(selector)) return null;
+            
+            Element current = this;
+            while (current != null)
+            {
+                if (MatchesSimpleSelector(current, selector))
+                    return current;
+                    
+                current = current.Parent as Element;
+            }
+            
+            return null;
+        }
+        
+        // --- DOM Living Standard: Dataset (data-* attributes) ---
+        
+        private StringMap _dataset;
+        
+        /// <summary>
+        /// DOM Living Standard: Returns a StringMap providing access to data-* attributes.
+        /// </summary>
+        public StringMap Dataset
+        {
+            get
+            {
+                _dataset ??= new StringMap(this);
+                return _dataset;
+            }
+        }
+    }
+    
+    /// <summary>
+    /// DOM Living Standard: StringMap for data-* attributes.
+    /// Maps camelCase JS names to kebab-case HTML attributes.
+    /// </summary>
+    public class StringMap : IEnumerable<KeyValuePair<string, string>>
+    {
+        private readonly Element _element;
+        
+        public StringMap(Element element)
+        {
+            _element = element;
+        }
+        
+        public string this[string name]
+        {
+            get => GetValue(name);
+            set => SetValue(name, value);
+        }
+        
+        public string GetValue(string camelCaseName)
+        {
+            if (string.IsNullOrWhiteSpace(camelCaseName)) return null;
+            
+            var attrName = "data-" + ToKebabCase(camelCaseName);
+            return _element.GetAttribute(attrName);
+        }
+        
+        public void SetValue(string camelCaseName, string value)
+        {
+            if (string.IsNullOrWhiteSpace(camelCaseName)) return;
+            
+            var attrName = "data-" + ToKebabCase(camelCaseName);
+            if (value == null)
+                _element.RemoveAttribute(attrName);
+            else
+                _element.SetAttribute(attrName, value);
+        }
+        
+        public bool Contains(string camelCaseName)
+        {
+            if (string.IsNullOrWhiteSpace(camelCaseName)) return false;
+            
+            var attrName = "data-" + ToKebabCase(camelCaseName);
+            return _element.HasAttribute(attrName);
+        }
+        
+        public void Remove(string camelCaseName)
+        {
+            if (string.IsNullOrWhiteSpace(camelCaseName)) return;
+            
+            var attrName = "data-" + ToKebabCase(camelCaseName);
+            _element.RemoveAttribute(attrName);
+        }
+        
+        /// <summary>
+        /// Enumerate all data-* attributes as camelCase name/value pairs.
+        /// </summary>
+        public IEnumerator<KeyValuePair<string, string>> GetEnumerator()
+        {
+            foreach (var kv in _element.Attributes)
+            {
+                if (kv.Key.StartsWith("data-", StringComparison.OrdinalIgnoreCase))
+                {
+                    var camelName = ToCamelCase(kv.Key.Substring(5));
+                    yield return new KeyValuePair<string, string>(camelName, kv.Value);
+                }
+            }
+        }
+        
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+        
+        /// <summary>
+        /// Convert camelCase to kebab-case.
+        /// Example: "userName" -> "user-name"
+        /// </summary>
+        private static string ToKebabCase(string camelCase)
+        {
+            if (string.IsNullOrEmpty(camelCase)) return camelCase;
+            
+            var sb = new StringBuilder();
+            foreach (char c in camelCase)
+            {
+                if (char.IsUpper(c) && sb.Length > 0)
+                {
+                    sb.Append('-');
+                    sb.Append(char.ToLower(c));
+                }
+                else
+                {
+                    sb.Append(char.ToLower(c));
+                }
+            }
+            return sb.ToString();
+        }
+        
+        /// <summary>
+        /// Convert kebab-case to camelCase.
+        /// Example: "user-name" -> "userName"
+        /// </summary>
+        private static string ToCamelCase(string kebabCase)
+        {
+            if (string.IsNullOrEmpty(kebabCase)) return kebabCase;
+            
+            var sb = new StringBuilder();
+            bool nextUpper = false;
+            foreach (char c in kebabCase)
+            {
+                if (c == '-')
+                {
+                    nextUpper = true;
+                }
+                else if (nextUpper)
+                {
+                    sb.Append(char.ToUpper(c));
+                    nextUpper = false;
+                }
+                else
+                {
+                    sb.Append(c);
+                }
+            }
+            return sb.ToString();
         }
     }
 }
