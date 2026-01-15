@@ -43,6 +43,30 @@ public class AddressBarWidget : Widget
     
     public bool IsBookmarked { get; set; }
     
+    // --- NEW: Security and Loading State (10/10) ---
+    
+    /// <summary>
+    /// Current security state of the page (HTTPS status).
+    /// </summary>
+    public SecurityState CurrentSecurity { get; set; } = SecurityState.Unknown;
+    
+    /// <summary>
+    /// Loading progress (0.0 to 1.0), or -1 if not loading.
+    /// </summary>
+    public float LoadingProgress { get; set; } = -1;
+    
+    /// <summary>
+    /// Event when autocomplete suggestions are requested.
+    /// </summary>
+    public event Action<string, Action<List<string>>> AutocompleteRequested;
+    
+    /// <summary>
+    /// Current autocomplete suggestions.
+    /// </summary>
+    private List<string> _suggestions = new();
+    private int _selectedSuggestionIndex = -1;
+    private bool _showSuggestions = false;
+    
     // Styling
     // Styling (optional overrides)
     public SKColor? BackgroundColor { get; set; }
@@ -575,4 +599,76 @@ public class AddressBarWidget : Widget
     }
 
     public override bool CanFocus => true;
+    
+    // --- Autocomplete (10/10) ---
+    
+    /// <summary>
+    /// Request autocomplete suggestions for the current text.
+    /// </summary>
+    public void RequestAutocomplete()
+    {
+        if (string.IsNullOrWhiteSpace(_text) || _text.Length < 2)
+        {
+            _suggestions.Clear();
+            _showSuggestions = false;
+            return;
+        }
+        
+        AutocompleteRequested?.Invoke(_text, suggestions =>
+        {
+            _suggestions = suggestions ?? new List<string>();
+            _showSuggestions = _suggestions.Count > 0;
+            _selectedSuggestionIndex = -1;
+            Invalidate();
+        });
+    }
+    
+    /// <summary>
+    /// Apply the selected autocomplete suggestion.
+    /// </summary>
+    public void ApplySuggestion(int index)
+    {
+        if (index >= 0 && index < _suggestions.Count)
+        {
+            Text = _suggestions[index];
+            _caretPosition = _text.Length;
+            _showSuggestions = false;
+            Invalidate();
+        }
+    }
+    
+    /// <summary>
+    /// Hide the autocomplete dropdown.
+    /// </summary>
+    public void HideAutocomplete()
+    {
+        _showSuggestions = false;
+        _suggestions.Clear();
+        Invalidate();
+    }
+    
+    /// <summary>
+    /// Get security icon color based on current state.
+    /// </summary>
+    public SKColor GetSecurityIconColor()
+    {
+        return CurrentSecurity switch
+        {
+            SecurityState.Secure => SKColors.ForestGreen,
+            SecurityState.Insecure => SKColors.OrangeRed,
+            SecurityState.Mixed => SKColors.Orange,
+            _ => ThemeManager.Current.Text
+        };
+    }
+}
+
+/// <summary>
+/// Security state of the current page.
+/// </summary>
+public enum SecurityState
+{
+    Unknown,
+    Secure,     // Valid HTTPS
+    Insecure,   // HTTP or invalid cert
+    Mixed       // HTTPS with mixed content
 }
