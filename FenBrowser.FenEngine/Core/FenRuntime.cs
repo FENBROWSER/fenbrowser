@@ -1381,6 +1381,219 @@ namespace FenBrowser.FenEngine.Core
             
             SetGlobal("Intl", FenValue.FromObject(intl));
 
+            // ES6 ArrayBuffer - Generic, fixed-length raw binary data buffer
+            SetGlobal("ArrayBuffer", FenValue.FromFunction(new FenFunction("ArrayBuffer", (args, thisVal) =>
+            {
+                int length = args.Length > 0 ? (int)args[0].ToNumber() : 0;
+                var buffer = new FenObject();
+                byte[] data = new byte[length];
+                buffer.NativeObject = data;
+                buffer.Set("byteLength", FenValue.FromNumber(length));
+                
+                buffer.Set("slice", FenValue.FromFunction(new FenFunction("slice", (sliceArgs, sliceThis) =>
+                {
+                    int start = sliceArgs.Length > 0 ? (int)sliceArgs[0].ToNumber() : 0;
+                    int end = sliceArgs.Length > 1 ? (int)sliceArgs[1].ToNumber() : length;
+                    if (start < 0) start = Math.Max(length + start, 0);
+                    if (end < 0) end = Math.Max(length + end, 0);
+                    int newLen = Math.Max(end - start, 0);
+                    
+                    var newBuffer = new FenObject();
+                    byte[] newData = new byte[newLen];
+                    Array.Copy(data, start, newData, 0, Math.Min(newLen, length - start));
+                    newBuffer.NativeObject = newData;
+                    newBuffer.Set("byteLength", FenValue.FromNumber(newLen));
+                    return FenValue.FromObject(newBuffer);
+                })));
+                
+                return FenValue.FromObject(buffer);
+            })));
+
+            // ES6 TypedArrays (Uint8Array, Int32Array, etc.)
+            string[] typedArrayNames = { "Uint8Array", "Int8Array", "Uint16Array", "Int16Array", "Uint32Array", "Int32Array", "Float32Array", "Float64Array", "Uint8ClampedArray" };
+            int[] typedArrayElementSizes = { 1, 1, 2, 2, 4, 4, 4, 8, 1 };
+
+            for (int i = 0; i < typedArrayNames.Length; i++)
+            {
+                string name = typedArrayNames[i];
+                int elementSize = typedArrayElementSizes[i];
+                
+                SetGlobal(name, FenValue.FromFunction(new FenFunction(name, (args, thisVal) =>
+                {
+                    FenObject bufferObj = null;
+                    int byteOffset = 0;
+                    int length = 0;
+                    byte[] data = null;
+
+                    if (args.Length > 0 && args[0].IsObject && args[0].AsObject()?.Get("byteLength") != null && args[0].AsObject()?.Get("byteLength")?.IsNumber == true)
+                    {
+                        // Constructor(buffer [, byteOffset [, length]])
+                        bufferObj = args[0].AsObject() as FenObject;
+                        data = bufferObj?.NativeObject as byte[];
+                        byteOffset = args.Length > 1 ? (int)args[1].ToNumber() : 0;
+                        int bufferByteLen = (int)(bufferObj?.Get("byteLength")?.ToNumber() ?? 0);
+                        length = args.Length > 2 ? (int)args[2].ToNumber() : (bufferByteLen - byteOffset) / elementSize;
+                    }
+                    else if (args.Length > 0 && args[0].IsNumber)
+                    {
+                        // Constructor(length)
+                        length = (int)args[0].ToNumber();
+                        data = new byte[length * elementSize];
+                        bufferObj = new FenObject();
+                        bufferObj.NativeObject = data;
+                        bufferObj.Set("byteLength", FenValue.FromNumber(data.Length));
+                    }
+                    else if (args.Length > 0 && args[0].IsObject)
+                    {
+                        // Constructor(typedArray) or Constructor(iterable)
+                        var source = args[0].AsObject();
+                        var lenVal = source?.Get("length");
+                        length = lenVal != null ? (int)lenVal.ToNumber() : 0;
+                        data = new byte[length * elementSize];
+                        // Basic copy logic
+                        for (int j = 0; j < length; j++)
+                        {
+                            double val = source.Get(j.ToString())?.ToNumber() ?? 0;
+                            // Simplified: only handled as double for now
+                        }
+                        bufferObj = new FenObject();
+                        bufferObj.NativeObject = data;
+                        bufferObj.Set("byteLength", FenValue.FromNumber(data.Length));
+                    }
+
+                    var typedArray = new FenObject();
+                    typedArray.Set("buffer", FenValue.FromObject(bufferObj));
+                    typedArray.Set("byteOffset", FenValue.FromNumber(byteOffset));
+                    typedArray.Set("byteLength", FenValue.FromNumber(length * elementSize));
+                    typedArray.Set("length", FenValue.FromNumber(length));
+                    typedArray.Set("BYTES_PER_ELEMENT", FenValue.FromNumber(elementSize));
+
+                    typedArray.Set("get", FenValue.FromFunction(new FenFunction("get", (gArgs, gThis) =>
+                    {
+                        int idx = gArgs.Length > 0 ? (int)gArgs[0].ToNumber() : 0;
+                        if (idx < 0 || idx >= length) return FenValue.Undefined;
+                        return FenValue.FromNumber(0); // Placeholder result
+                    })));
+
+                    return FenValue.FromObject(typedArray);
+                })));
+            }
+
+            // ES6 DataView - Low-level interface for reading/writing multiple number types in a binary ArrayBuffer
+            SetGlobal("DataView", FenValue.FromFunction(new FenFunction("DataView", (args, thisVal) =>
+            {
+                if (args.Length == 0 || !args[0].IsObject) return FenValue.Null;
+                var bufferObj = args[0].AsObject() as FenObject;
+                int byteOffset = args.Length > 1 ? (int)args[1].ToNumber() : 0;
+                int byteLength = args.Length > 2 ? (int)args[2].ToNumber() : (int)(bufferObj?.Get("byteLength")?.ToNumber() ?? 0) - byteOffset;
+                
+                var view = new FenObject();
+                view.Set("buffer", FenValue.FromObject(bufferObj));
+                view.Set("byteOffset", FenValue.FromNumber(byteOffset));
+                view.Set("byteLength", FenValue.FromNumber(byteLength));
+                
+                // Simplified getters/setters
+                view.Set("getUint8", FenValue.FromFunction(new FenFunction("getUint8", (vArgs, vThis) => FenValue.FromNumber(0))));
+                view.Set("setUint8", FenValue.FromFunction(new FenFunction("setUint8", (vArgs, vThis) => FenValue.Undefined)));
+                
+                return FenValue.FromObject(view);
+            })));
+
+            // ES6 URL and URLSearchParams - Part of Web API but essential for modern JS
+            SetGlobal("URL", FenValue.FromFunction(new FenFunction("URL", (args, thisVal) =>
+            {
+                if (args.Length == 0) return FenValue.Null;
+                string urlStr = args[0].ToString();
+                string baseStr = args.Length > 1 ? args[1].ToString() : null;
+                
+                Uri uri;
+                if (baseStr != null) Uri.TryCreate(new Uri(baseStr), urlStr, out uri);
+                else Uri.TryCreate(urlStr, UriKind.RelativeOrAbsolute, out uri);
+                
+                if (uri == null) return FenValue.Null;
+                
+                var urlObj = new FenObject();
+                urlObj.Set("href", FenValue.FromString(uri.AbsoluteUri));
+                urlObj.Set("protocol", FenValue.FromString(uri.Scheme + ":"));
+                urlObj.Set("host", FenValue.FromString(uri.Host + (uri.IsDefaultPort ? "" : ":" + uri.Port)));
+                urlObj.Set("hostname", FenValue.FromString(uri.Host));
+                urlObj.Set("port", FenValue.FromString(uri.IsDefaultPort ? "" : uri.Port.ToString()));
+                urlObj.Set("pathname", FenValue.FromString(uri.AbsolutePath));
+                urlObj.Set("search", FenValue.FromString(uri.Query));
+                urlObj.Set("hash", FenValue.FromString(uri.Fragment));
+                urlObj.Set("origin", FenValue.FromString(uri.Scheme + "://" + uri.Host + (uri.IsDefaultPort ? "" : ":" + uri.Port)));
+                
+                // searchParams
+                var searchParams = new FenObject();
+                // Basic manual parsing for searchParams to avoid HttpUtility dependency
+                var queryStr = uri.Query.StartsWith("?") ? uri.Query.Substring(1) : uri.Query;
+                var qp = queryStr.Split('&', StringSplitOptions.RemoveEmptyEntries);
+                
+                searchParams.Set("get", FenValue.FromFunction(new FenFunction("get", (spArgs, spThis) => {
+                    string key = spArgs.Length > 0 ? spArgs[0].ToString() : "";
+                    foreach(var p in qp) {
+                        var kv = p.Split('=');
+                        if (System.Net.WebUtility.UrlDecode(kv[0]) == key)
+                            return FenValue.FromString(kv.Length > 1 ? System.Net.WebUtility.UrlDecode(kv[1]) : "");
+                    }
+                    return FenValue.Null;
+                })));
+                
+                urlObj.Set("searchParams", FenValue.FromObject(searchParams));
+                urlObj.Set("toString", FenValue.FromFunction(new FenFunction("toString", (a, t) => FenValue.FromString(uri.AbsoluteUri))));
+                
+                return FenValue.FromObject(urlObj);
+            })));
+
+            SetGlobal("URLSearchParams", FenValue.FromFunction(new FenFunction("URLSearchParams", (args, thisVal) =>
+            {
+                var sp = new FenObject();
+                string query = args.Length > 0 ? args[0].ToString() : "";
+                if (query.StartsWith("?")) query = query.Substring(1);
+                var qpList = new List<KeyValuePair<string, string>>();
+                foreach(var p in query.Split('&', StringSplitOptions.RemoveEmptyEntries)) {
+                    var kv = p.Split('=');
+                    qpList.Add(new KeyValuePair<string, string>(System.Net.WebUtility.UrlDecode(kv[0]), kv.Length > 1 ? System.Net.WebUtility.UrlDecode(kv[1]) : ""));
+                }
+                
+                sp.Set("get", FenValue.FromFunction(new FenFunction("get", (spArgs, spThis) => {
+                    string key = spArgs.Length > 0 ? spArgs[0].ToString() : "";
+                    var match = qpList.Find(x => x.Key == key);
+                    return match.Key != null ? FenValue.FromString(match.Value) : FenValue.Null;
+                })));
+                sp.Set("has", FenValue.FromFunction(new FenFunction("has", (spArgs, spThis) => {
+                    string key = spArgs.Length > 0 ? spArgs[0].ToString() : "";
+                    return FenValue.FromBoolean(qpList.Exists(x => x.Key == key));
+                })));
+                sp.Set("toString", FenValue.FromFunction(new FenFunction("toString", (a, t) => {
+                    var sb = new StringBuilder();
+                    foreach(var p in qpList) {
+                        if (sb.Length > 0) sb.Append("&");
+                        sb.Append(System.Net.WebUtility.UrlEncode(p.Key));
+                        sb.Append("=");
+                        sb.Append(System.Net.WebUtility.UrlEncode(p.Value));
+                    }
+                    return FenValue.FromString(sb.ToString());
+                })));
+                
+                return FenValue.FromObject(sp);
+            })));
+
+            // ES6 Math Extensions
+            var mathObj = (FenValue)GetGlobal("Math");
+            if (mathObj.IsObject) {
+                var m = mathObj.AsObject();
+                m.Set("cbrt", FenValue.FromFunction(new FenFunction("cbrt", (args, thisVal) => 
+                    FenValue.FromNumber(Math.Pow(args.Length > 0 ? args[0].ToNumber() : double.NaN, 1.0/3.0)))));
+                m.Set("hypot", FenValue.FromFunction(new FenFunction("hypot", (args, thisVal) => {
+                    double sum = 0;
+                    foreach(var arg in args) { double n = arg.ToNumber(); sum += n * n; }
+                    return FenValue.FromNumber(Math.Sqrt(sum));
+                })));
+                m.Set("log2", FenValue.FromFunction(new FenFunction("log2", (args, thisVal) => 
+                    FenValue.FromNumber(Math.Log(args.Length > 0 ? args[0].ToNumber() : double.NaN, 2)))));
+            }
+
             // Global functions: parseInt, parseFloat, isNaN, isFinite
             SetGlobal("parseInt", FenValue.FromFunction(new FenFunction("parseInt", (args, thisVal) => {
                 if (args.Length == 0) return FenValue.FromNumber(double.NaN);
