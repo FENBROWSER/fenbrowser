@@ -1176,6 +1176,80 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(weakSet);
             })));
 
+            // ES6 Proxy constructor - Enables metaprogramming
+            SetGlobal("Proxy", FenValue.FromFunction(new FenFunction("Proxy", (args, thisVal) =>
+            {
+                if (args.Length < 2) return FenValue.Undefined;
+                
+                var target = args[0].AsObject() as FenObject;
+                var handlerVal = args[1].AsObject() as FenObject;
+                
+                if (target == null || handlerVal == null) return FenValue.Undefined;
+                
+                // Create a proxy object that intercepts operations
+                var proxy = new FenObject();
+                proxy.Set("__isProxy__", FenValue.FromBoolean(true));
+                proxy.Set("__target__", FenValue.FromObject(target));
+                proxy.Set("__handler__", FenValue.FromObject(handlerVal));
+                
+                // Override Get to use handler.get trap
+                var originalGet = proxy.Get;
+                // Note: FenObject doesn't support overriding Get directly
+                // So we store a reference and provide helper methods
+                
+                proxy.Set("get", FenValue.FromFunction(new FenFunction("get", (getArgs, getThis) =>
+                {
+                    var prop = getArgs.Length > 0 ? getArgs[0].ToString() : "";
+                    var getTrap = handlerVal.Get("get")?.AsFunction();
+                    if (getTrap != null)
+                    {
+                        return getTrap.Invoke(new IValue[] { FenValue.FromObject(target), FenValue.FromString(prop), FenValue.FromObject(proxy) }, _context);
+                    }
+                    return target.Get(prop);
+                })));
+                
+                proxy.Set("set", FenValue.FromFunction(new FenFunction("set", (setArgs, setThis) =>
+                {
+                    var prop = setArgs.Length > 0 ? setArgs[0].ToString() : "";
+                    var val = setArgs.Length > 1 ? setArgs[1] : FenValue.Undefined;
+                    var setTrap = handlerVal.Get("set")?.AsFunction();
+                    if (setTrap != null)
+                    {
+                        return setTrap.Invoke(new IValue[] { FenValue.FromObject(target), FenValue.FromString(prop), val, FenValue.FromObject(proxy) }, _context);
+                    }
+                    target.Set(prop, val);
+                    return FenValue.FromBoolean(true);
+                })));
+                
+                proxy.Set("has", FenValue.FromFunction(new FenFunction("has", (hasArgs, hasThis) =>
+                {
+                    var prop = hasArgs.Length > 0 ? hasArgs[0].ToString() : "";
+                    var hasTrap = handlerVal.Get("has")?.AsFunction();
+                    if (hasTrap != null)
+                    {
+                        return hasTrap.Invoke(new IValue[] { FenValue.FromObject(target), FenValue.FromString(prop) }, _context);
+                    }
+                    return FenValue.FromBoolean(target.Get(prop) != null);
+                })));
+                
+                proxy.Set("deleteProperty", FenValue.FromFunction(new FenFunction("deleteProperty", (delArgs, delThis) =>
+                {
+                    var prop = delArgs.Length > 0 ? delArgs[0].ToString() : "";
+                    var delTrap = handlerVal.Get("deleteProperty")?.AsFunction();
+                    if (delTrap != null)
+                    {
+                        return delTrap.Invoke(new IValue[] { FenValue.FromObject(target), FenValue.FromString(prop) }, _context);
+                    }
+                    target.Delete(prop);
+                    return FenValue.FromBoolean(true);
+                })));
+                
+                return FenValue.FromObject(proxy);
+            })));
+
+            // Reflect API is defined later in this file (around line 2550)
+
+
             // Global functions: parseInt, parseFloat, isNaN, isFinite
             SetGlobal("parseInt", FenValue.FromFunction(new FenFunction("parseInt", (args, thisVal) => {
                 if (args.Length == 0) return FenValue.FromNumber(double.NaN);
