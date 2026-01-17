@@ -117,7 +117,26 @@ namespace FenBrowser.FenEngine.Core
         TemplateExprStart, // ${
         TemplateExprEnd,   // }
         Ellipsis,          // ...
-        PrivateIdentifier  // #field (for private class fields)
+        PrivateIdentifier, // #field (for private class fields)
+        
+        // ES6+ operators
+        OptionalChain,     // ?.
+        NullishCoalescing, // ??
+        NullishAssign,     // ??=
+        OrAssign,          // ||=
+        AndAssign,         // &&=
+        Exponent,          // **
+        ExponentAssign,    // **=
+        BigInt,            // 123n
+        
+        // Bitwise operators
+        BitwiseAnd,        // &
+        BitwiseOr,         // |
+        BitwiseXor,        // ^
+        BitwiseNot,        // ~
+        LeftShift,         // <<
+        RightShift,        // >>
+        UnsignedRightShift // >>>
     }
 
     public class Token
@@ -275,7 +294,36 @@ namespace FenBrowser.FenEngine.Core
                     }
                     break;
                 case '?':
-                    token = new Token(TokenType.Question, "?", _line, startColumn);
+                    if (PeekChar() == '.')
+                    {
+                        // Check if next char after . is a digit (ternary + decimal, not optional chain)
+                        if (_readPosition + 1 < _input.Length && IsDigit(_input[_readPosition + 1]))
+                        {
+                            token = new Token(TokenType.Question, "?", _line, startColumn);
+                        }
+                        else
+                        {
+                            ReadChar();
+                            token = new Token(TokenType.OptionalChain, "?.", _line, startColumn);
+                        }
+                    }
+                    else if (PeekChar() == '?')
+                    {
+                        ReadChar();
+                        if (PeekChar() == '=')
+                        {
+                            ReadChar();
+                            token = new Token(TokenType.NullishAssign, "??=", _line, startColumn);
+                        }
+                        else
+                        {
+                            token = new Token(TokenType.NullishCoalescing, "??", _line, startColumn);
+                        }
+                    }
+                    else
+                    {
+                        token = new Token(TokenType.Question, "?", _line, startColumn);
+                    }
                     break;
                 case '+':
                     if (PeekChar() == '+')
@@ -360,7 +408,20 @@ namespace FenBrowser.FenEngine.Core
                     }
                     break;
                 case '*':
-                    if (PeekChar() == '=')
+                    if (PeekChar() == '*')
+                    {
+                        ReadChar();
+                        if (PeekChar() == '=')
+                        {
+                            ReadChar();
+                            token = new Token(TokenType.ExponentAssign, "**=", _line, startColumn);
+                        }
+                        else
+                        {
+                            token = new Token(TokenType.Exponent, "**", _line, startColumn);
+                        }
+                    }
+                    else if (PeekChar() == '=')
                     {
                         ReadChar();
                         token = new Token(TokenType.MulAssign, "*=", _line, startColumn);
@@ -379,6 +440,11 @@ namespace FenBrowser.FenEngine.Core
                         ReadChar();
                         token = new Token(TokenType.LtEq, "<=", _line, startColumn);
                     }
+                    else if (PeekChar() == '<')
+                    {
+                        ReadChar();
+                        token = new Token(TokenType.LeftShift, "<<", _line, startColumn);
+                    }
                     else
                     {
                         token = new Token(TokenType.Lt, "<", _line, startColumn);
@@ -390,6 +456,19 @@ namespace FenBrowser.FenEngine.Core
                         ReadChar();
                         token = new Token(TokenType.GtEq, ">=", _line, startColumn);
                     }
+                    else if (PeekChar() == '>')
+                    {
+                        ReadChar();
+                        if (PeekChar() == '>')
+                        {
+                            ReadChar();
+                            token = new Token(TokenType.UnsignedRightShift, ">>>", _line, startColumn);
+                        }
+                        else
+                        {
+                            token = new Token(TokenType.RightShift, ">>", _line, startColumn);
+                        }
+                    }
                     else
                     {
                         token = new Token(TokenType.Gt, ">", _line, startColumn);
@@ -399,23 +478,45 @@ namespace FenBrowser.FenEngine.Core
                     if (PeekChar() == '&')
                     {
                         ReadChar();
-                        token = new Token(TokenType.And, "&&", _line, startColumn);
+                        if (PeekChar() == '=')
+                        {
+                            ReadChar();
+                            token = new Token(TokenType.AndAssign, "&&=", _line, startColumn);
+                        }
+                        else
+                        {
+                            token = new Token(TokenType.And, "&&", _line, startColumn);
+                        }
                     }
                     else
                     {
-                        token = new Token(TokenType.Illegal, "&", _line, startColumn);
+                        token = new Token(TokenType.BitwiseAnd, "&", _line, startColumn);
                     }
                     break;
                 case '|':
                     if (PeekChar() == '|')
                     {
                         ReadChar();
-                        token = new Token(TokenType.Or, "||", _line, startColumn);
+                        if (PeekChar() == '=')
+                        {
+                            ReadChar();
+                            token = new Token(TokenType.OrAssign, "||=", _line, startColumn);
+                        }
+                        else
+                        {
+                            token = new Token(TokenType.Or, "||", _line, startColumn);
+                        }
                     }
                     else
                     {
-                        token = new Token(TokenType.Illegal, "|", _line, startColumn);
+                        token = new Token(TokenType.BitwiseOr, "|", _line, startColumn);
                     }
+                    break;
+                case '^':
+                    token = new Token(TokenType.BitwiseXor, "^", _line, startColumn);
+                    break;
+                case '~':
+                    token = new Token(TokenType.BitwiseNot, "~", _line, startColumn);
                     break;
                 case ';':
                     token = new Token(TokenType.Semicolon, ";", _line, startColumn);
@@ -570,19 +671,39 @@ namespace FenBrowser.FenEngine.Core
         private string ReadNumber()
         {
             int position = _position;
-            while (IsDigit(_ch))
+            
+            // Handle numeric separators (1_000_000) and BigInt (123n)
+            while (IsDigit(_ch) || _ch == '_')
             {
+                if (_ch == '_')
+                {
+                    // Numeric separator - skip but keep in string for parsing
+                    ReadChar();
+                    continue;
+                }
                 ReadChar();
             }
+            
             if (_ch == '.' && IsDigit(PeekChar()))
             {
                 ReadChar();
-                while (IsDigit(_ch))
+                while (IsDigit(_ch) || _ch == '_')
                 {
                     ReadChar();
                 }
             }
-            return _input.Substring(position, _position - position);
+            
+            // Handle exponent notation (1e10, 1E-5)
+            if (_ch == 'e' || _ch == 'E')
+            {
+                ReadChar();
+                if (_ch == '+' || _ch == '-') ReadChar();
+                while (IsDigit(_ch) || _ch == '_') ReadChar();
+            }
+            
+            // Note: BigInt (123n) is handled by the caller checking for 'n' suffix
+            string raw = _input.Substring(position, _position - position);
+            return raw.Replace("_", ""); // Remove separators for parsing
         }
 
         private string ReadString(char quote)

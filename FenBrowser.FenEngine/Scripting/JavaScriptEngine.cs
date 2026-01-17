@@ -2866,7 +2866,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                 // We'll fill 'length' bytes.
                 if (arr != null && arr.Has("length"))
                 {
-                    int len = (int)arr.Get("length").AsNumber();
+                    int len = (int)arr.Get("length").ToNumber();
                     var rng = System.Security.Cryptography.RandomNumberGenerator.Create();
                     var bytes = new byte[len];
                     rng.GetBytes(bytes);

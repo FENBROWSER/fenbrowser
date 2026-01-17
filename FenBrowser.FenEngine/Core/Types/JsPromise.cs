@@ -87,7 +87,7 @@ namespace FenBrowser.FenEngine.Core.Types
                         if (onRejected != null)
                         {
                             try { return onRejected.Invoke(new IValue[] { reason }, _context); }
-                            catch (Exception ex) { throw ex; }
+                            catch (Exception) { throw; }
                         }
                         // If no handler, rethrow
                         if (exception != null) throw exception;
@@ -119,7 +119,7 @@ namespace FenBrowser.FenEngine.Core.Types
                    if (onFinally != null) 
                    {
                        try { onFinally.Invoke(new IValue[0], _context); }
-                       catch (Exception ex) { throw ex; }
+                       catch (Exception) { throw; }
                    }
                    
                    if (t.IsFaulted) throw t.Exception.InnerException;
