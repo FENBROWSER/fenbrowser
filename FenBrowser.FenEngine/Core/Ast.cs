@@ -830,4 +830,120 @@ namespace FenBrowser.FenEngine.Core
             return sb.ToString();
         }
     }
+
+    // ES6+ Optional chaining: obj?.prop, obj?.[prop], obj?.method()
+    public class OptionalChainExpression : Expression
+    {
+        public Expression Object { get; set; }      // Left side (can be any expression)
+        public Expression Property { get; set; }    // For computed access: obj?.[expr]
+        public string PropertyName { get; set; }    // For dot access: obj?.prop
+        public bool IsComputed { get; set; }        // true for ?.[expr], false for ?.prop
+        public bool IsCall { get; set; }            // true for obj?.()
+        public List<Expression> Arguments { get; set; } = new List<Expression>(); // For ?.()
+
+        public override string String()
+        {
+            if (IsCall)
+            {
+                var args = string.Join(", ", Arguments.ConvertAll(a => a.String()));
+                return $"{Object.String()}?.({args})";
+            }
+            if (IsComputed)
+                return $"{Object.String()}?.[{Property.String()}]";
+            return $"{Object.String()}?.{PropertyName}";
+        }
+    }
+
+    // ES6+ Nullish coalescing: a ?? b
+    public class NullishCoalescingExpression : Expression
+    {
+        public Expression Left { get; set; }
+        public Expression Right { get; set; }
+
+        public override string String()
+        {
+            return $"({Left.String()} ?? {Right.String()})";
+        }
+    }
+
+    // ES6+ Logical assignment: a ||= b, a &&= b, a ??= b
+    public class LogicalAssignmentExpression : Expression
+    {
+        public Expression Left { get; set; }
+        public string Operator { get; set; }  // "||=", "&&=", "??="
+        public Expression Right { get; set; }
+
+        public override string String()
+        {
+            return $"({Left.String()} {Operator} {Right.String()})";
+        }
+    }
+
+    // ES6+ BigInt literal: 123n
+    public class BigIntLiteral : Expression
+    {
+        public string Value { get; set; }  // Store as string to preserve precision
+
+        public override string String() => $"{Value}n";
+    }
+
+    // ES6+ Class static block: static { ... }
+    public class StaticBlock : Statement
+    {
+        public BlockStatement Body { get; set; }
+
+        public override string String()
+        {
+            return $"static {{ {Body.String()} }}";
+        }
+    }
+
+    // ES6+ Exponentiation: a ** b
+    public class ExponentiationExpression : Expression
+    {
+        public Expression Left { get; set; }
+        public Expression Right { get; set; }
+
+        public override string String()
+        {
+            return $"({Left.String()} ** {Right.String()})";
+        }
+    }
+
+    // ES6+ Compound assignment expression: a += b, a -= b, etc.
+    public class CompoundAssignmentExpression : Expression
+    {
+        public Expression Left { get; set; }
+        public string Operator { get; set; }  // "+=", "-=", "*=", "/=", "%=", "**=", etc.
+        public Expression Right { get; set; }
+
+        public override string String()
+        {
+            return $"({Left.String()} {Operator} {Right.String()})";
+        }
+    }
+
+    // ES6+ Bitwise expressions for completeness
+    public class BitwiseExpression : Expression
+    {
+        public Expression Left { get; set; }
+        public string Operator { get; set; }  // "&", "|", "^", "<<", ">>", ">>>"
+        public Expression Right { get; set; }
+
+        public override string String()
+        {
+            return $"({Left.String()} {Operator} {Right.String()})";
+        }
+    }
+
+    // ES6+ Bitwise NOT: ~a
+    public class BitwiseNotExpression : Expression
+    {
+        public Expression Operand { get; set; }
+
+        public override string String()
+        {
+            return $"(~{Operand.String()})";
+        }
+    }
 }
