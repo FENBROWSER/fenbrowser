@@ -10,29 +10,51 @@ namespace FenBrowser.FenEngine.Core
         private readonly Dictionary<string, IObject> _cache = new Dictionary<string, IObject>();
         private readonly FenEnvironment _globalEnv;
         private readonly IExecutionContext _context;
+        private readonly Func<Uri, string> _contentFetcher; // Helper for sync fetching (blocking)
 
-        public ModuleLoader(FenEnvironment globalEnv, IExecutionContext context)
+        public ModuleLoader(FenEnvironment globalEnv, IExecutionContext context, Func<Uri, string> contentFetcher = null)
         {
             _globalEnv = globalEnv;
             _context = context;
+            _contentFetcher = contentFetcher ?? DefaultFileFetcher;
+        }
+
+        private static string DefaultFileFetcher(Uri uri)
+        {
+            if (uri.IsFile) return File.ReadAllText(uri.LocalPath);
+            throw new NotSupportedException($"Default loader only supports file://. Requested: {uri}");
         }
 
         public string Resolve(string specifier, string referrer)
         {
-            // Basic resolution
             try 
             {
-                if (specifier.StartsWith("./") || specifier.StartsWith("../"))
+                Uri baseUri = null;
+                if (!string.IsNullOrEmpty(referrer))
                 {
-                    // Resolve relative to referrer (if referrer is a path)
-                    // For now, assume referrer is CWD or ignore
-                    return Path.GetFullPath(specifier);
+                    Uri.TryCreate(referrer, UriKind.RelativeOrAbsolute, out baseUri);
                 }
-                return Path.GetFullPath(specifier);
+                
+                // If referrer is relative (e.g. just a path in tests), treat as file relative to CWD
+                if (baseUri != null && !baseUri.IsAbsoluteUri)
+                {
+                     baseUri = new Uri(new Uri(Path.GetFullPath(Environment.CurrentDirectory) + Path.DirectorySeparatorChar), referrer);
+                }
+                else if (baseUri == null)
+                {
+                     baseUri = new Uri(Path.GetFullPath(Environment.CurrentDirectory) + Path.DirectorySeparatorChar);
+                }
+
+                if (Uri.TryCreate(baseUri, specifier, out var resolved))
+                {
+                    return resolved.AbsoluteUri;
+                }
+                
+                return specifier; // Fallback (e.g. bare module specifier like "react")
             }
             catch
             {
-                return specifier; // Fallback
+                return specifier; 
             }
         }
 
@@ -40,21 +62,41 @@ namespace FenBrowser.FenEngine.Core
         {
             if (_cache.TryGetValue(path, out var cached)) return cached;
 
-            if (!File.Exists(path)) throw new FileNotFoundException($"Module not found: {path}");
+            string code = null;
+            try
+            {
+                if (Uri.TryCreate(path, UriKind.Absolute, out var uri))
+                {
+                    code = _contentFetcher(uri);
+                }
+                else
+                {
+                    // Fallback to file for non-URIs
+                    if (File.Exists(path)) code = File.ReadAllText(path);
+                    else throw new FileNotFoundException($"Module file not found: {path}");
+                }
+            }
+            catch (Exception ex)
+            {
+                 throw new Exception($"Failed to load module '{path}': {ex.Message}", ex);
+            }
 
-            string code = File.ReadAllText(path);
+            if (code == null) throw new Exception($"Empty code for module: {path}");
+
             var lexer = new Lexer(code);
             var parser = new Parser(lexer);
             var program = parser.ParseProgram();
 
             if (parser.Errors.Count > 0)
             {
-                throw new Exception($"Module parse error: {string.Join(", ", parser.Errors)}");
+                throw new Exception($"Module parse error in '{path}': {string.Join(", ", parser.Errors)}");
             }
 
             // Create module environment
             var moduleEnv = new FenEnvironment(_globalEnv);
-            var interpreter = new Interpreter();
+            
+            // Pass THIS loader to the interpreter so nested imports use it
+            var interpreter = new Interpreter(); 
             
             // Evaluate module
             interpreter.Eval(program, moduleEnv, _context);
@@ -68,6 +110,39 @@ namespace FenBrowser.FenEngine.Core
             }
             
             _cache[path] = exportObj;
+            return exportObj;
+        }
+        public IObject LoadModuleSrc(string code, string pseudoPath)
+        {
+            if (_cache.TryGetValue(pseudoPath, out var cached)) return cached;
+
+            var lexer = new Lexer(code);
+            var parser = new Parser(lexer);
+            var program = parser.ParseProgram();
+
+            if (parser.Errors.Count > 0)
+            {
+                throw new Exception($"Module parse error in '{pseudoPath}': {string.Join(", ", parser.Errors)}");
+            }
+
+            // Create module environment
+            var moduleEnv = new FenEnvironment(_globalEnv);
+            
+            // Pass THIS loader to the interpreter so nested imports use it
+            var interpreter = new Interpreter(); 
+            
+            // Evaluate module
+            interpreter.Eval(program, moduleEnv, _context);
+
+            // Extract exports
+            var exports = interpreter.Exports;
+            var exportObj = new FenObject();
+            foreach(var kvp in exports)
+            {
+                exportObj.Set(kvp.Key, kvp.Value);
+            }
+            
+            _cache[pseudoPath] = exportObj;
             return exportObj;
         }
     }
