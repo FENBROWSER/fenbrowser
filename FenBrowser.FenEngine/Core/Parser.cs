@@ -6,18 +6,25 @@ namespace FenBrowser.FenEngine.Core
     public enum Precedence
     {
         Lowest,
-        Comma,       // ,
-        Assignment,  // =
-        Ternary,     // ? :  (conditional)
-        LogicalOr,   // ||
-        LogicalAnd,  // &&
-        Equals,      // ==
-        LessGreater, // > or <
-        Sum,         // +
-        Product,     // *
-        Prefix,      // -X or !X
-        Call,        // myFunction(X)
-        Index        // array[index]
+        Comma,            // ,
+        Assignment,       // =, +=, -=, etc.
+        NullishCoalesce,  // ??
+        Ternary,          // ? :  (conditional)
+        LogicalOr,        // ||
+        LogicalAnd,       // &&
+        BitwiseOr,        // |
+        BitwiseXor,       // ^
+        BitwiseAnd,       // &
+        Equals,           // ==, ===, !=, !==
+        LessGreater,      // >, <, >=, <=, in, instanceof
+        Shift,            // <<, >>, >>>
+        Sum,              // +, -
+        Product,          // *, /, %
+        Exponent,         // ** (right-associative)
+        Prefix,           // -X or !X
+        Call,             // myFunction(X)
+        Member,           // obj.prop, obj?.
+        Index             // array[index]
     }
 
     public class Parser
@@ -38,8 +45,16 @@ namespace FenBrowser.FenEngine.Core
             { TokenType.MinusAssign, Precedence.Assignment },
             { TokenType.MulAssign, Precedence.Assignment },
             { TokenType.DivAssign, Precedence.Assignment },
+            { TokenType.NullishAssign, Precedence.Assignment },
+            { TokenType.OrAssign, Precedence.Assignment },
+            { TokenType.AndAssign, Precedence.Assignment },
+            { TokenType.ExponentAssign, Precedence.Assignment },
+            { TokenType.NullishCoalescing, Precedence.NullishCoalesce },
             { TokenType.Or, Precedence.LogicalOr },
             { TokenType.And, Precedence.LogicalAnd },
+            { TokenType.BitwiseOr, Precedence.BitwiseOr },
+            { TokenType.BitwiseXor, Precedence.BitwiseXor },
+            { TokenType.BitwiseAnd, Precedence.BitwiseAnd },
             { TokenType.Eq, Precedence.Equals },
             { TokenType.NotEq, Precedence.Equals },
             { TokenType.StrictEq, Precedence.Equals },
@@ -50,17 +65,22 @@ namespace FenBrowser.FenEngine.Core
             { TokenType.GtEq, Precedence.LessGreater },
             { TokenType.Instanceof, Precedence.LessGreater },
             { TokenType.In, Precedence.LessGreater },
+            { TokenType.LeftShift, Precedence.Shift },
+            { TokenType.RightShift, Precedence.Shift },
+            { TokenType.UnsignedRightShift, Precedence.Shift },
             { TokenType.Plus, Precedence.Sum },
             { TokenType.Minus, Precedence.Sum },
             { TokenType.Slash, Precedence.Product },
             { TokenType.Asterisk, Precedence.Product },
             { TokenType.Percent, Precedence.Product },
+            { TokenType.Exponent, Precedence.Exponent },
             { TokenType.LParen, Precedence.Call },
-            { TokenType.Dot, Precedence.Call },  // Member access has same precedence as function calls
-            { TokenType.TemplateString, Precedence.Call },  // Tagged template literals tag`...`
+            { TokenType.Dot, Precedence.Member },
+            { TokenType.OptionalChain, Precedence.Member },
+            { TokenType.TemplateString, Precedence.Call },
             { TokenType.LBracket, Precedence.Index },
-            { TokenType.Question, Precedence.Ternary },  // Ternary operator
-            { TokenType.Arrow, Precedence.Assignment },  // Arrow functions
+            { TokenType.Question, Precedence.Ternary },
+            { TokenType.Arrow, Precedence.Assignment },
             { TokenType.Increment, Precedence.Prefix },
             { TokenType.Decrement, Precedence.Prefix },
         };
@@ -110,7 +130,7 @@ namespace FenBrowser.FenEngine.Core
             RegisterPrefix(TokenType.Dot, ParseEmptyExpression);       // Recovery for leading dots
             RegisterPrefix(TokenType.Lt, ParseEmptyExpression);        // Recovery for bare < (like in HTML)
             RegisterPrefix(TokenType.Plus, ParsePrefixExpression);     // +x (unary plus)
-            RegisterPrefix(TokenType.Asterisk, ParseEmptyExpression);  // Recovery for bare *
+            RegisterPrefix(TokenType.Asterisk, ParseEmptyExpression);  // Recovery for bare *\r\n            RegisterPrefix(TokenType.BitwiseNot, ParseBitwiseNotExpression);  // ~x
 
             // Register infix parsers
             RegisterInfix(TokenType.Plus, ParseInfixExpression);
@@ -144,6 +164,21 @@ namespace FenBrowser.FenEngine.Core
             RegisterInfix(TokenType.Increment, ParsePostfixIncrement);  // x++
             RegisterInfix(TokenType.Decrement, ParsePostfixDecrement);  // x--
             RegisterInfix(TokenType.TemplateString, ParseTaggedTemplate);  // tag`template`
+            
+            // ES6+ operators
+            RegisterInfix(TokenType.OptionalChain, ParseOptionalChainExpression);  // ?.
+            RegisterInfix(TokenType.NullishCoalescing, ParseNullishCoalescingExpression);  // ??
+            RegisterInfix(TokenType.NullishAssign, ParseLogicalAssignmentExpression);  // ??=
+            RegisterInfix(TokenType.OrAssign, ParseLogicalAssignmentExpression);  // ||=
+            RegisterInfix(TokenType.AndAssign, ParseLogicalAssignmentExpression);  // &&=
+            RegisterInfix(TokenType.Exponent, ParseExponentiationExpression);  // **
+            RegisterInfix(TokenType.ExponentAssign, ParseCompoundAssignment);  // **=
+            RegisterInfix(TokenType.BitwiseAnd, ParseInfixExpression);  // &
+            RegisterInfix(TokenType.BitwiseOr, ParseInfixExpression);   // |
+            RegisterInfix(TokenType.BitwiseXor, ParseInfixExpression);  // ^
+            RegisterInfix(TokenType.LeftShift, ParseInfixExpression);   // <<
+            RegisterInfix(TokenType.RightShift, ParseInfixExpression);  // >>
+            RegisterInfix(TokenType.UnsignedRightShift, ParseInfixExpression);  // >>>
 
             // Read two tokens, so curToken and peekToken are both set
             NextToken();
@@ -2101,6 +2136,103 @@ namespace FenBrowser.FenEngine.Core
             }
             
             return new RegexLiteral { Token = _curToken, Pattern = pattern, Flags = flags };
+        }
+
+        // ES6+ Parse optional chaining: obj?.prop, obj?.[key], obj?.()
+        private Expression ParseOptionalChainExpression(Expression left)
+        {
+            var token = _curToken;
+            var expr = new OptionalChainExpression { Token = token, Object = left };
+            
+            NextToken(); // Move past ?.
+            
+            // Check what follows the ?.
+            if (CurTokenIs(TokenType.Identifier))
+            {
+                // obj?.prop
+                expr.PropertyName = _curToken.Literal;
+                expr.IsComputed = false;
+            }
+            else if (CurTokenIs(TokenType.LBracket))
+            {
+                // obj?.[expr]
+                NextToken(); // Move past [
+                expr.Property = ParseExpression(Precedence.Lowest);
+                expr.IsComputed = true;
+                if (!ExpectPeek(TokenType.RBracket))
+                {
+                    return null;
+                }
+            }
+            else if (CurTokenIs(TokenType.LParen))
+            {
+                // obj?.()
+                expr.IsCall = true;
+                expr.Arguments = ParseCallArguments();
+            }
+            
+            return expr;
+        }
+
+        // ES6+ Parse nullish coalescing: a ?? b
+        private Expression ParseNullishCoalescingExpression(Expression left)
+        {
+            var token = _curToken;
+            var precedence = CurPrecedence();
+            NextToken();
+            var right = ParseExpression(precedence);
+            
+            return new NullishCoalescingExpression
+            {
+                Token = token,
+                Left = left,
+                Right = right
+            };
+        }
+
+        // ES6+ Parse logical assignment: a ||= b, a &&= b, a ??= b
+        private Expression ParseLogicalAssignmentExpression(Expression left)
+        {
+            var token = _curToken;
+            var op = token.Literal;
+            NextToken();
+            var right = ParseExpression(Precedence.Assignment);
+            
+            return new LogicalAssignmentExpression
+            {
+                Token = token,
+                Left = left,
+                Operator = op,
+                Right = right
+            };
+        }
+
+        // ES6+ Parse exponentiation: a ** b (right-associative)
+        private Expression ParseExponentiationExpression(Expression left)
+        {
+            var token = _curToken;
+            NextToken();
+            // Right-associative: parse with same precedence - 1 to allow right recursion
+            var right = ParseExpression(Precedence.Exponent - 1);
+            
+            return new ExponentiationExpression
+            {
+                Token = token,
+                Left = left,
+                Right = right
+            };
+        }
+
+        // ES6+ Parse bitwise NOT prefix: ~x
+        private Expression ParseBitwiseNotExpression()
+        {
+            var token = _curToken;
+            NextToken();
+            return new BitwiseNotExpression
+            {
+                Token = token,
+                Operand = ParseExpression(Precedence.Prefix)
+            };
         }
     }
 }
