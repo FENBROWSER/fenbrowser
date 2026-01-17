@@ -14,7 +14,7 @@ namespace FenBrowser.FenEngine.Core
         private IObject _prototype;
         public object NativeObject { get; set; } // Holds underlying .NET object (Regex, Date, etc.)
 
-        public IValue Get(string key, IExecutionContext context = null)
+        public virtual IValue Get(string key, IExecutionContext context = null)
         {
             // PROXY TRAP: Get
             if (_properties.TryGetValue("__isProxy__", out var isProxy) && isProxy.ToBoolean())
@@ -41,7 +41,7 @@ namespace FenBrowser.FenEngine.Core
             return FenValue.Undefined;
         }
 
-        public void Set(string key, IValue value, IExecutionContext context = null)
+        public virtual void Set(string key, IValue value, IExecutionContext context = null)
         {
             // PROXY TRAP: Set
             if (_properties.TryGetValue("__isProxy__", out var isProxy) && isProxy.ToBoolean())
@@ -62,7 +62,7 @@ namespace FenBrowser.FenEngine.Core
             _properties[key] = value;
         }
 
-        public bool Has(string key, IExecutionContext context = null)
+        public virtual bool Has(string key, IExecutionContext context = null)
         {
             // PROXY TRAP: Has
             if (_properties.TryGetValue("__isProxy__", out var isProxy) && isProxy.ToBoolean())
@@ -81,7 +81,7 @@ namespace FenBrowser.FenEngine.Core
             return false;
         }
 
-        public bool Delete(string key, IExecutionContext context = null)
+        public virtual bool Delete(string key, IExecutionContext context = null)
         {
              // PROXY TRAP: DeleteProperty
             if (_properties.TryGetValue("__isProxy__", out var isProxy) && isProxy.ToBoolean())
@@ -91,7 +91,7 @@ namespace FenBrowser.FenEngine.Core
             return _properties.Remove(key);
         }
 
-        public IEnumerable<string> Keys(IExecutionContext context = null)
+        public virtual IEnumerable<string> Keys(IExecutionContext context = null)
         {
              // PROXY TRAP: OwnKeys
             if (_properties.TryGetValue("__isProxy__", out var isProxy) && isProxy.ToBoolean())
@@ -104,11 +104,7 @@ namespace FenBrowser.FenEngine.Core
                     // Assuming result is Array-like
                     var list = new List<string>();
                     // Basic handling: check if it's an array and iterate (simplified)
-                     if (res.IsObject) {
-                        var arr = res.AsObject();
-                        // TODO: robust iteration
-                     }
-                     // Fallback for now or partial implementation
+                    // ...
                 }
             }
             
@@ -120,7 +116,7 @@ namespace FenBrowser.FenEngine.Core
             }
         }
 
-        public IObject GetPrototype() => _prototype;
-        public void SetPrototype(IObject prototype) => _prototype = prototype;
+        public virtual IObject GetPrototype() => _prototype;
+        public virtual void SetPrototype(IObject prototype) => _prototype = prototype;
     }
 }

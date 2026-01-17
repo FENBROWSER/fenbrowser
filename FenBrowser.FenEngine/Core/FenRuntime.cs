@@ -4,6 +4,8 @@ using System.Collections.Generic;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.FenEngine.Core.Types;
+using FenBrowser.FenEngine.WebAPIs;
 using FenBrowser.FenEngine.DOM;
 using FenBrowser.FenEngine.DevTools;
 using System.Linq;
@@ -98,6 +100,12 @@ namespace FenBrowser.FenEngine.Core
         }
 
         public IExecutionContext Context => _context;
+        public FenEnvironment GlobalEnv => _globalEnv;
+
+        public void SetModuleLoader(FenBrowser.FenEngine.Core.Interfaces.IModuleLoader loader)
+        {
+            _context.ModuleLoader = loader;
+        }
 
         public Action<string> OnConsoleMessage; // Delegate for console output
         public Uri BaseUri { get; set; }
@@ -170,12 +178,16 @@ namespace FenBrowser.FenEngine.Core
             })));
             document.Set("createElement", FenValue.FromFunction(new FenFunction("createElement", (args, thisVal) =>
             {
-                // Basic stub: return object with tag
+                if (_domBridge == null) return FenValue.Null;
                 if (args.Length == 0) return FenValue.Null;
-                var el = new FenObject();
-                el.Set("tagName", FenValue.FromString(args[0].ToString().ToUpper()));
-                // In a real impl, this would need to callback to engine to create a real node
-                return FenValue.FromObject(el); 
+                return _domBridge.CreateElement(args[0].ToString()) ?? FenValue.Null;
+            })));
+
+            document.Set("createTextNode", FenValue.FromFunction(new FenFunction("createTextNode", (args, thisVal) =>
+            {
+                if (_domBridge == null) return FenValue.Null;
+                var text = args.Length > 0 ? args[0].ToString() : "";
+                return _domBridge.CreateTextNode(text) ?? FenValue.Null;
             })));
             
              // document.body / head (Stubs or getters if bridge supports)
@@ -2300,6 +2312,52 @@ namespace FenBrowser.FenEngine.Core
 
             /* [PERF-REMOVED] */
             SetGlobal("Reflect", FenValue.FromObject(reflect));
+
+            // --- PROMISE ---
+            // Use _context from FenRuntime
+            var promiseFunc = new FenFunction("Promise", (args, thisVal) => 
+                FenValue.FromObject(new JsPromise(args.Length > 0 ? args[0] : null, _context)));
+            
+            var promiseStatic = new FenObject();
+            promiseStatic.NativeObject = promiseFunc; 
+            
+            promiseStatic.Set("resolve", FenValue.FromFunction(new FenFunction("resolve", (args, thisVal) => 
+                FenValue.FromObject(JsPromise.Resolve(args.Length > 0 ? args[0] : FenValue.Undefined, _context)))));
+                
+            promiseStatic.Set("reject", FenValue.FromFunction(new FenFunction("reject", (args, thisVal) => 
+                FenValue.FromObject(JsPromise.Reject(args.Length > 0 ? args[0] : FenValue.Undefined, _context)))));
+                
+            SetGlobal("Promise", FenValue.FromObject(promiseStatic)); 
+
+            // --- COLLECTIONS ---
+            SetGlobal("Map", FenValue.FromFunction(new FenFunction("Map", (args, thisVal) => FenValue.FromObject(new JsMap(_context)))));
+            SetGlobal("Set", FenValue.FromFunction(new FenFunction("Set", (args, thisVal) => FenValue.FromObject(new JsSet(_context)))));
+            SetGlobal("WeakMap", FenValue.FromFunction(new FenFunction("WeakMap", (args, thisVal) => FenValue.FromObject(new JsWeakMap()))));
+            SetGlobal("WeakSet", FenValue.FromFunction(new FenFunction("WeakSet", (args, thisVal) => FenValue.FromObject(new JsWeakSet()))));
+
+            // --- TYPED ARRAYS ---
+            SetGlobal("ArrayBuffer", FenValue.FromFunction(new FenFunction("ArrayBuffer", (args, thisVal) => 
+                 FenValue.FromObject(new JsArrayBuffer(args.Length > 0 ? (int)args[0].ToNumber() : 0)))));
+                 
+            SetGlobal("DataView", FenValue.FromFunction(new FenFunction("DataView", (args, thisVal) => 
+            {
+                 if (args.Length == 0 || !args[0].IsObject) return FenValue.Undefined;
+                 var buf = args[0].AsObject() as JsArrayBuffer;
+                 if (buf == null) return FenValue.Undefined; // TypeError
+                 int offset = args.Length > 1 ? (int)args[1].ToNumber() : 0;
+                 int len = args.Length > 2 ? (int)args[2].ToNumber() : -1;
+                 return FenValue.FromObject(new JsDataView(buf, offset, len));
+            })));
+             
+            SetGlobal("Uint8Array", FenValue.FromFunction(new FenFunction("Uint8Array", (args, thisVal) => 
+                 FenValue.FromObject(new JsUint8Array(args.Length > 0 ? args[0] : null, args.Length > 1 ? args[1] : null, args.Length > 2 ? args[2] : null)))));
+                 
+            SetGlobal("Float32Array", FenValue.FromFunction(new FenFunction("Float32Array", (args, thisVal) => 
+                 FenValue.FromObject(new JsFloat32Array(args.Length > 0 ? args[0] : null, args.Length > 1 ? args[1] : null, args.Length > 2 ? args[2] : null)))));
+
+            // --- XHR ---
+            SetGlobal("XMLHttpRequest", FenValue.FromFunction(new FenFunction("XMLHttpRequest", (args, thisVal) => FenValue.FromObject(new XMLHttpRequest(_context)))));
+
 
             
             // Error constructors - provide full error types

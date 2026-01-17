@@ -13,5 +13,10 @@ namespace FenBrowser.FenEngine.Core.Interfaces
         /// Loads and evaluates a module, returning its exports.
         /// </summary>
         IObject LoadModule(string path);
+        
+        /// <summary>
+        /// Loads and evaluates a module from source code.
+        /// </summary>
+        IObject LoadModuleSrc(string code, string pseudoPath);
     }
 }

@@ -1632,8 +1632,7 @@ namespace FenBrowser.FenEngine.Core
         {
             var specifiers = new List<ImportSpecifier>();
             
-            if (!ExpectPeek(TokenType.LBrace)) return specifiers; // Should be at {
-            
+            // Caller guarantees _curToken is LBrace, so we just consume it to enter the block
             NextToken(); // Move past {
 
             while (!CurTokenIs(TokenType.RBrace) && !CurTokenIs(TokenType.Eof))
