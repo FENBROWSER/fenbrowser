@@ -12,20 +12,10 @@ using System.Collections.Generic;
 
 namespace FenBrowser.Tests.WebAPIs
 {
-    // Minimal mock for HttpClientHandler to intercept requests
-    public class MockHttpHandler : HttpMessageHandler
-    {
-        public Func<HttpRequestMessage, Task<HttpResponseMessage>> Handler { get; set; }
-
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-        {
-            return Handler(request);
-        }
-    }
-
     public class FetchApiTests
     {
         private readonly IExecutionContext _context;
+        private Func<HttpRequestMessage, Task<HttpResponseMessage>> _mockHandler;
 
         public FetchApiTests()
         {
@@ -35,8 +25,11 @@ namespace FenBrowser.Tests.WebAPIs
              var env = new FenEnvironment();
              _context.Environment = env;
              
-             // Register API
-             FetchApi.Register(_context);
+             // Default handler
+             _mockHandler = req => Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+
+             // Register API with the mock handler delegate
+             FetchApi.Register(_context, req => _mockHandler(req));
         }
 
         [Fact]
@@ -53,9 +46,8 @@ namespace FenBrowser.Tests.WebAPIs
         [Fact]
         public async Task Fetch_ShouldResolveWithResponse()
         {
-             // Setup mock
-             var handler = new MockHttpHandler();
-             handler.Handler = async req => 
+             // Setup mock behavior
+             _mockHandler = async req => 
              {
                  await Task.Delay(10); // Simulate network latency
                  return new HttpResponseMessage(HttpStatusCode.OK) 
@@ -64,57 +56,93 @@ namespace FenBrowser.Tests.WebAPIs
                  };
              };
              
-             FetchApi.ClientFactory = () => new HttpClient(handler);
-
              var fetch = _context.Environment.Get("fetch").AsFunction();
              var promise = fetch.Invoke(new IValue[] { FenValue.FromString("http://test.com") }, _context);
              
-             // Wait for async task to complete (simple poll for verification)
-             var pObj = promise.AsObject();
-             for (int i=0; i<100; i++)
+             // Verify resolution using .then()
+             var tcs = new TaskCompletionSource<IValue>();
+             var onFulfilled = new FenFunction("onFulfilled", (args, thisVal) => 
              {
-                 if (pObj.Has("__state")) break;
-                 await Task.Delay(10);
+                 tcs.SetResult(args[0]);
+                 return FenValue.Undefined;
+             });
+             var onRejected = new FenFunction("onRejected", (args, thisVal) => 
+             {
+                 tcs.SetException(new Exception("Promise rejected: " + (args.Length > 0 ? args[0].ToString() : "unknown")));
+                 return FenValue.Undefined;
+             });
+
+             // promise.then(onFulfilled, onRejected)
+             promise.AsObject().Get("then").AsFunction().Invoke(
+                 new IValue[] { FenValue.FromFunction(onFulfilled), FenValue.FromFunction(onRejected) },
+                 _context
+             );
+
+             // Wait for tcs (with timeout)
+             if (await Task.WhenAny(tcs.Task, Task.Delay(5000)) != tcs.Task)
+             {
+                 throw new TimeoutException("Fetch promise timed out");
              }
 
-             Assert.Equal("fulfilled", pObj.Get("__state")?.ToString());
-             var result = pObj.Get("__result");
+             var result = await tcs.Task;
              Assert.NotNull(result);
              Assert.True(result.IsObject); // Response object
              
              var response = result.AsObject();
              Assert.True(response.Has("text"));
              Assert.True(response.Has("ok"));
-             Assert.Equal(true, response.Get("ok").ToBoolean());
+             Assert.True(response.Get("ok").ToBoolean()); 
              Assert.Equal(200, response.Get("status").ToNumber());
         }
 
         [Fact]
         public async Task Response_Text_ShouldReturnContent()
         {
-             // Setup mock
-             var handler = new MockHttpHandler();
-             handler.Handler = req => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) 
+             // Setup mock behavior
+             _mockHandler = req => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) 
              { 
                  Content = new StringContent("API Data") 
              });
-             FetchApi.ClientFactory = () => new HttpClient(handler);
 
              var fetch = _context.Environment.Get("fetch").AsFunction();
              var promise = fetch.Invoke(new IValue[] { FenValue.FromString("http://api.com") }, _context);
              
-             // Wait for fetch
-             while (!promise.AsObject().Has("__state")) await Task.Delay(10);
-
-             var response = promise.AsObject().Get("__result").AsObject();
-             var textFunc = response.Get("text").AsFunction();
-             var textPromise = textFunc.Invoke(new IValue[]{}, _context).AsObject();
-
-             // Wait for text()
-             while (!textPromise.Has("__state")) await Task.Delay(10);
+             // Chain fetch().then(res => res.text()).then(txt => ...)
+             var tcs = new TaskCompletionSource<string>();
              
-             Assert.Equal("fulfilled", textPromise.Get("__state")?.ToString());
-             Assert.Equal("API Data", textPromise.Get("__result")?.ToString());
+             var onFetchFulfilled = new FenFunction("onFetchFulfilled", (args, thisVal) => 
+             {
+                 var resp = args[0].AsObject();
+                 var textFunc = resp.Get("text").AsFunction();
+                 // Return the promise from text()
+                 // But wait, FenFunction returns IValue. If we return a Promise here, the chaining should wait for it if properly implemented.
+                 // However, we are manually hooking 'then'.
+                 // Let's just invoke text().then(final) inside here.
+                 
+                 var textPromise = textFunc.Invoke(new IValue[]{}, _context);
+                 
+                 var onTextFulfilled = new FenFunction("onTextFulfilled", (tArgs, tThis) => {
+                     tcs.SetResult(tArgs[0].ToString());
+                     return FenValue.Undefined;
+                 });
+                 
+                 textPromise.AsObject().Get("then").AsFunction().Invoke(
+                     new IValue[] { FenValue.FromFunction(onTextFulfilled) }, _context
+                 );
+                 
+                 return FenValue.Undefined;
+             });
+
+             promise.AsObject().Get("then").AsFunction().Invoke(
+                 new IValue[] { FenValue.FromFunction(onFetchFulfilled) }, _context
+             );
+             
+             if (await Task.WhenAny(tcs.Task, Task.Delay(5000)) != tcs.Task)
+             {
+                 throw new TimeoutException("Text promise timed out");
+             }
+             
+             Assert.Equal("API Data", await tcs.Task);
         }
     }
 }
