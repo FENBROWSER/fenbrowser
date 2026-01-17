@@ -1249,6 +1249,137 @@ namespace FenBrowser.FenEngine.Core
 
             // Reflect API is defined later in this file (around line 2550)
 
+            // ES6 RegExp constructor - wraps .NET Regex
+            SetGlobal("RegExp", FenValue.FromFunction(new FenFunction("RegExp", (args, thisVal) =>
+            {
+                var pattern = args.Length > 0 ? args[0].ToString() : "";
+                var flags = args.Length > 1 ? args[1].ToString() : "";
+                
+                var regexObj = new FenObject();
+                regexObj.Set("source", FenValue.FromString(pattern));
+                regexObj.Set("flags", FenValue.FromString(flags));
+                regexObj.Set("global", FenValue.FromBoolean(flags.Contains("g")));
+                regexObj.Set("ignoreCase", FenValue.FromBoolean(flags.Contains("i")));
+                regexObj.Set("multiline", FenValue.FromBoolean(flags.Contains("m")));
+                regexObj.Set("dotAll", FenValue.FromBoolean(flags.Contains("s")));
+                regexObj.Set("unicode", FenValue.FromBoolean(flags.Contains("u")));
+                regexObj.Set("sticky", FenValue.FromBoolean(flags.Contains("y")));
+                regexObj.Set("lastIndex", FenValue.FromNumber(0));
+                
+                // Build .NET RegexOptions
+                var options = RegexOptions.ECMAScript;
+                if (flags.Contains("i")) options |= RegexOptions.IgnoreCase;
+                if (flags.Contains("m")) options |= RegexOptions.Multiline;
+                if (flags.Contains("s")) options |= RegexOptions.Singleline;
+                
+                Regex regex = null;
+                try { regex = new Regex(pattern, options); } catch { }
+                
+                regexObj.Set("test", FenValue.FromFunction(new FenFunction("test", (testArgs, testThis) =>
+                {
+                    if (testArgs.Length == 0 || regex == null) return FenValue.FromBoolean(false);
+                    return FenValue.FromBoolean(regex.IsMatch(testArgs[0].ToString()));
+                })));
+                
+                regexObj.Set("exec", FenValue.FromFunction(new FenFunction("exec", (execArgs, execThis) =>
+                {
+                    if (execArgs.Length == 0 || regex == null) return FenValue.Null;
+                    var input = execArgs[0].ToString();
+                    int startIndex = (int)(regexObj.Get("lastIndex")?.ToNumber() ?? 0);
+                    bool isGlobal = regexObj.Get("global")?.ToBoolean() ?? false;
+                    
+                    if (startIndex >= input.Length) {
+                        if (isGlobal) regexObj.Set("lastIndex", FenValue.FromNumber(0));
+                        return FenValue.Null;
+                    }
+                    
+                    var match = regex.Match(input, startIndex);
+                    if (!match.Success) {
+                        if (isGlobal) regexObj.Set("lastIndex", FenValue.FromNumber(0));
+                        return FenValue.Null;
+                    }
+                    
+                    var result = new FenObject();
+                    result.Set("0", FenValue.FromString(match.Value));
+                    for (int i = 1; i < match.Groups.Count; i++)
+                        result.Set(i.ToString(), FenValue.FromString(match.Groups[i].Value));
+                    result.Set("length", FenValue.FromNumber(match.Groups.Count));
+                    result.Set("index", FenValue.FromNumber(match.Index));
+                    result.Set("input", FenValue.FromString(input));
+                    
+                    if (isGlobal) regexObj.Set("lastIndex", FenValue.FromNumber(match.Index + match.Length));
+                    
+                    return FenValue.FromObject(result);
+                })));
+                
+                regexObj.Set("toString", FenValue.FromFunction(new FenFunction("toString", (a, t) =>
+                    FenValue.FromString($"/{pattern}/{flags}"))));
+                
+                return FenValue.FromObject(regexObj);
+            })));
+
+            // ES6 Intl API - Internationalization (basic stubs)
+            var intl = new FenObject();
+            
+            // Intl.DateTimeFormat
+            intl.Set("DateTimeFormat", FenValue.FromFunction(new FenFunction("DateTimeFormat", (args, thisVal) =>
+            {
+                var locale = args.Length > 0 ? args[0].ToString() : "en-US";
+                var formatter = new FenObject();
+                formatter.Set("format", FenValue.FromFunction(new FenFunction("format", (fArgs, fThis) =>
+                {
+                    if (fArgs.Length == 0) return FenValue.FromString("");
+                    double timestamp = fArgs[0].ToNumber();
+                    var dt = DateTimeOffset.FromUnixTimeMilliseconds((long)timestamp).DateTime;
+                    return FenValue.FromString(dt.ToString("G", System.Globalization.CultureInfo.GetCultureInfo(locale)));
+                })));
+                formatter.Set("resolvedOptions", FenValue.FromFunction(new FenFunction("resolvedOptions", (a, t) =>
+                {
+                    var opts = new FenObject();
+                    opts.Set("locale", FenValue.FromString(locale));
+                    opts.Set("calendar", FenValue.FromString("gregory"));
+                    opts.Set("timeZone", FenValue.FromString("UTC"));
+                    return FenValue.FromObject(opts);
+                })));
+                return FenValue.FromObject(formatter);
+            })));
+            
+            // Intl.NumberFormat
+            intl.Set("NumberFormat", FenValue.FromFunction(new FenFunction("NumberFormat", (args, thisVal) =>
+            {
+                var locale = args.Length > 0 ? args[0].ToString() : "en-US";
+                var formatter = new FenObject();
+                formatter.Set("format", FenValue.FromFunction(new FenFunction("format", (fArgs, fThis) =>
+                {
+                    if (fArgs.Length == 0) return FenValue.FromString("");
+                    double num = fArgs[0].ToNumber();
+                    return FenValue.FromString(num.ToString("N", System.Globalization.CultureInfo.GetCultureInfo(locale)));
+                })));
+                formatter.Set("resolvedOptions", FenValue.FromFunction(new FenFunction("resolvedOptions", (a, t) =>
+                {
+                    var opts = new FenObject();
+                    opts.Set("locale", FenValue.FromString(locale));
+                    opts.Set("style", FenValue.FromString("decimal"));
+                    return FenValue.FromObject(opts);
+                })));
+                return FenValue.FromObject(formatter);
+            })));
+            
+            // Intl.Collator
+            intl.Set("Collator", FenValue.FromFunction(new FenFunction("Collator", (args, thisVal) =>
+            {
+                var locale = args.Length > 0 ? args[0].ToString() : "en-US";
+                var collator = new FenObject();
+                collator.Set("compare", FenValue.FromFunction(new FenFunction("compare", (cArgs, cThis) =>
+                {
+                    if (cArgs.Length < 2) return FenValue.FromNumber(0);
+                    string a = cArgs[0].ToString(), b = cArgs[1].ToString();
+                    return FenValue.FromNumber(string.Compare(a, b, StringComparison.CurrentCulture));
+                })));
+                return FenValue.FromObject(collator);
+            })));
+            
+            SetGlobal("Intl", FenValue.FromObject(intl));
 
             // Global functions: parseInt, parseFloat, isNaN, isFinite
             SetGlobal("parseInt", FenValue.FromFunction(new FenFunction("parseInt", (args, thisVal) => {
