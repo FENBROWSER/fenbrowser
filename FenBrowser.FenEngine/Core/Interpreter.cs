@@ -11,7 +11,7 @@ using FenBrowser.FenEngine.DevTools;
 
 namespace FenBrowser.FenEngine.Core
 {
-    public class Interpreter
+    public partial class Interpreter
     {
         private FenObject _stringPrototype;
 
@@ -385,6 +385,34 @@ namespace FenBrowser.FenEngine.Core
                 // Yield expression (for generator functions)
                 case YieldExpression yieldExpr:
                     return EvalYieldExpression(yieldExpr, env, context);
+
+                // ES6+ Optional chaining: obj?.prop
+                case OptionalChainExpression optChainExpr:
+                    return EvalOptionalChainExpression(optChainExpr, env, context);
+
+                // ES6+ Nullish coalescing: a ?? b
+                case NullishCoalescingExpression nullishExpr:
+                    return EvalNullishCoalescingExpression(nullishExpr, env, context);
+
+                // ES6+ Logical assignment: a ||= b, a &&= b, a ??= b
+                case LogicalAssignmentExpression logicalAssignExpr:
+                    return EvalLogicalAssignmentExpression(logicalAssignExpr, env, context);
+
+                // ES6+ Exponentiation: a ** b
+                case ExponentiationExpression expExpr:
+                    return EvalExponentiationExpression(expExpr, env, context);
+
+                // ES6+ Bitwise NOT: ~x
+                case BitwiseNotExpression bitwiseNotExpr:
+                    return EvalBitwiseNotExpression(bitwiseNotExpr, env, context);
+
+                // ES6+ BigInt literal: 123n
+                case BigIntLiteral bigIntLit:
+                    return EvalBigIntLiteral(bigIntLit);
+
+                // ES6+ Compound assignment: a += b, a **= b, etc.
+                case CompoundAssignmentExpression compoundExpr:
+                    return EvalCompoundAssignmentExpression(compoundExpr, env, context);
 
             }
 
@@ -3056,6 +3084,219 @@ namespace FenBrowser.FenEngine.Core
         public bool IsFunction => false;
         public FenFunction AsFunction() => null;
         public IObject AsObject() => null;
+    }
+
+    // ES6+ Interpreter Extensions - partial class
+    public partial class Interpreter
+    {
+        // ES6+ Optional chaining: obj?.prop, obj?.[key], obj?.()
+        private IValue EvalOptionalChainExpression(OptionalChainExpression expr, FenEnvironment env, IExecutionContext context)
+        {
+            var objVal = Eval(expr.Object, env, context);
+            if (IsError(objVal)) return objVal;
+            
+            // Short-circuit: if null or undefined, return undefined
+            if (objVal.IsNull || objVal.IsUndefined)
+            {
+                return FenValue.Undefined;
+            }
+            
+            if (expr.IsCall)
+            {
+                // obj?.() - optional call
+                if (!objVal.IsFunction)
+                {
+                    return FenValue.Undefined;
+                }
+                var args = EvalExpressionsWithSpread(expr.Arguments, env, context);
+                return ApplyFunction(objVal, args, context, null);
+            }
+            else if (expr.IsComputed)
+            {
+                // obj?.[key]
+                var keyVal = Eval(expr.Property, env, context);
+                if (IsError(keyVal)) return keyVal;
+                
+                if (objVal.IsObject)
+                {
+                    return objVal.AsObject()?.Get(keyVal.ToString(), context) ?? FenValue.Undefined;
+                }
+                return FenValue.Undefined;
+            }
+            else
+            {
+                // obj?.prop
+                if (objVal.IsObject)
+                {
+                    return objVal.AsObject()?.Get(expr.PropertyName, context) ?? FenValue.Undefined;
+                }
+                return FenValue.Undefined;
+            }
+        }
+
+        // ES6+ Nullish coalescing: a ?? b
+        private IValue EvalNullishCoalescingExpression(NullishCoalescingExpression expr, FenEnvironment env, IExecutionContext context)
+        {
+            var leftVal = Eval(expr.Left, env, context);
+            if (IsError(leftVal)) return leftVal;
+            
+            // Return right only if left is null or undefined (not falsy like 0 or "")
+            if (leftVal.IsNull || leftVal.IsUndefined)
+            {
+                return Eval(expr.Right, env, context);
+            }
+            return leftVal;
+        }
+
+        // ES6+ Logical assignment: a ||= b, a &&= b, a ??= b
+        private IValue EvalLogicalAssignmentExpression(LogicalAssignmentExpression expr, FenEnvironment env, IExecutionContext context)
+        {
+            var leftVal = Eval(expr.Left, env, context);
+            if (IsError(leftVal)) return leftVal;
+            
+            bool shouldAssign = false;
+            switch (expr.Operator)
+            {
+                case "||=":
+                    // Assign if left is falsy
+                    shouldAssign = !leftVal.ToBoolean();
+                    break;
+                case "&&=":
+                    // Assign if left is truthy
+                    shouldAssign = leftVal.ToBoolean();
+                    break;
+                case "??=":
+                    // Assign if left is null/undefined
+                    shouldAssign = leftVal.IsNull || leftVal.IsUndefined;
+                    break;
+            }
+            
+            if (shouldAssign)
+            {
+                var rightVal = Eval(expr.Right, env, context);
+                if (IsError(rightVal)) return rightVal;
+                
+                // Assign to the left side
+                if (expr.Left is Identifier ident)
+                {
+                    env.Update(ident.Value, rightVal);
+                    return rightVal;
+                }
+                else if (expr.Left is MemberExpression member)
+                {
+                    var obj = Eval(member.Object, env, context);
+                    if (obj.IsObject)
+                    {
+                        obj.AsObject()?.Set(member.Property, rightVal, context);
+                    }
+                    return rightVal;
+                }
+                return rightVal;
+            }
+            return leftVal;
+        }
+
+        // ES6+ Exponentiation: a ** b
+        private IValue EvalExponentiationExpression(ExponentiationExpression expr, FenEnvironment env, IExecutionContext context)
+        {
+            var leftVal = Eval(expr.Left, env, context);
+            if (IsError(leftVal)) return leftVal;
+            var rightVal = Eval(expr.Right, env, context);
+            if (IsError(rightVal)) return rightVal;
+            
+            double baseNum = leftVal.ToNumber();
+            double expNum = rightVal.ToNumber();
+            return FenValue.FromNumber(Math.Pow(baseNum, expNum));
+        }
+
+        // ES6+ Bitwise NOT: ~x
+        private IValue EvalBitwiseNotExpression(BitwiseNotExpression expr, FenEnvironment env, IExecutionContext context)
+        {
+            var operand = Eval(expr.Operand, env, context);
+            if (IsError(operand)) return operand;
+            
+            int intVal = (int)operand.ToNumber();
+            return FenValue.FromNumber(~intVal);
+        }
+
+        // ES6+ BigInt literal: 123n
+        private IValue EvalBigIntLiteral(BigIntLiteral bigIntLit)
+        {
+            // For now, store as a FenObject with special type marker
+            // Full BigInt support would require a dedicated BigInt type
+            var bigIntObj = new FenObject();
+            bigIntObj.Set("__type__", FenValue.FromString("BigInt"));
+            bigIntObj.Set("value", FenValue.FromString(bigIntLit.Value));
+            
+            // Provide valueOf for numeric context
+            bigIntObj.Set("valueOf", FenValue.FromFunction(new FenFunction("valueOf", (args, thisVal) =>
+            {
+                if (long.TryParse(bigIntLit.Value, out long val))
+                    return FenValue.FromNumber(val);
+                return FenValue.FromNumber(double.NaN);
+            })));
+            
+            bigIntObj.Set("toString", FenValue.FromFunction(new FenFunction("toString", (args, thisVal) =>
+            {
+                return FenValue.FromString(bigIntLit.Value + "n");
+            })));
+            
+            return FenValue.FromObject(bigIntObj);
+        }
+
+        // ES6+ Compound assignment: a += b, a **= b, etc.
+        private IValue EvalCompoundAssignmentExpression(CompoundAssignmentExpression expr, FenEnvironment env, IExecutionContext context)
+        {
+            var leftVal = Eval(expr.Left, env, context);
+            if (IsError(leftVal)) return leftVal;
+            var rightVal = Eval(expr.Right, env, context);
+            if (IsError(rightVal)) return rightVal;
+            
+            IValue result;
+            switch (expr.Operator)
+            {
+                case "+=":
+                    if (leftVal.IsString || rightVal.IsString)
+                        result = FenValue.FromString(leftVal.ToString() + rightVal.ToString());
+                    else
+                        result = FenValue.FromNumber(leftVal.ToNumber() + rightVal.ToNumber());
+                    break;
+                case "-=":
+                    result = FenValue.FromNumber(leftVal.ToNumber() - rightVal.ToNumber());
+                    break;
+                case "*=":
+                    result = FenValue.FromNumber(leftVal.ToNumber() * rightVal.ToNumber());
+                    break;
+                case "/=":
+                    result = FenValue.FromNumber(leftVal.ToNumber() / rightVal.ToNumber());
+                    break;
+                case "%=":
+                    result = FenValue.FromNumber(leftVal.ToNumber() % rightVal.ToNumber());
+                    break;
+                case "**=":
+                    result = FenValue.FromNumber(Math.Pow(leftVal.ToNumber(), rightVal.ToNumber()));
+                    break;
+                default:
+                    result = FenValue.Undefined;
+                    break;
+            }
+            
+            // Assign result back
+            if (expr.Left is Identifier ident)
+            {
+                env.Update(ident.Value, result);
+            }
+            else if (expr.Left is MemberExpression member)
+            {
+                var obj = Eval(member.Object, env, context);
+                if (obj.IsObject)
+                {
+                    obj.AsObject()?.Set(member.Property, result, context);
+                }
+            }
+            
+            return result;
+        }
     }
 }
 
