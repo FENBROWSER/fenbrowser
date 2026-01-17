@@ -251,10 +251,11 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             // 1) Inline <style> tags first (DOM order)
+            const int MAX_INLINE_CSS_SIZE = 300_000; // 300KB per inline style
             foreach (var n in root.Descendants().OfType<Element>().Where(n => !n.IsText && string.Equals(n.Tag, "style", StringComparison.OrdinalIgnoreCase)))
             {
                 var text = SafeGatherText(n);
-                if (!string.IsNullOrWhiteSpace(text))
+                if (!string.IsNullOrWhiteSpace(text) && text.Length <= MAX_INLINE_CSS_SIZE)
                 {
                     // Debug logging disabled for performance
                     
@@ -340,7 +341,9 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         var css = await fetchExternalCssAsync(abs).ConfigureAwait(false);
                         /* [PERF-REMOVED] */
-                        if (!string.IsNullOrWhiteSpace(css))
+                        // Limit CSS size to prevent crashes on massive stylesheets (GitHub, etc.)
+                        const int MAX_CSS_SIZE = 500_000; // 500KB per stylesheet
+                        if (!string.IsNullOrWhiteSpace(css) && css.Length <= MAX_CSS_SIZE)
                         {
                             lock (cssBlobs)
                             {
@@ -352,6 +355,10 @@ namespace FenBrowser.FenEngine.Rendering
                                     BaseUri = abs
                                 });
                             }
+                        }
+                        else if (!string.IsNullOrWhiteSpace(css))
+                        {
+                            Log(log, $"[CssLoader] Skipped large CSS ({css.Length} bytes) from: {abs}");
                         }
                     }
                     catch (Exception ex)

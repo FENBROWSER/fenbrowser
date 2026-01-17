@@ -99,7 +99,14 @@ namespace FenBrowser.FenEngine.Rendering
             }
             if (tasks.Count > 0)
             {
-                await Task.WhenAll(tasks);
+                try
+                {
+                    await Task.WhenAll(tasks);
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Error($"[FontRegistry] Error awaiting pending fonts: {ex.Message}", LogCategory.Rendering);
+                }
             }
         }
 

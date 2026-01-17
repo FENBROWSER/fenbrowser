@@ -31,9 +31,19 @@ namespace FenBrowser.FenEngine.Rendering
     {
 
         public Func<Uri, Task<string>> ScriptFetcher { get; set; }
+        public Func<System.Net.Http.HttpRequestMessage, Task<System.Net.Http.HttpResponseMessage>> FetchHandler { get; set; }
 
+        private CspPolicy _activePolicy;
         /// <summary>Active Content Security Policy for this page. When set, subresource loads are checked against it.</summary>
-        public CspPolicy ActivePolicy { get; set; }
+        public CspPolicy ActivePolicy 
+        { 
+            get => _activePolicy; 
+            set 
+            {
+                FenLogger.Debug($"[ActivePolicy] SET to {(value == null ? "NULL" : "Instance hash=" + value.GetHashCode())} Stack={Environment.StackTrace}", LogCategory.Rendering);
+                _activePolicy = value; 
+            }
+        }
 
         // EXPOSED STYLES FOR SKIA RENDERER
         public Dictionary<Node, CssComputed> LastComputedStyles { get; private set; }
@@ -199,7 +209,12 @@ namespace FenBrowser.FenEngine.Rendering
 
                 return false;
             }
-            catch { return false; }
+            catch (Exception ex)
+            {
+                // Log failure to parse URI but return false (safe default)
+                FenLogger.Warn($"[CustomHtmlEngine] IsJsHeavyAppShell check failed: {ex.Message}", LogCategory.Rendering);
+                return false; 
+            }
         }
 
         public void Dispose()
@@ -213,7 +228,10 @@ namespace FenBrowser.FenEngine.Rendering
                 // _cachedView = null;
                 _cachedRenderer = null;
             }
-            catch { }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[CustomHtmlEngine] Dispose error: {ex.Message}", LogCategory.Rendering);
+            }
         }
 
         private async Task RaiseLoadingChangedAsync(bool isLoading)
@@ -228,7 +246,10 @@ namespace FenBrowser.FenEngine.Rendering
                     await UiThreadHelper.RunAsyncAwaitable(disp, null, () =>
                     {
                         try { handler(this, isLoading); }
-                        catch { }
+                        catch (Exception ex) 
+                        {
+                            FenLogger.Error($"[CustomHtmlEngine] LoadingChanged handler error (async): {ex.Message}", LogCategory.Rendering);
+                        }
                         return Task.CompletedTask;
                     });
                 }
@@ -237,7 +258,10 @@ namespace FenBrowser.FenEngine.Rendering
                     handler(this, isLoading);
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                FenLogger.Error($"[CustomHtmlEngine] LoadingChanged handler error: {ex.Message}", LogCategory.Rendering);
+            }
         }
 
         // Resolve a possibly relative URL against a base
@@ -256,7 +280,10 @@ namespace FenBrowser.FenEngine.Rendering
                 if (Uri.TryCreate(href, UriKind.Absolute, out abs)) return abs;
                 if (baseUri != null && Uri.TryCreate(baseUri, href, out abs)) return abs;
             }
-            catch { }
+            catch (Exception ex)
+            {
+                FenLogger.Debug($"[CustomHtmlEngine] ResolveUri failed for '{href}': {ex.Message}", LogCategory.Rendering);
+            }
             return null;
         }
 
@@ -283,7 +310,10 @@ namespace FenBrowser.FenEngine.Rendering
                 if (System.Text.RegularExpressions.Regex.IsMatch(u, @"\.(webp|avif)(\?.*)?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
                     u = System.Text.RegularExpressions.Regex.Replace(u, @"\.(webp|avif)(\?.*)?$", ".jpg$2", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                FenLogger.Debug($"[CustomHtmlEngine] RewriteWebPToJpg failed for '{u}': {ex.Message}", LogCategory.Rendering);
+            }
             return u;
         }
 
@@ -359,7 +389,10 @@ namespace FenBrowser.FenEngine.Rendering
                                 try { await imageLoader(abs); } 
                                 finally { gate.Release(); } 
                             } 
-                            catch { } 
+                            catch (Exception ex)
+                            {
+                                FenLogger.Warn($"[CustomHtmlEngine] Image load task failed: {ex.Message}", LogCategory.Rendering);
+                            } 
                         }));
                     }
                 };
@@ -424,11 +457,17 @@ namespace FenBrowser.FenEngine.Rendering
                             }
                         }
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        FenLogger.Debug($"[CustomHtmlEngine] PrewarmImages node processing error: {ex.Message}", LogCategory.Rendering);
+                    }
                 }
                 // Fire-and-forget; we do not await prewarm tasks to avoid blocking render
             }
-            catch { }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[CustomHtmlEngine] PrewarmImages failed: {ex.Message}", LogCategory.Rendering);
+            }
         }
 
         private static int VisualChildCount(object node)
@@ -444,7 +483,10 @@ namespace FenBrowser.FenEngine.Rendering
                     if (value != null) return value.Count;
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                FenLogger.Debug($"[CustomHtmlEngine] VisualChildCount error: {ex.Message}", LogCategory.Rendering);
+            }
             return 0;
         }
 
@@ -461,7 +503,10 @@ namespace FenBrowser.FenEngine.Rendering
                     if (value != null && index >= 0 && index < value.Count) return value[index];
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                 FenLogger.Debug($"[CustomHtmlEngine] VisualGetChild error: {ex.Message}", LogCategory.Rendering);
+            }
             return null;
         }
 
@@ -526,13 +571,16 @@ namespace FenBrowser.FenEngine.Rendering
                     FenLogger.Debug("[CaptureActiveContext] SetDomAsync returned.", LogCategory.Rendering);
                     FenLogger.Debug($"[CaptureActiveContext] Synced JS DOM to _activeDom hash={dom.GetHashCode()}", LogCategory.Rendering);
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[CustomHtmlEngine] Failed to sync ActiveDom to JS: {ex.Message}", LogCategory.Rendering);
+                }
             }
             
             if (_activeJs != null)
             {
                 try { _activeJs.FetchOverride = ScriptFetcher; }
-                catch { }
+                catch (Exception ex) { FenLogger.Warn($"[CustomHtmlEngine] Failed to set FetchOverride: {ex.Message}", LogCategory.Rendering); }
             }
 
             // Extract and fire title
@@ -551,7 +599,10 @@ namespace FenBrowser.FenEngine.Rendering
                     TitleChanged?.Invoke(this, baseUri.Host);
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[CustomHtmlEngine] Title extraction failed: {ex.Message}", LogCategory.Rendering);
+            }
         }
 
         private void ConfigureMedia(double? viewportWidth)
@@ -563,7 +614,10 @@ namespace FenBrowser.FenEngine.Rendering
                 try { CssParser.MediaDppx = 1.0; } catch { }
                 try { CssParser.MediaPrefersColorScheme = "light"; } catch { CssParser.MediaPrefersColorScheme = "light"; }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[CustomHtmlEngine] ConfigureMedia failed: {ex.Message}", LogCategory.Rendering);
+            }
         }
 
         private async Task<object> BuildVisualTreeAsync(
@@ -600,13 +654,20 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 // [Verification] Register success
                 FenBrowser.Core.Verification.ContentVerifier.RegisterCssState(false, LastComputedStyles.Count);
-                // try 
-                // {
-                //     var sourceResult = await CssLoader.ComputeWithResultAsync(dom, baseUri, cssFetcher, viewportWidth, viewportHeight, null);
-                //     LastCssSources = sourceResult.Sources;
-                // }
-                // catch { /* DevTools sources are optional */ }
-                LastCssSources = null; // DevTools sources disabled for perf
+                
+                // Get CSS sources from engine for DevTools
+                try
+                {
+                    if (cssEngine is Css.CustomCssEngine customEngine)
+                    {
+                        LastCssSources = customEngine.LastSources;
+                    }
+                }
+                catch (Exception srcEx)
+                {
+                    FenLogger.Error($"[CustomHtmlEngine] CSS Sources retrieval error: {srcEx.Message}", LogCategory.Rendering);
+                    LastCssSources = null;
+                }
                 FenLogger.Debug($"[PERF] BuildVisualTree Complete: {_buildTreeStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
                 
                 FenLogger.Debug($"[CustomHtmlEngine] BuildVisualTree: CSS Success. Styles Count={LastComputedStyles?.Count}", LogCategory.Rendering);
@@ -699,7 +760,7 @@ namespace FenBrowser.FenEngine.Rendering
                     await UiThreadHelper.RunAsyncAwaitable(disp, null, () =>
                     {
                         try { handler(element); }
-                        catch { }
+                        catch (Exception ex) { FenLogger.Error($"[CustomHtmlEngine] RepaintReady async handler error: {ex.Message}", LogCategory.Rendering); }
                         return Task.CompletedTask;
                     }).ConfigureAwait(false);
                 }
@@ -708,7 +769,10 @@ namespace FenBrowser.FenEngine.Rendering
                     handler(element);
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                 FenLogger.Error($"[CustomHtmlEngine] DispatchRepaintAsync error: {ex.Message}", LogCategory.Rendering);
+            }
         }
 
                 private void ScheduleRepaintFromJs()
@@ -838,6 +902,28 @@ namespace FenBrowser.FenEngine.Rendering
                  },
                  ExecuteInlineScriptsOnInnerHTML = allowJs
              };
+
+             // Wire up CSP Nonce check
+             js.NonceAllowed = (nonce) =>
+             {
+                 if (!allowJs) return false;
+                 if (ActivePolicy != null)
+                 {
+                     bool allowed = ActivePolicy.IsAllowed("script-src", null, nonce, isInline: true);
+                     if (allowed && nonce == "wrong456") 
+                     {
+                          FenLogger.Error($"[CSP-CRITICAL] Nonce 'wrong456' ALLOWED! ActivePolicy hash={ActivePolicy.GetHashCode()}", LogCategory.Rendering);
+                          // Dump directives
+                          foreach (var d in ActivePolicy.Directives)
+                          {
+                              FenLogger.Error($"  [DIR] {d.Key}: Sources={string.Join(",",d.Value.Sources)} Nonces={string.Join(",",d.Value.Nonces)}", LogCategory.Rendering);
+                          }
+                     }
+                     return allowed;
+                 }
+                 FenLogger.Warn("[CSP] ActivePolicy is NULL during nonce check!", LogCategory.Rendering);
+                 return true;
+             };
              
              // Wire up permission requests
              js.PermissionRequested += async (origin, perm) => 
@@ -872,6 +958,8 @@ namespace FenBrowser.FenEngine.Rendering
                  }
              }
              catch { }
+
+             if (js != null) js.FetchHandler = FetchHandler;
 
              return js;
         }
@@ -1001,6 +1089,30 @@ namespace FenBrowser.FenEngine.Rendering
                 // 2. Helper: Load CSS
                 await LoadCssAsync(dom, baseUri, fetchExternalCssAsync);
                 FenLogger.Debug($"[PERF] CSS Load: {_pageLoadStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
+
+                // 2.5. Security: CSP Meta Parsing
+                ActivePolicy = null;
+                try
+                {
+                    // Scan HEAD for <meta http-equiv="Content-Security-Policy">
+                    // Simple search in all descendants or just head? Descendants is safer if HEAD parsing is loose.
+                    var metaCsp = dom.Descendants()
+                        .FirstOrDefault(n => 
+                            string.Equals(n.Tag, "meta", StringComparison.OrdinalIgnoreCase) &&
+                            n.Attr != null && 
+                            n.Attr.TryGetValue("http-equiv", out var equiv) && 
+                            string.Equals(equiv, "Content-Security-Policy", StringComparison.OrdinalIgnoreCase));
+                    
+                    if (metaCsp != null && metaCsp.Attr.TryGetValue("content", out var cspContent))
+                    {
+                         ActivePolicy = CspPolicy.Parse(cspContent);
+                         FenLogger.Info($"[Security] Active CSP from Meta: {cspContent}", LogCategory.Rendering);
+                    }
+                }
+                catch (Exception cspEx)
+                {
+                    FenLogger.Warn($"[Security] Failed to parse CSP meta: {cspEx.Message}", LogCategory.Rendering);
+                }
 
                 // 3. Declarative Shadow DOM
                 try

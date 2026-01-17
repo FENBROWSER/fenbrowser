@@ -287,6 +287,9 @@ namespace FenBrowser.FenEngine.Rendering
             
             _resources = new ResourceManager(httpClient, isPrivate);
 
+            // Wire up Fetch API (Phase 8)
+            _engine.FetchHandler = (req) => _resources.SendAsync(req, CurrentPolicy);
+
             // Wire up DevTools Network Monitoring
             _resources.NetworkRequestStarting += (id, req) =>
             {
@@ -387,7 +390,7 @@ namespace FenBrowser.FenEngine.Rendering
                 try { ConsoleMessage?.Invoke(msg); } catch { }
             };
             Console.WriteLine($"[BrowserHost] CWD: {Environment.CurrentDirectory}");
-            _engine.ScriptFetcher = (u) => _resources.FetchTextAsync(u);
+            _engine.ScriptFetcher = (u) => _resources.FetchTextAsync(u, referer: _current, accept: null, secFetchDest: "script");
             _navManager = new NavigationManager(_resources);
             
             // Wire up ImageLoader to trigger RepaintReady when images finish loading
@@ -703,11 +706,19 @@ pre {{
                 // reducing visible layout jitter from premature re-renders.
                 Task.Run(async () => 
                 {
-                    await Task.Delay(1500);
-                    try { 
+                    try
+                    {
+                        await Task.Delay(1500);
+                        if (_disposed) return;
+
                         var dom = _engine.GetActiveDom();
                         if (dom != null) RepaintReady?.Invoke(this, dom);
-                    } catch { }
+                    }
+                    catch (Exception ex)
+                    {
+                        // Prevent background crash
+                        try { FenLogger.Error($"[BrowserHost] Delayed repaint error: {ex.Message}", LogCategory.Rendering); } catch {}
+                    }
                 });
 
                 if (!_isNavigatingHistory)
