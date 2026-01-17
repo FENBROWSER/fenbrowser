@@ -272,52 +272,23 @@ namespace FenBrowser.Core
             // url = UpgradeIfHsts(url); // Handled by HstsHandler
             LastTextResponseUri = null;
 
-            string partition = SafePartition(referer != null ? (referer.Host ?? "") : "");
-            var folderPath = Path.Combine(_cacheRoot, "cache_" + partition);
-            Directory.CreateDirectory(folderPath);
-            
-            var key = url.AbsoluteUri; var fname = HashForFile(key) + ".txt"; var meta = HashForFile(key) + ".meta";
-            var filePath = Path.Combine(folderPath, fname);
-            var metaPath = Path.Combine(folderPath, meta);
-
-            try
+            // Direct Send via NetworkClient
+            // Cache Setup
+            var key = url.ToString();
+            string folderPath = null, filePath = null, metaPath = null;
+            if (!_isPrivate && !string.IsNullOrEmpty(_cacheRoot))
             {
-                // Skip disk cache read if private
-                if (!_isPrivate && File.Exists(filePath) && File.Exists(metaPath))
-                {
-                    try
+                try {
+                    using (var sha = System.Security.Cryptography.SHA256.Create())
                     {
-                        var metaPayload = await File.ReadAllTextAsync(metaPath).ConfigureAwait(false);
-                        var timestampPart = metaPayload;
-                        var finalPart = string.Empty;
-                        if (!string.IsNullOrEmpty(metaPayload))
-                        {
-                            var split = metaPayload.IndexOf('|');
-                            if (split >= 0)
-                            {
-                                timestampPart = metaPayload.Substring(0, split);
-                                finalPart = metaPayload.Substring(split + 1);
-                            }
-                        }
-
-                        DateTimeOffset ts;
-                        if (DateTimeOffset.TryParse(timestampPart, out ts) && (DateTimeOffset.UtcNow - ts) < TimeSpan.FromMinutes(5))
-                        {
-                            Uri cachedFinal = null;
-                            if (!string.IsNullOrWhiteSpace(finalPart))
-                            {
-                                try { if (!Uri.TryCreate(finalPart, UriKind.Absolute, out cachedFinal)) cachedFinal = null; } catch { cachedFinal = null; }
-                            }
-                            LastTextResponseUri = cachedFinal ?? url;
-                            return await File.ReadAllTextAsync(filePath).ConfigureAwait(false);
-                        }
+                        var hashBytes = sha.ComputeHash(Encoding.UTF8.GetBytes(key));
+                        var hash = BitConverter.ToString(hashBytes).Replace("-", "");
+                        folderPath = Path.Combine(_cacheRoot, "Text", hash.Substring(0, 2));
+                        filePath = Path.Combine(folderPath, hash);
+                        metaPath = filePath + ".meta";
                     }
-                    catch { }
-                }
-            }
-            catch { }
-
-            var refererOriginal = referer;
+                } catch { } 
+            }            var refererOriginal = referer;
             Uri previousRequest = null;
 
             try
@@ -891,6 +862,50 @@ namespace FenBrowser.Core
                 return buf;
             }
             catch { return null; }
+        }
+
+        /// <summary>
+        /// Sends a generic HTTP request with CSP checks and standard headers.
+        /// Used by Fetch API and other generic networking needs.
+        /// </summary>
+        public async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CspPolicy policy)
+        {
+            if (request == null || request.RequestUri == null) throw new ArgumentNullException(nameof(request));
+
+            // CSP Check
+            if (policy != null)
+            {
+                // Default to connect-src for generic fetch/XHR
+                if (!policy.IsAllowed("connect-src", request.RequestUri))
+                {
+                    FenLogger.Warn($"[CSP] Blocked generic request to {request.RequestUri} (connect-src)", LogCategory.Network);
+                    throw new Exception($"Blocked by Content Security Policy (connect-src): {request.RequestUri}");
+                }
+            }
+
+            // Standard Browser Headers
+            if (!request.Headers.Contains("User-Agent"))
+            {
+                request.Headers.Add("User-Agent", BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent));
+            }
+
+            // Sec-Fetch headers (basic)
+            if (!request.Headers.Contains("Sec-Fetch-Dest")) request.Headers.Add("Sec-Fetch-Dest", "empty");
+            if (!request.Headers.Contains("Sec-Fetch-Mode")) request.Headers.Add("Sec-Fetch-Mode", "cors");
+            if (!request.Headers.Contains("Sec-Fetch-Site")) request.Headers.Add("Sec-Fetch-Site", "cross-site");
+
+            try
+            {
+                // Go through INetworkClient pipeline (handles cookies, HSTS, tracking prevention)
+                var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                var response = await SendRequestTrackedAsync(request, cts.Token).ConfigureAwait(false);
+                return response;
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Error($"[ResourceManager] SendAsync failed: {ex.Message}", LogCategory.Network);
+                throw;
+            }
         }
 
         private async Task<HttpResponseMessage> SendRequestTrackedAsync(HttpRequestMessage req, CancellationToken token)
