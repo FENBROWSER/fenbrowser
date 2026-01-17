@@ -8,7 +8,18 @@ namespace FenBrowser.Core.Security
     {
         public Dictionary<string, CspDirective> Directives { get; } = new Dictionary<string, CspDirective>(StringComparer.OrdinalIgnoreCase);
 
+        /// <summary>
+        /// Check if a resource URL is allowed by the policy.
+        /// </summary>
         public bool IsAllowed(string directiveName, Uri url, bool isInline = false, bool isEval = false)
+        {
+            return IsAllowed(directiveName, url, null, isInline, isEval);
+        }
+
+        /// <summary>
+        /// Check if a resource is allowed, optionally validating a nonce.
+        /// </summary>
+        public bool IsAllowed(string directiveName, Uri url, string nonce, bool isInline = false, bool isEval = false)
         {
             // If no policy, everything allowed
             if (Directives.Count == 0) return true;
@@ -19,25 +30,22 @@ namespace FenBrowser.Core.Security
             {
                 if (!Directives.TryGetValue("default-src", out directive))
                 {
-                    // No default-src and specific directive not found -> Allowed by default in CSP spec?
-                    // "If the directive is not present in the policy, it allows all accesses." (unless it falls back to default-src)
-                    // default-src falls back for: script-src, style-src, img-src, connect-src, font-src, object-src, media-src, frame-src, etc.
-                    // base-uri, form-action, frame-ancestors do NOT fall back.
-                    
-                    var fallbacks = new HashSet<string>(StringComparer.OrdinalIgnoreCase) 
+                    // No default-src fallback for base-uri, form-action, frame-ancestors
+                    var noFallback = new HashSet<string>(StringComparer.OrdinalIgnoreCase) 
                     { 
-                        "script-src", "style-src", "img-src", "connect-src", "font-src", 
-                        "object-src", "media-src", "frame-src", "child-src", "worker-src", "manifest-src" 
+                        "base-uri", "form-action", "frame-ancestors", "sandbox" 
                     };
 
-                    if (fallbacks.Contains(directiveName)) return true; // Actually, if no default-src, these are allowed.
+                    if (noFallback.Contains(directiveName)) return true;
+
+                    // If default-src is missing, fallback directives are allowed
                     return true;
                 }
             }
 
-            if (directive == null) return true; // Should be covered above but safety check/logic flow
+            if (directive == null) return true; 
 
-            return directive.IsAllowed(url, isInline, isEval);
+            return directive.IsAllowed(url, nonce, isInline, isEval);
         }
 
         public static CspPolicy Parse(string headerValue)
@@ -70,59 +78,83 @@ namespace FenBrowser.Core.Security
     {
         public string Name { get; }
         public HashSet<string> Sources { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        public HashSet<string> Nonces { get; } = new HashSet<string>(StringComparer.Ordinal); // Case-sensitive nonces
 
         public CspDirective(string name, string[] sources)
         {
             Name = name;
-            foreach (var s in sources) Sources.Add(s);
+            foreach (var s in sources) 
+            {
+                if (s.StartsWith("'nonce-", StringComparison.OrdinalIgnoreCase) && s.EndsWith("'"))
+                {
+                    // Extract nonce value: 'nonce-abc' -> abc
+                    var val = s.Substring(7, s.Length - 8);
+                    Nonces.Add(val);
+                }
+                Sources.Add(s);
+            }
         }
 
-        public bool IsAllowed(Uri url, bool isInline = false, bool isEval = false, Uri origin = null)
+        public bool IsAllowed(Uri url, string nonce, bool isInline = false, bool isEval = false, Uri origin = null)
         {
             if (Sources.Contains("'none'")) return false;
 
-            if (isInline) return Sources.Contains("'unsafe-inline'");
+            // 1. Nonce Check (Overrides inline checks if present)
+            if (!string.IsNullOrEmpty(nonce))
+            {
+                if (Nonces.Contains(nonce)) return true;
+                // If nonce is provided but doesn't match, do we fail immediately?
+                // CSP Spec: "If 'nonce-source' is present in the list of allowed sources... 
+                // matches if the element has a nonce attribute..."
+                // If the element HAS a nonce, it MUST allow it. 
+                // But if the policy requires a nonce (contains 'nonce-...') and the element nonce is bad, is it blocked?
+                // Actually, CSP allows if ANY source matches.
+            }
+
+            // 2. Inline Check
+            if (isInline) 
+            {
+                // If 'unsafe-inline' is present, it's allowed UNLESS a nonce/hash is present in the policy (in modern CSP).
+                // "If a directive contains a nonce-source or hash-source... 'unsafe-inline' is ignored."
+                // For simplicity, we'll implement strict check: if we have nonces, we ignore unsafe-inline.
+                bool hasNonces = Nonces.Count > 0;
+                if (!hasNonces && Sources.Contains("'unsafe-inline'")) return true;
+                
+                // If we have nonces, we only allow if the nonce matched above.
+                if (hasNonces) return !string.IsNullOrEmpty(nonce) && Nonces.Contains(nonce);
+
+                return false;
+            }
+
+            // 3. Eval Check
             if (isEval) return Sources.Contains("'unsafe-eval'");
             
-            if (url == null) return false; // Inline/eval check passed/failed, strictly URL check now
+            // 4. URL Check
+            if (url == null) return false; 
 
-            if (Sources.Contains("*")) return true;
+            if (Sources.Contains("*") || (url.Scheme == "data" && Sources.Contains("data:")) || (url.Scheme == "blob" && Sources.Contains("blob:"))) return true;
 
-            // Check 'self' - same origin check
+            // Check 'self'
             if (Sources.Contains("'self'") && origin != null)
             {
                 if (IsSameOrigin(url, origin)) return true;
             }
 
-            // Check 'self'
-            // We need the origin context to check 'self'. 
-            // Currently CspPolicy.IsAllowed signature doesn't take origin. 
-            // We should assume the caller has resolved 'self' or we need to change signature.
-            // For now, let's assume 'self' needs to be checked by caller or we ignore it here if we don't know origin?
-            // BETTER: Pass originUri to IsAllowed. For now, let's match exact host if provided in list.
-            
-            // For this basic implementation, we support:
-            // - scheme: (https:, data:)
-            // - host (example.com, *.example.com)
-            
             foreach (var src in Sources)
             {
                 if (src == "*") return true;
-                if (src.StartsWith("'")) continue; // keywords like 'self', 'unsafe-inline' (handled above/separately)
+                if (src.StartsWith("'")) continue; // keywords
 
-                // Scheme check (e.g. https:)
+                // Scheme check
                 if (src.EndsWith(":"))
                 {
                     if (string.Equals(url.Scheme + ":", src, StringComparison.OrdinalIgnoreCase)) return true;
                     continue;
                 }
 
-                // Host check
-                // src could be "example.com", "*.example.com", "https://example.com"
-                
-                // Simple parsing of src
-                string srcScheme = null;
+                // Host matching logic (simplified)
                 string srcHost = src;
+                string srcScheme = null;
                 string srcPort = null;
 
                 if (src.Contains("://"))
@@ -132,7 +164,6 @@ namespace FenBrowser.Core.Security
                     srcHost = uriParts[1];
                 }
 
-                // Handle port
                 var portIdx = srcHost.IndexOf(':');
                 if (portIdx >= 0)
                 {
@@ -140,31 +171,22 @@ namespace FenBrowser.Core.Security
                     srcHost = srcHost.Substring(0, portIdx);
                 }
                 
-                // Remove path if present (CSP hosts typically don't include path unless specific)
                 var slash = srcHost.IndexOf('/');
                 if (slash >= 0) srcHost = srcHost.Substring(0, slash);
 
-                // Scheme matching
                 if (srcScheme != null && !string.Equals(url.Scheme, srcScheme, StringComparison.OrdinalIgnoreCase)) continue;
 
-                // Port matching
                 if (srcPort != null)
                 {
-                    // If port specified, must match. 
-                    // If url port is default (-1), we need to map to 80/443
                     var uPort = url.Port;
                     if (uPort == -1) uPort = url.Scheme == "https" ? 443 : 80;
-                    
-                    if (srcPort == "*") { /* allowed */ }
-                    else if (int.TryParse(srcPort, out int p) && p != uPort) continue;
+                    if (srcPort != "*" && int.TryParse(srcPort, out int p) && p != uPort) continue;
                 }
 
-                // Host matching
                 if (srcHost == "*") return true;
                 if (srcHost.StartsWith("*."))
                 {
-                    var suffix = srcHost.Substring(2);
-                    if (url.Host.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) return true;
+                    if (url.Host.EndsWith(srcHost.Substring(2), StringComparison.OrdinalIgnoreCase)) return true;
                 }
                 else
                 {
@@ -175,23 +197,13 @@ namespace FenBrowser.Core.Security
             return false;
         }
 
-        /// <summary>Check if two URIs have the same origin (scheme, host, port)</summary>
         private static bool IsSameOrigin(Uri url, Uri origin)
         {
             if (url == null || origin == null) return false;
-            
-            // Scheme must match
-            if (!string.Equals(url.Scheme, origin.Scheme, StringComparison.OrdinalIgnoreCase))
-                return false;
-            
-            // Host must match
-            if (!string.Equals(url.Host, origin.Host, StringComparison.OrdinalIgnoreCase))
-                return false;
-            
-            // Port must match (handle default ports)
+            if (!string.Equals(url.Scheme, origin.Scheme, StringComparison.OrdinalIgnoreCase)) return false;
+            if (!string.Equals(url.Host, origin.Host, StringComparison.OrdinalIgnoreCase)) return false;
             int urlPort = url.Port == -1 ? GetDefaultPort(url.Scheme) : url.Port;
             int originPort = origin.Port == -1 ? GetDefaultPort(origin.Scheme) : origin.Port;
-            
             return urlPort == originPort;
         }
 
