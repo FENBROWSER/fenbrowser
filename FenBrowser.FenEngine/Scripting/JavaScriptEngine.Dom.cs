@@ -338,11 +338,49 @@ namespace FenBrowser.FenEngine.Scripting
             protected JsDomNodeBase(JavaScriptEngine e, Element n) { _e = e; _node = n; }
         }
 
-        internal sealed class JsDomText : JsDomNodeBase
+        internal sealed class JsDomText : JsDomNodeBase, IObject
         {
+            private IObject _prototype = null;
+            public object NativeObject { get; set; }
+
             public JsDomText(JavaScriptEngine e, Element n) : base(e, n) { }
-            public string nodeType => "text";
-            public string data { get { return _node.Text ?? ""; } set { _node.Text = value ?? ""; } }
+            public string nodeType => "text"; // Keep specific internal property
+            public string data { get { return _node.Text ?? ""; } set { _node.Text = value ?? ""; _e.RequestRepaint(); } }
+
+            // IObject Implementation
+            public IValue Get(string key, IExecutionContext context = null)
+            {
+                switch (key)
+                {
+                    case "data": return FenValue.FromString(data);
+                    case "nodeValue": return FenValue.FromString(data);
+                    case "textContent": return FenValue.FromString(data);
+                    // DOM Standard: nodeType is 3 for Text nodes
+                    case "nodeType": return FenValue.FromNumber(3); 
+                    case "nodeName": return FenValue.FromString("#text");
+                    case "length": return FenValue.FromNumber(data.Length);
+                    default: return FenValue.Undefined;
+                }
+            }
+
+            public void Set(string key, IValue value, IExecutionContext context = null)
+            {
+                if (key == "data" || key == "nodeValue" || key == "textContent") 
+                {
+                    data = value.ToString();
+                }
+            }
+
+            public bool Has(string key, IExecutionContext context = null) 
+                => key == "data" || key == "nodeValue" || key == "textContent" || key == "nodeType" || key == "nodeName" || key == "length";
+
+            public bool Delete(string key, IExecutionContext context = null) => false;
+
+            public IEnumerable<string> Keys(IExecutionContext context = null) 
+                => new[] { "data", "nodeValue", "textContent", "nodeType", "nodeName", "length" };
+
+            public IObject GetPrototype() => _prototype;
+            public void SetPrototype(IObject prototype) { _prototype = prototype; }
         }
 
         internal sealed class JsDomElement : JsDomNodeBase, IObject

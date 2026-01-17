@@ -31,6 +31,8 @@ namespace FenBrowser.FenEngine.Scripting
     public sealed partial class JavaScriptEngine : FenBrowser.FenEngine.Core.IDomBridge
     {
         public Func<Uri, Task<string>> FetchOverride { get; set; }
+        public Func<Uri, string, bool> SubresourceAllowed { get; set; }
+        public Func<string, bool> NonceAllowed { get; set; }
         
         // Permission Request Event
         public event Func<string, JsPermissions, Task<bool>> PermissionRequested;
@@ -62,6 +64,8 @@ namespace FenBrowser.FenEngine.Scripting
             SetupMutationObserver();
             // _mini = new MiniJs.Engine();
         }
+
+        public Func<System.Net.Http.HttpRequestMessage, System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage>> FetchHandler { get; set; }
 
 
 
@@ -135,6 +139,7 @@ namespace FenBrowser.FenEngine.Scripting
             _fenRuntime.OnConsoleMessage = msg => 
             {
                 FenLogger.Debug($"[JavaScriptEngine] Received console message from runtime: {msg}", LogCategory.JavaScript);
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[JSConsole] {msg}\n"); } catch {}
                 try { _host?.Log(msg); } catch (Exception ex) { FenLogger.Error($"[JavaScriptEngine] Host log error: {ex}", LogCategory.JavaScript); }
             };
 
@@ -150,7 +155,8 @@ namespace FenBrowser.FenEngine.Scripting
             SetupModernAPIs();
             
             // Register Fetch API
-            FenBrowser.FenEngine.WebAPIs.FetchApi.Register(_fenRuntime.Context);
+            // Register Fetch API
+            FenBrowser.FenEngine.WebAPIs.FetchApi.Register(_fenRuntime.Context, FetchHandler);
         }
         
         // IDomBridge Implementation
@@ -179,6 +185,58 @@ namespace FenBrowser.FenEngine.Scripting
                      new FenBrowser.FenEngine.Core.Interfaces.IValue[] { FenValue.FromString(eventName), callback },
                      elVal.AsObject());
              }
+        }
+
+        public FenBrowser.FenEngine.Core.Interfaces.IValue CreateElement(string tagName)
+        {
+            if (_domRoot == null) return FenValue.Null;
+            var doc = new JsDocument(this, _domRoot);
+            var el = doc.createElement(tagName);
+            return el != null ? FenValue.FromObject(el) : FenValue.Null;
+        }
+
+        public FenBrowser.FenEngine.Core.Interfaces.IValue CreateTextNode(string text)
+        {
+             // JsDomText needs to be wrapped or implement IObject. 
+             // Currently returning Null if not IObject, but we should fix JsDomText later.
+             // For now, let's try to assume we'll fix JsDomText to implement IObject or use a generic wrapper.
+             if (_domRoot == null) return FenValue.Null;
+             var doc = new JsDocument(this, _domRoot);
+             var txt = doc.createTextNode(text);
+             // Ensure JsDomText implements IObject or wrap it?
+             // If JsDomText doesn't implement IObject, this will fail if we try to cast.
+             // But valid JS node must be an object.
+             if (txt is FenBrowser.FenEngine.Core.Interfaces.IObject obj) return FenValue.FromObject(obj);
+             return FenValue.Null; 
+        }
+
+        public void AppendChild(FenBrowser.FenEngine.Core.Interfaces.IValue parent, FenBrowser.FenEngine.Core.Interfaces.IValue child)
+        {
+            if (parent.IsObject && child.IsObject)
+            {
+                var pObj = parent.AsObject();
+                // Check if it's JsDomElement or JsDocument (body)
+                if (pObj is JsDomElement el)
+                {
+                     // Unwrap child
+                     object childNative = child.AsObject();
+                     if (childNative is FenObject fo) childNative = fo.NativeObject; // Unwrap wrapper if needed?
+                     // Actually JsDomElement.appendChild takes 'object child' and casts to JsDomNodeBase
+                     el.appendChild(child.AsObject());
+                }
+            }
+        }
+
+        public void SetAttribute(FenBrowser.FenEngine.Core.Interfaces.IValue element, string name, string value)
+        {
+            if (element.IsObject)
+            {
+                var obj = element.AsObject();
+                if (obj is JsDomElement el)
+                {
+                    el.setAttribute(name, value);
+                }
+            }
         }
 
         private void SetupModernAPIs()
@@ -645,8 +703,7 @@ namespace FenBrowser.FenEngine.Scripting
         public JsVal OnPopState { get; set; }
         public JsVal OnHashChange { get; set; }
         
-        // Subresource validation delegate (optional)
-        public Func<Uri, string, bool> SubresourceAllowed { get; set; }
+
 
         // Canvas persistence
         private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Element, SKBitmap> _canvasBitmaps 
@@ -2164,6 +2221,9 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             public void clearTimeout(int id) => _engine.ClearTimeout(id);
             public int setInterval(string code, int ms) => _engine.ScheduleInterval(code, ms, false);
             public void clearInterval(int id) => _engine.ClearTimeout(id);
+            
+            public object crypto => new JsCrypto();
+            public object performance => new JsPerformance();
 
             public JsVal onpopstate
             {
@@ -2234,7 +2294,17 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         {
             private JavaScriptEngine _engine;
             public HostConsole(JavaScriptEngine engine) { _engine = engine; }
-            public void log(string msg) { System.Diagnostics.Debug.WriteLine(msg); }
+            public void log(string msg) { LogToFile("INFO", msg); }
+            public void error(string msg) { LogToFile("ERROR", msg); }
+            public void warn(string msg) { LogToFile("WARN", msg); }
+            public void info(string msg) { LogToFile("INFO", msg); }
+            public void debug(string msg) { LogToFile("DEBUG", msg); }
+            
+            private void LogToFile(string level, string msg)
+            {
+                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[Console:{level}] {msg}\n"); } catch {}
+                try { _engine._host.Log($"[{level}] {msg}"); } catch {}
+            }
         }
 
         public class HostNavigator
@@ -2414,83 +2484,152 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                     /* [PERF-REMOVED] */
                 }
                 
-                // Execute inline scripts with FenEngine
+                // Execute scripts (Inline + External + Modules)
                 try
                 {
                     /* [PERF-REMOVED] */
                     
+                    // Create ModuleLoader if needed (lazy init)
+                    var moduleLoader = new FenBrowser.FenEngine.Core.ModuleLoader(
+                        _fenRuntime.GlobalEnv, 
+                        _fenRuntime.Context,
+                        uri => FetchTextSync(uri) // Use existing sync fetcher
+                    );
+                    _fenRuntime.SetModuleLoader(moduleLoader);
+
+                    // Inject global error handler
+                    try
+                    {
+                        var errorHandler = "window.onerror = function(msg, url, line, col, error) { console.error('GLOBAL JS ERROR: ' + msg + ' at ' + url + ':' + line + ':' + col); if (error && error.stack) console.error(error.stack); };";
+                        _fenRuntime.ExecuteSimple(errorHandler, "debug-handler");
+                        var consoleTest = "console.log('Console test verify'); console.warn('Console warn verify');";
+                        _fenRuntime.ExecuteSimple(consoleTest, "debug-console-test");
+                    }
+                    catch (Exception ex) { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[SetupError] {ex}\n"); }
+
                     int scriptIndex = 0;
                     foreach (var s in _domRoot.SelfAndDescendants())
                     {
                         if (string.Equals(s.Tag, "script", StringComparison.OrdinalIgnoreCase))
                         {
+                            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[ScriptFound] Found script tag. Attrs: {(s.Attr != null ? string.Join(",", s.Attr.Keys) : "none")}\n"); } catch {}
                             scriptIndex++;
                             string code = null;
-                            bool isAsync = false;
                             string srcInfo = "inline";
 
-                            // External script
-                            if (s.Attr != null && s.Attr.ContainsKey("src")) 
+                            // Attribute checks
+                            var attrs = s.Attr ?? new Dictionary<string, string>();
+                            string type = attrs.ContainsKey("type") ? attrs["type"].ToLowerInvariant() : "";
+                            string src = attrs.ContainsKey("src") ? attrs["src"] : null;
+                            string nonce = attrs.ContainsKey("nonce") ? attrs["nonce"] : null;
+                            bool isModule = type == "module";
+                            
+                            // Filter invalid types
+                            if (!string.IsNullOrEmpty(type) && 
+                                type != "text/javascript" && 
+                                type != "application/javascript" && 
+                                type != "module")
+                            {
+                                continue;
+                            }
+                            
+                            if (attrs.ContainsKey("nomodule")) continue;
+
+                            // CSP Check (Enhanced with Nonce)
+                            if (SubresourceAllowed != null) 
+                            {
+                                Uri checkUri = null;
+                                if (!string.IsNullOrEmpty(src) && baseUri != null) Uri.TryCreate(baseUri, src, out checkUri);
+                                
+                                if (NonceAllowed != null)
+                                {
+                                    bool isAllowed = NonceAllowed(nonce);
+
+                                    if (string.IsNullOrEmpty(src))
+                                    {
+                                         // Inline Script: Check nonce
+                                         if (!isAllowed) continue;
+                                    }
+                                    else
+                                    {
+                                        // External Script: If nonce check PASSED, we allow it immediately.
+                                        // If failed or missing, we fall back to URL whitelist.
+                                        if (!isAllowed || string.IsNullOrEmpty(nonce)) 
+                                        {
+                                            // Fallback to URL check
+                                             if (!string.IsNullOrEmpty(src) && checkUri != null && !SubresourceAllowed(checkUri, "script")) 
+                                             {
+                                                 continue;
+                                             }
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    // URL Check (External Only) if NonceAllowed not available
+                                    if (!string.IsNullOrEmpty(src) && checkUri != null && !SubresourceAllowed(checkUri, "script")) 
+                                    {
+                                        continue;
+                                    }
+                                }
+                            }
+
+                            // 1. External Script
+                            if (!string.IsNullOrEmpty(src)) 
                             {
                                 if (!SandboxAllows(SandboxFeature.ExternalScripts, "script src")) continue;
 
-                                var src = s.Attr["src"];
-                                if (!string.IsNullOrEmpty(src) && baseUri != null)
+                                if (baseUri != null)
                                 {
                                     try 
                                     {
                                         var scriptUri = new Uri(baseUri, src);
                                         srcInfo = scriptUri.ToString();
                                         
-                                        // Check SubresourceAllowed delegate
-                                        if (SubresourceAllowed != null && !SubresourceAllowed(scriptUri, "script"))
+                                        if (isModule)
                                         {
-                                             /* [PERF-REMOVED] */
-                                             continue;
+                                            try { moduleLoader.LoadModule(scriptUri.AbsoluteUri); } catch { }
+                                            continue;
                                         }
 
-                                        FenLogger.Debug($"[JavaScriptEngine] Fetching external script: {scriptUri}", LogCategory.JavaScript);
-                                        
-                                        // Use ExternalScriptFetcher if available (uses ResourceManager/Cache)
                                         if (ExternalScriptFetcher != null)
                                         {
-                                             // Fix: await the task instead of .Result to prevent deadlock
-                                             code = await ExternalScriptFetcher(scriptUri, baseUri).ConfigureAwait(false);
+                                            code = await ExternalScriptFetcher(scriptUri, baseUri).ConfigureAwait(false);
                                         }
                                         else
                                         {
-                                            // Fallback synchronous fetch
                                             using (var client = new System.Net.Http.HttpClient())
                                             {
                                                 client.Timeout = TimeSpan.FromSeconds(5);
-                                                // Fix: await the task instead of .Result
                                                 code = await client.GetStringAsync(scriptUri).ConfigureAwait(false);
                                             }
                                         }
                                     }
-                                    catch (Exception ex)
-                                    {
-                                        /* [PERF-REMOVED] */
-                                    }
+                                    catch { }
                                 }
                             }
+                            // 2. Inline Script
                             else
                             {
-                                // Inline script
                                 if (!SandboxAllows(SandboxFeature.InlineScripts, "inline script")) continue;
                                 code = CollectScriptText(s);
+                                
+                                if (isModule && !string.IsNullOrWhiteSpace(code))
+                                {
+                                    try { moduleLoader.LoadModuleSrc(code, $"inline-module-{Guid.NewGuid()}.js"); } catch { }
+                                    continue; 
+                                }
                             }
                             
                             if (!string.IsNullOrWhiteSpace(code))
                             {
-                                /* [PERF-REMOVED] */
-                                FenLogger.Debug($"[JavaScriptEngine] Executing script ({code.Length} chars)", LogCategory.JavaScript);
+                                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[ScriptRun] Executing script: Length={code.Length}, Info={srcInfo}\n"); } catch {}
                                 _fenRuntime.ExecuteSimple(code, srcInfo);
                                 /* [PERF-REMOVED] */
                             }
                             else
                             {
-                                /* [PERF-REMOVED] */
+                                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[ScriptSkip] Code empty or skipped. Type={type}, Src={src}\n"); } catch {}
                             }
                         }
                     }
@@ -2499,6 +2638,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                 }
                 catch (Exception ex)
                 {
+                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[JSExecError] {ex}\n"); } catch {}
                     FenLogger.Error($"[JavaScriptEngine] Script execution error: {ex.Message}", LogCategory.JavaScript, ex);
                 }
             }
@@ -2690,18 +2830,73 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             _scrollToElement = scrollToElement ?? (_ => { });
         }
 
+        // ... IJsHost implementation ...
         public void Navigate(Uri target) => _navigate(target);
         public void PostForm(Uri target, string body) => _post(target, body);
         public void SetStatus(string s) => _status(s);
-
-        // IJsHostRepaint implementation
-        public void RequestRender() { try { _requestRender(); } catch { } }
-        public void InvokeOnUiThread(Action action) { if (action == null) return; try { _invokeOnUiThread(action); } catch { } }
-
-        public void SetTitle(string tval) => _setTitle(tval);
+        public void RequestRender() => _requestRender();
+        public void InvokeOnUiThread(Action action) => _invokeOnUiThread(action);
+        public void SetTitle(string t) => _setTitle(t);
         public void Alert(string msg) => _alert(msg);
         public void Log(string msg) => _log(msg);
-        public void ScrollToElement(Element element) => _scrollToElement(element);
+        public void ScrollToElement(Element e) => _scrollToElement(e);
     }
+
+    public class JsCrypto : FenBrowser.FenEngine.Core.FenObject
+    {
+        public JsCrypto()
+        {
+            Set("getRandomValues", FenValue.FromFunction(new FenFunction("getRandomValues", GetRandomValues)));
+            Set("subtle", FenValue.FromObject(new FenBrowser.FenEngine.Core.FenObject())); // Minimal mock
+        }
+        
+        private FenBrowser.FenEngine.Core.Interfaces.IValue GetRandomValues(FenBrowser.FenEngine.Core.Interfaces.IValue[] args, FenBrowser.FenEngine.Core.Interfaces.IValue thisVal)
+        {
+            if (args.Length < 1) return FenValue.Undefined;
+            try
+            {
+                var arr = args[0] as FenBrowser.FenEngine.Core.FenObject; // TypedArray usually
+                // In NilJS TypedArrays might be FenObjects with numeric keys
+                // For now, assume it's a typed array and fill it with random bytes.
+                // Since bridging typed arrays is complex, we'll just try to fill standard array-like object
+                
+                // Real implementation requires bridging TypedArrays properly.
+                // Assuming args[0] is the TypedArray instance.
+                
+                // We'll fill 'length' bytes.
+                if (arr != null && arr.Has("length"))
+                {
+                    int len = (int)arr.Get("length").AsNumber();
+                    var rng = System.Security.Cryptography.RandomNumberGenerator.Create();
+                    var bytes = new byte[len];
+                    rng.GetBytes(bytes);
+                    
+                    for(int i=0; i<len; i++)
+                    {
+                        arr.Set(i.ToString(), FenValue.FromNumber(bytes[i]));
+                    }
+                }
+                return args[0];
+            }
+            catch { return args[0]; }
+        }
+    }
+
+    public class JsPerformance : FenBrowser.FenEngine.Core.FenObject
+    {
+        private static readonly DateTime _start = DateTime.UtcNow;
+        
+        public JsPerformance()
+        {
+            Set("now", FenValue.FromFunction(new FenFunction("now", (args, _) => 
+                FenValue.FromNumber((DateTime.UtcNow - _start).TotalMilliseconds))));
+                
+            Set("mark", FenValue.FromFunction(new FenFunction("mark", (args, _) => FenValue.Undefined)));
+            Set("measure", FenValue.FromFunction(new FenFunction("measure", (args, _) => FenValue.Undefined)));
+            Set("clearMarks", FenValue.FromFunction(new FenFunction("clearMarks", (args, _) => FenValue.Undefined)));
+            Set("clearMeasures", FenValue.FromFunction(new FenFunction("clearMeasures", (args, _) => FenValue.Undefined)));
+        }
+    }
+
 }
 
