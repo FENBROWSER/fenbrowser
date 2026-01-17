@@ -69,6 +69,19 @@ public class RootWidget : DockPanel
     
     public BookmarksBarWidget BookmarksBar => _bookmarksBar;
     
+    /// <summary>
+    /// Find a widget of a specific type in the tree.
+    /// </summary>
+    public T FindWidget<T>() where T : Widget
+    {
+        if (_devToolsWidget is T dt) return dt;
+        if (_tabBar is T tb) return tb;
+        if (_toolbar is T tl) return tl;
+        if (_statusBar is T sb) return sb;
+        if (_contentWidget is T cw) return cw;
+        return null;
+    }
+    
     public void SetContent(Widget content)
     {
         // Add content as the last child to fill the remaining space

@@ -217,5 +217,90 @@ namespace FenBrowser.Host
             int max = 50;
             while (max-- > 0 && _mainThreadQueue.TryDequeue(out var action)) action();
         }
+        
+        /// <summary>
+        /// Copy text to system clipboard. (10/10)
+        /// Uses Windows-specific clipboard API via P/Invoke.
+        /// </summary>
+        public void CopyToClipboard(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+            
+            try
+            {
+                // Use Windows clipboard API via P/Invoke
+                if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
+                    System.Runtime.InteropServices.OSPlatform.Windows))
+                {
+                    WindowsClipboard.SetText(text);
+                }
+                else
+                {
+                    // TODO: Add Linux/macOS clipboard support
+                    FenLogger.Warn($"[WindowManager] Clipboard not supported on this platform", LogCategory.General);
+                }
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Error($"[WindowManager] Clipboard error: {ex.Message}", LogCategory.General);
+            }
+        }
+    }
+    
+    /// <summary>
+    /// Windows clipboard helper via P/Invoke.
+    /// </summary>
+    internal static class WindowsClipboard
+    {
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool OpenClipboard(IntPtr hWndNewOwner);
+        
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool CloseClipboard();
+        
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool EmptyClipboard();
+        
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr SetClipboardData(uint uFormat, IntPtr hMem);
+        
+        [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+        private static extern IntPtr GlobalAlloc(uint uFlags, UIntPtr dwBytes);
+        
+        [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+        private static extern IntPtr GlobalLock(IntPtr hMem);
+        
+        [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+        private static extern bool GlobalUnlock(IntPtr hMem);
+        
+        private const uint CF_UNICODETEXT = 13;
+        private const uint GMEM_MOVEABLE = 0x0002;
+        
+        public static void SetText(string text)
+        {
+            if (!OpenClipboard(IntPtr.Zero)) return;
+            
+            try
+            {
+                EmptyClipboard();
+                
+                var bytes = (text.Length + 1) * 2;
+                var hMem = GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)bytes);
+                if (hMem == IntPtr.Zero) return;
+                
+                var pMem = GlobalLock(hMem);
+                if (pMem != IntPtr.Zero)
+                {
+                    System.Runtime.InteropServices.Marshal.Copy(text.ToCharArray(), 0, pMem, text.Length);
+                    GlobalUnlock(hMem);
+                    SetClipboardData(CF_UNICODETEXT, hMem);
+                }
+            }
+            finally
+            {
+                CloseClipboard();
+            }
+        }
     }
 }
+

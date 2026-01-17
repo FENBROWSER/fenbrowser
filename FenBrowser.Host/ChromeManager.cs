@@ -181,7 +181,18 @@ namespace FenBrowser.Host
             // CSS Access
             _devToolsServer.InitializeCss(
                 node => WindowManager.Instance.RunOnMainThread(() => tab.Browser.ComputedStyles.TryGetValue(node, out var s) ? s : null).Result, 
-                node => WindowManager.Instance.RunOnMainThread(() => node is Element el && tab.Browser.CssSources != null ? CssLoader.GetMatchedRules(el, tab.Browser.CssSources) : new System.Collections.Generic.List<CssLoader.MatchedRule>()).Result,
+                node => WindowManager.Instance.RunOnMainThread(() => {
+                    try
+                    {
+                        return node is Element el && tab.Browser.CssSources != null 
+                            ? CssLoader.GetMatchedRules(el, tab.Browser.CssSources) 
+                            : new System.Collections.Generic.List<CssLoader.MatchedRule>();
+                    }
+                    catch
+                    {
+                        return new System.Collections.Generic.List<CssLoader.MatchedRule>();
+                    }
+                }).Result,
                 (node, prop, val) => WindowManager.Instance.RunOnMainThread(() => {
                     if (node is Element el) {
                         // Simple style patching
@@ -200,6 +211,15 @@ namespace FenBrowser.Host
 
             _devToolsHost = new DevToolsHostAdapter(tab.Browser, _devToolsServer);
             _devToolsHost.CursorChanged += cursor => CursorManager.UpdateCursorFromDevTools(_mouse, cursor);
+            
+            // Wire up capture events for proper drag handling
+            var devToolsWidget = _root.FindWidget<DevToolsWidget>();
+            if (devToolsWidget != null)
+            {
+                _devToolsHost.CaptureRequested += () => InputManager.Instance.SetCapture(devToolsWidget);
+                _devToolsHost.CaptureReleased += () => InputManager.Instance.ReleaseCapture();
+            }
+            
             _devTools.Attach(_devToolsHost);
         }
 

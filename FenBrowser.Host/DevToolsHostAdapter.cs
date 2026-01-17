@@ -102,6 +102,33 @@ public class DevToolsHostAdapter : IDevToolsHost
     }
     
     /// <summary>
+    /// Copy text to system clipboard. (10/10)
+    /// </summary>
+    public void CopyToClipboard(string text)
+    {
+        Program.RunOnMainThread(() =>
+        {
+            Program.CopyToClipboard(text);
+        });
+    }
+    
+    /// <summary>
+    /// Events for capture management - DevToolsWidget listens to these.
+    /// </summary>
+    public event Action? CaptureRequested;
+    public event Action? CaptureReleased;
+    
+    public void SetCapture()
+    {
+        Program.RunOnMainThread(() => CaptureRequested?.Invoke());
+    }
+    
+    public void ReleaseCapture()
+    {
+        Program.RunOnMainThread(() => CaptureReleased?.Invoke());
+    }
+    
+    /// <summary>
     /// Add a console message.
     /// </summary>
     public void AddConsoleMessage(string message, ConsoleLevel level = ConsoleLevel.Log)
