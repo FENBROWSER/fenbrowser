@@ -166,7 +166,19 @@ namespace FenBrowser.FenEngine.Layout
                     {
                         // ICB VALIDATION LOG: Verify html height >= viewport
                         string htmlTag = node?.Tag?.ToUpperInvariant() ?? "unknown";
-                        FenLogger.Log($"[ICB] ICB: {_context.ViewportWidth}x{_context.ViewportHeight} | {htmlTag}: {finalW}x{finalH}", LogCategory.Layout);
+                        
+                        // FIX: Use ActualHeight (Overflow) for the document content height
+                        // If we just use finalH, it is clamped to ViewportHeight for html { height: 100% }
+                        float documentScrollHeight = finalH;
+                        if (desiredSize.ActualHeight > finalH)
+                        {
+                            documentScrollHeight = desiredSize.ActualHeight;
+                        }
+                        
+                        // Ensure it's at least viewport height (ICB)
+                        documentScrollHeight = Math.Max(documentScrollHeight, _context.ViewportHeight);
+
+                        FenLogger.Log($"[ICB] ICB: {_context.ViewportWidth}x{_context.ViewportHeight} | {htmlTag}: {finalW}x{finalH} | ScrollHeight: {documentScrollHeight}", LogCategory.Layout);
                         if (finalH < _context.ViewportHeight)
                         {
                             FenLogger.Log($"[ICB] WARNING: Root height {finalH} < viewport {_context.ViewportHeight} - BUG!", LogCategory.Layout);
@@ -174,7 +186,7 @@ namespace FenBrowser.FenEngine.Layout
                         
                         // Optional: Dump tree for debugging
                         try { _computer.DumpLayoutTree(node); } catch { }
-                        return BuildResult(availableWidth, finalH);
+                        return BuildResult(availableWidth, documentScrollHeight);
                     }
                     return null;
                 }

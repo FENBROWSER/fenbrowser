@@ -17,6 +17,9 @@ namespace FenBrowser.FenEngine.Rendering.Css
         public string EngineName => "FenBrowser.Custom";
 
         private Dictionary<Node, CssComputed> _lastComputed;
+        
+        // Expose CSS sources for DevTools
+        public List<CssLoader.CssSource> LastSources { get; private set; }
 
         public async Task<Dictionary<Node, CssComputed>> ComputeStylesAsync(
             Element root,
@@ -33,6 +36,9 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     viewportWidth, viewportHeight, null);
                 
                 _lastComputed = result.Computed;
+                // Don't store sources - causes memory issues on complex sites like GitHub
+                // LastSources = result.Sources;
+                LastSources = null;
                 return result.Computed;
             }
             catch (Exception ex)

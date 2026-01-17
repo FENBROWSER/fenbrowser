@@ -249,10 +249,32 @@ namespace FenBrowser.FenEngine.Rendering
             if (pushedMask)
             {
                  var maskNodePop = (MaskPaintNode)node;
-                 // Apply mask using DstIn
-                 using var maskImage = SKImage.FromBitmap(maskNodePop.MaskBitmap);
-                 backend.ApplyMask(maskImage, maskNodePop.Bounds);
-                 // Pop isolation layer
+                 // SAFETY: Wrap mask bitmap access with null and disposed checks
+                 try
+                 {
+                     if (maskNodePop.MaskBitmap != null && !maskNodePop.MaskBitmap.IsNull)
+                     {
+                         // Apply mask using DstIn
+                         using var maskImage = SKImage.FromBitmap(maskNodePop.MaskBitmap);
+                         if (maskImage != null)
+                         {
+                             backend.ApplyMask(maskImage, maskNodePop.Bounds);
+                         }
+                     }
+                 }
+                 catch (ObjectDisposedException)
+                 {
+                     FenLogger.Debug($"[SkiaRenderer] Mask skipped: MaskBitmap was disposed");
+                 }
+                 catch (AccessViolationException)
+                 {
+                     FenLogger.Warn($"[SkiaRenderer] Mask skipped: AccessViolationException (native memory corruption)");
+                 }
+                 catch (Exception ex)
+                 {
+                     FenLogger.Error($"[SkiaRenderer] Mask failed: {ex.Message}");
+                 }
+                 // Pop isolation layer (always pop, even if mask failed)
                  backend.PopLayer();
             }
 
@@ -621,34 +643,69 @@ namespace FenBrowser.FenEngine.Rendering
         
         private void DrawImage(IRenderBackend backend, ImagePaintNode node)
         {
-            // Trace image drawing with clip info for debug
-            // Note: backend methods like DrawImage are abstract, we can't inspect Clip from backend simply here
-            // unless we cast or backend exposes it. 
-            // BUT SkiaRenderBackend wraps SKCanvas, we could add diagnostic there?
-            // Actually, wait, the method signature I viewed doesn't have 'canvas'.
-            // I need to modify SkiaRenderBackend or just accept that I can't easily see the clip here
-            // without casting backend.
-            
-            var skiaBackend = backend as SkiaRenderBackend;
-            string clipInfo = "N/A";
-            if (skiaBackend != null)
+            // SAFETY: Catch AccessViolationException and ObjectDisposedException from disposed/corrupted bitmaps
+            // This can happen when:
+            // 1. Image cache eviction removes a bitmap while rendering is in progress
+            // 2. GC collects a bitmap that's still referenced by a paint node
+            // 3. A bitmap was corrupted during async loading
+            try
             {
-               // Reflection or public prop? SkiaRenderBackend usually exposes Canvas?
-               // Let's assume for now just logging bounds.
-               // Actually, SkiaRenderer.cs is generic over IRenderBackend.
-               // For debugging I'll try to cast to see if I can get the canvas or tracked state.
+                FenLogger.Debug($"[SkiaRenderer] DrawImage called. Bounds={node.Bounds}, Bitmap={(node.Bitmap != null ? $"{node.Bitmap.Width}x{node.Bitmap.Height}" : "NULL")}");
+                
+                // Guard: Check bitmap validity before accessing
+                if (node.Bitmap == null) return;
+                
+                // Additional null-safety: Check if bitmap has been disposed
+                // SKBitmap.IsNull indicates if the native handle is valid
+                if (node.Bitmap.IsNull)
+                {
+                    FenLogger.Debug($"[SkiaRenderer] DrawImage skipped: Bitmap is disposed/null");
+                    return;
+                }
+                
+                // Validate bitmap dimensions to prevent divide-by-zero or invalid geometry
+                if (node.Bitmap.Width <= 0 || node.Bitmap.Height <= 0)
+                {
+                    FenLogger.Debug($"[SkiaRenderer] DrawImage skipped: Invalid bitmap dimensions");
+                    return;
+                }
+                
+                SKRect srcRect = node.SourceRect ?? new SKRect(0, 0, node.Bitmap.Width, node.Bitmap.Height);
+                SKRect destRect = CalculateDestRect(node.Bounds, srcRect, node.ObjectFit);
+                
+                FenLogger.Debug($"[SkiaRenderer] DrawImage destRect={destRect}");
+                
+                // CRITICAL: Wrap SKImage.FromBitmap in try-catch as this is where AccessViolationException
+                // typically occurs when the underlying native bitmap memory is corrupted
+                SKImage image = null;
+                try
+                {
+                    image = SKImage.FromBitmap(node.Bitmap);
+                    if (image != null)
+                    {
+                        backend.DrawImage(image, destRect);
+                    }
+                }
+                finally
+                {
+                    image?.Dispose();
+                }
             }
-            
-            FenLogger.Debug($"[SkiaRenderer] DrawImage called. Bounds={node.Bounds}, Bitmap={(node.Bitmap != null ? $"{node.Bitmap.Width}x{node.Bitmap.Height}" : "NULL")}");
-            if (node.Bitmap == null) return;
-            
-            SKRect srcRect = node.SourceRect ?? new SKRect(0, 0, node.Bitmap.Width, node.Bitmap.Height);
-            SKRect destRect = CalculateDestRect(node.Bounds, srcRect, node.ObjectFit);
-            
-            FenLogger.Debug($"[SkiaRenderer] DrawImage destRect={destRect}");
-            
-            using var image = SKImage.FromBitmap(node.Bitmap);
-            backend.DrawImage(image, destRect);
+            catch (ObjectDisposedException)
+            {
+                // Bitmap was disposed between check and use - safe to skip
+                FenLogger.Debug($"[SkiaRenderer] DrawImage skipped: Bitmap was disposed");
+            }
+            catch (AccessViolationException)
+            {
+                // Native memory was corrupted or freed - can't recover, just skip this image
+                FenLogger.Warn($"[SkiaRenderer] DrawImage skipped: AccessViolationException (native memory corruption)");
+            }
+            catch (Exception ex)
+            {
+                // Catch any other unexpected errors to prevent renderer crash
+                FenLogger.Error($"[SkiaRenderer] DrawImage failed: {ex.Message}");
+            }
         }
 
         // Removed DrawDiagnosticPlaceholder
