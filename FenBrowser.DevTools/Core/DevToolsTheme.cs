@@ -75,6 +75,11 @@ public static class DevToolsTheme
     public const float TabHeight = 30f;
     public const float ToolbarHeight = 28f;
     
+    // Tree view constants
+    public const float IndentWidth = 20f;           // Width per depth level
+    public const float TreeArrowSize = 6f;          // Size of expand/collapse arrows
+    public static readonly SKColor TreeGuide = SKColor.Parse("#3C3C3C"); // Vertical guide lines
+    
     // Create common paints
     public static SKPaint CreateTextPaint(SKColor? color = null, float size = FontSizeNormal, bool bold = false)
     {
