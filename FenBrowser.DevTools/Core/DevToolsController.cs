@@ -4,10 +4,21 @@ using FenBrowser.Core.Dom;
 namespace FenBrowser.DevTools.Core;
 
 /// <summary>
+/// Dock position for DevTools panel.
+/// </summary>
+public enum DockPosition
+{
+    Bottom,
+    Right,
+    Undocked
+}
+
+/// <summary>
 /// Main controller for DevTools.
 /// Manages tabs, layout, and panel switching.
+/// 10/10 Spec: Keyboard shortcuts, docking, element picker, IDisposable.
 /// </summary>
-public class DevToolsController
+public class DevToolsController : IDisposable
 {
     private readonly List<IDevToolsPanel> _panels = new();
     private IDevToolsPanel? _activePanel;
@@ -40,18 +51,42 @@ public class DevToolsController
     public float MinHeight { get; } = 200f;
     public float MaxHeight { get; } = 600f;
     
+    // --- 10/10: Docking Support ---
+    private DockPosition _dock = DockPosition.Bottom;
+    public DockPosition Dock
+    {
+        get => _dock;
+        set
+        {
+            if (_dock != value)
+            {
+                _dock = value;
+                DockChanged?.Invoke(value);
+                LayoutChanged?.Invoke();
+            }
+        }
+    }
+    
+    // --- 10/10: Element Picker Mode ---
+    public bool IsElementPickerActive { get; private set; }
+    
     // Events
     public event Action? Invalidated;
     public event Action? CloseRequested;
     public event Action? LayoutChanged;
+    public event Action<DockPosition>? DockChanged;
+    public event Action<bool>? ElementPickerChanged;
     
     // Selected element (for Elements panel)
     private Element? _selectedElement;
+    
+    private bool _disposed;
     
     public DevToolsController()
     {
         // Panels will be added by RegisterPanel
     }
+
     
     /// <summary>
     /// Register a panel (tab) in DevTools.
@@ -381,4 +416,118 @@ public class DevToolsController
     {
         return IsVisible && _bounds.Contains(x, y);
     }
+    
+    // --- 10/10: Keyboard Shortcuts ---
+    
+    /// <summary>
+    /// Handle keyboard shortcuts for DevTools.
+    /// Returns true if the shortcut was handled.
+    /// </summary>
+    public bool HandleKeyboardShortcut(int keyCode, bool ctrl, bool shift, bool alt)
+    {
+        if (!IsVisible) return false;
+        
+        // Ctrl+1/2/3/... for panel switching
+        if (ctrl && !shift && !alt && keyCode >= 49 && keyCode <= 57)
+        {
+            int index = keyCode - 49; // 1 = index 0, 2 = index 1, etc.
+            if (index < _panels.Count)
+            {
+                ActivatePanel(index);
+                return true;
+            }
+        }
+        
+        // Ctrl+Shift+C for element picker
+        if (ctrl && shift && keyCode == 67)
+        {
+            ToggleElementPicker();
+            return true;
+        }
+        
+        // Ctrl+Shift+D for dock position toggle
+        if (ctrl && shift && keyCode == 68)
+        {
+            CycleDockPosition();
+            return true;
+        }
+        
+        return false;
+    }
+    
+    /// <summary>
+    /// Toggle element picker mode.
+    /// </summary>
+    public void ToggleElementPicker()
+    {
+        IsElementPickerActive = !IsElementPickerActive;
+        ElementPickerChanged?.Invoke(IsElementPickerActive);
+        Invalidated?.Invoke();
+    }
+    
+    /// <summary>
+    /// Cycle through dock positions.
+    /// </summary>
+    public void CycleDockPosition()
+    {
+        Dock = Dock switch
+        {
+            DockPosition.Bottom => DockPosition.Right,
+            DockPosition.Right => DockPosition.Undocked,
+            DockPosition.Undocked => DockPosition.Bottom,
+            _ => DockPosition.Bottom
+        };
+    }
+    
+    // --- 10/10: IDisposable Implementation ---
+    
+    /// <summary>
+    /// Get panel by index.
+    /// </summary>
+    public IDevToolsPanel? GetPanel(int index)
+    {
+        return index >= 0 && index < _panels.Count ? _panels[index] : null;
+    }
+    
+    /// <summary>
+    /// Get panel by type.
+    /// </summary>
+    public T? GetPanel<T>() where T : class, IDevToolsPanel
+    {
+        foreach (var panel in _panels)
+        {
+            if (panel is T typed) return typed;
+        }
+        return null;
+    }
+    
+    /// <summary>
+    /// Number of registered panels.
+    /// </summary>
+    public int PanelCount => _panels.Count;
+    
+    /// <summary>
+    /// Index of active panel.
+    /// </summary>
+    public int ActivePanelIndex => _activePanelIndex;
+    
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        
+        foreach (var panel in _panels)
+        {
+            if (panel is IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
+        }
+        _panels.Clear();
+        _activePanel = null;
+        _host = null;
+        
+        GC.SuppressFinalize(this);
+    }
 }
+

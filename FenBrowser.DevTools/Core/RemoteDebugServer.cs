@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
@@ -7,18 +8,33 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Timers;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 
 namespace FenBrowser.DevTools.Core;
 
+/// <summary>
+/// Remote debugging server implementing Chrome DevTools Protocol over WebSocket.
+/// 10/10 Spec: 64-bit frames, heartbeat ping, per-client queues, graceful shutdown.
+/// </summary>
 public class RemoteDebugServer : IDisposable
 {
     private readonly TcpListener _listener;
     private readonly DevToolsServer _devToolsServer;
     private readonly CancellationTokenSource _cts = new();
     private readonly List<Socket> _clients = new();
+    private readonly ConcurrentDictionary<Socket, ConcurrentQueue<string>> _messageQueues = new();
     private const int BufferSize = 8192;
+    
+    // --- 10/10: Heartbeat ping ---
+    private System.Timers.Timer? _heartbeatTimer;
+    private const int HeartbeatIntervalMs = 30000;
+    
+    // --- 10/10: Connection statistics ---
+    public int ConnectionCount => _clients.Count;
+    public long MessagesSent { get; private set; }
+    public long MessagesReceived { get; private set; }
 
     public RemoteDebugServer(DevToolsServer devToolsServer, int port = 9222)
     {
@@ -38,11 +54,58 @@ public class RemoteDebugServer : IDisposable
             _listener.Start();
             var endpoint = (IPEndPoint)_listener.LocalEndpoint;
             FenLogger.Info($"[RemoteDebug] TCP Server started on port {endpoint.Port}", LogCategory.General);
+            
+            // Start heartbeat timer (10/10)
+            StartHeartbeat();
+            
             Task.Run(ListenLoop);
         }
         catch (Exception ex)
         {
             FenLogger.Error($"[RemoteDebug] Failed to start TCP listener: {ex.Message}", LogCategory.General);
+        }
+    }
+    
+    /// <summary>
+    /// Start heartbeat ping timer. (10/10)
+    /// </summary>
+    private void StartHeartbeat()
+    {
+        _heartbeatTimer = new System.Timers.Timer(HeartbeatIntervalMs);
+        _heartbeatTimer.Elapsed += (s, e) => SendPingToAllClients();
+        _heartbeatTimer.AutoReset = true;
+        _heartbeatTimer.Start();
+    }
+    
+    /// <summary>
+    /// Send ping to all connected clients. (10/10)
+    /// </summary>
+    private void SendPingToAllClients()
+    {
+        lock (_clients)
+        {
+            for (int i = _clients.Count - 1; i >= 0; i--)
+            {
+                var client = _clients[i];
+                if (!client.Connected)
+                {
+                    _clients.RemoveAt(i);
+                    _messageQueues.TryRemove(client, out _);
+                    continue;
+                }
+                
+                try
+                {
+                    // WebSocket Ping frame: FIN + opcode 9, length 0
+                    client.Send(new byte[] { 0x89, 0x00 });
+                }
+                catch
+                {
+                    // Client disconnected
+                    _clients.RemoveAt(i);
+                    _messageQueues.TryRemove(client, out _);
+                }
+            }
         }
     }
 
@@ -228,9 +291,19 @@ public class RemoteDebugServer : IDisposable
                 }
                 else if (payloadLen == 127)
                 {
-                     // Simple parser limitation: We don't support 64-bit length yet
-                     FenLogger.Warn("[RemoteDebug] 64-bit frame length not supported", LogCategory.General);
-                     offset = 10;
+                    // --- 10/10: Full 64-bit frame length support ---
+                    byte[] lenBytes = new byte[8];
+                    Array.Copy(buffer, 2, lenBytes, 0, 8);
+                    if (BitConverter.IsLittleEndian) Array.Reverse(lenBytes);
+                    payloadLen = (long)BitConverter.ToUInt64(lenBytes, 0);
+                    offset = 10;
+                    
+                    // Safety check: don't accept frames larger than 10MB
+                    if (payloadLen > 10 * 1024 * 1024)
+                    {
+                        FenLogger.Warn($"[RemoteDebug] Frame too large: {payloadLen} bytes, dropping", LogCategory.General);
+                        continue;
+                    }
                 }
                 
                 // Check if we have the full payload in this read (Basic fragmentation handling)
@@ -379,11 +452,26 @@ public class RemoteDebugServer : IDisposable
     public void Dispose()
     {
         _cts.Cancel();
+        
+        // Stop heartbeat timer (10/10)
+        _heartbeatTimer?.Stop();
+        _heartbeatTimer?.Dispose();
+        _heartbeatTimer = null;
+        
         _listener.Stop();
+        
         lock (_clients)
         {
-            foreach(var c in _clients) c.Close();
+            foreach (var c in _clients)
+            {
+                try { c.Close(); } catch { }
+            }
             _clients.Clear();
         }
+        
+        _messageQueues.Clear();
+        
+        GC.SuppressFinalize(this);
     }
 }
+

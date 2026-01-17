@@ -71,6 +71,26 @@ public class ElementsPanel : DevToolsPanelBase
     // Property toggle state (disabled properties)
     private HashSet<string> _disabledProperties = new();
     
+    // --- 10/10: Search state ---
+    private string _searchQuery = "";
+    private List<int> _searchResults = new();
+    private int _searchCurrentIndex = 0;
+    private bool _searchBoxFocused = false;
+    
+    // --- 10/10: Breadcrumb trail ---
+    private List<int> _breadcrumbPath = new();
+    
+    // --- 10/10: Copy selector support ---
+    private string? _lastCopiedSelector = null;
+    
+    // --- Double-click editing support ---
+    private DateTime _lastClickTime = DateTime.MinValue;
+    private int? _lastClickedNodeId = null;
+    private bool _editingElementAsHtml = false;
+    private int? _editingElementNodeId = null;
+    private string _editingElementHtml = "";
+
+    
     protected override void OnHostChanged()
     {
         if (Host != null)
@@ -419,22 +439,59 @@ public class ElementsPanel : DevToolsPanelBase
     {
         float y = bounds.Top + DevToolsTheme.PaddingNormal;
         
+        // Create paints
         using var tagPaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.SyntaxTag);
         using var attrNamePaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.SyntaxAttribute);
         using var attrValuePaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.SyntaxString);
         using var punctPaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.TextSecondary);
+        using var guidePaint = DevToolsTheme.CreateStrokePaint(DevToolsTheme.TreeGuide, 1f);
+        
+        // Constants for layout
+        const float leftMargin = 24f;  // Space for arrows
+        float indentWidth = DevToolsTheme.IndentWidth;
         
         for (int i = 0; i < _flattenedNodes.Count; i++)
         {
             var node = _flattenedNodes[i];
-            float itemY = y + i * DevToolsTheme.ItemHeight - _treeScrollY;
+            // Note: Canvas is already translated by -_treeScrollY, so we don't subtract it here
+            float itemY = y + i * DevToolsTheme.ItemHeight;
             
             // Skip if outside visible area
-            if (itemY + DevToolsTheme.ItemHeight < bounds.Top) continue;
-            if (itemY > bounds.Bottom) break;
+            // Since canvas is translated, itemY appears at (itemY - scrollY) on screen
+            float screenY = itemY - _treeScrollY;
+            if (screenY + DevToolsTheme.ItemHeight < bounds.Top) continue;
+            if (screenY > bounds.Bottom) break;
             
-            // Add base margin for arrows
-            float x = bounds.Left + 20 + node.Depth * 16f;
+            // Calculate x position with consistent indentation
+            float baseX = bounds.Left + leftMargin;
+            float nodeX = baseX + node.Depth * indentWidth;
+            
+            // Draw tree guide lines (vertical + horizontal connector)
+            for (int d = 0; d < node.Depth; d++)
+            {
+                float guideX = baseX + d * indentWidth + indentWidth / 2;
+                
+                // Check if we need to draw a vertical line at this depth
+                // (we need it if there are siblings after this node at this depth)
+                bool hasSiblingBelow = HasSiblingBelowAtDepth(i, d);
+                
+                if (hasSiblingBelow || d == node.Depth - 1)
+                {
+                    float lineTop = itemY;
+                    float lineBottom = itemY + DevToolsTheme.ItemHeight;
+                    
+                    // For the immediate parent depth, only draw to middle then across
+                    if (d == node.Depth - 1)
+                    {
+                        lineBottom = itemY + DevToolsTheme.ItemHeight / 2;
+                        // Draw horizontal connector
+                        float connectorEnd = nodeX - 4;
+                        canvas.DrawLine(guideX, lineBottom, connectorEnd, lineBottom, guidePaint);
+                    }
+                    
+                    canvas.DrawLine(guideX, lineTop, guideX, lineBottom, guidePaint);
+                }
+            }
             
             // Draw selection / hover background (only for opening tags/text)
             if (!node.IsClosingTag)
@@ -452,6 +509,7 @@ public class ElementsPanel : DevToolsPanelBase
             }
             
             float textY = itemY + DevToolsTheme.ItemHeight / 2 + 4;
+            float x = nodeX;
 
             // Draw opening tag, text, or closing tag
             if (node.IsClosingTag)
@@ -465,55 +523,65 @@ public class ElementsPanel : DevToolsPanelBase
                 continue;
             }
 
-            // Draw expand/collapse arrow (ONLY for elements)
+            // Draw expand/collapse arrow (ONLY for elements with children)
             if (node.HasChildren && node.Node.NodeType == 1)
             {
-                using var arrowPaint = DevToolsTheme.CreateFillPaint(node.Node.NodeId == _selectedNodeId ? DevToolsTheme.TextPrimary : DevToolsTheme.TextSecondary);
+                using var arrowPaint = DevToolsTheme.CreateFillPaint(
+                    node.Node.NodeId == _selectedNodeId ? DevToolsTheme.TextPrimary : DevToolsTheme.TextSecondary);
                 using var arrowPath = new SKPath();
                 
-                float centerX = x - 12; // More space for even larger hit area
+                float arrowSize = DevToolsTheme.TreeArrowSize;
+                float centerX = nodeX - 10;
                 float centerY = itemY + DevToolsTheme.ItemHeight / 2;
                 
                 if (node.IsExpanded)
                 {
-                    // Down triangle
-                    arrowPath.MoveTo(centerX - 6, centerY - 4);
-                    arrowPath.LineTo(centerX + 6, centerY - 4);
-                    arrowPath.LineTo(centerX, centerY + 5);
+                    // Down triangle (expanded)
+                    arrowPath.MoveTo(centerX - arrowSize/2, centerY - arrowSize/3);
+                    arrowPath.LineTo(centerX + arrowSize/2, centerY - arrowSize/3);
+                    arrowPath.LineTo(centerX, centerY + arrowSize/2);
                 }
                 else
                 {
-                    // Right triangle
-                    arrowPath.MoveTo(centerX - 4, centerY - 6);
-                    arrowPath.LineTo(centerX - 4, centerY + 6);
-                    arrowPath.LineTo(centerX + 5, centerY);
+                    // Right triangle (collapsed)
+                    arrowPath.MoveTo(centerX - arrowSize/3, centerY - arrowSize/2);
+                    arrowPath.LineTo(centerX - arrowSize/3, centerY + arrowSize/2);
+                    arrowPath.LineTo(centerX + arrowSize/2, centerY);
                 }
                 arrowPath.Close();
                 canvas.DrawPath(arrowPath, arrowPaint);
             }
             
-            if (node.Node.NodeType == 3) // Text
+            // Render based on node type
+            if (node.Node.NodeType == 3) // Text node
             {
                 if (_editingNodeId == node.Node.NodeId)
                 {
                     // Draw edit background
                     float textWidth = attrValuePaint.MeasureText(_editingNodeValue);
-                    var editRect = new SKRect(x - 2, itemY + 4, x + textWidth + 8, itemY + DevToolsTheme.ItemHeight - 4);
-                    using var editBg = DevToolsTheme.CreateFillPaint(new SKColor(50, 50, 50));
-                    canvas.DrawRect(editRect, editBg);
+                    var editRect = new SKRect(x - 2, itemY + 4, x + textWidth + 10, itemY + DevToolsTheme.ItemHeight - 4);
+                    using var editBg = DevToolsTheme.CreateFillPaint(new SKColor(40, 44, 52));
+                    using var editBorder = DevToolsTheme.CreateStrokePaint(DevToolsTheme.TabBorder);
+                    canvas.DrawRoundRect(editRect, 2, 2, editBg);
+                    canvas.DrawRoundRect(editRect, 2, 2, editBorder);
                     
                     canvas.DrawText(_editingNodeValue, x, textY, attrValuePaint);
                     
                     // Draw cursor
                     if (_cursorBlink)
-                        canvas.DrawLine(x + textWidth, textY - 12, x + textWidth, textY + 2, attrValuePaint);
+                    {
+                        using var cursorPaint = DevToolsTheme.CreateStrokePaint(DevToolsTheme.TextPrimary);
+                        canvas.DrawLine(x + textWidth + 1, textY - 10, x + textWidth + 1, textY + 3, cursorPaint);
+                    }
                 }
                 else
                 {
-                    canvas.DrawText("\"" + node.Node.NodeValue + "\"", x, textY, attrValuePaint);
+                    string displayText = node.Node.NodeValue ?? "";
+                    if (displayText.Length > 60) displayText = displayText.Substring(0, 57) + "...";
+                    canvas.DrawText("\"" + displayText + "\"", x, textY, attrValuePaint);
                 }
             }
-            else
+            else // Element node
             {
                 // Opening bracket
                 canvas.DrawText("<", x, textY, punctPaint);
@@ -524,11 +592,18 @@ public class ElementsPanel : DevToolsPanelBase
                 canvas.DrawText(tagName, x, textY, tagPaint);
                 x += tagPaint.MeasureText(tagName);
                 
-                // Attributes
+                // Attributes (limit to avoid overflow)
                 if (node.Node.Attributes != null)
                 {
+                    int attrCount = 0;
                     foreach (var attr in node.Node.Attributes)
                     {
+                        if (attrCount >= 3 && node.Node.Attributes.Count > 4)
+                        {
+                            canvas.DrawText($" ...+{node.Node.Attributes.Count - 3} more", x, textY, punctPaint);
+                            break;
+                        }
+                        
                         string attrName = " " + attr.Key;
                         canvas.DrawText(attrName, x, textY, attrNamePaint);
                         x += attrNamePaint.MeasureText(attrName);
@@ -537,12 +612,14 @@ public class ElementsPanel : DevToolsPanelBase
                         x += punctPaint.MeasureText("=\"");
                         
                         string attrValue = attr.Value;
-                        if (attrValue.Length > 30) attrValue = attrValue.Substring(0, 27) + "...";
+                        if (attrValue.Length > 25) attrValue = attrValue.Substring(0, 22) + "...";
                         canvas.DrawText(attrValue, x, textY, attrValuePaint);
                         x += attrValuePaint.MeasureText(attrValue);
                         
                         canvas.DrawText("\"", x, textY, punctPaint);
                         x += punctPaint.MeasureText("\"");
+                        
+                        attrCount++;
                     }
                 }
                 
@@ -550,7 +627,7 @@ public class ElementsPanel : DevToolsPanelBase
                 if (!node.HasChildren || !node.IsExpanded)
                 {
                     if (node.HasChildren)
-                        canvas.DrawText(">...</" + tagName + ">", x, textY, punctPaint);
+                        canvas.DrawText(">…</" + tagName + ">", x, textY, punctPaint);
                     else
                         canvas.DrawText(" />", x, textY, punctPaint);
                 }
@@ -562,6 +639,21 @@ public class ElementsPanel : DevToolsPanelBase
         }
 
         _treeMaxScrollY = Math.Max(0, (y + _flattenedNodes.Count * DevToolsTheme.ItemHeight) - bounds.Bottom);
+    }
+    
+    /// <summary>
+    /// Check if there's a sibling node below at the specified depth.
+    /// Used for drawing tree guide lines.
+    /// </summary>
+    private bool HasSiblingBelowAtDepth(int currentIndex, int depth)
+    {
+        for (int i = currentIndex + 1; i < _flattenedNodes.Count; i++)
+        {
+            var node = _flattenedNodes[i];
+            if (node.Depth < depth) return false;  // Gone past the subtree
+            if (node.Depth == depth && !node.IsClosingTag) return true;  // Found sibling
+        }
+        return false;
     }
     
     private void DrawSplitter(SKCanvas canvas, SKRect bounds)
@@ -1122,28 +1214,19 @@ public class ElementsPanel : DevToolsPanelBase
     
     public override void OnMouseMove(float x, float y)
     {
-        // 1. Determine splitter hit - consistent 10px hit area
-        bool isOverSplitter = Math.Abs(x - _splitterX) <= 5; 
-        
+        // 1. Handle dragging first
         if (_draggingSplitter)
         {
              _splitterX = Math.Clamp(x, Bounds.Left + MIN_PANEL_WIDTH, Bounds.Right - MIN_PANEL_WIDTH);
              Host?.RequestCursorChange(CursorType.HorizontalResize);
              Invalidate();
-             return; // Dragging has absolute priority
+             return;
         }
 
-        // 2. Set cursor based on hover
-        if (isOverSplitter)
-        {
-            Host?.RequestCursorChange(CursorType.HorizontalResize);
-        }
-        else
-        {
-            Host?.RequestCursorChange(CursorType.Default);
-        }
+        // 2. Always use default cursor when not dragging
+        Host?.RequestCursorChange(CursorType.Default);
 
-        // FenBrowser.Core.FenLogger.Info($"[Elements] MouseMove x={x:F1}, y={y:F1}, splitterX={_splitterX:F1}, isOver={isOverSplitter}, dragging={_draggingSplitter}, bounds={Bounds}", FenBrowser.Core.Logging.LogCategory.General);
+        // FenBrowser.Core.FenLogger.Info($"[Elements] MouseMove x={x:F1}, y={y:F1}, splitterX={_splitterX:F1}, dragging={_draggingSplitter}, bounds={Bounds}", FenBrowser.Core.Logging.LogCategory.General);
 
         // 3. Handle Tree hover
         if (x < _splitterX)
@@ -1184,6 +1267,7 @@ public class ElementsPanel : DevToolsPanelBase
         if (Math.Abs(x - _splitterX) <= 5)
         {
             _draggingSplitter = true;
+            Host?.SetCapture();  // Capture mouse to receive all events during drag
             return true;
         }
         
@@ -1196,9 +1280,12 @@ public class ElementsPanel : DevToolsPanelBase
             {
                 var node = _flattenedNodes[index];
                 
-                // Check if clicked on arrow - larger hit area (30px)
-                float baseNodeX = Bounds.Left + 20 + node.Depth * 16f;
-                float arrowCenterX = baseNodeX - 12;
+                // Calculate node X position using new constants
+                float baseX = Bounds.Left + 24f;  // leftMargin from DrawDomTree
+                float nodeX = baseX + node.Depth * DevToolsTheme.IndentWidth;
+                float arrowCenterX = nodeX - 10;
+                
+                // Check if clicked on arrow (15px hit area)
                 if (Math.Abs(x - arrowCenterX) <= 15 && node.HasChildren)
                 {
                     // Toggle expand
@@ -1228,15 +1315,27 @@ public class ElementsPanel : DevToolsPanelBase
                 }
                 else
                 {
-                     // Select node
+                    // Check for double-click on element to enter edit mode
+                    bool isDoubleClick = (DateTime.Now - _lastClickTime) < TimeSpan.FromMilliseconds(400)
+                                       && _lastClickedNodeId == node.Node.NodeId;
+                    
+                    _lastClickTime = DateTime.Now;
+                    _lastClickedNodeId = node.Node.NodeId;
+                    
+                    // Select node
                     _selectedNodeId = node.Node.NodeId;
-                    _stylesScrollY = 0; // Reset styles scroll
+                    _stylesScrollY = 0;
                     _computedStyleData = null;
                     _matchedStyleData = null;
                     _ = FetchStylesAsync(node.Node.NodeId);
                     
-                    // Click on text node enters edit mode
-                    if (node.Node.NodeType == 3)
+                    // Double-click on element enters "Edit as HTML" mode
+                    if (isDoubleClick && node.Node.NodeType == 1 && !node.IsClosingTag)
+                    {
+                        StartEditAsHtml(node.Node.NodeId);
+                    }
+                    // Single click on text node enters edit mode
+                    else if (node.Node.NodeType == 3)
                     {
                         _editingNodeId = node.Node.NodeId;
                         _editingNodeValue = node.Node.NodeValue ?? "";
@@ -1607,8 +1706,12 @@ public class ElementsPanel : DevToolsPanelBase
         if (_draggingSplitter)
         {
             _draggingSplitter = false;
-            Host?.RequestCursorChange(CursorType.Default);
+            Host?.ReleaseCapture();  // Release capture after drag
+            Invalidate();
         }
+        
+        // Always reset cursor on mouse up
+        Host?.RequestCursorChange(CursorType.Default);
     }
     
     public override void OnMouseWheel(float x, float y, float deltaX, float deltaY)
@@ -1633,8 +1736,299 @@ public class ElementsPanel : DevToolsPanelBase
         return index >= 0 && index < _flattenedNodes.Count ? index : -1;
     }
     
+    // --- 10/10: Search functionality ---
+    
+    /// <summary>
+    /// Search for nodes matching the query (tag name, id, class, or text content).
+    /// </summary>
+    public void Search(string query)
+    {
+        _searchQuery = query;
+        _searchResults.Clear();
+        _searchCurrentIndex = 0;
+        
+        if (string.IsNullOrWhiteSpace(query)) return;
+        
+        var lowerQuery = query.ToLowerInvariant();
+        foreach (var kv in _nodeMap)
+        {
+            var node = kv.Value;
+            bool matches = false;
+            
+            // Match tag name
+            if (node.NodeName?.ToLowerInvariant().Contains(lowerQuery) == true)
+                matches = true;
+            
+            // Match id
+            if (node.Attributes?.TryGetValue("id", out var id) == true && 
+                id.ToLowerInvariant().Contains(lowerQuery))
+                matches = true;
+            
+            // Match class
+            if (node.Attributes?.TryGetValue("class", out var cls) == true && 
+                cls.ToLowerInvariant().Contains(lowerQuery))
+                matches = true;
+            
+            // Match text content
+            if (node.NodeValue?.ToLowerInvariant().Contains(lowerQuery) == true)
+                matches = true;
+            
+            if (matches) _searchResults.Add(kv.Key);
+        }
+        
+        if (_searchResults.Count > 0)
+        {
+            NavigateToSearchResult(0);
+        }
+        
+        Invalidate();
+    }
+    
+    /// <summary>
+    /// Navigate to search result by index.
+    /// </summary>
+    public void NavigateToSearchResult(int index)
+    {
+        if (_searchResults.Count == 0) return;
+        
+        _searchCurrentIndex = Math.Clamp(index, 0, _searchResults.Count - 1);
+        int nodeId = _searchResults[_searchCurrentIndex];
+        
+        // Expand parents
+        ExpandParentsOfNode(nodeId);
+        
+        // Select and scroll to node
+        SelectNode(nodeId);
+    }
+    
+    /// <summary>
+    /// Go to next search result.
+    /// </summary>
+    public void NextSearchResult() => NavigateToSearchResult(_searchCurrentIndex + 1);
+    
+    /// <summary>
+    /// Go to previous search result.
+    /// </summary>
+    public void PreviousSearchResult() => NavigateToSearchResult(_searchCurrentIndex - 1);
+    
+    private void ExpandParentsOfNode(int nodeId)
+    {
+        if (!_nodeMap.TryGetValue(nodeId, out var node)) return;
+        
+        int? parentId = node.ParentId;
+        while (parentId.HasValue && _nodeMap.TryGetValue(parentId.Value, out var parent))
+        {
+            _expandedNodes.Add(parentId.Value);
+            parentId = parent.ParentId;
+        }
+        
+        RefreshFlattenedTree();
+    }
+    
+    // --- 10/10: Breadcrumb trail ---
+    
+    /// <summary>
+    /// Get the path from root to the specified node.
+    /// </summary>
+    public List<int> GetNodePath(int nodeId)
+    {
+        var path = new List<int>();
+        int? current = nodeId;
+        
+        while (current.HasValue && _nodeMap.TryGetValue(current.Value, out var node))
+        {
+            path.Insert(0, current.Value);
+            current = node.ParentId;
+        }
+        
+        return path;
+    }
+    
+    /// <summary>
+    /// Update breadcrumb path for selected node.
+    /// </summary>
+    private void UpdateBreadcrumbs()
+    {
+        _breadcrumbPath = _selectedNodeId.HasValue ? GetNodePath(_selectedNodeId.Value) : new List<int>();
+    }
+    
+    // --- 10/10: CSS Selector generation ---
+    
+    /// <summary>
+    /// Generate a unique CSS selector for the specified node.
+    /// </summary>
+    public string GenerateCssSelector(int nodeId)
+    {
+        var path = new List<string>();
+        int? current = nodeId;
+        
+        while (current.HasValue && _nodeMap.TryGetValue(current.Value, out var node))
+        {
+            // Stop at document or html
+            if (node.NodeType == 9 || node.NodeName.ToLowerInvariant() == "html")
+                break;
+            
+            string selector = node.NodeName.ToLowerInvariant();
+            
+            // Prefer id if available (stops the chain)
+            if (node.Attributes?.TryGetValue("id", out var id) == true && !string.IsNullOrEmpty(id))
+            {
+                path.Insert(0, "#" + id);
+                break;
+            }
+            
+            // Add class if available
+            if (node.Attributes?.TryGetValue("class", out var cls) == true && !string.IsNullOrEmpty(cls))
+            {
+                var firstClass = cls.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+                if (!string.IsNullOrEmpty(firstClass))
+                    selector += "." + firstClass;
+            }
+            
+            path.Insert(0, selector);
+            current = node.ParentId;
+        }
+        
+        return string.Join(" > ", path);
+    }
+    
+    /// <summary>
+    /// Copy CSS selector for selected node to clipboard.
+    /// </summary>
+    public void CopySelectedSelector()
+    {
+        if (_selectedNodeId.HasValue)
+        {
+            _lastCopiedSelector = GenerateCssSelector(_selectedNodeId.Value);
+            Host?.CopyToClipboard(_lastCopiedSelector);
+        }
+    }
+    
+    private void SelectNode(int nodeId)
+    {
+        _selectedNodeId = nodeId;
+        UpdateBreadcrumbs();
+        _ = FetchStylesAsync(nodeId);
+        _ = SendHighlightCommand(nodeId);
+        Invalidate();
+    }
+    
+    // --- Edit as HTML functionality ---
+    
+    /// <summary>
+    /// Start editing an element as HTML.
+    /// </summary>
+    private void StartEditAsHtml(int nodeId)
+    {
+        if (!_nodeMap.TryGetValue(nodeId, out var node)) return;
+        
+        _editingElementAsHtml = true;
+        _editingElementNodeId = nodeId;
+        _editingElementHtml = GenerateOuterHtml(node);
+        _cursorBlink = true;
+        _lastBlink = DateTime.Now;
+        Invalidate();
+    }
+    
+    /// <summary>
+    /// Generate outerHTML for a DOM node.
+    /// </summary>
+    private string GenerateOuterHtml(DomNodeDto node)
+    {
+        if (node.NodeType == 3) // Text node
+            return node.NodeValue ?? "";
+        
+        if (node.NodeType == 8) // Comment
+            return $"<!--{node.NodeValue}-->";
+        
+        var sb = new System.Text.StringBuilder();
+        string tagName = node.NodeName.ToLower();
+        
+        sb.Append('<');
+        sb.Append(tagName);
+        
+        if (node.Attributes != null)
+        {
+            foreach (var attr in node.Attributes)
+            {
+                sb.Append(' ');
+                sb.Append(attr.Key);
+                sb.Append("=\"");
+                sb.Append(System.Web.HttpUtility.HtmlEncode(attr.Value));
+                sb.Append('"');
+            }
+        }
+        
+        // Self-closing tags
+        if (node.ChildNodeCount == 0 && IsSelfClosingTag(tagName))
+        {
+            sb.Append(" />");
+            return sb.ToString();
+        }
+        
+        sb.Append('>');
+        
+        // Children (simplified - just add placeholder if has children)
+        if (node.ChildNodeCount > 0)
+        {
+            sb.Append("...");
+        }
+        
+        sb.Append("</");
+        sb.Append(tagName);
+        sb.Append('>');
+        
+        return sb.ToString();
+    }
+    
+    private bool IsSelfClosingTag(string tagName)
+    {
+        return tagName switch
+        {
+            "br" or "hr" or "img" or "input" or "meta" or "link" or 
+            "area" or "base" or "col" or "embed" or "source" or "track" or "wbr" => true,
+            _ => false
+        };
+    }
+    
+    /// <summary>
+    /// Apply HTML edit changes.
+    /// </summary>
+    private async Task ApplyHtmlEditAsync()
+    {
+        if (_editingElementNodeId == null || Host == null) return;
+        
+        int nodeId = _editingElementNodeId.Value;
+        string html = _editingElementHtml;
+        
+        _editingElementAsHtml = false;
+        _editingElementNodeId = null;
+        Invalidate();
+        
+        try
+        {
+            var request = new ProtocolRequest<object>
+            {
+                Id = 1006,
+                Method = "DOM.setOuterHTML",
+                Params = new { nodeId = nodeId, outerHTML = html }
+            };
+            
+            await Host.SendProtocolCommandAsync(JsonSerializer.Serialize(request, ProtocolJson.Options));
+            
+            // Refresh tree after edit
+            await RefreshTreeAsync();
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.FenLogger.Error($"[ElementsPanel] setOuterHTML error: {ex.Message}", LogCategory.General);
+        }
+    }
+    
     /// <summary>
     /// Represents a flattened DOM tree node.
     /// </summary>
     private record DomTreeNode(DomNodeDto Node, int Depth, bool HasChildren, bool IsExpanded, bool IsClosingTag = false);
 }
+
+

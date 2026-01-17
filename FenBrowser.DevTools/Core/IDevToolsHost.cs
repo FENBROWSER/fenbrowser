@@ -73,6 +73,21 @@ public interface IDevToolsHost
     /// Request the browser to change the mouse cursor.
     /// </summary>
     void RequestCursorChange(CursorType cursor);
+    
+    /// <summary>
+    /// Copy text to system clipboard. (10/10)
+    /// </summary>
+    void CopyToClipboard(string text);
+    
+    /// <summary>
+    /// Set mouse capture to receive all mouse events during drag operations.
+    /// </summary>
+    void SetCapture();
+    
+    /// <summary>
+    /// Release mouse capture after drag operations.
+    /// </summary>
+    void ReleaseCapture();
 }
 
 /// <summary>
