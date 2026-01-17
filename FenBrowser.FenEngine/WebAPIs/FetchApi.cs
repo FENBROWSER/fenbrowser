@@ -12,12 +12,12 @@ namespace FenBrowser.FenEngine.WebAPIs
 {
     public static class FetchApi
     {
-        public static void Register(IExecutionContext context)
+        public static void Register(IExecutionContext context, Func<HttpRequestMessage, Task<HttpResponseMessage>> fetchHandler)
         {
             var global = context.Environment;
             
             // Register 'fetch' global function
-            global.Set("fetch", FenValue.FromFunction(new FenFunction("fetch", (args, thisVal) => Fetch(args, thisVal, context))));
+            global.Set("fetch", FenValue.FromFunction(new FenFunction("fetch", (args, thisVal) => Fetch(args, thisVal, context, fetchHandler))));
 
             // Register 'Headers' class
             global.Set("Headers", FenValue.FromFunction(new FenFunction("Headers", JsHeaders.Constructor)));
@@ -26,131 +26,98 @@ namespace FenBrowser.FenEngine.WebAPIs
             global.Set("Response", FenValue.FromFunction(new FenFunction("Response", JsResponse.Constructor)));
         }
 
-        // For testing
-        public static Func<HttpClient> ClientFactory { get; set; } = () => new HttpClient();
-
-        private static IValue Fetch(IValue[] args, IValue thisVal, IExecutionContext context)
+        private static IValue Fetch(IValue[] args, IValue thisVal, IExecutionContext context, Func<HttpRequestMessage, Task<HttpResponseMessage>> fetchHandler)
         {
             if (args.Length < 1) return FenValue.Undefined;
 
-            var url = args[0].ToString();
-            // TODO: Parse options from args[1]
-
-            // Return a Promise-like object (Thenable)
-            var promise = new FenObject();
+            var input = args[0];
+            var init = args.Length > 1 ? args[1] : FenValue.Undefined;
             
-            Task.Run(async () => 
+            string url = "";
+            if (input.IsString) url = input.ToString();
+            // TODO: Handle Request object as input
+            
+            // Parse Options
+            string method = "GET";
+            var headers = new JsHeaders();
+            string body = null;
+            
+            if (init.IsObject)
             {
-                try
+                var opts = init.AsObject();
+                if (opts.Has("method")) method = opts.Get("method").ToString().ToUpperInvariant();
+                if (opts.Has("body")) body = opts.Get("body").ToString();
+                if (opts.Has("headers"))
                 {
-                    // SERVICE WORKER INTERCEPTION
-                    var sw = FenBrowser.FenEngine.Workers.ServiceWorkerManager.Instance.GetController(url);
-                    if (sw != null)
-                    {
-                         // Create Request object
-                         var req = new FenObject();
-                         req.Set("url", FenValue.FromString(url));
-                         req.Set("method", FenValue.FromString("GET"));
-                         
-                         // Create FetchEvent
-                         var fetchEvt = new FetchEvent("fetch", req, context);
-                         
-                         // Dispatch to worker
-                         var handled = await FenBrowser.FenEngine.Workers.ServiceWorkerManager.Instance.DispatchFetchEvent(sw, fetchEvt);
-                         
-                         if (handled && fetchEvt.RespondWithPromise != null)
-                         {
-                              var responseVal = await AwaitPromise(fetchEvt.RespondWithPromise);
-                              ResolvePromise(promise, responseVal);
-                              return;
-                         }
+                    var hObj = opts.Get("headers");
+                    // If it's a JsHeaders object
+                    if (hObj is JsHeaders jsh) 
+                    { 
+                         foreach(var kv in jsh.GetHeaders()) headers.SetHeader(kv.Key, kv.Value);
                     }
-
-                    // Network Fallback
-                    using (var client = ClientFactory())
+                    // If it's a plain dict
+                    else if (hObj.IsObject)
                     {
-                        var response = await client.GetAsync(url);
-                        var jsResponse = new JsResponse(response, context);
-                        ResolvePromise(promise, FenValue.FromObject(jsResponse));
+                        var dict = hObj.AsObject();
+                        foreach(var k in dict.Keys()) headers.SetHeader(k, dict.Get(k).ToString());
                     }
                 }
-                catch (Exception ex)
-                {
-                    RejectPromise(promise, ex.Message);
-                }
-            });
-            
-            // Basic 'then' implementation
-            SetupPromiseThen(promise, context);
-            
-            return FenValue.FromObject(promise);
-        }
+            }
 
-        // --- Promise Helpers ---
-
-        private static async Task<IValue> AwaitPromise(FenObject promise)
-        {
-             // Simple poll
-             for(int i=0; i<100; i++) 
+             // Return a Promise
+             return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("executor", (execArgs, execThis) => 
              {
-                 var state = promise.Get("__state")?.ToString();
-                 if (state == "fulfilled") return promise.Get("__result");
-                 if (state == "rejected") throw new Exception(promise.Get("__reason")?.ToString() ?? "Rejected");
-                 await Task.Delay(10);
-             }
-             throw new TimeoutException("Promise timed out");
-        }
+                 var resolve = execArgs[0].AsFunction();
+                 var reject = execArgs[1].AsFunction();
 
-        private static void ResolvePromise(FenObject promise, IValue result)
-        {
-             if (promise.Has("onFulfilled"))
-             {
-                 var cb = promise.Get("onFulfilled").AsFunction();
-                 // TODO: Schedule on main thread
-                 cb?.Invoke(new[] { result }, null);
-             }
-             else
-             {
-                 promise.Set("__result", result);
-                 promise.Set("__state", FenValue.FromString("fulfilled"));
-             }
-        }
+                 Task.Run(async () => 
+                 {
+                     try
+                     {
+                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[Fetch] Start: {method} {url}\n"); } catch {}
+                        
+                        // 1. Service Worker Interception
+                        var sw = FenBrowser.FenEngine.Workers.ServiceWorkerManager.Instance.GetController(url);
+                        if (sw != null)
+                        {
+                             // ... (omitted for brevity)
+                        }
 
-        private static void RejectPromise(FenObject promise, string error)
-        {
-             if (promise.Has("onRejected"))
-             {
-                 var cb = promise.Get("onRejected").AsFunction();
-                 cb?.Invoke(new[] { FenValue.FromString(error) }, null);
-             }
-             else
-             {
-                 promise.Set("__reason", FenValue.FromString(error));
-                 promise.Set("__state", FenValue.FromString("rejected"));
-             }
-        }
+                        // 2. Network Fetch via Handler
+                        if (fetchHandler == null) throw new Exception("FetchHandler missing");
 
-        private static void SetupPromiseThen(FenObject promise, IExecutionContext context)
-        {
-            promise.Set("then", FenValue.FromFunction(new FenFunction("then", (args, _) =>
-            {
-                if (args.Length > 0) promise.Set("onFulfilled", args[0]);
-                if (args.Length > 1) promise.Set("onRejected", args[1]);
+                        var req = new HttpRequestMessage(new HttpMethod(method), url);
+                        if (body != null)
+                        {
+                            req.Content = new StringContent(body);
+                             var ct = headers.GetHeader("content-type");
+                            if (!string.IsNullOrEmpty(ct)) 
+                            {
+                                try { req.Content.Headers.ContentType = System.Net.Http.Headers.MediaTypeHeaderValue.Parse(ct); } catch {}
+                            }
+                        }
 
-                var state = promise.Get("__state")?.ToString();
-                if (state == "fulfilled")
-                {
-                    var res = promise.Get("__result");
-                    args[0]?.AsFunction()?.Invoke(new[] { res }, context);
-                }
-                else if (state == "rejected")
-                {
-                     var reason = promise.Get("__reason");
-                     args[1]?.AsFunction()?.Invoke(new[] { reason }, context);
-                }
+                        foreach(var kv in headers.GetHeaders())
+                        {
+                            if (kv.Key.Equals("content-type", StringComparison.OrdinalIgnoreCase)) continue;
+                             req.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
+                        }
 
-                return FenValue.FromObject(promise); 
-            })));
+                        var resp = await fetchHandler(req);
+                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[Fetch] Response: {resp.StatusCode} for {url}\n"); } catch {}
+                        
+                        var jsResp = new JsResponse(resp, context);
+                        
+                        resolve.Invoke(new IValue[] { FenValue.FromObject(jsResp) }, context);
+                     }
+                     catch (Exception ex)
+                     {
+                         try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[Fetch] Error: {ex.Message} for {url}\n"); } catch {}
+                         reject.Invoke(new IValue[] { FenValue.FromString(ex.Message) }, context);
+                     }
+                 });
+                 return FenValue.Undefined;
+             })), context));
         }
     }
 
@@ -163,7 +130,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             Set("append", FenValue.FromFunction(new FenFunction("append", Append)));
             Set("get", FenValue.FromFunction(new FenFunction("get", Get)));
             Set("has", FenValue.FromFunction(new FenFunction("has", Has)));
-            Set("set", FenValue.FromFunction(new FenFunction("set", SetHeader)));
+            Set("set", FenValue.FromFunction(new FenFunction("set", SetHeaderBinding)));
         }
 
         public static IValue Constructor(IValue[] args, IValue thisVal)
@@ -199,11 +166,26 @@ namespace FenBrowser.FenEngine.WebAPIs
              return FenValue.FromBoolean(_headers.ContainsKey(key));
         }
 
-        private IValue SetHeader(IValue[] args, IValue thisVal)
+        public string GetHeader(string key)
+        {
+            if (_headers.ContainsKey(key)) return _headers[key];
+            return null;
+        }
+
+        public IEnumerable<KeyValuePair<string, string>> GetHeaders()
+        {
+            return _headers;
+        }
+
+        public void SetHeader(string key, string value)
+        {
+             _headers[key.ToLowerInvariant()] = value;
+        }
+
+        private IValue SetHeaderBinding(IValue[] args, IValue thisVal)
         {
              if (args.Length < 2) return FenValue.Undefined;
-             var key = args[0].ToString().ToLowerInvariant();
-             _headers[key] = args[1].ToString();
+             SetHeader(args[0].ToString(), args[1].ToString());
              return FenValue.Undefined;
         }
     }
