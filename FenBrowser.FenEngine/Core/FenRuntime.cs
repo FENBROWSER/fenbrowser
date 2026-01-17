@@ -1035,6 +1035,147 @@ namespace FenBrowser.FenEngine.Core
             var symbolCtor = FenSymbol.CreateSymbolConstructor();
             SetGlobal("Symbol", FenValue.FromObject(symbolCtor));
 
+            // ES6 Collection constructors: Map, Set, WeakMap, WeakSet
+            SetGlobal("Map", FenValue.FromFunction(new FenFunction("Map", (args, thisVal) =>
+            {
+                var map = new FenBrowser.FenEngine.Core.Types.JsMap(_context);
+                // If iterable argument provided, populate from it
+                if (args.Length > 0 && args[0].IsObject)
+                {
+                    var iterable = args[0].AsObject();
+                    var lenVal = iterable?.Get("length");
+                    if (lenVal != null && lenVal.IsNumber)
+                    {
+                        int len = (int)lenVal.ToNumber();
+                        for (int i = 0; i < len; i++)
+                        {
+                            var entry = iterable.Get(i.ToString());
+                            if (entry != null && entry.IsObject)
+                            {
+                                var entryObj = entry.AsObject();
+                                var key = entryObj?.Get("0") ?? FenValue.Undefined;
+                                var val = entryObj?.Get("1") ?? FenValue.Undefined;
+                                map.Get("set")?.AsFunction()?.Invoke(new IValue[] { key, val }, _context);
+                            }
+                        }
+                    }
+                }
+                return FenValue.FromObject(map);
+            })));
+
+            SetGlobal("Set", FenValue.FromFunction(new FenFunction("Set", (args, thisVal) =>
+            {
+                var set = new FenBrowser.FenEngine.Core.Types.JsSet(_context);
+                // If iterable argument provided, populate from it
+                if (args.Length > 0 && args[0].IsObject)
+                {
+                    var iterable = args[0].AsObject();
+                    var lenVal = iterable?.Get("length");
+                    if (lenVal != null && lenVal.IsNumber)
+                    {
+                        int len = (int)lenVal.ToNumber();
+                        for (int i = 0; i < len; i++)
+                        {
+                            var val = iterable.Get(i.ToString());
+                            set.Get("add")?.AsFunction()?.Invoke(new IValue[] { val ?? FenValue.Undefined }, _context);
+                        }
+                    }
+                }
+                return FenValue.FromObject(set);
+            })));
+
+            // WeakMap - Keys must be objects, values are weakly referenced
+            SetGlobal("WeakMap", FenValue.FromFunction(new FenFunction("WeakMap", (args, thisVal) =>
+            {
+                var weakMap = new FenObject();
+                var storage = new System.Runtime.CompilerServices.ConditionalWeakTable<object, IValue>();
+                
+                weakMap.Set("set", FenValue.FromFunction(new FenFunction("set", (setArgs, setThis) =>
+                {
+                    if (setArgs.Length > 0 && setArgs[0].IsObject)
+                    {
+                        var key = setArgs[0].AsObject();
+                        var val = setArgs.Length > 1 ? setArgs[1] : FenValue.Undefined;
+                        if (key != null) storage.AddOrUpdate(key, val);
+                    }
+                    return FenValue.FromObject(weakMap);
+                })));
+                
+                weakMap.Set("get", FenValue.FromFunction(new FenFunction("get", (getArgs, getThis) =>
+                {
+                    if (getArgs.Length > 0 && getArgs[0].IsObject)
+                    {
+                        var key = getArgs[0].AsObject();
+                        if (key != null && storage.TryGetValue(key, out var val))
+                            return val;
+                    }
+                    return FenValue.Undefined;
+                })));
+                
+                weakMap.Set("has", FenValue.FromFunction(new FenFunction("has", (hasArgs, hasThis) =>
+                {
+                    if (hasArgs.Length > 0 && hasArgs[0].IsObject)
+                    {
+                        var key = hasArgs[0].AsObject();
+                        if (key != null && storage.TryGetValue(key, out _))
+                            return FenValue.FromBoolean(true);
+                    }
+                    return FenValue.FromBoolean(false);
+                })));
+                
+                weakMap.Set("delete", FenValue.FromFunction(new FenFunction("delete", (delArgs, delThis) =>
+                {
+                    if (delArgs.Length > 0 && delArgs[0].IsObject)
+                    {
+                        var key = delArgs[0].AsObject();
+                        if (key != null) return FenValue.FromBoolean(storage.Remove(key));
+                    }
+                    return FenValue.FromBoolean(false);
+                })));
+                
+                return FenValue.FromObject(weakMap);
+            })));
+
+            // WeakSet - Values must be objects, weakly referenced
+            SetGlobal("WeakSet", FenValue.FromFunction(new FenFunction("WeakSet", (args, thisVal) =>
+            {
+                var weakSet = new FenObject();
+                var storage = new System.Runtime.CompilerServices.ConditionalWeakTable<object, object>();
+                
+                weakSet.Set("add", FenValue.FromFunction(new FenFunction("add", (addArgs, addThis) =>
+                {
+                    if (addArgs.Length > 0 && addArgs[0].IsObject)
+                    {
+                        var val = addArgs[0].AsObject();
+                        if (val != null) storage.AddOrUpdate(val, new object());
+                    }
+                    return FenValue.FromObject(weakSet);
+                })));
+                
+                weakSet.Set("has", FenValue.FromFunction(new FenFunction("has", (hasArgs, hasThis) =>
+                {
+                    if (hasArgs.Length > 0 && hasArgs[0].IsObject)
+                    {
+                        var key = hasArgs[0].AsObject();
+                        if (key != null && storage.TryGetValue(key, out _))
+                            return FenValue.FromBoolean(true);
+                    }
+                    return FenValue.FromBoolean(false);
+                })));
+                
+                weakSet.Set("delete", FenValue.FromFunction(new FenFunction("delete", (delArgs, delThis) =>
+                {
+                    if (delArgs.Length > 0 && delArgs[0].IsObject)
+                    {
+                        var key = delArgs[0].AsObject();
+                        if (key != null) return FenValue.FromBoolean(storage.Remove(key));
+                    }
+                    return FenValue.FromBoolean(false);
+                })));
+                
+                return FenValue.FromObject(weakSet);
+            })));
+
             // Global functions: parseInt, parseFloat, isNaN, isFinite
             SetGlobal("parseInt", FenValue.FromFunction(new FenFunction("parseInt", (args, thisVal) => {
                 if (args.Length == 0) return FenValue.FromNumber(double.NaN);
