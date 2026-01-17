@@ -17,6 +17,16 @@ namespace FenBrowser.Host
         {
             try
             {
+                // Global Exception Handling
+                AppDomain.CurrentDomain.UnhandledException += (sender, e) => {
+                    FenLogger.Error($"[CRASH] Unhandled Domain Exception: {e.ExceptionObject}", LogCategory.General);
+                };
+
+                TaskScheduler.UnobservedTaskException += (sender, e) => {
+                    FenLogger.Error($"[CRASH] Unobserved Task Exception: {e.Exception}", LogCategory.General);
+                    e.SetObserved();
+                };
+
                 // 1. Logging Setup
                 FenBrowser.Core.Logging.LogManager.InitializeFromSettings();
                 if (args.Contains("--log-level") && args.Length > Array.IndexOf(args, "--log-level") + 1)
@@ -57,5 +67,14 @@ namespace FenBrowser.Host
         // Bridge for legacy static calls from DevTools or other components
         public static Task<T> RunOnMainThread<T>(Func<T> func) => WindowManager.Instance.RunOnMainThread(func);
         public static Task RunOnMainThread(Action action) => WindowManager.Instance.RunOnMainThread(action);
+        
+        /// <summary>
+        /// Copy text to system clipboard. (10/10)
+        /// </summary>
+        public static void CopyToClipboard(string text)
+        {
+            WindowManager.Instance.CopyToClipboard(text);
+        }
     }
 }
+

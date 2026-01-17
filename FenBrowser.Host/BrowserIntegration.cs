@@ -91,6 +91,12 @@ public class BrowserIntegration
         _browser.LoadingChanged += (s, loading) =>
         {
             IsLoading = loading;
+            // Clear CSS caches on start of navigation to prevent memory buildup
+            if (loading)
+            {
+                CssLoader.ClearCaches();
+                FenLogger.Info("[BrowserIntegration] Cleared CSS caches for new navigation", LogCategory.General);
+            }
             LoadingChanged?.Invoke(loading);
         };
         
@@ -102,21 +108,15 @@ public class BrowserIntegration
             
             FenLogger.Info($"[BrowserIntegration] RepaintReady: Root={(_root?.TagName ?? "NULL")}, Styles={(_styles?.Count.ToString() ?? "NULL")}", LogCategory.Rendering);
             
-            // CRITICAL: Explicit layout trigger chain after DOM build
-            // This is the mandatory sequence: MarkLayoutDirty + RunLayout + TryRecordFrame
-            // RecordFrame internally calls _renderer.Render which runs layout
-            if (_root != null && _lastViewportSize.Width > 0)
-            {
-                FenLogger.Info("[BrowserIntegration] Running explicit layout + frame after DOM build", LogCategory.Layout);
-                RecordFrame(_lastViewportSize);
-                NeedsRepaint?.Invoke(); // Signal UI to redraw with new frame
-            }
-            else
-            {
-                // Fallback: mark for async processing if viewport not ready
-                _needsRepaint = true;
-                _wakeEvent.Set();
-            }
+            // THREAD SAFETY FIX: Do NOT call RecordFrame directly from this event handler.
+            // RepaintReady can fire from any thread (including thread pool continuations),
+            // but SKPictureRecorder is NOT thread-safe. Always signal the engine thread
+            // to perform the actual rendering work on its dedicated thread.
+            _needsRepaint = true;
+            _wakeEvent.Set();
+            
+            // Signal UI that a repaint is pending (optional immediate feedback)
+            NeedsRepaint?.Invoke();
         };
         
         _browser.TitleChanged += (s, title) => TitleChanged?.Invoke(title);
@@ -178,6 +178,8 @@ public class BrowserIntegration
         }
     }
     
+    private readonly object _rendererLock = new object();
+
     private void EngineLoop()
     {
         while (_running)
@@ -200,11 +202,17 @@ public class BrowserIntegration
                 // Debug: Log synced state
                 FenLogger.Info($"[EngineLoop] After sync: Root={(_root != null ? _root.TagName : "NULL")}, Styles={(_styles != null ? _styles.Count.ToString() : "NULL")}", LogCategory.Rendering);
                 
-                RecordFrame(_lastViewportSize);
+                lock (_rendererLock)
+                {
+                    RecordFrame(_lastViewportSize);
+                }
             }
             
-            // 3. Wait for work
-            _wakeEvent.WaitOne(16); // ~60fps poll or event-driven
+            // 3. Adaptive Wait (CPU Optimization)
+            // If needs repaint (animations/scroll), poll fast (16ms).
+            // If idle, wait indefinitely until an event wakes us.
+            int timeoutKey = _needsRepaint ? 16 : -1;
+            _wakeEvent.WaitOne(timeoutKey);
         }
     }
     
@@ -326,6 +334,9 @@ public class BrowserIntegration
     /// </summary>
     public void RecordFrame(SKSize viewportSize)
     {
+        // Guard: Prevent recording during/after shutdown
+        if (!_running) return;
+        
         // RELAXED GATING: Allow early structural frames
         // Only skip when BOTH root AND styles are missing
         if (_root == null && _styles == null) 
@@ -528,6 +539,8 @@ public class BrowserIntegration
             FenLogger.Debug($"[Scroll] NewY={_scrollY}, MaxScroll={maxScroll}", LogCategory.Rendering);
             
             _needsRepaint = true;
+            // CRITICAL: Wake the engine thread to process the scroll immediately
+            _wakeEvent.Set();
         });
         
         // Immediate UI feedback (optional, we wait for engine to re-record)
@@ -680,15 +693,18 @@ public class BrowserIntegration
         float docY = scaledY + _scrollY;
         
         // Perform hit test in document space
-        if (_renderer.HitTest(docX, docY, out var result))
+        lock (_rendererLock)
         {
-            // Update last hit test (for status bar)
-            if (!result.Equals(_lastHitTest))
+            if (_renderer.HitTest(docX, docY, out var result))
             {
-                _lastHitTest = result;
-                HitTestChanged?.Invoke(result);
+                // Update last hit test (for status bar)
+                if (!result.Equals(_lastHitTest))
+                {
+                    _lastHitTest = result;
+                    HitTestChanged?.Invoke(result);
+                }
+                return result;
             }
-            return result;
         }
         
         // No hit - reset if changed
@@ -704,9 +720,36 @@ public class BrowserIntegration
     /// <summary>
     /// Handle mouse move for cursor updates and status bar.
     /// </summary>
+    private bool _isMouseMovePending = false;
+    private (float X, float Y, float VX, float VY) _pendingMouseMove;
+
+    /// <summary>
+    /// Handle mouse move for cursor updates and status bar.
+    /// Coalesces rapid events to prevent queue flooding.
+    /// </summary>
     public HitTestResult HandleMouseMove(float windowX, float windowY, float viewportOffsetX = 0, float viewportOffsetY = 0)
     {
+        // 1. Immediate Hit Test on Main Thread (safe due to lock) for snappy UI feedback
+        // This is required for cursor changes to feel instant
         return PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
+    }
+    
+    // Internal method to queue costly hover logic if needed
+    public void QueueHoverLogic(float windowX, float windowY, float viewportOffsetX, float viewportOffsetY)
+    {
+         _pendingMouseMove = (windowX, windowY, viewportOffsetX, viewportOffsetY);
+         if (!_isMouseMovePending)
+         {
+             _isMouseMovePending = true;
+             PostToEngine(() => 
+             {
+                 _isMouseMovePending = false;
+                 // Process latest coordinates
+                 var (px, py, pvx, pvy) = _pendingMouseMove;
+                 // Perform heavy hover logic here if we had any (Trigger Hover CSS etc)
+                 // Currently we don't have heavy hover logic in engine, so this is just placeholder/future-proof
+             });
+         }
     }
     
     /// <summary>

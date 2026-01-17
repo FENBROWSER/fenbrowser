@@ -18,22 +18,25 @@ public static class CursorManager
     
     /// <summary>
     /// Update the cursor based on hit test result.
-    /// Throttled to prevent excessive system calls.
+    /// Only throttle when cursor is NOT changing (to prevent hammering same cursor).
+    /// Cursor changes go through immediately.
     /// </summary>
     public static void UpdateCursor(IMouse mouse, FenCursorType cursor)
     {
-        // Only update and log when cursor actually changes
+        // If cursor is the same, throttle to prevent excessive system calls
         if (cursor == _currentCursor)
-            return;
+        {
+            var now = DateTime.UtcNow;
+            if ((now - _lastUpdate) < _throttleInterval)
+                return;
+            _lastUpdate = now;
+            return; // Already have correct cursor, nothing to do
+        }
         
-        // Throttle cursor updates
-        var now = DateTime.UtcNow;
-        if ((now - _lastUpdate) < _throttleInterval)
-            return;
-        
+        // Cursor is changing - apply immediately
         FenLogger.Debug($"[Cursor] Changed: {_currentCursor} → {cursor}", LogCategory.Events);
         _currentCursor = cursor;
-        _lastUpdate = now;
+        _lastUpdate = DateTime.UtcNow;
         
         // Map to Silk.NET cursor and set
         var silkCursor = MapToSilkCursor(cursor);
