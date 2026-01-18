@@ -99,6 +99,7 @@ public class SettingsPageWidget : Widget
     
     private static SKTypeface _headerFont = SKTypeface.FromFamilyName("Segoe UI", SKFontStyle.Bold);
     private static SKTypeface _labelFont = SKTypeface.FromFamilyName("Segoe UI", SKFontStyle.Normal);
+    private SKBitmap _aboutIcon;
     
     public SettingsPageWidget()
     {
@@ -1060,10 +1061,56 @@ public class SettingsPageWidget : Widget
                 break;
                 
             case SettingsCategory.About:
-                canvas.DrawText("FenBrowser", contentLeft, currentY + 30, subHeaderPaint);
-                currentY += 50;
-                canvas.DrawText("Version 1.1.0 (Advanced Edition)", contentLeft, currentY + 20, labelPaint);
-                currentY += 30;
+                // Lazy load icon
+                if (_aboutIcon == null)
+                {
+                    try
+                    {
+                         var iconPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "icon.png");
+                         if (System.IO.File.Exists(iconPath))
+                         {
+                             _aboutIcon = SKBitmap.Decode(iconPath);
+                         }
+                    } catch {}
+                }
+
+                if (_aboutIcon != null)
+                {
+                    // Draw 64x64 icon
+                    var iconRect = new SKRect(contentLeft, currentY, contentLeft + 64, currentY + 64);
+                    using var iconPaint = new SKPaint { FilterQuality = SKFilterQuality.High, IsAntialias = true };
+                    canvas.DrawBitmap(_aboutIcon, iconRect, iconPaint);
+                    
+                    // Indent text
+                    float textX = contentLeft + 80;
+                    
+                    var version = System.Reflection.Assembly.GetEntryAssembly()?
+                        .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+                        .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+                        .FirstOrDefault()?.InformationalVersion 
+                        ?? System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version?.ToString(3) 
+                        ?? "0.1.0-alpha";
+
+                    canvas.DrawText("FenBrowser", textX, currentY + 25, subHeaderPaint);
+                    canvas.DrawText($"Version {version} (Advanced Edition)", textX, currentY + 50, labelPaint);
+                    
+                    currentY += 80;
+                }
+                else
+                {
+                    var version = System.Reflection.Assembly.GetEntryAssembly()?
+                        .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+                        .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+                        .FirstOrDefault()?.InformationalVersion 
+                        ?? System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version?.ToString(3) 
+                        ?? "0.1.0-alpha";
+
+                    canvas.DrawText("FenBrowser", contentLeft, currentY + 30, subHeaderPaint);
+                    currentY += 50;
+                    canvas.DrawText($"Version {version} (Advanced Edition)", contentLeft, currentY + 20, labelPaint);
+                    currentY += 30;
+                }
+                
                 canvas.DrawText("A modular, secure, and privacy-focused browser", contentLeft, currentY + 20, descPaint);
                 currentY += 40;
                 canvas.DrawText("Built with .NET, SkiaSharp, and Silk.NET", contentLeft, currentY + 20, descPaint);
