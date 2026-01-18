@@ -622,6 +622,14 @@ namespace FenBrowser.FenEngine.Scripting
             public object[] querySelectorAll(string sel) { return new JsDocument(_e, _node).querySelectorAll(sel); }
             public object[] getElementsByClassName(string className) { return new JsDocument(_e, _node).getElementsByClassName(className); }
 
+            public void focus()
+            {
+                 if (_e._host != null)
+                 {
+                     _e._host.FocusNode(_node);
+                 }
+            }
+
             public void scrollIntoView()
             {
                 if (_e._host != null)

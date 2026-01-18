@@ -130,6 +130,12 @@ namespace FenBrowser.FenEngine.Core.Types
             })));
         }
 
+        public void Then(IValue onFulfilled, IValue onRejected)
+        {
+            var thenFunc = Get("then").AsFunction();
+            thenFunc.Invoke(new IValue[] { onFulfilled, onRejected }, _context);
+        }
+
         // Static Helpers
         public static JsPromise Resolve(IValue value, IExecutionContext context)
         {

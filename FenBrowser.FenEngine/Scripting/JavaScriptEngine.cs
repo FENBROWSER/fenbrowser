@@ -155,7 +155,6 @@ namespace FenBrowser.FenEngine.Scripting
             SetupModernAPIs();
             
             // Register Fetch API
-            // Register Fetch API
             FenBrowser.FenEngine.WebAPIs.FetchApi.Register(_fenRuntime.Context, FetchHandler);
         }
         
@@ -299,22 +298,6 @@ namespace FenBrowser.FenEngine.Scripting
                 }
             }
             
-            // Keep legacy immediate-fire behavior for 'load' on window/document if needed,
-            // but ONLY if we are sure the event has already passed.
-            // For now, trusting the event loop to fire 'load' naturally is better, 
-            // but sticking to existing logic for safety if the engine doesn't fire load explicitly yet.
-            if ((evt == "DOMContentLoaded" || evt == "load") && (thisVal is JsDocument || (thisVal is FenObject win && win == _fenRuntime.GetGlobal("window").AsObject())))
-            {
-                // Execute immediately as we assume ready if this is late-binding
-                _fenRuntime.Context.ScheduleCallback(() => {
-                        try { 
-                        FenLogger.Debug($"[EventListener] Firing {evt} event immediately (compat)", LogCategory.JavaScript);
-                        callback.Invoke(new FenBrowser.FenEngine.Core.Interfaces.IValue[] { FenValue.FromObject(new FenBrowser.FenEngine.Core.FenObject()) }, _fenRuntime.Context); 
-                        } catch (Exception ex) {
-                        FenLogger.Error($"[EventListener] Error executing {evt}: {ex.Message}", LogCategory.JavaScript, ex);
-                        }
-                }, 0);
-            }
             return FenValue.Undefined;
         }
 
@@ -646,16 +629,19 @@ namespace FenBrowser.FenEngine.Scripting
             navObj.Set("clipboard", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.ClipboardAPI.CreateClipboardObject()));
             
             // Web Audio API - AudioContext constructor
-            _fenRuntime.SetGlobal("AudioContext", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.WebAudioAPI.CreateAudioContextConstructor()));
-            _fenRuntime.SetGlobal("webkitAudioContext", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.WebAudioAPI.CreateAudioContextConstructor()));
+            _fenRuntime.SetGlobal("AudioContext", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.WebAudioAPI.CreateAudioContextConstructor(_fenRuntime.Context)));
+            _fenRuntime.SetGlobal("webkitAudioContext", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.WebAudioAPI.CreateAudioContextConstructor(_fenRuntime.Context)));
             
             // WebRTC API - RTCPeerConnection constructor
-            _fenRuntime.SetGlobal("RTCPeerConnection", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.WebRTCAPI.CreateRTCPeerConnectionConstructor()));
-            _fenRuntime.SetGlobal("webkitRTCPeerConnection", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.WebRTCAPI.CreateRTCPeerConnectionConstructor()));
+            _fenRuntime.SetGlobal("RTCPeerConnection", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.WebRTCAPI.CreateRTCPeerConnectionConstructor(_fenRuntime.Context)));
+            _fenRuntime.SetGlobal("webkitRTCPeerConnection", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.WebRTCAPI.CreateRTCPeerConnectionConstructor(_fenRuntime.Context)));
             _fenRuntime.SetGlobal("MediaStream", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.WebRTCAPI.CreateMediaStreamConstructor()));
             
             // Notifications API - Notification constructor
             _fenRuntime.SetGlobal("Notification", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.NotificationsAPI.CreateNotificationConstructor()));
+
+            // IndexedDB API
+            FenBrowser.FenEngine.WebAPIs.IndexedDBService.Register(_fenRuntime.Context);
         }
 
 
@@ -2645,6 +2631,32 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             
             // JS is "enabled" in this app; hide server noscript overlays & flip no-js ? js
             this.SanitizeForScriptingEnabled(domRoot);
+
+            // 7. Fire LifeCycle Events (Spec Compliant)
+            if (_fenRuntime != null)
+            {
+                var docIVal = _fenRuntime.GetGlobal("document");
+                if (docIVal.IsObject)
+                {
+                    var docObj = docIVal.AsObject();
+                    DocumentWrapper docWrapper = null;
+                    if (docObj is DocumentWrapper dw) docWrapper = dw;
+                    // Note: If document is a FenObject wrapping DocumentWrapper, we might need to check NativeObject
+                    // but FenRuntime.SetDom sets it directly as the object.
+
+                    if (docWrapper != null)
+                    {
+                        // DOMContentLoaded phase
+                        docWrapper.SetReadyState("interactive");
+                        DispatchEvent(docObj, "DOMContentLoaded", new DomEvent("DOMContentLoaded", bubbles: true));
+                        
+                        // load phase
+                        docWrapper.SetReadyState("complete");
+                        var window = _fenRuntime.GetGlobal("window").AsObject();
+                        DispatchEvent(window, "load", new DomEvent("load"));
+                    }
+                }
+            }
         }
 
         // Backward compatibility wrapper (deprecated)
@@ -2786,6 +2798,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         void Alert(string msg);
         void Log(string msg);
         void ScrollToElement(Element element);
+        void FocusNode(Element element);
     }
 
     // Optional host interface: if implemented, JavaScriptEngine will call RequestRender() when DOM changes
@@ -2816,8 +2829,9 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
     private readonly Action<string> _alert;
     private readonly Action<string> _log;
     private readonly Action<Element> _scrollToElement;
+    private readonly Action<Element> _focusNode;
 
-        public JsHostAdapter(Action<Uri> navigate, Action<Uri, string> post, Action<string> status, Action requestRender = null, Action<Action> invokeOnUiThread = null, Action<string> setTitle = null, Action<string> alert = null, Action<string> log = null, Action<Element> scrollToElement = null)
+        public JsHostAdapter(Action<Uri> navigate, Action<Uri, string> post, Action<string> status, Action requestRender = null, Action<Action> invokeOnUiThread = null, Action<string> setTitle = null, Action<string> alert = null, Action<string> log = null, Action<Element> scrollToElement = null, Action<Element> focusNode = null)
         {
             _navigate = navigate ?? (_ => { });
             _post = post ?? ((_, __) => { });
@@ -2828,6 +2842,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             _alert = alert ?? (_ => { });
             _log = log ?? (_ => { });
             _scrollToElement = scrollToElement ?? (_ => { });
+            _focusNode = focusNode ?? (_ => { });
         }
 
         // ... IJsHost implementation ...
@@ -2840,6 +2855,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         public void Alert(string msg) => _alert(msg);
         public void Log(string msg) => _log(msg);
         public void ScrollToElement(Element e) => _scrollToElement(e);
+        public void FocusNode(Element e) => _focusNode(e);
     }
 
     public class JsCrypto : FenBrowser.FenEngine.Core.FenObject
