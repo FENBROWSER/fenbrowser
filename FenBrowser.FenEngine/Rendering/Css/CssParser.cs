@@ -81,25 +81,25 @@ namespace FenBrowser.FenEngine.Rendering
             if (name == "min-width")
             {
                 if (MediaViewportWidth.HasValue) return MediaViewportWidth.Value >= pxVal;
-                return true; // Default to true if unknown? Or false? Let's say true to be safe
+                return false; // Spec: if unknown, condition is false
             }
             if (name == "max-width")
             {
                 if (MediaViewportWidth.HasValue) return MediaViewportWidth.Value <= pxVal;
-                return true;
+                return false;
             }
              if (name == "min-height")
             {
                 if (MediaViewportHeight.HasValue) return MediaViewportHeight.Value >= pxVal;
-                return true; 
+                return false; 
             }
             if (name == "max-height")
             {
                  if (MediaViewportHeight.HasValue) return MediaViewportHeight.Value <= pxVal;
-                 return true;
+                 return false;
             }
 
-            return true; // Unknown feature, assume match
+            return false; // Unknown feature, return false to be safe (spec: unknown = false)
         }
 
         private static readonly Dictionary<string, SKColor> _namedColors 

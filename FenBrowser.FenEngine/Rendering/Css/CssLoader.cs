@@ -1399,7 +1399,7 @@ namespace FenBrowser.FenEngine.Rendering
                     if (rule is NewCss.CssMediaRule mediaRule)
                     {
                         // Evaluate condition
-                        bool matches = CssParser.EvaluateMediaQuery(mediaRule.Condition);
+                        bool matches = EvaluateMediaQuery(mediaRule.Condition, viewportWidth);
                         if (matches)
                         {
                             // Flatten inner rules into the main stream
@@ -1750,6 +1750,38 @@ private static double? ExtractPx(string text, string prop)
                     {
                         if (kv.Key.StartsWith("--")) continue;
                         var val = ResolveCustomPropertyReferences(kv.Value.Value, css, rawCustom, new HashSet<string>());
+                        
+                        // Handle CSS-wide keywords: inherit, initial, unset
+                        var lowerVal = val?.ToLowerInvariant()?.Trim();
+                        if (lowerVal == "inherit")
+                        {
+                            // Use parent's computed value
+                            if (parentCss != null && parentCss.Map.TryGetValue(kv.Key, out var parentVal))
+                                val = parentVal;
+                            else
+                                val = CssComputed.GetInitialValue(kv.Key) ?? val;
+                        }
+                        else if (lowerVal == "initial")
+                        {
+                            // Use spec-defined initial value
+                            val = CssComputed.GetInitialValue(kv.Key) ?? val;
+                        }
+                        else if (lowerVal == "unset")
+                        {
+                            // inherit for inherited properties, initial for non-inherited
+                            if (CssComputed.IsInheritedProperty(kv.Key))
+                            {
+                                if (parentCss != null && parentCss.Map.TryGetValue(kv.Key, out var parentVal))
+                                    val = parentVal;
+                                else
+                                    val = CssComputed.GetInitialValue(kv.Key) ?? val;
+                            }
+                            else
+                            {
+                                val = CssComputed.GetInitialValue(kv.Key) ?? val;
+                            }
+                        }
+                        
                         css.Map[kv.Key] = val;
                     }
                 }
@@ -1821,6 +1853,11 @@ private static double? ExtractPx(string text, string prop)
                 css.GridAutoFlow = Safe(DictGet(css.Map, "grid-auto-flow"))?.ToLowerInvariant();
                 css.GridAutoColumns = Safe(DictGet(css.Map, "grid-auto-columns"));
                 css.GridAutoRows = Safe(DictGet(css.Map, "grid-auto-rows"));
+                
+                css.ColumnSpan = Safe(DictGet(css.Map, "column-span"));
+                css.ColumnRuleStyle = Safe(DictGet(css.Map, "column-rule-style"));
+                css.ColumnRuleWidth = Safe(DictGet(css.Map, "column-rule-width"));
+                css.ColumnRuleColor = Safe(DictGet(css.Map, "column-rule-color"));
                 
                 // Overflow properties
                 css.Overflow = Safe(DictGet(css.Map, "overflow"))?.ToLowerInvariant();
@@ -1921,6 +1958,29 @@ private static double? ExtractPx(string text, string prop)
                 css.FontSize = 16.0;
                 currentEmBase = 16.0;
             }
+            
+            // Multi-column properties (moved here to have currentEmBase available)
+            css.ColumnCount = Safe(DictGet(css.Map, "column-count"));
+            if (int.TryParse(css.ColumnCount, out int cCount)) css.ColumnCountInt = cCount;
+            
+            css.ColumnWidth = Safe(DictGet(css.Map, "column-width"));
+            if (TryPx(css.ColumnWidth, out double cWidth, currentEmBase)) css.ColumnWidthFloat = cWidth;
+            
+            css.Columns = Safe(DictGet(css.Map, "columns"));
+            if (!string.IsNullOrEmpty(css.Columns))
+            {
+                // Shorthand: [width] [count] (order-independent)
+                var colParts = css.Columns.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (var cp in colParts)
+                {
+                    if (int.TryParse(cp, out int c)) css.ColumnCountInt = c;
+                    else if (TryPx(cp, out double w, currentEmBase)) css.ColumnWidthFloat = w;
+                }
+            }
+            
+            css.ColumnGapValue = Safe(DictGet(css.Map, "column-gap"));
+            if (TryPx(css.ColumnGapValue, out double colGapVal, currentEmBase)) css.ColumnGap = colGapVal;
+            
             if (css.FontSize < 8) {
                 DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[FONT-WARN] Tiny Font! Element={n.Tag} fs={rawFontSize ?? "null"} resolved={css.FontSize}px\r\n");
             }
