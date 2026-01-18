@@ -21,7 +21,7 @@ namespace FenBrowser.FenEngine.DOM
         private readonly IExecutionContext _context;
         private readonly Uri _baseUri;
         private IObject _prototype;
-        private string _readyState = "complete"; // Default, managed by SetReadyState
+        private string _readyState = "loading"; // Spec compliant default
         public object NativeObject { get; set; }
 
         public DocumentWrapper(Element root, IExecutionContext context, Uri baseUri = null)
@@ -199,7 +199,30 @@ namespace FenBrowser.FenEngine.DOM
 
         public void SetReadyState(string state)
         {
+            if (_readyState == state) return;
             _readyState = state;
+            
+            FenLogger.Debug($"[DocumentWrapper] readyState -> {state}", FenBrowser.Core.Logging.LogCategory.JavaScript);
+            
+            // Dispatch readystatechange
+            DispatchEventInternal(new DomEvent("readystatechange"));
+        }
+
+        private void DispatchEventInternal(DomEvent evt)
+        {
+            var listeners = ElementWrapper.EventRegistry.Get(_root, evt.Type, false);
+            foreach (var l in listeners)
+            {
+                try
+                {
+                    l.Callback.AsFunction().Invoke(new IValue[] { FenValue.FromObject(evt) }, _context);
+                    if (l.Once) ElementWrapper.EventRegistry.Remove(_root, evt.Type, l.Callback, l.Capture);
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Error($"[DocumentWrapper] Error dispatching internal event '{evt.Type}': {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript);
+                }
+            }
         }
 
         private IValue CreateDocumentFragment(IValue[] args, IValue thisVal)
