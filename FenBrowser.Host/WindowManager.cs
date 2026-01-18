@@ -59,15 +59,27 @@ namespace FenBrowser.Host
 
         private WindowManager() { }
 
-        public void Initialize(string initialUrl)
+        public void Initialize(string initialUrl, bool isHeadless = false)
         {
             _mainThreadId = Environment.CurrentManagedThreadId;
 
             var options = WindowOptions.Default;
             options.Size = new Vector2D<int>(_logicalWidth, _logicalHeight);
             options.VSync = true;
-            options.WindowState = WindowState.Maximized;
-            options.WindowBorder = WindowBorder.Hidden; 
+            
+            // Headless mode uses Hidden window state
+            if (isHeadless)
+            {
+                options.WindowState = WindowState.Minimized; // Silk.NET sometimes has issues with Hidden, Minimized is safer for context
+                options.WindowBorder = WindowBorder.Hidden;
+                FenLogger.Info("[WindowManager] Initializing in HEADLESS mode", LogCategory.General);
+            }
+            else
+            {
+                options.WindowState = WindowState.Maximized;
+                options.WindowBorder = WindowBorder.Hidden; 
+            }
+            
             options.TransparentFramebuffer = false;
             options.Title = "FenBrowser";
 
@@ -92,6 +104,84 @@ namespace FenBrowser.Host
             InitializeSkia();
 
             OnLoad?.Invoke();
+            
+            LoadWindowIcon();
+        }
+        
+        private void LoadWindowIcon()
+        {
+            try
+            {
+                var iconPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "icon.png");
+                if (System.IO.File.Exists(iconPath))
+                {
+                    // Load original
+                    using var sourceBitmap = SKBitmap.Decode(iconPath);
+                    if (sourceBitmap != null)
+                    {
+                        var icons = new System.Collections.Generic.List<Silk.NET.Core.RawImage>();
+                        
+                        // Generate mipmaps for common icon sizes
+                        int[] sizes = new[] { 256, 128, 64, 48, 32, 16 };
+                        
+                        foreach (var size in sizes)
+                        {
+                            if (sourceBitmap.Width < size || sourceBitmap.Height < size) continue;
+                            
+                            var info = new SKImageInfo(size, size, SKColorType.Rgba8888, SKAlphaType.Premul);
+                            using var scaledBitmap = new SKBitmap(info);
+                            using var canvas = new SKCanvas(scaledBitmap);
+                            canvas.Clear(SKColors.Transparent);
+
+                            // Zoom logic: Crop a SQUARE area from the center to preserve aspect ratio
+                            // Use the smallest dimension to ensure we don't go out of bounds
+                            float minDim = Math.Min(sourceBitmap.Width, sourceBitmap.Height);
+                            float zoom = 1.75f;
+                            
+                            // The size of the square we want to crop from the source
+                            float cropSize = minDim / zoom;
+                            
+                            // Center coordinates
+                            float centerX = sourceBitmap.Width / 2.0f;
+                            float centerY = sourceBitmap.Height / 2.0f;
+                            
+                            // Calculate Top-Left of the crop (clamping if needed, though minDim/zoom should be safe for zoom >= 1)
+                            float cropX = centerX - (cropSize / 2.0f);
+                            float cropY = centerY - (cropSize / 2.0f);
+
+                            var srcRect = new SKRect(cropX, cropY, cropX + cropSize, cropY + cropSize);
+                            var destRect = new SKRect(0, 0, size, size);
+                            
+                            using var paint = new SKPaint { FilterQuality = SKFilterQuality.High, IsAntialias = true };
+                            canvas.DrawBitmap(sourceBitmap, srcRect, destRect, paint);
+                            canvas.Flush();
+                            
+                            var pixels = scaledBitmap.Bytes;
+                            icons.Add(new Silk.NET.Core.RawImage(size, size, new Memory<byte>(pixels)));
+                        }
+
+                        // Also add original if not covered and force RGBA
+                        if (icons.Count == 0)
+                        {
+                             var info = new SKImageInfo(sourceBitmap.Width, sourceBitmap.Height, SKColorType.Rgba8888, SKAlphaType.Premul);
+                             using var rgbaBitmap = new SKBitmap(info);
+                             if (sourceBitmap.ScalePixels(rgbaBitmap, SKFilterQuality.High))
+                             {
+                                 icons.Add(new Silk.NET.Core.RawImage(rgbaBitmap.Width, rgbaBitmap.Height, new Memory<byte>(rgbaBitmap.Bytes)));
+                             }
+                        }
+
+                        if (icons.Count > 0)
+                        {
+                            _window.SetWindowIcon(icons.ToArray());
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[WindowManager] Failed to set window icon: {ex.Message}", LogCategory.General);
+            }
         }
 
         private void InitializeInput()
