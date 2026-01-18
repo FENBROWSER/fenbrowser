@@ -46,7 +46,7 @@ namespace FenBrowser.Tests.Layout
         private Dictionary<Node, BoxModel> ArrangeGrid(Element container, Dictionary<Node, CssComputed> styles)
         {
             var boxes = new Dictionary<Node, BoxModel>();
-            GridLayoutComputer.Measure(container, new SKSize((float)styles[container].Width.Value, (float)styles[container].Height.Value), styles, 0);
+            GridLayoutComputer.Measure(container, new SKSize((float)styles[container].Width.Value, (float)styles[container].Height.Value), styles, 0, (n, sz, d) => new LayoutMetrics());
             
             GridLayoutComputer.Arrange(container, new SKRect(0, 0, (float)styles[container].Width.Value, (float)styles[container].Height.Value), styles, boxes, 0, (node, rect, depth) =>
             {
@@ -56,7 +56,7 @@ namespace FenBrowser.Tests.Layout
                     boxes[el].ContentBox = rect;
                     boxes[el].BorderBox = rect; 
                 }
-            });
+            }, (n, sz, d) => new LayoutMetrics());
             return boxes;
         }
 

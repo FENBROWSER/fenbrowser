@@ -62,7 +62,8 @@ namespace FenBrowser.Tests.Layout
                 styles,
                 boxes,
                 0,
-                (node, rect, depth) => positions[node] = rect);
+                (node, rect, depth) => positions[node] = rect,
+                (n, sz, d) => new LayoutMetrics());
 
             return positions;
         }
