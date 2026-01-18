@@ -19,13 +19,13 @@ namespace FenBrowser.FenEngine.WebAPIs
         /// <summary>
         /// Creates the RTCPeerConnection constructor
         /// </summary>
-        public static FenObject CreateRTCPeerConnectionConstructor()
+        public static FenObject CreateRTCPeerConnectionConstructor(IExecutionContext context)
         {
             var constructor = new FenObject();
             constructor.Set("__call__", FenValue.FromFunction(new FenFunction("RTCPeerConnection", (args, thisVal) =>
             {
                 var config = args.Length > 0 && args[0].IsObject ? args[0].AsObject() : null;
-                return FenValue.FromObject(CreateRTCPeerConnection(config));
+                return FenValue.FromObject(CreateRTCPeerConnection(config, context));
             })));
             return constructor;
         }
@@ -33,7 +33,7 @@ namespace FenBrowser.FenEngine.WebAPIs
         /// <summary>
         /// Creates an RTCPeerConnection instance
         /// </summary>
-        public static FenObject CreateRTCPeerConnection(IObject configuration)
+        public static FenObject CreateRTCPeerConnection(IObject configuration, IExecutionContext context)
         {
             var connectionId = ++_connectionIdCounter;
             var pc = new FenObject();
@@ -71,26 +71,28 @@ namespace FenBrowser.FenEngine.WebAPIs
             pc.Set("createOffer", FenValue.FromFunction(new FenFunction("createOffer", (args, thisVal) =>
             {
                 FenLogger.Debug("[WebRTC] createOffer()", LogCategory.JavaScript);
-                return CreatePromise((resolve, reject) =>
+                return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("exec", (eArgs, eThis) => 
                 {
                     var offer = new FenObject();
                     offer.Set("type", FenValue.FromString("offer"));
                     offer.Set("sdp", FenValue.FromString($"v=0\r\no=- {DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()} 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"));
-                    resolve(FenValue.FromObject(offer));
-                });
+                    eArgs[0].AsFunction().Invoke(new[] { FenValue.FromObject(offer) }, context);
+                    return FenValue.Undefined;
+                })), context));
             })));
 
             // createAnswer()
             pc.Set("createAnswer", FenValue.FromFunction(new FenFunction("createAnswer", (args, thisVal) =>
             {
                 FenLogger.Debug("[WebRTC] createAnswer()", LogCategory.JavaScript);
-                return CreatePromise((resolve, reject) =>
+                return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("exec", (eArgs, eThis) => 
                 {
                     var answer = new FenObject();
                     answer.Set("type", FenValue.FromString("answer"));
                     answer.Set("sdp", FenValue.FromString($"v=0\r\no=- {DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()} 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"));
-                    resolve(FenValue.FromObject(answer));
-                });
+                    eArgs[0].AsFunction().Invoke(new[] { FenValue.FromObject(answer) }, context);
+                    return FenValue.Undefined;
+                })), context));
             })));
 
             // setLocalDescription()
@@ -103,7 +105,11 @@ namespace FenBrowser.FenEngine.WebAPIs
                     pc.Set("currentLocalDescription", args[0]);
                     pc.Set("signalingState", FenValue.FromString("have-local-offer"));
                 }
-                return CreatePromise((resolve, reject) => resolve(FenValue.Undefined));
+                return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("exec", (eArgs, eThis) => 
+                {
+                    eArgs[0].AsFunction().Invoke(new IValue[0], context);
+                    return FenValue.Undefined;
+                })), context));
             })));
 
             // setRemoteDescription()
@@ -116,14 +122,22 @@ namespace FenBrowser.FenEngine.WebAPIs
                     pc.Set("currentRemoteDescription", args[0]);
                     pc.Set("signalingState", FenValue.FromString("stable"));
                 }
-                return CreatePromise((resolve, reject) => resolve(FenValue.Undefined));
+                return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("exec", (eArgs, eThis) => 
+                {
+                    eArgs[0].AsFunction().Invoke(new IValue[0], context);
+                    return FenValue.Undefined;
+                })), context));
             })));
 
             // addIceCandidate()
             pc.Set("addIceCandidate", FenValue.FromFunction(new FenFunction("addIceCandidate", (args, thisVal) =>
             {
                 FenLogger.Debug("[WebRTC] addIceCandidate()", LogCategory.JavaScript);
-                return CreatePromise((resolve, reject) => resolve(FenValue.Undefined));
+                return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("exec", (eArgs, eThis) => 
+                {
+                    eArgs[0].AsFunction().Invoke(new IValue[0], context);
+                    return FenValue.Undefined;
+                })), context));
             })));
 
             // createDataChannel()
@@ -131,14 +145,14 @@ namespace FenBrowser.FenEngine.WebAPIs
             {
                 var label = args.Length > 0 ? args[0].ToString() : "";
                 FenLogger.Debug($"[WebRTC] createDataChannel({label})", LogCategory.JavaScript);
-                return FenValue.FromObject(CreateRTCDataChannel(label));
+                return FenValue.FromObject(CreateRTCDataChannel(label, context));
             })));
 
             // addTrack()
             pc.Set("addTrack", FenValue.FromFunction(new FenFunction("addTrack", (args, thisVal) =>
             {
                 FenLogger.Debug("[WebRTC] addTrack()", LogCategory.JavaScript);
-                return FenValue.FromObject(CreateRTCRtpSender());
+                return FenValue.FromObject(CreateRTCRtpSender(context));
             })));
 
             // removeTrack()
@@ -175,11 +189,11 @@ namespace FenBrowser.FenEngine.WebAPIs
             // getStats()
             pc.Set("getStats", FenValue.FromFunction(new FenFunction("getStats", (args, thisVal) =>
             {
-                return CreatePromise((resolve, reject) =>
+                return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("exec", (eArgs, eThis) => 
                 {
-                    var stats = new FenObject();
-                    resolve(FenValue.FromObject(stats));
-                });
+                    eArgs[0].AsFunction().Invoke(new[] { FenValue.FromObject(new FenObject()) }, context);
+                    return FenValue.Undefined;
+                })), context));
             })));
 
             // close()
@@ -195,7 +209,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             return pc;
         }
 
-        private static FenObject CreateRTCDataChannel(string label)
+        private static FenObject CreateRTCDataChannel(string label, IExecutionContext context)
         {
             var dc = new FenObject();
             dc.Set("label", FenValue.FromString(label));
@@ -234,13 +248,16 @@ namespace FenBrowser.FenEngine.WebAPIs
             {
                 await Task.Delay(100);
                 dc.Set("readyState", FenValue.FromString("open"));
-                // Trigger onopen if set
+                context.ScheduleCallback(() => {
+                    var onopen = dc.Get("onopen");
+                    if (onopen.IsFunction) onopen.AsFunction().Invoke(new IValue[0], context);
+                }, 0);
             });
 
             return dc;
         }
 
-        private static FenObject CreateRTCRtpSender()
+        private static FenObject CreateRTCRtpSender(IExecutionContext context)
         {
             var sender = new FenObject();
             sender.Set("track", FenValue.Null);
@@ -257,17 +274,26 @@ namespace FenBrowser.FenEngine.WebAPIs
 
             sender.Set("setParameters", FenValue.FromFunction(new FenFunction("setParameters", (args, thisVal) =>
             {
-                return CreatePromise((resolve, reject) => resolve(FenValue.Undefined));
+                return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("exec", (eArgs, eThis) => {
+                    eArgs[0].AsFunction().Invoke(new IValue[0], context);
+                    return FenValue.Undefined;
+                })), context));
             })));
 
             sender.Set("replaceTrack", FenValue.FromFunction(new FenFunction("replaceTrack", (args, thisVal) =>
             {
-                return CreatePromise((resolve, reject) => resolve(FenValue.Undefined));
+                return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("exec", (eArgs, eThis) => {
+                    eArgs[0].AsFunction().Invoke(new IValue[0], context);
+                    return FenValue.Undefined;
+                })), context));
             })));
 
             sender.Set("getStats", FenValue.FromFunction(new FenFunction("getStats", (args, thisVal) =>
             {
-                return CreatePromise((resolve, reject) => resolve(FenValue.FromObject(new FenObject())));
+                return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("exec", (eArgs, eThis) => {
+                    eArgs[0].AsFunction().Invoke(new[] { FenValue.FromObject(new FenObject()) }, context);
+                    return FenValue.Undefined;
+                })), context));
             })));
 
             return sender;
@@ -333,78 +359,6 @@ namespace FenBrowser.FenEngine.WebAPIs
             })));
 
             return stream;
-        }
-
-        private static IValue CreatePromise(Action<Action<IValue>, Action<IValue>> executor)
-        {
-            var thenable = new FenObject();
-            IValue resolvedValue = FenValue.Undefined;
-            IValue rejectedValue = null;
-            bool isResolved = false;
-            bool isRejected = false;
-            FenValue thenCallbackValue = null;
-            FenValue catchCallbackValue = null;
-
-            thenable.Set("then", FenValue.FromFunction(new FenFunction("then", (args, thisVal) =>
-            {
-                if (args.Length > 0 && args[0].IsFunction)
-                    thenCallbackValue = args[0] as FenValue;
-                
-                if (isResolved && thenCallbackValue != null && thenCallbackValue.IsFunction)
-                {
-                    Task.Run(() =>
-                    {
-                        try { thenCallbackValue.AsFunction().Invoke(new IValue[] { resolvedValue }, null); } catch { }
-                    });
-                }
-                return FenValue.FromObject(thenable);
-            })));
-
-            thenable.Set("catch", FenValue.FromFunction(new FenFunction("catch", (args, thisVal) =>
-            {
-                if (args.Length > 0 && args[0].IsFunction)
-                    catchCallbackValue = args[0] as FenValue;
-                    
-                if (isRejected && catchCallbackValue != null && catchCallbackValue.IsFunction)
-                {
-                    Task.Run(() =>
-                    {
-                        try { catchCallbackValue.AsFunction().Invoke(new IValue[] { rejectedValue }, null); } catch { }
-                    });
-                }
-                return FenValue.FromObject(thenable);
-            })));
-
-            // Execute the executor
-            Task.Run(() =>
-            {
-                try
-                {
-                    executor(
-                        (value) =>
-                        {
-                            resolvedValue = value;
-                            isResolved = true;
-                            if (thenCallbackValue != null && thenCallbackValue.IsFunction)
-                            {
-                                try { thenCallbackValue.AsFunction().Invoke(new IValue[] { value }, null); } catch { }
-                            }
-                        },
-                        (error) =>
-                        {
-                            rejectedValue = error;
-                            isRejected = true;
-                            if (catchCallbackValue != null && catchCallbackValue.IsFunction)
-                            {
-                                try { catchCallbackValue.AsFunction().Invoke(new IValue[] { error }, null); } catch { }
-                            }
-                        }
-                    );
-                }
-                catch { }
-            });
-
-            return FenValue.FromObject(thenable);
         }
     }
 }
