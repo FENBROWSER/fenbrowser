@@ -11,62 +11,30 @@ namespace FenBrowser.FenEngine.Layout
     // Updated to handle parsing manually since CssComputed lacks columns properties
     public partial class MinimalLayoutComputer
     {
-        private int ResolveColumnCount(CssComputed style)
-        {
-            if (style == null) return 1;
-            if (style.Map.TryGetValue("column-count", out string val))
-            {
-                if (int.TryParse(val, out int count)) return count;
-            }
-            return 1;
-        }
-
-        private float ResolveColumnWidth(CssComputed style)
-        {
-            if (style == null) return 0;
-            if (style.Map.TryGetValue("column-width", out string val))
-            {
-                if (float.TryParse(val.Replace("px", ""), out float w)) return w;
-            }
-            return 0;
-        }
-        
-        private float ResolveColumnGap(CssComputed style)
-        {
-            if (style == null) return 16f;
-            if (style.Map.TryGetValue("column-gap", out string val))
-            {
-                if (float.TryParse(val.Replace("px", ""), out float w)) return w;
-            }
-            return 16f;
-        }
-
         private bool IsMultiColumn(CssComputed style)
         {
             if (style == null) return false;
-            int count = ResolveColumnCount(style);
-            float width = ResolveColumnWidth(style);
-            return (count > 1 || width > 0);
+            return (style.ColumnCountInt > 1 || style.ColumnWidthFloat > 0);
         }
 
         private LayoutMetrics MeasureMultiColumn(Element elem, SKSize availableSize, int depth)
         {
              var style = GetStyle(elem);
-             float gap = ResolveColumnGap(style);
+             float gap = (float)(style.ColumnGap ?? 16f);
              
              // Resolve Column Count & Width
-             int count = ResolveColumnCount(style);
-             float colWidth = ResolveColumnWidth(style);
+             int count = style.ColumnCountInt ?? 1;
+             float colWidth = (float)(style.ColumnWidthFloat ?? 0);
              float availableW = availableSize.Width;
              
              if (float.IsInfinity(availableW)) availableW = _viewportWidth; 
              
+             // Algorithm from spec for resolving count/width
              if (colWidth > 0)
              {
-                 int potential = (int)Math.Floor((availableW + gap) / (colWidth + gap));
-                 potential = Math.Max(1, potential);
-                 if (ResolveColumnCount(style) > 1) 
-                     count = Math.Min(count, potential);
+                 int potential = (int)Math.Max(1, Math.Floor((availableW + gap) / (colWidth + gap)));
+                 if (style.ColumnCountInt.HasValue) 
+                     count = Math.Min(style.ColumnCountInt.Value, potential);
                  else
                      count = potential;
              }
@@ -75,17 +43,23 @@ namespace FenBrowser.FenEngine.Layout
              float effectiveColWidth = (availableW - ((count - 1) * gap)) / count;
              if (effectiveColWidth < 1) effectiveColWidth = 1;
              
-             // 1. Measure children as if in a single column of this width
-             var colConstraint = new SKSize(effectiveColWidth, float.PositiveInfinity); // Unconstrained height
-             
-             // We reuse MeasureBlock logic to measure children vertically
+             // 1. Measure children to get total content height
+             var colConstraint = new SKSize(effectiveColWidth, float.PositiveInfinity);
              var m = MeasureBlockInternal(elem, colConstraint, depth, elem);
              
              // 2. Calculate Balanced Height
+             // Naive balance + account for largest child
              float totalHeight = m.ContentHeight;
-             float balancedHeight = totalHeight / count;
+             float maxChildH = 0;
+             if (elem.Children != null) {
+                 foreach(var c in elem.Children) {
+                     if (_desiredSizes.TryGetValue(c, out var sz)) maxChildH = Math.Max(maxChildH, sz.Height);
+                 }
+             }
              
-             // In balanced mode, the container height is roughly balancedHeight
+             float balancedHeight = Math.Max(maxChildH, (float)Math.Ceiling(totalHeight / count));
+             
+             // Container height is balancedHeight unless fixed
              float finalH = balancedHeight;
              if (style.Height.HasValue) finalH = (float)style.Height.Value;
              
@@ -93,25 +67,34 @@ namespace FenBrowser.FenEngine.Layout
              if (style.Width.HasValue) finalW = (float)style.Width.Value;
              else if (availableSize.Width > 0 && !float.IsInfinity(availableSize.Width)) finalW = availableSize.Width; 
              
-             return new LayoutMetrics { ContentHeight = finalH, MaxChildWidth = finalW, MarginTop = m.MarginTop, MarginBottom = m.MarginBottom };
+             // Report Intrinsic Widths
+             float minContent = colWidth > 0 ? colWidth : m.MinContentWidth;
+             float maxContent = colWidth > 0 ? (colWidth * count + gap * (count - 1)) : m.MaxContentWidth;
+
+             return new LayoutMetrics { 
+                 ContentHeight = finalH, 
+                 MaxChildWidth = effectiveColWidth, 
+                 MinContentWidth = minContent,
+                 MaxContentWidth = maxContent,
+                 MarginTop = m.MarginTop, 
+                 MarginBottom = m.MarginBottom 
+             };
         }
 
         private void ArrangeMultiColumn(Element elem, SKRect finalRect)
         {
              var style = GetStyle(elem);
-             float gap = ResolveColumnGap(style);
+             float gap = (float)(style.ColumnGap ?? 16f);
              
-             // Re-resolve columns (stateless)
-             int count = ResolveColumnCount(style);
-             float colWidth = ResolveColumnWidth(style);
+             int count = style.ColumnCountInt ?? 1;
+             float colWidth = (float)(style.ColumnWidthFloat ?? 0);
              float availableW = finalRect.Width;
              
              if (colWidth > 0)
              {
-                 int potential = (int)Math.Floor((availableW + gap) / (colWidth + gap));
-                 potential = Math.Max(1, potential);
-                 if (ResolveColumnCount(style) > 1) 
-                     count = Math.Min(count, potential);
+                 int potential = (int)Math.Max(1, Math.Floor((availableW + gap) / (colWidth + gap)));
+                 if (style.ColumnCountInt.HasValue) 
+                     count = Math.Min(style.ColumnCountInt.Value, potential);
                  else
                      count = potential;
              }

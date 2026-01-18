@@ -9,6 +9,8 @@ namespace FenBrowser.FenEngine.Layout
         public float ContentHeight;
         public float ActualHeight; // Unconstrained content height (for scrolling overflow)
         public float MaxChildWidth;
+        public float MinContentWidth; // NEW: Smallest width without overflow
+        public float MaxContentWidth; // NEW: Ideal width without wrapping
         public float Baseline;
         public float MarginTop;
         public float MarginBottom;
