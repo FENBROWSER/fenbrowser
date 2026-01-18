@@ -756,6 +756,8 @@ namespace FenBrowser.FenEngine.Layout
                 ContentHeight = h, 
                 ActualHeight = Math.Max(Math.Max(h, naturalH), m.ActualHeight),
                 MaxChildWidth = w, 
+                MinContentWidth = isExplicitWidth ? w : m.MinContentWidth,
+                MaxContentWidth = isExplicitWidth ? w : m.MaxContentWidth,
                 Baseline = m.Baseline,
                 MarginTop = mt,
                 MarginBottom = mb
@@ -1020,6 +1022,8 @@ namespace FenBrowser.FenEngine.Layout
 
             float logicalCurBlock = 0;
             float logicalMaxInline = 0;
+            float logicalMinInline = 0;
+            float logicalMaxIntrinsicInline = 0;
             float logicalMaxActualBlockEnd = 0; 
             float lastBlockMargin = 0;
             bool first = true;
@@ -1135,6 +1139,16 @@ namespace FenBrowser.FenEngine.Layout
                     
                     float fullChildInline = childLogicalSize.Inline + logicalMargin.InlineSum;
                     logicalMaxInline = Math.Max(logicalMaxInline, fullChildInline);
+                    
+                    // Propagate intrinsic widths
+                    if (writingMode == "vertical-rl" || writingMode == "vertical-lr") {
+                        // In vertical modes, inline is physical height. 
+                        // Simplified: intrinsic widths don't map cleanly to logical sizing here yet.
+                        // But for now, we use MaxChildWidth as a proxy.
+                    } else {
+                        logicalMinInline = Math.Max(logicalMinInline, childMetrics.MinContentWidth + logicalMargin.InlineSum);
+                        logicalMaxIntrinsicInline = Math.Max(logicalMaxIntrinsicInline, childMetrics.MaxContentWidth + logicalMargin.InlineSum);
+                    }
                 }
                 else
                 {
@@ -1144,6 +1158,11 @@ namespace FenBrowser.FenEngine.Layout
                    var childLogicalSize = WritingModeConverter.ToLogical(childPhysicalSize, writingMode);
                    
                    logicalMaxInline = Math.Max(logicalMaxInline, childLogicalSize.Inline);
+                   
+                   if (!(writingMode == "vertical-rl" || writingMode == "vertical-lr")) {
+                        logicalMinInline = Math.Max(logicalMinInline, childMetrics.MinContentWidth);
+                        logicalMaxIntrinsicInline = Math.Max(logicalMaxIntrinsicInline, childMetrics.MaxContentWidth);
+                   }
                 }
 
                 bool isFloat = childStyle?.Float?.ToLowerInvariant() == "left"; 
@@ -1259,6 +1278,8 @@ namespace FenBrowser.FenEngine.Layout
                 ContentHeight = finalPhysSize.Height, 
                 ActualHeight = finalPhysSize.Height, 
                 MaxChildWidth = finalPhysSize.Width,
+                MinContentWidth = logicalMinInline, // Physical for horizontal
+                MaxContentWidth = logicalMaxIntrinsicInline, // Physical for horizontal
                 MarginTop = internalBlockMarginStart,
                 MarginBottom = internalBlockMarginEnd
             };
@@ -2544,7 +2565,7 @@ namespace FenBrowser.FenEngine.Layout
         public LayoutMetrics MeasureGrid(Element element, SKSize availableSize, int depth)
         {
             if (element == null) return new LayoutMetrics();
-            return GridLayoutComputer.Measure(element, availableSize, _styles, depth, GetChildrenWithPseudos(element));
+            return GridLayoutComputer.Measure(element, availableSize, _styles, depth, (n, sz, d) => MeasureNode(n, sz, d), GetChildrenWithPseudos(element));
         }
 
         /// <summary>
@@ -2561,6 +2582,7 @@ namespace FenBrowser.FenEngine.Layout
                 _boxes,
                 depth,
                 (node, rect, d) => ArrangeNode(node, rect, d), // Delegate child arrangement
+                (node, size, d) => MeasureNode(node, size, d), // Delegate child measurement
                 GetChildrenWithPseudos(element)
             );
         }

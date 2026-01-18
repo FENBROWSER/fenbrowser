@@ -65,6 +65,10 @@ namespace FenBrowser.FenEngine.Layout
             float currentY = 0;
             float currentLineHeight = 0;
             float maxLineContentWidth = 0;
+            float maxContentWidth = 0; // Ideal width (unwrapped)
+            float minContentWidth = 0; // Smallest unbreakable width
+            
+            float currentUnwrappedX = 0; 
             
             // Buffer to hold items for the current line so we can align them later
             var currentLineItems = new List<LineItem>();
@@ -236,11 +240,13 @@ namespace FenBrowser.FenEngine.Layout
 
                 // 3. Advance Line
                 maxLineContentWidth = Math.Max(maxLineContentWidth, currentX);
+                maxContentWidth = Math.Max(maxContentWidth, currentUnwrappedX);
                 currentY += alignedLineHeight; // Use the aligned height, which might be taller than raw max height
 
                 // Reset Line State
                 currentLineHeight = 0;
                 currentLineItems.Clear();
+                currentUnwrappedX = 0; 
 
                 // Re-calculate available width for next line
                 UpdateAvailableWidthForY();
@@ -545,6 +551,8 @@ namespace FenBrowser.FenEngine.Layout
                     });
 
                     currentX += totalW;
+                    currentUnwrappedX += totalW;
+                    minContentWidth = Math.Max(minContentWidth, totalW);
                     currentLineHeight = Math.Max(currentLineHeight, totalH);
                 }
                 else if (node is Text textNode)
@@ -615,6 +623,7 @@ namespace FenBrowser.FenEngine.Layout
                             VerticalAlign = style?.VerticalAlign
                         });
                         currentX += spaceW;
+                        currentUnwrappedX += spaceW;
                         currentLineHeight = Math.Max(currentLineHeight, lineHeight);
                         return;
                     }
@@ -642,6 +651,7 @@ namespace FenBrowser.FenEngine.Layout
                                 VerticalAlign = style?.VerticalAlign
                             });
                             currentX += spaceW;
+                            currentUnwrappedX += spaceW;
                             currentLineHeight = Math.Max(currentLineHeight, lineHeight);
                             continue;
                         }
@@ -674,6 +684,8 @@ namespace FenBrowser.FenEngine.Layout
 
                         // FenLogger.Debug($"[INLINE-WORD] word='{word}' wordW={wordW} currentX={currentX} paint.TextSize={paint.TextSize}", LogCategory.Rendering);
                         currentX += wordW + spaceW;
+                        currentUnwrappedX += wordW + spaceW;
+                        minContentWidth = Math.Max(minContentWidth, wordW);
                         currentLineHeight = Math.Max(currentLineHeight, lineHeight);
                     }
                 }
@@ -702,7 +714,9 @@ namespace FenBrowser.FenEngine.Layout
             result.Metrics = new LayoutMetrics 
             {
                 ContentHeight = currentY, // Logical Height (Stack Size)
-                MaxChildWidth = maxLineContentWidth
+                MaxChildWidth = maxLineContentWidth,
+                MinContentWidth = minContentWidth,
+                MaxContentWidth = maxContentWidth
             };
 
             if (isVerticalRL)

@@ -30,6 +30,7 @@ namespace FenBrowser.FenEngine.Layout
         {
             // Resolved Layout Values
             public float BaseSize { get; set; }      // The calculated size (used size)
+            public float GrowthLimit { get; set; }   // The maximum size the track can grow to
             
             // Sizing Constraints (Parsed)
             public GridTrackSize MinLimit { get; set; }
@@ -476,7 +477,8 @@ namespace FenBrowser.FenEngine.Layout
                 MinLimit = t.MinLimit,
                 MaxLimit = t.MaxLimit,
                 MinContent = t.MinContent,
-                MaxContent = t.MaxContent
+                MaxContent = t.MaxContent,
+                GrowthLimit = t.GrowthLimit
             };
         }
 
@@ -488,6 +490,7 @@ namespace FenBrowser.FenEngine.Layout
             SKSize availableSize,
             IReadOnlyDictionary<Node, CssComputed> styles,
             int depth,
+            Func<Node, SKSize, int, LayoutMetrics> measureNode,
             IEnumerable<Node> childrenSource = null)
         {
             if (container == null || container.Children == null)
@@ -552,18 +555,22 @@ namespace FenBrowser.FenEngine.Layout
 
             // Resolve intrinsic sizes for columns (Auto, MinContent, MaxContent, FitContent)
             // This sets BaseSize based on content
-            MeasureTracksIntrinsic(columnTracks, items, positions, styles, true, depth);
+            MeasureTracksIntrinsic(columnTracks, items, positions, styles, true, depth, measureNode);
             
             // Resolve flexible tracks (fr units)
             ResolveFlexibleTracks(columnTracks, availableSize.Width, columnGap);
             
             // Measure rows
-            MeasureAutoRowHeights(rowTracks, columnTracks, items, positions, styles, columnGap, depth);
+            MeasureAutoRowHeights(rowTracks, columnTracks, items, positions, styles, columnGap, depth, measureNode);
             ResolveFlexibleTracks(rowTracks, availableSize.Height, rowGap);
 
             // Calculate total dimensions
             float totalWidth = columnTracks.Sum(t => t.BaseSize) + Math.Max(0, columnTracks.Count - 1) * columnGap;
             float totalHeight = rowTracks.Sum(t => t.BaseSize) + Math.Max(0, rowTracks.Count - 1) * rowGap;
+
+            // Calculate Intrinsic Dimensions
+            float minIntrinsicWidth = columnTracks.Sum(t => t.BaseSize) + Math.Max(0, columnTracks.Count - 1) * columnGap;
+            float maxIntrinsicWidth = columnTracks.Sum(t => float.IsInfinity(t.GrowthLimit) ? t.BaseSize : t.GrowthLimit) + Math.Max(0, columnTracks.Count - 1) * columnGap;
 
             System.Diagnostics.Debug.WriteLine($"[CSS-GRID] Measured: {columnTracks.Count}x{rowTracks.Count}, size={totalWidth}x{totalHeight}");
 
@@ -571,7 +578,9 @@ namespace FenBrowser.FenEngine.Layout
             {
                 ContentHeight = totalHeight,
                 ActualHeight = totalHeight,
-                MaxChildWidth = totalWidth
+                MaxChildWidth = totalWidth,
+                MinContentWidth = minIntrinsicWidth,
+                MaxContentWidth = maxIntrinsicWidth
             };
         }
 
@@ -585,6 +594,7 @@ namespace FenBrowser.FenEngine.Layout
             IDictionary<Node, BoxModel> boxes,
             int depth,
             Action<Node, SKRect, int> arrangeChild,
+            Func<Node, SKSize, int, LayoutMetrics> measureNode,
             IEnumerable<Node> childrenSource = null)
         {
             if (container == null || container.Children == null) return;
@@ -641,7 +651,7 @@ namespace FenBrowser.FenEngine.Layout
 
             // Resolve intrinsic sizes for columns (Auto, MinContent, MaxContent, FitContent)
             // This sets BaseSize based on content
-            MeasureTracksIntrinsic(columnTracks, items, positions, styles, true, depth);
+            MeasureTracksIntrinsic(columnTracks, items, positions, styles, true, depth, measureNode);
 
             // Resolve Track Sizes
             ResolveFlexibleTracks(columnTracks, bounds.Width, columnGap);
@@ -841,7 +851,8 @@ namespace FenBrowser.FenEngine.Layout
             Dictionary<Element, GridItemPosition> positions,
             IReadOnlyDictionary<Node, CssComputed> styles,
             float columnGap,
-            int depth)
+            int depth,
+            Func<Node, SKSize, int, LayoutMetrics> measureNode)
         {
             var rowMaxHeights = new Dictionary<int, float>();
             foreach (var item in items)
@@ -850,9 +861,16 @@ namespace FenBrowser.FenEngine.Layout
                 var pos = positions[item];
                 var itemStyle = styles.TryGetValue(item, out var ist) ? ist : null;
 
-                float itemHeight = 50; 
-                if (itemStyle?.Height != null) itemHeight = (float)itemStyle.Height.Value;
-                else if (itemStyle?.MinHeight != null) itemHeight = (float)itemStyle.MinHeight.Value;
+                // Calculate width to measure against
+                float itemWidth = 0;
+                for (int c = pos.ColumnStart - 1; c < pos.ColumnEnd - 1 && c < columnTracks.Count; c++)
+                {
+                    itemWidth += columnTracks[c].BaseSize;
+                    if (c < pos.ColumnEnd - 2) itemWidth += columnGap;
+                }
+
+                var metrics = measureNode(item, new SKSize(itemWidth, float.PositiveInfinity), depth + 1);
+                float itemHeight = metrics.ContentHeight;
 
                 int spanRows = Math.Max(1, pos.RowEnd - pos.RowStart);
                 float heightPerRow = itemHeight / spanRows;
@@ -887,7 +905,8 @@ namespace FenBrowser.FenEngine.Layout
             Dictionary<Element, GridItemPosition> positions,
             IReadOnlyDictionary<Node, CssComputed> styles,
             bool isColumn,
-            int depth)
+            int depth,
+            Func<Node, SKSize, int, LayoutMetrics> measureNode)
         {
             // Simple heuristic for intrinsic sizing:
             // Iterate all tracks. If track is content-sized (Auto, MinContent, MaxContent, FitContent),
@@ -909,81 +928,82 @@ namespace FenBrowser.FenEngine.Layout
             }
             if (!hasContentTracks) return;
 
+            // First Pass: 1-track spanning items
             foreach (var item in items)
             {
                 if (!positions.TryGetValue(item, out var pos)) continue;
-                
                 int spanStart = isColumn ? pos.ColumnStart : pos.RowStart;
                 int spanCount = isColumn ? pos.ColumnSpan : pos.RowSpan;
-                
-                // For simplicity, only consider items spanning 1 track for intrinsic sizing first.
-                // Spanning items distribution is complex.
                 if (spanCount != 1) continue;
                 
                 int trackIndex = spanStart - 1;
                 if (trackIndex < 0 || trackIndex >= tracks.Count) continue;
-                
                 var track = tracks[trackIndex];
-                
-                // Calculate item intrinsic size
-                // We need to measure 'min-content' and 'max-content' of the item.
-                // Since MinimalLayoutComputer doesn't expose these easily, we approximate:
-                // MinContent ~= MinWidth (or Width if set)
-                // MaxContent ~= Width (if set) or Measure with infinite available.
-                
-                // Get style
                 if (!styles.TryGetValue(item, out var style)) continue;
+
+                // Measure item accurately
+                var metrics = measureNode(item, new SKSize(float.PositiveInfinity, float.PositiveInfinity), depth + 1);
                 
-                // Use explicit size if present
-                float? explicitSize = (float?)(isColumn ? style.Width : style.Height);
-                
-                float minSize = 0;
-                float maxSize = 0;
-                
-                if (explicitSize.HasValue)
-                {
-                    minSize = explicitSize.Value;
-                    maxSize = explicitSize.Value;
-                }
-                else
-                {
-                    // If no explicit width, check min-width/max-width to approximate content range
-                    float? minW = (float?)(isColumn ? style.MinWidth : style.MinHeight);
-                    float? maxW = (float?)(isColumn ? style.MaxWidth : style.MaxHeight);
-                    
-                    minSize = minW ?? 0;
-                    maxSize = maxW ?? float.PositiveInfinity; // Treat as "Infinite" content
-                }
-                
-                // Update Track BaseSize
-                // ... logic ...
-                
-                // MinLimit
-                if (track.MinLimit.Type == GridUnitType.MinContent) track.BaseSize = Math.Max(track.BaseSize, minSize);
-                else if (track.MinLimit.Type == GridUnitType.MaxContent) track.BaseSize = Math.Max(track.BaseSize, maxSize);
-                else if (track.MinLimit.Type == GridUnitType.Auto) track.BaseSize = Math.Max(track.BaseSize, minSize);
-                
-                // MaxLimit
-                if (track.MaxLimit.Type == GridUnitType.MinContent) 
-                {
-                    track.BaseSize = Math.Max(track.BaseSize, minSize);
-                }
-                else if (track.MaxLimit.Type == GridUnitType.MaxContent)
-                {
-                     track.BaseSize = Math.Max(track.BaseSize, maxSize);
-                }
-                else if (track.MaxLimit.Type == GridUnitType.FitContent)
-                {
-                    float limit = track.MaxLimit.FitContentLimit;
-                    float fit = Math.Min(maxSize, Math.Max(minSize, limit));
-                    track.BaseSize = Math.Max(track.BaseSize, fit);
-                }
-                else if (track.IsAuto)
-                {
-                    track.BaseSize = Math.Max(track.BaseSize, maxSize);
-                }
-                
-                System.Console.WriteLine($"[Grid] Track {trackIndex} BaseSize -> {track.BaseSize}");
+                float minSize = isColumn ? metrics.MinContentWidth : metrics.ContentHeight;
+                float maxSize = isColumn ? metrics.MaxContentWidth : metrics.ContentHeight;
+
+                UpdateTrackSizes(track, minSize, maxSize);
+            }
+
+            // Second Pass: Multi-track spanning items
+            var spanningItems = items.Where(i => positions.ContainsKey(i) && (isColumn ? positions[i].ColumnSpan : positions[i].RowSpan) > 1)
+                                    .OrderBy(i => isColumn ? positions[i].ColumnSpan : positions[i].RowSpan);
+
+            foreach (var item in spanningItems)
+            {
+                var pos = positions[item];
+                int start = (isColumn ? pos.ColumnStart : pos.RowStart) - 1;
+                int span = isColumn ? pos.ColumnSpan : pos.RowSpan;
+                if (start < 0 || start + span > tracks.Count) continue;
+
+                var spannedTracks = tracks.GetRange(start, span);
+                if (!styles.TryGetValue(item, out var style)) continue;
+
+                // Measure multi-track item
+                var metrics = measureNode(item, new SKSize(float.PositiveInfinity, float.PositiveInfinity), depth + 1);
+
+                float minSize = isColumn ? metrics.MinContentWidth : metrics.ContentHeight;
+                float maxSize = isColumn ? metrics.MaxContentWidth : metrics.ContentHeight;
+
+                // Distribute minSize
+                DistributeExtraSpace(spannedTracks, minSize, true);
+                // Distribute maxSize
+                DistributeExtraSpace(spannedTracks, maxSize, false);
+            }
+        }
+
+        private static void UpdateTrackSizes(GridTrack track, float minSize, float maxSize)
+        {
+            if (track.MinLimit.Type == GridUnitType.MinContent || track.MinLimit.Type == GridUnitType.Auto)
+                track.BaseSize = Math.Max(track.BaseSize, minSize);
+            else if (track.MinLimit.Type == GridUnitType.MaxContent)
+                track.BaseSize = Math.Max(track.BaseSize, maxSize);
+
+            if (track.MaxLimit.Type == GridUnitType.MaxContent || track.MaxLimit.Type == GridUnitType.Auto)
+                track.GrowthLimit = Math.Max(track.GrowthLimit, maxSize);
+        }
+
+        private static void DistributeExtraSpace(List<GridTrack> tracks, float requiredSpace, bool isMin)
+        {
+            float currentSum = tracks.Sum(t => isMin ? t.BaseSize : (float.IsInfinity(t.GrowthLimit) ? t.BaseSize : t.GrowthLimit));
+            float extra = requiredSpace - currentSum;
+            if (extra <= 0) return;
+
+            // Simple distribution: evenly among content-sized tracks
+            var growable = tracks.Where(t => t.IsAuto || t.MinLimit.Type == GridUnitType.MinContent || t.MinLimit.Type == GridUnitType.MaxContent).ToList();
+            if (growable.Count == 0) growable = tracks; // Fallback
+
+            float share = extra / growable.Count;
+            foreach (var t in growable)
+            {
+                if (isMin) t.BaseSize += share;
+                else if (!float.IsInfinity(t.GrowthLimit)) t.GrowthLimit += share;
+                else t.BaseSize += share; // Growth limit infinite means base size is the constraint for now
             }
         }
     }

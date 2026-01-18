@@ -34,6 +34,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
             
             public float FlexGrow;
             public float FlexShrink;
+            public int Order; // CSS order property
             
             public bool Frozen; // If true, size is fixed
 
@@ -91,6 +92,9 @@ namespace FenBrowser.FenEngine.Rendering.Css
             }).ToList();
             
             if (children.Count == 0) return new LayoutMetrics();
+            
+            // Sort children by CSS order property (stable sort preserves source order for equal values)
+            children = children.OrderBy(c => getStyle(c)?.Order ?? 0).ToList();
             
             // ... (keep mainAvailable logic) ...
             float mainAvailable = isRow ? availableSize.Width : availableSize.Height;
@@ -336,6 +340,9 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 return !shouldHide(c, getStyle(c));
             }).ToList();
             if (children.Count == 0) return;
+            
+            // Sort children by CSS order property (stable sort preserves source order for equal values)
+            children = children.OrderBy(c => getStyle(c)?.Order ?? 0).ToList();
 
             float mainAvailable = isRow ? contentBox.Width : contentBox.Height;
              if (float.IsInfinity(mainAvailable) || float.IsNaN(mainAvailable))
@@ -469,7 +476,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                             foreach(var item in line.Items) {
                                 float ratio = (item.FlexShrink * item.FlexBaseSize) / totalWeightedShrink;
                                 float shrinkAmount = Math.Abs(freeSpace) * ratio;
-                                item.TargetMainSize = Math.Max(0, item.FlexBaseSize - shrinkAmount);
+                                item.TargetMainSize = Math.Max(item.MinMain, item.FlexBaseSize - shrinkAmount);
                             }
                              line.MainSize = mainAvailable; 
                         } else {
@@ -538,13 +545,12 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     float maxAscent = 0;
                     foreach(var item in line.Items)
                     {
-                        // Improved baseline calculation: use first line baseline or logic
-                        // For now, assume baseline is roughly 80% of height for text, or margin-top + height for blocks
-                        // This is a simplification. Real engines use font metrics.
-                        // Ideally: item.IntrinsicMetrics.Ascent
-                        float ascent = item.IntrinsicMetrics.ContentHeight * 0.8f; 
+                        // Use actual baseline from measurement if available, otherwise heuristic
+                        float ascent = item.IntrinsicMetrics.Baseline;
+                        if (ascent <= 0) ascent = item.IntrinsicMetrics.ContentHeight * 0.8f;
+                        
                         var m = item.Style?.Margin; 
-                        if (m!=null) ascent += (float)m.Value.Top;
+                        if (m!=null) ascent += (float)(isRow ? m.Value.Top : m.Value.Left);
                         
                         maxAscent = Math.Max(maxAscent, ascent);
                     }
