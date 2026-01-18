@@ -426,6 +426,58 @@ public class BrowserIntegration
         }
     }
     
+    /// <summary>
+    /// Get the screen-space rectangle of an element.
+    /// </summary>
+    public SKRect? GetElementRect(Element element)
+    {
+        if (element == null) return null;
+        
+        lock (_rendererLock)
+        {
+            var box = _renderer.GetElementBox(element);
+            if (box == null) return null;
+            return box.BorderBox;
+        }
+    }
+    
+    /// <summary>
+    /// Capture a base64-encoded screenshot of the current page.
+    /// </summary>
+    public async Task<string> CaptureScreenshotAsync()
+    {
+        return await Task.Run(() =>
+        {
+            lock (_frameLock)
+            {
+                if (_currentFrame == null) return "";
+                
+                var size = new SKSizeI((int)_lastViewportSize.Width, (int)_lastViewportSize.Height);
+                if (size.Width <= 0 || size.Height <= 0) return "";
+                
+                using var image = SKImage.FromPicture(_currentFrame, size);
+                if (image == null) return "";
+                
+                using var data = image.Encode(SKEncodedImageFormat.Png, 100);
+                if (data == null) return "";
+                
+                return Convert.ToBase64String(data.ToArray());
+            }
+        });
+    }
+
+    /// <summary>
+    /// Focus a specific DOM node.
+    /// </summary>
+    public void FocusNode(Element element)
+    {
+        // Internal engine focus logic (placeholder for now as engine doesn't track focus yet)
+        // But we can signal it if needed.
+        _highlightedElement = element; // For visual feedback in WebDriver
+        _needsRepaint = true;
+        NeedsRepaint?.Invoke();
+    }
+    
     private void DrawHighlight(SKCanvas canvas, Element element)
     {
         // Get bounds from layout computer via renderer
