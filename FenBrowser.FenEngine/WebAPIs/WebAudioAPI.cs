@@ -18,14 +18,14 @@ namespace FenBrowser.FenEngine.WebAPIs
         /// <summary>
         /// Creates the AudioContext constructor
         /// </summary>
-        public static FenObject CreateAudioContextConstructor()
+        public static FenObject CreateAudioContextConstructor(IExecutionContext context)
         {
             var constructor = new FenObject();
 
             // Make it callable as new AudioContext()
             constructor.Set("__call__", FenValue.FromFunction(new FenFunction("AudioContext", (args, thisVal) =>
             {
-                return FenValue.FromObject(CreateAudioContext());
+                return FenValue.FromObject(CreateAudioContext(context));
             })));
 
             return constructor;
@@ -34,7 +34,7 @@ namespace FenBrowser.FenEngine.WebAPIs
         /// <summary>
         /// Creates an AudioContext instance
         /// </summary>
-        public static FenObject CreateAudioContext()
+        public static FenObject CreateAudioContext(IExecutionContext context)
         {
             var contextId = ++_contextIdCounter;
             var ctx = new FenObject();
@@ -114,41 +114,50 @@ namespace FenBrowser.FenEngine.WebAPIs
             ctx.Set("decodeAudioData", FenValue.FromFunction(new FenFunction("decodeAudioData", (args, thisVal) =>
             {
                 FenLogger.Debug("[WebAudio] decodeAudioData()", LogCategory.JavaScript);
-                // Return a promise-like thenable
-                var thenable = new FenObject();
-                thenable.Set("then", FenValue.FromFunction(new FenFunction("then", (thenArgs, thenThis) =>
+                
+                return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("executor", (execArgs, execThis) => 
                 {
-                    if (thenArgs.Length > 0 && thenArgs[0].IsFunction)
+                    var resolve = execArgs[0].AsFunction();
+                    Task.Run(async () => 
                     {
-                        var callback = thenArgs[0].AsFunction();
-                        // Return a stub AudioBuffer
-                        callback?.Invoke(new IValue[] { FenValue.FromObject(CreateAudioBuffer(2, 44100, sampleRate)) }, null);
-                    }
-                    return FenValue.FromObject(thenable);
-                })));
-                thenable.Set("catch", FenValue.FromFunction(new FenFunction("catch", (catchArgs, catchThis) => FenValue.FromObject(thenable))));
-                return FenValue.FromObject(thenable);
+                        await Task.Delay(50); // Simulate decode
+                        var buffer = CreateAudioBuffer(2, 44100, sampleRate);
+                        context.ScheduleCallback(() => {
+                            resolve.Invoke(new[] { FenValue.FromObject(buffer) }, context);
+                        }, 0);
+                    });
+                    return FenValue.Undefined;
+                })), context));
             })));
 
             ctx.Set("suspend", FenValue.FromFunction(new FenFunction("suspend", (args, thisVal) =>
             {
                 FenLogger.Debug("[WebAudio] suspend()", LogCategory.JavaScript);
                 ctx.Set("state", FenValue.FromString("suspended"));
-                return FenValue.Undefined;
+                return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("ex", (eArgs, eThis) => {
+                    eArgs[0].AsFunction().Invoke(new IValue[0], context);
+                    return FenValue.Undefined;
+                })), context));
             })));
 
             ctx.Set("resume", FenValue.FromFunction(new FenFunction("resume", (args, thisVal) =>
             {
                 FenLogger.Debug("[WebAudio] resume()", LogCategory.JavaScript);
                 ctx.Set("state", FenValue.FromString("running"));
-                return FenValue.Undefined;
+                return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("ex", (eArgs, eThis) => {
+                    eArgs[0].AsFunction().Invoke(new IValue[0], context);
+                    return FenValue.Undefined;
+                })), context));
             })));
 
             ctx.Set("close", FenValue.FromFunction(new FenFunction("close", (args, thisVal) =>
             {
                 FenLogger.Debug("[WebAudio] close()", LogCategory.JavaScript);
                 ctx.Set("state", FenValue.FromString("closed"));
-                return FenValue.Undefined;
+                return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("ex", (eArgs, eThis) => {
+                    eArgs[0].AsFunction().Invoke(new IValue[0], context);
+                    return FenValue.Undefined;
+                })), context));
             })));
 
             FenLogger.Debug($"[WebAudio] AudioContext #{contextId} created", LogCategory.JavaScript);
