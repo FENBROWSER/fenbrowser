@@ -1,0 +1,264 @@
+// =============================================================================
+// TestHarnessAPI.cs
+// WPT/Test262 Test Harness API Implementation
+// 
+// SPEC REFERENCE: Web Platform Tests testharness.js
+//                 https://web-platform-tests.org/writing-tests/testharness-api.html
+// 
+// PURPOSE: Provides window.testRunner and related APIs for automated testing
+// =============================================================================
+
+using System;
+using System.Collections.Generic;
+using System.Text;
+using FenBrowser.Core;
+using FenBrowser.FenEngine.Core;
+using FenBrowser.FenEngine.Core.Interfaces;
+
+namespace FenBrowser.FenEngine.WebAPIs
+{
+    /// <summary>
+    /// Test harness API for WPT and JavaScript test suites.
+    /// Exposes window.testRunner for test automation.
+    /// </summary>
+    public static class TestHarnessAPI
+    {
+        // --- Test State ---
+        private static bool _testMode = false;
+        private static bool _waitUntilDone = false;
+        private static bool _testDone = false;
+        private static StringBuilder _testLog = new StringBuilder();
+        private static List<TestResult> _results = new List<TestResult>();
+        private static int _testTimeout = 10000; // Default 10s
+        
+        public class TestResult
+        {
+            public string Name { get; set; }
+            public TestStatus Status { get; set; }
+            public string Message { get; set; }
+            public string Stack { get; set; }
+            public double Duration { get; set; }
+        }
+        
+        public enum TestStatus
+        {
+            Pass,
+            Fail,
+            Timeout,
+            NotRun,
+            PreconditionFailed
+        }
+        
+        // --- Public API ---
+        
+        /// <summary>
+        /// Enable test mode for the engine.
+        /// </summary>
+        public static void EnableTestMode(int timeoutMs = 10000)
+        {
+            _testMode = true;
+            _waitUntilDone = false;
+            _testDone = false;
+            _testLog.Clear();
+            _results.Clear();
+            _testTimeout = timeoutMs;
+        }
+        
+        /// <summary>
+        /// Disable test mode.
+        /// </summary>
+        public static void DisableTestMode()
+        {
+            _testMode = false;
+        }
+        
+        /// <summary>
+        /// Check if test mode is enabled.
+        /// </summary>
+        public static bool IsTestMode => _testMode;
+        
+        /// <summary>
+        /// Check if tests should wait for async completion.
+        /// </summary>
+        public static bool IsWaitingForDone => _waitUntilDone && !_testDone;
+        
+        /// <summary>
+        /// Check if test execution is complete.
+        /// </summary>
+        public static bool IsTestDone => _testDone;
+        
+        /// <summary>
+        /// Get captured test log.
+        /// </summary>
+        public static string GetTestLog() => _testLog.ToString();
+        
+        /// <summary>
+        /// Get test results.
+        /// </summary>
+        public static IReadOnlyList<TestResult> GetResults() => _results.AsReadOnly();
+        
+        /// <summary>
+        /// Get configured timeout in ms.
+        /// </summary>
+        public static int GetTimeout() => _testTimeout;
+        
+        /// <summary>
+        /// Add a test result.
+        /// </summary>
+        public static void AddResult(string name, TestStatus status, string message = null, string stack = null)
+        {
+            _results.Add(new TestResult
+            {
+                Name = name,
+                Status = status,
+                Message = message,
+                Stack = stack
+            });
+        }
+        
+        /// <summary>
+        /// Log a message to test output.
+        /// </summary>
+        public static void Log(string message)
+        {
+            _testLog.AppendLine(message);
+        }
+        
+        // --- FenRuntime Registration ---
+        
+        /// <summary>
+        /// Create testRunner object for FenRuntime window.
+        /// </summary>
+        public static FenObject CreateTestRunnerObject()
+        {
+            var testRunner = new FenObject();
+            
+            // notifyDone() - Signal test completion
+            testRunner.Set("notifyDone", FenValue.FromFunction(new FenFunction("notifyDone", (args, thisVal) =>
+            {
+                _testDone = true;
+                Log("[testRunner] notifyDone() called");
+                return FenValue.Undefined;
+            })));
+            
+            // waitUntilDone() - Keep page alive for async tests
+            testRunner.Set("waitUntilDone", FenValue.FromFunction(new FenFunction("waitUntilDone", (args, thisVal) =>
+            {
+                _waitUntilDone = true;
+                Log("[testRunner] waitUntilDone() called");
+                return FenValue.Undefined;
+            })));
+            
+            // log(message) - Structured logging
+            testRunner.Set("log", FenValue.FromFunction(new FenFunction("log", (args, thisVal) =>
+            {
+                var msg = args.Length > 0 ? args[0].ToString() : "";
+                Log(msg);
+                return FenValue.Undefined;
+            })));
+            
+            // dumpAsText() - Signal text-based output mode
+            testRunner.Set("dumpAsText", FenValue.FromFunction(new FenFunction("dumpAsText", (args, thisVal) =>
+            {
+                Log("[testRunner] dumpAsText() mode enabled");
+                return FenValue.Undefined;
+            })));
+            
+            // setTestTimeout(ms) - Set custom timeout
+            testRunner.Set("setTestTimeout", FenValue.FromFunction(new FenFunction("setTestTimeout", (args, thisVal) =>
+            {
+                if (args.Length > 0 && args[0].IsNumber)
+                {
+                    _testTimeout = (int)args[0].ToNumber();
+                    Log($"[testRunner] Timeout set to {_testTimeout}ms");
+                }
+                return FenValue.Undefined;
+            })));
+            
+            // reportResult(name, status, message) - Report individual test result
+            testRunner.Set("reportResult", FenValue.FromFunction(new FenFunction("reportResult", (args, thisVal) =>
+            {
+                var name = args.Length > 0 ? args[0].ToString() : "unknown";
+                var pass = args.Length > 1 && args[1].ToBoolean();
+                var msg = args.Length > 2 ? args[2].ToString() : null;
+                
+                AddResult(name, pass ? TestStatus.Pass : TestStatus.Fail, msg);
+                Log($"[testRunner] Result: {name} = {(pass ? "PASS" : "FAIL")}");
+                return FenValue.Undefined;
+            })));
+            
+            // completeTest() - Alias for notifyDone
+            testRunner.Set("completeTest", FenValue.FromFunction(new FenFunction("completeTest", (args, thisVal) =>
+            {
+                _testDone = true;
+                Log("[testRunner] completeTest() called");
+                return FenValue.Undefined;
+            })));
+            
+            return testRunner;
+        }
+        
+        /// <summary>
+        /// Register testRunner on FenRuntime's global environment.
+        /// </summary>
+        public static void Register(FenRuntime runtime)
+        {
+            if (runtime == null) return;
+            
+            var testRunner = CreateTestRunnerObject();
+            runtime.GlobalEnv.Set("testRunner", FenValue.FromObject(testRunner));
+            
+            // Also register add_result_callback for testharness.js
+            runtime.GlobalEnv.Set("add_result_callback", FenValue.FromFunction(new FenFunction("add_result_callback", (args, thisVal) =>
+            {
+                Log("[testharness] add_result_callback registered");
+                return FenValue.Undefined;
+            })));
+            
+            runtime.GlobalEnv.Set("add_completion_callback", FenValue.FromFunction(new FenFunction("add_completion_callback", (args, thisVal) =>
+            {
+                Log("[testharness] add_completion_callback registered");
+                return FenValue.Undefined;
+            })));
+        }
+        
+        /// <summary>
+        /// Get summary of test results.
+        /// </summary>
+        public static (int passed, int failed, int total) GetResultSummary()
+        {
+            int passed = 0, failed = 0;
+            foreach (var r in _results)
+            {
+                if (r.Status == TestStatus.Pass) passed++;
+                else failed++;
+            }
+            return (passed, failed, _results.Count);
+        }
+        
+        /// <summary>
+        /// Generate TAP (Test Anything Protocol) output.
+        /// </summary>
+        public static string GenerateTAPOutput()
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine($"TAP version 13");
+            sb.AppendLine($"1..{_results.Count}");
+            
+            for (int i = 0; i < _results.Count; i++)
+            {
+                var r = _results[i];
+                var status = r.Status == TestStatus.Pass ? "ok" : "not ok";
+                sb.AppendLine($"{status} {i + 1} - {r.Name}");
+                if (r.Status != TestStatus.Pass && !string.IsNullOrEmpty(r.Message))
+                {
+                    sb.AppendLine($"  ---");
+                    sb.AppendLine($"  message: {r.Message}");
+                    sb.AppendLine($"  ...");
+                }
+            }
+            
+            return sb.ToString();
+        }
+    }
+}

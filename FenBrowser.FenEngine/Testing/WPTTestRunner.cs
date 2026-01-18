@@ -1,0 +1,319 @@
+// =============================================================================
+// WPTTestRunner.cs
+// Web Platform Tests Runner
+// 
+// PURPOSE: Execute WPT tests in headless mode and collect results
+// =============================================================================
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using FenBrowser.Core;
+
+namespace FenBrowser.FenEngine.Testing
+{
+    /// <summary>
+    /// Runner for Web Platform Tests (WPT).
+    /// Executes HTML test files and collects testharness.js results.
+    /// </summary>
+    public class WPTTestRunner
+    {
+        private readonly string _wptRootPath;
+        private readonly int _timeoutMs;
+        private readonly List<TestExecutionResult> _results = new List<TestExecutionResult>();
+        
+        public class TestExecutionResult
+        {
+            public string TestFile { get; set; }
+            public bool Success { get; set; }
+            public int PassCount { get; set; }
+            public int FailCount { get; set; }
+            public int TotalCount { get; set; }
+            public string Output { get; set; }
+            public TimeSpan Duration { get; set; }
+            public string Error { get; set; }
+        }
+        
+        public class RunOptions
+        {
+            public string TestPattern { get; set; } = "*";
+            public bool Verbose { get; set; } = false;
+            public int MaxTests { get; set; } = int.MaxValue;
+            public bool StopOnFirstFailure { get; set; } = false;
+        }
+
+        private readonly Func<string, Task> _navigator;
+        
+        public WPTTestRunner(string wptRootPath, Func<string, Task> navigator = null, int timeoutMs = 10000)
+        {
+            _wptRootPath = wptRootPath;
+            _navigator = navigator;
+            _timeoutMs = timeoutMs;
+        }
+        
+        /// <summary>
+        /// Run all tests matching a pattern.
+        /// </summary>
+        public async Task<IReadOnlyList<TestExecutionResult>> RunTestsAsync(RunOptions options = null)
+        {
+            options = options ?? new RunOptions();
+            _results.Clear();
+            
+            var testFiles = FindTestFiles(options.TestPattern, options.MaxTests);
+            
+            foreach (var testFile in testFiles)
+            {
+                var result = await RunSingleTestAsync(testFile, options.Verbose);
+                _results.Add(result);
+                
+                if (options.StopOnFirstFailure && !result.Success)
+                    break;
+            }
+            
+            return _results.AsReadOnly();
+        }
+
+        /// <summary>
+        /// Run tests in a specific category directory.
+        /// </summary>
+        public async Task<IReadOnlyList<TestExecutionResult>> RunCategoryAsync(string category, Action<string, int> onProgress = null, int maxTests = int.MaxValue)
+        {
+            _results.Clear();
+            
+            var categoryPath = Path.Combine(_wptRootPath, category);
+            if (!Directory.Exists(categoryPath))
+            {
+                // Fallback: Check if it's inside "tests" or "wpt" subfolder if the root is raw repo
+                var altPath = Path.Combine(_wptRootPath, "tests", category); // Common WPT structure
+                if (Directory.Exists(altPath)) categoryPath = altPath;
+                else
+                {
+                     // Try as direct file pattern if not directory? No, this method is for categories.
+                     return _results.AsReadOnly();
+                }
+            }
+
+            // WPT tests are HTML, HTM, or ANY.JS (for worker tests, etc). sticking to HTML/HTM for now.
+            var testFiles = new List<string>();
+            testFiles.AddRange(Directory.GetFiles(categoryPath, "*.html", SearchOption.AllDirectories));
+            testFiles.AddRange(Directory.GetFiles(categoryPath, "*.htm", SearchOption.AllDirectories));
+            
+            int count = 0;
+            foreach (var testFile in testFiles)
+            {
+                if (count >= maxTests) break;
+                
+                // Skip helper files (often start with _)
+                if (Path.GetFileName(testFile).StartsWith("_")) continue;
+
+                count++;
+                var result = await RunSingleTestAsync(testFile);
+                _results.Add(result);
+                onProgress?.Invoke(Path.GetFileName(testFile), count);
+            }
+            
+            return _results.AsReadOnly();
+        }
+        
+        /// <summary>
+        /// Run a single test file.
+        /// </summary>
+        public async Task<TestExecutionResult> RunSingleTestAsync(string testFile, bool verbose = false)
+        {
+            var result = new TestExecutionResult { TestFile = testFile };
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            
+            try
+            {
+                // Enable test mode
+                WebAPIs.TestHarnessAPI.EnableTestMode(_timeoutMs);
+                WebAPIs.TestConsoleCapture.StartCapture();
+                
+                // TODO: Load and execute the test file in headless mode
+                // For now, this is a placeholder
+                await ExecuteTestAsync(testFile, verbose);
+                
+                // Collect results
+                var (passed, failed, total) = WebAPIs.TestHarnessAPI.GetResultSummary();
+                result.PassCount = passed;
+                result.FailCount = failed;
+                result.TotalCount = total;
+                result.Success = failed == 0;
+                result.Output = WebAPIs.TestConsoleCapture.GetFullOutput();
+            }
+            catch (Exception ex)
+            {
+                result.Success = false;
+                result.Error = ex.Message;
+            }
+            finally
+            {
+                WebAPIs.TestConsoleCapture.StopCapture();
+                WebAPIs.TestHarnessAPI.DisableTestMode();
+            }
+            
+            sw.Stop();
+            result.Duration = sw.Elapsed;
+            
+            return result;
+        }
+        
+        /// <summary>
+        /// Find test files matching pattern.
+        /// </summary>
+        private List<string> FindTestFiles(string pattern, int maxTests)
+        {
+            var files = new List<string>();
+            
+            if (!Directory.Exists(_wptRootPath))
+                return files;
+            
+            var searchPattern = pattern.Contains("*") ? pattern : $"*{pattern}*";
+            var foundFiles = Directory.GetFiles(_wptRootPath, searchPattern + ".html", SearchOption.AllDirectories);
+            
+            foreach (var file in foundFiles)
+            {
+                if (files.Count >= maxTests) break;
+                
+                // Skip non-test files
+                var fileName = Path.GetFileName(file);
+                if (fileName.StartsWith("_") || fileName.StartsWith("."))
+                    continue;
+                    
+                files.Add(file);
+            }
+            
+            return files;
+        }
+        
+        /// <summary>
+        /// Execute a test file. Placeholder for actual implementation.
+        /// </summary>
+        /// <summary>
+        /// Execute a test file using the live engine.
+        /// </summary>
+        private async Task ExecuteTestAsync(string testFile, bool verbose)
+        {
+            // Convert file path to URI
+            var uri = new Uri(testFile).AbsoluteUri;
+            
+            // 1. Navigate
+            if (verbose) Console.WriteLine($"[WPT] Navigating to {uri}");
+            
+            if (_navigator != null)
+            {
+                await _navigator(uri);
+            }
+            else
+            {
+               if (verbose) Console.WriteLine("[WPT] Warning: No Navigator delegate provided.");
+            }
+
+            // 2. Wait for completion
+            // WPT tests usually set window.testharness_results or we can poll specific JS state
+            // For now, we'll wait for a specific signal or timeout
+            
+            var timeout = DateTime.Now.AddMilliseconds(_timeoutMs);
+            bool isDone = false;
+
+            while (!isDone && DateTime.Now < timeout)
+            {
+                await Task.Delay(100);
+                
+                // Check if we can interact with the engine?
+                // Ideally we inject a JS snippet to check 'done' state
+                // This is a simplified version where we assume 'test_results' global exists when done
+                
+                // TODO: Implement robust JS bridge polling
+                // For this phase, we are establishing the loop. 
+                // We will assume if 2 seconds pass, it's "done" for non-async tests, or hook into console.
+                
+                // NOTE: Without a deep JS bridge, we can't easily read complex objects back YET.
+                // But we CAN read the console output which we capture.
+                
+                // Let's rely on Console Capture for now until JS Bridge is deeper.
+                // Testharness.js dumps results to console.
+            }
+            
+            // Wait a fixed buffer for rendering/script execution
+            await Task.Delay(500);
+        }
+        
+        /// <summary>
+        /// Generate summary report.
+        /// </summary>
+        public string GenerateSummary()
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("=== WPT Test Summary ===");
+            sb.AppendLine();
+            
+            int totalPass = 0, totalFail = 0, totalTests = 0;
+            var failures = new List<TestExecutionResult>();
+            
+            foreach (var r in _results)
+            {
+                totalPass += r.PassCount;
+                totalFail += r.FailCount;
+                totalTests += r.TotalCount;
+                
+                if (!r.Success)
+                    failures.Add(r);
+            }
+            
+            sb.AppendLine($"Tests run: {_results.Count}");
+            sb.AppendLine($"Assertions: {totalTests} ({totalPass} passed, {totalFail} failed)");
+            sb.AppendLine();
+            
+            if (failures.Count > 0)
+            {
+                sb.AppendLine("Failed tests:");
+                foreach (var f in failures)
+                {
+                    sb.AppendLine($"  - {f.TestFile}");
+                    if (!string.IsNullOrEmpty(f.Error))
+                        sb.AppendLine($"    Error: {f.Error}");
+                }
+            }
+            else if (totalTests == 0)
+            {
+                sb.AppendLine("No assertions executed. (Runner Stub active)");
+            }
+            else
+            {
+                sb.AppendLine("All tests passed!");
+            }
+            
+            return sb.ToString();
+        }
+        
+        /// <summary>
+        /// Generate TAP output for all results.
+        /// </summary>
+        public string GenerateTAPOutput()
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("TAP version 13");
+            sb.AppendLine($"1..{_results.Count}");
+            
+            for (int i = 0; i < _results.Count; i++)
+            {
+                var r = _results[i];
+                var status = r.Success ? "ok" : "not ok";
+                sb.AppendLine($"{status} {i + 1} - {Path.GetFileName(r.TestFile)}");
+                
+                if (!r.Success && !string.IsNullOrEmpty(r.Error))
+                {
+                    sb.AppendLine("  ---");
+                    sb.AppendLine($"  message: {r.Error}");
+                    sb.AppendLine("  ...");
+                }
+            }
+            
+            return sb.ToString();
+        }
+    }
+}
