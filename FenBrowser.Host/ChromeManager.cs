@@ -14,6 +14,9 @@ using SkiaSharp;
 using FenBrowser.Core.Dom;
 using FenBrowser.Core.Css;
 using FenBrowser.FenEngine.Rendering;
+using FenBrowser.WebDriver;
+using FenBrowser.WebDriver.Commands;
+using FenBrowser.Host.WebDriver;
 
 namespace FenBrowser.Host
 {
@@ -45,6 +48,10 @@ namespace FenBrowser.Host
         private DevToolsServer _devToolsServer;
         private RemoteDebugServer _remoteDebugServer;
         private FenBrowser.DevTools.Instrumentation.DomInstrumenter _domInstrumenter;
+        
+        // WebDriver
+        private WebDriverServer _webDriverServer;
+        private FenBrowserDriver _webDriverAdapter;
 
         // Track Active Tab
         private BrowserTab _currentActiveTab;
@@ -59,6 +66,7 @@ namespace FenBrowser.Host
 
             InitializeWidgets(initialUrl);
             InitializeDevTools();
+            InitializeWebDriver();
             
             // Create Root and Compositor
             _root = new RootWidget(_tabBar, _toolbar, _statusBar, new DevToolsWidget(_devTools));
@@ -162,6 +170,21 @@ namespace FenBrowser.Host
             
             FenLogger.Info("[ChromeManager] DevTools Initialized", LogCategory.General);
         }
+
+        private void InitializeWebDriver()
+        {
+            try
+            {
+                _webDriverServer = new WebDriverServer(4444);
+                _webDriverServer.OnLog += msg => FenLogger.Info(msg, LogCategory.General);
+                _webDriverServer.Start();
+                FenLogger.Info("[ChromeManager] WebDriver Server started on port 4444", LogCategory.General);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Error($"[ChromeManager] Failed to start WebDriver Server: {ex.Message}", LogCategory.General);
+            }
+        }
         
         private void SetupDevToolsForTab(BrowserTab tab)
         {
@@ -208,6 +231,16 @@ namespace FenBrowser.Host
                 }).Wait(),
                 () => WindowManager.Instance.RunOnMainThread(() => tab.Browser.RequestRepaint()).Wait()
             );
+
+            // Update WebDriver focus
+            if (_webDriverServer != null)
+            {
+                _webDriverAdapter = new FenBrowserDriver(tab.Browser);
+                _webDriverServer.GetType().GetField("_handler", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                    ?.GetValue(_webDriverServer)?.GetType().GetProperty("Browser")?.SetValue(
+                        _webDriverServer.GetType().GetField("_handler", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)?.GetValue(_webDriverServer),
+                        _webDriverAdapter);
+            }
 
             _devToolsHost = new DevToolsHostAdapter(tab.Browser, _devToolsServer);
             _devToolsHost.CursorChanged += cursor => CursorManager.UpdateCursorFromDevTools(_mouse, cursor);
