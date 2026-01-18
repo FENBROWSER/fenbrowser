@@ -310,7 +310,9 @@ namespace FenBrowser.Core.Css
         // Columns (Multi-column layout)
         public string Columns { get; set; }                  // column-width column-count shorthand
         public string ColumnCount { get; set; }              // auto or number
+        public int? ColumnCountInt { get; set; }             // Typed number
         public string ColumnWidth { get; set; }              // auto or length
+        public double? ColumnWidthFloat { get; set; }        // Typed length in pixels
         public string ColumnGapValue { get; set; }           // normal or length
         public string ColumnRuleWidth { get; set; }          // thin, medium, thick, or length
         public string ColumnRuleStyle { get; set; }          // none, solid, dotted, etc.
@@ -472,6 +474,113 @@ namespace FenBrowser.Core.Css
                     CustomProperties[kv.Key] = kv.Value;
                 }
             }
+        }
+        
+        /// <summary>
+        /// CSS spec-defined initial values for common properties.
+        /// Reference: https://www.w3.org/TR/CSS21/propidx.html
+        /// </summary>
+        public static readonly Dictionary<string, string> InitialValues = new Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase)
+        {
+            // Display & Positioning
+            ["display"] = "inline",
+            ["position"] = "static",
+            ["visibility"] = "visible",
+            ["z-index"] = "auto",
+            ["float"] = "none",
+            ["clear"] = "none",
+            
+            // Box Model
+            ["width"] = "auto",
+            ["height"] = "auto",
+            ["min-width"] = "0",
+            ["min-height"] = "0",
+            ["max-width"] = "none",
+            ["max-height"] = "none",
+            ["margin"] = "0",
+            ["margin-top"] = "0",
+            ["margin-right"] = "0",
+            ["margin-bottom"] = "0",
+            ["margin-left"] = "0",
+            ["padding"] = "0",
+            ["padding-top"] = "0",
+            ["padding-right"] = "0",
+            ["padding-bottom"] = "0",
+            ["padding-left"] = "0",
+            ["border-width"] = "medium",
+            ["border-style"] = "none",
+            ["border-color"] = "currentcolor",
+            
+            // Typography (inherited by default)
+            ["color"] = "canvastext",
+            ["font-family"] = "serif",
+            ["font-size"] = "medium",
+            ["font-weight"] = "normal",
+            ["font-style"] = "normal",
+            ["line-height"] = "normal",
+            ["text-align"] = "start",
+            ["text-decoration"] = "none",
+            ["text-transform"] = "none",
+            ["white-space"] = "normal",
+            ["word-spacing"] = "normal",
+            ["letter-spacing"] = "normal",
+            
+            // Background
+            ["background-color"] = "transparent",
+            ["background-image"] = "none",
+            ["background-repeat"] = "repeat",
+            ["background-position"] = "0% 0%",
+            ["background-size"] = "auto",
+            
+            // Flex
+            ["flex-direction"] = "row",
+            ["flex-wrap"] = "nowrap",
+            ["justify-content"] = "flex-start",
+            ["align-items"] = "stretch",
+            ["align-content"] = "stretch",
+            ["flex-grow"] = "0",
+            ["flex-shrink"] = "1",
+            ["flex-basis"] = "auto",
+            ["order"] = "0",
+            
+            // Grid
+            ["grid-template-columns"] = "none",
+            ["grid-template-rows"] = "none",
+            ["gap"] = "0",
+            
+            // Other
+            ["opacity"] = "1",
+            ["overflow"] = "visible",
+            ["cursor"] = "auto",
+            ["pointer-events"] = "auto"
+        };
+        
+        /// <summary>
+        /// Properties that are inherited by default per CSS spec.
+        /// </summary>
+        public static readonly HashSet<string> InheritedProperties = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase)
+        {
+            "color", "font-family", "font-size", "font-weight", "font-style",
+            "line-height", "text-align", "text-indent", "text-transform",
+            "white-space", "word-spacing", "letter-spacing", "direction",
+            "visibility", "cursor", "quotes", "list-style", "list-style-type",
+            "list-style-position", "list-style-image"
+        };
+        
+        /// <summary>
+        /// Check if a property is inherited by default.
+        /// </summary>
+        public static bool IsInheritedProperty(string property)
+        {
+            return InheritedProperties.Contains(property);
+        }
+        
+        /// <summary>
+        /// Get the spec-defined initial value for a property.
+        /// </summary>
+        public static string GetInitialValue(string property)
+        {
+            return InitialValues.TryGetValue(property, out var val) ? val : null;
         }
     }
 }
