@@ -13,6 +13,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.Tests", "FenBrow
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.DevTools", "FenBrowser.DevTools\FenBrowser.DevTools.csproj", "{0116A6EB-BB85-4414-AC96-28AFC02F36CE}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.WebDriver", "FenBrowser.WebDriver\FenBrowser.WebDriver.csproj", "{DAD19852-9F27-4D7D-A345-6543A1F0D7EB}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -83,6 +85,18 @@ Global
 		{0116A6EB-BB85-4414-AC96-28AFC02F36CE}.Release|x64.Build.0 = Release|Any CPU
 		{0116A6EB-BB85-4414-AC96-28AFC02F36CE}.Release|x86.ActiveCfg = Release|Any CPU
 		{0116A6EB-BB85-4414-AC96-28AFC02F36CE}.Release|x86.Build.0 = Release|Any CPU
+		{DAD19852-9F27-4D7D-A345-6543A1F0D7EB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DAD19852-9F27-4D7D-A345-6543A1F0D7EB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DAD19852-9F27-4D7D-A345-6543A1F0D7EB}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{DAD19852-9F27-4D7D-A345-6543A1F0D7EB}.Debug|x64.Build.0 = Debug|Any CPU
+		{DAD19852-9F27-4D7D-A345-6543A1F0D7EB}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{DAD19852-9F27-4D7D-A345-6543A1F0D7EB}.Debug|x86.Build.0 = Debug|Any CPU
+		{DAD19852-9F27-4D7D-A345-6543A1F0D7EB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DAD19852-9F27-4D7D-A345-6543A1F0D7EB}.Release|Any CPU.Build.0 = Release|Any CPU
+		{DAD19852-9F27-4D7D-A345-6543A1F0D7EB}.Release|x64.ActiveCfg = Release|Any CPU
+		{DAD19852-9F27-4D7D-A345-6543A1F0D7EB}.Release|x64.Build.0 = Release|Any CPU
+		{DAD19852-9F27-4D7D-A345-6543A1F0D7EB}.Release|x86.ActiveCfg = Release|Any CPU
+		{DAD19852-9F27-4D7D-A345-6543A1F0D7EB}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
