@@ -50,7 +50,7 @@ namespace FenBrowser.Tests.Layout
             
             var styles = CreateStyles(container, style);
             
-            var result = GridLayoutComputer.Measure(container, new SKSize(500, 500), styles, 0);
+            var result = GridLayoutComputer.Measure(container, new SKSize(500, 500), styles, 0, (n, sz, d) => new LayoutMetrics());
             
             // Total width: 100 + 200 + 100 = 400px
             Assert.Equal(400, result.MaxChildWidth);
@@ -69,7 +69,7 @@ namespace FenBrowser.Tests.Layout
             
             var styles = CreateStyles(container, style);
             
-            var result = GridLayoutComputer.Measure(container, new SKSize(600, 500), styles, 0);
+            var result = GridLayoutComputer.Measure(container, new SKSize(600, 500), styles, 0, (n, sz, d) => new LayoutMetrics());
             
             // Total FR = 3, available = 600
             // 1fr = 200, 2fr = 400
@@ -89,7 +89,7 @@ namespace FenBrowser.Tests.Layout
             
             var styles = CreateStyles(container, style);
             
-            var result = GridLayoutComputer.Measure(container, new SKSize(500, 500), styles, 0);
+            var result = GridLayoutComputer.Measure(container, new SKSize(500, 500), styles, 0, (n, sz, d) => new LayoutMetrics());
             
             // Fixed: 200px, remaining for 1fr: 300px
             // Total: 500px
@@ -110,7 +110,7 @@ namespace FenBrowser.Tests.Layout
             
             var styles = CreateStyles(container, style);
             
-            var result = GridLayoutComputer.Measure(container, new SKSize(500, 500), styles, 0);
+            var result = GridLayoutComputer.Measure(container, new SKSize(500, 500), styles, 0, (n, sz, d) => new LayoutMetrics());
             
             // Total: 100 + 20 (gap) + 100 = 220px
             Assert.Equal(220, result.MaxChildWidth);
@@ -129,7 +129,7 @@ namespace FenBrowser.Tests.Layout
             
             var styles = CreateStyles(container, style);
             
-            var result = GridLayoutComputer.Measure(container, new SKSize(400, 500), styles, 0);
+            var result = GridLayoutComputer.Measure(container, new SKSize(400, 500), styles, 0, (n, sz, d) => new LayoutMetrics());
             
             // 50% of 400 = 200 each, total = 400
             Assert.Equal(400, result.MaxChildWidth);
@@ -159,7 +159,8 @@ namespace FenBrowser.Tests.Layout
                 styles,
                 boxes,
                 0,
-                (node, rect, depth) => positions[node] = rect);
+                (node, rect, depth) => positions[node] = rect,
+                (n, sz, d) => new LayoutMetrics());
             
             var children = new List<Node>(container.Children);
             
@@ -203,7 +204,8 @@ namespace FenBrowser.Tests.Layout
                 styles,
                 boxes,
                 0,
-                (node, rect, depth) => positions[node] = rect);
+                (node, rect, depth) => positions[node] = rect,
+                (n, sz, d) => new LayoutMetrics());
             
             var children = new List<Node>(container.Children);
             
@@ -253,7 +255,8 @@ namespace FenBrowser.Tests.Layout
                 styles,
                 boxes,
                 0,
-                (node, rect, depth) => positions[node] = rect);
+                (node, rect, depth) => positions[node] = rect,
+                (n, sz, d) => new LayoutMetrics());
             
             // child2 should be at column 3 -> x=200
             Assert.Equal(200, positions[child2].Left, 1);
@@ -299,7 +302,8 @@ namespace FenBrowser.Tests.Layout
                 styles,
                 boxes,
                 0,
-                (node, rect, depth) => positions[node] = rect);
+                (node, rect, depth) => positions[node] = rect,
+                (n, sz, d) => new LayoutMetrics());
             
             // Span item should be 200px wide (spanning 2 columns)
             Assert.Equal(200, positions[spanItem].Width, 1);
@@ -321,7 +325,7 @@ namespace FenBrowser.Tests.Layout
             
             var styles = CreateStyles(container, style);
             
-            var result = GridLayoutComputer.Measure(container, new SKSize(200, 500), styles, 0);
+            var result = GridLayoutComputer.Measure(container, new SKSize(200, 500), styles, 0, (n, sz, d) => new LayoutMetrics());
             
             // Should have height for 2 implicit rows
             Assert.True(result.ContentHeight > 0);
@@ -340,7 +344,7 @@ namespace FenBrowser.Tests.Layout
             
             var styles = CreateStyles(container, style);
             
-            var result = GridLayoutComputer.Measure(container, new SKSize(200, 500), styles, 0);
+            var result = GridLayoutComputer.Measure(container, new SKSize(200, 500), styles, 0, (n, sz, d) => new LayoutMetrics());
             
             // Should be 80px tall (explicit row height)
             Assert.Equal(80, result.ContentHeight);
@@ -360,7 +364,7 @@ namespace FenBrowser.Tests.Layout
             
             var styles = CreateStyles(container, style);
             
-            var result = GridLayoutComputer.Measure(container, new SKSize(200, 200), styles, 0);
+            var result = GridLayoutComputer.Measure(container, new SKSize(200, 200), styles, 0, (n, sz, d) => new LayoutMetrics());
             
             // Single item grid should have valid dimensions
             Assert.True(result.ContentHeight > 0);
@@ -380,7 +384,7 @@ namespace FenBrowser.Tests.Layout
             
             var styles = CreateStyles(container, style);
             
-            var result = GridLayoutComputer.Measure(container, new SKSize(600, 500), styles, 0);
+            var result = GridLayoutComputer.Measure(container, new SKSize(600, 500), styles, 0, (n, sz, d) => new LayoutMetrics());
             
             // Should create auto columns for each item
             Assert.True(result.MaxChildWidth > 0);
