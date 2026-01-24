@@ -333,10 +333,10 @@ namespace FenBrowser.FenEngine.Rendering
                 var abs = ResolveUri(baseUri, href);
                 if (abs == null || fetchExternalCssAsync == null) continue;
 
-                await gate.WaitAsync();
                 var order = sourceIndex++;
                 var t = Task.Run(async () =>
                 {
+                    await gate.WaitAsync().ConfigureAwait(false);
                     try
                     {
                         var css = await fetchExternalCssAsync(abs).ConfigureAwait(false);
@@ -382,23 +382,40 @@ namespace FenBrowser.FenEngine.Rendering
             var parseTasks = new List<Task>();
             foreach (var blob in expanded)
             {
-                await parseGate.WaitAsync();
-                parseTasks.Add(Task.Run(() =>
+                parseTasks.Add(Task.Run(async () =>
                 {
+                    await parseGate.WaitAsync().ConfigureAwait(false);
                     try
                     {
-                        List<NewCss.CssRule> parsed;
+                        // FIX: Do expensive parsing OUTSIDE the lock. Lock only protects cache dictionary access.
+                        // Pre-process for @font-face (can be done without lock)
+                        string processedCss = ExtractFontFace(blob.CssText, blob.BaseUri, log);
+                        
+                        List<NewCss.CssRule> parsed = null;
+                        bool cacheHit = false;
+                        
+                        // Check cache first (quick lock)
                         lock (_parsedRulesCache)
                         {
-                            // Pre-process for @font-face
-                            string processedCss = ExtractFontFace(blob.CssText, blob.BaseUri, log);
-
-                            if (!_parsedRulesCache.TryGetValue(processedCss, out parsed))
+                            cacheHit = _parsedRulesCache.TryGetValue(processedCss, out parsed);
+                        }
+                        
+                        // Parse OUTSIDE lock if not in cache
+                        if (!cacheHit)
+                        {
+                            parsed = ParseRules(processedCss, blob.SourceOrder, blob.BaseUri, viewportWidth, log, MapToNewCssOrigin(blob.Origin));
+                            
+                            // Store in cache (quick lock)
+                            lock (_parsedRulesCache)
                             {
-                                parsed = ParseRules(processedCss, blob.SourceOrder, blob.BaseUri, viewportWidth, log, MapToNewCssOrigin(blob.Origin));
-                                _parsedRulesCache[processedCss] = parsed;
+                                // Double-check in case another thread added it
+                                if (!_parsedRulesCache.ContainsKey(processedCss))
+                                {
+                                    _parsedRulesCache[processedCss] = parsed;
+                                }
                             }
                         }
+                        
                         lock (allRules) allRules.AddRange(parsed);
                     }
                     catch (Exception ex)
@@ -951,10 +968,17 @@ namespace FenBrowser.FenEngine.Rendering
 
                 // Extract and parse the @font-face block
                 string fontFaceBody = text.Substring(braceOpen + 1, braceClose - braceOpen - 1);
+                
+                // [DEBUG-LOG]
+                if (loopCount % 500 == 0 || fontFaceBody.Length > 10000)
+                {
+                     FenLogger.Debug($"[CSS-DEBUG] ExtractFontFace iter={loopCount} bodyLen={fontFaceBody.Length}", LogCategory.Rendering);
+                }
+
                 try
                 {
                     FontRegistry.ParseAndRegister(fontFaceBody, baseUri);
-                    log?.Invoke($"[CSS] Registered @font-face");
+                    // log?.Invoke($"[CSS] Registered @font-face"); // Reduced noise
                 }
                 catch (Exception ex)
                 {
@@ -963,6 +987,10 @@ namespace FenBrowser.FenEngine.Rendering
 
                 i = braceClose + 1;
             }
+            
+            if (loopCount > 1000) FenLogger.Debug($"[CSS-DEBUG] ExtractFontFace finished with {loopCount} iterations.", LogCategory.Rendering);
+            
+            return result.ToString();
 
             return result.ToString();
         }
@@ -1372,15 +1400,24 @@ namespace FenBrowser.FenEngine.Rendering
             
              try { if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_full_css.txt", "\n--- NEW CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch {}
 
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             // FlattenBasicMedia REMOVED: Now handled by proper parsing in CssSyntaxParser + Recursive processing below
             // text = FlattenBasicMedia(text, viewportWidth, log);
             
             // Extract non-standard/unimplemented blocks to avoid parser errors
             text = ExtractKeyframes(text, log);
+            FenLogger.Debug($"[PERF-CSS] ExtractKeyframes: {sw.ElapsedMilliseconds}ms", LogCategory.Rendering); sw.Restart();
+            
             text = ExtractFontFace(text, baseForUrls, log);
+            FenLogger.Debug($"[PERF-CSS] ExtractFontFace: {sw.ElapsedMilliseconds}ms", LogCategory.Rendering); sw.Restart();
+
             text = FlattenSupports(text, log);
-            text = ExtractLayers(text, log);
+            FenLogger.Debug($"[PERF-CSS] FlattenSupports: {sw.ElapsedMilliseconds}ms", LogCategory.Rendering); sw.Restart();
+
+            // text = ExtractLayers(text, log); // REMOVED: Now handled by proper parsing
+            
             text = FlattenContainerQueries(text, (float)(viewportWidth ?? 1024), log);
+             FenLogger.Debug($"[PERF-CSS] FlattenContainerQueries: {sw.ElapsedMilliseconds}ms", LogCategory.Rendering); sw.Restart();
 
              try { if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_full_css.txt", "\n--- PROCESSED CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch {}
 
@@ -1391,25 +1428,69 @@ namespace FenBrowser.FenEngine.Rendering
 
             int ruleIndexInsideSheet = 0;
             
-            // Recursive helper to flatten media rules into the main list
-            void ProcessRuleList(IEnumerable<NewCss.CssRule> inputRules)
+            // Track layers to assign stable LayerOrder
+            var layerOrderIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            int nextLayerOrder = 1; // 0 is reserved for unlayered
+
+            // Recursive helper to flatten media, layers, and scope into the main list
+            void ProcessRuleList(IEnumerable<NewCss.CssRule> inputRules, string currentLayer = null, int currentLayerOrder = 0, string currentScope = null)
             {
                 foreach (var rule in inputRules)
                 {
+                    rule.BaseUri = baseForUrls;
+                    rule.Origin = origin;
+
                     if (rule is NewCss.CssMediaRule mediaRule)
                     {
-                        // Evaluate condition
-                        bool matches = EvaluateMediaQuery(mediaRule.Condition, viewportWidth);
-                        if (matches)
+                        if (EvaluateMediaQuery(mediaRule.Condition, viewportWidth))
                         {
-                            // Flatten inner rules into the main stream
-                            ProcessRuleList(mediaRule.Rules);
+                            ProcessRuleList(mediaRule.Rules, currentLayer, currentLayerOrder, currentScope);
                         }
+                    }
+                    else if (rule is NewCss.CssLayerRule layerRule)
+                    {
+                        if (layerRule.Rules.Count == 0)
+                        {
+                            // Order declaration: @layer base, theme;
+                            var names = layerRule.Name.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(n => n.Trim());
+                            foreach (var name in names)
+                            {
+                                string full = string.IsNullOrEmpty(currentLayer) ? name : $"{currentLayer}.{name}";
+                                if (!layerOrderIndex.ContainsKey(full))
+                                {
+                                    layerOrderIndex[full] = nextLayerOrder++;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            // Layer block: @layer theme { ... }
+                            string layerName = string.IsNullOrEmpty(currentLayer) ? layerRule.Name : $"{currentLayer}.{layerRule.Name}";
+                            if (!string.IsNullOrEmpty(layerName))
+                            {
+                                if (!layerOrderIndex.TryGetValue(layerName, out int order))
+                                {
+                                    order = nextLayerOrder++;
+                                    layerOrderIndex[layerName] = order;
+                                }
+                                ProcessRuleList(layerRule.Rules, layerName, order, currentScope);
+                            }
+                            else
+                            {
+                                ProcessRuleList(layerRule.Rules, null, nextLayerOrder++, currentScope);
+                            }
+                        }
+                    }
+                    else if (rule is NewCss.CssScopeRule scopeRule)
+                    {
+                        ProcessRuleList(scopeRule.Rules, currentLayer, currentLayerOrder, scopeRule.ScopeSelector);
                     }
                     else
                     {
-                        rule.BaseUri = baseForUrls;
-                        rule.Origin = origin; 
+                        rule.LayerName = currentLayer;
+                        rule.LayerOrder = currentLayerOrder;
+                        rule.ScopeSelector = currentScope;
+
                         if (rule is NewCss.CssStyleRule styleRule)
                         {
                             styleRule.Order = (sourceOrder * 10000) + ruleIndexInsideSheet++;
@@ -1421,6 +1502,7 @@ namespace FenBrowser.FenEngine.Rendering
             
             ProcessRuleList(sheet.Rules);
             
+            FenLogger.Debug($"[PERF-CSS] Processing Processed Sheet: {sw.ElapsedMilliseconds}ms", LogCategory.Rendering);
             try { if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CssLoader] Parsed {rules.Count} rules from block of length {text.Length}\r\n"); } catch {}
 
             return rules;
@@ -1573,10 +1655,22 @@ private static double? ExtractPx(string text, string prop)
 
         private static int FindMatchingBrace(string s, int openIdx)
         {
+            if (string.IsNullOrEmpty(s) || openIdx < 0 || openIdx >= s.Length) return -1;
+            
             int depth = 0;
+            bool inSingleQuote = false;
+            bool inDoubleQuote = false;
+
             for (int i = openIdx; i < s.Length; i++)
             {
                 char c = s[i];
+                
+                if (inSingleQuote) { if (c == '\'') inSingleQuote = false; continue; }
+                if (inDoubleQuote) { if (c == '"') inDoubleQuote = false; continue; }
+
+                if (c == '\'') { inSingleQuote = true; continue; }
+                if (c == '"') { inDoubleQuote = true; continue; }
+
                 if (c == '{') depth++;
                 else if (c == '}')
                 {
@@ -1622,7 +1716,7 @@ private static double? ExtractPx(string text, string prop)
         // Stage 3: Cascade
         // ===========================
 
-        private static Dictionary<Node, CssComputed> CascadeIntoComputedStyles(Element root, List<NewCss.CssRule> rules, Action<string> log)
+        private static Dictionary<Node, CssComputed> CascadeIntoComputedStyles(Element root, List<NewCss.CssRule> rules, Action<string> log, FenBrowser.FenEngine.Core.RenderDeadline deadline = null)
         {
             var result = new Dictionary<Node, CssComputed>();
             if (root == null) return result;
@@ -1649,6 +1743,9 @@ private static double? ExtractPx(string text, string prop)
 
             foreach (var n in nodes)
             {
+                // Reliability Gate: Check intra-frame deadline
+                deadline?.Check();
+
                 if (n.IsText) continue;
 
                 CssComputed parentCss = null;
