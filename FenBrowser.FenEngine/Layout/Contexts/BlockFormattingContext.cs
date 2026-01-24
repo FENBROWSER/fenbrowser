@@ -39,6 +39,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             // 3. Iterate Children
             var outOfFlow = new List<LayoutBox>();
+            var floatManager = new FloatManager();
+            float currentY = yOffset; // Track Y relative to content box top
+
             foreach (var child in blockBox.Children)
             {
                 // Reliability Gate: Check intra-frame deadline
@@ -50,52 +53,96 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     continue;
                 }
 
-                // Create child state
-                // Note: Block children usually shrink-to-fit if float, otherwise fill available.
-                // The available width is our content width.
-                // CRITICAL FIX: Pass actual containing block height (not infinity) for % height resolution
-                float childAvailableHeight = state.ContainingBlockHeight > 0 ? state.ContainingBlockHeight : state.ViewportHeight;
+                // Check Float
+                string floatStyle = child.ComputedStyle?.Float?.ToLowerInvariant() ?? "none";
+                string clearStyle = child.ComputedStyle?.Clear?.ToLowerInvariant() ?? "none";
 
+                // Handle Clearance (for both floats and blocks)
+                if (clearStyle != "none")
+                {
+                    float clearY = floatManager.GetClearanceY(clearStyle, currentY);
+                    if (clearY > currentY)
+                    {
+                        // Add top margin to satisfy clearance?
+                        // Or just move yOffset
+                        currentY = clearY;
+                    }
+                }
+
+                // Create child state
+                float childAvailableHeight = state.ContainingBlockHeight > 0 ? state.ContainingBlockHeight : state.ViewportHeight;
                 var childState = new LayoutState(
                     new SKSize(contentWidth, childAvailableHeight),
                     contentWidth,
-                    childAvailableHeight, // Propagate CB height for percentage resolution
+                    childAvailableHeight,
                     state.ViewportWidth,
                     state.ViewportHeight
                 );
 
-                // Determine context for child
                 var context = FormattingContext.Resolve(child);
-                context.Layout(child, childState);
 
-                // Post-Layout: positioning
-                // Retrieve child geometry
-                var childOuter = child.Geometry.MarginBox;
-                
-                // Margin Collapsing would happen here (adjusting yOffset or child margins)
-                // For MVP: Simple stacking
-                yOffset += (float)child.Geometry.Margin.Top;
-
-                // Place child
-                // Coordinate system: Relative to Parent's Content Box? 
-                // Let's stick to Parent's Origin (0,0) being top-left of parent border box? 
-                // Or absolute? 
-                // Usually convenient to store relative offsets.
-                
-                // Let's store geometry relative to Parent Content Box or Border Box?
-                // MinimalLayoutComputer used relative.
-                
-                float childX = xOffset + (float)child.Geometry.Margin.Left;
-                float childY = yOffset;
-                
-                // Update child "Location" (BoxModel usually stores rects, we need to shift them)
-                // Assuming child.Geometry was set to (0,0,w,h) during its layout?
-                // We shift it now.
-                ShiftBox(child.Geometry, childX, childY);
-
-                yOffset += childOuter.Height;
-                // Bottom margin handles next gap
+                if (floatStyle == "left" || floatStyle == "right")
+                {
+                    // Float Layout
+                    context.Layout(child, childState);
+                    
+                    // Box is sized. Now place it.
+                    float floatWidth = child.Geometry.MarginBox.Width;
+                    
+                    // Simple placement: At current Y, find side
+                    // If doesn't fit? (Not implemented: Float drop)
+                    
+                    float fx = 0;
+                    if (floatStyle == "left")
+                    {
+                        fx = xOffset; // Left edge of content
+                        // Check if we need to push down due to existing left floats?
+                        // FloatManager will handle complex stacking if we expanded it.
+                        // For now, assume it stacks against previous left float or edge.
+                        // Simplified: floats stack vertically if width > available?
+                        // Correct: They try to go as high as possible.
+                    }
+                    else
+                    {
+                        fx = xOffset + contentWidth - floatWidth;
+                    }
+                    
+                    // Add to manager
+                    LayoutBoxOps.SetPosition(child, fx, currentY);
+                    child.Geometry.MarginBox = new SKRect(fx, currentY, fx + floatWidth, currentY + child.Geometry.MarginBox.Height); // Refix absolute
+                    
+                    floatManager.AddFloat(child, floatStyle == "left");
+                    
+                    // Floats don't advance the normal flow Y immediately for subsequent blocks,
+                    // BUT they take up space.
+                    // Block flow continues at currentY (unless cleared).
+                }
+                else
+                {
+                    // Normal Flow Block
+                    // Check available space due to floats (Intrusion)
+                    // If this block creates a new BFC (e.g. overflow: hidden), it narrows next to floats.
+                    // If it is a normal block, it overlaps floats but its *text* (inline) wraps.
+                    
+                    // Simplified: We implement BFC narrowing for ALL blocks for better out-of-the-box appearance
+                    // (simulating overflow: hidden behavior which is common for layouts)
+                    
+                    var space = floatManager.GetAvailableSpace(currentY, 0, contentWidth);
+                    // If tight space, might need to move down?
+                    
+                    // Layout
+                     context.Layout(child, childState);
+                     
+                     float childX = xOffset + (float)child.Geometry.Margin.Left;
+                     float childY = currentY + (float)child.Geometry.Margin.Top; // Collapsing skipped
+                     
+                     LayoutBoxOps.SetPosition(child, childX, childY);
+                     
+                     currentY += child.Geometry.MarginBox.Height;
+                }
             }
+            
+            yOffset = currentY; // Final Y
 
             // 4. Resolve Height
             // Auto height = content bottom + padding bottom + border bottom

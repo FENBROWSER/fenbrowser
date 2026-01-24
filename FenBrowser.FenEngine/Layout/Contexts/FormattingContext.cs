@@ -30,6 +30,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             // 1. Check for explicit formatting context triggers
             string display = box.ComputedStyle?.Display?.ToLowerInvariant() ?? "block";
             
+            if (display.Contains("grid"))
+            {
+                return GridFormattingContext.Instance;
+            }
+
             if (display.Contains("flex"))
             {
                 return FlexFormattingContext.Instance;
