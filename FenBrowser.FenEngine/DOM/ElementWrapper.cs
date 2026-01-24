@@ -16,17 +16,16 @@ namespace FenBrowser.FenEngine.DOM
     /// Wraps a Element to expose it to JavaScript.
     /// Provides DOM manipulation methods with permission checking.
     /// </summary>
-    public partial class ElementWrapper : IObject
+    public partial class ElementWrapper : NodeWrapper
     {
         private readonly Element _element;
-        private readonly IExecutionContext _context;
+        // _context is in base
         private IObject _prototype;
-        public object NativeObject { get; set; }
 
-        public ElementWrapper(Element element, IExecutionContext context)
+        public ElementWrapper(Element element, IExecutionContext context) : base(element, context)
         {
             _element = element ?? throw new ArgumentNullException(nameof(element));
-            _context = context ?? throw new ArgumentNullException(nameof(context));
+            // _context set in base
         }
 
         public Element Element => _element;
@@ -56,6 +55,24 @@ namespace FenBrowser.FenEngine.DOM
                 
                 case "setattribute":
                     return FenValue.FromFunction(new FenFunction("setAttribute", SetAttribute));
+
+                case "hasattribute":
+                    return FenValue.FromFunction(new FenFunction("hasAttribute", HasAttribute));
+
+                case "removeattribute":
+                    return FenValue.FromFunction(new FenFunction("removeAttribute", RemoveAttribute));
+
+                case "attributes":
+                    return FenValue.FromObject(new NamedNodeMapWrapper(_element.NamedAttributes, _context));
+
+                case "getattributenode":
+                    return FenValue.FromFunction(new FenFunction("getAttributeNode", GetAttributeNode));
+                
+                case "setattributenode":
+                    return FenValue.FromFunction(new FenFunction("setAttributeNode", SetAttributeNode));
+                
+                case "removeattributenode":
+                    return FenValue.FromFunction(new FenFunction("removeAttributeNode", RemoveAttributeNode));
 
                 case "width":
                     return FenValue.FromNumber(GetDimension("width"));
@@ -109,8 +126,8 @@ namespace FenBrowser.FenEngine.DOM
                     return FenValue.Null;
 
                 case "children":
-                    var childElements = _element.Children?.OfType<Element>().Where(c => !c.IsText).ToList() ?? new List<Element>();
-                    return CreateArrayFromElements(childElements);
+                    var childElements = _element.Children?.OfType<Element>().Where(c => !c.IsText); // HTMLCollection is live ideally, but for now snapshot or wrap list
+                    return FenValue.FromObject(new HTMLCollectionWrapper(childElements, _context));
 
                 case "firstelementchild":
                     var firstChild = _element.Children?.OfType<Element>().FirstOrDefault(c => !c.IsText);
@@ -144,8 +161,8 @@ namespace FenBrowser.FenEngine.DOM
                 case "shadowroot":
                     if (_element.ShadowRoot != null)
                     {
-                        // Return a wrapper for the shadow root
-                        return FenValue.FromObject(new ElementWrapper(_element.ShadowRoot, _context));
+                        if (_element.ShadowRoot.Mode == "closed") return FenValue.Null;
+                        return FenValue.FromObject(new ShadowRootWrapper(_element.ShadowRoot, _context));
                     }
                     return FenValue.Null;
                 
@@ -175,8 +192,7 @@ namespace FenBrowser.FenEngine.DOM
                     return FenValue.FromObject(new DOMTokenList(_element, "class", _context));
                 
                 default:
-
-                    return FenValue.Undefined;
+                    return base.Get(key, context);
             }
         }
 
@@ -202,12 +218,12 @@ namespace FenBrowser.FenEngine.DOM
             }
         }
 
-        public bool Has(string key, IExecutionContext context = null) => !Get(key, context).IsUndefined;
-        public bool Delete(string key, IExecutionContext context = null) => false;
-        public IEnumerable<string> Keys(IExecutionContext context = null) 
-            => new[] { "innerHTML", "textContent", "tagName", "id", "getAttribute", "setAttribute", "getContext", "width", "height", "clientWidth", "clientHeight" };
-        public IObject GetPrototype() => _prototype;
-        public void SetPrototype(IObject prototype) => _prototype = prototype;
+        public override bool Has(string key, IExecutionContext context = null) => !Get(key, context).IsUndefined;
+        public override bool Delete(string key, IExecutionContext context = null) => false;
+
+        public override System.Collections.Generic.IEnumerable<string> Keys(IExecutionContext context = null) 
+            => new[] { "attachShadow", "shadowRoot", "innerHTML", "textContent", "tagName", "id", "attributes", "getAttribute", "setAttribute", "hasAttribute", "removeAttribute", "getAttributeNode", "setAttributeNode", "removeAttributeNode", "getContext", "width", "height", "clientWidth", "clientHeight" };
+        // IObject.GetPrototype/SetPrototype handled by NodeWrapper
 
         private IValue GetContext(IValue[] args, IValue thisVal)
         {
@@ -475,8 +491,9 @@ namespace FenBrowser.FenEngine.DOM
             {
                 try
                 {
-                    var parser = new HtmlLiteParser(htmlString);
-                    var parsed = parser.Parse();
+                    var tokenizer = new FenBrowser.FenEngine.HTML.HtmlTokenizer(htmlString);
+                    var builder = new FenBrowser.FenEngine.HTML.HtmlTreeBuilder(tokenizer);
+                    var parsed = builder.Build();
                     if (parsed?.Children != null)
                     {
                         foreach (var child in parsed.Children.OfType<Element>())
@@ -577,6 +594,71 @@ namespace FenBrowser.FenEngine.DOM
             // Notifications happen when applied.
             
             return FenValue.Undefined;
+        }
+
+        private IValue HasAttribute(IValue[] args, IValue thisVal)
+        {
+            if (args.Length == 0) return FenValue.FromBoolean(false);
+            return FenValue.FromBoolean(_element.HasAttribute(args[0].ToString()));
+        }
+
+        private IValue RemoveAttribute(IValue[] args, IValue thisVal)
+        {
+            if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "removeAttribute"))
+                throw new FenSecurityError("DOM write permission required");
+
+            if (args.Length == 0) return FenValue.Undefined;
+            _element.RemoveAttribute(args[0].ToString());
+            return FenValue.Undefined;
+        }
+
+        private IValue GetAttributeNode(IValue[] args, IValue thisVal)
+        {
+            if (args.Length == 0) return FenValue.Null;
+            var attr = _element.GetAttributeNode(args[0].ToString());
+            return attr != null ? FenValue.FromObject(new AttrWrapper(attr, _context)) : FenValue.Null;
+        }
+
+        private IValue SetAttributeNode(IValue[] args, IValue thisVal)
+        {
+            if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "setAttributeNode"))
+                throw new FenSecurityError("DOM write permission required");
+
+             if (args.Length == 0 || !args[0].IsObject) return FenValue.Null;
+             
+             var wrapper = args[0].AsObject() as AttrWrapper;
+             if (wrapper == null) throw new FenSecurityError("Argument must be an Attr node");
+
+             try
+             {
+                 var old = _element.SetAttributeNode(wrapper.Attr);
+                 return old != null ? FenValue.FromObject(new AttrWrapper(old, _context)) : FenValue.Null;
+             }
+             catch(Exception ex)
+             {
+                 throw new FenSecurityError(ex.Message);
+             }
+        }
+
+        private IValue RemoveAttributeNode(IValue[] args, IValue thisVal)
+        {
+             if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "removeAttributeNode"))
+                throw new FenSecurityError("DOM write permission required");
+
+             if (args.Length == 0 || !args[0].IsObject) return FenValue.Null;
+             
+             var wrapper = args[0].AsObject() as AttrWrapper;
+             if (wrapper == null) throw new FenSecurityError("Argument must be an Attr node");
+
+             try
+             {
+                 var removed = _element.RemoveAttributeNode(wrapper.Attr);
+                 return removed != null ? FenValue.FromObject(new AttrWrapper(removed, _context)) : FenValue.Null;
+             }
+             catch(Exception ex)
+             {
+                 throw new FenSecurityError(ex.Message);
+             }
         }
         private double GetDimension(string attrName)
         {
@@ -1168,48 +1250,7 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Attach a shadow root to this element (Shadow DOM)
         /// </summary>
-        private IValue AttachShadow(IValue[] args, IValue thisValue)
-        {
-            // Check if element can have shadow root
-            string tag = _element.Tag?.ToUpperInvariant();
-            var validTags = new[] { "ARTICLE", "ASIDE", "BLOCKQUOTE", "BODY", "DIV", "FOOTER", 
-                "H1", "H2", "H3", "H4", "H5", "H6", "HEADER", "MAIN", "NAV", "P", "SECTION", "SPAN" };
-            
-            bool isValid = Array.Exists(validTags, t => t == tag);
-            if (!isValid)
-            {
-                throw new Errors.FenInternalError($"Failed to execute 'attachShadow': {tag} is not a valid element for shadow DOM");
-            }
-            
-            if (_element.ShadowRoot != null)
-            {
-                throw new Errors.FenInternalError("Failed to execute 'attachShadow': Shadow root already attached");
-            }
-            
-            // Parse options (mode: 'open' or 'closed')
-            string mode = "open";
-            if (args.Length >= 1 && args[0] is FenValue optVal && optVal.AsObject() is FenObject optObj)
-            {
-                var modeVal = optObj.Get("mode");
-                if (modeVal is FenValue mv)
-                {
-                    mode = mv.AsString()?.ToLowerInvariant() ?? "open";
-                }
-            }
-            
-            // Create shadow root
-            var shadowRoot = new Element("shadow-root");
-            _element.ShadowRoot = shadowRoot;
-            
-            // Return the shadow root wrapper (for open mode)
-            if (mode == "open")
-            {
-                var shadowHost = new Element("shadow-root");
-                return FenValue.FromObject(new ElementWrapper(shadowHost, _context));
-            }
-            
-            return FenValue.Null;
-        }
+
     }
 
     // ElementWrapper partial class - DOM Level 3 Events
@@ -1322,7 +1363,28 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.FromBoolean(result);
         }
 
-        /// <summary>
+        private IValue AttachShadow(IValue[] args, IValue thisVal)
+        {
+            if (args.Length < 1 || !args[0].IsObject)
+                return new ErrorValue("attachShadow requires an options object with 'mode'");
+            
+            var options = args[0].AsObject();
+            var modeVal = options.Get("mode");
+            var mode = modeVal?.ToString();
+            
+            if (mode != "open" && mode != "closed")
+                return new ErrorValue("ShadowRoot mode must be 'open' or 'closed'");
+            
+            try 
+            {
+                var shadow = _element.AttachShadow(mode);
+                return FenBrowser.FenEngine.DOM.DomWrapperFactory.Wrap(shadow, _context);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return new ErrorValue(ex.Message);
+            }
+        }
     }
 }
 
