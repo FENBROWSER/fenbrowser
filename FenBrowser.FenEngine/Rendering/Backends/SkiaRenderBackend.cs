@@ -160,40 +160,51 @@ namespace FenBrowser.FenEngine.Rendering.Backends
                 return;
             }
 
-            // Fallback for non-uniform borders (simplified to prevent crashing/logic errors, ignores radius for now)
-            // Note: Ideally we would construct complex paths for corners, but that's a larger task.
-            // Using existing line logic but fixing offsets to be "inner" borders.
-            
-            // Top border
-            if (border.TopWidth > 0)
+            // Fallback for non-uniform borders
+            // Add clipping if rounded to prevent lines from bleeding outside corners
+            int saveCount = 0;
+            if (hasRadius)
             {
-                using var paint = CreateBorderPaint(border.TopColor, border.TopWidth);
-                float y = rect.Top + border.TopWidth / 2;
-                _canvas.DrawLine(rect.Left, y, rect.Right, y, paint);
+                saveCount = _canvas.Save();
+                using var clipPath = CreateRoundedRectPath(rect, new SKPoint[] { border.TopLeftRadius, border.TopRightRadius, border.BottomRightRadius, border.BottomLeftRadius });
+                _canvas.ClipPath(clipPath, SKClipOperation.Intersect, true);
             }
-            
-            // Right border
-            if (border.RightWidth > 0)
-            {
-                using var paint = CreateBorderPaint(border.RightColor, border.RightWidth);
-                float x = rect.Right - border.RightWidth / 2;
-                _canvas.DrawLine(x, rect.Top, x, rect.Bottom, paint);
+
+            try {
+                // Top border
+                if (border.TopWidth > 0)
+                {
+                    using var paint = CreateBorderPaint(border.TopColor, border.TopWidth);
+                    float y = rect.Top + border.TopWidth / 2;
+                    _canvas.DrawLine(rect.Left, y, rect.Right, y, paint);
+                }
+                
+                // Right border
+                if (border.RightWidth > 0)
+                {
+                    using var paint = CreateBorderPaint(border.RightColor, border.RightWidth);
+                    float x = rect.Right - border.RightWidth / 2;
+                    _canvas.DrawLine(x, rect.Top, x, rect.Bottom, paint);
+                }
+                
+                // Bottom border
+                if (border.BottomWidth > 0)
+                {
+                    using var paint = CreateBorderPaint(border.BottomColor, border.BottomWidth);
+                    float y = rect.Bottom - border.BottomWidth / 2;
+                    _canvas.DrawLine(rect.Right, y, rect.Left, y, paint);
+                }
+                
+                // Left border
+                if (border.LeftWidth > 0)
+                {
+                    using var paint = CreateBorderPaint(border.LeftColor, border.LeftWidth);
+                    float x = rect.Left + border.LeftWidth / 2;
+                    _canvas.DrawLine(x, rect.Bottom, x, rect.Top, paint);
+                }
             }
-            
-            // Bottom border
-            if (border.BottomWidth > 0)
-            {
-                using var paint = CreateBorderPaint(border.BottomColor, border.BottomWidth);
-                float y = rect.Bottom - border.BottomWidth / 2;
-                _canvas.DrawLine(rect.Right, y, rect.Left, y, paint);
-            }
-            
-            // Left border
-            if (border.LeftWidth > 0)
-            {
-                using var paint = CreateBorderPaint(border.LeftColor, border.LeftWidth);
-                float x = rect.Left + border.LeftWidth / 2;
-                _canvas.DrawLine(x, rect.Bottom, x, rect.Top, paint);
+            finally {
+                if (hasRadius) _canvas.RestoreToCount(saveCount);
             }
         }
 
@@ -277,6 +288,14 @@ namespace FenBrowser.FenEngine.Rendering.Backends
             
             using var paint = opacity < 1f ? new SKPaint { Color = new SKColor(255, 255, 255, (byte)(opacity * 255)) } : null;
             _canvas.DrawImage(image, destRect, paint);
+        }
+
+        public void DrawImage(SKImage image, SKRect destRect, SKRect srcRect, float opacity = 1f)
+        {
+            if (image == null) return;
+
+            using var paint = opacity < 1f ? new SKPaint { Color = new SKColor(255, 255, 255, (byte)(opacity * 255)) } : null;
+            _canvas.DrawImage(image, srcRect, destRect, paint);
         }
         
         public void DrawPicture(SKPicture picture, SKRect destRect, float opacity = 1f)

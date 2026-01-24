@@ -70,7 +70,9 @@ namespace FenBrowser.FenEngine.Core
                 // 2. Check Dirty Flags & Render
                 if (_treeIsDirty)
                 {
-                    PerformRendering();
+                    // Create a deadline based on remaining budget (e.g., 100% of 16ms for now)
+                    var deadline = new RenderDeadline(FrameBudgetMs, "FullRender");
+                    PerformRendering(deadline);
                 }
                 
                 // 3. Check Frame Budget
@@ -80,21 +82,29 @@ namespace FenBrowser.FenEngine.Core
                    FenLogger.Warn($"[EngineLoop] Frame exceeded budget: {elapsed:F2}ms", LogCategory.Performance);
                 }
             }
+            catch (DeadlineExceededException ex)
+            {
+                FenLogger.Warn($"[EngineLoop] Frame aborted due to deadline: {ex.Phase}", LogCategory.Performance);
+            }
             catch (Exception ex)
             {
                 FenLogger.Error($"[EngineLoop] Critical Error in RunFrame: {ex}", LogCategory.General);
             }
         }
         
-        private void PerformRendering()
+        private void PerformRendering(RenderDeadline deadline = null)
         {
             if (_root == null) return;
             
             // Phase 1: Style Recalc (TODO: Traverse checking StyleDirty)
+            deadline?.Check();
             
             // Phase 2: Layout (TODO: Traverse checking LayoutDirty)
+            // As we refactor, we will pass 'deadline' to LayoutEngine
+            deadline?.Check();
             
             // Phase 3: Paint (TODO: Traverse checking PaintDirty)
+            deadline?.Check();
             
             // For now, we just acknowledge the flag was handled to prevent infinite loop loops in logs,
             // but in reality the legacy system (SkiaDomRenderer) acts on _coordinator.NotifyLayoutDirty() separately.

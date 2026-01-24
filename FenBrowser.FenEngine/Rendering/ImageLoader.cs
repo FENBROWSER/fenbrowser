@@ -257,6 +257,22 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         private static SKBitmap RenderSvgToBitmap(string svgContent, int? targetWidth, int? targetHeight)
         {
+            // Ensure SVG Namespace (required for SkiaSharp.Svg)
+            if (!svgContent.Contains("xmlns=\"http://www.w3.org/2000/svg\"") && 
+                !svgContent.Contains("xmlns='http://www.w3.org/2000/svg'"))
+            {
+                if (svgContent.Contains("<svg "))
+                    svgContent = svgContent.Replace("<svg ", "<svg xmlns=\"http://www.w3.org/2000/svg\" ");
+                else if (svgContent.Contains("<svg>"))
+                    svgContent = svgContent.Replace("<svg>", "<svg xmlns=\"http://www.w3.org/2000/svg\">");
+            }
+
+            // Normalization: SkiaSharp.Svg is case-sensitive for certain attributes
+            if (svgContent.Contains("viewbox="))
+            {
+                svgContent = svgContent.Replace("viewbox=", "viewBox=");
+            }
+
             var result = _svgRenderer.Render(svgContent, SvgRenderLimits.Default);
             
             // CRITICAL FIX: Check for pre-rendered bitmap first (avoids SKSvg disposal issues)

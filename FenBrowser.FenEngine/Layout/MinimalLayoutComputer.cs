@@ -101,13 +101,49 @@ namespace FenBrowser.FenEngine.Layout
                 if (style.Position == null && style.Map.TryGetValue("position", out var mapPos))
                     style.Position = mapPos;
                     
-                // ACID2 FIX: Sync overflow properties for clipping
                 if (style.Overflow == null && style.Map.TryGetValue("overflow", out var mapOverflow))
                     style.Overflow = mapOverflow;
                 if (style.OverflowX == null && style.Map.TryGetValue("overflow-x", out var mapOverflowX))
                     style.OverflowX = mapOverflowX;
                 if (style.OverflowY == null && style.Map.TryGetValue("overflow-y", out var mapOverflowY))
                     style.OverflowY = mapOverflowY;
+
+                // SIZING SYNCHRONIZATION
+                if (style.Map.TryGetValue("width", out var mapW) && !string.IsNullOrEmpty(mapW))
+                {
+                    if (mapW.EndsWith("%") && float.TryParse(mapW.TrimEnd('%'), out var pw)) style.WidthPercent = pw;
+                    else if (!style.Width.HasValue && float.TryParse(mapW.Replace("px", ""), out var fw)) style.Width = fw;
+                }
+                
+                if (style.Map.TryGetValue("height", out var mapH) && !string.IsNullOrEmpty(mapH))
+                {
+                    if (mapH.EndsWith("%") && float.TryParse(mapH.TrimEnd('%'), out var ph)) style.HeightPercent = ph;
+                    else if (!style.Height.HasValue && float.TryParse(mapH.Replace("px", ""), out var fh)) style.Height = fh;
+                }
+
+                if (style.Map.TryGetValue("min-width", out var mapMinW) && !string.IsNullOrEmpty(mapMinW))
+                {
+                    if (mapMinW.EndsWith("%") && float.TryParse(mapMinW.TrimEnd('%'), out var pmw)) style.MinWidthPercent = pmw;
+                    else if (!style.MinWidth.HasValue && float.TryParse(mapMinW.Replace("px", ""), out var fmw)) style.MinWidth = fmw;
+                }
+
+                if (style.Map.TryGetValue("min-height", out var mapMinH) && !string.IsNullOrEmpty(mapMinH))
+                {
+                    if (mapMinH.EndsWith("%") && float.TryParse(mapMinH.TrimEnd('%'), out var pmh)) style.MinHeightPercent = pmh;
+                    else if (!style.MinHeight.HasValue && float.TryParse(mapMinH.Replace("px", ""), out var fmh)) style.MinHeight = fmh;
+                }
+
+                if (style.Map.TryGetValue("max-width", out var mapMaxW) && !string.IsNullOrEmpty(mapMaxW))
+                {
+                    if (mapMaxW.EndsWith("%") && float.TryParse(mapMaxW.TrimEnd('%'), out var pmxw)) style.MaxWidthPercent = pmxw;
+                    else if (!style.MaxWidth.HasValue && float.TryParse(mapMaxW.Replace("px", ""), out var fmxw)) style.MaxWidth = fmxw;
+                }
+
+                if (style.Map.TryGetValue("max-height", out var mapMaxH) && !string.IsNullOrEmpty(mapMaxH))
+                {
+                    if (mapMaxH.EndsWith("%") && float.TryParse(mapMaxH.TrimEnd('%'), out var pmxh)) style.MaxHeightPercent = pmxh;
+                    else if (!style.MaxHeight.HasValue && float.TryParse(mapMaxH.Replace("px", ""), out var fmxh)) style.MaxHeight = fmxh;
+                }
             }
             
             // (UA Defaults are now handled by ua.css loaded in CssLoader)
@@ -183,7 +219,16 @@ namespace FenBrowser.FenEngine.Layout
                  yield return style.Before.PseudoElementInstance;
             }
 
-            if (children != null)
+            if (element != null && element.ShadowRoot != null)
+            {
+                 // Shadow DOM: Render shadow root children INSTEAD of light children
+                 // (unless slots are used, but for now we do simple replacement)
+                 if (element.ShadowRoot.Children != null)
+                 {
+                     foreach(var c in element.ShadowRoot.Children) yield return c;
+                 }
+            }
+            else if (children != null)
             {
                 foreach(var c in children) yield return c;
             }
@@ -346,6 +391,27 @@ namespace FenBrowser.FenEngine.Layout
                     isExplicitHeight = true;
                     FenLogger.Log($"[ICB] HTML height auto -> forced to viewport: {_viewportHeight}px", LogCategory.Layout);
                 }
+                // FIXED: BODY height auto also needs to fill viewport if it's the effective root for background/flex
+                // Especially for New Tab Page where body is flex container
+                else if (tag == "BODY") 
+                {
+                     // Force body to at least viewport height if it's small/auto.
+                     // This mimics the "Background Propagation" from Body to Viewport in browsers,
+                     // and allows standard centering techniques (flex/grid on body) to work naturally.
+                     
+                     // We check if it's "auto" (h not set yet) OR if it's unexpectedly small relative to viewport.
+                     // But strictly, if CSS is explicit (e.g. height: 2px), we should respect it.
+                     // However, "auto" (default) is the main culprit. isExplicitHeight is false here.
+                     
+                     if (!isExplicitHeight || h < _viewportHeight * 0.1f) // Auto or abnormally small
+                     {
+                          float targetH = _viewportHeight;
+                          if (availableSize.Height > targetH) targetH = availableSize.Height; // Use available if larger
+                          
+                          h = targetH;
+                          isExplicitHeight = true; 
+                     }
+                }
             }
 
             // Min/Max Constraints
@@ -357,17 +423,26 @@ namespace FenBrowser.FenEngine.Layout
                 // FIX: Evaluate ALL min/max expressions (width and height)
                 // MinWidth
                 if (style.MinWidth.HasValue) minW = (float)style.MinWidth.Value;
+                else if (style.MinWidthPercent.HasValue && !float.IsInfinity(availableSize.Width))
+                    minW = (float)style.MinWidthPercent.Value / 100f * availableSize.Width;
                 else if (style.MinWidthExpression != null) 
                     minW = LayoutHelper.EvaluateCssExpression(style.MinWidthExpression, availableSize.Width, _viewportWidth, _viewportHeight);
                 
                 // MaxWidth
                 if (style.MaxWidth.HasValue) maxW = (float)style.MaxWidth.Value;
+                else if (style.MaxWidthPercent.HasValue && !float.IsInfinity(availableSize.Width))
+                    maxW = (float)style.MaxWidthPercent.Value / 100f * availableSize.Width;
                 else if (style.MaxWidthExpression != null) 
                     maxW = LayoutHelper.EvaluateCssExpression(style.MaxWidthExpression, availableSize.Width, _viewportWidth, _viewportHeight);
 
                 // MinHeight - CRITICAL FIX: Was missing expression evaluation
                 // This fixes body { min-height: 100% } not working
                 if (style.MinHeight.HasValue) minH = (float)style.MinHeight.Value;
+                else if (style.MinHeightPercent.HasValue)
+                {
+                     float resolveAgainst = float.IsInfinity(availableSize.Height) ? _viewportHeight : availableSize.Height;
+                     minH = (float)style.MinHeightPercent.Value / 100f * resolveAgainst;
+                }
                 else if (style.MinHeightExpression != null)
                 {
                     // For percentage min-height, resolve against parent's height (availableSize.Height)
@@ -385,6 +460,11 @@ namespace FenBrowser.FenEngine.Layout
                 
                 // MaxHeight - CRITICAL FIX: Was missing expression evaluation
                 if (style.MaxHeight.HasValue) maxH = (float)style.MaxHeight.Value;
+                else if (style.MaxHeightPercent.HasValue)
+                {
+                     float resolveAgainst = float.IsInfinity(availableSize.Height) ? _viewportHeight : availableSize.Height;
+                     maxH = (float)style.MaxHeightPercent.Value / 100f * resolveAgainst;
+                }
                 else if (style.MaxHeightExpression != null)
                 {
                     float resolveAgainst = float.IsInfinity(availableSize.Height) ? _viewportHeight : availableSize.Height;
@@ -430,16 +510,25 @@ namespace FenBrowser.FenEngine.Layout
                 childConstraint = new SKSize(childConstraint.Width, childAvailableHeight);
             }
 
-            if (w > 0) 
+            if (w > 0 || !isExplicitWidth) 
             {
-                float contentW = w;
+                float contentW = w > 0 ? w : availableSize.Width;
                 if (style != null)
                 {
-                   var styleMargin = style.Margin;
                    var p = style.Padding;
                    var b = style.BorderThickness;
-                   if (style.BoxSizing == "border-box")
+                   
+                   // For auto-width (w=0), availableSize.Width is the outer limit.
+                   // We must deduct padding/borders to give children their correct content box constraint.
+                   if (isExplicitWidth && style.BoxSizing == "border-box")
+                   {
                         contentW -= (float)(p.Left + p.Right + b.Left + b.Right);
+                   }
+                   else if (!isExplicitWidth && !float.IsInfinity(contentW))
+                   {
+                        // Auto-width case
+                        contentW -= (float)(p.Left + p.Right + b.Left + b.Right);
+                   }
                 }
                 childConstraint = new SKSize(Math.Max(0, contentW), childConstraint.Height);
             }
@@ -474,6 +563,12 @@ namespace FenBrowser.FenEngine.Layout
                 m = MeasureAudio(elem, childConstraint);
             else if (tag == "IFRAME")
                 m = MeasureIframe(elem, childConstraint);
+            else if (tag == "IMG" || tag == "SVG" || tag == "CANVAS" || tag == "EMBED" || tag == "OBJECT")
+            {
+                // Use existing robust MeasureImage for all replaced elements
+                // It handles attributes, intrinsic sizing, and defaults (300x150)
+                m = MeasureImage(elem, childConstraint);
+            }
             else if (tag == "PROGRESS")
                 m = MeasureProgress(elem, childConstraint);
             else if (tag == "METER")
@@ -534,6 +629,32 @@ namespace FenBrowser.FenEngine.Layout
                 string childInfo = "";
                 if (elem.Children != null) childInfo = $"children={elem.Children.Count}";
                 // (V5: Removed logging block moved to start)
+            }
+
+            // Phase 13.5 FIX: For Replaced Elements (IMG, VIDEO, etc.), if resolved height is 0 
+            // (often due to percentage height resolving against auto parent), we MUST fallback to intrinsic size.
+            // Spec: "If the height is a percentage... and the containing block's height is not specified... the value computes to 'auto'."
+            bool isReplaced = tag == "IMG" || tag == "VIDEO" || tag == "CANVAS" || tag == "SVG" || tag == "EMBED" || tag == "OBJECT" || tag == "IFRAME";
+            
+            if (isReplaced)
+            {
+                FenLogger.Debug($"[IMG-DEBUG-NODE] {tag} Entry: explicitH={isExplicitHeight} h={h} m.h={m.ContentHeight} explicitW={isExplicitWidth} w={w} m.w={m.MaxChildWidth}");
+            }
+
+            if (isReplaced && h <= 1 && m.ContentHeight > 1)
+            {
+                // Check if user explicitly asked for 0px (rare, but valid hiding)
+                bool explicitlyZero = style != null && style.Height.HasValue && Math.Abs(style.Height.Value) < 0.1;
+
+                if (!explicitlyZero)
+                {
+                     // Treat as auto - use measured intrinsic height
+                     h = m.ContentHeight;
+                     // Also fix width if needed
+                     if (w <= 1 && m.MaxChildWidth > 1) w = m.MaxChildWidth;
+                     
+                     FenLogger.Debug($"[REPLACED-FIX] Restored {tag} size to {w}x{h} (was 0 due to failed percent)");
+                }
             }
 
             if (w <= 0 && !isExplicitWidth) w = m.MaxChildWidth;
@@ -633,8 +754,8 @@ namespace FenBrowser.FenEngine.Layout
                 bool isBlock = (display == "block" || display == null); 
                 bool isFloat = style?.Float?.ToLowerInvariant() == "left";
                 
-                if (!isExplicitWidth && isBlock && !node.IsText && tag != "IMG" && !isFloat && 
-                    tag != "BUTTON" && tag != "INPUT" && tag != "TEXTAREA" && tag != "SELECT" && tag != "LABEL") 
+                if (!isExplicitWidth && isBlock && !node.IsText && tag != "IMG" && tag != "SVG" && !tag.EndsWith(":SVG") && 
+                    !isFloat && tag != "BUTTON" && tag != "INPUT" && tag != "TEXTAREA" && tag != "SELECT" && tag != "LABEL") 
                 {
                      // CRITICAL FIX for Flex Center Alignment:
                      // If shrinkToFit is true, we skip this eager block expansion.
@@ -723,9 +844,10 @@ namespace FenBrowser.FenEngine.Layout
             // ============================================================
             if (depth == 0 && tag == "HTML")
             {
+                System.Console.WriteLine($"[ICB-TRACE] HTML depth=0 h={h} _viewportHeight={_viewportHeight}");
                 if (h < _viewportHeight)
                 {
-                    FenLogger.Log($"[ICB] OVERRIDE: HTML height {h}px < viewport {_viewportHeight}px. Forcing to viewport.", LogCategory.Layout);
+                    System.Console.WriteLine($"[ICB] OVERRIDE: HTML height {h}px < viewport {_viewportHeight}px. Forcing to viewport.");
                     h = _viewportHeight;
                 }
                 if (w < _viewportWidth)
@@ -737,9 +859,10 @@ namespace FenBrowser.FenEngine.Layout
             // BODY can be at depth 1 or 2 depending on HEAD presence
             else if (depth <= 2 && tag == "BODY")
             {
+                System.Console.WriteLine($"[ICB-TRACE] BODY depth={depth} h={h} _viewportHeight={_viewportHeight}");
                 if (h < _viewportHeight)
                 {
-                    FenLogger.Log($"[ICB] OVERRIDE: BODY height {h}px < viewport {_viewportHeight}px. Forcing to viewport.", LogCategory.Layout);
+                    System.Console.WriteLine($"[ICB] OVERRIDE: BODY height {h}px < viewport {_viewportHeight}px. Forcing to viewport.");
                     h = _viewportHeight;
                 }
                 if (w < _viewportWidth)
@@ -958,8 +1081,17 @@ namespace FenBrowser.FenEngine.Layout
             string display = style?.Display?.ToLowerInvariant(); 
             
             var elem = node as Element;
+            
+            // AGGRESSIVE DEBUG: Trace Dispatch (General Category)
+            if (tag == "BODY" || tag == "HTML")
+            {
+                 FenLogger.Debug($"[ARRANGE-DISPATCH] Tag={tag} Display={display} Box={box.ContentBox} ViewportH={_viewportHeight}");
+            }
+
             if (display == "flex" || display == "inline-flex") 
+            {
                 ArrangeFlex(elem, box.ContentBox, depth + 1, style, elem.Children);
+            }
             else if (display == "grid")
                 ArrangeGrid(elem, box.ContentBox, depth + 1);
             else if (IsMultiColumn(style) && elem != null)
@@ -2085,7 +2217,20 @@ namespace FenBrowser.FenEngine.Layout
                 ArrangeBlockInternal(element, r, depth, element);
         }
 
-        public void ArrangeText(Node node, SKRect finalRect) { }
+        public void ArrangeText(Node node, SKRect finalRect) 
+        { 
+            if (node == null) return;
+            
+            var box = new BoxModel { BorderBox = finalRect, ContentBox = finalRect };
+            
+            // Text nodes also need their pre-computed lines from the measure pass
+            if (_textLines.TryGetValue(node, out var lines))
+            {
+                box.Lines = lines;
+            }
+            
+            _boxes[node] = box;
+        }
 
         public LayoutMetrics MeasureText(Node node, SKSize availableSize)
         {
@@ -2312,6 +2457,9 @@ namespace FenBrowser.FenEngine.Layout
             // Ensure non-zero for visibility
             if (w < 1) w = 1;
             if (h < 1) h = 1;
+
+            if (elem.TagName == "IMG")
+                FenLogger.Debug($"[IMG-DEBUG-MEASURE] res={w}x{h} int={intW}x{intH} avail={availableSize.Width}x{availableSize.Height} cssW={hasCssW} cssH={hasCssH} attrW={elem.GetAttribute("width")}");
 
             return new LayoutMetrics { ContentHeight = h, ActualHeight = h, MaxChildWidth = w };
         }

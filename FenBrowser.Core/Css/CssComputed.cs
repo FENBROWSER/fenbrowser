@@ -92,6 +92,10 @@ namespace FenBrowser.Core.Css
         public double? MaxHeight { get; set; }
         public double? WidthPercent { get; set; }
         public double? HeightPercent { get; set; }
+        public double? MinWidthPercent { get; set; }
+        public double? MinHeightPercent { get; set; }
+        public double? MaxWidthPercent { get; set; }
+        public double? MaxHeightPercent { get; set; }
         public double? AspectRatio { get; set; }  // width/height ratio
 
         // Expression storage for complex functions (calc, min, max, clamp)

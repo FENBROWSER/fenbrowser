@@ -87,6 +87,12 @@ namespace FenBrowser.FenEngine.Rendering.Backends
             if (LogCommands)
                 CommandLog.Add(new RenderCommand("DrawImage", $"destRect={destRect}"));
         }
+
+        public void DrawImage(SKImage image, SKRect destRect, SKRect srcRect, float opacity = 1f)
+        {
+            if (LogCommands)
+                CommandLog.Add(new RenderCommand("DrawImage", $"destRect={destRect}, srcRect={srcRect}"));
+        }
         
         public void DrawPicture(SKPicture picture, SKRect destRect, float opacity = 1f)
         {

@@ -3,6 +3,7 @@ using FenBrowser.Core.Dom;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using System.Net;
 using System.Threading.Tasks;
 using System.IO;
@@ -792,14 +793,15 @@ namespace FenBrowser.FenEngine.Rendering
 
         private async Task<Element> RunDomParseAsync(string html)
         {
-            // Use internal HtmlLiteParser
-            var parser = new HtmlLiteParser(html ?? string.Empty);
+            // Use new HTML Tokenizer + TreeBuilder
+            var tokenizer = new FenBrowser.FenEngine.HTML.HtmlTokenizer(html ?? string.Empty);
+            var builder = new FenBrowser.FenEngine.HTML.HtmlTreeBuilder(tokenizer);
             try
             {
-                FenLogger.Debug("[RenderAsync] Starting parse...", LogCategory.Rendering);
+                FenLogger.Debug("[RenderAsync] Starting parse (New Parser)...", LogCategory.Rendering);
                 var dom = await Task.Run(() =>
                 {
-                    try { return parser.Parse(); }
+                    try { return builder.Build(); }
                     catch (Exception pex)
                     {
                         FenLogger.Error($"[RenderAsync] Parse exception: {pex.Message}", LogCategory.Rendering);
@@ -808,6 +810,14 @@ namespace FenBrowser.FenEngine.Rendering
                 });
                 
                 FenLogger.Debug("[RenderAsync] Parse complete", LogCategory.Rendering);
+                
+                // DEBUG: Dump DOM
+                try {
+                     var sb = new StringBuilder();
+                     DumpTree(dom, sb, 0);
+                     System.IO.File.WriteAllText(@"c:\Users\udayk\Videos\FENBROWSER\dom_dump.txt", sb.ToString());
+                } catch {}
+
                 // Return DocumentElement (the HTML element), not the Document wrapper
                 return dom.DocumentElement ?? dom;
             }
@@ -823,7 +833,7 @@ namespace FenBrowser.FenEngine.Rendering
              try
              {
                  FenLogger.Debug("[RenderAsync] Starting CSS load...", LogCategory.Rendering);
-                 var cssTask = CssLoader.ComputeAsync(dom, baseUri, fetchExternalCssAsync);
+                 var cssTask = CssLoader.ComputeAsync(dom, baseUri, fetchExternalCssAsync, null, null, (msg) => FenLogger.Debug(msg, LogCategory.Rendering));
                  var timeoutTask = Task.Delay(10000); 
                  var completedTask = await Task.WhenAny(cssTask, timeoutTask);
                  
@@ -981,10 +991,11 @@ namespace FenBrowser.FenEngine.Rendering
             html.className = html.className.replace('no-js', 'js');
             if (html.className.indexOf('js') < 0) html.className += ' js';
         }
-        var nojs = document.getElementsByTagName('noscript');
-        for (var i = 0; i < nojs.length; i++) {
-            if (nojs[i] && nojs[i].style) nojs[i].style.display = 'none';
-        }
+        // DISABLED: FenBrowser keeps noscript visible for fallback content
+        // var nojs = document.getElementsByTagName('noscript');
+        // for (var i = 0; i < nojs.length; i++) {
+        //     if (nojs[i] && nojs[i].style) nojs[i].style.display = 'none';
+        // }
         var jsEnabled = document.querySelectorAll('.js-enabled, .with-js, [data-js]');
         for (var i = 0; i < jsEnabled.length; i++) {
             if (jsEnabled[i] && jsEnabled[i].style) jsEnabled[i].style.display = '';
@@ -1123,9 +1134,29 @@ namespace FenBrowser.FenEngine.Rendering
                         var parent = template.Parent as Element;
                         if (parent != null)
                         {
-                            var firstElementChild = template.Children?.OfType<Element>().FirstOrDefault();
-                            if (firstElementChild != null) parent.ShadowRoot = firstElementChild;
-                            parent.Children?.Remove(template);
+                            var mode = template.Attr["shadowrootmode"];
+                            if (mode == "open" || mode == "closed")
+                            {
+                                try
+                                {
+                                    var shadow = parent.AttachShadow(mode);
+                                    // Move children from template to shadow root
+                                    var children = template.Children?.ToList();
+                                    if (children != null)
+                                    {
+                                        foreach (var child in children)
+                                        {
+                                            shadow.AppendChild(child);
+                                        }
+                                    }
+                                    // Remove the template element itself
+                                    if (parent.Children != null) parent.Children.Remove(template);
+                                }
+                                catch (Exception dsdEx)
+                                {
+                                    FenLogger.Warn($"[DSD] Failed to attach shadow root: {dsdEx.Message}", LogCategory.Rendering);
+                                }
+                            }
                         }
                     }
                 }
@@ -1147,12 +1178,37 @@ namespace FenBrowser.FenEngine.Rendering
 
                 if (allowJs)
                 {
-                    try
+                    // DISABLED: FenBrowser has limited JS support, so we keep noscript 
+                    // fallback content visible for sites that heavily depend on JS (like Google Search)
+                    // var noscripts = dom.Descendants().Where(n => string.Equals(n.Tag, "noscript", StringComparison.OrdinalIgnoreCase)).ToList();
+                    // foreach (var node in noscripts) node.Remove();
+                }
+
+                // FIX: Google Search puts <style>table,div,span,p{display:none}</style> inside <noscript>.
+                // Since we render <noscript> (due to partial JS support), this style applies globally and hides everything.
+                // We must remove <style> tags from potentially visible <noscript> elements.
+                try
+                {
+                    var noscriptElements = dom.Descendants()
+                        .Where(n => string.Equals(n.Tag, "noscript", StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+
+                    foreach (var ns in noscriptElements)
                     {
-                        var noscripts = dom.Descendants().Where(n => string.Equals(n.Tag, "noscript", StringComparison.OrdinalIgnoreCase)).ToList();
-                        foreach (var node in noscripts) node.Remove();
+                        var stylesInNoscript = ns.Descendants()
+                            .Where(s => string.Equals(s.Tag, "style", StringComparison.OrdinalIgnoreCase))
+                            .ToList();
+                        
+                        foreach (var style in stylesInNoscript)
+                        {
+                            FenLogger.Debug($"[CustomHtmlEngine] Removing harmful <style> from <noscript>", LogCategory.Rendering);
+                            style.Remove();
+                        }
                     }
-                    catch { }
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[CustomHtmlEngine] Failed to sanitize noscript: {ex.Message}", LogCategory.Rendering);
                 }
 
                 _activeJs = SetupJavaScriptEngine(baseUri, onNavigate, allowJs, fetchExternalCssAsync);
@@ -1301,6 +1357,24 @@ namespace FenBrowser.FenEngine.Rendering
             catch (Exception ex)
             {
                 return $"Error: {ex.Message}";
+            }
+        }
+        private void DumpTree(FenBrowser.Core.Dom.Node node, StringBuilder sb, int depth)
+        {
+            sb.Append(new string(' ', depth * 2));
+            sb.Append(node.NodeName);
+            if (node is FenBrowser.Core.Dom.Element el)
+            {
+                if (el.Attr != null) foreach(var k in el.Attr.Keys) sb.Append($" {k}='{el.Attr[k]}'");
+            }
+            if (node is FenBrowser.Core.Dom.Text txt)
+            {
+                sb.Append($" \"{(txt.Data ?? "").Replace("\n", "\\n").Replace("\r", "\\r")}\"");
+            }
+            sb.AppendLine();
+            if (node.Children != null)
+            {
+               foreach(var child in node.Children) DumpTree(child, sb, depth + 1);
             }
         }
     }
