@@ -25,6 +25,7 @@ public class DockPanel : Widget
         float usedHeight = 0;
         float maxWidth = 0;
         float maxHeight = 0;
+        bool hasFillChild = false;
         
         SKSize remaining = availableSpace;
         
@@ -53,9 +54,18 @@ public class DockPanel : Widget
                     maxHeight = Math.Max(maxHeight, desired.Height);
                     break;
                 case Dock.Fill:
-                    // Doesn't subtract from remaining yet in Measure pass
+                    // Fill child takes all remaining space
+                    hasFillChild = true;
                     break;
             }
+        }
+        
+        // CRITICAL FIX: When LastChildFill is true and we have a Fill child,
+        // the DockPanel should request the full available space (like a window root).
+        // Otherwise we only return the sum of docked children, causing layout compression.
+        if (LastChildFill && hasFillChild)
+        {
+            return availableSpace;
         }
         
         return new SKSize(Math.Max(maxWidth, usedWidth), Math.Max(maxHeight, usedHeight));

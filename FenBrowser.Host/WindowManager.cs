@@ -67,12 +67,13 @@ namespace FenBrowser.Host
             options.Size = new Vector2D<int>(_logicalWidth, _logicalHeight);
             options.VSync = true;
             
-            // Headless mode uses Hidden window state
+            // Headless mode uses off-screen window to ensure valid context/dimensions
             if (isHeadless)
             {
-                options.WindowState = WindowState.Minimized; // Silk.NET sometimes has issues with Hidden, Minimized is safer for context
+                options.WindowState = WindowState.Normal;
+                options.Position = new Vector2D<int>(-32000, -32000);
                 options.WindowBorder = WindowBorder.Hidden;
-                FenLogger.Info("[WindowManager] Initializing in HEADLESS mode", LogCategory.General);
+                FenLogger.Info("[WindowManager] Initializing in HEADLESS mode (Off-screen)", LogCategory.General);
             }
             else
             {
@@ -275,6 +276,26 @@ namespace FenBrowser.Host
             FenLogger.Info("[WindowManager] Closing...", LogCategory.General);
             OnClose?.Invoke();
             Dispose();
+        }
+
+        public SKBitmap CaptureScreenshot()
+        {
+            if (_surface == null) 
+            {
+                FenLogger.Error("[WindowManager] CaptureScreenshot: Surface is NULL", LogCategory.General);
+                return null;
+            }
+            
+            _grContext?.Flush(); // Ensure pending commands are executed
+
+            var bitmap = new SKBitmap(_physicalWidth, _physicalHeight);
+            if (_surface.ReadPixels(bitmap.Info, bitmap.GetPixels(), bitmap.RowBytes, 0, 0))
+            {
+                return bitmap;
+            }
+            
+            FenLogger.Error("[WindowManager] CaptureScreenshot: ReadPixels failed", LogCategory.General);
+            return null;
         }
 
         public void Dispose()

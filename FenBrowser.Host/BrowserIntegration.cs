@@ -58,6 +58,8 @@ public class BrowserIntegration
     
     public event Action<string> TitleChanged;
     public event Action<string> UrlChanged;
+    
+    public BrowserHost Host => _browser;
     public event Action<bool> LoadingChanged;
     public event Action<SKBitmap> FaviconChanged; // [NEW]
     public event Action NeedsRepaint;
@@ -337,6 +339,13 @@ public class BrowserIntegration
         // Guard: Prevent recording during/after shutdown
         if (!_running) return;
         
+        // Guard: Prevent recording invalid/minimized frames
+        if (viewportSize.Width <= 1 || viewportSize.Height <= 1)
+        {
+            FenLogger.Warn($"[BrowserIntegration] RecordFrame skipped: invalid size {viewportSize}", LogCategory.Rendering);
+            return;
+        }
+        
         // RELAXED GATING: Allow early structural frames
         // Only skip when BOTH root AND styles are missing
         if (_root == null && _styles == null) 
@@ -385,14 +394,23 @@ public class BrowserIntegration
             canvas.Translate(0, -_scrollY);
             
             _renderer.Render(
-                _root, 
-                canvas, 
-                _styles, 
+                _root,
+                canvas,
+                _styles,
                 scrolledViewport,
                 _browser.CurrentUri?.AbsoluteUri,
                 (contentSize, overlays) =>
                 {
                     _contentHeight = contentSize.Height;
+                    
+                    // Manually render input overlays (text/placeholders) on top of the DOM
+                    if (overlays != null)
+                    {
+                        foreach (var overlay in overlays)
+                        {
+                            DrawInputOverlay(canvas, overlay);
+                        }
+                    }
                 },
                 viewportSize
             );
@@ -712,6 +730,13 @@ public class BrowserIntegration
     
     public void UpdateViewport(SKSize size)
     {
+        // Guard against invalid/minimized sizes to prevent layout collapse/white flash
+        if (size.Width <= 1 || size.Height <= 1) 
+        {
+            FenLogger.Info($"[BrowserIntegration] Ignoring small viewport update: {size}", LogCategory.General);
+            return;
+        }
+
         FenLogger.Info($"[BrowserIntegration] UpdateViewport: {size}", LogCategory.General);
         if (_lastViewportSize != size)
         {
@@ -956,6 +981,51 @@ public class BrowserIntegration
     public void StopMomentumScroll()
     {
         _scrollPhysics.Stop();
+    }
+    
+    private void DrawInputOverlay(SKCanvas canvas, InputOverlayData overlay)
+    {
+        if (overlay == null) return;
+
+        string text = overlay.InitialText;
+        bool isPlaceholder = false;
+        
+        if (string.IsNullOrEmpty(text) && !string.IsNullOrEmpty(overlay.Placeholder))
+        {
+            text = overlay.Placeholder;
+            isPlaceholder = true;
+        }
+        
+        if (string.IsNullOrEmpty(text)) return;
+
+        using var paint = new SKPaint
+        {
+            Typeface = SKTypeface.FromFamilyName(overlay.FontFamily),
+            TextSize = overlay.FontSize,
+            IsAntialias = true,
+            Color = isPlaceholder ? SKColors.Gray : (overlay.TextColor ?? SKColors.Black)
+        };
+
+        var metrics = paint.FontMetrics;
+        // Vertically center based on font metrics
+        float textHeight = metrics.Descent - metrics.Ascent;
+        float y = overlay.Bounds.MidY + textHeight / 2 - metrics.Descent;
+        
+        // Horizontal alignment
+        float x = overlay.Bounds.Left + 10; 
+        if (overlay.TextAlign == "center")
+        {
+            x = overlay.Bounds.MidX - paint.MeasureText(text) / 2;
+        }
+        else if (overlay.TextAlign == "right")
+        {
+            x = overlay.Bounds.Right - paint.MeasureText(text) - 10;
+        }
+
+        canvas.Save();
+        canvas.ClipRect(overlay.Bounds);
+        canvas.DrawText(text, x, y, paint);
+        canvas.Restore();
     }
 }
 
