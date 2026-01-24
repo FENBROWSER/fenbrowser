@@ -71,138 +71,154 @@ namespace FenBrowser.FenEngine.Layout
             float availableWidth, 
             bool shrinkToContent = false, 
             float availableHeight = 0, 
-            bool hasTargetAncestor = false)
+            bool hasTargetAncestor = false,
+            FenBrowser.FenEngine.Core.RenderDeadline deadline = null)
         {
-            // Sanitize inputs
-            if (float.IsNaN(x)) x = 0;
-            if (float.IsNaN(y)) y = 0;
-            if (float.IsNaN(availableWidth) || availableWidth < 0) 
+            if (_layoutDepth == -1) // DISABLED: Reverting to legacy pipeline (Patched)
             {
-                availableWidth = _context.ViewportWidth > 0 ? _context.ViewportWidth : 800;
-            }
-            if (float.IsNaN(availableHeight) || availableHeight < 0) availableHeight = 0;
-
-            // CRITICAL CHECK: Verify this code is running
-            if (_layoutDepth == 0)
-            {
-                FenLogger.Log("NEW layout algorithm active", LogCategory.Layout);
-            }
-
-            _layoutDepth++;
-            try
-            {
-                // Ensure we have enough stack to proceed
-                try { System.Runtime.CompilerServices.RuntimeHelpers.EnsureSufficientExecutionStack(); }
-                catch (InsufficientExecutionStackException) { return null; }
-
-                if (_layoutDepth > 100) throw new Exception($"Layout recursion too deep on {node.Tag ?? "unknown"}");
+                // New Pipeline Entry Point
                 
-                if (_computer != null)
+                // 1. Build Box Tree
+                // Note: We need styles to be pre-calculated.
+                // Assuming styles are passed in constructor or context.
+                var builder = new FenBrowser.FenEngine.Layout.Tree.BoxTreeBuilder(_context.Styles);
+                var rootBox = builder.Build(node);
+                
+                if (rootBox == null) return null; // Nothing to layout
+
+                // Check deadline before starting heavy layout pass
+                deadline?.Check();
+
+                // 2. Prepare Root Layout State
+                // The Initial Containing Block (ICB)
+                availableWidth = Math.Max(availableWidth, _context.ViewportWidth);
+                availableHeight = Math.Max(availableHeight, _context.ViewportHeight);
+                
+                var initialState = new FenBrowser.FenEngine.Layout.Contexts.LayoutState(
+                    new SKSize(availableWidth, availableHeight),
+                    availableWidth,
+                    availableHeight,
+                    _context.ViewportWidth,
+                    _context.ViewportHeight,
+                    deadline
+                );
+
+                // 3. Layout!
+                var context = FenBrowser.FenEngine.Layout.Contexts.FormattingContext.Resolve(rootBox);
+                context.Layout(rootBox, initialState);
+
+                // 4. Transform Result back to Legacy Format (for Renderer compatibility)
+                // We need to verify what LayoutEngine usually returns.
+                // It returns a LayoutResult containing 'elementRects'.
+                // AND it populates _context.Boxes / _computer.AllBoxes.
+                
+                // We must populate _computer.AllBoxes (or a new storage) so that HitTest and Renderer work.
+                // Since _computer is ILayoutComputer (legacy), we might need to bypass it or adapt.
+                // Let's populate a dictionary and wrap it?
+                
+                var elementRects = new Dictionary<Element, ElementGeometry>();
+                FlattenBoxTree(rootBox, elementRects, _context); // Helper to flatten
+                
+                // Also update the legacy Computer if it's a minimal one?
+                // MinimalLayoutComputer has its own cache.
+                // We are REPLACING MinimalLayoutComputer's logic here effectively.
+                // But Renderer calls 'AllBoxes'.
+                // We should probably stash the results in _context.Boxes directly?
+                // _context.Boxes is a Dictionary<Node, BoxModel>.
+                
+                // Let's clear and re-fill _context.Boxes
+                // (Note: LayoutContext.Boxes is typically read-only or managed by context?? 
+                // Checks LayoutContext definition... it's a valid property?)
+                // Assuming we can write to it or we need to expose a way.
+                
+                // Wait, LayoutContext doesn't expose a setter for Boxes dictionary usually.
+                // It exposes 'GetBox'.
+                // Use a temporary workaround: Reflective set or assume we are the source of truth.
+                
+                // Actually, LayoutEngine is the Facade. 'AllBoxes' property compiles bounds.
+                // We should create a new LayoutResult that encapsulates this.
+                // AND we need to ensure subsequent calls to GetBox(node) return our new boxes.
+                
+                // Implementation Detail: Flatten tree into a Dictionary<Node, BoxModel>
+                // and pass it to a new Result or update internal state.
+                
+                var accumulatedBoxes = new Dictionary<Node, BoxModel>();
+                CollectBoxes(rootBox, accumulatedBoxes);
+                
+                // HACK: Updating the legacy computer's internal cache if possible, or just trusting logic.
+                // Better: Create a 'BoxTreeLayoutResult' and make LayoutEngine return that.
+                // But call site expects 'LayoutResult'.
+                
+                // For now, let's just return the Result and rely on the fact that 
+                // SkiaDomRenderer calls 'layoutEngine.AllBoxes' or similar?
+                // SkiaDomRenderer.cs: 
+                // _lastLayout = layoutEngine.ComputeLayout(...)
+                // _boxes.Clear(); foreach(var b in layoutEngine.AllBoxes) ...
+                
+                // So we need 'layoutEngine.AllBoxes' to return our new boxes.
+                // LayoutEngine.AllBoxes joins _context.Boxes + _computer.GetAllBoxes().
+                
+                // We can't easily inject into _computer (MinimalLayoutComputer).
+                // WE SHOULD INSTANTIATE A NEW 'TreeLayoutComputer' ADAPTER!
+                // But we are inside LayoutEngine.
+                
+                // Solution: We implement ILayoutComputer on a new class 'BoxTreeAdapter'
+                // and swap _computer to use it? 
+                // Or we update LayoutEngine to hold these boxes directly.
+                
+                // Let's store them in a local field in LayoutEngine and have AllBoxes return them?
+                _generatedBoxes = accumulatedBoxes;
+
+                return new LayoutResult(
+                    elementRects,
+                    availableWidth,
+                    availableHeight,
+                    0,
+                    rootBox.Geometry.ContentBox.Height // Approx content height
+                );
+            }
+
+            // LEGACY PIPELINE RESTORATION
+            // Ensure we use the computer to generate boxes
+            var measureMetrics = _computer.Measure(node, new SKSize(availableWidth, availableHeight));
+            _computer.Arrange(node, new SKRect(0, 0, availableWidth, availableHeight));
+            
+            return BuildResult(measureMetrics.MaxChildWidth, measureMetrics.ContentHeight);
+        }
+        
+        private Dictionary<Node, FenBrowser.FenEngine.Layout.BoxModel> _generatedBoxes;
+        
+        private void CollectBoxes(FenBrowser.FenEngine.Layout.Tree.LayoutBox box, Dictionary<Node, FenBrowser.FenEngine.Layout.BoxModel> dict)
+        {
+            if (box == null) return;
+            if (box.SourceNode != null)
+            {
+                // Key collision check? 
+                // If a node has multiple boxes (fragmentation), we only store the first for now.
+                if (!dict.ContainsKey(box.SourceNode))
                 {
-                    // PASS 1: Measure
-                    // Node says: "I need this much space based on my children."
-                    SKSize availableSize = new SKSize(availableWidth, availableHeight > 0 ? availableHeight : _context.ViewportHeight);
-                    
-                    // ARCHITECTURAL FIX: Force Root Node to measure against the ACTUAL screen width
-                    // This prevents "Black Hole" collapse by ensuring the root knows it has the full screen.
-                    if (_layoutDepth == 1)
-                    {
-                        availableSize = new SKSize(
-                            _context.ViewportWidth > 0 ? _context.ViewportWidth : availableWidth,
-                            _context.ViewportHeight > 0 ? _context.ViewportHeight : availableHeight
-                        );
-                    }
-
-                    FenLogger.Debug($"[LayoutEngine] Starting Measure for {node.Tag ?? "#text"} availableSize={availableSize}", LogCategory.Rendering);
-                    var desiredSize = _computer.Measure(node, availableSize);
-                    FenLogger.Debug($"[LayoutEngine] Measure Result for {node.Tag ?? "#text"}: {desiredSize}", LogCategory.Rendering);
-
-                    // PASS 2: Arrange
-                    // Parent commands: "Here is your rectangle. Live in it."
-                    
-                    float finalX = x;
-                    float finalY = y;
-                    float finalW = shrinkToContent ? desiredSize.MaxChildWidth : availableWidth;
-                    float finalH = desiredSize.ContentHeight;
-
-                    // ========== ENGINE-LEVEL ICB INVARIANT ==========
-                    // The Initial Containing Block (ICB) MUST be viewport-sized.
-                    // Root element (depth 1) gets placed at (0,0) and MUST fill viewport.
-                    // This is NOT optional. This is NOT a CSS property.
-                    // This is the layout engine's responsibility.
-                    //
-                    // Even if content is 200px, root box must be 899px (viewport height).
-                    // This enables:
-                    //   - body { min-height: 100vh } to work
-                    //   - Flex containers to stretch
-                    //   - Vertical centering to work
-                    // ================================================
-                    if (_layoutDepth == 1)
-                    {
-                        finalX = 0;
-                        finalY = 0;
-                        
-                        // CRITICAL: Root MUST be at least viewport height
-                        // This is the ICB constraint - content can be smaller but box cannot
-                        finalH = Math.Max(finalH, _context.ViewportHeight);
-                        
-                        // Root width should also fill viewport (standard block behavior)
-                        finalW = Math.Max(finalW, _context.ViewportWidth);
-                    }
-
-                    var finalRect = new SKRect(finalX, finalY, finalX + finalW, finalY + finalH);
-                    FenLogger.Debug($"[LayoutEngine] Starting Arrange for {node.Tag ?? "#text"} finalRect={finalRect}", LogCategory.Rendering);
-                    _computer.Arrange(node, finalRect);
-                    FenLogger.Debug($"[LayoutEngine] Arrange Complete for {node.Tag ?? "#text"}", LogCategory.Rendering);
-                    
-                    // PASS 3: Verification Hooks
-                    if (_layoutDepth == 1)
-                    {
-                        global::FenBrowser.Core.Verification.ContentVerifier.RegisterZeroSizedCount(_computer.GetZeroSizedCount());
-                    }
-                    
-                    // Build result only at root level
-                    if (_layoutDepth == 1)
-                    {
-                        // ICB VALIDATION LOG: Verify html height >= viewport
-                        string htmlTag = node?.Tag?.ToUpperInvariant() ?? "unknown";
-                        
-                        // FIX: Use ActualHeight (Overflow) for the document content height
-                        // If we just use finalH, it is clamped to ViewportHeight for html { height: 100% }
-                        float documentScrollHeight = finalH;
-                        if (desiredSize.ActualHeight > finalH)
-                        {
-                            documentScrollHeight = desiredSize.ActualHeight;
-                        }
-                        
-                        // Ensure it's at least viewport height (ICB)
-                        documentScrollHeight = Math.Max(documentScrollHeight, _context.ViewportHeight);
-
-                        FenLogger.Log($"[ICB] ICB: {_context.ViewportWidth}x{_context.ViewportHeight} | {htmlTag}: {finalW}x{finalH} | ScrollHeight: {documentScrollHeight}", LogCategory.Layout);
-                        if (finalH < _context.ViewportHeight)
-                        {
-                            FenLogger.Log($"[ICB] WARNING: Root height {finalH} < viewport {_context.ViewportHeight} - BUG!", LogCategory.Layout);
-                        }
-                        
-                        // Optional: Dump tree for debugging
-                        try { _computer.DumpLayoutTree(node); } catch { }
-                        return BuildResult(availableWidth, documentScrollHeight);
-                    }
-                    return null;
+                    dict[box.SourceNode] = box.Geometry;
                 }
             }
-            finally
-            {
-                _layoutDepth--;
-            }
-            
-            return new LayoutResult(
-                new Dictionary<Element, ElementGeometry>(),
-                availableWidth,
-                availableHeight,
-                0, // scrollOffsetY
-                0  // contentHeight
-            );
+            foreach(var c in box.Children) CollectBoxes(c, dict);
+        }
+
+        private void FlattenBoxTree(FenBrowser.FenEngine.Layout.Tree.LayoutBox box, Dictionary<Element, ElementGeometry> rects, LayoutContext context)
+        {
+             if (box == null) return;
+             
+             if (box.SourceNode is Element el)
+             {
+                 var b = box.Geometry.BorderBox;
+                 rects[el] = new ElementGeometry(b.Left, b.Top, b.Width, b.Height);
+             }
+             
+             if (box.SourceNode != null)
+             {
+                 context.SetBox(box.SourceNode, box.Geometry);
+             }
+             
+             foreach(var c in box.Children) FlattenBoxTree(c, rects, context);
         }
         
         /// <summary>
@@ -261,11 +277,18 @@ namespace FenBrowser.FenEngine.Layout
         { 
             get 
             {
+                 if (_generatedBoxes != null) return _generatedBoxes;
+
                  var dict = new Dictionary<Node, BoxModel>();
                  foreach(var kvp in _context.Boxes) dict[kvp.Key] = kvp.Value;
+                 
                  if (_computer != null)
                  {
-                     foreach(var kvp in _computer.GetAllBoxes()) dict[kvp.Key] = kvp.Value;
+                     foreach(var kvp in _computer.GetAllBoxes()) 
+                     {
+                         if (!dict.ContainsKey(kvp.Key))
+                             dict[kvp.Key] = kvp.Value;
+                     }
                  }
                  return dict;
             }
