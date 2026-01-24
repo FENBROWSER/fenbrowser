@@ -288,7 +288,14 @@ namespace FenBrowser.FenEngine.Rendering
             _resources = new ResourceManager(httpClient, isPrivate);
 
             // Wire up Fetch API (Phase 8)
-            _engine.FetchHandler = (req) => _resources.SendAsync(req, CurrentPolicy);
+            _engine.FetchHandler = (req) => 
+            {
+                if (!string.IsNullOrEmpty(WPTRootPath))
+                {
+                    req.RequestUri = RemapWptUri(req.RequestUri);
+                }
+                return _resources.SendAsync(req, CurrentPolicy);
+            };
 
             // Wire up DevTools Network Monitoring
             _resources.NetworkRequestStarting += (id, req) =>
@@ -389,8 +396,47 @@ namespace FenBrowser.FenEngine.Rendering
                 Console.WriteLine(msg);
                 try { ConsoleMessage?.Invoke(msg); } catch { }
             };
-            Console.WriteLine($"[BrowserHost] CWD: {Environment.CurrentDirectory}");
-            _engine.ScriptFetcher = (u) => _resources.FetchTextAsync(u, referer: _current, accept: null, secFetchDest: "script");
+            _engine.ScriptFetcher = (u) => 
+            {
+                // DEBUG: Log strict fetcher
+                Console.WriteLine($"[ScriptFetcher] Request: {u}");
+
+                if (u.ToString().IndexOf("testharnessreport.js", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    Console.WriteLine("[ScriptFetcher] INJECTING BRIDGE for testharnessreport.js");
+                    return Task.FromResult(@"
+                        console.log('[Bridge] Injected Bridge Loaded');
+                        console.log('[Bridge] typeof add_result_callback: ' + typeof window.add_result_callback);
+
+                        // Fallback: Testharness looks for these global functions to dispatch events
+                        window.result_callback = function(t) {
+                                console.log('[Bridge] Global Result: ' + t.name + ' ' + t.status);
+                                if (window.testRunner && window.testRunner.reportResult) {
+                                    window.testRunner.reportResult(t.name, t.status === 0, t.message);
+                                }
+                        };
+
+                        window.completion_callback = function(t, s) {
+                                console.log('[Bridge] Global Complete');
+                                if (window.testRunner && window.testRunner.notifyDone) {
+                                    window.testRunner.notifyDone();
+                                }
+                        };
+
+                        if (window.add_result_callback) {
+                            window.add_result_callback(window.result_callback);
+                        } else { console.log('[Bridge] add_result_callback not found, relying on global hooks'); }
+                        
+                        if (window.add_completion_callback) {
+                            window.add_completion_callback(window.completion_callback);
+                        }
+                    ");
+
+                }
+
+                u = RemapWptUri(u);
+                return _resources.FetchTextAsync(u, referer: _current, accept: null, secFetchDest: "script");
+            };
             _navManager = new NavigationManager(_resources);
             
             // Wire up ImageLoader to trigger RepaintReady when images finish loading
@@ -427,6 +473,55 @@ namespace FenBrowser.FenEngine.Rendering
                 catch { }
             };
             FontRegistry.FontLoaded += _fontLoadedHandler;
+        }
+
+        public static string WPTRootPath { get; set; }
+
+        private Uri RemapWptUri(Uri u)
+        {
+            if (string.IsNullOrEmpty(WPTRootPath)) return u;
+            if (u.Scheme != "file") return u;
+
+            // Simple heuristic matches common WPT paths
+            // If path looks like /resources/ or /common/ or /images/ but is at drive root C:/resources...
+            // AND the file doesn't exist there...
+            // REMAP it to WPTRootPath.
+
+            if (System.IO.File.Exists(u.LocalPath)) return u;
+
+            string local = u.LocalPath; // e.g. C:\resources\testharness.js
+            string fileName = System.IO.Path.GetFileName(local);
+            string dir = System.IO.Path.GetDirectoryName(local);
+            
+            // We want the part after the drive root. 
+            // e.g. \resources
+            // Use Path.GetPathRoot
+            string root = System.IO.Path.GetPathRoot(local);
+            if (local.StartsWith(root))
+            {
+                string rel = local.Substring(root.Length).TrimStart(System.IO.Path.DirectorySeparatorChar);
+                
+                // Only remap specific WPT folders to avoid accidents
+                if (rel.StartsWith("resources", StringComparison.OrdinalIgnoreCase) || 
+                    rel.StartsWith("common", StringComparison.OrdinalIgnoreCase) ||
+                    rel.StartsWith("images", StringComparison.OrdinalIgnoreCase) ||
+                    rel.StartsWith("fonts", StringComparison.OrdinalIgnoreCase) ||
+                    rel.StartsWith("media", StringComparison.OrdinalIgnoreCase) ||
+                    rel.StartsWith("css", StringComparison.OrdinalIgnoreCase))
+                {
+                    string mapped = System.IO.Path.Combine(WPTRootPath, rel);
+                     if (System.IO.File.Exists(mapped))
+                     {
+                         try 
+                         { 
+                             // FenLogger.Debug($"[WPT-Remap] {u} -> {mapped}", LogCategory.Navigation);
+                             return new Uri(mapped);
+                         } 
+                         catch {}
+                     }
+                }
+            }
+            return u;
         }
 
         private CertificateInfo _lastCertificate;
@@ -512,7 +607,7 @@ namespace FenBrowser.FenEngine.Rendering
                     _current = new Uri("fen://history");
                     
                     // Render the generated HTML
-                    var elem = await _engine.RenderAsync(sb.ToString(), _current, u => _resources.FetchTextAsync(u), u => _resources.FetchImageAsync(u), u => { _ = NavigateAsync(u.AbsoluteUri); });
+                    var elem = await _engine.RenderAsync(sb.ToString(), _current, u => _resources.FetchCssAsync(u), u => _resources.FetchImageAsync(u), u => { _ = NavigateAsync(u.AbsoluteUri); });
                     try { RepaintReady?.Invoke(this, elem); } catch { }
 
                     // Add to history if not navigating backwards/forwards
@@ -664,7 +759,7 @@ pre {{
                     }
                 } catch { }
 
-                var elem = await _engine.RenderAsync(htmlToRender, uri, u => _resources.FetchTextAsync(u), u => _resources.FetchImageAsync(u), u => { _ = NavigateAsync(u.AbsoluteUri); });
+                var elem = await _engine.RenderAsync(htmlToRender, uri, u => _resources.FetchCssAsync(u), u => _resources.FetchImageAsync(u), u => { _ = NavigateAsync(u.AbsoluteUri); });
 
                 // Dump Engine Source (Processed DOM level)
                 try
@@ -681,6 +776,13 @@ pre {{
                 
                 // _current already set above
                 
+                // CRITICAL: WPT testharness.js waits for window.load event to start tests.
+                // Since our engine might not fire it automatically in all cases, force it here.
+                try { 
+                    FenLogger.Debug("[BrowserApi] Force-dispatching 'load' event for WPT...", LogCategory.JavaScript);
+                    await _engine.ExecuteScriptAsync("window.dispatchEvent(new Event('load'));");
+                } catch (Exception ex) { FenLogger.Error($"[BrowserApi] Failed to dispatch load: {ex.Message}", LogCategory.JavaScript); }
+
                 // Debug: Log that _current is now set
                 try { FenLogger.Debug($"[BrowserApi] RenderAsync finished. Firing RepaintReady...", LogCategory.General); } catch {}
                 

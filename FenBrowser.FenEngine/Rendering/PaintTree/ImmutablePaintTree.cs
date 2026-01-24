@@ -80,6 +80,80 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
         
+        /// <summary>
+        /// Compares this paint tree with another to identify changes.
+        /// </summary>
+        public PaintTreeDiff Diff(ImmutablePaintTree other)
+        {
+            if (other == null) return new PaintTreeDiff { AddedNodes = new List<PaintNodeBase>(Roots) };
+            
+            var added = new List<PaintNodeBase>();
+            var removed = new List<PaintNodeBase>();
+            var modified = new List<NodeChange>();
+
+            DiffRecursive(Roots, other.Roots, added, removed, modified);
+
+            return new PaintTreeDiff
+            {
+                AddedNodes = added,
+                RemovedNodes = removed,
+                ModifiedNodes = modified
+            };
+        }
+
+        private void DiffRecursive(
+            IReadOnlyList<PaintNodeBase> current, 
+            IReadOnlyList<PaintNodeBase> other,
+            List<PaintNodeBase> added,
+            List<PaintNodeBase> removed,
+            List<NodeChange> modified)
+        {
+            // Keyed Matching: Use SourceNode + GetType() as a stable key.
+            // This allows us to detect moved nodes and stable updates even if order changes slightly.
+            var otherNodesByKey = new Dictionary<string, PaintNodeBase>();
+            foreach (var node in other)
+            {
+                string key = GetNodeKey(node);
+                if (!string.IsNullOrEmpty(key)) otherNodesByKey[key] = node;
+            }
+
+            foreach (var nodeB in current)
+            {
+                string key = GetNodeKey(nodeB);
+                if (string.IsNullOrEmpty(key) || !otherNodesByKey.TryGetValue(key, out var nodeA))
+                {
+                    added.Add(nodeB);
+                    continue;
+                }
+
+                // Node exists in both, check for modifications
+                bool geomChanged = nodeA.Bounds != nodeB.Bounds || nodeA.Transform != nodeB.Transform;
+                bool styleChanged = nodeA.Opacity != nodeB.Opacity || nodeA.ClipRect != nodeB.ClipRect;
+                
+                if (geomChanged) modified.Add(new NodeChange(nodeA, nodeB, ChangeType.Geometry));
+                else if (styleChanged) modified.Add(new NodeChange(nodeA, nodeB, ChangeType.Style));
+
+                // Recurse into children
+                DiffRecursive(nodeB.Children, nodeA.Children, added, removed, modified);
+                
+                // Mark as processed
+                otherNodesByKey.Remove(key);
+            }
+
+            // Remaining nodes in 'other' were removed
+            foreach (var node in otherNodesByKey.Values)
+            {
+                removed.Add(node);
+            }
+        }
+
+        private string GetNodeKey(PaintNodeBase node)
+        {
+            if (node.SourceNode == null) return null;
+            // Key is composed of the DOM node hash and the paint node type (role)
+            return $"{node.SourceNode.GetHashCode()}_{node.GetType().Name}";
+        }
+
         private static void TraverseNode(PaintNodeBase node, Action<PaintNodeBase> action)
         {
             if (node == null) return;

@@ -90,6 +90,11 @@ namespace FenBrowser.FenEngine.Rendering
         /// Draw an image.
         /// </summary>
         void DrawImage(SKImage image, SKRect destRect, float opacity = 1f);
+
+        /// <summary>
+        /// Draw an image with source slicing.
+        /// </summary>
+        void DrawImage(SKImage image, SKRect destRect, SKRect srcRect, float opacity = 1f);
         
         /// <summary>
         /// Draw an SKPicture (for SVG).

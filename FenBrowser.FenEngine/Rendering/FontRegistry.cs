@@ -136,7 +136,7 @@ namespace FenBrowser.FenEngine.Rendering
                 SKTypeface typeface = null;
 
                 // local() check
-                var localMatch = Regex.Match(src, @"local\s*\(\s*([""']?)([^)""']+)\1\s*\)", RegexOptions.IgnoreCase);
+                var localMatch = Regex.Match(src, @"local\s*\(\s*([""']?)([^)""']+)\1\s*\)", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(500));
                 if (localMatch.Success)
                 {
                     string localName = localMatch.Groups[2].Value;
@@ -150,7 +150,7 @@ namespace FenBrowser.FenEngine.Rendering
                     // url() check - assumed if not local
                     // Sanitize url(...) wrapper if present (CssLoader might pass raw src string)
                     string url = src;
-                    var urlMatch = Regex.Match(src, @"url\s*\(\s*([""']?)([^)""']+)\1\s*\)", RegexOptions.IgnoreCase);
+                    var urlMatch = Regex.Match(src, @"url\s*\(\s*([""']?)([^)""']+)\1\s*\)", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(500));
                     if (urlMatch.Success) url = urlMatch.Groups[2].Value;
 
                     Uri uri;
@@ -234,12 +234,12 @@ namespace FenBrowser.FenEngine.Rendering
                 var descriptor = new FontFaceDescriptor { BaseUri = baseUri };
 
                 // Parse font-family
-                var familyMatch = Regex.Match(fontFaceBlock, @"font-family\s*:\s*([""']?)([^;""']+)\1", RegexOptions.IgnoreCase);
+                var familyMatch = Regex.Match(fontFaceBlock, @"font-family\s*:\s*([""']?)([^;""']+)\1", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(500));
                 if (familyMatch.Success)
                     descriptor.Family = familyMatch.Groups[2].Value.Trim();
 
                 // Parse src
-                var srcMatch = Regex.Match(fontFaceBlock, @"src\s*:\s*([^;]+)", RegexOptions.IgnoreCase);
+                var srcMatch = Regex.Match(fontFaceBlock, @"src\s*:\s*([^;]+)", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(500));
                 if (srcMatch.Success)
                 {
                     descriptor.Source = srcMatch.Groups[1].Value.Trim();
@@ -247,7 +247,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 // Parse font-weight
-                var weightMatch = Regex.Match(fontFaceBlock, @"font-weight\s*:\s*(\d+|normal|bold|lighter|bolder)", RegexOptions.IgnoreCase);
+                var weightMatch = Regex.Match(fontFaceBlock, @"font-weight\s*:\s*(\d+|normal|bold|lighter|bolder)", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(500));
                 if (weightMatch.Success)
                 {
                     var weightVal = weightMatch.Groups[1].Value.ToLowerInvariant();
@@ -259,7 +259,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 // Parse font-style
-                var styleMatch = Regex.Match(fontFaceBlock, @"font-style\s*:\s*(normal|italic|oblique)", RegexOptions.IgnoreCase);
+                var styleMatch = Regex.Match(fontFaceBlock, @"font-style\s*:\s*(normal|italic|oblique)", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(500));
                 if (styleMatch.Success)
                 {
                     var styleVal = styleMatch.Groups[1].Value.ToLowerInvariant();

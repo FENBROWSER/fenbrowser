@@ -123,10 +123,14 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         .footer {
-            margin-top: 60px;
+            position: fixed;
+            bottom: 20px;
+            left: 0;
+            width: 100%;
             font-size: 12px;
             color: #475569;
             text-align: center;
+            pointer-events: none; /* Let clicks pass through if overlapping */
         }
     </style>
 </head>
