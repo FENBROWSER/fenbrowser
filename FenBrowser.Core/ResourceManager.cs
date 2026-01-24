@@ -938,6 +938,37 @@ namespace FenBrowser.Core
                 throw;
             }
         }
+        public async Task<string> FetchCssAsync(Uri url)
+        {
+            if (url == null) return null;
+            // Use FetchTextDetailedAsync to inspect headers before returning
+            var result = await FetchTextDetailedAsync(url, 
+                accept: "text/css,*/*;q=0.1", 
+                secFetchDest: "style");
+
+            if (result.Status != FetchStatus.Success)
+            {
+                // Silently omit failed CSS
+                return null; 
+            }
+
+            // Mime Check
+            var ct = result.ContentType;
+            if (!string.IsNullOrWhiteSpace(ct))
+            {
+                ct = ct.ToLowerInvariant();
+                // If it is explicitly JAVASCRIPT, we reject it
+                // Google serves 'xjs' as text/javascript which contains valid-looking tokens but is not CSS.
+                if (ct.Contains("javascript") || ct.Contains("ecmascript"))
+                {
+                    System.Diagnostics.Debug.WriteLine($"[CssLoader] BLOCKED JS masquerading as CSS: {url} ({ct})");
+                    FenLogger.Warn($"[CssLoader] Blocked non-CSS resource: {url} Content-Type: {ct}", LogCategory.Network);
+                    return null; 
+                }
+            }
+
+            return result.Content;
+        }
     }
 }
 

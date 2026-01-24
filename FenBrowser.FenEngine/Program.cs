@@ -37,10 +37,15 @@ namespace FenBrowser.FenEngine
                 }
                 Console.WriteLine($"Duration: {result.Duration.TotalMilliseconds}ms");
             }
+            else if (args.Length >= 1 && args[0] == "test")
+            {
+                FenBrowser.FenEngine.Tests.LogicTestRunner.MainTest(args);
+            }
             else
             {
                 Console.WriteLine("Usage: FenBrowser.FenEngine.exe verify <html_path>");
                 Console.WriteLine("       FenBrowser.FenEngine.exe test262 <test_file_path> [test262_root_path]");
+                Console.WriteLine("       FenBrowser.FenEngine.exe test");
             }
         }
     }

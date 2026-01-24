@@ -71,6 +71,12 @@ namespace FenBrowser.Core.Dom
 
         public QuirksMode Mode { get; set; } = QuirksMode.Quirks;
 
+        /// <summary>
+        /// The security sandbox policy for this specific document.
+        /// Decentralized from global registry to ensure modularity and site isolation.
+        /// </summary>
+        public FenBrowser.Core.SandboxPolicy SandboxPolicy { get; set; } = FenBrowser.Core.SandboxPolicy.AllowAll;
+
         // --- Final Architecture: Orchestrator Hook ---
         public event System.Action OnTreeDirty;
         

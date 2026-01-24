@@ -14,7 +14,10 @@ namespace FenBrowser.Core
         Storage = 1 << 5,
         Navigation = 1 << 6,
         DomMutation = 1 << 7,
-        All = Scripts | InlineScripts | ExternalScripts | Timers | Network | Storage | Navigation | DomMutation
+        SharedArrayBuffer = 1 << 8,
+        CrossOriginIsolated = 1 << 9,
+        DocumentDomain = 1 << 10,
+        All = Scripts | InlineScripts | ExternalScripts | Timers | Network | Storage | Navigation | DomMutation | SharedArrayBuffer | CrossOriginIsolated | DocumentDomain
     }
 
     public sealed class SandboxPolicy

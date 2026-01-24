@@ -14,6 +14,17 @@ namespace FenBrowser.Core.Dom
 
         public string TagName { get; private set; }
 
+        public ShadowRoot ShadowRoot { get; private set; }
+
+        public ShadowRoot AttachShadow(string mode)
+        {
+            if (ShadowRoot != null)
+                throw new InvalidOperationException("Shadow root is already attached to this element.");
+            
+            ShadowRoot = new ShadowRoot(this, mode);
+            return ShadowRoot;
+        }
+
         // Attribute storage - DOM Living Standard §4.10
         private readonly NamedNodeMap _attributes;
         
@@ -305,8 +316,8 @@ namespace FenBrowser.Core.Dom
             _attrOriginalNames[key] = originalName;
         }
 
-        // Shadow DOM support
-        public Element ShadowRoot { get; set; }
+        // Shadow DOM support (Moved to top)
+        // public Element ShadowRoot { get; set; }
         
         // Template support
         private DocumentFragment _templateContent;
