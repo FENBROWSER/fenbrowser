@@ -45,6 +45,8 @@ namespace FenBrowser.FenEngine.DOM
         // Propagation path
         public List<Element> Path { get; set; } = new List<Element>();
 
+        private IExecutionContext _context;
+
         /// <summary>
         /// Create a new DOM Event
         /// </summary>
@@ -52,9 +54,10 @@ namespace FenBrowser.FenEngine.DOM
         /// <param name="bubbles">Whether the event bubbles up through the DOM</param>
         /// <param name="cancelable">Whether the event can be cancelled</param>
         /// <param name="composed">Whether the event crosses shadow DOM boundaries</param>
-        public DomEvent(string type, bool bubbles = false, bool cancelable = false, bool composed = false)
+        public DomEvent(string type, bool bubbles = false, bool cancelable = false, bool composed = false, IExecutionContext context = null)
         {
             Type = type ?? "";
+            _context = context;
             Bubbles = bubbles;
             Cancelable = cancelable;
             Composed = composed;
@@ -152,13 +155,24 @@ namespace FenBrowser.FenEngine.DOM
         /// </summary>
         private IValue ComposedPath(IValue[] args, IValue thisVal)
         {
-            var arr = new FenObject();
-            for (int i = 0; i < Path.Count; i++)
+            // Requires context to wrap nodes
+            if (_context == null) return FenValue.FromObject(new NodeListWrapper(new List<Node>(), null));
+
+            var nodes = new List<Node>();
+            if (Path != null)
             {
-                // We'd need context to create ElementWrapper, so return element references
-                arr.Set(i.ToString(), FenValue.FromString(Path[i].Tag ?? "#unknown"));
+                // Path currently contains Elements, convert to Nodes
+                foreach (var el in Path) nodes.Add(el);
             }
-            arr.Set("length", FenValue.FromNumber(Path.Count));
+            
+            // Return as array/NodeList? Spec says array of EventTargets.
+            // Using FenObject as array for now, populated with Wrappers.
+            var arr = new FenObject();
+            for (int i = 0; i < nodes.Count; i++)
+            {
+                arr.Set(i.ToString(), DomWrapperFactory.Wrap(nodes[i], _context));
+            }
+            arr.Set("length", FenValue.FromNumber(nodes.Count));
             return FenValue.FromObject(arr);
         }
 
