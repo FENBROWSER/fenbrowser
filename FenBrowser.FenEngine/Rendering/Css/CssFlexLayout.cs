@@ -330,6 +330,12 @@ namespace FenBrowser.FenEngine.Rendering.Css
             string alignContent = style?.AlignContent?.ToLowerInvariant() ?? "stretch";
             string alignItems = style?.AlignItems?.ToLowerInvariant() ?? "stretch";
             
+            // DEBUG: Log flex container dimensions
+            if (container.TagName == "BODY" || container.TagName == "HTML")
+            {
+                FenLogger.Debug($"[FLEX-ARRANGE] <{container.TagName}> contentBox={contentBox} isRow={isRow} Justify={justify} AlignItems={alignItems}", LogCategory.Layout);
+            }
+            
             // Spec compliance check
             SpecComplianceLogger.LogContentBox(container.TagName ?? "unknown", container.Id ?? "", contentBox.Width, contentBox.Height);
 
@@ -565,6 +571,9 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
                 if (freeMain > 0)
                 {
+                     if (container.TagName == "BODY")
+                        FenLogger.Debug($"[FLEX-JUSTIFY] BODY Line={line.MainSize} Avail={mainAvailable} Free={freeMain} Justify={justify} StartOffset={startOffset}", LogCategory.Layout);
+
                      switch (justify)
                     {
                         case "center": startOffset = freeMain / 2; break;
@@ -575,6 +584,10 @@ namespace FenBrowser.FenEngine.Rendering.Css
                         case "space-evenly":
                              if (line.Items.Count > 0) { float p = freeMain / (line.Items.Count + 1); startOffset = p; itemGap += p; } break;
                     }
+                }
+                else if (container.TagName == "BODY")
+                {
+                    FenLogger.Debug($"[FLEX-JUSTIFY-FAIL] BODY freeMain={freeMain} (Avail={mainAvailable} - Line={line.MainSize})", LogCategory.Layout);
                 }
                 
                 float totalFlexGrow = 0;

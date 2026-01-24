@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using FenBrowser.Core;
 using FenBrowser.Core.Dom;
+using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Rendering.Css;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.DOM;
@@ -105,7 +107,7 @@ namespace FenBrowser.FenEngine.Rendering
             list.Add(rule);
         }
 
-        public Dictionary<string, CssDeclaration> ComputeCascadedValues(Element element, string pseudoElement = null)
+        public Dictionary<string, CssDeclaration> ComputeCascadedValues(Element element, string pseudoElement = null, RenderDeadline deadline = null)
         {
             EnsureIndex();
             var results = new List<MatchedDeclaration>();
@@ -127,12 +129,15 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             // 2. Sort declarations
+            deadline?.Check();
             results.Sort();
+            deadline?.Check();
 
             // 3. Apply standard cascade (Winner per property)
             var computed = new Dictionary<string, CssDeclaration>();
             foreach (var match in results)
             {
+                deadline?.Check();
                 computed[match.Declaration.Property] = match.Declaration;
             }
 
@@ -198,6 +203,30 @@ namespace FenBrowser.FenEngine.Rendering
         
         private void TryMatchRule(Element element, CssStyleRule styleRule, List<MatchedDeclaration> results, string pseudoElement)
         {
+            // 1. Check Scope if applicable
+            int scopeProximity = 0;
+            if (!string.IsNullOrEmpty(styleRule.ScopeSelector))
+            {
+                // Find closest ancestor matching the scope selector
+                var current = element.Parent as Element;
+                int dist = 1;
+                bool scopeMatched = false;
+                while (current != null)
+                {
+                    if (CssLoader.MatchesSelector(current, styleRule.ScopeSelector))
+                    {
+                        scopeProximity = dist;
+                        scopeMatched = true;
+                        break;
+                    }
+                    current = current.Parent as Element;
+                    dist++;
+                }
+                
+                if (!scopeMatched) return; // Not inside the required scope
+            }
+
+            // 2. Match the actual selector
             var matchedChain = SelectorMatcher.GetMatchingChain(element, styleRule.Selector);
 
             if (matchedChain != null)
@@ -233,7 +262,9 @@ namespace FenBrowser.FenEngine.Rendering
                         Origin = styleRule.Origin,
                         Specificity = matchedChain.Specificity,
                         Order = styleRule.Order,
-                        SelectorText = styleRule.Selector.ToString()
+                        SelectorText = styleRule.Selector.ToString(),
+                        LayerOrder = styleRule.LayerOrder,
+                        ScopeProximity = scopeProximity
                     });
                 }
             }
@@ -247,38 +278,72 @@ namespace FenBrowser.FenEngine.Rendering
         public Specificity Specificity { get; set; }
         public int Order { get; set; }
         public string SelectorText { get; set; }
+        public int LayerOrder { get; set; } // 0 for unlayered, >0 for layered
+        public int ScopeProximity { get; set; } // 0 for no scope, >0 for scoped, smaller is closer
 
         public int CompareTo(MatchedDeclaration other)
         {
-            // 1. Importance & Origin
-            int thisWeight = GetWeight(Origin, Declaration.IsImportant);
-            int otherWeight = GetWeight(other.Origin, other.Declaration.IsImportant);
+            // 1. Origin & Importance & Layers
+            int thisWeight = GetWeight(Origin, Declaration.IsImportant, LayerOrder);
+            int otherWeight = GetWeight(other.Origin, other.Declaration.IsImportant, other.LayerOrder);
             int weightDiff = thisWeight.CompareTo(otherWeight);
             if (weightDiff != 0) return weightDiff;
 
-            // 2. Specificity
+            // 2. Scope Proximity (Tie-breaker before specificity)
+            // Smaller proximity means directly inside a shallower scope root? 
+            // Actually, spec says scope with HEAVIER specificity or SHORTER proximity?
+            // "Scope proximity" tie-breaker: the rule whose scope root is a CLOSER ancestor wins.
+            // So SMALLER proximity value (closer) should have HIGHER weight.
+            // Since CompareTo is ascending, we use reverse comparison for priority.
+            if (ScopeProximity != other.ScopeProximity)
+                return other.ScopeProximity.CompareTo(ScopeProximity);
+
+            // 3. Specificity
             int specDiff = Specificity.CompareTo(other.Specificity);
             if (specDiff != 0) return specDiff;
 
-            // 3. Order
+            // 4. Order
             return Order.CompareTo(other.Order);
         }
 
-        private int GetWeight(CssOrigin origin, bool important)
+        private int GetWeight(CssOrigin origin, bool important, int layerOrder)
         {
-            // Ascending order of precedence:
-            // UA (0)
-            // User (1)
-            // Author (2)
-            // Author !important (3)
-            // User !important (4)
-            // UA !important (5)
+            // Standard Cascade Order (Level 5):
+            // Normal: UA < User < Author Layer 1 < Layer 2 < Unlayered
+            // Important: Unlayered !important < Layer 2 !important < Layer 1 !important < User !important < UA !important
             
-            if (!important) return (int)origin;
+            // We map this into a single integer score for sorting.
+            // Base ranges:
+            // 0-100: UA normal
+            // 100-200: User normal
+            // 200-300: Author layered (200 + layerOrder)
+            // 300-310: Author unlayered
+            // 400-410: Author unlayered !important
+            // 410-510: Author layered !important (510 - layerOrder)
+            // 600-700: User !important
+            // 700-800: UA !important
+
+            if (!important)
+            {
+                if (origin == CssOrigin.UserAgent) return 0;
+                if (origin == CssOrigin.User) return 100;
+                if (origin == CssOrigin.Author)
+                {
+                    if (layerOrder == 0) return 300; // Unlayered author rules win over layered
+                    return 200 + Math.Min(layerOrder, 99); // Higher layerOrder wins
+                }
+            }
+            else
+            {
+                if (origin == CssOrigin.Author)
+                {
+                    if (layerOrder == 0) return 400; // Unlayered important author rules are lowest priority in !important block
+                    return 510 - Math.Min(layerOrder, 100); // LOWER layerOrder wins for !important
+                }
+                if (origin == CssOrigin.User) return 600;
+                if (origin == CssOrigin.UserAgent) return 700;
+            }
             
-            if (origin == CssOrigin.Author) return 3;
-            if (origin == CssOrigin.User) return 4;
-            if (origin == CssOrigin.UserAgent) return 5;
             return 0;
         }
     }

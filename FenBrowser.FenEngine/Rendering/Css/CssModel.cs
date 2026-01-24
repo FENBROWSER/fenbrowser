@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using FenBrowser.Core.Dom;
 
 namespace FenBrowser.FenEngine.Rendering.Css
 {
@@ -20,6 +21,15 @@ namespace FenBrowser.FenEngine.Rendering.Css
     {
         public Uri BaseUri { get; set; }
         public CssOrigin Origin { get; set; }
+        
+        // Cascade Layer Support
+        public string LayerName { get; set; }
+        public int LayerOrder { get; set; } // Sequence in which @layer was defined
+        
+        // CSS Scope Support
+        public string ScopeSelector { get; set; }
+        public FenBrowser.Core.Dom.Element ScopeRoot { get; set; }
+        public int ScopeProximity { get; set; } // Number of generations between scope root and matched element
     }
 
     public class CssStyleRule : CssRule
@@ -32,6 +42,18 @@ namespace FenBrowser.FenEngine.Rendering.Css
     public class CssMediaRule : CssRule
     {
         public string Condition { get; set; }
+        public List<CssRule> Rules { get; } = new List<CssRule>();
+    }
+
+    public class CssLayerRule : CssRule
+    {
+        public string Name { get; set; }
+        public List<CssRule> Rules { get; } = new List<CssRule>();
+    }
+
+    public class CssScopeRule : CssRule
+    {
+        public string EndSelector { get; set; }
         public List<CssRule> Rules { get; } = new List<CssRule>();
     }
 

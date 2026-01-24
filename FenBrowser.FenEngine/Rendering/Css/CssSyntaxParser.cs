@@ -76,35 +76,82 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 if (_currentToken.Type == CssTokenType.LeftBrace)
                 {
                     ConsumeToken(); // {
-                    
-                    // Recursively parse rules inside the block
-                    // We can reuse the loop logic from ParseStylesheet but stopping at RightBrace
-                    while (_currentToken.Type != CssTokenType.RightBrace && _currentToken.Type != CssTokenType.EOF)
-                    {
-                         if (_currentToken.Type == CssTokenType.Whitespace || _currentToken.Type == CssTokenType.Comment)
-                        {
-                            ConsumeToken();
-                            continue;
-                        }
-
-                        if (_currentToken.Type == CssTokenType.AtKeyword)
-                        {
-                            var subRule = ConsumeAtRule();
-                            if (subRule != null) mediaRule.Rules.Add(subRule);
-                        }
-                        else
-                        {
-                            var subRule = ConsumeQualifiedRule();
-                            if (subRule != null) mediaRule.Rules.Add(subRule);
-                        }
-                    }
-                    
+                    ParseInsideBlock(mediaRule.Rules);
                     if (_currentToken.Type == CssTokenType.RightBrace)
                     {
                         ConsumeToken(); // }
                     }
                 }
                 return mediaRule;
+            }
+            
+            if (name.Equals("layer", StringComparison.OrdinalIgnoreCase))
+            {
+                var nameTokens = new List<CssToken>();
+                while (_currentToken.Type != CssTokenType.LeftBrace && _currentToken.Type != CssTokenType.Semicolon && _currentToken.Type != CssTokenType.EOF)
+                {
+                    nameTokens.Add(_currentToken);
+                    ConsumeToken();
+                }
+                
+                string rawNames = string.Join("", nameTokens.Select(t => t.ToStringValue())).Trim();
+                var names = rawNames.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(n => n.Trim()).ToList();
+
+                if (_currentToken.Type == CssTokenType.LeftBrace)
+                {
+                    ConsumeToken();
+                    var layerRule = new CssLayerRule { Name = names.FirstOrDefault() };
+                    ParseInsideBlock(layerRule.Rules);
+                    if (_currentToken.Type == CssTokenType.RightBrace) ConsumeToken();
+                    return layerRule;
+                }
+                else if (_currentToken.Type == CssTokenType.Semicolon)
+                {
+                    ConsumeToken();
+                    // Just a declaration of order: @layer base, theme;
+                    // We can represent this by returning multiple rules or a special rule.
+                    // For simplicity, let's return a CssLayerRule with multiple names or handle it in a special way.
+                    // But the parser returns ONE rule.
+                    // Let's make CssLayerRule.Name contain the comma-separated string if it's a declaration only?
+                    // No, let's return a rule for EACH name.
+                    // Wait, ParseStylesheet accepts a list of rules.
+                    
+                    // Actually, I'll return a special CssLayerRule where Name identifies it as a multi-declaration.
+                    return new CssLayerRule { Name = rawNames, Rules = { } }; 
+                }
+                return null;
+            }
+            
+            if (name.Equals("scope", StringComparison.OrdinalIgnoreCase))
+            {
+                var scopeRule = new CssScopeRule();
+                var selectorTokens = new List<CssToken>();
+                while (_currentToken.Type != CssTokenType.LeftBrace && _currentToken.Type != CssTokenType.EOF)
+                {
+                    selectorTokens.Add(_currentToken);
+                    ConsumeToken();
+                }
+                
+                string raw = string.Join("", selectorTokens.Select(t => t.ToStringValue())).Trim();
+                // Simple @scope (...) to (...) parsing
+                if (raw.Contains(" to "))
+                {
+                    var parts = raw.Split(new[] { " to " }, 2, StringSplitOptions.None);
+                    scopeRule.ScopeSelector = parts[0].Trim('(', ')', ' ');
+                    scopeRule.EndSelector = parts[1].Trim('(', ')', ' ');
+                }
+                else
+                {
+                    scopeRule.ScopeSelector = raw.Trim('(', ')', ' ');
+                }
+
+                if (_currentToken.Type == CssTokenType.LeftBrace)
+                {
+                    ConsumeToken();
+                    ParseInsideBlock(scopeRule.Rules);
+                    if (_currentToken.Type == CssTokenType.RightBrace) ConsumeToken();
+                }
+                return scopeRule;
             }
 
             // Unknown @rule, consume until semicolon or block
@@ -123,6 +170,31 @@ namespace FenBrowser.FenEngine.Rendering.Css
             }
             
             return null; // Ignore unknown rules
+        }
+
+        private void ParseInsideBlock(List<CssRule> rules)
+        {
+            int loopCount = 0;
+            while (_currentToken.Type != CssTokenType.RightBrace && _currentToken.Type != CssTokenType.EOF)
+            {
+                if (loopCount++ > 100000) break;
+                if (_currentToken.Type == CssTokenType.Whitespace || _currentToken.Type == CssTokenType.Comment)
+                {
+                    ConsumeToken();
+                    continue;
+                }
+
+                if (_currentToken.Type == CssTokenType.AtKeyword)
+                {
+                    var subRule = ConsumeAtRule();
+                    if (subRule != null) rules.Add(subRule);
+                }
+                else
+                {
+                    var subRule = ConsumeQualifiedRule();
+                    if (subRule != null) rules.Add(subRule);
+                }
+            }
         }
 
         private CssStyleRule ConsumeQualifiedRule()
@@ -229,7 +301,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 {
                     int j = i - 1;
                     while (j >= 0 && valueTokens[j].Type == CssTokenType.Whitespace) j--;
-                    if (j >= 0 && valueTokens[j].Type == CssTokenType.Delim && valueTokens[j].Value == "!")
+                    if (j >= 0 && valueTokens[j].Type == CssTokenType.Delim && valueTokens[j].Delimiter == '!')
                     {
                         important = true;
                         // Remove ! and important from value

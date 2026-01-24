@@ -465,24 +465,34 @@ namespace FenBrowser.FenEngine.Rendering.Css
         private static bool MatchesPseudoClass(Element el, string name, string args, int depth)
         {
             if (depth > 64) return false;
-            return name.ToLowerInvariant() switch
+            switch (name.ToLowerInvariant())
             {
-                "first-child" => IsFirstChild(el),
-                "last-child" => IsLastChild(el),
-                "only-child" => IsOnlyChild(el),
-                "empty" => el.Children == null || el.Children.Count == 0,
-                "root" => el.Parent == null || el.Tag?.ToUpperInvariant() == "HTML",
-                "not" => !Matches(el, args, depth + 1),
-                "is" or "where" => ParseSelectorList(args).Any(chain => MatchesChain(el, chain, depth + 1)),
-                "has" => el.Children?.OfType<Element>().Any(c => Matches(c, args, depth + 1)) == true,
-                "nth-child" => MatchesNthChild(el, args),
-                "nth-last-child" => MatchesNthLastChild(el, args),
-                "checked" => el.Attr?.ContainsKey("checked") == true,
-                "disabled" => el.Attr?.ContainsKey("disabled") == true,
-                "enabled" => el.Attr?.ContainsKey("disabled") != true,
-                "focus" or "hover" or "active" or "visited" or "link" => false, // State-dependent
-                _ => false
-            };
+                case "first-child": return IsFirstChild(el);
+                case "last-child": return IsLastChild(el);
+                case "only-child": return IsOnlyChild(el);
+                case "first-of-type": return IsFirstOfType(el);
+                case "last-of-type": return IsLastOfType(el);
+                case "only-of-type": return IsFirstOfType(el) && IsLastOfType(el);
+                case "empty": return el.Children == null || el.Children.Count == 0;
+                case "root": return el.Parent == null || el.Tag?.ToUpperInvariant() == "HTML";
+                case "not": return !Matches(el, args, depth + 1);
+                case "is":
+                case "where": return ParseSelectorList(args).Any(chain => MatchesChain(el, chain, depth + 1));
+                case "has": return MatchesHas(el, args, depth + 1);
+                case "nth-child": return MatchesNthChild(el, args);
+                case "nth-last-child": return MatchesNthLastChild(el, args);
+                case "nth-of-type": return MatchesNthOfType(el, args);
+                case "nth-last-of-type": return MatchesNthLastOfType(el, args);
+                case "checked": return el.Attr?.ContainsKey("checked") == true;
+                case "disabled": return el.Attr?.ContainsKey("disabled") == true;
+                case "enabled": return el.Attr?.ContainsKey("disabled") != true;
+                case "focus":
+                case "hover":
+                case "active":
+                case "visited":
+                case "link": return false; // State-dependent not implemented in static matcher
+                default: return false;
+            }
         }
 
         private static bool IsFirstChild(Element el)
@@ -503,6 +513,20 @@ namespace FenBrowser.FenEngine.Rendering.Css
             return el.Parent.Children.Count(c => !c.IsText) == 1;
         }
 
+
+
+        private static bool IsFirstOfType(Element el)
+        {
+             if (el.Parent?.Children == null) return true;
+             return el.Parent.Children.OfType<Element>().FirstOrDefault(c => string.Equals(c.Tag, el.Tag, StringComparison.OrdinalIgnoreCase)) == el;
+        }
+
+        private static bool IsLastOfType(Element el)
+        {
+             if (el.Parent?.Children == null) return true;
+             return el.Parent.Children.OfType<Element>().LastOrDefault(c => string.Equals(c.Tag, el.Tag, StringComparison.OrdinalIgnoreCase)) == el;
+        }
+
         private static bool MatchesNthChild(Element el, string args)
         {
             if (el.Parent?.Children == null) return false;
@@ -516,6 +540,84 @@ namespace FenBrowser.FenEngine.Rendering.Css
             var siblings = el.Parent.Children.Where(c => !c.IsText).ToList();
             int index = siblings.Count - siblings.IndexOf(el);
             return MatchesNthFormula(index, args);
+        }
+
+        private static bool MatchesNthOfType(Element el, string args)
+        {
+            if (el.Parent?.Children == null) return false;
+            var siblings = el.Parent.Children.OfType<Element>().Where(c => string.Equals(c.Tag, el.Tag, StringComparison.OrdinalIgnoreCase)).ToList();
+            int index = siblings.IndexOf(el) + 1;
+            return MatchesNthFormula(index, args);
+        }
+
+        private static bool MatchesNthLastOfType(Element el, string args)
+        {
+            if (el.Parent?.Children == null) return false;
+            var siblings = el.Parent.Children.OfType<Element>().Where(c => string.Equals(c.Tag, el.Tag, StringComparison.OrdinalIgnoreCase)).ToList();
+            int index = siblings.Count - siblings.IndexOf(el);
+            return MatchesNthFormula(index, args);
+        }
+
+        private static bool MatchesHas(Element el, string relativeSelectors, int depth)
+        {
+            var parsed = ParseSelectorList(relativeSelectors);
+            foreach (var chain in parsed)
+            {
+                if (chain.Segments.Count == 0) continue;
+                
+                var first = chain.Segments[0];
+                var combinator = first.Combinator;
+                
+                // Identify candidates based on combinator relative to 'el'
+                IEnumerable<Element> candidates = null;
+                
+                if (combinator == '>') // Child
+                {
+                    candidates = el.Children?.OfType<Element>();
+                }
+                else if (combinator == '+') // Adjacent Sibling
+                {
+                    var next = GetNextSibling(el);
+                    if (next != null) candidates = new[] { next };
+                }
+                else if (combinator == '~') // General Sibling
+                {
+                    candidates = GetFollowingSiblings(el);
+                }
+                else // Descendant (Space)
+                {
+                    candidates = el.Descendants().OfType<Element>();
+                }
+                
+                if (candidates != null)
+                {
+                    foreach (var cand in candidates)
+                    {
+                        if (MatchesChain(cand, chain, depth + 1)) return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        private static Element GetNextSibling(Element el)
+        {
+             var parent = el.Parent as Element;
+             if (parent?.Children == null) return null;
+             var siblings = parent.Children.OfType<Element>().ToList();
+             int idx = siblings.IndexOf(el);
+             if (idx >= 0 && idx < siblings.Count - 1) return siblings[idx + 1];
+             return null;
+        }
+
+        private static List<Element> GetFollowingSiblings(Element el)
+        {
+             var parent = el.Parent as Element;
+             if (parent?.Children == null) return new List<Element>();
+             var siblings = parent.Children.OfType<Element>().ToList();
+             int idx = siblings.IndexOf(el);
+             if (idx >= 0 && idx < siblings.Count - 1) return siblings.Skip(idx + 1).ToList();
+             return new List<Element>();
         }
 
         private static bool MatchesNthFormula(int n, string formula)
