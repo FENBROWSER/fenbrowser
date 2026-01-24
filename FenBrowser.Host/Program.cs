@@ -20,6 +20,9 @@ namespace FenBrowser.Host
         {
             try
             {
+                // Force UTF-8 Console Output if possible (may fail if no console attached)
+                try { Console.OutputEncoding = Encoding.UTF8; } catch { }
+
                 // Global Exception Handling
                 AppDomain.CurrentDomain.UnhandledException += (sender, e) => {
                     FenLogger.Error($"[CRASH] Unhandled Domain Exception: {e.ExceptionObject}", LogCategory.General);
@@ -112,6 +115,9 @@ namespace FenBrowser.Host
                     
                     Console.WriteLine($"[WPT] Initializing Headless Engine for: {input}");
 
+                    // Set WPT Root Path for BrowserHost remapping
+                    FenBrowser.FenEngine.Rendering.BrowserHost.WPTRootPath = rootPath;
+
                     // Initialize Headless
                     FenBrowser.Core.Logging.LogManager.InitializeFromSettings();
                     CssEngineConfig.CurrentEngine = CssEngineType.Custom;
@@ -189,10 +195,205 @@ namespace FenBrowser.Host
                          });
                     };
 
-                    // Run the loop (invisible)
                     wptWm.Run();
                     return;
                 }
+                else if (args.Length >= 1 && args[0] == "--acid2")
+                {
+                    AttachConsole(ATTACH_PARENT_PROCESS);
+                    Console.WriteLine("[Acid2] Initializing Headless Engine for Acid2 Test...");
+
+                    // Initialize Headless
+                    FenBrowser.Core.Logging.LogManager.InitializeFromSettings();
+                    CssEngineConfig.CurrentEngine = CssEngineType.Custom;
+                    var wm = WindowManager.Instance;
+                    wm.Initialize("about:blank", isHeadless: true);
+
+                    wm.OnLoad += () => {
+                        Task.Run(async () => {
+                            try
+                            {
+                                // Initialize ChromeManager (UI)
+                                ChromeManager.Instance.Initialize("about:blank");
+                                
+                                var runner = new AcidTestRunner();
+                                var result = await runner.RunAcid2Async(async (url) => {
+                                    var innerTask = await FenBrowser.Host.Program.RunOnMainThread(async () => {
+                                        try {
+                                            Console.WriteLine("[Acid2] Lambda: Checking ActiveTab...");
+                                            if (FenBrowser.Host.Tabs.TabManager.Instance.ActiveTab == null) {
+                                                Console.WriteLine("[Acid2] Lambda: Creating Tab...");
+                                                FenBrowser.Host.Tabs.TabManager.Instance.CreateTab(url);
+                                            }
+                                            else {
+                                                Console.WriteLine("[Acid2] Lambda: Navigating...");
+                                                await FenBrowser.Host.Tabs.TabManager.Instance.ActiveTab.NavigateAsync(url);
+                                            }
+                                            
+                                            Console.WriteLine("[Acid2] Lambda: Waiting for render...");
+                                            await Task.Delay(2000); 
+                                            
+                                            Console.WriteLine("[Acid2] Lambda: Capturing screenshot...");
+                                            var shot = WindowManager.Instance.CaptureScreenshot();
+                                            Console.WriteLine($"[Acid2] Lambda: Screenshot captured (Null? {shot == null})");
+                                            return shot;
+                                        } catch (Exception lambdaEx) {
+                                            Console.WriteLine($"[Acid2] Lambda Error: {lambdaEx}");
+                                            throw;
+                                        }
+                                    });
+                                    return await innerTask;
+                                });
+
+                                Console.WriteLine($"Result: {(result.Passed ? "PASS" : "FAIL")}");
+                                Console.WriteLine($"Message: {result.Message}");
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"[Acid2] Fatal Error: {ex}");
+                            }
+                            finally
+                            {
+                                Console.WriteLine("[Acid2] Work complete. Exiting...");
+                                Environment.Exit(0);
+                            }
+                        });
+                    };
+
+                    wm.Run();
+                    return;
+                }
+                else if (args.Length >= 2 && args[0] == "--wpt")
+                {
+                    AttachConsole(ATTACH_PARENT_PROCESS);
+                    string testPath = args[1];
+                    string logPath = args.Length > 2 ? args[2] : null;
+
+                    Console.WriteLine($"[WPT] Initializing for: {testPath}");
+                    
+                    // Initialize Headless Engine
+                    FenBrowser.Core.Logging.LogManager.InitializeFromSettings();
+                    CssEngineConfig.CurrentEngine = CssEngineType.Custom;
+                    var wm = WindowManager.Instance;
+                    wm.Initialize("about:blank", isHeadless: true);
+
+                    wm.OnLoad += () => {
+                        Task.Run(async () => {
+                            try
+                            {
+                                // Initialize ChromeManager (UI placeholder)
+                                ChromeManager.Instance.Initialize("about:blank");
+
+                                // Define Navigator Delegate
+                                Func<string, Task> navigator = async (uri) => {
+                                    await FenBrowser.Host.Program.RunOnMainThread(async () => {
+                                        if (FenBrowser.Host.Tabs.TabManager.Instance.ActiveTab == null) {
+                                            FenBrowser.Host.Tabs.TabManager.Instance.CreateTab(uri);
+                                        } else {
+                                            await FenBrowser.Host.Tabs.TabManager.Instance.ActiveTab.NavigateAsync(uri);
+                                        }
+                                    });
+                                };
+
+                                // Create Runner
+                                string root = Directory.GetCurrentDirectory(); 
+                                if (File.Exists(testPath)) root = Path.GetDirectoryName(Path.GetFullPath(testPath));
+                                else if (Directory.Exists(testPath)) root = Path.GetFullPath(testPath);
+                                
+                                var runner = new FenBrowser.FenEngine.Testing.WPTTestRunner(root, navigator);
+                                
+                                FenBrowser.FenEngine.Testing.WPTTestRunner.TestExecutionResult result = null;
+                                
+                                if (File.Exists(testPath))
+                                {
+                                    Console.WriteLine($"[WPT] Running Single File: {testPath}");
+                                    result = await runner.RunSingleTestAsync(Path.GetFullPath(testPath), verbose: true);
+                                }
+                                else
+                                {
+                                    Console.WriteLine($"[WPT] Running Pattern in root: {root}");
+                                    var results = await runner.RunTestsAsync(new FenBrowser.FenEngine.Testing.WPTTestRunner.RunOptions { TestPattern = testPath, Verbose = true });
+                                    if (results.Count > 0) result = results[0]; // Just take first for now or aggregation?
+                                    // Make summary
+                                }
+
+                                if (result != null)
+                                {
+                                    var msg = $"Result: {(result.Success ? "PASS" : "FAIL")}\n" +
+                                              $"Passed: {result.PassCount}, Failed: {result.FailCount}\n" +
+                                              $"Output:\n{result.Output}\n" +
+                                              $"Error: {result.Error}";
+                                    
+                                    Console.WriteLine(msg);
+
+                                    if (!string.IsNullOrEmpty(logPath))
+                                    {
+                                        File.WriteAllText(logPath, msg);
+                                        Console.WriteLine($"[WPT] Log written to {logPath}");
+                                    }
+                                }
+                                else
+                                {
+                                   Console.WriteLine("[WPT] No test executed.");
+                                }
+
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"[WPT] Fatal Error: {ex}");
+                            }
+                            finally
+                            {
+                                Environment.Exit(0);
+                            }
+                        });
+                    };
+
+                    wm.Run();
+                    return;
+                }
+                
+                // WebDriver Mode (e.g., --port=4444)
+                var portArg = args.FirstOrDefault(a => a.StartsWith("--port="));
+                if (portArg != null)
+                {
+                    AttachConsole(ATTACH_PARENT_PROCESS);
+                    if (int.TryParse(portArg.Split('=')[1], out int port))
+                    {
+                         Console.WriteLine($"[WebDriver] Initializing on port {port}...");
+                         
+                         FenBrowser.Core.Logging.LogManager.InitializeFromSettings();
+                         CssEngineConfig.CurrentEngine = CssEngineType.Custom;
+                         
+                         var wm = WindowManager.Instance;
+                         bool headless = args.Contains("--headless");
+                         wm.Initialize("about:blank", isHeadless: headless);
+                         
+                         var server = new FenBrowser.WebDriver.WebDriverServer(port);
+                         
+                         wm.OnLoad += () => {
+                             Task.Run(() => {
+                                 try
+                                 {
+                                     ChromeManager.Instance.Initialize("about:blank");
+                                     var driver = new FenBrowser.Host.WebDriver.HostBrowserDriver();
+                                     server.SetDriver(driver);
+                                     server.Start();
+                                 }
+                                 catch (Exception ex)
+                                 {
+                                     Console.WriteLine($"[WebDriver] Startup Error: {ex}");
+                                     Environment.Exit(1);
+                                 }
+                             });
+                         };
+                         
+                         wm.Run();
+                         server.Dispose();
+                         return;
+                    }
+                }
+
 
                 // 1. Logging Setup
                 FenBrowser.Core.Logging.LogManager.InitializeFromSettings();

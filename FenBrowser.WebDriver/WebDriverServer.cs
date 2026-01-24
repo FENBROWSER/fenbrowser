@@ -41,7 +41,6 @@ namespace FenBrowser.WebDriver
         {
             _port = port;
             _listener = new HttpListener();
-            _listener.Prefixes.Add($"http://localhost:{port}/");
             _listener.Prefixes.Add($"http://127.0.0.1:{port}/");
             
             _sessionManager = new SessionManager();
@@ -50,6 +49,14 @@ namespace FenBrowser.WebDriver
             _cts = new CancellationTokenSource();
         }
         
+        /// <summary>
+        /// Set the browser driver implementation.
+        /// </summary>
+        public void SetDriver(IBrowserDriver driver)
+        {
+            _handler.Browser = driver;
+        }
+
         /// <summary>
         /// Start the WebDriver server.
         /// </summary>
