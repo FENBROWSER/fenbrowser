@@ -1499,8 +1499,40 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(view);
             })));
 
-            // ES6 URL and URLSearchParams - Part of Web API but essential for modern JS
-            SetGlobal("URL", FenValue.FromFunction(new FenFunction("URL", (args, thisVal) =>
+            // Promise - Updated Full Spec Implementation (Phase 1)
+            var promiseCtor = new FenFunction("Promise", (args, thisVal) => 
+            {
+                if (args.Length == 0 || !args[0].IsFunction) return new ErrorValue("Promise resolver undefined is not a function");
+                return FenValue.FromObject(new JsPromise(args[0], _context));
+            });
+            var promiseObj = FenValue.FromFunction(promiseCtor);
+            var promiseStatics = promiseObj.AsObject();
+            promiseStatics.Set("resolve", FenValue.FromFunction(new FenFunction("resolve", (args, ctx) => 
+                FenValue.FromObject(JsPromise.Resolve(args.Length>0?args[0]:FenValue.Undefined, ctx)))));
+            promiseStatics.Set("reject", FenValue.FromFunction(new FenFunction("reject", (args, ctx) => 
+                FenValue.FromObject(JsPromise.Reject(args.Length>0?args[0]:FenValue.Undefined, ctx)))));
+            promiseStatics.Set("all", FenValue.FromFunction(new FenFunction("all", (args, ctx) => 
+                FenValue.FromObject(JsPromise.All(args.Length>0?args[0]:FenValue.Undefined, ctx)))));
+            promiseStatics.Set("race", FenValue.FromFunction(new FenFunction("race", (args, ctx) => 
+                FenValue.FromObject(JsPromise.Race(args.Length>0?args[0]:FenValue.Undefined, ctx)))));
+            promiseStatics.Set("allSettled", FenValue.FromFunction(new FenFunction("allSettled", (args, ctx) => 
+                FenValue.FromObject(JsPromise.AllSettled(args.Length>0?args[0]:FenValue.Undefined, ctx)))));
+            promiseStatics.Set("any", FenValue.FromFunction(new FenFunction("any", (args, ctx) => 
+                FenValue.FromObject(JsPromise.Any(args.Length>0?args[0]:FenValue.Undefined, ctx)))));
+            SetGlobal("Promise", promiseObj);
+
+            // queueMicrotask
+            SetGlobal("queueMicrotask", FenValue.FromFunction(new FenFunction("queueMicrotask", (args, ctx) =>
+            {
+                if (args.Length > 0 && args[0].IsFunction)
+                {
+                    var callback = args[0].AsFunction();
+                    Core.EventLoop.EventLoopCoordinator.Instance.ScheduleMicrotask(() => { try { callback.Invoke(new IValue[0], ctx); } catch {} });
+                }
+                return FenValue.Undefined;
+            })));
+
+
             {
                 if (args.Length == 0) return FenValue.Null;
                 string urlStr = args[0].ToString();
@@ -2172,6 +2204,9 @@ namespace FenBrowser.FenEngine.Core
             })));
             /* [PERF-REMOVED] */
             SetGlobal("JSON", FenValue.FromObject(json));
+
+            // Intl (Phase 2)
+            SetGlobal("Intl", FenValue.FromObject(JsIntl.CreateIntlObject(_context)));
 
             // Object global - provides static methods like Object.keys(), Object.values(), etc.
             var objectConstructor = new FenObject();
