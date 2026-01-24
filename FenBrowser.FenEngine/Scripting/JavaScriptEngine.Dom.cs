@@ -444,8 +444,9 @@ namespace FenBrowser.FenEngine.Scripting
                     {
                         if (!_e.SandboxAllows(SandboxFeature.DomMutation, "innerHTML")) return;
                         var html = value ?? string.Empty;
-                        var parser = new HtmlLiteParser(html);
-                        var doc = parser.Parse();
+                        var tokenizer = new FenBrowser.FenEngine.HTML.HtmlTokenizer(html);
+                        var builder = new FenBrowser.FenEngine.HTML.HtmlTreeBuilder(tokenizer);
+                        var doc = builder.Build();
                         Element container = null;
                         try
                         {
@@ -502,8 +503,9 @@ namespace FenBrowser.FenEngine.Scripting
                 try
                 {
                     var pos = (position ?? "").Trim().ToLowerInvariant();
-                    var parser = new HtmlLiteParser(html ?? string.Empty);
-                    var frag = parser.Parse();
+                    var tokenizer = new FenBrowser.FenEngine.HTML.HtmlTokenizer(html ?? string.Empty);
+                    var builder = new FenBrowser.FenEngine.HTML.HtmlTreeBuilder(tokenizer);
+                    var frag = builder.Build();
                     Element container = null;
                     try
                     {
@@ -829,6 +831,26 @@ namespace FenBrowser.FenEngine.Scripting
                         if (args.Length > 0) removeChild(args[0]); 
                         return FenValue.Undefined; 
                     }));
+                    case "shadowRoot":
+                        {
+                             var sr = _node.ShadowRoot;
+                             if (sr == null || sr.Mode == "closed") return FenValue.Null;
+                             return FenValue.FromObject(new JsDomShadowRoot(_e, sr));
+                        }
+                    case "attachShadow": return FenValue.FromFunction(new FenFunction("attachShadow", (args, _) => {
+                        var mode = "open";
+                        if (args.Length > 0 && args[0] is FenObject opt)
+                        {
+                            var m = opt.Get("mode");
+                            if (m != null && !m.IsUndefined) mode = m.ToString();
+                        }
+                        try
+                        {
+                             var shadow = _node.AttachShadow(mode);
+                             return FenValue.FromObject(new JsDomShadowRoot(_e, shadow));
+                        }
+                        catch { return FenValue.Null; }
+                    }));
                     case "addEventListener": 
                         try { FenLogger.Debug("[JsDomElement] Get addEventListener", LogCategory.JavaScript); } catch { }
                         return FenValue.FromFunction(new FenFunction("addEventListener", _e.AddEventListenerNative));
@@ -873,7 +895,98 @@ namespace FenBrowser.FenEngine.Scripting
 
             public bool Has(string key, IExecutionContext context = null) => true;
             public bool Delete(string key, IExecutionContext context = null) => false;
-            public IEnumerable<string> Keys(IExecutionContext context = null) => new[] { "style", "tagName", "id", "className", "innerHTML", "innerText", "textContent", "classList" };
+            public IEnumerable<string> Keys(IExecutionContext context = null) => new[] { "style", "tagName", "id", "className", "innerHTML", "innerText", "textContent", "classList", "attachShadow" };
+            public IObject GetPrototype() => _prototype;
+            public void SetPrototype(IObject prototype) { _prototype = prototype; }
+        }
+
+        internal sealed class JsDomShadowRoot : IObject
+        {
+            private readonly JavaScriptEngine _e;
+            private readonly ShadowRoot _node;
+            private IObject _prototype = null;
+            public object NativeObject { get; set; }
+
+            public JsDomShadowRoot(JavaScriptEngine e, ShadowRoot node)
+            {
+                _e = e;
+                _node = node;
+            }
+
+            public IValue Get(string key, IExecutionContext context = null)
+            {
+                switch (key)
+                {
+                    case "mode": return FenValue.FromString(_node.Mode);
+                    case "host": return FenValue.FromObject(new JsDomElement(_e, _node.Host));
+                    case "innerHTML": return FenValue.FromString(GetInnerHTML());
+                    case "appendChild": return FenValue.FromFunction(new FenFunction("appendChild", (args, _) => {
+                         if (args.Length > 0 && args[0] is JsDomNodeBase j)
+                         {
+                             _node.AppendChild(j._node); 
+                             _e.RequestRepaint();
+                         }
+                         return FenValue.Undefined;
+                    }));
+                    case "getElementById": return FenValue.FromFunction(new FenFunction("getElementById", (args, _) => {
+                         if (args.Length == 0) return FenValue.Null;
+                         var id = args[0].ToString();
+                         var el = _node.Descendants().OfType<Element>().FirstOrDefault(e => string.Equals(e.Id, id, StringComparison.OrdinalIgnoreCase));
+                         return el != null ? FenValue.FromObject(new JsDomElement(_e, el)) : FenValue.Null;
+                    }));
+                    case "querySelector": return FenValue.FromFunction(new FenFunction("querySelector", (args, _) => {
+                         if (args.Length == 0) return FenValue.Null;
+                         var sel = args[0].ToString();
+                         var el = _node.Descendants().OfType<Element>().FirstOrDefault(e => e.Matches(sel));
+                         return el != null ? FenValue.FromObject(new JsDomElement(_e, el)) : FenValue.Null;
+                    }));
+                    case "querySelectorAll": return FenValue.FromFunction(new FenFunction("querySelectorAll", (args, _) => {
+                        if (args.Length == 0) return FenValue.FromObject(new FenObject()); 
+                        var sel = args[0].ToString();
+                        var results = _node.Descendants().OfType<Element>().Where(e => e.Matches(sel)).ToArray();
+                        var arr = new FenObject();
+                        arr.Set("length", FenValue.FromNumber(results.Length));
+                        for (int i = 0; i < results.Length; i++)
+                        {
+                            arr.Set(i.ToString(), FenValue.FromObject(new JsDomElement(_e, results[i])));
+                        }
+                        return FenValue.FromObject(arr);
+                    }));
+                }
+                return FenValue.Undefined;
+            }
+
+            public void Set(string key, IValue value, IExecutionContext context = null)
+            {
+                if (key == "innerHTML")
+                {
+                     var html = value?.ToString() ?? "";
+                     try {
+                         var tokenizer = new FenBrowser.FenEngine.HTML.HtmlTokenizer(html);
+                         var builder = new FenBrowser.FenEngine.HTML.HtmlTreeBuilder(tokenizer);
+                         var doc = builder.Build();
+                         _node.RemoveAllChildren();
+                         foreach(var ch in doc.Children) {
+                             _node.AppendChild(ch.CloneNode(true));
+                         }
+                         _e.RequestRepaint();
+                     } catch {}
+                }
+            }
+
+            private string GetInnerHTML()
+            {
+                var sb = new StringBuilder();
+                 foreach(var child in _node.Children) {
+                     if (child is Element el) sb.Append(el.ToHtml());
+                     else if (child is Text t) sb.Append(System.Net.WebUtility.HtmlEncode(t.Data ?? ""));
+                 }
+                 return sb.ToString();
+            }
+
+            public bool Has(string key, IExecutionContext context = null) => true;
+            public bool Delete(string key, IExecutionContext context = null) => false;
+            public IEnumerable<string> Keys(IExecutionContext context = null) => new[] { "mode", "host", "innerHTML", "appendChild", "querySelector", "querySelectorAll", "getElementById" };
             public IObject GetPrototype() => _prototype;
             public void SetPrototype(IObject prototype) { _prototype = prototype; }
         }

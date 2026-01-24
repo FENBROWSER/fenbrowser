@@ -154,8 +154,12 @@ namespace FenBrowser.FenEngine.Scripting
             SetupWindowEvents();
             SetupModernAPIs();
             
-            // Register Fetch API
-            FenBrowser.FenEngine.WebAPIs.FetchApi.Register(_fenRuntime.Context, FetchHandler);
+            // Register Fetch API with lazy delegate resolution to support property injection after constructor
+            FenBrowser.FenEngine.WebAPIs.FetchApi.Register(_fenRuntime.Context, async (req) => 
+            {
+                 if (FetchHandler == null) throw new Exception("FetchHandler not configured on engine");
+                 return await FetchHandler(req);
+            });
         }
         
         // IDomBridge Implementation
@@ -422,6 +426,8 @@ namespace FenBrowser.FenEngine.Scripting
                 winObj = new FenBrowser.FenEngine.Core.FenObject();
                 _fenRuntime.SetGlobal("window", FenValue.FromObject(winObj));
             }
+            // Alias self -> window (Critical for WPT testharness.js)
+            _fenRuntime.SetGlobal("self", FenValue.FromObject(winObj));
             
             // Add addEventListener to window object using shared implementation
             var fnVal = FenValue.FromFunction(new FenFunction("addEventListener", AddEventListenerNative));
@@ -2126,6 +2132,18 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
 
         private void RecordMutation(MutationRecord record)
         {
+            // NEW: Intercept dynamic scripts for WPT
+            if (record.AddedNodes != null && record.AddedNodes.Count > 0)
+            {
+                foreach (var node in record.AddedNodes)
+                {
+                    if (node is Element el && string.Equals(el.TagName, "script", StringComparison.OrdinalIgnoreCase))
+                    {
+                        HandleDynamicScript(el);
+                    }
+                }
+            }
+
             // 1. Dispatch to wrappers immediately (they filter internally and queue records)
             lock (_mutationLock)
             {
@@ -2146,6 +2164,86 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
 
             // Schedule microtask to deliver mutations
             EnqueueMicrotask(InvokeMutationObservers);
+        }
+
+        private void HandleDynamicScript(Element scriptEl)
+        {
+            if (scriptEl == null) return;
+
+            // Check src
+            string src = null;
+            if (scriptEl.Attr != null) scriptEl.Attr.TryGetValue("src", out src);
+
+            if (!string.IsNullOrWhiteSpace(src))
+            {
+                // External Script
+                var baseUri = _ctx?.BaseUri;
+                var uri = Resolve(baseUri, src);
+                
+                if (uri != null && (AllowExternalScripts || SandboxAllows(SandboxFeature.ExternalScripts)))
+                {
+                    // Run fetch-and-execute on background, then post back to main loop
+                    Task.Run(async () => 
+                    {
+                        try
+                        {
+                            string content = null;
+                            
+                            // Use FetchOverride (set by CustomHtmlEngine/BrowserApi for WPT)
+                            if (FetchOverride != null)
+                                content = await FetchOverride(uri);
+                            
+                            // Legacy generic fetcher
+                            if (content == null && ExternalScriptFetcher != null) 
+                                content = await ExternalScriptFetcher(uri, baseUri);
+                            
+                            // Fallback to internal fetch
+                            if (content == null) 
+                                content = await FetchAsync(uri);
+
+                            // Dispatch result on main thread
+                            EnqueueMicrotask(() => 
+                            {
+                                if (content != null)
+                                {
+                                    try 
+                                    {
+                                        Evaluate(content);
+                                        DispatchEvent(scriptEl, "load");
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        FenLogger.Error($"[DynamicScript] Exec failed: {ex.Message}", LogCategory.JavaScript);
+                                        DispatchEvent(scriptEl, "error");
+                                    }
+                                }
+                                else
+                                {
+                                    FenLogger.Error($"[DynamicScript] Fetch failed for {uri}", LogCategory.JavaScript);
+                                    DispatchEvent(scriptEl, "error");
+                                }
+                            });
+                        }
+                        catch (Exception ex)
+                        {
+                             FenLogger.Error($"[DynamicScript] Background error: {ex.Message}", LogCategory.JavaScript);
+                             EnqueueMicrotask(() => DispatchEvent(scriptEl, "error"));
+                        }
+                    });
+                }
+            }
+            else
+            {
+                // Inline Script
+                if (ExecuteInlineScriptsOnInnerHTML || SandboxAllows(SandboxFeature.InlineScripts))
+                {
+                    var text = scriptEl.Text;
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        Evaluate(text);
+                    }
+                }
+            }
         }
 
         // ---- XHR shim state ----
