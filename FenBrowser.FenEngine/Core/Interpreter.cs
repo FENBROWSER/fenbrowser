@@ -997,9 +997,62 @@ namespace FenBrowser.FenEngine.Core
                 {
                     var val = obj.Get(i.ToString(), null) ?? FenValue.Undefined;
                     var result = callback.Invoke(new IValue[] { val, FenValue.FromNumber(i), thisVal }, null);
-                    if (result.ToBoolean()) return FenValue.FromBoolean(true);
+            // Array.prototype.flat(depth)
+            _arrayPrototype.Set("flat", FenValue.FromFunction(new FenFunction("flat", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj == null) return FenValue.FromObject(CreateArray(new string[0]));
+                int depth = args.Length > 0 ? (int)args[0].ToNumber() : 1;
+                var result = FlattenArray(obj, depth);
+                return FenValue.FromObject(result);
+            })));
+
+            // Array.prototype.flatMap(callback, thisArg)
+            _arrayPrototype.Set("flatMap", FenValue.FromFunction(new FenFunction("flatMap", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj == null || args.Length == 0) return FenValue.FromObject(CreateArray(new string[0]));
+                var callback = args[0].AsFunction();
+                var thisArg = args.Length > 1 ? args[1] : FenValue.Undefined;
+                
+                // Map
+                var mapped = new FenObject();
+                var lenVal = obj.Get("length", null);
+                int len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                for (int i = 0; i < len; i++)
+                {
+                    var val = obj.Get(i.ToString(), null);
+                    var res = callback.Invoke(new IValue[] { val ?? FenValue.Undefined, FenValue.FromNumber(i), thisVal }, null);
+                    mapped.Set(i.ToString(), res, null);
                 }
-                return FenValue.FromBoolean(false);
+                mapped.Set("length", FenValue.FromNumber(len), null);
+                
+                // Flat(1)
+                return FenValue.FromObject(FlattenArray(mapped, 1));
+            })));
+
+            // Array.prototype.fill(value, start, end)
+            _arrayPrototype.Set("fill", FenValue.FromFunction(new FenFunction("fill", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj == null) return thisVal;
+                var value = args.Length > 0 ? args[0] : FenValue.Undefined;
+                var lenVal = obj.Get("length", null);
+                int len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                
+                int start = args.Length > 1 ? (int)args[1].ToNumber() : 0;
+                int end = args.Length > 2 ? (int)args[2].ToNumber() : len;
+                
+                if (start < 0) start = Math.Max(len + start, 0);
+                if (end < 0) end = Math.Max(len + end, 0);
+                start = Math.Min(start, len);
+                end = Math.Min(end, len);
+                
+                for (int i = start; i < end; i++)
+                {
+                    obj.Set(i.ToString(), value, null);
+                }
+                return thisVal;
             })));
 
             // Array.prototype.every(callback, thisArg)
@@ -2804,6 +2857,36 @@ namespace FenBrowser.FenEngine.Core
                 if (count < 0) return new ErrorValue("Invalid count value");
                 if (count == 0 || str.Length == 0) return FenValue.FromString("");
                 return FenValue.FromString(string.Concat(Enumerable.Repeat(str, count)));
+            })));
+
+            // String.prototype.padStart(targetLength, padString)
+            _stringPrototype.Set("padStart", FenValue.FromFunction(new FenFunction("padStart", (args, thisVal) =>
+            {
+                var str = thisVal.ToString();
+                int targetLen = args.Length > 0 ? (int)args[0].ToNumber() : 0;
+                if (targetLen <= str.Length) return FenValue.FromString(str);
+                var padStr = args.Length > 1 ? args[1].ToString() : " ";
+                if (string.IsNullOrEmpty(padStr)) return FenValue.FromString(str);
+                
+                int padLen = targetLen - str.Length;
+                var sb = new StringBuilder();
+                while (sb.Length < padLen) sb.Append(padStr);
+                return FenValue.FromString(sb.ToString().Substring(0, padLen) + str);
+            })));
+
+            // String.prototype.padEnd(targetLength, padString)
+            _stringPrototype.Set("padEnd", FenValue.FromFunction(new FenFunction("padEnd", (args, thisVal) =>
+            {
+                var str = thisVal.ToString();
+                int targetLen = args.Length > 0 ? (int)args[0].ToNumber() : 0;
+                if (targetLen <= str.Length) return FenValue.FromString(str);
+                var padStr = args.Length > 1 ? args[1].ToString() : " ";
+                if (string.IsNullOrEmpty(padStr)) return FenValue.FromString(str);
+                
+                int padLen = targetLen - str.Length;
+                var sb = new StringBuilder(str);
+                while (sb.Length < targetLen) sb.Append(padStr);
+                return FenValue.FromString(sb.ToString().Substring(0, targetLen));
             })));
 
             // String.prototype.padStart(targetLength, padString)
