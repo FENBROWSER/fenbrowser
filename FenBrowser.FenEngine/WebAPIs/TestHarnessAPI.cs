@@ -207,19 +207,6 @@ namespace FenBrowser.FenEngine.WebAPIs
             
             var testRunner = CreateTestRunnerObject();
             runtime.GlobalEnv.Set("testRunner", FenValue.FromObject(testRunner));
-            
-            // Also register add_result_callback for testharness.js
-            runtime.GlobalEnv.Set("add_result_callback", FenValue.FromFunction(new FenFunction("add_result_callback", (args, thisVal) =>
-            {
-                Log("[testharness] add_result_callback registered");
-                return FenValue.Undefined;
-            })));
-            
-            runtime.GlobalEnv.Set("add_completion_callback", FenValue.FromFunction(new FenFunction("add_completion_callback", (args, thisVal) =>
-            {
-                Log("[testharness] add_completion_callback registered");
-                return FenValue.Undefined;
-            })));
         }
         
         /// <summary>

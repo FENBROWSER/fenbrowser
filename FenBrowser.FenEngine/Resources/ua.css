@@ -1,187 +1,296 @@
 /* User Agent Default Styles for FenBrowser */
 
 /* Block-level elements */
-html, body, div, p, blockquote, pre, address, hr,
-dialog, figure, figcaption, header, footer, nav, main, section, article,
-ul, ol, li, dl, dt, dd,
-table, caption, tbody, thead, tfoot, tr,
-form, fieldset, legend, h1, h2, h3, h4, h5, h6 {
-    display: block;
+html,
+body,
+div,
+p,
+blockquote,
+pre,
+address,
+hr,
+dialog,
+figure,
+figcaption,
+header,
+footer,
+nav,
+main,
+section,
+article,
+ul,
+ol,
+li,
+dl,
+dt,
+dd,
+table,
+caption,
+tbody,
+thead,
+tfoot,
+tr,
+form,
+fieldset,
+legend,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  display: block;
 }
 
 /* Body defaults */
 body {
-    margin: 8px;
-    font-family: sans-serif;
-    font-size: 16px;
-    background-color: white;
-    color: black;
+  margin: 8px;
+  font-family: sans-serif;
+  font-size: 16px;
+  background-color: white;
+  color: black;
 }
 
 /* Headings */
 h1 {
-    font-size: 32px; /* 2em */
-    font-weight: 700;
-    margin: 0.67em 0;
+  font-size: 32px; /* 2em */
+  font-weight: 700;
+  margin: 0.67em 0;
 }
 
 h2 {
-    font-size: 24px; /* 1.5em */
-    font-weight: 700;
-    margin: 0.83em 0;
+  font-size: 24px; /* 1.5em */
+  font-weight: 700;
+  margin: 0.83em 0;
 }
 
 h3 {
-    font-size: 18.72px; /* 1.17em */
-    font-weight: 700;
-    margin: 1em 0;
+  font-size: 18.72px; /* 1.17em */
+  font-weight: 700;
+  margin: 1em 0;
 }
 
 h4 {
-    font-size: 16px; /* 1em */
-    font-weight: 700;
-    margin: 1.33em 0;
+  font-size: 16px; /* 1em */
+  font-weight: 700;
+  margin: 1.33em 0;
 }
 
 h5 {
-    font-size: 13.28px; /* 0.83em */
-    font-weight: 700;
-    margin: 1.67em 0;
+  font-size: 13.28px; /* 0.83em */
+  font-weight: 700;
+  margin: 1.67em 0;
 }
 
 h6 {
-    font-size: 10.72px; /* 0.67em */
-    font-weight: 700;
-    margin: 2.33em 0;
+  font-size: 10.72px; /* 0.67em */
+  font-weight: 700;
+  margin: 2.33em 0;
 }
 
 /* Paragraphs */
 p {
-    margin: 1em 0;
+  margin: 1em 0;
 }
 
 /* Lists */
-ul, ol {
-    margin: 1em 0;
-    padding-left: 40px;
+ul,
+ol {
+  margin: 1em 0;
+  padding-left: 40px;
 }
 
 ul {
-    list-style-type: disc;
+  list-style-type: disc;
 }
 
 ol {
-    list-style-type: decimal;
+  list-style-type: decimal;
 }
 
 li {
-    display: list-item;
+  display: list-item;
 }
 
 /* Nested lists logic (simplification) */
-ul ul, ol ul { list-style-type: circle; }
-ol ol, ul ol { list-style-type: decimal; /* varied in real browsers */ }
+ul ul,
+ol ul {
+  list-style-type: circle;
+}
+ol ol,
+ul ol {
+  list-style-type: decimal; /* varied in real browsers */
+}
 
 /* Definition Lists */
 dd {
-    margin-left: 40px;
+  margin-left: 40px;
 }
 
 /* Metadata to hide */
-head, title, meta, link, style, script, template, noscript, base, rp {
-    display: none;
+/* NOTE: noscript is NOT hidden because FenBrowser has limited JS support */
+/* and many JS-heavy sites (Google, etc.) have useful fallback content in noscript */
+head,
+title,
+meta,
+link,
+style,
+script,
+template,
+base,
+rp {
+  display: none;
+}
+
+/* noscript content is shown by default since FenBrowser has limited JS */
+noscript {
+  display: block;
 }
 
 /* Inline elements (default) */
-span, a, em, strong, b, i, q, mark, abbr, cite, code, time, var, small, label {
-    display: inline;
+span,
+a,
+em,
+strong,
+b,
+i,
+q,
+mark,
+abbr,
+cite,
+code,
+time,
+var,
+small,
+label {
+  display: inline;
 }
 
-strong, b {
-    font-weight: bold;
+strong,
+b {
+  font-weight: bold;
 }
 
-i, em, cite, var, address {
-    font-style: italic;
+i,
+em,
+cite,
+var,
+address {
+  font-style: italic;
 }
 
 mark {
-    background-color: yellow;
-    color: black;
+  background-color: yellow;
+  color: black;
 }
 
 /* Replaced/Inline-Block elements */
-img, video, audio, canvas, svg, iframe, embed, object {
-    display: inline; /* Or inline-block if specialized */
+img,
+video,
+audio,
+canvas,
+svg,
+iframe,
+embed,
+object {
+  display: inline; /* Or inline-block if specialized */
 }
 
 /* Form controls */
-button, input, select, textarea, meter, progress, output {
-    display: inline-block;
+button,
+input,
+select,
+textarea,
+meter,
+progress,
+output {
+  display: inline-block;
 }
 
 /* Tables */
 table {
-    display: table;
-    border-collapse: separate;
-    border-spacing: 2px;
-    border-color: gray;
+  display: table;
+  border-collapse: separate;
+  border-spacing: 2px;
+  border-color: gray;
 }
 
-thead { display: table-header-group; }
-tbody { display: table-row-group; }
-tfoot { display: table-footer-group; }
-tr { display: table-row; }
-td, th { display: table-cell; }
-caption { display: table-caption; text-align: center; }
-colgroup { display: table-column-group; }
-col { display: table-column; }
+thead {
+  display: table-header-group;
+}
+tbody {
+  display: table-row-group;
+}
+tfoot {
+  display: table-footer-group;
+}
+tr {
+  display: table-row;
+}
+td,
+th {
+  display: table-cell;
+}
+caption {
+  display: table-caption;
+  text-align: center;
+}
+colgroup {
+  display: table-column-group;
+}
+col {
+  display: table-column;
+}
 
 th {
-    font-weight: bold;
-    text-align: center;
+  font-weight: bold;
+  text-align: center;
 }
 
 td {
-    text-align: left;
+  text-align: left;
 }
 
 /* Ruby */
-ruby { display: ruby; }
-rt { 
-    display: ruby-text; 
-    font-size: 0.5em; 
+ruby {
+  display: ruby;
 }
-rb { display: ruby-base; }
+rt {
+  display: ruby-text;
+  font-size: 0.5em;
+}
+rb {
+  display: ruby-base;
+}
 
 /* Details/Summary */
 details {
-    display: block;
+  display: block;
 }
 
 summary {
-    display: list-item;
-    list-style-type: disclosure-closed; 
-    cursor: default;
+  display: list-item;
+  list-style-type: disclosure-closed;
+  cursor: default;
 }
 
 details[open] > summary {
-    list-style-type: disclosure-open;
+  list-style-type: disclosure-open;
 }
 
 /* Hide details content when not open */
 details:not([open]) > :not(summary) {
-    display: none;
+  display: none;
 }
 
 /* Other */
 hr {
-    border: 1px inset;
-    margin: 0.5em auto;
-    display: block;
+  border: 1px inset;
+  margin: 0.5em auto;
+  display: block;
 }
 
 /* Hidden attribute */
 [hidden] {
-    display: none !important;
+  display: none !important;
 }

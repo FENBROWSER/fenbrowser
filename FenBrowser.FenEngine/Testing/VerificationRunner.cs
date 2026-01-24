@@ -5,7 +5,7 @@ using System.Threading.Tasks;
 using SkiaSharp;
 using FenBrowser.Core.Dom;
 using FenBrowser.Core.Css;
-using FenBrowser.Core; // HtmlLiteParser
+using FenBrowser.Core;
 using FenBrowser.FenEngine.Layout;
 using FenBrowser.FenEngine.Rendering;
 
@@ -23,8 +23,9 @@ namespace FenBrowser.FenEngine.Testing
             float viewportH = 600;
 
             // 1. Parse HTML
-            var parser = new HtmlLiteParser(html);
-            var doc = parser.Parse();
+            var tokenizer = new FenBrowser.FenEngine.HTML.HtmlTokenizer(html);
+            var builder = new FenBrowser.FenEngine.HTML.HtmlTreeBuilder(tokenizer);
+            var doc = builder.Build();
 
             // 2. Compute Style
             Console.WriteLine("[Verify] Computing styles...");
