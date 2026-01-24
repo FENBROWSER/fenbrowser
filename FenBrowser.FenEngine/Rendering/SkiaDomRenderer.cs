@@ -93,6 +93,7 @@ namespace FenBrowser.FenEngine.Rendering
             _isRendering = true;
             try
             {
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_render_start.txt", $"Render Start: Root={root?.GetType().Name}\n"); } catch {}
             CurrentOverlays.Clear();
             _lastStyles = styles;
 

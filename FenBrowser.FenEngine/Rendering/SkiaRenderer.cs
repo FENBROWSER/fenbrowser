@@ -163,7 +163,6 @@ namespace FenBrowser.FenEngine.Rendering
             // Cull nodes outside viewport
             if (!node.IntersectsViewport(viewport) && node.Bounds.Width > 0 && node.Bounds.Height > 0)
             {
-                // FenLogger.Debug($"[SkiaRenderer] Culled {node.GetType().Name} at {node.Bounds}");
                 return;
             }
             
@@ -182,7 +181,6 @@ namespace FenBrowser.FenEngine.Rendering
             // Handle explicit ClipRect (base property)
             if (node.ClipRect.HasValue)
             {
-                FenLogger.Debug($"[SkiaRenderer] Pushing Clip: {node.ClipRect.Value} for {node.GetType().Name} (Bounds={node.Bounds})");
                 backend.PushClip(node.ClipRect.Value);
                 pushedClip = true;
             }
@@ -614,7 +612,11 @@ namespace FenBrowser.FenEngine.Rendering
         {
             if (node.TextDecorations == null) return;
             
-            float strokeWidth = System.Math.Max(1, fontSize / 16);
+            var typeface = node.Typeface ?? SKTypeface.Default;
+            using var paint = new SKPaint { Typeface = typeface, TextSize = fontSize };
+            paint.GetFontMetrics(out var metrics);
+
+            float strokeWidth = metrics.UnderlineThickness ?? System.Math.Max(1, fontSize / 16);
             
             float x = node.TextOrigin.X;
             float y = node.TextOrigin.Y;
@@ -624,17 +626,20 @@ namespace FenBrowser.FenEngine.Rendering
                 switch (decoration.ToLowerInvariant())
                 {
                     case "underline":
-                        float underlineY = y + fontSize * 0.15f;
+                        // metrics.UnderlinePosition is often positive (below baseline) in Skia
+                        float underlineY = y + (metrics.UnderlinePosition ?? fontSize * 0.15f);
                         backend.DrawRect(new SKRect(x, underlineY, x + textWidth, underlineY + strokeWidth), color);
                         break;
                         
                     case "line-through":
-                        float strikeY = y - fontSize * 0.3f;
-                        backend.DrawRect(new SKRect(x, strikeY, x + textWidth, strikeY + strokeWidth), color);
+                        float strikeY = y + (metrics.StrikeoutPosition ?? -fontSize * 0.3f);
+                        float sWidth = metrics.StrikeoutThickness ?? strokeWidth;
+                        backend.DrawRect(new SKRect(x, strikeY, x + textWidth, strikeY + sWidth), color);
                         break;
                         
                     case "overline":
-                        float overlineY = y - fontSize * 0.85f;
+                        // Overline is usually near the ascent
+                        float overlineY = y + metrics.Ascent; 
                         backend.DrawRect(new SKRect(x, overlineY, x + textWidth, overlineY + strokeWidth), color);
                         break;
                 }
@@ -683,7 +688,7 @@ namespace FenBrowser.FenEngine.Rendering
                     image = SKImage.FromBitmap(node.Bitmap);
                     if (image != null)
                     {
-                        backend.DrawImage(image, destRect);
+                        backend.DrawImage(image, destRect, srcRect);
                     }
                 }
                 finally

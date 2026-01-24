@@ -73,6 +73,8 @@ namespace FenBrowser.FenEngine.Rendering
             string baseUri = null,
             int frameId = 0)
         {
+            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_paint_start.txt", $"Build Start: Root={root?.GetType().Name} BoxCount={boxes?.Count}\n"); } catch {}
+            
             FenBrowser.Core.FenLogger.Debug($"[PAINT-TREE] Build called. Root={(root != null ? root.GetType().Name : "NULL")} Boxes={boxes?.Count} Styles={styles?.Count}");
             if (root == null || boxes == null || boxes.Count == 0)
             {
@@ -547,6 +549,9 @@ namespace FenBrowser.FenEngine.Rendering
                 // 1. Background
                 var bgNode = BuildBackgroundNode(node, box, style, isFocused, isHovered);
                 if (bgNode != null) nodes.Add(bgNode);
+
+                var bgImgNode = BuildBackgroundImageNode(node, box, style);
+                if (bgImgNode != null) nodes.Add(bgImgNode);
                 
                 // 2. Border
                 var borderNode = BuildBorderNode(node, box, style, isFocused, isHovered);
@@ -1152,6 +1157,107 @@ namespace FenBrowser.FenEngine.Rendering
                 IsHovered = isHovered
             };
         }
+
+        private ImagePaintNode BuildBackgroundImageNode(Node node, Layout.BoxModel box, CssComputed style)
+        {
+            if (string.IsNullOrEmpty(style?.BackgroundImage) || style.BackgroundImage == "none") return null;
+
+            string url = style.BackgroundImage.Trim();
+            if (url.StartsWith("url(", StringComparison.OrdinalIgnoreCase))
+            {
+                url = url.Substring(4, url.Length - 5).Trim('\'', '\"', ' ');
+            }
+            else
+            {
+                // Might be a gradient or other value we don't support yet as image
+                return null;
+            }
+
+            // Resolve Relative URLs
+            if (!string.IsNullOrEmpty(url) && 
+                !url.StartsWith("http", StringComparison.OrdinalIgnoreCase) && 
+                !url.StartsWith("data:", StringComparison.OrdinalIgnoreCase) && 
+                !string.IsNullOrEmpty(_baseUri))
+            {
+                try 
+                {
+                    var uri = new Uri(new Uri(_baseUri), url);
+                    url = uri.ToString();
+                }
+                catch {}
+            }
+
+            var bitmap = ImageLoader.GetImage(url);
+            global::FenBrowser.Core.FenLogger.Debug($"[BG-IMG] URL={(url?.Length > 60 ? url.Substring(0, 60) + "..." : url)} Bitmap={(bitmap != null ? $"{bitmap.Width}x{bitmap.Height}" : "NULL")}");
+            
+            if (bitmap == null) return null;
+
+            // Handle BackgroundSize and BackgroundPosition for Sprites
+            SKRect? srcRect = null;
+            if (bitmap.Width > 0 && bitmap.Height > 0)
+            {
+                float bgW = bitmap.Width;
+                float bgH = bitmap.Height;
+
+                // Simple Size Parsing (px only for now)
+                if (!string.IsNullOrEmpty(style.BackgroundSize) && style.BackgroundSize.Contains("px"))
+                {
+                    var sizeParts = style.BackgroundSize.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    if (sizeParts.Length >= 2 && sizeParts[0].EndsWith("px") && sizeParts[1].EndsWith("px"))
+                    {
+                        float.TryParse(sizeParts[0].Replace("px", ""), out bgW);
+                        float.TryParse(sizeParts[1].Replace("px", ""), out bgH);
+                    }
+                    else if (sizeParts.Length == 1 && sizeParts[0].EndsWith("px"))
+                    {
+                         float.TryParse(sizeParts[0].Replace("px", ""), out bgW);
+                         // height auto
+                    }
+                }
+
+                // Simple Position Parsing (px only for now)
+                float posX = 0, posY = 0;
+                if (!string.IsNullOrEmpty(style.BackgroundPosition) && style.BackgroundPosition.Contains("px"))
+                {
+                    var posParts = style.BackgroundPosition.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    if (posParts.Length >= 2)
+                    {
+                        float.TryParse(posParts[0].Replace("px", ""), out posX);
+                        float.TryParse(posParts[1].Replace("px", ""), out posY);
+                    }
+                }
+
+                // Scale factor if background-size differs from natural bitmap size
+                float scaleX = bitmap.Width / bgW;
+                float scaleY = bitmap.Height / bgH;
+
+                // CSS position is often negative for sprites (offset from top-left)
+                // Source Rect = ( -posX * scaleX, -posY * scaleY, boxWidth * scaleX, boxHeight * scaleY )
+                srcRect = new SKRect(
+                    -posX * scaleX,
+                    -posY * scaleY,
+                    (-posX + (float)box.PaddingBox.Width) * scaleX,
+                    (-posY + (float)box.PaddingBox.Height) * scaleY
+                );
+
+                // Sanity check: cap to bitmap bounds
+                srcRect = new SKRect(
+                    Math.Max(0, srcRect.Value.Left),
+                    Math.Max(0, srcRect.Value.Top),
+                    Math.Min(bitmap.Width, srcRect.Value.Right),
+                    Math.Min(bitmap.Height, srcRect.Value.Bottom)
+                );
+            }
+
+            return new ImagePaintNode
+            {
+                Bounds = box.PaddingBox,
+                SourceNode = node,
+                Bitmap = bitmap,
+                SourceRect = srcRect,
+                ObjectFit = "none"
+            };
+        }
         
         private BorderPaintNode BuildBorderNode(Node node, Layout.BoxModel box, CssComputed style, bool isFocused, bool isHovered)
         {
@@ -1351,12 +1457,6 @@ namespace FenBrowser.FenEngine.Rendering
             // Text color
              SKColor color = parentStyle?.ForegroundColor ?? SKColors.Black;
 
-            // [DEBUG-LOGGING]
-            if (textNode.Parent is Element p && FenBrowser.Core.Logging.DebugConfig.ShouldLog(p.GetAttribute("class")))
-            {
-                 Console.WriteLine($"[PAINT-TEXT] Text='{textNode.Data}' Color={color} Pos=({box.ContentBox.Left},{box.ContentBox.Top}) FontSize={fontSize}px Lines={box.Lines?.Count ?? 0}");
-            }
-
             // MULTI-LINE SUPPORT
             // If BoxModel has Lines populated (from TextLayoutComputer), use them.
             if (box.Lines != null && box.Lines.Count > 0)
@@ -1456,108 +1556,88 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 global::FenBrowser.Core.FenLogger.Debug($"[IMG-BUILD] Tag={tag} URL={(url?.Length > 80 ? url?.Substring(0, 80) + "..." : url)}");
-                global::FenBrowser.Core.FenLogger.Debug($"[IMG-BUILD] box.ContentBox={box.ContentBox.Width}x{box.ContentBox.Height} @ {box.ContentBox.Left},{box.ContentBox.Top}");
                 var bitmap = ImageLoader.GetImage(url);
-                global::FenBrowser.Core.FenLogger.Debug($"[IMG-BUILD] Bitmap={(bitmap != null ? $"{bitmap.Width}x{bitmap.Height}" : "NULL")}");
                 
-                // Image loading is handled upstream - we just reference the bounds
                 return new ImagePaintNode
                 {
                     Bounds = box.ContentBox,
+                    SourceNode = elem,
                     Bitmap = bitmap,
                     ObjectFit = style?.ObjectFit ?? "fill"
                 };
             }
-            else if (tag.Equals("SVG", StringComparison.OrdinalIgnoreCase))
+            else if (tag == "SVG")
             {
-                global::FenBrowser.Core.FenLogger.Debug($"[SVG-ENTRY] Processing SVG tag. Attributes: {elem.Attributes?.Count}", FenBrowser.Core.Logging.LogCategory.Rendering);
-                // Parse SVG attributes for better rasterization
-                float? svgW = null;
-                float? svgH = null;
-                if (elem.Attributes != null)
+                // Internal method to re-render SVG with color resolution
+                string svgContent = elem.ToHtml(); // Basic capture
+                
+                // Resolve CSS variables in SVG content
+                if (style != null && style.CustomProperties != null && style.CustomProperties.Count > 0 && svgContent.Contains("var("))
                 {
-                    if (elem.Attributes.TryGetValue("width", out var wStr) && float.TryParse(wStr, out var w)) svgW = w;
-                    if (elem.Attributes.TryGetValue("height", out var hStr) && float.TryParse(hStr, out var h)) svgH = h;
-                    
-                    // Parse viewBox for intrinsic dimensions
-                    string viewBox = null;
-                    if (elem.Attributes.TryGetValue("viewBox", out viewBox) || elem.Attributes.TryGetValue("viewbox", out viewBox))
+                    foreach (var varKvp in style.CustomProperties)
                     {
-                        var parts = viewBox.Split(new[] {' ', ','}, StringSplitOptions.RemoveEmptyEntries);
-                        if (parts.Length >= 4)
+                        string varFunc = $"var({varKvp.Key})";
+                        if (svgContent.Contains(varFunc))
                         {
-                            if (!svgW.HasValue && float.TryParse(parts[2], out var vbW)) svgW = vbW;
-                            if (!svgH.HasValue && float.TryParse(parts[3], out var vbH)) svgH = vbH;
+                            svgContent = svgContent.Replace(varFunc, varKvp.Value);
                         }
                     }
                 }
-
-                // Use intrinsic SVG dimensions if available, otherwise use box (but clamp to prevent massive renders)
-                float finalW = svgW ?? box.ContentBox.Width;
-                float finalH = svgH ?? box.ContentBox.Height;
                 
-                // Clamp ONLY if it's unreasonably huge (e.g. > 2000), not 200.
-                if (finalW > 2048) finalW = 2048;
-                if (finalH > 2048) finalH = 2048;
-                
-                if (finalW <= 0) finalW = 24;
-                if (finalH <= 0) finalH = 24;
-
-                string svgContent = elem.ToHtml();
-                
-                // CRITICAL FIX: Replace 'currentColor' with actual resolved color
+                // Final currentColor fallback if any left
                 if (style != null && svgContent.Contains("currentColor"))
                 {
                     var fg = style.ForegroundColor ?? SKColors.Black;
                     string hexColor = $"#{fg.Red:X2}{fg.Green:X2}{fg.Blue:X2}";
                     svgContent = svgContent.Replace("currentColor", hexColor);
-                    svgContent = svgContent.Replace("fill=\"currentColor\"", $"fill=\"{hexColor}\"");
-                    svgContent = svgContent.Replace("stroke=\"currentColor\"", $"stroke=\"{hexColor}\"");
-                }
-                
-                // CRITICAL FIX: Fallback for 'var(--bbQxAb)' (Google specific) or generic vars
-                if (svgContent.Contains("var("))
-                {
-                    // For now, naive fallback to foreground color if variable resolution fails
-                    // This handles the Google search icon issue
-                     var fg = style.ForegroundColor ?? SKColors.Black;
-                     string hexColor = $"#{fg.Red:X2}{fg.Green:X2}{fg.Blue:X2}";
-                     
-                     if (svgContent.Contains("--bbQxAb"))
-                     {
-                         // var(--bbQxAb) is usually grey/blue on Google. Let's use #5f6368 (Google Grey 700) or style color.
-                         svgContent = svgContent.Replace("var(--bbQxAb)", "#5f6368");
-                         /* [PERF-REMOVED] */
-                     }
                 }
 
-                string dataUri = "data:image/svg+xml;base64," + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(svgContent));
-                
-                var tuple = ImageLoader.GetImageTuple(dataUri, false, null, (int)finalW, (int)finalH);
-                var (bitmap, isLazy) = ((SKBitmap, bool))tuple;
-                
-                try { 
-                    if (bitmap == null) global::FenBrowser.Core.FenLogger.Debug($"[SVG-DEBUG] Bitmap is NULL for SVG. Content: {svgContent.Substring(0, Math.Min(200, svgContent.Length))}...", FenBrowser.Core.Logging.LogCategory.Rendering);
-                    else {
-                        global::FenBrowser.Core.FenLogger.Debug($"[SVG-DEBUG] Created bitmap {bitmap.Width}x{bitmap.Height} for SVG {finalW}x{finalH}. HasFill={svgContent.Contains("fill=")} HasPath={svgContent.Contains("<path")} Color fixed? {svgContent.Contains("#")}", FenBrowser.Core.Logging.LogCategory.Rendering);
-                        // Dump first 500 chars of SVG content for 272x92 logo
-                        if (finalW > 200 && finalH > 80) {
-                            global::FenBrowser.Core.FenLogger.Debug($"[SVG-CONTENT] {svgContent.Substring(0, Math.Min(500, svgContent.Length))}", FenBrowser.Core.Logging.LogCategory.Rendering);
-                        }
-                    }
-                } catch {}
+                if (!svgContent.Contains("xmlns=\"http://www.w3.org/2000/svg\"") && 
+                    !svgContent.Contains("xmlns='http://www.w3.org/2000/svg'"))
+                {
+                    if (svgContent.Contains("<svg "))
+                        svgContent = svgContent.Replace("<svg ", "<svg xmlns=\"http://www.w3.org/2000/svg\" ");
+                    else if (svgContent.Contains("<svg>"))
+                        svgContent = svgContent.Replace("<svg>", "<svg xmlns=\"http://www.w3.org/2000/svg\">");
+                }
+
+                // Normalization: SkiaSharp.Svg is case-sensitive for certain attributes
+                if (svgContent.Contains("viewbox="))
+                {
+                    svgContent = svgContent.Replace("viewbox=", "viewBox=");
+                }
+
+                // Re-rasterize with resolved colors
+                var bitmap = RenderSvgToCachedBitmap(svgContent, (int)box.ContentBox.Width, (int)box.ContentBox.Height);
 
                 return new ImagePaintNode
                 {
                     Bounds = box.ContentBox,
                     SourceNode = elem,
                     Bitmap = bitmap,
-                    ObjectFit = "contain",
-                    IsFocused = isFocused,
-                    IsHovered = isHovered
+                    ObjectFit = style?.ObjectFit ?? "fill"
                 };
             }
-            return null; // No image or SVG to paint
+
+            return null;
+        }
+
+        private SKBitmap RenderSvgToCachedBitmap(string svgContent, int width, int height)
+        {
+
+
+                
+            if (width <= 0) width = 24;
+            if (height <= 0) height = 24;
+
+            string dataUri = "data:image/svg+xml;base64," + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(svgContent));
+            var tuple = ImageLoader.GetImageTuple(dataUri, false, null, width, height);
+            
+            if (tuple is (SKBitmap bitmap, bool _))
+            {
+                return bitmap;
+            }
+            return null;
         }
 
 
