@@ -1,5 +1,5 @@
-using FenBrowser.Core;
 using FenBrowser.Core.Dom;
+using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Rendering;
 using Xunit;
 using System;
@@ -44,7 +44,7 @@ namespace FenBrowser.Tests.Engine
 </body>
 </html>";
 
-            var parser = new HtmlLiteParser(html);
+            var parser = new HtmlParser(html);
             var doc = parser.Parse();
             
             // Find html element

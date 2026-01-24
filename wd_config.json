@@ -4,7 +4,7 @@
   "capabilities": {},
   "timeout_multiplier": 1,
   "webdriver": {
-    "binary": "c:\\Users\\udayk\\Videos\\FENBROWSER\\FenBrowser.Desktop\\bin\\Debug\\net8.0\\FenBrowser.Desktop.exe",
+    "binary": "c:\\Users\\udayk\\Videos\\FENBROWSER\\FenBrowser.Host\\bin\\Debug\\net8.0\\FenBrowser.Host.exe",
     "args": ["--port=4444"]
   },
   "wptserve": {
