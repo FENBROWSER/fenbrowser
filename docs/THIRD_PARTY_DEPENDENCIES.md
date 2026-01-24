@@ -1,7 +1,7 @@
 # FenBrowser Third-Party Dependencies
 
 > **Comprehensive Technical Reference**
-> Last Updated: December 29, 2024
+> Last Updated: January 20, 2026
 
 This document provides an exhaustive analysis of every third-party library used in FenBrowser, organized by project module. Each entry includes technical details, integration rationale, security considerations, licensing, and honest assessment of trade-offs.
 
@@ -15,12 +15,11 @@ This document provides an exhaustive analysis of every third-party library used 
 4. [FenBrowser.FenEngine Dependencies](#fenbrowserfenengine-dependencies)
 5. [FenBrowser.Host Dependencies](#fenbrowserhost-dependencies)
 6. [FenBrowser.DevTools Dependencies](#fenbrowserdevtools-dependencies)
-7. [FenBrowser.UI Dependencies](#fenbrowserui-dependencies)
-8. [FenBrowser.Tests Dependencies](#fenbrowsertests-dependencies)
-9. [Transitive Dependencies](#transitive-dependencies)
-10. [Security Analysis](#security-analysis)
-11. [License Compliance](#license-compliance)
-12. [Future Considerations](#future-considerations)
+7. [FenBrowser.Tests Dependencies](#fenbrowsertests-dependencies)
+8. [Transitive Dependencies](#transitive-dependencies)
+9. [Security Analysis](#security-analysis)
+10. [License Compliance](#license-compliance)
+11. [Future Considerations](#future-considerations)
 
 ---
 
@@ -28,8 +27,8 @@ This document provides an exhaustive analysis of every third-party library used 
 
 | Metric                        | Value                             |
 | ----------------------------- | --------------------------------- |
-| **Total Direct Dependencies** | 17 packages                       |
-| **Unique Libraries**          | 11 distinct libraries             |
+| **Total Direct Dependencies** | 13 packages                       |
+| **Unique Libraries**          | 7 distinct libraries              |
 | **Runtime Dependencies**      | 9 packages                        |
 | **Test-Only Dependencies**    | 4 packages                        |
 | **Target Framework**          | .NET 8.0 (host), .NET 9.0 (tests) |
@@ -48,25 +47,21 @@ FenBrowser follows these principles when selecting dependencies:
 
 ## Dependency Matrix
 
-| Package                      | Version | Core | FenEngine | Host | DevTools | UI  | Tests |
-| ---------------------------- | ------- | :--: | :-------: | :--: | :------: | :-: | :---: |
-| SkiaSharp                    | 2.88.9  |  ✓   |     ✓     |  ✓   |    ✓     |     |       |
-| SkiaSharp.HarfBuzz           | 2.88.9  |      |     ✓     |  ✓   |          |     |       |
-| SkiaSharp.NativeAssets.Linux | 2.88.9  |      |     ✓     |      |          |     |       |
-| SkiaSharp.NativeAssets.Win32 | 2.88.9  |      |           |  ✓   |          |     |       |
-| Svg.Skia                     | 3.2.1   |      |     ✓     |      |          |     |       |
-| Silk.NET.Windowing           | 2.21.0  |      |           |  ✓   |          |     |       |
-| Silk.NET.Input               | 2.21.0  |      |           |  ✓   |          |     |       |
-| Silk.NET.OpenGL              | 2.21.0  |      |           |  ✓   |          |     |       |
-| Topten.RichTextKit           | 0.4.164 |      |           |  ✓   |          |     |       |
-| Avalonia                     | 11.3.9  |      |           |      |          |  ✓  |       |
-| Avalonia.Desktop             | 11.3.9  |      |           |      |          |  ✓  |       |
-| Avalonia.Fonts.Inter         | 11.3.9  |      |           |      |          |  ✓  |       |
-| Avalonia.Themes.Fluent       | 11.3.9  |      |           |      |          |  ✓  |       |
-| xunit                        | 2.9.2   |      |           |      |          |     |   ✓   |
-| xunit.runner.visualstudio    | 2.8.2   |      |           |      |          |     |   ✓   |
-| Microsoft.NET.Test.Sdk       | 17.12.0 |      |           |      |          |     |   ✓   |
-| coverlet.collector           | 6.0.2   |      |           |      |          |     |   ✓   |
+| Package                      | Version | Core | FenEngine | Host | DevTools | Tests |
+| ---------------------------- | ------- | :--: | :-------: | :--: | :------: | :---: |
+| SkiaSharp                    | 2.88.9  |  ✓   |     ✓     |  ✓   |    ✓     |       |
+| SkiaSharp.HarfBuzz           | 2.88.9  |      |     ✓     |  ✓   |          |       |
+| SkiaSharp.NativeAssets.Linux | 2.88.9  |      |     ✓     |      |          |       |
+| SkiaSharp.NativeAssets.Win32 | 2.88.9  |      |           |  ✓   |          |       |
+| Svg.Skia                     | 3.2.1   |      |     ✓     |      |          |       |
+| Silk.NET.Windowing           | 2.21.0  |      |           |  ✓   |          |       |
+| Silk.NET.Input               | 2.21.0  |      |           |  ✓   |          |       |
+| Silk.NET.OpenGL              | 2.21.0  |      |           |  ✓   |          |       |
+| Topten.RichTextKit           | 0.4.164 |      |           |  ✓   |          |       |
+| xunit                        | 2.9.2   |      |           |      |          |   ✓   |
+| xunit.runner.visualstudio    | 2.8.2   |      |           |      |          |   ✓   |
+| Microsoft.NET.Test.Sdk       | 17.12.0 |      |           |      |          |   ✓   |
+| coverlet.collector           | 6.0.2   |      |           |      |          |   ✓   |
 
 ---
 
@@ -531,107 +526,6 @@ _Same as Core – for rendering DevTools panels_
 
 ---
 
-## FenBrowser.UI Dependencies
-
-The UI project provides the Avalonia-based UI framework (currently used for alternate UI experiments).
-
-### Avalonia (v11.3.9)
-
-```xml
-<PackageReference Include="Avalonia" Version="11.3.9" />
-```
-
-**Description:**
-Avalonia is a cross-platform XAML UI framework inspired by WPF. It provides a rich widget toolkit with data binding, styling, and templating.
-
-**Why We Use It:**
-
-- Powers the DevTools inspector UI
-- Provides familiar XAML-based development
-- Rich control library (TreeView, DataGrid, etc.)
-
-**Note:** Avalonia is **NOT** used for the main browser window or web content rendering. Those use custom SkiaSharp rendering for pixel-perfect CSS compatibility.
-
-**Technical Details:**
-
-- XAML dialect similar to WPF/UWP
-- Skia-based rendering (same as FenBrowser)
-- ReactiveUI integration for MVVM
-- Ahead-of-time compilation support
-
-**Pros:**
-
-- ✅ Cross-platform (Windows, Linux, macOS, iOS, Android, WebAssembly)
-- ✅ XAML familiar to WPF developers
-- ✅ Rich built-in controls
-- ✅ Powerful styling and templating
-- ✅ Active development and community
-- ✅ MIT License
-
-**Cons:**
-
-- ⚠️ Adds ~20MB to distribution
-- ⚠️ Slower startup than native controls
-- ⚠️ Higher memory usage
-- ⚠️ Some WPF features missing
-- ⚠️ Designer support less mature than WPF
-
-**Security Assessment:**
-
-- 🟢 Low Risk – UI framework, no network access
-
-**Why Not Used for Main Browser:**
-
-- Custom rendering gives us pixel-perfect CSS control
-- Avalonia's layout model differs from CSS box model
-- Performance: Custom Skia is faster for web content
-- We need custom text selection, caret rendering
-
-### Avalonia.Desktop (v11.3.9)
-
-```xml
-<PackageReference Include="Avalonia.Desktop" Version="11.3.9" />
-```
-
-**Description:**
-Desktop platform support for Avalonia, enabling Windows, Linux, and macOS applications.
-
-**Why We Use It:**
-
-- Required for Avalonia to run on desktop platforms
-- Provides platform-specific integrations
-
-### Avalonia.Fonts.Inter (v11.3.9)
-
-```xml
-<PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.9" />
-```
-
-**Description:**
-Bundles the Inter font family for consistent typography across platforms.
-
-**Why We Use It:**
-
-- Ensures consistent UI appearance regardless of system fonts
-- Inter is designed specifically for UI readability
-
-### Avalonia.Themes.Fluent (v11.3.9)
-
-```xml
-<PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.9" />
-```
-
-**Description:**
-Microsoft Fluent Design System theme for Avalonia applications.
-
-**Why We Use It:**
-
-- Modern, professional appearance
-- Dark and light mode support
-- Consistent with Windows 11 aesthetic
-
----
-
 ## FenBrowser.Tests Dependencies
 
 The Tests project contains unit and integration tests.
@@ -713,16 +607,14 @@ Code coverage collection for .NET tests.
 
 These libraries are pulled in automatically by our direct dependencies:
 
-| Package                  | Pulled By          | Purpose                 |
-| ------------------------ | ------------------ | ----------------------- |
-| System.Memory            | SkiaSharp          | Span<T> support         |
-| System.Buffers           | SkiaSharp          | Array pooling           |
-| HarfBuzzSharp            | SkiaSharp.HarfBuzz | Native HarfBuzz         |
-| ShimSkiaSharp            | Svg.Skia           | SVG compatibility layer |
-| Silk.NET.Core            | Silk.NET.\*        | Core abstractions       |
-| Silk.NET.GLFW            | Silk.NET.Windowing | Window backend          |
-| Avalonia.Remote.Protocol | Avalonia           | Designer communication  |
-| ReactiveUI               | Avalonia           | MVVM framework          |
+| Package        | Pulled By          | Purpose                 |
+| -------------- | ------------------ | ----------------------- |
+| System.Memory  | SkiaSharp          | Span<T> support         |
+| System.Buffers | SkiaSharp          | Array pooling           |
+| HarfBuzzSharp  | SkiaSharp.HarfBuzz | Native HarfBuzz         |
+| ShimSkiaSharp  | Svg.Skia           | SVG compatibility layer |
+| Silk.NET.Core  | Silk.NET.\*        | Core abstractions       |
+| Silk.NET.GLFW  | Silk.NET.Windowing | Window backend          |
 
 ---
 
@@ -757,7 +649,6 @@ These libraries are pulled in automatically by our direct dependencies:
 | Svg.Skia           | MIT        | ✅ Allowed     |
 | Silk.NET           | MIT        | ✅ Allowed     |
 | Topten.RichTextKit | Apache 2.0 | ✅ Allowed     |
-| Avalonia           | MIT        | ✅ Allowed     |
 | xunit              | Apache 2.0 | ✅ Allowed     |
 
 **Conclusion:** All dependencies use permissive open-source licenses compatible with commercial and proprietary use.
@@ -776,7 +667,6 @@ These libraries are pulled in automatically by our direct dependencies:
 ### Potential Removals:
 
 - **Topten.RichTextKit** – Consider forking or replacing if maintenance stalls
-- **Avalonia** – If DevTools moves to custom Skia UI
 
 ### Upgrade Strategy:
 

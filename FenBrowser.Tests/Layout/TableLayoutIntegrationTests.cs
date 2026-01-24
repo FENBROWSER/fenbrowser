@@ -1,7 +1,7 @@
 using Xunit;
 using FenBrowser.Core.Dom;
+using FenBrowser.Core.Parsing;
 using FenBrowser.Core.Css;
-using FenBrowser.Core;
 using FenBrowser.FenEngine.Layout;
 using SkiaSharp;
 using System.Collections.Generic;
@@ -17,7 +17,7 @@ namespace FenBrowser.Tests.Layout
         {
              // 1. Setup HTML
              var html = "<table><tr><td>A</td><td>B</td></tr><tr><td>C</td><td>D</td></tr></table>";
-             var parser = new HtmlLiteParser(html);
+             var parser = new HtmlParser(html);
              var doc = parser.Parse();
              
              // Ensure Structure Doc -> Body -> Table
@@ -94,7 +94,7 @@ namespace FenBrowser.Tests.Layout
         {
              // 1. Setup HTML with Colspan
              var html = "<table><tr><td colspan='2'>Header</td></tr><tr><td>A</td><td>B</td></tr></table>";
-             var parser = new HtmlLiteParser(html);
+             var parser = new HtmlParser(html);
              var doc = parser.Parse();
              
              var body = new Element("BODY");
