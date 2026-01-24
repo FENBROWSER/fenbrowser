@@ -7,6 +7,8 @@ using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Security;
 using FenBrowser.FenEngine.Errors;
+using Range = FenBrowser.Core.Dom.Range;
+
 using FenBrowser.FenEngine.Rendering;
 
 namespace FenBrowser.FenEngine.DOM
@@ -30,6 +32,8 @@ namespace FenBrowser.FenEngine.DOM
             _context = context ?? throw new ArgumentNullException(nameof(context));
             _baseUri = baseUri;
         }
+
+        internal Node Node => _root;
 
         public IValue Get(string key, IExecutionContext context = null)
         {
@@ -58,9 +62,12 @@ namespace FenBrowser.FenEngine.DOM
                 case "createevent":
                     return FenValue.FromFunction(new FenFunction("createEvent", CreateEvent));
 
+                case "createrange":
+                    return FenValue.FromFunction(new FenFunction("createRange", CreateRange));
+
                 case "queryselectorall":
                     return FenValue.FromFunction(new FenFunction("querySelectorAll", QuerySelectorAll));
-                
+
                 case "getelementsbyclassname":
                     return FenValue.FromFunction(new FenFunction("getElementsByClassName", GetElementsByClassName));
 
@@ -205,7 +212,7 @@ namespace FenBrowser.FenEngine.DOM
             FenLogger.Debug($"[DocumentWrapper] readyState -> {state}", FenBrowser.Core.Logging.LogCategory.JavaScript);
             
             // Dispatch readystatechange
-            DispatchEventInternal(new DomEvent("readystatechange"));
+            DispatchEventInternal(new DomEvent("readystatechange", false, false, false, _context));
         }
 
         private void DispatchEventInternal(DomEvent evt)
@@ -227,28 +234,38 @@ namespace FenBrowser.FenEngine.DOM
 
         private IValue CreateDocumentFragment(IValue[] args, IValue thisVal)
         {
-            var frag = new Element("#document-fragment");
-            return FenValue.FromObject(new ElementWrapper(frag, _context));
+            var doc = _root as Document ?? _root.OwnerDocument;
+            var frag = doc != null ? doc.CreateDocumentFragment() : new DocumentFragment();
+            return DomWrapperFactory.Wrap(frag, _context);
         }
 
         private IValue CreateTextNode(IValue[] args, IValue thisVal)
         {
             var text = args.Length > 0 ? args[0].ToString() : "";
-            var node = new Element("#text") { Text = text };
-            return FenValue.FromObject(new ElementWrapper(node, _context));
+            var doc = _root as Document ?? _root.OwnerDocument;
+            var node = doc != null ? doc.CreateTextNode(text) : new Text(text);
+            return DomWrapperFactory.Wrap(node, _context);
         }
 
         private IValue CreateComment(IValue[] args, IValue thisVal)
         {
             var text = args.Length > 0 ? args[0].ToString() : "";
-            var node = new Element("#comment") { Text = text };
-            return FenValue.FromObject(new ElementWrapper(node, _context));
+            var doc = _root as Document ?? _root.OwnerDocument;
+            var node = doc != null ? doc.CreateComment(text) : new Comment(text);
+            return DomWrapperFactory.Wrap(node, _context);
+        }
+
+        private IValue CreateRange(IValue[] args, IValue thisVal)
+        {
+            var doc = _root as Document ?? _root.OwnerDocument;
+            return FenValue.FromObject(new RangeWrapper(new Range(doc), _context));
         }
 
         private IValue CreateEvent(IValue[] args, IValue thisVal)
         {
             var type = args.Length > 0 ? args[0].ToString() : "";
-            return FenValue.FromObject(new DomEvent(type));
+            // Pass context to event so it can wrap nodes in composedPath
+            return FenValue.FromObject(new DomEvent(type, false, false, false, _context));
         }
 
         private IValue QuerySelectorAll(IValue[] args, IValue thisVal)
