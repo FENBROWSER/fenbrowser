@@ -25,7 +25,7 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         // Debug file logging - ENABLE temporarily to diagnose CSS loading
-        private const bool DEBUG_FILE_LOGGING = false;
+        private const bool DEBUG_FILE_LOGGING = true;
 
         public class MatchedRule
         {
@@ -140,9 +140,10 @@ namespace FenBrowser.FenEngine.Rendering
             Func<Uri, Task<string>> fetchExternalCssAsync,
             double? viewportWidth = null,
             double? viewportHeight = null,
-            Action<string> log = null)
+            Action<string> log = null,
+            FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
-            var result = await ComputeWithResultAsync(root, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight, log);
+            var result = await ComputeWithResultAsync(root, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight, log, deadline);
             return result.Computed;
         }
 
@@ -152,7 +153,8 @@ namespace FenBrowser.FenEngine.Rendering
             Func<Uri, Task<string>> fetchExternalCssAsync,
             double? viewportWidth = null,
             double? viewportHeight = null,
-            Action<string> log = null)
+            Action<string> log = null,
+            FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
             // This MUST be done even if using cached rules.
             CssParser.MediaViewportWidth = viewportWidth;
@@ -437,7 +439,8 @@ namespace FenBrowser.FenEngine.Rendering
             // CRITICAL FIX: Offload heavy CSS matching/cascading to background thread to avoid freezing UI
             ResolveVariables(allRules);
             FenLogger.Debug($"[PERF-CSS] Variable Resolution: {_cssStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
-            var computed = CascadeIntoComputedStyles(root, allRules, log);
+            // Stage 3: Cascade
+            var computed = CascadeIntoComputedStyles(root, allRules, log, deadline);
             FenLogger.Debug($"[PERF-CSS] Cascade Matching: {_cssStopwatch.ElapsedMilliseconds}ms (Elements: {computed.Count})", LogCategory.Rendering);
             
             return new CssLoadResult
@@ -1716,8 +1719,9 @@ private static double? ExtractPx(string text, string prop)
         // Stage 3: Cascade
         // ===========================
 
-        private static Dictionary<Node, CssComputed> CascadeIntoComputedStyles(Element root, List<NewCss.CssRule> rules, Action<string> log, FenBrowser.FenEngine.Core.RenderDeadline deadline = null)
+        private static Dictionary<Node, CssComputed> CascadeIntoComputedStyles(Element root, List<NewCss.CssRule> rules, Action<string> log, FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
+            FenBrowser.Core.FenLogger.Info($"[DEBUG] CascadeIntoComputedStyles called for root {root?.Tag}. Rule count: {rules?.Count}", FenBrowser.Core.Logging.LogCategory.CSS);
             var result = new Dictionary<Node, CssComputed>();
             if (root == null) return result;
             
@@ -1759,22 +1763,27 @@ private static double? ExtractPx(string text, string prop)
                     MergeInlineStyle(n, mainProps);
                     var css = ResolveStyle(n, parentCss, mainProps);
 
-                    // 2. Compute Pseudo-Element Styles
-                    ResolvePseudo(n, css, engine, "before", (c, s) => c.Before = s);
-                    ResolvePseudo(n, css, engine, "after", (c, s) => c.After = s);
-                    ResolvePseudo(n, css, engine, "marker", (c, s) => c.Marker = s);
-                    ResolvePseudo(n, css, engine, "placeholder", (c, s) => c.Placeholder = s);
-                    ResolvePseudo(n, css, engine, "selection", (c, s) => c.Selection = s);
-                    ResolvePseudo(n, css, engine, "first-line", (c, s) => c.FirstLine = s);
-                    ResolvePseudo(n, css, engine, "first-letter", (c, s) => c.FirstLetter = s);
+                    // 2. Compute Pseudo-Element Styles (PERF: Skip if no rules target this pseudo)
+                    if (engine.HasPseudoRules("before")) ResolvePseudo(n, css, engine, "before", (c, s) => c.Before = s);
+                    if (engine.HasPseudoRules("after")) ResolvePseudo(n, css, engine, "after", (c, s) => c.After = s);
+                    if (engine.HasPseudoRules("marker")) ResolvePseudo(n, css, engine, "marker", (c, s) => c.Marker = s);
+                    if (engine.HasPseudoRules("placeholder")) ResolvePseudo(n, css, engine, "placeholder", (c, s) => c.Placeholder = s);
+                    if (engine.HasPseudoRules("selection")) ResolvePseudo(n, css, engine, "selection", (c, s) => c.Selection = s);
+                    if (engine.HasPseudoRules("first-line")) ResolvePseudo(n, css, engine, "first-line", (c, s) => c.FirstLine = s);
+                    if (engine.HasPseudoRules("first-letter")) ResolvePseudo(n, css, engine, "first-letter", (c, s) => c.FirstLetter = s);
 
                     result[n] = css;
+                    
+                    // CRITICAL FIX: Attach style directly to node to avoid dictionary key mismatch
+                    // This ensures layout can find styles even if DOM node instances differ
+                    n.ComputedStyle = css;
                 }
                 catch (Exception resolveEx)
                 {
                     var msg = $"[CssLoader] CRASH in ResolveStyle (or pseudo) for Node <{n.Tag} id='{n.Id}'>: {resolveEx}";
                     Log(log, msg);
                     result[n] = new CssComputed(); // Recovery
+                    n.ComputedStyle = result[n];  // Also attach recovery style
                 }
             }
             
@@ -1885,6 +1894,13 @@ private static double? ExtractPx(string text, string prop)
 
                 // Populate core display/positioning properties from the map
                 css.Display = Safe(DictGet(css.Map, "display"))?.ToLowerInvariant();
+                
+                // DEBUG: Trace display:flex application
+                if (css.Display == "flex" || css.Display == "inline-flex")
+                {
+                    FenLogger.Debug($"[FLEX-DEBUG] Element={n.Tag}.{n.GetAttribute("class")??""}#{n.GetAttribute("id")??""} Display={css.Display}", LogCategory.Layout);
+                }
+                
                 css.Position = Safe(DictGet(css.Map, "position"))?.ToLowerInvariant();
                 css.Visibility = Safe(DictGet(css.Map, "visibility"))?.ToLowerInvariant(); // Add Visibility
                 css.FlexDirection = Safe(DictGet(css.Map, "flex-direction"))?.ToLowerInvariant();
@@ -4771,7 +4787,11 @@ private static double? ExtractPx(string text, string prop)
     private static readonly object _logLock = new object();
     private static void DebugLog(string filename, string message)
     {
-        // Disabled for performance
+        try 
+        {
+            System.IO.File.AppendAllText(filename, message);
+        } 
+        catch { }
     }
 
     /// <summary>
