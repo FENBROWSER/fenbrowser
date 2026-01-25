@@ -40,19 +40,15 @@ namespace FenBrowser.Core
 
     public sealed class ResourceManager
     {
-        // Optional diagnostic sink; host can assign to surface timings in UI.
         public static System.Action<string> LogSink;
         private readonly HttpClient _http;
 
-        private sealed class TextEntry { public string Body; public string ContentType; }
-        private readonly Dictionary<string, LinkedListNode<Tuple<string, TextEntry>>> _textMap = new Dictionary<string, LinkedListNode<Tuple<string, TextEntry>>>(StringComparer.Ordinal);
-        private readonly LinkedList<Tuple<string, TextEntry>> _textLru = new LinkedList<Tuple<string, TextEntry>>();
-        private readonly int _textCap = 128;
+        // Phase 2.3: Sharded Caches
+        public sealed class TextEntry { public string Body; public string ContentType; }
+        private readonly FenBrowser.Core.Cache.ShardedCache<TextEntry> _textCache = new FenBrowser.Core.Cache.ShardedCache<TextEntry>(128);
 
-        private sealed class ImgEntry { public byte[] Buffer; public string ContentType; }
-        private readonly Dictionary<string, LinkedListNode<Tuple<string, ImgEntry>>> _imgMap = new Dictionary<string, LinkedListNode<Tuple<string, ImgEntry>>>(StringComparer.Ordinal);
-        private readonly LinkedList<Tuple<string, ImgEntry>> _imgLru = new LinkedList<Tuple<string, ImgEntry>>();
-        private readonly int _imgCap = 64;
+        public sealed class ImgEntry { public byte[] Buffer; public string ContentType; }
+        private readonly FenBrowser.Core.Cache.ShardedCache<ImgEntry> _imgCache = new FenBrowser.Core.Cache.ShardedCache<ImgEntry>(64);
 
         public Uri LastTextResponseUri { get; private set; }
 
@@ -109,8 +105,8 @@ namespace FenBrowser.Core
         public void ClearCache()
         {
             // Clear memory
-            lock (_textMap) { _textMap.Clear(); _textLru.Clear(); }
-            lock (_imgMap) { _imgMap.Clear(); _imgLru.Clear(); }
+            _textCache.Clear();
+            _imgCache.Clear();
 
             // Clear disk (skip if private or path null)
             try
@@ -275,6 +271,15 @@ namespace FenBrowser.Core
             // Direct Send via NetworkClient
             // Cache Setup
             var key = url.ToString();
+            string partition = SafePartition(referer?.Host);
+            
+            // 1. Sharded Memory Lookup
+            if (_textCache.TryGet(partition, key, out var memEntry))
+            {
+                LastTextResponseUri = url;
+                return memEntry.Body;
+            }
+
             string folderPath = null, filePath = null, metaPath = null;
             if (!_isPrivate && !string.IsNullOrEmpty(_cacheRoot))
             {
@@ -414,12 +419,12 @@ namespace FenBrowser.Core
                     // [Verification] Register source truth
                     FenBrowser.Core.Verification.ContentVerifier.RegisterSource(url?.ToString() ?? "unknown", text?.Length ?? 0, text?.GetHashCode() ?? 0);
 
-                    // memory cache
+                    // Phase 2.3: Sharded Memory Cache
                     var entry = new TextEntry { Body = text ?? string.Empty, ContentType = ct ?? string.Empty };
-                    var pair = Tuple.Create(key, entry);
-                    var node = new LinkedListNode<Tuple<string, TextEntry>>(pair);
-                    _textLru.AddFirst(node); _textMap[key] = node;
-                    if (_textLru.Count > _textCap) { var last = _textLru.Last; if (last != null) { _textMap.Remove(last.Value.Item1); _textLru.RemoveLast(); } }
+                    
+                    // Partition by Referer Host (or default)
+                    string partitionKey = SafePartition(refererOriginal?.Host);
+                    _textCache.Put(partitionKey, key, entry);
 
                     // disk cache (skip if private)
                     if (!_isPrivate)
@@ -456,6 +461,49 @@ namespace FenBrowser.Core
             if (url == null) return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = "URL is null" };
             
             /* [PERF-REMOVED] */
+
+            // Handle data: URI scheme (e.g., data:text/html,<div>Hello</div>)
+            if (string.Equals(url.Scheme, "data", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    var dataUri = url.OriginalString;
+                    var commaIndex = dataUri.IndexOf(',');
+                    if (commaIndex > 5)
+                    {
+                        var dataMeta = dataUri.Substring(5, commaIndex - 5); // Skip "data:" prefix
+                        var content = dataUri.Substring(commaIndex + 1);
+                        
+                        // Determine content type from meta
+                        string contentType = "text/plain";
+                        if (dataMeta.Contains("text/html")) contentType = "text/html";
+                        else if (dataMeta.Contains("text/css")) contentType = "text/css";
+                        else if (dataMeta.Contains("application/javascript")) contentType = "application/javascript";
+                        
+                        // Check if base64 encoded
+                        bool isBase64 = dataMeta.Contains("base64", StringComparison.OrdinalIgnoreCase);
+                        string decodedContent;
+                        
+                        if (isBase64)
+                        {
+                            var cleanContent = Uri.UnescapeDataString(content);
+                            var bytes = Convert.FromBase64String(cleanContent);
+                            decodedContent = System.Text.Encoding.UTF8.GetString(bytes);
+                        }
+                        else
+                        {
+                            decodedContent = Uri.UnescapeDataString(content);
+                        }
+                        
+                        return new FetchResult { Status = FetchStatus.Success, Content = decodedContent, FinalUri = url, ContentType = contentType };
+                    }
+                    return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = "Invalid data URI format", FinalUri = url };
+                }
+                catch (Exception ex)
+                {
+                    return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = $"Data URI parsing failed: {ex.Message}", FinalUri = url };
+                }
+            }
 
             // Handle file scheme locally
             if (string.Equals(url.Scheme, "file", StringComparison.OrdinalIgnoreCase))
@@ -732,10 +780,14 @@ namespace FenBrowser.Core
             // url = UpgradeIfHsts(url); // Handled by HstsHandler
             var key = url.AbsoluteUri;
 
-            LinkedListNode<Tuple<string, ImgEntry>> node;
-            if (_imgMap.TryGetValue(key, out node) && node != null && node.Value != null && node.Value.Item2 != null && node.Value.Item2.Buffer != null)
+            // Sharded Lookup
+            string partition = SafePartition(referer?.Host);
+            if (_imgCache.TryGet(partition, key, out var imgEntry))
             {
-                return new MemoryStream(node.Value.Item2.Buffer);
+                if (imgEntry.Buffer != null)
+                {
+                    return new MemoryStream(imgEntry.Buffer);
+                }
             }
 
             var refererOriginal = referer;
@@ -785,10 +837,10 @@ namespace FenBrowser.Core
                 var buf = await HttpCache.Instance.GetBufferAsync(null, req).ConfigureAwait(false) ?? await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
 
                 var entry = new ImgEntry { Buffer = buf, ContentType = resp.Content != null && resp.Content.Headers != null && resp.Content.Headers.ContentType != null ? resp.Content.Headers.ContentType.MediaType : null };
-                var pair = Tuple.Create(key, entry);
-                var n = new LinkedListNode<Tuple<string, ImgEntry>>(pair);
-                _imgLru.AddFirst(n); _imgMap[key] = n;
-                if (_imgLru.Count > _imgCap) { var last = _imgLru.Last; if (last != null) { _imgMap.Remove(last.Value.Item1); _imgLru.RemoveLast(); } }
+                
+                // Phase 2.3: Sharded Image Cache
+                string partitionKey = SafePartition(refererOriginal?.Host);
+                _imgCache.Put(partitionKey, key, entry);
 
                 return new MemoryStream(buf);
             }
