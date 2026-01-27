@@ -6,6 +6,11 @@ namespace FenBrowser.Core.Dom
     {
         public override NodeType NodeType => NodeType.Document;
         public override string NodeName => "#document";
+        
+        /// <summary>
+        /// The document's base URL.
+        /// </summary>
+        public string BaseUri { get; set; }
 
         // Top Layer elements (e.g. <dialog> opened with showModal)
         // See HTML Spec: https://html.spec.whatwg.org/multipage/infrastructure.html#top-layer

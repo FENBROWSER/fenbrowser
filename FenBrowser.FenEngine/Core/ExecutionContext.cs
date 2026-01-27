@@ -11,101 +11,7 @@ namespace FenBrowser.FenEngine.Core
     /// Execution context for JavaScript code.
     /// Manages scopes, permissions, resource tracking, and limits.
     /// </summary>
-    public interface IExecutionContext
-    {
-        /// <summary>
-        /// Permission manager for security checks
-        /// </summary>
-        IPermissionManager Permissions { get; }
 
-        /// <summary>
-        /// Resource limits configuration
-        /// </summary>
-        IResourceLimits Limits { get; }
-
-        /// <summary>
-        /// Current call stack depth
-        /// </summary>
-        int CallStackDepth { get; }
-
-        /// <summary>
-        /// Execution start time
-        /// </summary>
-        DateTime ExecutionStart { get; }
-
-        /// <summary>
-        /// Check if execution should continue (within time limit)
-        /// </summary>
-        bool ShouldContinue { get; }
-
-        /// <summary>
-        /// Push a call frame onto the stack
-        /// </summary>
-        void PushCallFrame(string functionName);
-
-        /// <summary>
-        /// Pop a call frame from the stack
-        /// </summary>
-        void PopCallFrame();
-
-        /// <summary>
-        /// Check if call stack limit is exceeded
-        /// </summary>
-        void CheckCallStackLimit();
-
-        /// <summary>
-        /// Check if execution time limit is exceeded
-        /// </summary>
-        void CheckExecutionTimeLimit();
-
-        /// <summary>
-        /// Callback to trigger UI repaint
-        /// </summary>
-        Action RequestRender { get; }
-        void SetRequestRender(Action action);
-
-        /// <summary>
-        /// Schedule a callback to be executed after a delay
-        /// Action: The callback to execute
-        /// int: Delay in milliseconds
-        /// </summary>
-        Action<Action, int> ScheduleCallback { get; set; }
-
-        /// <summary>
-        /// Schedule a microtask (Promise resolution).
-        /// Executed at the end of the current task.
-        /// </summary>
-        Action<Action> ScheduleMicrotask { get; set; }
-
-        /// <summary>
-        /// Current 'this' binding for function execution
-        /// </summary>
-        IValue ThisBinding { get; set; }
-
-        /// <summary>
-        /// Delegate to execute a function (used by FenFunction.Invoke for user functions)
-        /// </summary>
-        Func<IValue, IValue[], IValue> ExecuteFunction { get; set; }
-
-        /// <summary>
-        /// Module loader for resolving and loading modules
-        /// </summary>
-        IModuleLoader ModuleLoader { get; set; }
-
-        /// <summary>
-        /// Callback for DOM mutations
-        /// </summary>
-        Action<MutationRecord> OnMutation { get; set; }
-
-        /// <summary>
-        /// Current script URL being executed (for debugging)
-        /// </summary>
-        string CurrentUrl { get; set; }
-        /// <summary>
-        /// Global variable environment (scope)
-        /// </summary>
-        FenEnvironment Environment { get; set; }
-    }
 
     /// <summary>
     /// Default execution context implementation
@@ -141,8 +47,8 @@ namespace FenBrowser.FenEngine.Core
             // Ideally should be overridden by Host to use EventLoopCoordinator
             Task.Run(() => action());
         };
-        public IValue ThisBinding { get; set; }
-        public Func<IValue, IValue[], IValue> ExecuteFunction { get; set; }
+        public FenValue ThisBinding { get; set; }
+        public Func<FenValue, FenValue[], FenValue> ExecuteFunction { get; set; }
         public IModuleLoader ModuleLoader { get; set; }
         public Action<MutationRecord> OnMutation { get; set; }
         public string CurrentUrl { get; set; }

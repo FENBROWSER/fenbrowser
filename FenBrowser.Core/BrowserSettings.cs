@@ -42,11 +42,10 @@ namespace FenBrowser.Core
         public int MemoryBufferSize { get; set; } = 1000;
         
         /// <summary>
-        /// Path for log files. Defaults to FenBrowser app data folder.
+        /// Path for log files. Defaults to "logs" folder in the current execution directory.
         /// </summary>
         public string LogPath { get; set; } = System.IO.Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), 
-            "FenBrowser", "logs");
+            AppContext.BaseDirectory, "logs");
     }
 
     public class BrowserSettings
@@ -143,8 +142,8 @@ namespace FenBrowser.Core
             {
                 case UserAgentType.Chrome:
                     return useMobile
-                        ? "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.7600.0 Mobile Safari/537.36"
-                        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.7600.0 Safari/537.36";
+                        ? "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.85 Mobile Safari/537.36"
+                        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.85 Safari/537.36";
 
                 case UserAgentType.Firefox:
                     return useMobile
@@ -193,10 +192,8 @@ namespace FenBrowser.Core
             var settings = new BrowserSettings();
             
             // Add some default bookmarks
-            settings.Bookmarks.Add(new Bookmark { Title = "Google", Url = "https://www.google.com" });
-            settings.Bookmarks.Add(new Bookmark { Title = "GitHub", Url = "https://github.com" });
-            settings.Bookmarks.Add(new Bookmark { Title = "YouTube", Url = "https://www.youtube.com" });
-            settings.Bookmarks.Add(new Bookmark { Title = "Microsoft Edge", Url = "https://www.microsoft.com/edge" });
+            // Bookmarks are empty by default for privacy
+            // settings.Bookmarks.Add(new Bookmark { Title = "FenBrowser", Url = "https://fenbrowser.com" });
             
             return settings;
         }

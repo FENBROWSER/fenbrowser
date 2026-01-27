@@ -79,11 +79,12 @@ namespace FenBrowser.FenEngine.Core.Types
                 if (options.IsObject)
                 {
                     var opts = options.AsObject();
-                    var style = opts.Get("style")?.ToString();
-                    if (style == "currency") 
+                    var style = opts.Get("style");
+                    if (style.ToString() == "currency") 
                     {
                         isCurrency = true;
-                        currency = opts.Get("currency")?.ToString() ?? "USD";
+                        var curr = opts.Get("currency");
+                        currency = !curr.IsUndefined ? curr.ToString() : "USD";
                     }
                 }
 

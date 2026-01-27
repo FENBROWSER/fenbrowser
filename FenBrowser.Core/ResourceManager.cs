@@ -316,7 +316,7 @@ namespace FenBrowser.Core
                     // Add Client Hints for modern detection
                     if (selectedUserAgent == UserAgentType.Chrome || selectedUserAgent == UserAgentType.FenBrowser)
                     {
-                        AddHeaderSafe(req, "Sec-CH-UA", "\"Not A(Brand\";v=\"8\", \"Chromium\";v=\"145\", \"Google Chrome\";v=\"145\"");
+                        AddHeaderSafe(req, "Sec-CH-UA", "\"Not A(Brand\";v=\"99\", \"Chromium\";v=\"121\", \"Google Chrome\";v=\"121\"");
                         AddHeaderSafe(req, "Sec-CH-UA-Mobile", useMobile ? "?1" : "?0");
                         AddHeaderSafe(req, "Sec-CH-UA-Platform", "\"Windows\"");
                     }
@@ -554,7 +554,7 @@ namespace FenBrowser.Core
                     // Add Client Hints
                     if (selectedUserAgent == UserAgentType.Chrome || selectedUserAgent == UserAgentType.FenBrowser)
                     {
-                        AddHeaderSafe(req, "Sec-CH-UA", "\"Not A(Brand\";v=\"8\", \"Chromium\";v=\"145\", \"Google Chrome\";v=\"145\"");
+                        AddHeaderSafe(req, "Sec-CH-UA", "\"Not A(Brand\";v=\"99\", \"Chromium\";v=\"121\", \"Google Chrome\";v=\"121\"");
                         AddHeaderSafe(req, "Sec-CH-UA-Mobile", useMobile ? "?1" : "?0");
                         AddHeaderSafe(req, "Sec-CH-UA-Platform", "\"Windows\"");
                     }
@@ -1000,7 +1000,7 @@ namespace FenBrowser.Core
 
             if (result.Status != FetchStatus.Success)
             {
-                // Silently omit failed CSS
+                FenLogger.Warn($"[CssLoader] CSS Fetch Failed: {url} Status: {result.Status} Detail: {result.ErrorDetail}", LogCategory.Network);
                 return null; 
             }
 
@@ -1019,6 +1019,7 @@ namespace FenBrowser.Core
                 }
             }
 
+            FenLogger.Debug($"[CssLoader] CSS Fetch Success: {url} Length: {result.Content?.Length ?? 0} Type: {result.ContentType}", LogCategory.Network);
             return result.Content;
         }
     }

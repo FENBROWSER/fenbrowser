@@ -60,7 +60,7 @@ namespace FenBrowser.FenEngine.Core
         /// </summary>
         public static string KeyFor(FenSymbol symbol)
         {
-            if (symbol == null) return null;
+            if (symbol  == null) return null;
             lock (_lock)
             {
                 foreach (var kv in _globalRegistry)

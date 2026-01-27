@@ -15,15 +15,15 @@ namespace FenBrowser.FenEngine.Core.Types
         private enum PromiseState { Pending, Fulfilled, Rejected }
 
         private PromiseState _state = PromiseState.Pending;
-        private IValue _result = FenValue.Undefined;
+        private FenValue _result = FenValue.Undefined;
         private readonly List<Reaction> _reactions = new List<Reaction>();
         private readonly IExecutionContext _context;
 
         private struct Reaction
         {
             public JsPromise Capability;
-            public IValue OnFulfilled;
-            public IValue OnRejected;
+            public FenValue OnFulfilled;
+            public FenValue OnRejected;
         }
 
         // --- Constructors ---
@@ -42,7 +42,7 @@ namespace FenBrowser.FenEngine.Core.Types
                 try
                 {
                     // Executor runs synchronously immediately
-                    executor.AsFunction().Invoke(new IValue[] { resolve, reject }, _context);
+                    executor.AsFunction().Invoke(new FenValue[] { resolve, reject }, _context);
                 }
                 catch (Exception ex)
                 {
@@ -69,41 +69,41 @@ namespace FenBrowser.FenEngine.Core.Types
             Set("finally", FenValue.FromFunction(new FenFunction("finally", Finally)));
             
             // Tag identifying this as a Promise
-            Set("toString", FenValue.FromFunction(new FenFunction("toString", (args, ctx) => FenValue.FromString("[object Promise]"))));
+            Set("toString", FenValue.FromFunction(new FenFunction("toString", (args, thisVal) => FenValue.FromString("[object Promise]"))));
         }
 
         // --- Core Logic ---
 
-        private IValue CreateResolveFunction()
+        private FenValue CreateResolveFunction()
         {
-            return FenValue.FromFunction(new FenFunction("resolve", (args, ctx) =>
+            return FenValue.FromFunction(new FenFunction("resolve", (args, thisVal) =>
             {
                 ResolvePromise(args.Length > 0 ? args[0] : FenValue.Undefined);
                 return FenValue.Undefined;
             }));
         }
 
-        private IValue CreateRejectFunction()
+        private FenValue CreateRejectFunction()
         {
-            return FenValue.FromFunction(new FenFunction("reject", (args, ctx) =>
+            return FenValue.FromFunction(new FenFunction("reject", (args, thisVal) =>
             {
                 RejectPromise(args.Length > 0 ? args[0] : FenValue.Undefined);
                 return FenValue.Undefined;
             }));
         }
 
-        private void ResolvePromise(IValue resolution)
+        private void ResolvePromise(FenValue resolution)
         {
             if (_state != PromiseState.Pending) return;
 
             // 25.4.1.3.2 Promise Resolve Functions
-            if (resolution == this)
+            if (resolution.IsObject && ReferenceEquals(resolution.AsObject(), this))
             {
                 RejectPromise(FenValue.FromString("TypeError: Chaining cycle detected for promise"));
                 return;
             }
 
-            if (resolution is JsPromise other)
+            if (resolution.IsObject && resolution.AsObject() is JsPromise other)
             {
                 // Adopt state of the other promise
                 if (other._state == PromiseState.Pending)
@@ -125,7 +125,7 @@ namespace FenBrowser.FenEngine.Core.Types
             FulfillPromise(resolution);
         }
 
-        private void FulfillPromise(IValue value)
+        private void FulfillPromise(FenValue value)
         {
             if (_state != PromiseState.Pending) return;
             _result = value;
@@ -133,7 +133,7 @@ namespace FenBrowser.FenEngine.Core.Types
             TriggerReactions();
         }
 
-        private void RejectPromise(IValue reason)
+        private void RejectPromise(FenValue reason)
         {
             if (_state != PromiseState.Pending) return;
             _result = reason;
@@ -154,10 +154,10 @@ namespace FenBrowser.FenEngine.Core.Types
         private void ExecuteReaction(Reaction reaction)
         {
             // 25.4.1.2.1 Promise Reaction Job
-            IValue handler = (_state == PromiseState.Fulfilled) ? reaction.OnFulfilled : reaction.OnRejected;
+            FenValue handler = (_state == PromiseState.Fulfilled) ? reaction.OnFulfilled : reaction.OnRejected;
             var capability = reaction.Capability;
 
-            if (handler == null || !handler.IsFunction)
+            if (handler.IsUndefined || !handler.IsFunction)
             {
                 // Fallthrough
                 if (_state == PromiseState.Fulfilled) capability.ResolvePromise(_result);
@@ -167,7 +167,7 @@ namespace FenBrowser.FenEngine.Core.Types
 
             try
             {
-                var result = handler.AsFunction().Invoke(new IValue[] { _result }, _context);
+                var result = handler.AsFunction().Invoke(new FenValue[] { _result }, _context);
                 capability.ResolvePromise(result);
             }
             catch (Exception ex)
@@ -178,10 +178,10 @@ namespace FenBrowser.FenEngine.Core.Types
 
         // --- Instance Methods ---
 
-        private IValue Then(IValue[] args, IExecutionContext context)
+        private FenValue Then(FenValue[] args, FenValue thisVal)
         {
-            var onFulfilled = args.Length > 0 && args[0].IsFunction ? args[0] : null;
-            var onRejected = args.Length > 1 && args[1].IsFunction ? args[1] : null;
+            var onFulfilled = args.Length > 0 && args[0].IsFunction ? args[0] : FenValue.Undefined;
+            var onRejected = args.Length > 1 && args[1].IsFunction ? args[1] : FenValue.Undefined;
 
             var capability = new JsPromise(_context);
 
@@ -204,54 +204,55 @@ namespace FenBrowser.FenEngine.Core.Types
             return FenValue.FromObject(capability);
         }
 
-        private IValue Catch(IValue[] args, IExecutionContext context)
+        private FenValue Catch(FenValue[] args, FenValue thisVal)
         {
             // .catch(onRejected) is .then(undefined, onRejected)
             var onRejected = args.Length > 0 ? args[0] : FenValue.Undefined;
-            return Then(new IValue[] { FenValue.Undefined, onRejected }, context);
+            return Then(new FenValue[] { FenValue.Undefined, onRejected }, thisVal);
         }
 
-        private IValue Finally(IValue[] args, IExecutionContext context)
+        private FenValue Finally(FenValue[] args, FenValue thisVal)
         {
             var onFinally = args.Length > 0 && args[0].IsFunction ? args[0].AsFunction() : null;
             
             // .finally(f) returns a promise that executes f then passes through the previous result/error
-            var P = this.Constructor as FenFunction; // Approximation
+            // .finally(f) returns a promise that executes f then passes through the previous result/error
+            var P = this.Get("constructor") is FenValue fn && fn.IsFunction ? fn.AsFunction() as FenFunction : null;
 
-            var onFulfilled = new FenFunction("finallyFulfilled", (a, ctx) =>
+            var onFulfilled = new FenFunction("finallyFulfilled", (a, t) =>
             {
                 var value = a.Length > 0 ? a[0] : FenValue.Undefined;
-                if (onFinally != null) onFinally.Invoke(new IValue[0], _context);
+                if (onFinally != null) onFinally.Invoke(new FenValue[0], _context);
                 return value;
             });
 
-            var onRejected = new FenFunction("finallyRejected", (a, ctx) =>
+            var onRejected = new FenFunction("finallyRejected", (a, t) =>
             {
                 var reason = a.Length > 0 ? a[0] : FenValue.Undefined;
-                if (onFinally != null) onFinally.Invoke(new IValue[0], _context);
+                if (onFinally != null) onFinally.Invoke(new FenValue[0], _context);
                 throw new JsPromiseException(reason); // Rethrow to propagate rejection
             });
 
-            return Then(new IValue[] { FenValue.FromFunction(onFulfilled), FenValue.FromFunction(onRejected) }, context);
+            return Then(new FenValue[] { FenValue.FromFunction(onFulfilled), FenValue.FromFunction(onRejected) }, thisVal);
         }
 
         // --- Public Helpers for C# ---
 
-        public void Then(IValue onFulfilled, IValue onRejected)
+        public void Then(FenValue onFulfilled, FenValue onRejected)
         {
-            Then(new IValue[] { onFulfilled, onRejected }, _context);
+            Then(new FenValue[] { onFulfilled, onRejected }, FenValue.FromObject(this));
         }
 
         // --- Static Methods ---
 
-        public static JsPromise Resolve(IValue value, IExecutionContext context)
+        public static JsPromise Resolve(FenValue value, IExecutionContext context)
         {
             var p = new JsPromise(context);
             p.ResolvePromise(value);
             return p;
         }
 
-        public static JsPromise Reject(IValue reason, IExecutionContext context)
+        public static JsPromise Reject(FenValue reason, IExecutionContext context)
         {
             var p = new JsPromise(context);
             p.RejectPromise(reason);
@@ -268,11 +269,29 @@ namespace FenBrowser.FenEngine.Core.Types
             }
             return Resolve(FenValue.FromObject(new FenObject()), context);
         }
+
+        public static JsPromise Race(IValue iterable, IExecutionContext context)
+        {
+            // Stub implementation
+            return Resolve(FenValue.Undefined, context);
+        }
+
+        public static JsPromise Any(IValue iterable, IExecutionContext context)
+        {
+             // Stub implementation
+            return Resolve(FenValue.Undefined, context);
+        }
+
+        public static JsPromise AllSettled(IValue iterable, IExecutionContext context)
+        {
+             // Stub implementation
+            return Resolve(FenValue.FromObject(new FenObject()), context);
+        }
     }
 
     public class JsPromiseException : Exception
     {
-        public IValue Value { get; }
-        public JsPromiseException(IValue value) : base(value?.ToString() ?? "Error") { Value = value; }
+        public FenValue value { get; }
+        public JsPromiseException(FenValue value) : base(value.ToString()) { this.value = value; }
     }
 }

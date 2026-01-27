@@ -19,7 +19,7 @@ namespace FenBrowser.FenEngine.Core.Types
                 if (!val.IsObject) throw new Exception("TypeError: WeakSet value must be an object");
                 
                 var valObj = val.AsObject();
-                if (valObj == null) throw new Exception("TypeError: WeakSet value cannot be null");
+                if (valObj  == null) throw new Exception("TypeError: WeakSet value cannot be null");
 
                 try 
                 {

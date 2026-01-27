@@ -104,8 +104,23 @@ namespace FenBrowser.Core.Network
             {
                 if (len >= 12 && bytes[8] == 0x57 && bytes[9] == 0x45 && bytes[10] == 0x42 && bytes[11] == 0x50)
                     return "image/webp";
+                if (len >= 12 && bytes[8] == 0x57 && bytes[9] == 0x41 && bytes[10] == 0x56 && bytes[11] == 0x45)
+                    return "audio/wav";
             }
             if (len >= 4 && StartsWithIgnoreCase(bytes, "<svg")) return "image/svg+xml";
+
+            // Audio/Video
+            // Ogg (OggS)
+            if (len >= 4 && bytes[0] == 0x4F && bytes[1] == 0x67 && bytes[2] == 0x67 && bytes[3] == 0x53) return "audio/ogg";
+            
+            // WebM (EBML 1A 45 DF A3)
+            if (len >= 4 && bytes[0] == 0x1A && bytes[1] == 0x45 && bytes[2] == 0xDF && bytes[3] == 0xA3) return "video/webm";
+
+            // MP3 (ID3)
+            if (len >= 3 && bytes[0] == 0x49 && bytes[1] == 0x44 && bytes[2] == 0x33) return "audio/mpeg";
+
+            // MP4 (ftyp at offset 4)
+            if (len >= 12 && bytes[4] == 0x66 && bytes[5] == 0x74 && bytes[6] == 0x79 && bytes[7] == 0x70) return "video/mp4";
 
             // PDF
             if (len >= 4 && bytes[0] == 0x25 && bytes[1] == 0x50 && bytes[2] == 0x44 && bytes[3] == 0x46) return "application/pdf";

@@ -40,7 +40,7 @@ namespace FenBrowser.FenEngine.Core
                 {
                      baseUri = new Uri(new Uri(Path.GetFullPath(Environment.CurrentDirectory) + Path.DirectorySeparatorChar), referrer);
                 }
-                else if (baseUri == null)
+                else if (baseUri  == null)
                 {
                      baseUri = new Uri(Path.GetFullPath(Environment.CurrentDirectory) + Path.DirectorySeparatorChar);
                 }
@@ -81,7 +81,7 @@ namespace FenBrowser.FenEngine.Core
                  throw new Exception($"Failed to load module '{path}': {ex.Message}", ex);
             }
 
-            if (code == null) throw new Exception($"Empty code for module: {path}");
+            if (code  == null) throw new Exception($"Empty code for module: {path}");
 
             var lexer = new Lexer(code);
             var parser = new Parser(lexer);

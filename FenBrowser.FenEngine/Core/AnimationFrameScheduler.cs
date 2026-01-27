@@ -107,7 +107,7 @@ namespace FenBrowser.FenEngine.Core
         /// <returns>Handle that can be used to cancel the callback.</returns>
         public AnimationFrameHandle RequestAnimationFrame(AnimationFrameCallback callback)
         {
-            if (callback == null)
+            if (callback  == null)
                 throw new ArgumentNullException(nameof(callback));
 
             var id = Interlocked.Increment(ref _nextId);
@@ -143,7 +143,7 @@ namespace FenBrowser.FenEngine.Core
         /// <param name="handle">Handle returned from RequestAnimationFrame.</param>
         public void CancelAnimationFrame(AnimationFrameHandle handle)
         {
-            if (handle == null) return;
+            if (handle  == null) return;
             CancelAnimationFrame(handle.Id);
             handle.IsCancelled = true;
         }

@@ -19,7 +19,7 @@ namespace FenBrowser.FenEngine.Core.Types
                 if (!key.IsObject) throw new Exception("TypeError: WeakMap key must be an object");
                 
                 var keyObj = key.AsObject();
-                if (keyObj == null) throw new Exception("TypeError: WeakMap key cannot be null");
+                if (keyObj  == null) throw new Exception("TypeError: WeakMap key cannot be null");
 
                 try 
                 {
@@ -38,7 +38,7 @@ namespace FenBrowser.FenEngine.Core.Types
                 
                 var keyObj = key.AsObject();
                 if (keyObj != null && _storage.TryGetValue(keyObj, out var val))
-                    return val;
+                    return (FenValue)val;
                 
                 return FenValue.Undefined;
             })));

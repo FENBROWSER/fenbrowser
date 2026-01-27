@@ -16,7 +16,7 @@ namespace FenBrowser.FenEngine.Core.Types
             Set("slice", FenValue.FromFunction(new FenFunction("slice", Slice)));
         }
 
-        private IValue Slice(IValue[] args, IValue thisVal)
+        private FenValue Slice(FenValue[] args, FenValue thisVal)
         {
             int begin = args.Length > 0 ? (int)args[0].ToNumber() : 0;
             int end = args.Length > 1 ? (int)args[1].ToNumber() : Data.Length;
@@ -65,13 +65,13 @@ namespace FenBrowser.FenEngine.Core.Types
             Set("setUint8", FenValue.FromFunction(new FenFunction("setUint8", (a,t) => SetVal(a, 1, (d,idx,v) => d[idx]=(byte)v))));
         }
 
-        private IValue GetVal(IValue[] args, int size, Func<byte[], int, double> reader) {
+        private FenValue GetVal(FenValue[] args, int size, Func<byte[], int, double> reader) {
             int offset = (int)args[0].ToNumber();
             if (offset + size > ByteLength) throw new Exception("RangeError");
             return FenValue.FromNumber(reader(Buffer.Data, ByteOffset + offset));
         }
         
-        private IValue SetVal(IValue[] args, int size, Action<byte[], int, double> writer) {
+        private FenValue SetVal(FenValue[] args, int size, Action<byte[], int, double> writer) {
              int offset = (int)args[0].ToNumber();
              double val = args[1].ToNumber();
              if (offset + size > ByteLength) throw new Exception("RangeError");
@@ -109,7 +109,7 @@ namespace FenBrowser.FenEngine.Core.Types
              {
                  var obj = arg0.AsObject();
                  var lenVal = obj.Get("length");
-                 Length = (int)(lenVal?.ToNumber() ?? 0);
+                 Length = (int)lenVal.ToNumber();
                  var newBuf = new JsArrayBuffer(Length * BytesPerElement);
                  InitView(newBuf, 0, Length * BytesPerElement);
                  

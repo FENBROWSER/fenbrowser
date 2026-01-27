@@ -93,7 +93,7 @@ namespace FenBrowser.FenEngine.Core
 
             // Register prefix parsers
             RegisterPrefix(TokenType.Identifier, ParseIdentifier);
-            RegisterPrefix(TokenType.Number, ParseIntegerLiteral);
+            RegisterPrefix(TokenType.Number, ParseNumberLiteral);
             RegisterPrefix(TokenType.String, ParseStringLiteral);
             RegisterPrefix(TokenType.TemplateString, ParseTemplateLiteral);  // Template literal `...`
             RegisterPrefix(TokenType.LBracket, ParseArrayLiteral); // NEW: Array
@@ -417,18 +417,20 @@ namespace FenBrowser.FenEngine.Core
             return new PrivateIdentifier(_curToken, name);
         }
 
-        private Expression ParseIntegerLiteral()
+        private Expression ParseNumberLiteral()
         {
-            var lit = new IntegerLiteral { Token = _curToken };
-
-            if (!long.TryParse(_curToken.Literal, out var value))
+            if (long.TryParse(_curToken.Literal, out var longValue))
             {
-                _errors.Add($"could not parse {_curToken.Literal} as integer");
-                return null;
+                return new IntegerLiteral { Token = _curToken, Value = longValue };
+            }
+            
+            if (double.TryParse(_curToken.Literal, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var doubleValue))
+            {
+                return new DoubleLiteral { Token = _curToken, Value = doubleValue };
             }
 
-            lit.Value = value;
-            return lit;
+            _errors.Add($"could not parse {_curToken.Literal} as number");
+            return null;
         }
         
         private Expression ParseStringLiteral()
@@ -609,7 +611,7 @@ namespace FenBrowser.FenEngine.Core
 
             // Handle body - with or without braces
             expression.Consequence = ParseBodyAsBlock();
-            if (expression.Consequence == null) return null;
+            if (expression.Consequence  == null) return null;
 
             if (PeekTokenIs(TokenType.Else))
             {
@@ -655,7 +657,7 @@ namespace FenBrowser.FenEngine.Core
                 // Single statement without braces
                 NextToken();
                 var stmt = ParseStatement();
-                if (stmt == null) return null;
+                if (stmt  == null) return null;
                 
                 var block = new BlockStatement { Token = _curToken };
                 block.Statements.Add(stmt);
@@ -1906,7 +1908,7 @@ namespace FenBrowser.FenEngine.Core
 
             // Parse body
             stmt.Body = ParseBodyAsBlock();
-            if (stmt.Body == null) return null;
+            if (stmt.Body  == null) return null;
 
             // Expect 'while'
             if (!ExpectPeek(TokenType.While)) return null;
@@ -1985,7 +1987,7 @@ namespace FenBrowser.FenEngine.Core
         {
             var parameters = new List<Identifier>();
 
-            if (left == null)
+            if (left  == null)
             {
                 return parameters;
             }

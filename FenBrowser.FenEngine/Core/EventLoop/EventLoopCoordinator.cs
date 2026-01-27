@@ -31,6 +31,12 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         /// </summary>
         public EnginePhase CurrentPhase => EnginePhaseManager.CurrentPhase;
 
+        /// <summary>
+        /// Fired when new work is added to any queue (Task, Microtask, Animation, Layout).
+        /// Used to wake the host event loop.
+        /// </summary>
+        public event Action OnWorkEnqueued;
+
         #region Task Scheduling
 
         /// <summary>
@@ -38,8 +44,9 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         /// </summary>
         public void ScheduleTask(Action callback, TaskSource source, string description = null)
         {
-            if (callback == null) return;
+            if (callback  == null) return;
             _taskQueue.Enqueue(callback, source, description);
+            OnWorkEnqueued?.Invoke();
         }
 
         /// <summary>
@@ -59,8 +66,9 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         /// </summary>
         public void ScheduleMicrotask(Action callback)
         {
-            if (callback == null) return;
+            if (callback  == null) return;
             _microtaskQueue.Enqueue(callback);
+            OnWorkEnqueued?.Invoke();
         }
 
         /// <summary>
@@ -80,11 +88,12 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         /// </summary>
         public void ScheduleAnimationFrame(Action callback)
         {
-            if (callback == null) return;
+            if (callback  == null) return;
             lock (_animationLock)
             {
                 _animationFrameCallbacks.Enqueue(callback);
             }
+            OnWorkEnqueued?.Invoke();
         }
 
         #endregion
@@ -97,6 +106,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         public void NotifyLayoutDirty()
         {
             _layoutDirty = true;
+            OnWorkEnqueued?.Invoke();
         }
 
         /// <summary>
@@ -133,7 +143,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             _layoutRunThisTick = false; // Reset at start of tick
 
             var task = _taskQueue.Dequeue();
-            if (task == null)
+            if (task  == null)
             {
                 // No task, but might still have animation frames or rendering to do
                 ProcessRenderingUpdate();

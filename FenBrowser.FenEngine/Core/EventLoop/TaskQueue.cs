@@ -53,7 +53,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         /// </summary>
         public void Enqueue(ScheduledTask task)
         {
-            if (task == null) throw new ArgumentNullException(nameof(task));
+            if (task  == null) throw new ArgumentNullException(nameof(task));
 
             lock (_lock)
             {

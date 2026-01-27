@@ -135,7 +135,7 @@ namespace FenBrowser.FenEngine.Core.Types
         /// </summary>
         public static string KeyFor(JsSymbol symbol)
         {
-            if (symbol == null || symbol._isWellKnown)
+            if (symbol  == null || symbol._isWellKnown)
                 return null;
 
             foreach (var kvp in _globalRegistry)

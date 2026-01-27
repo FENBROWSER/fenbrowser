@@ -1,493 +1,74 @@
-/*
- * FenBrowser User Agent Stylesheet
- * Based on WHATWG HTML Living Standard - Rendering
- * https://html.spec.whatwg.org/multipage/rendering.html
- */
-
-/* === Metadata === */
-head,
-style,
-script,
-title,
-meta,
-link,
-base,
-template {
-  display: none;
-}
-
-/* === Document Root === */
-html {
-  display: block;
-  unicode-bidi: isolate;
-  height: 100%;
-}
-
-:root {
-  color-scheme: light dark;
-}
-
-/* === Sections === */
-body {
-  display: block;
-  margin: 8px;
-  min-height: 100%;
-  font-size: 16px;
-  font-family: "Segoe UI", Roboto, Arial, sans-serif;
-  line-height: 1.5;
-  color: #000;
-  background: #fff;
-}
-
-article,
-aside,
-footer,
-header,
-hgroup,
-main,
-nav,
-section {
-  display: block;
-  unicode-bidi: isolate;
-}
-
-/* === Headings === */
-h1 {
-  display: block;
-  font-size: 2em; /* 32px at 16px base */
-  font-weight: bold;
-  margin-block-start: 0.67em;
-  margin-block-end: 0.67em;
-}
-
-h2 {
-  display: block;
-  font-size: 1.5em; /* 24px at 16px base */
-  font-weight: bold;
-  margin-block-start: 0.83em;
-  margin-block-end: 0.83em;
-}
-
-h3 {
-  display: block;
-  font-size: 1.17em; /* ~18.7px at 16px base */
-  font-weight: bold;
-  margin-block-start: 1em;
-  margin-block-end: 1em;
-}
-
-h4 {
-  display: block;
-  font-size: 1em; /* 16px */
-  font-weight: bold;
-  margin-block-start: 1.33em;
-  margin-block-end: 1.33em;
-}
-
-h5 {
-  display: block;
-  font-size: 0.83em; /* ~13.3px */
-  font-weight: bold;
-  margin-block-start: 1.67em;
-  margin-block-end: 1.67em;
-}
-
-h6 {
-  display: block;
-  font-size: 0.67em; /* ~10.7px */
-  font-weight: bold;
-  margin-block-start: 2.33em;
-  margin-block-end: 2.33em;
-}
-
-/* === Grouping Content === */
-p {
-  display: block;
-  margin-block-start: 1em;
-  margin-block-end: 1em;
-}
-
-hr {
-  display: block;
-  margin-block-start: 0.5em;
-  margin-block-end: 0.5em;
-  border-style: inset;
-  border-width: 1px;
-}
-
-pre {
-  display: block;
-  font-family: monospace;
-  white-space: pre;
-  margin: 1em 0;
-}
-
-blockquote {
-  display: block;
-  margin-block-start: 1em;
-  margin-block-end: 1em;
-  margin-inline-start: 40px;
-  margin-inline-end: 40px;
-}
-
-figure {
-  display: block;
-  margin-block-start: 1em;
-  margin-block-end: 1em;
-  margin-inline-start: 40px;
-  margin-inline-end: 40px;
-}
-
-figcaption {
-  display: block;
-}
-
-address {
-  display: block;
-  font-style: italic;
-}
-
-/* === Lists === */
-ul,
-menu,
-dir {
-  display: block;
-  list-style-type: disc;
-  margin-block-start: 1em;
-  margin-block-end: 1em;
-  padding-inline-start: 40px;
-}
-
-ol {
-  display: block;
-  list-style-type: decimal;
-  margin-block-start: 1em;
-  margin-block-end: 1em;
-  padding-inline-start: 40px;
-}
-
-li {
-  display: list-item;
-}
-
-dl {
-  display: block;
-  margin-block-start: 1em;
-  margin-block-end: 1em;
-}
-
-dt {
-  display: block;
-}
-
-dd {
-  display: block;
-  margin-inline-start: 40px;
-}
-
-/* === Text-level semantics === */
-a:link {
-  color: #0000ee;
-  text-decoration: underline;
-}
-
-a:visited {
-  color: #551a8b;
-}
-
-strong,
-b {
-  font-weight: bold;
-}
-
-em,
-i,
-cite,
-var,
-dfn {
-  font-style: italic;
-}
-
-code,
-kbd,
-samp,
-tt {
-  font-family: monospace;
-}
-
-small {
-  font-size: smaller;
-}
-
-sub {
-  vertical-align: sub;
-  font-size: smaller;
-}
-
-sup {
-  vertical-align: super;
-  font-size: smaller;
-}
-
-u,
-ins {
-  text-decoration: underline;
-}
-
-s,
-strike,
-del {
-  text-decoration: line-through;
-}
-
-mark {
-  background-color: yellow;
-  color: black;
-}
-
-abbr[title],
-acronym[title] {
-  text-decoration: dotted underline;
-}
-
-/* === Embedded Content === */
-img {
-  border: 0;
-  max-width: 100%;
-  height: auto;
-}
-
-iframe {
-  border: 2px inset;
-}
-
-video,
-audio {
-  display: inline-block;
-}
-
-/* === Tables === */
-table {
-  display: table;
-  border-collapse: separate;
-  border-spacing: 2px;
-  border-color: gray;
-}
-
-thead {
-  display: table-header-group;
-  vertical-align: middle;
-}
-
-tbody {
-  display: table-row-group;
-  vertical-align: middle;
-}
-
-tfoot {
-  display: table-footer-group;
-  vertical-align: middle;
-}
-
-tr {
-  display: table-row;
-  vertical-align: inherit;
-}
-
-td,
-th {
-  display: table-cell;
-  vertical-align: inherit;
-  padding: 1px;
-}
-
-th {
-  font-weight: bold;
-  text-align: center;
-}
-
-caption {
-  display: table-caption;
-  text-align: center;
-}
-
-colgroup {
-  display: table-column-group;
-}
-
-col {
-  display: table-column;
-}
-
-/* === Forms === */
-input,
-textarea,
-select,
-button {
-  font: inherit;
-}
-
-input {
-  padding: 2px;
-  border: 2px inset;
-}
-
-button {
-  padding: 2px 6px;
-  border: 2px outset;
-  background-color: buttonface;
-  cursor: pointer;
-}
-
-textarea {
-  padding: 2px;
-  border: 2px inset;
-  white-space: pre-wrap;
-}
-
-fieldset {
-  display: block;
-  margin-inline-start: 2px;
-  margin-inline-end: 2px;
-  padding-block-start: 0.35em;
-  padding-inline-start: 0.75em;
-  padding-inline-end: 0.75em;
-  padding-block-end: 0.625em;
-  border: 2px groove;
-}
-
-legend {
-  display: block;
-  padding-inline-start: 2px;
-  padding-inline-end: 2px;
-}
-
-/* === Misc === */
-div {
-  display: block;
-}
-
-span {
-  display: inline;
-}
-
-center {
-  display: block;
-  text-align: center;
-}
-
-/* Legacy attribute support */
-*[hidden] {
-  display: none;
-}
-
-*[align="center"] {
-  text-align: center;
-}
-
-*[align="left"] {
-  text-align: left;
-}
-
-*[align="right"] {
-  text-align: right;
-}
-
-/* Embedded content */
-img,
-picture,
-svg,
-canvas,
-video,
-audio,
-object,
-embed,
-iframe,
-frame {
-  display: inline;
-}
-
-textarea {
-  display: inline-block;
-  background-color: white;
-  min-height: 1.2em;
-}
-
-/* === Lists Attributes === */
-ol[type="1"],
-li[type="1"] {
-  list-style-type: decimal;
-}
-ol[type="a"],
-li[type="a"] {
-  list-style-type: lower-alpha;
-}
-ol[type="A"],
-li[type="A"] {
-  list-style-type: upper-alpha;
-}
-ol[type="i"],
-li[type="i"] {
-  list-style-type: lower-roman;
-}
-ol[type="I"],
-li[type="I"] {
-  list-style-type: upper-roman;
-}
-ul[type="disc"],
-li[type="disc"] {
-  list-style-type: disc;
-}
-ul[type="circle"],
-li[type="circle"] {
-  list-style-type: circle;
-}
-ul[type="square"],
-li[type="square"] {
-  list-style-type: square;
-}
-
-/* === Interactive Elements === */
-dialog {
-  display: none;
-  position: absolute;
-  inset-inline-start: 0px;
-  inset-inline-end: 0px;
-  margin: auto;
-  border-width: medium;
-  border-style: solid;
-  color: CanvasText;
-  background-color: Canvas;
-  padding: 1em;
-}
-
-dialog[open] {
-  display: block;
-}
-
-details {
-  display: block;
-}
-
-summary {
-  display: list-item;
-}
-
-/* === Form Elements === */
-optgroup {
-  font-family: inherit;
-  font-style: inherit;
-  font-weight: inherit;
-  font-weight: bolder;
-}
-
-option {
-  font-family: inherit;
-  font-style: inherit;
-  font-weight: inherit;
-}
-
-datalist {
-  display: none;
-}
-
+/* Default User Agent Stylesheet (ua.css) */
+/* Based on W3C recommended default style sheet */
+
+html, address,
+blockquote,
+body, dd, div,
+dl, dt, fieldset, form,
+frame, frameset,
+h1, h2, h3, h4,
+h5, h6, noframes,
+ol, p, ul, center,
+dir, hr, menu, pre { display: block; unicode-bidi: embed }
+
+li              { display: list-item }
+head            { display: none }
+table           { display: table }
+tr              { display: table-row }
+thead           { display: table-header-group }
+tbody           { display: table-row-group }
+tfoot           { display: table-footer-group }
+col             { display: table-column }
+colgroup        { display: table-column-group }
+td, th          { display: table-cell }
+caption         { display: table-caption }
+th              { font-weight: bolder; text-align: center }
+caption         { text-align: center }
+body            { margin: 8px; font-family: serif; }
+h1              { font-size: 2em; margin: 0.67em 0; font-weight: bold; }
+h2              { font-size: 1.5em; margin: 0.83em 0; font-weight: bold; }
+h3              { font-size: 1.17em; margin: 1em 0; font-weight: bold; }
+h4, p,
+blockquote, ul,
+fieldset, form,
+ol, dl, dir,
+menu            { margin: 1.0em 0 }
+h5              { font-size: 0.83em; margin: 1.67em 0; font-weight: bold; }
+h6              { font-size: 0.67em; margin: 2.33em 0; font-weight: bold; }
+h1, h2, h3, h4,
+h5, h6, b,
+strong          { font-weight: bolder }
+blockquote      { margin-left: 40px; margin-right: 40px }
+i, cite, em,
+var, address    { font-style: italic }
+pre, tt, code,
+kbd, samp       { font-family: monospace }
+pre             { white-space: pre }
+button, textarea,
+input, select   { display: inline-block }
+big             { font-size: 1.17em }
+small, sub, sup { font-size: 0.83em }
+sub             { vertical-align: sub }
+sup             { vertical-align: super }
+table           { border-spacing: 2px; }
+thead, tbody,
+tfoot           { vertical-align: middle }
+td, th, tr      { vertical-align: inherit }
+s, strike, del  { text-decoration: line-through }
+hr              { border: 1px inset }
+ol, ul, dir,
+menu, dd        { margin-left: 40px }
+ol              { list-style-type: decimal }
+ol ul, ul ol,
+ul ul, ol ol    { margin-top: 0; margin-bottom: 0 }
+u, ins          { text-decoration: underline }
+br:before       { content: "\A"; white-space: pre-line }
+center          { text-align: center }
+:link, :visited { text-decoration: underline }
+:focus          { outline: thin dotted invert }
+
+/* HTML5 Elements */
+article, aside, dialog, figure, footer, header,
+hgroup, main, nav, section { display: block; }
+mark { background: yellow; color: black; }
+template { display: none; }
