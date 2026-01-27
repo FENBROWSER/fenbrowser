@@ -4,6 +4,7 @@ using FenBrowser.Host.Theme;
 using Silk.NET.Input;
 using SkiaSharp;
 using FenBrowser.Host.Input;
+using InputManager = FenBrowser.Host.Input.InputManager;
 
 namespace FenBrowser.Host.Widgets;
 

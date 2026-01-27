@@ -25,6 +25,8 @@ public class BrowserIntegration
     private Element _root;
     private Dictionary<Node, CssComputed> _styles;
     private bool _needsRepaint = true;
+    private bool _hasFirstStyledRender = false; // Track first styled render to avoid unstyled initial layout
+    private DateTime _lastNavigationTime = DateTime.Now; // Track navigation start time for timeout
     private float _scrollY = 0;
     private float _contentHeight = 0;
     private float _dpiScale = 1.0f;
@@ -46,6 +48,9 @@ public class BrowserIntegration
     
     private string _overrideUrl;
     private Element? _highlightedElement;
+    
+    // Safety Net: Polls for DOM updates if events are missed
+    private System.Threading.Timer _domPoller;
     
     public string CurrentUrl => _overrideUrl ?? _browser.CurrentUri?.AbsoluteUri ?? "";
     public bool IsLoading { get; private set; }
@@ -131,6 +136,40 @@ public class BrowserIntegration
         // Start Engine Thread
         _engineThread = new Thread(EngineLoop) { IsBackground = true, Name = "FenEngine-Render" };
         _engineThread.Start();
+        
+        // Timer to poll for missed updates
+        _domPoller = new System.Threading.Timer(_ => 
+        {
+            try
+            {
+                if (_browser == null) return;
+                var actualDom = _browser.GetDomRoot();
+                var actualStyles = _browser.ComputedStyles;
+                
+                bool needsSync = false;
+                
+                // Sync DOM if changed
+                if (actualDom != null && actualDom != _root)
+                {
+                    _root = actualDom;
+                    needsSync = true;
+                }
+                
+                // Sync Styles if changed or if we have DOM but no styles
+                if (actualStyles != null && (_styles == null || _styles.Count == 0 || actualStyles != _styles))
+                {
+                    _styles = actualStyles;
+                    needsSync = true;
+                }
+                
+                if (needsSync)
+                {
+                    _needsRepaint = true;
+                    _wakeEvent.Set();
+                }
+            }
+            catch {}
+        }, null, 1000, 500);
     }
 
     public void HighlightElement(Element? element)
@@ -184,36 +223,106 @@ public class BrowserIntegration
 
     private void EngineLoop()
     {
+        var coordinator = FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance;
+        coordinator.OnWorkEnqueued += () => _wakeEvent.Set();
+        
         while (_running)
         {
-            // 1. Process Input Events
+            // 1. Process Input Events (Host -> Engine)
             while (_eventQueue.TryDequeue(out var action))
             {
                 try { action(); }
                 catch (Exception ex) { FenLogger.Error($"[EngineLoop] Action error: {ex.Message}", LogCategory.General); }
             }
             
-            // 2. Perform Layout & Record Frame if needed
-            if (_needsRepaint && _lastViewportSize.Width > 0)
+            // 2. Pump JS Event Loop (Tasks & Microtasks)
+            // Execute one slice of work per frame tick to keep UI responsive
+            bool loopsToRun = true;
+            int sliceCount = 0;
+            while (loopsToRun && sliceCount < 50) // Cap to avoid starving render
             {
-                FenLogger.Info($"[EngineLoop] Repainting. Viewport: {_lastViewportSize}", LogCategory.General);
-                // Sync latest state from browser host
-                _root = _browser.GetDomRoot();
-                _styles = _browser.ComputedStyles;
-                
-                // Debug: Log synced state
-                FenLogger.Info($"[EngineLoop] After sync: Root={(_root != null ? _root.TagName : "NULL")}, Styles={(_styles != null ? _styles.Count.ToString() : "NULL")}", LogCategory.Rendering);
-                
-                lock (_rendererLock)
+                try 
                 {
-                    RecordFrame(_lastViewportSize);
+                    if (!coordinator.ProcessNextTask()) 
+                    {
+                        loopsToRun = false;
+                    }
+                    else
+                    {
+                        sliceCount++;
+                    }
+                }
+                catch (Exception ex) 
+                { 
+                    FenLogger.Error($"[EngineLoop] Coordinator error: {ex}", LogCategory.JavaScript);
+                    loopsToRun = false; 
                 }
             }
             
-            // 3. Adaptive Wait (CPU Optimization)
+            try
+            {
+                // 3. Perform Layout & Record Frame if needed
+                if ((_needsRepaint || coordinator.CurrentPhase == FenBrowser.Core.Engine.EnginePhase.Layout) && _lastViewportSize.Width > 0)
+                {
+                    FenLogger.Info($"[EngineLoop] Repainting. Viewport: {_lastViewportSize}", LogCategory.General);
+                    // Sync latest state from browser host
+                    _root = _browser.GetDomRoot();
+                    _styles = _browser.ComputedStyles;
+                    
+                    // Debug: Log synced state
+                    FenLogger.Info($"[EngineLoop] After sync: Root={(_root != null ? _root.TagName : "NULL")}, Styles={(_styles != null ? _styles.Count.ToString() : "NULL")}", LogCategory.Rendering);
+                    
+                    // CRITICAL FIX: Skip layout if CSS styles not yet attached to THIS DOM
+                    // Use root.ComputedStyle as the check (set by CSS cascade on this DOM)
+                    // BUT don't block forever - allow render after timeout
+                    if (!_hasFirstStyledRender && _root != null)
+                    {
+                        // Update styles reference in case engine created a new dictionary
+                        _styles = _browser.ComputedStyles;
+                        
+                        if (_styles == null || _styles.Count == 0)
+                        {
+                            // Check if we've been waiting too long
+                            var elapsed = DateTime.Now - _lastNavigationTime;
+                            if (elapsed.TotalMilliseconds < 5000)
+                            {
+                                FenLogger.Debug($"[EngineLoop] Styles not ready ({_styles?.Count ?? 0}). PROCEEDING ANYWAY to debug Whitescreen. ({elapsed.TotalMilliseconds:F0}ms)", LogCategory.Rendering);
+                                _needsRepaint = true; // Keep requesting repaint until CSS is ready
+                                // return; // FORCE PROCEED
+                            }
+                            else
+                            {
+                                FenLogger.Warn($"[EngineLoop] TIMEOUT: Allowing unstyled layout after {elapsed.TotalMilliseconds:F0}ms. Styles still null/empty.", LogCategory.Rendering);
+                            }
+                        }
+                    }
+                    if (_root != null && _root.ComputedStyle != null)
+                    {
+                        _hasFirstStyledRender = true; // Mark that we now have styles attached to this DOM
+                    }
+                    
+                    lock (_rendererLock)
+                    {
+                        RecordFrame(_lastViewportSize);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Error($"[EngineLoop] CRASH: {ex}", LogCategory.Rendering);
+            }
+            
+            // 4. Adaptive Wait (CPU Optimization)
             // If needs repaint (animations/scroll), poll fast (16ms).
             // If idle, wait indefinitely until an event wakes us.
-            int timeoutKey = _needsRepaint ? 16 : -1;
+            // NEW: If coordinator has work, don't sleep!
+            bool hasWork = _needsRepaint || coordinator.HasPendingTasks || coordinator.HasPendingMicrotasks || sliceCount > 0;
+            int timeoutKey = hasWork ? 0 : -1; // 0 = Yield, -1 = Wait
+            
+            // Limit invalidation speed slightly if just painting (16ms cap approx)
+            if (_needsRepaint) timeoutKey = 16;
+            else if (sliceCount > 0) timeoutKey = 1; // Yield briefly for JS
+            
             _wakeEvent.WaitOne(timeoutKey);
         }
     }
@@ -231,13 +340,29 @@ public class BrowserIntegration
     {
         if (string.IsNullOrWhiteSpace(url)) return;
         
+        // Reset navigation timing for unstyled layout skip
+        _lastNavigationTime = DateTime.Now;
+        _hasFirstStyledRender = false;
+        
         // Add protocol if missing
         if (!url.StartsWith("http://") && !url.StartsWith("https://") && 
             !url.StartsWith("file://") && !url.StartsWith("data:") && 
             !url.StartsWith("fen://") && !url.StartsWith("view-source:"))
         {
+            // Check for local file path (e.g. C:\... or /...)
+            bool isLocalPath = (url.Length >= 2 && url[1] == ':') || url.StartsWith("/") || url.StartsWith("\\") || url.StartsWith("./") || url.StartsWith("../");
+            
+            if (isLocalPath)
+            {
+                try
+                {
+                    string fullPath = System.IO.Path.GetFullPath(url);
+                    url = "file://" + fullPath.Replace("\\", "/");
+                }
+                catch { url = "file://" + url.Replace("\\", "/"); }
+            }
             // Default to http for localhost/127.0.0.1 to facilitate debugging
-            if (url.StartsWith("localhost") || url.StartsWith("127.0.0.1") || url.StartsWith("[::1]"))
+            else if (url.StartsWith("localhost") || url.StartsWith("127.0.0.1") || url.StartsWith("[::1]"))
             {
                 url = "http://" + url;
             }
@@ -414,6 +539,8 @@ public class BrowserIntegration
                 },
                 viewportSize
             );
+            
+            // (Debug overlay removed)
             
             // Draw highlight overlay
             if (_highlightedElement != null)

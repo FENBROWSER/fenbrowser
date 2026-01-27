@@ -4,6 +4,7 @@ using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.Host.Widgets;
 using FenBrowser.Host.Input;
+using InputManager = FenBrowser.Host.Input.InputManager;
 using FenBrowser.Host.Tabs;
 using FenBrowser.Host.Context;
 using FenBrowser.Host.Theme;
