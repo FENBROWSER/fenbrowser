@@ -25,7 +25,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             global.Set("Response", FenValue.FromFunction(new FenFunction("Response", JsResponse.Constructor)));
         }
 
-        private static IValue Fetch(IValue[] args, IValue thisVal, IExecutionContext context, Func<HttpRequestMessage, Task<HttpResponseMessage>> fetchHandler)
+        private static FenValue Fetch(FenValue[] args, FenValue thisVal, IExecutionContext context, Func<HttpRequestMessage, Task<HttpResponseMessage>> fetchHandler)
         {
             if (args.Length < 1) return FenValue.Undefined;
 
@@ -64,7 +64,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                         }
 
                         // 2. Network Fetch via Handler
-                        if (fetchHandler == null) throw new Exception("FetchHandler missing");
+                        if (fetchHandler  == null) throw new Exception("FetchHandler missing");
 
                         var req = new HttpRequestMessage(new HttpMethod(request.Method), request.Url);
                         if (request.Body != null)
@@ -88,12 +88,12 @@ namespace FenBrowser.FenEngine.WebAPIs
                         
                         var jsResp = new JsResponse(resp, context);
                         
-                        resolve.Invoke(new IValue[] { FenValue.FromObject(jsResp) }, context);
+                        resolve.Invoke(new FenValue[] { FenValue.FromObject(jsResp) }, context);
                      }
                      catch (Exception ex)
                      {
                          try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[Fetch] Error: {ex.Message} for {request.Url}\n"); } catch {}
-                         reject.Invoke(new IValue[] { FenValue.FromString(ex.Message) }, context);
+                         reject.Invoke(new FenValue[] { FenValue.FromString(ex.Message) }, context);
                      }
                  });
                  return FenValue.Undefined;
@@ -108,10 +108,10 @@ namespace FenBrowser.FenEngine.WebAPIs
             public JsHeaders Headers { get; private set; } = new JsHeaders();
             public string Body { get; private set; }
 
-            public JsRequest(string url, IValue options = null)
+            public JsRequest(string url, FenValue options = default)
             {
                 Url = url;
-                if (options != null && options.IsObject)
+                if (!options.IsNull && options.IsObject)
                 {
                     var opts = options.AsObject();
                     if (opts.Has("method")) Method = opts.Get("method").ToString().ToUpperInvariant();
@@ -119,7 +119,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                     if (opts.Has("headers"))
                     {
                         var hObj = opts.Get("headers");
-                        if (hObj is JsHeaders jsh) Headers = jsh;
+                        if (hObj.IsObject && hObj.AsObject() is JsHeaders jsh) Headers = jsh;
                         else if (hObj.IsObject)
                         {
                             var dict = hObj.AsObject();
@@ -133,11 +133,11 @@ namespace FenBrowser.FenEngine.WebAPIs
                 Set("headers", FenValue.FromObject(Headers));
             }
 
-            public static IValue Constructor(IValue[] args, IValue thisVal)
+            public static FenValue Constructor(FenValue[] args, FenValue thisVal)
             {
                 if (args.Length < 1) return FenValue.Undefined;
                 string url = args[0].ToString();
-                IValue init = args.Length > 1 ? args[1] : FenValue.Undefined;
+                FenValue init = args.Length > 1 ? args[1] : FenValue.Undefined;
                 return FenValue.FromObject(new JsRequest(url, init));
             }
         }
@@ -154,12 +154,12 @@ namespace FenBrowser.FenEngine.WebAPIs
             Set("set", FenValue.FromFunction(new FenFunction("set", SetHeaderBinding)));
         }
 
-        public static IValue Constructor(IValue[] args, IValue thisVal)
+        public static FenValue Constructor(FenValue[] args, FenValue thisVal)
         {
               return FenValue.FromObject(new JsHeaders());
         }
 
-        private IValue Append(IValue[] args, IValue thisVal)
+        private FenValue Append(FenValue[] args, FenValue thisVal)
         {
              if (args.Length < 2) return FenValue.Undefined;
              var key = args[0].ToString().ToLowerInvariant();
@@ -173,14 +173,14 @@ namespace FenBrowser.FenEngine.WebAPIs
              return FenValue.Undefined;
         }
 
-        private IValue Get(IValue[] args, IValue thisVal)
+        private FenValue Get(FenValue[] args, FenValue thisVal)
         {
              if (args.Length < 1) return FenValue.Null;
              var key = args[0].ToString().ToLowerInvariant();
              return _headers.ContainsKey(key) ? FenValue.FromString(_headers[key]) : FenValue.Null;
         }
 
-        private IValue Has(IValue[] args, IValue thisVal)
+        private FenValue Has(FenValue[] args, FenValue thisVal)
         {
              if (args.Length < 1) return FenValue.FromBoolean(false);
              var key = args[0].ToString().ToLowerInvariant();
@@ -203,7 +203,7 @@ namespace FenBrowser.FenEngine.WebAPIs
              _headers[key.ToLowerInvariant()] = value;
         }
 
-        private IValue SetHeaderBinding(IValue[] args, IValue thisVal)
+        private FenValue SetHeaderBinding(FenValue[] args, FenValue thisVal)
         {
              if (args.Length < 2) return FenValue.Undefined;
              SetHeader(args[0].ToString(), args[1].ToString());
@@ -242,12 +242,12 @@ namespace FenBrowser.FenEngine.WebAPIs
             Set("json", FenValue.FromFunction(new FenFunction("json", Json)));
         }
 
-        public static IValue Constructor(IValue[] args, IValue thisVal)
+        public static FenValue Constructor(FenValue[] args, FenValue thisVal)
         {
             return FenValue.FromObject(new JsResponse(new HttpResponseMessage()));
         }
 
-        private IValue Text(IValue[] args, IValue thisVal)
+        private FenValue Text(FenValue[] args, FenValue thisVal)
         {
             var executor = new FenFunction("executor", (executorArgs, executorThis) =>
             {
@@ -272,7 +272,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(executor), _context));
         }
 
-        private IValue Json(IValue[] args, IValue thisVal)
+        private FenValue Json(FenValue[] args, FenValue thisVal)
         {
             var executor = new FenFunction("executor", (executorArgs, executorThis) =>
             {
@@ -301,7 +301,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(executor), _context));
         }
 
-        private IValue ConvertJsonElement(System.Text.Json.JsonElement element)
+        private FenValue ConvertJsonElement(System.Text.Json.JsonElement element)
         {
             switch (element.ValueKind)
             {

@@ -33,12 +33,12 @@ namespace FenBrowser.FenEngine.Workers
         /// <summary>
         /// Message handler callback
         /// </summary>
-        public IValue OnMessage { get; set; }
+        public FenValue OnMessage { get; set; }
 
         /// <summary>
         /// Error handler callback
         /// </summary>
-        public IValue OnError { get; set; }
+        public FenValue OnError { get; set; }
 
         public WorkerGlobalScope(WorkerRuntime runtime, string origin, string name = "")
         {
@@ -106,7 +106,7 @@ namespace FenBrowser.FenEngine.Workers
                         _runtime.QueueMicrotask(() =>
                         {
                             if (callback.IsNative && callback.NativeImplementation != null)
-                                callback.NativeImplementation(Array.Empty<IValue>(), FenValue.Undefined);
+                                callback.NativeImplementation(new FenValue[0], FenValue.Undefined);
                         });
                     });
                     
@@ -141,7 +141,7 @@ namespace FenBrowser.FenEngine.Workers
         /// </summary>
         public void DispatchMessage(object data)
         {
-            if (OnMessage == null || OnMessage.IsNull || !OnMessage.IsFunction)
+            if (OnMessage.IsUndefined || !OnMessage.IsFunction)
                 return;
 
             var evt = new FenObject();
@@ -152,7 +152,7 @@ namespace FenBrowser.FenEngine.Workers
             var fn = OnMessage.AsFunction();
             if (fn.IsNative && fn.NativeImplementation != null)
             {
-                fn.NativeImplementation(new IValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
+                fn.NativeImplementation(new FenValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
             }
         }
 
@@ -161,7 +161,7 @@ namespace FenBrowser.FenEngine.Workers
         /// </summary>
         public void DispatchError(Exception ex)
         {
-            if (OnError == null || OnError.IsNull || !OnError.IsFunction)
+            if (OnError.IsUndefined || !OnError.IsFunction)
                 return;
 
             var evt = new FenObject();
@@ -171,20 +171,22 @@ namespace FenBrowser.FenEngine.Workers
             var fn = OnError.AsFunction();
             if (fn.IsNative && fn.NativeImplementation != null)
             {
-                fn.NativeImplementation(new IValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
+                fn.NativeImplementation(new FenValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
             }
         }
 
-        private IValue ConvertToFenValue(object obj)
+        private FenValue ConvertToFenValue(object obj)
         {
-            if (obj == null) return FenValue.Null;
+            if (obj  == null) return FenValue.Null;
             if (obj is bool b) return FenValue.FromBoolean(b);
             if (obj is string s) return FenValue.FromString(s);
             if (obj is int i) return FenValue.FromNumber(i);
             if (obj is long l) return FenValue.FromNumber(l);
             if (obj is float f) return FenValue.FromNumber(f);
             if (obj is double d) return FenValue.FromNumber(d);
-            if (obj is IValue v) return v;
+            if (obj is FenValue fv) return fv;
+            if (obj is IObject io) return FenValue.FromObject(io);
+            if (obj is IValue v) return FenValue.FromString(v.ToString()); // Fallback
 
             // Complex objects - wrap in FenObject
             if (obj is IDictionary<string, object> dict)

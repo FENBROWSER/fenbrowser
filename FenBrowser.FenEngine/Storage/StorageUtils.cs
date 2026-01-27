@@ -9,9 +9,9 @@ namespace FenBrowser.FenEngine.Storage
 {
     public static class StorageUtils
     {
-        public static object ToSerializable(IValue value)
+        public static object ToSerializable(FenValue value)
         {
-            if (value == null || value.IsNull || value.IsUndefined) return null;
+            if (value.IsNull || value.IsUndefined) return null;
             if (value.IsBoolean) return value.ToBoolean();
             if (value.IsNumber) return value.ToNumber();
             if (value.IsString) return value.ToString();
@@ -46,7 +46,7 @@ namespace FenBrowser.FenEngine.Storage
             return value.ToString();
         }
 
-        public static IValue FromSerializable(object obj)
+        public static FenValue FromSerializable(object obj)
         {
             if (obj == null) return FenValue.Null;
             if (obj is bool b) return FenValue.FromBoolean(b);
@@ -84,7 +84,7 @@ namespace FenBrowser.FenEngine.Storage
             return FenValue.FromString(obj.ToString());
         }
 
-        private static IValue ConvertJsonElement(JsonElement element)
+        private static FenValue ConvertJsonElement(JsonElement element)
         {
             switch (element.ValueKind)
             {

@@ -118,7 +118,7 @@ namespace FenBrowser.FenEngine.Workers
                 reg.SetWaiting(sw);
 
                 // For testing/simplicity: Auto-Activate if no existing active worker
-                if (reg.Active == null)
+                if (reg.Active  == null)
                 {
                     // Create actual runtime for events
                     var runtime = new WorkerRuntime(scriptUrl, scope, _storageBackend);
@@ -135,7 +135,7 @@ namespace FenBrowser.FenEngine.Workers
 
         public async Task<bool> DispatchFetchEvent(ServiceWorker sw, FenBrowser.FenEngine.WebAPIs.FetchEvent fetchEvt)
         {
-            if (sw == null) return false;
+            if (sw  == null) return false;
             
             // Lookup runtime by scope directly
             if (_activeRuntimes.TryGetValue(sw.Scope, out var runtime))

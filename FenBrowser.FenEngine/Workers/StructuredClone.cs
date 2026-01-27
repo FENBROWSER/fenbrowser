@@ -33,7 +33,7 @@ namespace FenBrowser.FenEngine.Workers
         /// <exception cref="StructuredCloneException">Thrown for non-cloneable types</exception>
         public static object Clone(object value)
         {
-            if (value == null)
+            if (value  == null)
                 return null;
 
             var type = value.GetType();
@@ -118,7 +118,7 @@ namespace FenBrowser.FenEngine.Workers
         /// </summary>
         public static bool CanClone(object value)
         {
-            if (value == null)
+            if (value  == null)
                 return true;
 
             var type = value.GetType();

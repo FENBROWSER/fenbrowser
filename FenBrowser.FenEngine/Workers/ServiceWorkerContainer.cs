@@ -40,7 +40,7 @@ namespace FenBrowser.FenEngine.Workers
              Set("controller", worker != null ? FenValue.FromObject(worker) : FenValue.Null);
         }
 
-        private IValue Register(IValue[] args, IValue thisVal)
+        private FenValue Register(FenValue[] args, FenValue thisVal)
         {
             if (args.Length < 1) return FenValue.Undefined; // Reject
 
@@ -48,7 +48,8 @@ namespace FenBrowser.FenEngine.Workers
             // TODO: Resolve relative URL against document base
             
             var options = args.Length > 1 ? args[1].AsObject() : null;
-            var scope = options?.Get("scope")?.ToString() ?? "./"; 
+            var scopeVal = options != null ? options.Get("scope") : FenValue.Undefined;
+            var scope = !scopeVal.IsUndefined ? scopeVal.ToString() : "./"; 
             // TODO: Resolve scope
 
             // Return Promise
@@ -59,7 +60,7 @@ namespace FenBrowser.FenEngine.Workers
             }));
         }
 
-        private IValue GetRegistration(IValue[] args, IValue thisVal)
+        private FenValue GetRegistration(FenValue[] args, FenValue thisVal)
         {
             var scope = args.Length > 0 ? args[0].ToString() : "./";
             
@@ -71,7 +72,7 @@ namespace FenBrowser.FenEngine.Workers
         }
 
         // --- Promise Helper (Reuse) ---
-        private FenObject CreatePromise(Func<Task<IValue>> valueFactory)
+        private FenObject CreatePromise(Func<Task<FenValue>> valueFactory)
         {
             var promise = new FenObject();
             Task.Run(async () =>
@@ -90,7 +91,7 @@ namespace FenBrowser.FenEngine.Workers
             return promise;
         }
 
-        private void ResolvePromise(FenObject promise, IValue result)
+        private void ResolvePromise(FenObject promise, FenValue result)
         {
              if (promise.Has("onFulfilled"))
              {
@@ -125,16 +126,17 @@ namespace FenBrowser.FenEngine.Workers
                 if (args.Length > 0) promise.Set("onFulfilled", args[0]);
                 if (args.Length > 1) promise.Set("onRejected", args[1]);
 
-                var state = promise.Get("__state")?.ToString();
+                var stateVal = promise.Get("__state");
+                var state = !stateVal.IsUndefined ? stateVal.ToString() : null;
                 if (state == "fulfilled")
                 {
                     var res = promise.Get("__result");
-                    args[0]?.AsFunction()?.Invoke(new[] { res }, null);
+                    if (args.Length > 0 && args[0].IsFunction) args[0].AsFunction().Invoke(new[] { res }, null);
                 }
                 else if (state == "rejected")
                 {
                      var reason = promise.Get("__reason");
-                     args[1]?.AsFunction()?.Invoke(new[] { reason }, null);
+                     if (args.Length > 1 && args[1].IsFunction) args[1].AsFunction().Invoke(new[] { reason }, null);
                 }
 
                 return FenValue.FromObject(promise); 

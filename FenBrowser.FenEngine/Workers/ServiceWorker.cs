@@ -41,7 +41,7 @@ namespace FenBrowser.FenEngine.Workers
             // TODO: Dispatch 'statechange' event
         }
 
-        private IValue PostMessage(IValue[] args, IValue thisVal)
+        private FenValue PostMessage(FenValue[] args, FenValue thisVal)
         {
             if (args.Length < 1) return FenValue.Undefined;
             

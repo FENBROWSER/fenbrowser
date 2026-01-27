@@ -52,7 +52,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             Set("keys", FenValue.FromFunction(new FenFunction("keys", Keys)));
         }
 
-        private IValue Match(IValue[] args, IValue thisVal)
+        private FenValue Match(FenValue[] args, FenValue thisVal)
         {
             if (args.Length < 1) return FenValue.FromObject(CreatePromise(() => Resolve(FenValue.Undefined)));
 
@@ -69,7 +69,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             }));
         }
 
-        private IValue Put(IValue[] args, IValue thisVal)
+        private FenValue Put(FenValue[] args, FenValue thisVal)
         {
             if (args.Length < 2) return FenValue.Undefined; // Should reject
 
@@ -84,7 +84,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             }));
         }
 
-        private IValue Delete(IValue[] args, IValue thisVal)
+        private FenValue Delete(FenValue[] args, FenValue thisVal)
         {
              if (args.Length < 1) return FenValue.FromObject(CreatePromise(() => Resolve(FenValue.FromBoolean(false))));
 
@@ -100,12 +100,12 @@ namespace FenBrowser.FenEngine.WebAPIs
              }));
         }
 
-        private IValue Keys(IValue[] args, IValue thisVal)
+        private FenValue Keys(FenValue[] args, FenValue thisVal)
         {
             return FenValue.FromObject(CreatePromise(async () =>
             {
                 var keys = await _storage.GetAllKeys(_origin, $"cache_{_cacheName}", STORE_NAME);
-                var list = new List<IValue>();
+                var list = new List<FenValue>();
                 foreach(var k in keys)
                 {
                     var req = new FenObject();
@@ -148,9 +148,9 @@ namespace FenBrowser.FenEngine.WebAPIs
             return request.ToString();
         }
 
-        private Task<IValue> Resolve(IValue value) => Task.FromResult(value);
+        private Task<FenValue> Resolve(FenValue value) => Task.FromResult(value);
 
-        private FenObject CreatePromise(Func<Task<IValue>> valueFactory)
+        private FenObject CreatePromise(Func<Task<FenValue>> valueFactory)
         {
             var promise = new FenObject();
             Task.Run(async () =>
@@ -170,7 +170,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             return promise;
         }
 
-        private void ResolvePromise(FenObject promise, IValue result)
+        private void ResolvePromise(FenObject promise, FenValue result)
         {
              if (promise.Has("onFulfilled"))
              {
@@ -205,16 +205,18 @@ namespace FenBrowser.FenEngine.WebAPIs
                 if (args.Length > 0) promise.Set("onFulfilled", args[0]);
                 if (args.Length > 1) promise.Set("onRejected", args[1]);
 
-                var state = promise.Get("__state")?.ToString();
+                var state = promise.Get("__state").ToString();
                 if (state == "fulfilled")
                 {
                     var res = promise.Get("__result");
-                    args[0]?.AsFunction()?.Invoke(new[] { res }, null);
+                    var cb = args[0];
+                    if (cb.IsFunction) cb.AsFunction().Invoke(new[] { res }, null);
                 }
                 else if (state == "rejected")
                 {
                      var reason = promise.Get("__reason");
-                     args[1]?.AsFunction()?.Invoke(new[] { reason }, null);
+                     var cb = args[1];
+                     if (cb.IsFunction) cb.AsFunction().Invoke(new[] { reason }, null);
                 }
 
                 return FenValue.FromObject(promise); 
@@ -224,10 +226,10 @@ namespace FenBrowser.FenEngine.WebAPIs
         private async Task<CacheEntry> SerializeResponse(string url, IObject response)
         {
             var statusVal = response.Get("status");
-            var status = (int)(statusVal?.ToNumber() ?? 200); 
+            var status = (int)(statusVal.IsNumber ? statusVal.ToNumber() : 200); 
             
             var statusTextVal = response.Get("statusText");
-            var statusText = statusTextVal?.ToString() ?? "OK";
+            var statusText = statusTextVal.IsString ? statusTextVal.ToString() : "OK";
             
             string body = "Cached Body content placeholder";
             
@@ -241,7 +243,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             };
         }
 
-        private IValue CreateJsResponse(CacheEntry entry)
+        private FenValue CreateJsResponse(CacheEntry entry)
         {
             var res = new FenObject();
             res.Set("status", FenValue.FromNumber(entry.Status));

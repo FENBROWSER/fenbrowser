@@ -26,7 +26,7 @@ namespace FenBrowser.FenEngine.WebAPIs
         // Response promise set by respondWith
         public FenObject RespondWithPromise { get; private set; }
 
-        private IValue RespondWith(IValue[] args, IValue thisVal)
+        private FenValue RespondWith(FenValue[] args, FenValue thisVal)
         {
             if (args.Length < 1) return FenValue.Undefined;
             
@@ -38,7 +38,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             return FenValue.Undefined;
         }
 
-        private IValue WaitUntil(IValue[] args, IValue thisVal)
+        private FenValue WaitUntil(FenValue[] args, FenValue thisVal)
         {
             // TODO: Track lifetime extension
             return FenValue.Undefined;

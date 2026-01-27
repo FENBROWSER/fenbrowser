@@ -107,7 +107,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 }
                 return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("exec", (eArgs, eThis) => 
                 {
-                    eArgs[0].AsFunction().Invoke(new IValue[0], context);
+                    eArgs[0].AsFunction().Invoke(new FenValue[0], context);
                     return FenValue.Undefined;
                 })), context));
             })));
@@ -124,7 +124,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 }
                 return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("exec", (eArgs, eThis) => 
                 {
-                    eArgs[0].AsFunction().Invoke(new IValue[0], context);
+                    eArgs[0].AsFunction().Invoke(new FenValue[0], context);
                     return FenValue.Undefined;
                 })), context));
             })));
@@ -135,7 +135,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 FenLogger.Debug("[WebRTC] addIceCandidate()", LogCategory.JavaScript);
                 return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("exec", (eArgs, eThis) => 
                 {
-                    eArgs[0].AsFunction().Invoke(new IValue[0], context);
+                    eArgs[0].AsFunction().Invoke(new FenValue[0], context);
                     return FenValue.Undefined;
                 })), context));
             })));
@@ -250,7 +250,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 dc.Set("readyState", FenValue.FromString("open"));
                 context.ScheduleCallback(() => {
                     var onopen = dc.Get("onopen");
-                    if (onopen.IsFunction) onopen.AsFunction().Invoke(new IValue[0], context);
+                    if (onopen.IsFunction) onopen.AsFunction().Invoke(new FenValue[0], context);
                 }, 0);
             });
 
@@ -275,7 +275,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             sender.Set("setParameters", FenValue.FromFunction(new FenFunction("setParameters", (args, thisVal) =>
             {
                 return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("exec", (eArgs, eThis) => {
-                    eArgs[0].AsFunction().Invoke(new IValue[0], context);
+                    eArgs[0].AsFunction().Invoke(new FenValue[0], context);
                     return FenValue.Undefined;
                 })), context));
             })));
@@ -283,7 +283,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             sender.Set("replaceTrack", FenValue.FromFunction(new FenFunction("replaceTrack", (args, thisVal) =>
             {
                 return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("exec", (eArgs, eThis) => {
-                    eArgs[0].AsFunction().Invoke(new IValue[0], context);
+                    eArgs[0].AsFunction().Invoke(new FenValue[0], context);
                     return FenValue.Undefined;
                 })), context));
             })));

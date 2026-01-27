@@ -50,7 +50,7 @@ namespace FenBrowser.FenEngine.Workers
             Set("active", worker != null ? FenValue.FromObject(worker) : FenValue.Null);
         }
 
-        private IValue Update(IValue[] args, IValue thisVal)
+        private FenValue Update(FenValue[] args, FenValue thisVal)
         {
             // Simple promise wrapper
             var promise = new FenObject(); 
@@ -58,7 +58,7 @@ namespace FenBrowser.FenEngine.Workers
             return FenValue.FromObject(promise); 
         }
 
-        private IValue Unregister(IValue[] args, IValue thisVal)
+        private FenValue Unregister(FenValue[] args, FenValue thisVal)
         {
              // TODO: Trigger unregister logic via Manager
              // Returns Promise<boolean>

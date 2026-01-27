@@ -30,7 +30,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             Set("match", FenValue.FromFunction(new FenFunction("match", Match)));
         }
 
-        private IValue Open(IValue[] args, IValue thisVal)
+        private FenValue Open(FenValue[] args, FenValue thisVal)
         {
              if (args.Length < 1) return FenValue.Undefined; // Should reject
              var cacheName = args[0].ToString();
@@ -45,7 +45,7 @@ namespace FenBrowser.FenEngine.WebAPIs
              }));
         }
 
-        private IValue Has(IValue[] args, IValue thisVal)
+        private FenValue Has(FenValue[] args, FenValue thisVal)
         {
              if (args.Length < 1) return FenValue.FromBoolean(false);
              var cacheName = args[0].ToString();
@@ -58,7 +58,7 @@ namespace FenBrowser.FenEngine.WebAPIs
              }));
         }
 
-        private IValue Delete(IValue[] args, IValue thisVal)
+        private FenValue Delete(FenValue[] args, FenValue thisVal)
         {
              if (args.Length < 1) return FenValue.FromBoolean(false);
              var cacheName = args[0].ToString();
@@ -75,7 +75,7 @@ namespace FenBrowser.FenEngine.WebAPIs
              }));
         }
 
-        private IValue Keys(IValue[] args, IValue thisVal)
+        private FenValue Keys(FenValue[] args, FenValue thisVal)
         {
              return FenValue.FromObject(CreatePromise(async () =>
              {
@@ -89,7 +89,7 @@ namespace FenBrowser.FenEngine.WebAPIs
              }));
         }
 
-        private IValue Match(IValue[] args, IValue thisVal)
+        private FenValue Match(FenValue[] args, FenValue thisVal)
         {
             // Checks all caches for a match
              if (args.Length < 1) return FenValue.Undefined;
@@ -101,7 +101,7 @@ namespace FenBrowser.FenEngine.WebAPIs
         }
 
         // --- Promise Helper (Dup from Cache.cs - should extract) ---
-        private FenObject CreatePromise(Func<Task<IValue>> valueFactory)
+        private FenObject CreatePromise(Func<Task<FenValue>> valueFactory)
         {
             var promise = new FenObject();
             Task.Run(async () =>
@@ -110,7 +110,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 {
                     var result = await valueFactory();
                     if (promise.Has("onFulfilled"))
-                         promise.Get("onFulfilled").AsFunction()?.Invoke(new[] { result }, null);
+                         promise.Get("onFulfilled").AsFunction()?.Invoke(new FenValue[] { result }, null);
                     else
                     {
                          promise.Set("__result", result);
