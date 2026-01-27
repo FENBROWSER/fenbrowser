@@ -50,6 +50,9 @@ namespace FenBrowser.FenEngine.Layout
         
         private readonly string _baseUri;
         private int _zeroSizedCount = 0;
+        
+        // Added for Preemption
+        public FenBrowser.Core.Deadlines.FrameDeadline Deadline { get; set; }
 
         public MinimalLayoutComputer(IReadOnlyDictionary<Node, CssComputed> styles, float viewportWidth, float viewportHeight, string baseUri = null)
         {
@@ -66,6 +69,12 @@ namespace FenBrowser.FenEngine.Layout
         internal LayoutMetrics MeasureInlineContextInternal(Element element, SKSize availableSize, int depth) => MeasureInlineContext(element, availableSize, depth);
         internal void ArrangeBlockInternalInternal(Element element, SKRect finalRect, int depth, Node fallbackNode) => ArrangeBlockInternal(element, finalRect, depth, fallbackNode);
 
+        internal void RegisterTextLines(Node node, List<ComputedTextLine> lines)
+        {
+            if (node == null || lines == null) return;
+            _textLines[node] = lines;
+        }
+
         /// <summary>
         /// Gets the computed style for the given node.
         /// </summary>
@@ -77,26 +86,40 @@ namespace FenBrowser.FenEngine.Layout
             if (node is PseudoElement pe) return pe.ComputedStyle;
             if (!_styles.TryGetValue(node, out var style) || style == null)
             {
-                if (node.IsText) return null; // Allow inheritance from parent
-                style = new CssComputed();
+                if (node.IsText) 
+                {
+                    var parentStyle = GetStyle(node.Parent);
+                    if (parentStyle != null) return parentStyle;
+                }
+                
+                // CRITICAL FIX: Use node.ComputedStyle as fallback (set during CSS cascade)
+                // This avoids the dictionary key mismatch issue when DOM nodes are different instances
+                if (node.ComputedStyle != null)
+                {
+                    style = node.ComputedStyle;
+                }
+                else
+                {
+                    style = new CssComputed();
+                }
             }
             
-            // IMPORTANT: Read CSS properties from Map when typed properties are null
+            // IMPORTANT: Read CSS properties from Map when typed properties are null OR empty
             if (style.Map != null)
             {
-                if (style.Display == null && style.Map.TryGetValue("display", out var mapDisplay))
+                if (string.IsNullOrEmpty(style.Display) && style.Map.TryGetValue("display", out var mapDisplay))
                     style.Display = mapDisplay;
-                if (style.Visibility == null && style.Map.TryGetValue("visibility", out var mapVisibility))
+                if (string.IsNullOrEmpty(style.Visibility) && style.Map.TryGetValue("visibility", out var mapVisibility))
                     style.Visibility = mapVisibility;
-                if (style.FlexDirection == null && style.Map.TryGetValue("flex-direction", out var mapFlexDir))
+                if (string.IsNullOrEmpty(style.FlexDirection) && style.Map.TryGetValue("flex-direction", out var mapFlexDir))
                     style.FlexDirection = mapFlexDir;
-                if (style.FlexWrap == null && style.Map.TryGetValue("flex-wrap", out var mapFlexWrap))
+                if (string.IsNullOrEmpty(style.FlexWrap) && style.Map.TryGetValue("flex-wrap", out var mapFlexWrap))
                     style.FlexWrap = mapFlexWrap;
-                if (style.JustifyContent == null && style.Map.TryGetValue("justify-content", out var mapJustify))
+                if (string.IsNullOrEmpty(style.JustifyContent) && style.Map.TryGetValue("justify-content", out var mapJustify))
                     style.JustifyContent = mapJustify;
-                if (style.AlignItems == null && style.Map.TryGetValue("align-items", out var mapAlign))
+                if (string.IsNullOrEmpty(style.AlignItems) && style.Map.TryGetValue("align-items", out var mapAlign))
                     style.AlignItems = mapAlign;
-                if (style.AlignContent == null && style.Map.TryGetValue("align-content", out var mapAlignContent))
+                if (string.IsNullOrEmpty(style.AlignContent) && style.Map.TryGetValue("align-content", out var mapAlignContent))
                     style.AlignContent = mapAlignContent;
                 if (style.Position == null && style.Map.TryGetValue("position", out var mapPos))
                     style.Position = mapPos;
@@ -272,7 +295,18 @@ namespace FenBrowser.FenEngine.Layout
             _traversedCount = 0;
             _textLines.Clear(); 
             _inlineCache.Clear(); 
-            return MeasureNode(node, availableSize, 0); 
+            var metrics = MeasureNode(node, availableSize, 0); 
+            
+            try 
+            {
+                if (node is Element e && (e.TagName == "HTML" || e.TagName == "BODY"))
+                {
+                    System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_layout_dims.txt", 
+                        $"[LAYOUT] Node={e.TagName} W={metrics.MaxChildWidth} H={metrics.ContentHeight}\r\n");
+                }
+            } catch {}
+
+            return metrics; 
         }
 
         public void Arrange(Node node, SKRect finalRect)
@@ -283,6 +317,10 @@ namespace FenBrowser.FenEngine.Layout
             _traversedCount = 0;
             _ancestorRects.Clear();
             ArrangeNode(node, finalRect, 0); // Start at 0
+            
+            // [DEBUG] Dump layout tree for root (Unconditional)
+            FenLogger.Error($"TRIGGERING LAYOUT DUMP FOR {node.GetType().Name}", LogCategory.Rendering);
+            DumpLayoutTree(node);
         }
 
         internal void SetDesiredSize(Node node, SKSize size)
@@ -300,6 +338,7 @@ namespace FenBrowser.FenEngine.Layout
 
             var style = GetStyle(node);
             bool isHidden = ShouldHide(node, style);
+            if (isHidden) return new LayoutMetrics();
             if (isHidden) return new LayoutMetrics();
 
             // (V6: Removed V5 logging block)
@@ -415,6 +454,11 @@ namespace FenBrowser.FenEngine.Layout
             }
 
             // Min/Max Constraints
+            if (tag == "A")
+            {
+                 FenLogger.Error($"[MEASURE-NODE-TRACE] Measuring <A> Display={style?.Display} Parent={(node as Element)?.ParentElement?.TagName}");
+            }
+
             float minW = 0, maxW = float.PositiveInfinity;
             float minH = 0, maxH = float.PositiveInfinity;
             
@@ -528,6 +572,8 @@ namespace FenBrowser.FenEngine.Layout
                    {
                         // Auto-width case
                         contentW -= (float)(p.Left + p.Right + b.Left + b.Right);
+                        // FIX: Deduct margins for auto-width block elements to fit in flow (e.g. body margin)
+                        contentW -= (float)(style.Margin.Left + style.Margin.Right);
                    }
                 }
                 childConstraint = new SKSize(Math.Max(0, contentW), childConstraint.Height);
@@ -575,6 +621,7 @@ namespace FenBrowser.FenEngine.Layout
                 m = MeasureMeter(elem, childConstraint);
             else if (display == "flex" || display == "inline-flex") 
             {
+                FenLogger.Debug($"[MEASURE-FLEX] Node={elem.TagName} Class={elem.GetAttribute("class")} is being measured as FLEX. Avail={availableSize}", LogCategory.Layout);
                 m = MeasureFlexInternal(elem, childConstraint, (display == "flex" && elem.TagName == "BODY"), depth + 1, node);
                 
                 // Fix: display:flex (block-level) should default to available width if not explicit, just like display:block
@@ -610,17 +657,47 @@ namespace FenBrowser.FenEngine.Layout
             }
             else 
             {
-                // Refactored to use BlockLayoutAlgorithm (Strategy Pattern)
-                var context = new FenBrowser.FenEngine.Layout.Algorithms.LayoutContext
+                // BFC MANAGEMENT
+                bool establishesBfc = false;
+                if (elem != null && style != null)
                 {
-                    Node = elem,
-                    Style = style, // Available in scope
-                    AvailableSize = childConstraint,
-                    Depth = depth + 1,
-                    Computer = this,
-                    FallbackNode = node
-                };
-                m = new FenBrowser.FenEngine.Layout.Algorithms.BlockLayoutAlgorithm().Measure(context); 
+                    // Heuristic BFC Triggers
+                    if (tag == "HTML") establishesBfc = true;
+                    else if (style.Float == "left" || style.Float == "right") establishesBfc = true;
+                    else if (style.Position == "absolute" || style.Position == "fixed") establishesBfc = true;
+                    else if (style.Display == "inline-block" || style.Display == "table-cell" || style.Display == "flow-root") establishesBfc = true;
+                    else if (style.Overflow != null && style.Overflow != "visible" && style.Overflow != "clip") establishesBfc = true;
+                }
+
+                if (establishesBfc)
+                {
+                    _activeBfcFloats.Push(new List<FloatExclusion>());
+                }
+
+                try
+                {
+                    // Refactored to use BlockLayoutAlgorithm (Strategy Pattern)
+                    var context = new FenBrowser.FenEngine.Layout.Algorithms.LayoutContext
+                    {
+                        Node = elem,
+                        Style = style, // Available in scope
+                        AvailableSize = childConstraint,
+                        Depth = depth + 1,
+                        Computer = this,
+                        FallbackNode = node,
+                        Exclusions = _activeBfcFloats.Count > 0 ? _activeBfcFloats.Peek() : null,
+                        Deadline = this.Deadline
+                    };
+                    FenLogger.Error($"[DEBUG-DELEGATE] Delegating MEASURE for {elem.TagName} (ID={elem.GetAttribute("id")}) to BlockLayoutAlgorithm. Avail={childConstraint}");
+                    m = new FenBrowser.FenEngine.Layout.Algorithms.BlockLayoutAlgorithm().Measure(context);
+                }
+                finally
+                {
+                    if (establishesBfc)
+                    {
+                        _activeBfcFloats.Pop();
+                    }
+                }
             }
 
             // DIAGNOSTIC: Log measurement result
@@ -672,11 +749,7 @@ namespace FenBrowser.FenEngine.Layout
                 bt_top = (float)style.BorderThickness.Top;
                 bb = (float)style.BorderThickness.Bottom;
                 
-                if (style.BoxSizing != "border-box")
-                {
-                    w += (float)(style.Padding.Left + style.Padding.Right + style.BorderThickness.Left + style.BorderThickness.Right);
-                    h += (float)(pt + pb + bt_top + bb);
-                }
+            // Removed redundant addition of padding/border (handled at the end)
             }
             
             float mt = 0, mb = 0, ml = 0, mr = 0;
@@ -705,8 +778,9 @@ namespace FenBrowser.FenEngine.Layout
 
                 if (MarginCollapseComputer.ShouldCollapseParentChildTop(style))
                 {
-                    // Collapse parent's top with 1st child's top (m.MarginTop)
-                    mt = MarginCollapseComputer.Collapse(mt, m.MarginTop);
+                    // Collapse parent's top with 1st child's top (bubbled in m.MarginTopPos/Neg)
+                    var collapsed = MarginPair.Collapse(mt, m.MarginTopPos, m.MarginTopNeg);
+                    mt = collapsed.Collapsed;
                     // Child's margin is now part of 'mt', so don't add it to 'h'
                 }
                 else
@@ -718,8 +792,9 @@ namespace FenBrowser.FenEngine.Layout
                 // Bottom Margin Collapse
                 if (MarginCollapseComputer.ShouldCollapseParentChildBottom(style))
                 {
-                    // Collapse parent's bottom with last child's bottom (m.MarginBottom)
-                    mb = MarginCollapseComputer.Collapse(mb, m.MarginBottom);
+                    // Collapse parent's bottom with last child's bottom (m.MarginBottomPos/Neg)
+                    var collapsed = MarginPair.Collapse(mb, m.MarginBottomPos, m.MarginBottomNeg);
+                    mb = collapsed.Collapsed;
                     // Child's margin is part of 'mb'
                 }
                 else
@@ -779,7 +854,7 @@ namespace FenBrowser.FenEngine.Layout
                 else if (w <= 0 && !node.IsText) 
                 {
                      bool isInlineBlock = (display == "inline-block" || display == "inline");
-                     if (!isFloat && !isInlineBlock) {
+                     if (!isFloat && !isInlineBlock && !shrinkToFit) {
                          // Use availableSize, not childConstraint (which already has padding subtracted)
                          float usedWidth = availableSize.Width - (ml + mr);
                          
@@ -814,6 +889,11 @@ namespace FenBrowser.FenEngine.Layout
                          w = float.IsInfinity(usedWidth) ? m.MaxChildWidth : Math.Max(0, usedWidth);
                      } 
                 }
+
+                if (shrinkToFit && w <= 0)
+                {
+                    w = m.MaxChildWidth;
+                }
             }
 
             // Apply Min/Max Constraints on final calculated dimensions (on Content Box)
@@ -836,6 +916,12 @@ namespace FenBrowser.FenEngine.Layout
                  
                  w += (float)(p.Left + p.Right + b.Left + b.Right);
                  h += (float)(p.Top + p.Bottom + b.Top + b.Bottom);
+
+                 if (tag == "H1") FenLogger.Error($"[H1-DEBUG] Added borders. NetH={h} pT={p.Top} bT={b.Top}");
+            }
+            else
+            {
+                 if (tag == "H1") FenLogger.Error($"[H1-DEBUG] SKIPPED borders. isExplicitWidth={isExplicitWidth} BoxSizing={style?.BoxSizing}");
             }
             
             // ============================================================
@@ -1101,7 +1187,21 @@ namespace FenBrowser.FenEngine.Layout
             else if (node.IsText) 
                 ArrangeText(node, box.ContentBox);
             else 
-                ArrangeBlockInternal(elem, box.ContentBox, depth + 1, node);
+            {
+                 // Refactored to use BlockLayoutAlgorithm (Strategy Pattern)
+                 var context = new FenBrowser.FenEngine.Layout.Algorithms.LayoutContext
+                 {
+                     Node = elem,
+                     Style = style,
+                     AvailableSize = box.ContentBox.Size,
+                     Depth = depth + 1,
+                     Computer = this,
+                     FallbackNode = node,
+                     Exclusions = _activeBfcFloats.Count > 0 ? _activeBfcFloats.Peek() : null,
+                     Deadline = this.Deadline
+                 };
+                 new FenBrowser.FenEngine.Layout.Algorithms.BlockLayoutAlgorithm().Arrange(context, box.ContentBox);
+            }
         }
 
         private LayoutMetrics MeasureBlockInternal(Element element, SKSize availableSize, int depth, Node fallbackNode)
@@ -1486,12 +1586,9 @@ namespace FenBrowser.FenEngine.Layout
 
 
             // Check for Flexbox
-            if (parentStyle != null && (parentStyle.Display == "flex" || parentStyle.Display == "inline-flex"))
-            {
-                FenLogger.Debug($"[FLEX-DISPATCH] Arranging <{element.TagName}> as FLEX. Direction={parentStyle.FlexDirection}");
-                ArrangeFlex(element, finalRect, depth, parentStyle, childrenSource);
-                return;
-            }
+            // [FIX] Removed incorrect recursive flex check here. 
+            // Children of flex containers are flex ITEMS, not necessarily flex CONTAINERS.
+            // They should be arranged according to their OWN display type (handled below).
             
             if (element != null) 
             {
@@ -1788,6 +1885,7 @@ namespace FenBrowser.FenEngine.Layout
         private bool IsInlineLevel(Node node)
         {
             if (node is Text) return true;
+            
             var style = GetStyle(node);
             string d = style?.Display?.ToLowerInvariant();
             
@@ -2552,6 +2650,15 @@ namespace FenBrowser.FenEngine.Layout
             else if (node is Text t) 
             { 
                 if (string.IsNullOrWhiteSpace(t.Data)) return true; 
+
+                // Hide text inside non-visible elements
+                var parent = t.Parent as Element;
+                if (parent != null)
+                {
+                    string ptag = parent.TagName?.ToLowerInvariant() ?? "";
+                    if (ptag == "head" || ptag == "script" || ptag == "style" || ptag == "template" || ptag == "noscript")
+                        return true;
+                }
             }
             else if (!(node is Element))
             {
@@ -2622,9 +2729,9 @@ namespace FenBrowser.FenEngine.Layout
         }
         public void DumpLayoutTree(Node root)
         {
-            FenLogger.Info("[MinimalLayoutComputer] --- Layout Tree Dump ---", LogCategory.Rendering);
+            FenLogger.Error("[MinimalLayoutComputer] --- Layout Tree Dump ---", LogCategory.Rendering);
             DumpNode(root, 0);
-            FenLogger.Info("[MinimalLayoutComputer] --- End Layout Tree Dump ---", LogCategory.Rendering);
+            FenLogger.Error("[MinimalLayoutComputer] --- End Layout Tree Dump ---", LogCategory.Rendering);
         }
 
         private void DumpNode(Node node, int depth)
@@ -2634,7 +2741,7 @@ namespace FenBrowser.FenEngine.Layout
             var box = GetBox(node);
             string boxInfo = box != null ? $" [{box.BorderBox.Left:F1},{box.BorderBox.Top:F1} {box.BorderBox.Width:F1}x{box.BorderBox.Height:F1}]" : " [No Box]";
             
-            FenLogger.Info($"{indent}{node.Tag ?? "#text"}{boxInfo}", LogCategory.Rendering);
+            FenLogger.Error($"{indent}{node.Tag ?? "#text"}{boxInfo}", LogCategory.Rendering);
 
             if (node is Element element && element.Children != null)
             {

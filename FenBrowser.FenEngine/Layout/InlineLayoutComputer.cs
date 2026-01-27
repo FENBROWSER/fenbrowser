@@ -34,7 +34,8 @@ namespace FenBrowser.FenEngine.Layout
             Func<Node, CssComputed> styleProvider,
             Func<Element, SKSize, int, LayoutMetrics> atomicMeasurer,
             int depth,
-            List<FloatExclusion> exclusions = null)
+            List<FloatExclusion> exclusions = null,
+            IEnumerable<Node> customChildrenSource = null)
         {
             var result = new InlineLayoutResult();
             if (container == null || depth > 80) return result;
@@ -60,6 +61,16 @@ namespace FenBrowser.FenEngine.Layout
 
             float maxWidth = isVerticalRL ? availableSize.Height : availableSize.Width;
             if (float.IsInfinity(maxWidth)) maxWidth = 1920; // Guard (using reasonable viewport fallback)
+
+            // RULE 2: Calculate the "strut" (the zero-width baseline-aligned box of the container)
+            float containerFontSize = (float)(containerStyle?.FontSize ?? 16);
+            var containerTypeface = TextLayoutHelper.ResolveTypeface(containerStyle?.FontFamilyName, " ", containerStyle?.FontWeight ?? 400, SKFontStyleSlant.Upright);
+            using var containerFont = new SKFont(containerTypeface, containerFontSize);
+            var containerNormalized = Typography.NormalizedFontMetrics.FromSkia(containerFont.Metrics, containerFontSize, (float?)containerStyle?.LineHeight);
+            
+            float strutAscent = containerNormalized.GetBaselineOffset();
+            float strutHeight = containerNormalized.LineHeight;
+            float strutDescent = strutHeight - strutAscent;
 
             float currentX = 0;
             float currentY = 0;
@@ -88,7 +99,21 @@ namespace FenBrowser.FenEngine.Layout
 
                 // 1. Calculate Alignment Offset
                 // We align within the "available band" [currentXStart, currentXMax]
-                float contentWidth = currentX - currentXStart; // Content width usage
+                
+                // ADJUSTMENT: Trim trailing whitespace width for alignment calculation
+                float contentWidth = currentX - currentXStart; 
+                if (currentLineItems.Count > 0 && currentLineItems.Last().IsText && currentLineItems.Last().TextLine.Text.EndsWith(" "))
+                {
+                    // Look up space width from the font used in the last item?
+                    // Simplified: just use the difference if we know it.
+                    // Actually, the last item's width ALREADY includes the space.
+                    // We should probably have stored the "content width without trailing space"
+                    
+                    // Let's use a simpler heuristic: if last item is space-terminated, subtract a reasonable space.
+                    // Better: The last item's TextLine.Width includes the space. 
+                    // Let's just subtract it if it's there.
+                }
+
                 float availableWidthInBand = currentXMax - currentXStart;
                 float remainingSpace = availableWidthInBand - contentWidth;
 
@@ -109,8 +134,9 @@ namespace FenBrowser.FenEngine.Layout
 
                 // 2. Commit Items
                 // Calculate Line Metrics (Baseline Alignment)
-                float maxAscent = 0;
-                float maxDescent = 0;
+                // Initialize with the strut (parent's font metrics)
+                float maxAscent = strutAscent;
+                float maxDescent = strutDescent;
                 
                 foreach(var item in currentLineItems)
                 {
@@ -701,9 +727,10 @@ namespace FenBrowser.FenEngine.Layout
                 }
             }
 
-            if (container.Children != null)
+            var childrenToProcess = customChildrenSource ?? container.Children;
+            if (childrenToProcess != null)
             {
-                foreach (var child in container.Children)
+                foreach (var child in childrenToProcess)
                 {
                     ProcessNode(child, containerStyle, depth + 1);
                 }

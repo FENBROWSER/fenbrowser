@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using FenBrowser.Core.Dom;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Logging;
@@ -22,48 +23,71 @@ namespace FenBrowser.FenEngine.Layout.Tree
         public LayoutBox Build(Node root)
         {
             if (root == null) return null;
-            return ConstructBox(root);
+            return ConstructBox(root, null).FirstOrDefault();
         }
 
-        private LayoutBox ConstructBox(Node node)
+        private List<LayoutBox> ConstructBox(Node node, CssComputed parentStyle)
         {
+            var result = new List<LayoutBox>();
+
             // Get style (handle nulls safely)
             bool found = _styles.TryGetValue(node, out var style);
-            if (found) Console.WriteLine($"[BoxTree] Found style for {node.GetType().Name} (Display: {style.Display}, W: {style.Width}, H: {style.Height})");
-            else Console.WriteLine($"[BoxTree] No style found for {node.GetType().Name} (Hash: {node.GetHashCode()})");
             
-            if (style == null && node is Element) style = new CssComputed(); 
+            // Fallback to node.ComputedStyle if dictionary lookup fails (instance mismatch)
+            if (style == null && node.ComputedStyle != null) style = node.ComputedStyle;
+            
+            if (style == null && node is Element) style = new CssComputed();
+            
+            // For text nodes, inherit from parent
+            if (style == null && node is Text) style = parentStyle ?? new CssComputed();
 
-            // 1. Handle Display: None
-            if (style?.Display == "none") return null;
+            var display = style?.Display?.ToLowerInvariant() ?? (node is Text ? "inline" : "block");
+
+            // 1. Handle Display: None and Hidden Tags
+            if (display == "none") return result;
+            
+            if (node is Element e)
+            {
+                string tag = e.TagName?.ToUpperInvariant();
+                if (tag == "HEAD" || tag == "SCRIPT" || tag == "STYLE" || tag == "META" || tag == "LINK" || tag == "TITLE" || tag == "NOSCRIPT" || tag == "TEMPLATE")
+                    return result;
+            }
 
             // 2. Handle Text Nodes
             if (node is Text textNode)
             {
-                if (string.IsNullOrWhiteSpace(textNode.Data)) return null; // Optimization: skip empty text for now? 
-                // Wait, significant whitespace counts.
-                // For now, let's keep all text nodes and let InlineLayout decide visibility.
-                return new TextLayoutBox(textNode, style);
+                // Preserve whitespace-only nodes but normalize them if they are too long? 
+                // For now, only drop IF they are totally empty (not even space).
+                if (string.IsNullOrEmpty(textNode.Data)) return result;
+                
+                // [Optimization] We could drop leading/trailing whitespace in blocks, 
+                // but for now let's be safe for IFC.
+                result.Add(new TextLayoutBox(textNode, style));
+                return result;
             }
 
             // 3. Handle Elements
             if (node is Element element)
             {
-                // display: contents -> sub-children become children of parent (handled by recursion flattening)
-                // BUT ConstructBox returns a single box. 
-                // If this is display: contents, we formally don't produce a box for THIS node,
-                // but we return its children? 
-                // Return type is single LayoutBox. This suggests we need a different signature 
-                // or we handle children loop in the caller.
-                
-                // Let's stick to standard boxes for now. display: contents is tricky.
-                // We'll treat it as a BlockBox for MVP, but with 0 size? No, that breaks semantics.
-                // Let's implement correct flatten later.
-                
-                var display = style?.Display?.ToLowerInvariant() ?? "block"; // Default to block
-                
+                // Handle display: contents
+                if (display == "contents")
+                {
+                    foreach (var childNode in GetChildren(element))
+                    {
+                        result.AddRange(ConstructBox(childNode, style));
+                    }
+                    return result;
+                }
+
                 LayoutBox box;
-                if (display == "inline" || display == "inline-block") // Treat inline-block as InlineBox for tree, but it's atomic
+                bool isInline = display == "inline";
+                bool isInlineLevel = isInline || display == "inline-block" || display == "inline-flex" || display == "inline-grid";
+
+                if (isInlineLevel && !isInline) // Atomic inline
+                {
+                    box = new InlineBox(node, style);
+                }
+                else if (isInline)
                 {
                     box = new InlineBox(node, style);
                 }
@@ -72,41 +96,83 @@ namespace FenBrowser.FenEngine.Layout.Tree
                     box = new BlockBox(node, style);
                 }
 
-                // Recurse on children (Shadow DOM vs Light DOM)
-                IEnumerable<Node> childrenToProcess = element.Children;
-                if (element.ShadowRoot != null)
+                // Recurse on children
+                var childBoxes = new List<LayoutBox>();
+                foreach (var childNode in GetChildren(element))
                 {
-                     // Shadow DOM Encapsulation: If shadow root exists, render its content instead of light children.
-                     childrenToProcess = element.ShadowRoot.Children;
+                    childBoxes.AddRange(ConstructBox(childNode, style));
                 }
 
-                if (childrenToProcess != null)
+                // Handle Block-in-Inline Splitting (CSS 2.1 Section 9.2.1.1)
+                if (isInline && HasBlockLevelBox(childBoxes))
                 {
-                    foreach (var childNode in childrenToProcess)
-                    {
-                        var childBox = ConstructBox(childNode);
-                        if (childBox != null)
-                        {
-                            box.AddChild(childBox);
-                        }
-                    }
+                    return SplitInlineBox(element, style, childBoxes);
                 }
-                
-                // Post-process: Anonymous Block Generation
-                // If we are a BlockBox and we have mixed inline and block children, we need wrappers.
-                // Spec: "In a block formatting context, boxes are laid out one after the other, vertically..."
-                // Spec: "If a block container box... contains an inline-level box... then it establishes an inline formatting context."
-                // Spec: "A block container either contains only block-level boxes or only inline-level boxes."
-                
+
+                // Normal child adding
+                foreach (var childBox in childBoxes)
+                {
+                    box.AddChild(childBox);
+                }
+
                 if (box is BlockBox blockBox)
                 {
                     FixupBlockChildren(blockBox);
                 }
 
-                return box;
+                result.Add(box);
+                return result;
             }
 
-            return null; // Unknown node type (Comment, DocumentType etc)
+            return result;
+        }
+
+        private IEnumerable<Node> GetChildren(Element element)
+        {
+            if (element.ShadowRoot != null) return element.ShadowRoot.Children;
+            return element.Children;
+        }
+
+        private bool HasBlockLevelBox(IEnumerable<LayoutBox> boxes)
+        {
+            foreach (var box in boxes)
+            {
+                if (IsBlockLevel(box)) return true;
+            }
+            return false;
+        }
+
+        private List<LayoutBox> SplitInlineBox(Element element, CssComputed style, List<LayoutBox> childBoxes)
+        {
+            var result = new List<LayoutBox>();
+            var currentInlineRun = new List<LayoutBox>();
+
+            void FlushRun()
+            {
+                if (currentInlineRun.Count > 0)
+                {
+                    var part = new InlineBox(element, style);
+                    foreach (var b in currentInlineRun) part.AddChild(b);
+                    result.Add(part);
+                    currentInlineRun.Clear();
+                }
+            }
+
+            foreach (var child in childBoxes)
+            {
+                if (IsBlockLevel(child))
+                {
+                    FlushRun();
+                    result.Add(child);
+                }
+                else
+                {
+                    currentInlineRun.Add(child);
+                }
+            }
+            FlushRun();
+
+            return result;
         }
 
         /// <summary>
@@ -140,8 +206,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 {
                     if (currentAnon == null)
                     {
-                        currentAnon = new AnonymousBlockBox();
-                        // Synthesize style? For now, leave null (transparent)
+                        currentAnon = new AnonymousBlockBox(box.ComputedStyle);
                         newChildren.Add(currentAnon);
                     }
                     currentAnon.AddChild(child);
