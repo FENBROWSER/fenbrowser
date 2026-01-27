@@ -543,15 +543,20 @@ namespace FenBrowser.Core.Parsing
                     return true;
                 }
                 
-                if (st.TagName == "div" || st.TagName == "p" || st.TagName == "ul" || st.TagName == "ol" || st.TagName == "dl" || st.TagName == "blockquote" || st.TagName == "article" || st.TagName == "section" || st.TagName == "nav" || st.TagName == "header" || st.TagName == "footer" || st.TagName == "main")
+                if (st.TagName == "div" || st.TagName == "p" || st.TagName == "ul" || st.TagName == "ol" || st.TagName == "dl" || st.TagName == "blockquote" || 
+                    st.TagName == "article" || st.TagName == "section" || st.TagName == "nav" || st.TagName == "header" || st.TagName == "footer" || st.TagName == "main" ||
+                    st.TagName == "address" || st.TagName == "aside" || st.TagName == "center" || st.TagName == "details" || st.TagName == "dialog" || st.TagName == "dir" || 
+                    st.TagName == "fieldset" || st.TagName == "figcaption" || st.TagName == "figure" || st.TagName == "hgroup" || st.TagName == "menu" || 
+                    st.TagName == "summary" || st.TagName == "pre" || st.TagName == "listing")
                 {
-                    if ((CurrentNode as Element)?.TagName == "p" && st.TagName != "p") // Simplified p-closing
+                    if ((CurrentNode as Element)?.TagName == "p") 
                     {
                          ClosePElement();
                     }
                     if (st.TagName == "p")
                     {
-                         if ((CurrentNode as Element)?.TagName == "p") ClosePElement();
+                         // If st.TagName is p, we either closed it above or it's a new p
+                         // Handled by the generic InsertHtmlElement below
                     }
                     InsertHtmlElement(st);
                     return true;
@@ -645,14 +650,7 @@ namespace FenBrowser.Core.Parsing
                     return true;
                 }
                 
-                if (st.TagName == "p" || st.TagName == "div" || st.TagName == "ul" || st.TagName == "ol" || st.TagName == "li" || 
-                    st.TagName == "h1" || st.TagName == "h2" || st.TagName == "h3" || st.TagName == "h4" || st.TagName == "h5" || st.TagName == "h6" ||
-                    st.TagName == "section" || st.TagName == "article" || st.TagName == "aside" || st.TagName == "header" || st.TagName == "footer" || st.TagName == "nav")
-                {
-                    if (StackHas("p")) ClosePElement();
-                    InsertHtmlElement(st);
-                    return true;
-                }
+                // (Consolidated into the block above for efficiency and correctness)
                 
                 // Ordinary element
                 InsertHtmlElement(st);
@@ -686,7 +684,15 @@ namespace FenBrowser.Core.Parsing
                     return true;
                 }
                 
-                if (et.TagName == "div" || et.TagName == "ul" || et.TagName == "ol" || et.TagName == "li" || et.TagName == "h1" || et.TagName == "h2")
+                if (et.TagName == "div" || et.TagName == "ul" || et.TagName == "ol" || et.TagName == "li" || 
+                    et.TagName == "nav" || et.TagName == "header" || et.TagName == "footer" || et.TagName == "section" || 
+                    et.TagName == "article" || et.TagName == "main" || et.TagName == "aside" ||
+                    et.TagName == "address" || et.TagName == "blockquote" || et.TagName == "center" || 
+                    et.TagName == "details" || et.TagName == "dialog" || et.TagName == "dir" || 
+                    et.TagName == "fieldset" || et.TagName == "figcaption" || et.TagName == "figure" || 
+                    et.TagName == "hgroup" || et.TagName == "menu" || et.TagName == "summary" || 
+                    et.TagName == "pre" || et.TagName == "listing" ||
+                    et.TagName == "h1" || et.TagName == "h2" || et.TagName == "h3" || et.TagName == "h4" || et.TagName == "h5" || et.TagName == "h6")
                 {
                      if (StackHas(et.TagName)) PopUntil(et.TagName);
                      return true;
@@ -1476,7 +1482,7 @@ namespace FenBrowser.Core.Parsing
         {
             var el = CreateElement(token);
             CurrentNode.AppendChild(el);
-            FenLogger.Debug($"[Parser] Pushing {el.TagName}_{el.GetHashCode()} to stack (Depth: {_openElements.Count})", LogCategory.HtmlParsing);
+            // FenLogger.Debug($"[Parser] Pushing {el.TagName}_{el.GetHashCode()} to stack (Depth: {_openElements.Count})", LogCategory.HtmlParsing);
             _openElements.Push(el);
             return el;
         }
@@ -1549,14 +1555,14 @@ namespace FenBrowser.Core.Parsing
         private void PopUntil(string tagName)
         {
             var targetFound = _openElements.Any(e => string.Equals(e.TagName, tagName, StringComparison.OrdinalIgnoreCase));
-            FenLogger.Debug($"[Parser] PopUntil({tagName}). Target in stack: {targetFound}. Current top: {(_openElements.Count > 0 ? _openElements.Peek().TagName : "NULL")}", LogCategory.HtmlParsing);
+            // FenLogger.Debug($"[Parser] PopUntil({tagName}). Target in stack: {targetFound}. Current top: {(_openElements.Count > 0 ? _openElements.Peek().TagName : "NULL")}", LogCategory.HtmlParsing);
             
             if (targetFound)
             {
                 while (_openElements.Count > 1)
                 {
                     var popped = _openElements.Pop();
-                    FenLogger.Debug($"[Parser] Popped {popped.TagName}_{popped.GetHashCode()}", LogCategory.HtmlParsing);
+                    // FenLogger.Debug($"[Parser] Popped {popped.TagName}_{popped.GetHashCode()}", LogCategory.HtmlParsing);
                     if (string.Equals(popped.TagName, tagName, StringComparison.OrdinalIgnoreCase)) break;
                 }
             }
@@ -1567,7 +1573,7 @@ namespace FenBrowser.Core.Parsing
         {
             InsertHtmlElement(token);
             _tokenizer.SetState(HtmlTokenizer.TokenizerState.RcData);
-            _tokenizer.LastStartTagName = token.TagName;
+            _tokenizer.LastStartTagName = token.TagName?.ToLowerInvariant();
             _originalInsertionMode = _insertionMode;
             SwitchTo(InsertionMode.Text);
         }
@@ -1576,7 +1582,7 @@ namespace FenBrowser.Core.Parsing
         {
             InsertHtmlElement(token);
             _tokenizer.SetState(HtmlTokenizer.TokenizerState.RawText);
-            _tokenizer.LastStartTagName = token.TagName;
+            _tokenizer.LastStartTagName = token.TagName?.ToLowerInvariant();
             _originalInsertionMode = _insertionMode;
             SwitchTo(InsertionMode.Text);
         }
