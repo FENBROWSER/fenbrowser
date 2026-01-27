@@ -76,7 +76,7 @@ namespace FenBrowser.FenEngine.Scripting
                 
                 // Convert argumentsList (array-like) to IValue[]
                 // Simplified: Assuming generic array or object with length
-                var invokeArgs = new System.Collections.Generic.List<IValue>();
+                var invokeArgs = new System.Collections.Generic.List<FenValue>();
                 
                 if (argumentsList.IsObject)
                 {
@@ -119,9 +119,9 @@ namespace FenBrowser.FenEngine.Scripting
 
         private class ExecutionContextShim : IExecutionContext
         {
-            public IValue ThisBinding { get; set; }
+            public FenValue ThisBinding { get; set; }
             
-            public ExecutionContextShim(IValue thisBinding) 
+            public ExecutionContextShim(FenValue thisBinding) 
             { 
                 ThisBinding = thisBinding; 
                 Permissions = new Security.PermissionManager(Security.JsPermissions.AllSafe); // Internal use
@@ -137,7 +137,7 @@ namespace FenBrowser.FenEngine.Scripting
             public void SetRequestRender(Action action) { RequestRender = action; }
             public Action<Action, int> ScheduleCallback { get; set; } = (a, d) => a();
             public Action<Action> ScheduleMicrotask { get; set; } = (a) => a();
-            public Func<IValue, IValue[], IValue> ExecuteFunction { get; set; }
+            public Func<FenValue, FenValue[], FenValue> ExecuteFunction { get; set; }
             public IModuleLoader ModuleLoader { get; set; }
             public Action<MutationRecord> OnMutation { get; set; }
             public string CurrentUrl { get; set; } = "reflect";

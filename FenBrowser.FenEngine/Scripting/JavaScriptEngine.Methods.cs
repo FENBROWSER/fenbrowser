@@ -59,7 +59,7 @@ namespace FenBrowser.FenEngine.Scripting
 
         private void EnqueueMicrotaskInternal(Action a)
         {
-            if (a == null) return;
+            if (a  == null) return;
             lock (_microtaskLock)
             {
                 _microtasks.Enqueue(a);
@@ -114,7 +114,7 @@ namespace FenBrowser.FenEngine.Scripting
         
         public async Task<string> FetchModuleTextAsync(Uri uri, Uri referer)
         {
-            if (uri == null) return null;
+            if (uri  == null) return null;
             if (FetchOverride != null) return await FetchOverride(uri);
             try
             {

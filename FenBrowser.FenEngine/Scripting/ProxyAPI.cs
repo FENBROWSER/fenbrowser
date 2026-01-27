@@ -12,7 +12,7 @@ namespace FenBrowser.FenEngine.Scripting
     /// </summary>
     public static class ProxyAPI
     {
-        public static IValue CreateProxyConstructor()
+        public static FenValue CreateProxyConstructor()
         {
             // new Proxy(target, handler)
             var proxyCtor = new FenFunction("Proxy", (args, thisVal) =>
@@ -26,7 +26,7 @@ namespace FenBrowser.FenEngine.Scripting
             return FenValue.FromFunction(proxyCtor);
         }
 
-        public static IValue CreateProxyGlobal()
+        public static FenValue CreateProxyGlobal()
         {
              var proxyCtor = new FenFunction("Proxy", (args, thisVal) =>
             {
@@ -41,12 +41,11 @@ namespace FenBrowser.FenEngine.Scripting
             return FenValue.FromFunction(proxyCtor);
         }
 
-        public static IValue CreateProxy(IValue target, IValue handler)
+        public static FenValue CreateProxy(FenValue target, FenValue handler)
         {
              if (!target.IsObject && !target.IsFunction)
                     throw new Errors.FenInternalError("Proxy target must be object/function");
             
-            // Logic duplicated from above
              if (target.IsFunction)
              {
                  var targetFunc = target.AsFunction();
@@ -59,12 +58,12 @@ namespace FenBrowser.FenEngine.Scripting
                  return FenValue.FromFunction(proxyFunc);
              }
              
-             var targetObj = target.AsObject();
+             // var targetObj = target.AsObject(); // unused?
              var handlerObj = handler.AsObject();
              var proxyObj = new FenObject();
              
              proxyObj.Set("__isProxy__", FenValue.FromBoolean(true));
-             proxyObj.Set("__proxyTarget__", target); // We might need this for Reflect
+             proxyObj.Set("__proxyTarget__", target); 
              
              if (handlerObj.Has("get"))
              {
