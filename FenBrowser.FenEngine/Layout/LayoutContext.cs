@@ -1,5 +1,6 @@
 using FenBrowser.Core.Dom;
 using FenBrowser.Core.Css;
+using FenBrowser.Core.Deadlines;
 
 namespace FenBrowser.FenEngine.Layout
 {
@@ -24,6 +25,9 @@ namespace FenBrowser.FenEngine.Layout
         /// </summary>
         public IReadOnlyDictionary<Node, CssComputed> Styles { get; init; }
         
+        public FrameDeadline Deadline { get; set; }
+
+        // Float Clearance
         /// <summary>
         /// Viewport width for percentage calculations.
         /// </summary>

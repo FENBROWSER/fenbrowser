@@ -30,35 +30,32 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             // 1. Check for explicit formatting context triggers
             string display = box.ComputedStyle?.Display?.ToLowerInvariant() ?? "block";
             
-            if (display.Contains("grid"))
+            if (display.Contains("grid")) return GridFormattingContext.Instance;
+            if (display.Contains("flex")) return FlexFormattingContext.Instance;
+            
+            // Inline-block, table-cell, etc. establish BFC for their children
+            if (display == "inline-block" || display == "table-cell" || display == "inline-flex" || display == "inline-grid")
             {
-                return GridFormattingContext.Instance;
-            }
-
-            if (display.Contains("flex"))
-            {
-                return FlexFormattingContext.Instance;
+                return BlockFormattingContext.Instance;
             }
 
             if (box is BlockBox blockBox)
             {
-                // Check children to decide (if not explicit flex/grid).
+                // Normal block or anonymous block
                 bool hasBlockChildren = false;
                 foreach(var child in blockBox.Children)
                 {
                     if (child is BlockBox) hasBlockChildren = true;
                 }
 
-                if (hasBlockChildren)
-                {
-                    return BlockFormattingContext.Instance;
-                }
-                else
-                {
-                   // Even empty block boxes effectively use IFC logic (empty line box) or BFC logic (height 0)?  
-                   // Usually InlineFormattingContext handles "Inline Level" boxes.
-                   return InlineFormattingContext.Instance;
-                }
+                if (hasBlockChildren) return BlockFormattingContext.Instance;
+                return InlineFormattingContext.Instance; 
+            }
+
+            if (box is InlineBox)
+            {
+                // Normal inline boxes (span, a, etc.) establish/participate in IFC
+                return InlineFormattingContext.Instance;
             }
             
             // Default fallback

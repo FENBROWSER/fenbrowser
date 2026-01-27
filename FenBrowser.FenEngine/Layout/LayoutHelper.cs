@@ -35,16 +35,21 @@ namespace FenBrowser.FenEngine.Layout
 
         public static bool ShouldHide(Node node, CssComputed style)
         {
+            if (node == null) return true;
+            string tag = node.Tag?.ToUpperInvariant() ?? "";
+
             if (style != null && style.Display == "none") return true;
             if (style != null && style.Visibility == "hidden") return true;
-            if (node.Tag?.ToUpperInvariant() == "HEAD" || 
-                node.Tag?.ToUpperInvariant() == "SCRIPT" || 
-                node.Tag?.ToUpperInvariant() == "STYLE" || 
-                node.Tag?.ToUpperInvariant() == "META" || 
-                node.Tag?.ToUpperInvariant() == "TITLE" || 
-                node.Tag?.ToUpperInvariant() == "LINK") 
+            if (tag == "HEAD" || 
+                tag == "SCRIPT" || 
+                tag == "STYLE" || 
+                tag == "META" || 
+                tag == "TITLE" || 
+                tag == "LINK" ||
+                tag == "NOSCRIPT" ||
+                tag == "TEMPLATE") 
             {
-                 if (style?.Display == null || style.Display == "none") return true;
+                return true;
             }
             return false;
         }

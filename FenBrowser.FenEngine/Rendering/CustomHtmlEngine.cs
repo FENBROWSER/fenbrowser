@@ -14,6 +14,7 @@ using FenBrowser.Core.Security;
 using FenBrowser.FenEngine.Security; // Added
 using FenBrowser.FenEngine.Scripting; // For IJsHost
 using FenBrowser.FenEngine.Core; // Corrected namespace
+using FenBrowser.FenEngine.Core.Interfaces; // Added for IExecutionContext
 using FenBrowser.FenEngine.Layout; // Added for LayoutResult
 using static FenBrowser.FenEngine.Rendering.CssLoader;
 using FenBrowser.FenEngine.Rendering;
@@ -195,27 +196,10 @@ namespace FenBrowser.FenEngine.Rendering
                 "stillworking"
             };
 
-        // Heuristic: detect JS-heavy SPA/app-shell sites where our JS engine
-        // cannot realistically reproduce full behavior (e.g., modern google.com),
-        // and skip expensive JS execution + double-render for performance.
+        // Heuristic removed: No site-specific optimizations.
         private static bool IsJsHeavyAppShell(Uri baseUri)
         {
-            try
-            {
-                if (baseUri == null || string.IsNullOrEmpty(baseUri.Host)) return false;
-                var host = baseUri.Host.ToLowerInvariant();
-
-                // Start conservatively: only google.com and www.google.com.
-                // if (host == "google.com" || host == "www.google.com") return true;
-
-                return false;
-            }
-            catch (Exception ex)
-            {
-                // Log failure to parse URI but return false (safe default)
-                FenLogger.Warn($"[CustomHtmlEngine] IsJsHeavyAppShell check failed: {ex.Message}", LogCategory.Rendering);
-                return false; 
-            }
+            return false;
         }
 
         public void Dispose()
@@ -640,7 +624,10 @@ namespace FenBrowser.FenEngine.Rendering
 
             var cssFetcher = fetchExternalCssAsync ?? (async _ => { await Task.CompletedTask; return string.Empty; });
             
-            LastComputedStyles = null;
+            // NOTE: Don't set LastComputedStyles = null here!
+            // The EngineLoop polls for styles during CSS computation (which can take 20+ seconds).
+            // Setting to null causes the renderer to skip styling until computation completes.
+            // Instead, keep the previous styles visible until new ones are ready.
             LastCssSources = null;
             try
             {
@@ -652,6 +639,18 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 LastComputedStyles = await cssEngine.ComputeStylesAsync(dom, baseUri, cssFetcher, viewportWidth, viewportHeight);
                 FenLogger.Debug($"[PERF] CSS ComputeStyles: {_buildTreeStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
+
+                // CRITICAL FIX: Assign computed styles to nodes so Layout Engine can see them!
+                if (LastComputedStyles != null)
+                {
+                    foreach (var kvp in LastComputedStyles)
+                    {
+                        if (kvp.Key != null)
+                        {
+                            kvp.Key.ComputedStyle = kvp.Value;
+                        }
+                    }
+                }
                 
                 // [Verification] Register success
                 FenBrowser.Core.Verification.ContentVerifier.RegisterCssState(false, LastComputedStyles.Count);
@@ -793,13 +792,14 @@ namespace FenBrowser.FenEngine.Rendering
 
         private async Task<Element> RunDomParseAsync(string html)
         {
-            // Use new HTML Tokenizer + TreeBuilder
-            var tokenizer = new FenBrowser.FenEngine.HTML.HtmlTokenizer(html ?? string.Empty);
-            var builder = new FenBrowser.FenEngine.HTML.HtmlTreeBuilder(tokenizer);
+            // CRITICAL FIX: Use production HtmlTreeBuilder from Core.Parsing
+            // The FenEngine version doesn't properly implement RAWTEXT state for style/script,
+            // causing CSS content to leak as visible text nodes
+            var builder = new FenBrowser.Core.Parsing.HtmlTreeBuilder(html ?? string.Empty);
             try
             {
-                FenLogger.Debug("[RenderAsync] Starting parse (New Parser)...", LogCategory.Rendering);
-                var dom = await Task.Run(() =>
+                FenLogger.Debug("[RenderAsync] Starting parse (Production Parser)...", LogCategory.Rendering);
+                var doc = await Task.Run(() =>
                 {
                     try { return builder.Build(); }
                     catch (Exception pex)
@@ -814,12 +814,12 @@ namespace FenBrowser.FenEngine.Rendering
                 // DEBUG: Dump DOM
                 try {
                      var sb = new StringBuilder();
-                     DumpTree(dom, sb, 0);
+                     DumpTree(doc.DocumentElement ?? doc, sb, 0);
                      System.IO.File.WriteAllText(@"c:\Users\udayk\Videos\FENBROWSER\dom_dump.txt", sb.ToString());
                 } catch {}
 
                 // Return DocumentElement (the HTML element), not the Document wrapper
-                return dom.DocumentElement ?? dom;
+                return doc.DocumentElement ?? doc;
             }
             catch (Exception ex)
             {
@@ -834,18 +834,25 @@ namespace FenBrowser.FenEngine.Rendering
              {
                  FenLogger.Debug("[RenderAsync] Starting CSS load...", LogCategory.Rendering);
                  var cssTask = CssLoader.ComputeAsync(dom, baseUri, fetchExternalCssAsync, null, null, (msg) => FenLogger.Debug(msg, LogCategory.Rendering));
-                 var timeoutTask = Task.Delay(10000); 
+                 var timeoutTask = Task.Delay(30000); // Increased from 10s to 30s for complex pages
                  var completedTask = await Task.WhenAny(cssTask, timeoutTask);
                  
                  if (completedTask == timeoutTask)
                  {
-                     FenLogger.Warn("[RenderAsync] CSS loading timed out after 10s", LogCategory.Rendering);
+                     FenLogger.Warn("[RenderAsync] CSS loading timed out after 30s", LogCategory.Rendering);
                      FenBrowser.Core.Verification.ContentVerifier.RegisterCssState(true, 0);
                  }
                  else
                  {
-                     FenLogger.Debug("[RenderAsync] CSS loading complete", LogCategory.Rendering);
-                     // Success will be registered later in BuildVisualTreeAsync (ComputeStylesAsync path)
+                     // CRITICAL FIX: Actually store the computed styles!
+                     LastComputedStyles = await cssTask;
+                     FenLogger.Info($"[RenderAsync] CSS loading complete. Styles Count={LastComputedStyles?.Count ?? 0}", LogCategory.Rendering);
+                     FenBrowser.Core.Verification.ContentVerifier.RegisterCssState(false, LastComputedStyles?.Count ?? 0);
+                     
+                     // CRITICAL FIX: Trigger repaint after CSS completes so layout re-runs with styles
+                     // This ensures flexbox centering, visibility, and other CSS properties are applied
+                     FenLogger.Debug("[RenderAsync] Triggering repaint after CSS completion", LogCategory.Rendering);
+                     OnRepaintReady(null);
                  }
              }
              catch (Exception cssEx) 
@@ -969,7 +976,13 @@ namespace FenBrowser.FenEngine.Rendering
              }
              catch { }
 
-             if (js != null) js.FetchHandler = FetchHandler;
+             if (js != null) 
+             {
+                 js.FetchHandler = FetchHandler;
+                 // [Compliance] Inject Window Dimensions
+                 if (_activeViewportWidth.HasValue) js.WindowWidth = _activeViewportWidth.Value;
+                 js.WindowHeight = GetPrimaryWindowHeight();
+             }
 
              return js;
         }
@@ -1095,6 +1108,11 @@ namespace FenBrowser.FenEngine.Rendering
                 var dom = await RunDomParseAsync(html);
                 if (dom == null) return null;
                 _activeDom = dom;
+                
+                // CRITICAL FIX: Invalidate old styles immediately so the renderer stops using them.
+                // This forces BrowserIntegration to wait (showing previous frame or spinner) until new styles are ready.
+                LastComputedStyles = null;
+                
                 FenLogger.Debug($"[PERF] DOM Parse: {_pageLoadStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
 
                 // 2. Helper: Load CSS

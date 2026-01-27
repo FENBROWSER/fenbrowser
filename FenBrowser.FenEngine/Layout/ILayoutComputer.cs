@@ -14,6 +14,12 @@ namespace FenBrowser.FenEngine.Layout
         public float Baseline;
         public float MarginTop;
         public float MarginBottom;
+        
+        // Spec-compliant margin collapse tracking
+        public float MarginTopPos;
+        public float MarginTopNeg;
+        public float MarginBottomPos;
+        public float MarginBottomNeg;
     }
 
     /// <summary>

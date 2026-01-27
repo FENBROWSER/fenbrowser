@@ -2,6 +2,7 @@ using System;
 using FenBrowser.Core.Dom;
 using FenBrowser.FenEngine.Rendering.Css; // For CssComputed if needed
 using FenBrowser.Core.Css; // For Thickness/Styles
+using FenBrowser.Core; 
 
 namespace FenBrowser.FenEngine.Layout
 {
@@ -11,6 +12,45 @@ namespace FenBrowser.FenEngine.Layout
     /// can combine to form a single margin. Margins that combine this way are said to collapse, 
     /// and the resulting combined margin is called a collapsed margin.
     /// </summary>
+    /// <summary>
+    /// Tracks a pair of positive and negative margins for collapsing.
+    /// CSS Spec: The collapsed margin is the max(positives) + min(negatives).
+    /// </summary>
+    public struct MarginPair
+    {
+        public float Positive;
+        public float Negative;
+
+        public float Collapsed => Positive + Negative;
+
+        public void Combine(float margin)
+        {
+            if (margin > 0) Positive = Math.Max(Positive, margin);
+            else Negative = Math.Min(Negative, margin);
+        }
+
+        public void Combine(MarginPair other)
+        {
+            Positive = Math.Max(Positive, other.Positive);
+            Negative = Math.Min(Negative, other.Negative);
+        }
+
+        public static MarginPair Collapse(float a, float bPos, float bNeg)
+        {
+            MarginPair res = new MarginPair();
+            res.Combine(a);
+            res.Positive = Math.Max(res.Positive, bPos);
+            res.Negative = Math.Min(res.Negative, bNeg);
+            return res;
+        }
+        
+        public static MarginPair FromStyle(Thickness margin, string writingMode = "horizontal-tb")
+        {
+             // This is a placeholder - usually we want only one side (top or bottom)
+             return new MarginPair();
+        }
+    }
+
     public static class MarginCollapseComputer
     {
         /// <summary>

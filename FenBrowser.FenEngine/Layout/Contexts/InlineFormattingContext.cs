@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using FenBrowser.FenEngine.Layout.Tree;
 using SkiaSharp;
 using FenBrowser.Core.Css;
 using FenBrowser.Core;
+using FenBrowser.Core.Dom;
 using FenBrowser.FenEngine.Layout; 
 
 namespace FenBrowser.FenEngine.Layout.Contexts
@@ -24,144 +26,255 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         public override void Layout(LayoutBox box, LayoutState state)
         {
-            // Inline Context lays out the children of 'box' into line boxes.
-            // 'box' is typically a BlockBox that contains inline-level children.
-            
-            float maxWidth = state.AvailableSize.Width;
-            float currentX = 0;
-            float currentY = 0;
-
-            // Initialize Geometry
-            // Resolve width similar to Block (fill available)
             ResolveContextWidth(box, state);
             
-            // Content start
-            currentX = (float)box.Geometry.Padding.Left + (float)box.Geometry.Border.Left;
-            currentY = (float)box.Geometry.Padding.Top + (float)box.Geometry.Border.Top;
-            float startX = currentX;
             float contentLimit = box.Geometry.ContentBox.Width;
+            // Robustness: Handle unconstrained width (shrink-to-fit root)
+            if (float.IsInfinity(contentLimit)) contentLimit = state.ViewportWidth;
+            if (float.IsNaN(contentLimit)) contentLimit = 800f; // Safe fallback
 
-            float maxLineHeight = 0;
-            var outOfFlow = new List<LayoutBox>();
+            float startX = (float)box.Geometry.Padding.Left + (float)box.Geometry.Border.Left;
+            float startY = (float)box.Geometry.Padding.Top + (float)box.Geometry.Border.Top;
+
+            var lines = new List<LineBox>();
+            var currentLine = new LineBox();
+            lines.Add(currentLine);
+
+            float curX = 0;
 
             foreach (var child in box.Children)
             {
-                // Reliability Gate: Check intra-frame deadline
                 state.Deadline?.Check();
+                if (child.IsOutOfFlow) continue;
 
-                if (child.IsOutOfFlow)
+                if (child is TextLayoutBox textBox)
                 {
-                    outOfFlow.Add(child);
-                    continue;
-                }
+                    string fullText = (textBox.SourceNode as Text)?.Data ?? "";
+                    if (string.IsNullOrEmpty(fullText)) continue;
 
-                // Measure child (Intrinsic)
-                // Text needs correct font measurement.
-                SKSize childSize = MeasureInlineChild(child);
-                
-                // Check for Wrap
-                if (currentX + childSize.Width > startX + contentLimit && currentX > startX)
+                    // WORD FLOW
+                    int startIdx = 0;
+                    while (startIdx < fullText.Length)
+                    {
+                        // Find next word break
+                        int nextSpace = fullText.IndexOf(' ', startIdx);
+                        int endIdx = (nextSpace == -1) ? fullText.Length : nextSpace + 1;
+                        string word = fullText.Substring(startIdx, endIdx - startIdx);
+                        float wordWidth = MeasureString(word, textBox.ComputedStyle).Width;
+
+                        if (curX + wordWidth > contentLimit && curX > 0)
+                        {
+                            currentLine = new LineBox();
+                            lines.Add(currentLine);
+                            curX = 0;
+                        }
+
+                        // Add to current line
+                        // Check if last item was a fragment for the same node
+                        var lastItem = currentLine.Items.LastOrDefault() as TextLayoutBox;
+                        if (lastItem != null && lastItem.SourceNode == textBox.SourceNode && 
+                            lastItem.ComputedStyle == textBox.ComputedStyle &&
+                            (lastItem.StartOffset + lastItem.Length == startIdx))
+                        {
+                            // Append to last fragment on this line
+                            lastItem.Length += word.Length;
+                            // Update width
+                            float newW = lastItem.Geometry.ContentBox.Width + wordWidth;
+                            lastItem.Geometry.ContentBox = new SKRect(lastItem.Geometry.ContentBox.Left, 0, lastItem.Geometry.ContentBox.Left + newW, lastItem.Geometry.ContentBox.Height);
+                            currentLine.Width += wordWidth;
+                            curX += wordWidth;
+                        }
+                        else
+                        {
+                            // Create new fragment box
+                            var frag = new TextLayoutBox(textBox.SourceNode as Text, textBox.ComputedStyle);
+                            frag.StartOffset = startIdx;
+                            frag.Length = word.Length;
+                            frag.Geometry = new BoxModel();
+                            float h = MeasureString("H", textBox.ComputedStyle).Height;
+                            frag.Geometry.ContentBox = new SKRect(curX, 0, curX + wordWidth, h);
+                            SyncBoxes(frag.Geometry);
+
+                            currentLine.Items.Add(frag);
+                            currentLine.Width = curX + wordWidth;
+                            currentLine.Height = Math.Max(currentLine.Height, h);
+                            curX += wordWidth;
+                        }
+
+                        startIdx = endIdx;
+                    }
+                }
+                else
                 {
-                    // New Line
-                    currentX = startX;
-                    currentY += maxLineHeight;
-                    maxLineHeight = 0;
+                    // Atomic Inline
+                    SKSize childSize = MeasureInlineChild(child);
+                    if (curX + childSize.Width > contentLimit && curX > 0)
+                    {
+                        currentLine = new LineBox();
+                        lines.Add(currentLine);
+                        curX = 0;
+                    }
+
+                    if (child.Geometry == null) child.Geometry = new BoxModel();
+                    child.Geometry.ContentBox = new SKRect(curX, 0, curX + childSize.Width, childSize.Height);
+                    SyncBoxes(child.Geometry);
+
+                    currentLine.Items.Add(child);
+                    currentLine.Width = curX + childSize.Width;
+                    currentLine.Height = Math.Max(currentLine.Height, childSize.Height);
+                    curX += childSize.Width;
                 }
+            }
 
-                // Place child
-                // Assuming child geometry is (0,0) based, shift it
-                if (child.Geometry == null) child.Geometry = new BoxModel();
-                
-                // Create simple box model for the inline item
-                child.Geometry.ContentBox = new SKRect(currentX, currentY, currentX + childSize.Width, currentY + childSize.Height);
-                // Sync others
-                child.Geometry.PaddingBox = child.Geometry.ContentBox;
-                child.Geometry.BorderBox = child.Geometry.ContentBox;
-                child.Geometry.MarginBox = child.Geometry.ContentBox;
+            // SYNC CHILDREN: Replace existing children with flattened fragments
+            box.Children.Clear();
+            foreach (var line in lines)
+            {
+                foreach (var item in line.Items)
+                {
+                    box.Children.Add(item);
+                }
+            }
 
-                currentX += childSize.Width;
-                maxLineHeight = Math.Max(maxLineHeight, childSize.Height);
+            // POSITION LINES
+            float curY = startY;
+            var textAlign = box.ComputedStyle?.TextAlign ?? SKTextAlign.Left;
+
+            // Robustness: If no lines or empty lines, ensure we take up space if we are an atomic inline 
+            if (lines.Count == 1 && lines[0].Items.Count == 0)
+            {
+                SKSize selfSize = MeasureInlineChild(box);
+                if (selfSize.Height > 0) curY += selfSize.Height;
+            }
+
+            foreach (var line in lines)
+            {
+                float xOffset = 0;
+                if (textAlign == SKTextAlign.Center) xOffset = (contentLimit - line.Width) / 2f;
+                else if (textAlign == SKTextAlign.Right) xOffset = (contentLimit - line.Width);
+
+                foreach (var item in line.Items)
+                {
+                    // Shift to final position
+                    float finalX = startX + xOffset + item.Geometry.ContentBox.Left;
+                    float finalY = curY; 
+                    
+                    LayoutBoxOps.SetPosition(item, finalX, finalY);
+                }
+                curY += line.Height;
             }
 
             // Final Height
-            currentY += maxLineHeight;
-            float finalH = currentY + (float)box.Geometry.Padding.Bottom + (float)box.Geometry.Border.Bottom;
+            float finalH = curY + (float)box.Geometry.Padding.Bottom + (float)box.Geometry.Border.Bottom;
+            float finalContentHeight = Math.Max(0f, curY - startY);
             
-            // Check explicit height
-            float finalContentHeight = Math.Max(0f, finalH - ((float)box.Geometry.Padding.Top + (float)box.Geometry.Border.Top + (float)box.Geometry.Padding.Bottom + (float)box.Geometry.Border.Bottom));
-            
-            if (box.ComputedStyle != null && box.ComputedStyle.Height.HasValue)
+            // SHRINK-TO-FIT: If width was auto and available was infinity, we shrink to widest line
+            float finalContentWidth = box.Geometry.ContentBox.Width;
+            if (box.ComputedStyle != null && !box.ComputedStyle.Width.HasValue && float.IsInfinity(state.AvailableSize.Width))
             {
-                 finalContentHeight = (float)box.ComputedStyle.Height.Value;
+                float maxLW = 0;
+                foreach (var line in lines) maxLW = Math.Max(maxLW, line.Width);
+                finalContentWidth = maxLW;
             }
 
-            // Update box height
-             box.Geometry.ContentBox = new SKRect(
-                 box.Geometry.ContentBox.Left,
-                 box.Geometry.ContentBox.Top,
-                 box.Geometry.ContentBox.Right,
-                 box.Geometry.ContentBox.Top + finalContentHeight
-             );
+            if (box.ComputedStyle != null && box.ComputedStyle.Height.HasValue)
+                finalContentHeight = (float)box.ComputedStyle.Height.Value;
+
+            box.Geometry.ContentBox = new SKRect(
+                box.Geometry.ContentBox.Left,
+                box.Geometry.ContentBox.Top,
+                box.Geometry.ContentBox.Left + finalContentWidth,
+                box.Geometry.ContentBox.Top + finalContentHeight
+            );
             
             SyncBoxes(box.Geometry);
-            
-            // Handle out-of-flow
-             foreach (var oof in outOfFlow)
-            {
-                 LayoutPositioningLogic.ResolvePositionedBox(oof, box, box.Geometry);
-                 var context = FormattingContext.Resolve(oof);
-                 var childState = new LayoutState(
-                    new SKSize(oof.Geometry.ContentBox.Width, oof.Geometry.ContentBox.Height),
-                    oof.Geometry.ContentBox.Width,
-                    oof.Geometry.ContentBox.Height,
-                    state.ViewportWidth,
-                    state.ViewportHeight
-                );
-                context.Layout(oof, childState);
-            }
         }
 
         private SKSize MeasureInlineChild(LayoutBox child)
         {
             if (child is TextLayoutBox textBox)
             {
-                // Simple estimation
-                // In real engine, use FontManager/Skia Paint
-                float charWidth = 8f; 
-                float lineHeight = 16f;
-                // Parse font size?
-                if (textBox.ComputedStyle != null && textBox.ComputedStyle.FontSize.HasValue)
-                {
-                    lineHeight = (float)textBox.ComputedStyle.FontSize.Value * 1.2f;
-                    charWidth = lineHeight * 0.5f; 
-                }
-                
-                return new SKSize(textBox.TextContent.Length * charWidth, lineHeight);
+                return MeasureString(textBox.TextContent, textBox.ComputedStyle);
             }
             else if (child is InlineBox inlineBox)
             {
-                 // Recurse? Or Atomic?
-                 // If it's a <span>, it might contain text.
-                 // Ideally we flatten or recurse. 
-                 // For MVP, assuming flattened or atomic.
-                 return new SKSize(50f, 20f);
+                // Check if it's an atomic inline (inline-block etc)
+                string display = inlineBox.ComputedStyle?.Display?.ToLowerInvariant() ?? "inline";
+                if (display != "inline")
+                {
+                    // For atomic inlines, we should ideally call their own layout
+                    // but for now, we'll return its computed size or content size.
+                    float cw = (float)(inlineBox.ComputedStyle?.Width ?? 0);
+                    float ch = (float)(inlineBox.ComputedStyle?.Height ?? 20);
+                    
+                    if (cw > 0) return new SKSize(cw, ch);
+                }
+
+                // Normal inline (span) - aggregate children
+                float w = 0;
+                float h = 0;
+                foreach (var c in inlineBox.Children)
+                {
+                    var sz = MeasureInlineChild(c);
+                    w += sz.Width;
+                    h = Math.Max(h, sz.Height);
+                }
+                return new SKSize(w, Math.Max(h, 20f));
             }
             
-            return new SKSize(0f,0f);
+            // Handle IMG, INPUT, SVG or other elements that result in generic LayoutBox
+            if (child.SourceNode is FenBrowser.Core.Dom.Element el)
+            {
+                string t = el.TagName?.ToUpperInvariant();
+                if (t == "IMG" || t == "INPUT" || t == "SVG" || t == "BUTTON")
+                {
+                    float w = (float)(child.ComputedStyle?.Width ?? 0);
+                    float h = (float)(child.ComputedStyle?.Height ?? 0);
+                    
+                    // Fallbacks if not specified
+                    if (w <= 0) 
+                    {
+                        if (t == "INPUT") w = 150;
+                        else if (t == "SVG") w = 24;
+                        else if (t == "BUTTON") w = 60;
+                        else w = 20;
+                    }
+                    if (h <= 0)
+                    {
+                        if (t == "INPUT") h = 24;
+                        else if (t == "SVG") h = 24;
+                        else if (t == "BUTTON") h = 24;
+                        else h = 20;
+                    }
+                    return new SKSize(w, h);
+                }
+            }
+
+            return new SKSize(10,10); // Minimal fallback for unknown items
         }
+
+        private SKSize MeasureString(string text, CssComputed style)
+        {
+             float fs = 16f;
+             if (style?.FontSize != null) fs = (float)style.FontSize.Value;
+             if (fs < 5) fs = 16f;
+
+             float charWidth = fs * 0.5f;
+             if (style?.FontWeight >= 700) charWidth *= 1.15f;
+             
+             return new SKSize(text.Length * charWidth, fs * 1.25f);
+        }
+
 
         private void ResolveContextWidth(LayoutBox box, LayoutState state)
         {
             float available = state.AvailableSize.Width;
-            
-            // Check explicit width
             float finalW = available; 
             
             var p = box.ComputedStyle?.Padding ?? new Thickness();
             var b = box.ComputedStyle?.BorderThickness ?? new Thickness();
             var m = box.ComputedStyle?.Margin ?? new Thickness();
 
-            // Default auto logic
             float used = (float)(p.Left + p.Right + b.Left + b.Right + m.Left + m.Right);
             finalW = Math.Max(0f, available - used);
 
@@ -170,13 +283,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 finalW = (float)box.ComputedStyle.Width.Value;
             }
 
-            // Set content box
-            // Preserve Left/Top (for positioning)
             float left = box.Geometry.ContentBox.Left;
             float top = box.Geometry.ContentBox.Top;
             box.Geometry.ContentBox = new SKRect(left, top, left + finalW, top);
             
-            // Set props
             box.Geometry.Padding = p;
             box.Geometry.Border = b;
             box.Geometry.Margin = m;

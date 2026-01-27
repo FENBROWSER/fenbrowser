@@ -102,6 +102,11 @@ namespace FenBrowser.FenEngine.Rendering.Css
             
             string alignItems = style?.AlignItems?.ToLowerInvariant() ?? "stretch";
 
+            if (container.TagName == "DIV" && children.Any(c => c is Element e && e.TagName == "A"))
+            {
+                 FenLogger.Error($"[FLEX-TRACE-V2] Container={container.TagName} Class={container.GetAttribute("class")} IsRow={isRow} IsWrap={isWrap} MainAvail={mainAvailable} Width={availableSize.Width}");
+            }
+
             // 1. Generate Flex Items
             var items = new List<FlexItem>();
             int itemCountGuard = 0;
@@ -136,7 +141,9 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     if (isRow) 
                     {
                         constraints.Width = float.PositiveInfinity;
-                        // Row usually fits content width
+                        // Row implies we want the intrinsic content width (shrink-to-fit)
+                        // otherwise block-level items expand to fill viewport width (e.g. 1920px) which breaks the row.
+                        shrink = true; 
                     }
                     else 
                     {
@@ -159,6 +166,11 @@ namespace FenBrowser.FenEngine.Rendering.Css
                         }
                     }
                     
+                    if (container.TagName == "DIV" || container.TagName == "HEADER" || container.TagName == "NAV")
+                    {
+                         // Logging removed
+                    }
+
                     item.IntrinsicMetrics = measureChild(child, constraints, depth + 1, shrink);
                     item.FlexBaseSize = isRow ? item.IntrinsicMetrics.MaxChildWidth : item.IntrinsicMetrics.ContentHeight;
                 }

@@ -19,15 +19,15 @@ namespace FenBrowser.FenEngine.Rendering.Css
         {
             var sheet = new CssStylesheet();
             ConsumeToken(); // Prime
-
+            ConsumeWhitespace();
+            
             int loopCount = 0;
             while (_currentToken.Type != CssTokenType.EOF)
             {
-                if (loopCount++ > 100000) { break; }
-                if (_currentToken.Type == CssTokenType.Whitespace || _currentToken.Type == CssTokenType.Comment)
+                if (loopCount++ > 1000000) // Safety break
                 {
-                    ConsumeToken();
-                    continue;
+                    FenBrowser.Core.FenLogger.Warn("[CssSyntaxParser] ParseStylesheet infinite loop detected. Aborting.", FenBrowser.Core.Logging.LogCategory.CSS);
+                    break;
                 }
 
                 if (_currentToken.Type == CssTokenType.CDO || _currentToken.Type == CssTokenType.CDC)
@@ -40,12 +40,17 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 {
                     var rule = ConsumeAtRule();
                     if (rule != null) sheet.Rules.Add(rule);
+                    ConsumeWhitespace();
+                    continue;
                 }
-                else
+
+                // Qualified Rule (Style Rule)
+                var qRule = ConsumeQualifiedRule();
+                if (qRule != null) 
                 {
-                    var rule = ConsumeQualifiedRule();
-                    if (rule != null) sheet.Rules.Add(rule);
+                    sheet.Rules.Add(qRule);
                 }
+                ConsumeWhitespace();
             }
             return sheet;
         }
@@ -204,8 +209,10 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
             // Parse selector (prelude)
             var selectorTokens = new List<CssToken>();
+            int selLoop = 0;
             while (_currentToken.Type != CssTokenType.LeftBrace && _currentToken.Type != CssTokenType.EOF)
             {
+                if (selLoop++ > 100000) break; // Safety break
                 selectorTokens.Add(_currentToken);
                 ConsumeToken();
             }
@@ -232,10 +239,8 @@ namespace FenBrowser.FenEngine.Rendering.Css
             var declarations = new List<CssDeclaration>();
             ConsumeToken(); // {
 
-            int loopCount = 0;
             while (_currentToken.Type != CssTokenType.RightBrace && _currentToken.Type != CssTokenType.EOF)
             {
-                if (loopCount++ > 100000) break;
                 if (_currentToken.Type == CssTokenType.Whitespace || _currentToken.Type == CssTokenType.Semicolon)
                 {
                     ConsumeToken();
@@ -332,32 +337,85 @@ namespace FenBrowser.FenEngine.Rendering.Css
             _currentToken = _tokenizer.Consume();
         }
 
+        private void ConsumeWhitespace()
+        {
+            int loop = 0;
+            while ((_currentToken.Type == CssTokenType.Whitespace || _currentToken.Type == CssTokenType.Comment) && _currentToken.Type != CssTokenType.EOF)
+            {
+                if (loop++ > 100000) break; // Safety
+                ConsumeToken(); 
+            }
+        }
+
+        private int _nestingLevel = 0;
+
         private void ConsumeSimpleBlock()
         {
-            // Consumes { ... } balancing blocks
-            CssTokenType ending = CssTokenType.RightBrace;
-            if (_currentToken.Type == CssTokenType.LeftParen) ending = CssTokenType.RightParen;
-            if (_currentToken.Type == CssTokenType.LeftBracket) ending = CssTokenType.RightBracket;
+            // Iterative implementation to avoid StackOverflow and improve performance
+            
+            // Determine initial ending
+            CssTokenType initialEnding = CssTokenType.RightBrace;
+            if (_currentToken.Type == CssTokenType.LeftParen) initialEnding = CssTokenType.RightParen;
+            else if (_currentToken.Type == CssTokenType.LeftBracket) initialEnding = CssTokenType.RightBracket;
 
-            ConsumeToken(); // Opening
+            ConsumeToken(); // Consume the opening token
+            
+            var stack = new Stack<CssTokenType>();
+            stack.Push(initialEnding);
 
-            int loopCount = 0;
-            while (_currentToken.Type != ending && _currentToken.Type != CssTokenType.EOF)
+            int safety = 0;
+            const int MAX_TOKENS = 500000;
+
+            try 
             {
-                if (loopCount++ > 100000) break;
-                if (_currentToken.Type == CssTokenType.LeftBrace || 
-                    _currentToken.Type == CssTokenType.LeftParen || 
-                    _currentToken.Type == CssTokenType.LeftBracket)
+                while (stack.Count > 0)
                 {
-                    ConsumeSimpleBlock();
-                }
-                else
-                {
-                    ConsumeToken();
+                    if (_currentToken.Type == CssTokenType.EOF) return;
+                    
+                    if (safety++ > MAX_TOKENS)
+                    {
+                        var msg = $"CssSyntaxParser: Block too large or infinite loop. Stack={stack.Count} Token={_currentToken.Type}";
+                        FenBrowser.Core.FenLogger.Error(msg, FenBrowser.Core.Logging.LogCategory.Rendering);
+                        throw new InvalidOperationException(msg);
+                    }
+
+                    CssTokenType expected = stack.Peek();
+
+                    if (_currentToken.Type == expected)
+                    {
+                        stack.Pop();
+                        ConsumeToken();
+                        continue;
+                    }
+
+                    // Nested block starts
+                    if (_currentToken.Type == CssTokenType.LeftBrace)
+                    {
+                        stack.Push(CssTokenType.RightBrace);
+                        ConsumeToken();
+                    }
+                    else if (_currentToken.Type == CssTokenType.LeftParen)
+                    {
+                        stack.Push(CssTokenType.RightParen);
+                        ConsumeToken();
+                    }
+                    else if (_currentToken.Type == CssTokenType.LeftBracket)
+                    {
+                        stack.Push(CssTokenType.RightBracket);
+                        ConsumeToken();
+                    }
+                    else
+                    {
+                        ConsumeToken();
+                    }
                 }
             }
-
-            if (_currentToken.Type == ending) ConsumeToken();
+            catch (Exception ex)
+            {
+                 // Log and rethrow to Ensure visibility
+                 FenBrowser.Core.FenLogger.Error($"[CssSyntaxParser] Crash in ConsumeSimpleBlock: {ex}", FenBrowser.Core.Logging.LogCategory.Rendering);
+                 throw;
+            }
         }
 
         private void ConsumeComponentValue()
@@ -415,6 +473,21 @@ namespace FenBrowser.FenEngine.Rendering.Css
             
             // CRITICAL FIX: Use FirstOrDefault to prevent "Sequence contains no elements" exception
             var specificity = chains.Select(c => c.Specificity).OrderByDescending(s => s).FirstOrDefault();
+
+            // PRE-PARSE functional pseudo-classes to avoid O(N^2) re-parsing during cascade
+            foreach (var chain in chains)
+            {
+                foreach (var seg in chain.Segments)
+                {
+                    foreach (var ps in seg.PseudoClasses)
+                    {
+                        if (!string.IsNullOrEmpty(ps.Args) && (ps.Name == "is" || ps.Name == "not" || ps.Name == "where" || ps.Name == "has"))
+                        {
+                            ps.ParsedArgs = SelectorMatcher.ParseSelectorList(ps.Args);
+                        }
+                    }
+                }
+            }
 
             return new CssSelector
             {

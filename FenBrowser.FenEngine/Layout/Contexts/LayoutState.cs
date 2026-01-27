@@ -32,9 +32,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         /// <summary>
         /// Optional deadline for the current layout pass.
         /// </summary>
-        public FenBrowser.FenEngine.Core.RenderDeadline Deadline { get; set; }
+        public FenBrowser.Core.Deadlines.FrameDeadline Deadline { get; set; }
 
-        public LayoutState(SKSize available, float cbWidth, float cbHeight, float vpWidth, float vpHeight, FenBrowser.FenEngine.Core.RenderDeadline deadline = null)
+        public LayoutState(SKSize available, float cbWidth, float cbHeight, float vpWidth, float vpHeight, FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
             AvailableSize = available;
             ContainingBlockWidth = cbWidth;

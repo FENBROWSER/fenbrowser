@@ -35,6 +35,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             var direction = style.FlexDirection?.ToLowerInvariant() ?? "row";
             bool isRow = direction.Contains("row");
             bool isWrap = style.FlexWrap?.Contains("wrap") == true;
+            string alignItems = style.AlignItems?.ToLowerInvariant() ?? "stretch";
+            string justifyContent = style.JustifyContent?.ToLowerInvariant() ?? "flex-start";
 
             // 2. Collect Flex Items (In-flow children)
             // Anonymous text nodes should be wrapped in anonymous blocks? 
@@ -45,6 +47,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             // 3. Main/Cross Axis setup
             float containerMainSize = isRow ? container.Geometry.ContentBox.Width : container.Geometry.ContentBox.Height;
             float containerCrossSize = isRow ? container.Geometry.ContentBox.Height : container.Geometry.ContentBox.Width;
+            
+            // Robustness: Handle unconstrained sizes
+            if (float.IsInfinity(containerMainSize)) containerMainSize = isRow ? state.ViewportWidth : 1000f;
+            if (float.IsInfinity(containerCrossSize)) containerCrossSize = isRow ? 1000f : state.ViewportWidth;
+            if (float.IsNaN(containerMainSize)) containerMainSize = 0;
+            if (float.IsNaN(containerCrossSize)) containerCrossSize = 0;
             
             // If main size is effectively infinite or unconstrained (auto), we resolve it by content later.
             // But for 100vh body, it is constrained.
@@ -62,22 +70,21 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 // Reliability Gate: Check intra-frame deadline
                 state.Deadline?.Check();
 
-                // We delegate measurement to the child's context in a "Probe" mode?
-                // Or standard Layout?
-                // Construct a state with available space.
+                // SHRINK-TO-FIT: If we are in a row, don't just give the child the whole width.
+                // Give it "infinite" width or at least the available container width, 
+                // but let the child resolve its own intrinsic width.
                 
-                float childAvailableWidth = isRow 
-                    ? float.PositiveInfinity // Flex items shrink-to-fit in main axis initially? No, they have max-content
-                    : container.Geometry.ContentBox.Width; // Column: Stretches to width
+                float childAvailWidth = isRow ? float.PositiveInfinity : container.Geometry.ContentBox.Width;
+                float childAvailHeight = isRow ? container.Geometry.ContentBox.Height : float.PositiveInfinity;
 
-                if (style.AlignItems == "stretch" && !isRow)
-                    childAvailableWidth = container.Geometry.ContentBox.Width;
+                // Respect alignment: if stretching, we pass the constrained size.
+                if (!isRow && alignItems == "stretch") childAvailWidth = container.Geometry.ContentBox.Width;
+                if (isRow && alignItems == "stretch" && container.Geometry.ContentBox.Height > 0) childAvailHeight = container.Geometry.ContentBox.Height;
 
                 var childState = state.Clone();
-                childState.AvailableSize = new SKSize(
-                    isRow ? state.AvailableSize.Width : container.Geometry.ContentBox.Width, 
-                    isRow ? container.Geometry.ContentBox.Height : state.AvailableSize.Height // tentative
-                );
+                childState.AvailableSize = new SKSize(childAvailWidth, childAvailHeight);
+                childState.ContainingBlockWidth = container.Geometry.ContentBox.Width;
+                childState.ContainingBlockHeight = container.Geometry.ContentBox.Height;
 
                 // Run Layout on child to get its content size
                 FormattingContext.Resolve(item).Layout(item, childState);
@@ -128,12 +135,26 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                              
                              // Re-sync margin box size
                              LayoutBoxOps.ComputeBoxModelFromContent(item, item.Geometry.ContentBox.Width, item.Geometry.ContentBox.Height);
+
+                             // CRITICAL: Re-layout child so its internal content (IFC/BFC) knows about the new width
+                             var reState = state.Clone();
+                             reState.AvailableSize = new SKSize(item.Geometry.ContentBox.Width, item.Geometry.ContentBox.Height);
+                             reState.ContainingBlockWidth = item.Geometry.ContentBox.Width;
+                             reState.ContainingBlockHeight = item.Geometry.ContentBox.Height;
+                             FormattingContext.Resolve(item).Layout(item, reState);
                         }
                         else
                         {
                             // Column grow (height)
                              float newHeight = item.Geometry.ContentBox.Height + share;
                              LayoutBoxOps.ComputeBoxModelFromContent(item, item.Geometry.ContentBox.Width, newHeight);
+
+                             // Re-layout child
+                             var reState = state.Clone();
+                             reState.AvailableSize = new SKSize(item.Geometry.ContentBox.Width, newHeight);
+                             reState.ContainingBlockWidth = item.Geometry.ContentBox.Width;
+                             reState.ContainingBlockHeight = newHeight;
+                             FormattingContext.Resolve(item).Layout(item, reState);
                         }
                     }
                 }
@@ -155,7 +176,6 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             totalMainSize += gap * Math.Max(0, items.Count - 1);
 
             // Justify Content
-            string justifyContent = style.JustifyContent?.ToLowerInvariant() ?? "flex-start";
             float startOffset = 0;
             float itemStepExtra = 0;
 
@@ -185,8 +205,6 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             currentMainPos = startOffset;
 
             // 7. Cross Axis Alignment (Align Items)
-            string alignItems = style.AlignItems?.ToLowerInvariant() ?? "stretch";
-
             float maxCrossSize = 0;
             foreach (var item in items)
             {
@@ -194,12 +212,22 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 maxCrossSize = Math.Max(maxCrossSize, itemCrossSize);
             }
 
+            float totalGap = gap * Math.Max(0, items.Count - 1);
+
             // If auto-height container, expand it to wrap lines (single line here)
-            if (isRow && container.Geometry.ContentBox.Height == 0) // Auto height
+            if (isRow && container.Geometry.ContentBox.Height <= 0) // Auto height or zeroed
             {
+                // Correct sum for vertical stacking in row? No, in row height is max child height.
                 container.Geometry.ContentBox = new SKRect(0, 0, container.Geometry.ContentBox.Width, maxCrossSize);
                 LayoutBoxOps.ComputeBoxModelFromContent(container, container.Geometry.ContentBox.Width, maxCrossSize);
                 containerCrossSize = maxCrossSize;
+            }
+            else if (!isRow && container.Geometry.ContentBox.Height <= 0) // Auto height Column
+            {
+                float totalColumnHeight = items.Sum(i => i.Geometry.MarginBox.Height) + totalGap;
+                container.Geometry.ContentBox = new SKRect(0, 0, container.Geometry.ContentBox.Width, totalColumnHeight);
+                LayoutBoxOps.ComputeBoxModelFromContent(container, container.Geometry.ContentBox.Width, totalColumnHeight);
+                containerMainSize = totalColumnHeight;
             }
 
             foreach (var item in items)
@@ -299,71 +327,5 @@ namespace FenBrowser.FenEngine.Layout.Contexts
     }
     
     // Helper to avoid code duplication with BlockContext for box sizing
-    public static class LayoutBoxOps
-    {
-        public static void ComputeBoxModelFromContent(LayoutBox box, float contentW, float contentH)
-        {
-            float x = (float)(box.Geometry.Padding.Left + box.Geometry.Border.Left);
-            float y = (float)(box.Geometry.Padding.Top + box.Geometry.Border.Top);
-            
-            // Re-center content box relative to border box top-left (0,0 of border box?)
-            // Wait, our convention:
-            // Geometry.ContentBox is rect (0, 0, w, h) ? No, positions are relative to Parent Content.
-            // But MarginBox encapsulates everything.
-            
-            // Let's stick to: ContentBox size is w, h.
-            // We set offsets implicitly when painting?
-            // No, the Layout engine logic usually sets ContentBox.Location relative to Parent Content.
-            
-            // For this helper, we just update the specific rect sizes based on Thickness,
-            // assuming the Location will be set by the layout parent loop (SetPosition).
-            
-            box.Geometry.ContentBox = new SKRect(0, 0, contentW, contentH);
-            
-            // Recalculate outer boxes relative to Content (0,0) - this is local coords
-            // NOTE: We rely on the renderer to apply offsets.
-            // But LayoutBox.Geometry needs correct dimensions for hit testing and parent measurement.
-            
-            var p = box.Geometry.Padding;
-            var b = box.Geometry.Border;
-            var m = box.Geometry.Margin;
-            
-            box.Geometry.PaddingBox = new SKRect(
-                (float)-p.Left, (float)-p.Top, 
-                contentW + (float)p.Right, contentH + (float)p.Bottom
-            );
-            
-            box.Geometry.BorderBox = new SKRect(
-                (float)(-p.Left - b.Left), (float)(-p.Top - b.Top),
-                contentW + (float)(p.Right + b.Right), contentH + (float)(p.Bottom + b.Bottom)
-            );
-            
-            box.Geometry.MarginBox = new SKRect(
-                (float)(-p.Left - b.Left - m.Left), (float)(-p.Top - b.Top - m.Top),
-                contentW + (float)(p.Right + b.Right + m.Right), contentH + (float)(p.Bottom + b.Bottom + m.Bottom)
-            );
-        }
-
-        public static void SetPosition(LayoutBox box, float x, float y)
-        {
-            // Move entire structure so MarginBox.TopLeft maps to x,y in Parent Content Space?
-            // No, usually x,y refers to BorderBox or MarginBox origin.
-            // Standard Flow: x,y is top-left of MarginBox.
-            
-            // Let's implement x,y as top-left of MarginBox
-            
-            var m = box.Geometry.Margin;
-            var b = box.Geometry.Border;
-            var p = box.Geometry.Padding;
-            
-            // Offset logic
-            float dx = x - box.Geometry.MarginBox.Left;
-            float dy = y - box.Geometry.MarginBox.Top;
-            
-            box.Geometry.MarginBox.Offset(dx, dy);
-            box.Geometry.BorderBox.Offset(dx, dy);
-            box.Geometry.PaddingBox.Offset(dx, dy);
-            box.Geometry.ContentBox.Offset(dx, dy);
-        }
-    }
+    // LayoutBoxOps moved to FenBrowser.FenEngine.Layout.Contexts.LayoutBoxOps.cs
 }

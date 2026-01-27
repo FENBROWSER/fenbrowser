@@ -3,6 +3,7 @@ using FenBrowser.Core.Dom;
 using SkiaSharp;
 using System;
 using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 // using FenBrowser.Core.Math; // Namespace moved to Core
 
 namespace FenBrowser.FenEngine.Rendering.UserAgent
@@ -140,7 +141,13 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
             if (tag.Length == 2 && tag[0] == 'H' && char.IsDigit(tag[1]))
             {
                 if (style == null) style = new CssComputed();
-                if (!style.FontSize.HasValue)
+                
+                // DEBUG LOG
+                bool isDefault = !style.FontSize.HasValue || Math.Abs(style.FontSize.Value - 16.0) < 0.1;
+                FenLogger.Debug($"[UA-DEBUG] Tag={tag} FontSize={(style.FontSize.HasValue ? style.FontSize.Value.ToString() : "null")} IsDefault={isDefault}", LogCategory.Rendering);
+
+                // FIX: Force apply if it's default 16px to override weak inheritance
+                if (isDefault)
                 {
                     double baseSize = tag switch
                     {

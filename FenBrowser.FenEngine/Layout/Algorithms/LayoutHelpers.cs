@@ -32,10 +32,31 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
 
         public static bool ShouldHide(Node node, CssComputed style)
         {
-            if (node is Element e && e.HasAttribute("hidden")) return true;
+            if (node is Element e)
+            {
+                if (e.HasAttribute("hidden")) return true;
+                
+                // Hide metadata/invisible tags - their children (including text) should not be rendered
+                string tag = e.TagName?.ToLowerInvariant() ?? "";
+                if (tag == "head" || tag == "script" || tag == "style" || tag == "template" || 
+                    tag == "link" || tag == "meta" || tag == "title" || tag == "noscript")
+                    return true;
+            }
+            else if (node is Text)
+            {
+                // Hide text nodes that are children of hidden elements
+                var parent = node.Parent as Element;
+                if (parent != null)
+                {
+                    string parentTag = parent.TagName?.ToLowerInvariant() ?? "";
+                    if (parentTag == "head" || parentTag == "script" || parentTag == "style" || 
+                        parentTag == "template" || parentTag == "noscript")
+                        return true;
+                }
+            }
+            
             if (style != null && style.Display == "none") return true;
-             // Check details/summary
-             // Logic simplified for refactor
+            
             return false;
         }
 

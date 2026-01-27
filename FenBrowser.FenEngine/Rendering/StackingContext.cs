@@ -23,7 +23,7 @@ namespace FenBrowser.FenEngine.Rendering
         {
             Root = root;
             var style = root.ComputedStyle;
-            if (style != null && int.TryParse(style.ZIndex, out int z)) ZIndex = z;
+            if (style != null && style.ZIndex.HasValue) ZIndex = style.ZIndex.Value;
             else ZIndex = 0; // Auto treats as 0 for stacking level
         }
 
@@ -41,7 +41,7 @@ namespace FenBrowser.FenEngine.Rendering
                 // Does this child establish a new Stacking Context?
                 // Rules: root, z-index != auto && positioned, opacity < 1, transform != none, etc.
                 bool isPositioned = child.ComputedStyle?.Position != "static";
-                bool hasZIndex = child.ComputedStyle?.ZIndex != "auto" && child.ComputedStyle?.ZIndex != null;
+                bool hasZIndex = child.ComputedStyle?.ZIndex != null;
                 bool isOpacity = child.ComputedStyle?.Opacity < 1.0f;
                 // Simplified check
                 
@@ -88,7 +88,11 @@ namespace FenBrowser.FenEngine.Rendering
             
             // 2. Negative Z
             ctx_NegativeZ.Sort((a,b) => a.ZIndex.CompareTo(b.ZIndex));
-            foreach(var c in NegativeZ) foreach(var b in c.GetPaintOrder()) yield return b;
+            foreach(var c in NegativeZ) 
+            {
+                yield return c.Root;
+                foreach(var b in c.GetPaintOrder()) yield return b;
+            }
             
             // 3. Block Level (Non-positioned)
             foreach(var b in BlockLevel) yield return b;

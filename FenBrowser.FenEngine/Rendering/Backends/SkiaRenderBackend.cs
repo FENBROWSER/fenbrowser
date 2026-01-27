@@ -242,7 +242,8 @@ namespace FenBrowser.FenEngine.Rendering.Backends
                 TextSize = glyphs.FontSize,
                 Typeface = glyphs.Typeface,
                 IsAntialias = true,
-                SubpixelText = true
+                SubpixelText = true,
+                LcdRenderText = true // ENABLED for ClearType-like rendering on Windows
             };
             
             // Draw as text blob for efficiency
@@ -272,7 +273,8 @@ namespace FenBrowser.FenEngine.Rendering.Backends
                 TextSize = fontSize,
                 Typeface = typeface ?? SKTypeface.Default,
                 IsAntialias = true,
-                SubpixelText = true
+                SubpixelText = true,
+                LcdRenderText = true // ENABLED for ClearType-like rendering on Windows
             };
             
             _canvas.DrawText(text, origin.X, origin.Y, paint);

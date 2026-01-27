@@ -335,6 +335,122 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         }
 
         #endregion
+
+        #region Scroll Anchoring
+
+        private class AnchorData
+        {
+            public Node Node { get; set; }
+            public float OffsetY { get; set; } // Distance from Scroll Top to Node Top
+        }
+
+        private readonly Dictionary<Element, AnchorData> _anchors = new();
+
+        /// <summary>
+        /// Selects a candidate node to anchor to before layout changes.
+        /// </summary>
+        public void SelectAnchor(Element container, Node rootContent, Func<Node, SKRect> getBox)
+        {
+            var state = GetScrollState(container);
+            // Viewport in Content Coordinates: [ScrollY, ScrollY + ViewportHeight]
+            var visibleRect = new SKRect(0, state.ScrollY, state.ViewportWidth, state.ScrollY + state.ViewportHeight);
+
+            // Find valid anchor: The first visible block-level element
+            var candidate = FindAnchorRecursive(rootContent, visibleRect, getBox);
+
+            if (candidate != null)
+            {
+                var box = getBox(candidate);
+                // Offset = Box.Top - ScrollY (Distance from visual top)
+                float offset = box.Top - state.ScrollY;
+                
+                _anchors[container] = new AnchorData { Node = candidate, OffsetY = offset };
+                FenLogger.Debug($"[ScrollManager] Selected Anchor: {candidate.GetType().Name} (Tag: {(candidate as Element)?.TagName}) @ Offset {offset}", LogCategory.Rendering);
+            }
+            else
+            {
+                _anchors.Remove(container);
+            }
+        }
+
+        private Node FindAnchorRecursive(Node node, SKRect visibleRect, Func<Node, SKRect> getBox)
+        {
+            if (node == null) return null;
+
+            // Check self
+            var box = getBox(node);
+            if (!box.IsEmpty)
+            {
+                // Must be partially visible
+                if (box.Bottom > visibleRect.Top && box.Top < visibleRect.Bottom)
+                {
+                    // Heuristic: Prefer Elements / Text with actual content
+                    if (node is Element || (node is Text t && !string.IsNullOrWhiteSpace(t.Data)))
+                    {
+                        // Found a candidate? 
+                        // TODO: Refine heuristic (e.g. skip massive containers, prefer leaf nodes or headers)
+                        // For now, take first match (DFS Pre-order). 
+                        // Actually, we want the top-most visible one. DFS pre-order does that efficiently.
+                        if (node is Element) return node;
+                        // If text, return parent? Or text itself if getBox supports it.
+                        return node;
+                    }
+                }
+            }
+
+            // Recurse
+            if (node.Children != null)
+            {
+                foreach (var child in node.Children)
+                {
+                    var result = FindAnchorRecursive(child, visibleRect, getBox);
+                    if (result != null) return result;
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Adjusts scroll position after layout to keep the anchor node stable.
+        /// </summary>
+        public void AdjustScroll(Element container, Func<Node, SKRect> getBox)
+        {
+            if (!_anchors.TryGetValue(container, out var anchorRef)) return;
+            
+            // Validate anchor still exists
+            // (Node references persist across layout passes)
+            
+            var newBox = getBox(anchorRef.Node);
+            if (newBox.IsEmpty)
+            {
+                // Anchor lost or became invisible - clear it
+                _anchors.Remove(container);
+                return;
+            }
+
+            // Calculate expected scroll position to maintain visual offset
+            // NewScrollY = NewBox.Top - OldOffset
+            float targetScrollY = newBox.Top - anchorRef.OffsetY;
+            
+            var state = GetScrollState(container);
+            float currentScrollY = state.ScrollY;
+
+            // If diff is significant, adjust
+            if (Math.Abs(targetScrollY - currentScrollY) > 0.5f)
+            {
+                float diff = targetScrollY - currentScrollY;
+                FenLogger.Debug($"[ScrollManager] Adjusting Scroll by {diff}px (Anchor moved from {anchorRef.Node.GetHashCode()})", LogCategory.Rendering);
+                
+                // Update state directly without clamping immediately? 
+                // Clamping happens in SetScrollPosition.
+                SetScrollPosition(container, state.ScrollX, targetScrollY);
+            }
+            
+            // Clean up
+            _anchors.Remove(container);
+        }
+
+        #endregion
     }
 
     /// <summary>

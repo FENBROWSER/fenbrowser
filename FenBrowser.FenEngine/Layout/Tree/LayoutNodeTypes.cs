@@ -28,10 +28,8 @@ namespace FenBrowser.FenEngine.Layout.Tree
     /// </summary>
     public class AnonymousBlockBox : BlockBox
     {
-        public AnonymousBlockBox() : base(null, null) 
+        public AnonymousBlockBox(CssComputed style = null) : base(null, style) 
         {
-            // Anonymous boxes typically inherit styles from parent, 
-            // but we'll handle style resolution in the builder/fixup phase.
         }
     }
 
@@ -41,7 +39,19 @@ namespace FenBrowser.FenEngine.Layout.Tree
     /// </summary>
     public class TextLayoutBox : LayoutBox
     {
-        public string TextContent => (SourceNode as Text)?.Data ?? "";
+        public int StartOffset { get; set; } = 0;
+        public int Length { get; set; } = -1;
+
+        public string TextContent 
+        {
+            get 
+            {
+                string full = (SourceNode as Text)?.Data ?? "";
+                if (Length < 0) return full.Substring(Math.Min(full.Length, StartOffset));
+                int len = Math.Min(Length, full.Length - StartOffset);
+                return full.Substring(StartOffset, Math.Max(0, len));
+            }
+        }
 
         public TextLayoutBox(Text sourceNode, CssComputed style) : base(sourceNode, style) { }
         

@@ -196,6 +196,7 @@ namespace FenBrowser.FenEngine.Rendering
             bool createsStackingContext = DetermineCreatesStackingContext(style);
             int zIndex = style?.ZIndex ?? 0;
 
+            /*
             if (FenBrowser.Core.Logging.DebugConfig.LogPaintCommands && depth < 20)
             {
                  var logEl = node as Element;
@@ -208,6 +209,7 @@ namespace FenBrowser.FenEngine.Rendering
                      global::FenBrowser.Core.FenLogger.Log($"[PAINT-NODE] {new string(' ', depth)}{(node as Element)?.TagName} {scInfo}{clipInfo}{visInfo} Rect={box.BorderBox}", LogCategory.Paint);
                  }
             }
+            */
             
             // Build paint nodes for this element
             // VISIBILITY CHECK: If visibility is hidden, we do NOT generate visual paint nodes for this element
@@ -530,6 +532,17 @@ namespace FenBrowser.FenEngine.Rendering
             bool isFocused = elemNode != null && ElementStateManager.Instance.IsFocused(elemNode);
             bool isHovered = elemNode != null && ElementStateManager.Instance.IsHovered(elemNode);
             
+            // CRITICAL FIX: Disable focus ring for root elements (HTML/BODY) to prevent "Blue Edge" 
+            if (elemNode != null)
+            {
+                string tag = elemNode.Tag?.ToUpperInvariant();
+                // Prevent focus ring on root document/body which causes persistent blue borders
+                if (tag == "HTML" || tag == "BODY")
+                {
+                    isFocused = false;
+                }
+            }
+            
             // 0. Shadow (below background)
             var shadowNode = BuildBoxShadowNode(node, bounds, style, box);
             if (shadowNode != null) nodes.Add(shadowNode);
@@ -546,6 +559,8 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 // Standard Block/Atomic/Replaced Behavior
 
+            if (node is Element || node is PseudoElement)
+            {
                 // 1. Background
                 var bgNode = BuildBackgroundNode(node, box, style, isFocused, isHovered);
                 if (bgNode != null) nodes.Add(bgNode);
@@ -556,6 +571,7 @@ namespace FenBrowser.FenEngine.Rendering
                 // 2. Border
                 var borderNode = BuildBorderNode(node, box, style, isFocused, isHovered);
                 if (borderNode != null) nodes.Add(borderNode);
+            }
             }
             
             // 3. Content (text or image)
@@ -573,7 +589,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 if (tagUpper.Contains("SVG"))
                 {
-                     global::FenBrowser.Core.FenLogger.Debug($"[SVG-CANDIDATE] Tag={elem.Tag} TagUpper={tagUpper}", FenBrowser.Core.Logging.LogCategory.Rendering);
+                     global::FenBrowser.Core.FenLogger.Debug($"[SVG-CANDIDATE] <{elem.Tag}> id={elem.GetAttribute("id")} class={elem.GetAttribute("class")} src={elem.GetAttribute("src")}", FenBrowser.Core.Logging.LogCategory.Rendering);
                 }
                 if (IsImageElement(elem) || tagUpper == "SVG" || tagUpper.EndsWith(":SVG")) // Handle namespace?
                 {
@@ -1496,7 +1512,11 @@ namespace FenBrowser.FenEngine.Rendering
                 displayText = displayText.Replace("&#10003;", "✔")
                                          .Replace("&#x2713;", "✔")
                                          .Replace("&#10004;", "✔")
-                                         .Replace("&#x2714;", "✔");
+                                         .Replace("&#x2714;", "✔")
+                                         .Replace("&#10007;", "✘")
+                                         .Replace("&#10008;", "✘")
+                                         .Replace("&#x2717;", "✘")
+                                         .Replace("&#x2718;", "✘");
             }
             if (displayText.Contains("&amp;")) displayText = displayText.Replace("&amp;", "&");
             
@@ -2350,6 +2370,12 @@ namespace FenBrowser.FenEngine.Rendering
             // Only for Elements
             if (!(node is Element elem)) return null;
 
+            string tag = elem.TagName;
+            string id = elem.GetAttribute("id") ?? "";
+            string type = style?.ListStyleType ?? "disc";
+
+            global::FenBrowser.Core.FenLogger.Info($"[MARKER-BUILD] <{tag}#{id}> Type={type} Display={style?.Display}", global::FenBrowser.Core.Logging.LogCategory.Rendering);
+
             string listStyleType = style?.ListStyleType ?? "disc"; // Default to disc
             string listStylePosition = style?.ListStylePosition ?? "outside";
             
@@ -2474,19 +2500,18 @@ namespace FenBrowser.FenEngine.Rendering
             if (listStylePosition == "inside")
             {
                 // Inside: Render as inline text at start of content
-                // Actually, real browsers just indent the first line. 
-                // Since our layout didn't reserve space for "inside", this will draw OVER content.
-                // A proper implementation requires LayoutEngine support.
-                // For now, let's treat it same as outside but shifted right? 
-                // Or just shifted slightly left of content.
-                x = box.ContentBox.Left - markerWidth - 8; 
+                x = box.ContentBox.Left + 4; // Shift inside slightly
             }
             else
             {
                 // Outside: Render to the left of the border box
-                // Default margin is 40px padding-left on UL/OL.
-                // Marker typically sits ~20px left of content or right-aligned in that gutter.
-                x = box.ContentBox.Left - markerWidth - 8; 
+                // Ensure it's offset from the content box far enough to be visible.
+                // If ContentBox.Left is small (e.g. 0), we must ensure it's not off-screen.
+                float desiredX = box.ContentBox.Left - markerWidth - 14;
+                x = Math.Max(4, desiredX); // Safety: at least 4px from left edge
+                
+                // If we had to push it inside, shift the Y slightly to avoid overlap if absolute
+                if (x > desiredX) { /* Keep original Y */ }
             }
             
             return new TextPaintNode

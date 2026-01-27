@@ -18,7 +18,12 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
         public int Depth { get; init; }
         public MinimalLayoutComputer Computer { get; init; }
         public Node FallbackNode { get; init; } // For pseudo-elements or specific cases where Node is not the only source
+        public List<FloatExclusion> Exclusions { get; init; } // Active floats to clear against
         
+        public bool ShrinkToFit { get; init; } // Added for Flex/Grid items needing intrinsic sizing logic
+        
+        public FenBrowser.Core.Deadlines.FrameDeadline Deadline { get; init; } // Added for Preemption
+
         // Factory for common use
         public LayoutContext WithSize(SKSize newSize)
         {
@@ -28,7 +33,9 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
                  AvailableSize = newSize,
                  Depth = this.Depth,
                  Computer = this.Computer,
-                 FallbackNode = this.FallbackNode
+                 FallbackNode = this.FallbackNode,
+                 Exclusions = this.Exclusions,
+                 Deadline = this.Deadline
              };
         }
     }
