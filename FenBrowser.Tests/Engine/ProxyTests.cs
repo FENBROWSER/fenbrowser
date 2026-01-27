@@ -23,7 +23,7 @@ namespace FenBrowser.Tests.Engine
             _context.ExecuteFunction = (fn, args) =>
             {
                 var interpreter = new Interpreter();
-                return interpreter.ApplyFunction(fn, new System.Collections.Generic.List<IValue>(args), _context);
+                return interpreter.ApplyFunction(fn, args.ToList(), _context);
             };
             
             // Manually register APIs as InitRuntime is internal to JavaScriptEngine
@@ -31,7 +31,7 @@ namespace FenBrowser.Tests.Engine
             _runtime.SetGlobal("Reflect", FenValue.FromObject(ReflectAPI.CreateReflectObject()));
         }
 
-        private IValue Evaluate(string code)
+        private FenValue Evaluate(string code)
         {
             var lexer = new Lexer(code);
             var parser = new Parser(lexer);

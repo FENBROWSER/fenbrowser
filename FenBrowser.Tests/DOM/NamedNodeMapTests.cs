@@ -55,7 +55,7 @@ namespace FenBrowser.Tests.DOM
             var attributes = _wrapper.Get("attributes", _context).AsObject();
             var getItem = attributes.Get("getNamedItem", _context).AsFunction();
             
-            var result = getItem.Invoke(new IValue[] { FenValue.FromString("id") }, _context);
+            var result = getItem.Invoke(new FenValue[] { FenValue.FromString("id") }, _context);
             
             Assert.True(result.IsObject);
             var attrWrapper = result.AsObject() as AttrWrapper;
@@ -72,8 +72,8 @@ namespace FenBrowser.Tests.DOM
             
             // Note: order is not guaranteed by spec but commonly implementation dependent
             // Our implementation uses List<Attr>, insertion order likely preserved
-            var result0 = itemMethod.Invoke(new IValue[] { FenValue.FromNumber(0) }, _context);
-            var result1 = itemMethod.Invoke(new IValue[] { FenValue.FromNumber(1) }, _context);
+            var result0 = itemMethod.Invoke(new FenValue[] { FenValue.FromNumber(0) }, _context);
+            var result1 = itemMethod.Invoke(new FenValue[] { FenValue.FromNumber(1) }, _context);
             
             Assert.True(result0.IsObject);
             Assert.True(result1.IsObject);
@@ -83,7 +83,7 @@ namespace FenBrowser.Tests.DOM
         public void TestGetAttributeNode()
         {
             var method = _wrapper.Get("getAttributeNode", _context).AsFunction();
-            var result = method.Invoke(new IValue[] { FenValue.FromString("data-custom") }, _context);
+            var result = method.Invoke(new FenValue[] { FenValue.FromString("data-custom") }, _context);
             
             Assert.True(result.IsObject);
             var attrWrapper = result.AsObject() as AttrWrapper;
@@ -98,7 +98,7 @@ namespace FenBrowser.Tests.DOM
              var attrWrapper = new AttrWrapper(newAttr, _context);
              
              var method = _wrapper.Get("setAttributeNode", _context).AsFunction();
-             method.Invoke(new IValue[] { FenValue.FromObject(attrWrapper) }, _context);
+             method.Invoke(new FenValue[] { FenValue.FromObject(attrWrapper) }, _context);
              
              Assert.Equal("hover-text", _root.GetAttribute("title"));
              Assert.Equal(3, _root.NamedAttributes.Length);

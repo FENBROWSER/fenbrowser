@@ -80,19 +80,19 @@ namespace FenBrowser.Tests.Workers
             response.Set("status", FenValue.FromNumber(200));
             var promise = CreatePromise(FenValue.FromObject(response));
             var respondWithFunc = evt.Get("respondWith").AsFunction();
-            respondWithFunc.Invoke(new IValue[] { promise }, null);
+            respondWithFunc.Invoke(new FenValue[] { promise }, null);
             
             Assert.NotNull(evt.RespondWithPromise);
         }
         
-        private IValue CreatePromise(IValue result)
+        private FenValue CreatePromise(FenValue result)
         {
             var p = new FenObject();
             p.Set("__state", FenValue.FromString("fulfilled"));
             p.Set("__result", result);
             p.Set("then", FenValue.FromFunction(new FenFunction("then", (a,t) => 
             {
-               if(a.Length>0) a[0].AsFunction().Invoke(new[]{result}, null);
+                if(a.Length>0) a[0].AsFunction().Invoke(new FenValue[]{result}, null);
                return FenValue.Undefined;
             })));
             return FenValue.FromObject(p);

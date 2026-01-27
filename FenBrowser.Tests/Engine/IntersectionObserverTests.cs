@@ -148,13 +148,16 @@ namespace FenBrowser.Tests.Engine
                 if (args.Length > 0 && args[0].IsObject)
                 {
                     var entries = args[0].AsObject();
-                    var length = entries.Get("length")?.ToNumber() ?? 0;
+                    var lenVal = entries.Get("length");
+                    var length = (int)lenVal.AsNumber();
                     for (int i = 0; i < length; i++)
                     {
-                        var entry = entries.Get(i.ToString())?.AsObject();
+                        var entryVal = entries.Get(i.ToString());
+                        var entry = entryVal.AsObject();
                         if (entry != null)
                         {
-                            var isIntersecting = entry.Get("isIntersecting")?.ToBoolean() ?? false;
+                            var intersectVal = entry.Get("isIntersecting");
+                            var isIntersecting = intersectVal.AsBoolean();
                             if (isIntersecting) intersectingEntriesReceived++;
                         }
                     }

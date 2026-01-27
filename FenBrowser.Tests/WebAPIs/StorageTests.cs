@@ -30,14 +30,14 @@ namespace FenBrowser.Tests.WebAPIs
             var storage = StorageApi.CreateLocalStorage(() => origin);
 
             // setItem
-            storage.Get("setItem").AsFunction().Invoke(new IValue[] 
+            storage.Get("setItem").AsFunction().Invoke(new FenValue[] 
             { 
                 FenValue.FromString("key1"), 
                 FenValue.FromString("value1") 
             }, null);
 
             // getItem
-            var result = storage.Get("getItem").AsFunction().Invoke(new IValue[] 
+            var result = storage.Get("getItem").AsFunction().Invoke(new FenValue[] 
             { 
                 FenValue.FromString("key1") 
             }, null);
@@ -55,14 +55,14 @@ namespace FenBrowser.Tests.WebAPIs
             var storage2 = StorageApi.CreateLocalStorage(() => origin2);
 
             // set in storage1
-            storage1.Get("setItem").AsFunction().Invoke(new IValue[] 
+            storage1.Get("setItem").AsFunction().Invoke(new FenValue[] 
             { 
                 FenValue.FromString("foo"), 
                 FenValue.FromString("bar") 
             }, null);
 
             // check storage2
-            var result = storage2.Get("getItem").AsFunction().Invoke(new IValue[] 
+            var result = storage2.Get("getItem").AsFunction().Invoke(new FenValue[] 
             { 
                 FenValue.FromString("foo") 
             }, null);
@@ -77,7 +77,7 @@ namespace FenBrowser.Tests.WebAPIs
             var storage = StorageApi.CreateLocalStorage(() => origin);
 
             // setItem
-            storage.Get("setItem").AsFunction().Invoke(new IValue[] 
+            storage.Get("setItem").AsFunction().Invoke(new FenValue[] 
             { 
                 FenValue.FromString("persistKey"), 
                 FenValue.FromString("persistVal") 
@@ -96,7 +96,7 @@ namespace FenBrowser.Tests.WebAPIs
             // _testPath is still set, Load() called in Reset should pick up file.
 
             var storageNew = StorageApi.CreateLocalStorage(() => origin);
-            var result = storageNew.Get("getItem").AsFunction().Invoke(new IValue[] 
+            var result = storageNew.Get("getItem").AsFunction().Invoke(new FenValue[] 
             { 
                 FenValue.FromString("persistKey") 
             }, null);
@@ -111,14 +111,14 @@ namespace FenBrowser.Tests.WebAPIs
             var storage2 = StorageApi.CreateSessionStorage();
 
             // set in storage1
-            storage1.Get("setItem").AsFunction().Invoke(new IValue[] 
+            storage1.Get("setItem").AsFunction().Invoke(new FenValue[] 
             { 
                 FenValue.FromString("sessionData"), 
                 FenValue.FromString("123") 
             }, null);
 
             // check storage2
-            var result = storage2.Get("getItem").AsFunction().Invoke(new IValue[] 
+            var result = storage2.Get("getItem").AsFunction().Invoke(new FenValue[] 
             { 
                 FenValue.FromString("sessionData") 
             }, null);
@@ -134,7 +134,7 @@ namespace FenBrowser.Tests.WebAPIs
             Assert.Equal(0, storage.Get("length").ToNumber());
 
             // Add item
-            storage.Get("setItem").AsFunction().Invoke(new IValue[] 
+            storage.Get("setItem").AsFunction().Invoke(new FenValue[] 
             { 
                 FenValue.FromString("a"), 
                 FenValue.FromString("1") 
@@ -143,7 +143,7 @@ namespace FenBrowser.Tests.WebAPIs
             Assert.Equal(1, storage.Get("length").ToNumber());
 
             // Clear
-            storage.Get("clear").AsFunction().Invoke(new IValue[] {}, null);
+            storage.Get("clear").AsFunction().Invoke(new FenValue[] {}, null);
             Assert.Equal(0, storage.Get("length").ToNumber());
         }
     }

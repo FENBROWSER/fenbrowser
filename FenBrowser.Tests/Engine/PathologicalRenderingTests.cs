@@ -53,13 +53,16 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
-        public void TestLayoutDeadlineExceeded()
+        public async Task TestLayoutDeadlineExceeded()
         {
             // Arrange: A very short deadline
-            var deadline = new RenderDeadline(0.001, "Test"); // 0.001ms = effectively immediate
+            var deadline = new FenBrowser.Core.Deadlines.FrameDeadline(0.001, "Test"); // 0.001ms = effectively immediate
 
             // Act & Assert: The Check() method should throw immediately
-            Assert.Throws<DeadlineExceededException>(() => deadline.Check());
+            await Assert.ThrowsAsync<FenBrowser.Core.Deadlines.DeadlineExceededException>(async () => 
+            {
+                deadline.Check();
+            });
         }
     }
 }
