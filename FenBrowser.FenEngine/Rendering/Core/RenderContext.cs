@@ -6,12 +6,18 @@ using FenBrowser.Core;
 using FenBrowser.FenEngine.Rendering;
 using SkiaSharp;
 
+using FenBrowser.FenEngine.Rendering;
+
+using FenBrowser.FenEngine.Layout; // Required for BoxModel
+
 namespace FenBrowser.FenEngine.Rendering.Core
 {
     public class RenderContext
     {
         public Dictionary<Node, CssComputed> Styles { get; set; } = new Dictionary<Node, CssComputed>();
-        public Dictionary<Node, RenderBox> Boxes { get; set; } = new Dictionary<Node, RenderBox>();
+        public Dictionary<Node, BoxModel> Boxes { get; set; } = new Dictionary<Node, BoxModel>();
+        // Added for Interaction Engine
+        public IReadOnlyList<Rendering.PaintNodeBase> PaintTreeRoots { get; set; }
         public float ViewportHeight { get; set; }
         public float ViewportWidth { get; set; }
         public SKRect Viewport { get; set; }

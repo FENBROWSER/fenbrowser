@@ -14,7 +14,8 @@ using FenBrowser.FenEngine.DevTools;
 using FenBrowser.FenEngine.Layout;
 using SkiaSharp;
 
-using FenBrowser.FenEngine.Core.Interfaces; // For IHistoryBridge
+using FenBrowser.FenEngine.Core.Interfaces;
+using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType; // For IHistoryBridge
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -303,6 +304,16 @@ namespace FenBrowser.FenEngine.Rendering
                 try
                 {
                     var headers = req.Headers.ToDictionary(h => h.Key, h => string.Join(", ", h.Value));
+                    
+                    // [Compliance] Log Compliance Data
+                    try 
+                    {
+                         var dump = new Dictionary<string, string>(headers);
+                         if (!dump.ContainsKey("User-Agent") && req.Headers.UserAgent != null) dump["User-Agent"] = req.Headers.UserAgent.ToString();
+                         FenLogger.Error($"[Compliance] HTTP Request: {req.Method} {req.RequestUri} Headers: {JsonSerializer.Serialize(dump)}", LogCategory.Network);
+                    }
+                    catch { }
+
                     // Pass the ResourceManager's ID to DevToolsCore so we can correlate completion
                     DevToolsCore.Instance.RecordRequest(req.RequestUri.ToString(), req.Method.ToString(), headers, id);
                 }
@@ -394,6 +405,7 @@ namespace FenBrowser.FenEngine.Rendering
             ResourceManager.LogSink = (msg) =>
             {
                 Console.WriteLine(msg);
+                try { FenLogger.Debug(msg, LogCategory.Network); } catch { }
                 try { ConsoleMessage?.Invoke(msg); } catch { }
             };
             _engine.ScriptFetcher = (u) => 
@@ -1554,9 +1566,9 @@ pre {{
             var rawResult = _engine.Evaluate(wrappedScript);
             try { FenLogger.Debug($"[ExecuteScript] Raw result type: {rawResult?.GetType().Name}", LogCategory.JavaScript); } catch { }
             
-            if (rawResult is FenBrowser.FenEngine.Core.ErrorValue ev)
+            if (rawResult is FenBrowser.FenEngine.Core.FenValue val && val.Type == JsValueType.Error)
             {
-                throw new Exception(ev.Message);
+                throw new Exception(val.AsError());
             }
 
             // Convert FenValue to native .NET type for proper JSON serialization
@@ -1729,9 +1741,9 @@ pre {{
             {
                 var execResult = _engine.Evaluate(wrappedScript);
                 try { FenLogger.Debug($"[AsyncScript] Script executed, result type: {execResult?.GetType().Name ?? "null"}", LogCategory.JavaScript); } catch { }
-                if (execResult is FenBrowser.FenEngine.Core.ErrorValue ev)
+                if (execResult is FenBrowser.FenEngine.Core.FenValue fv && (int)fv.Type == 10)
                 {
-                    try { FenLogger.Debug($"[AsyncScript] Script error: {ev.Message}", LogCategory.Errors); } catch { }
+                    try { FenLogger.Debug($"[AsyncScript] Script error: {fv.AsError()}", LogCategory.Errors); } catch { }
                 }
             }
             catch (Exception ex)
@@ -2130,11 +2142,28 @@ pre {{
             }
             else
             {
-                // Clicking elsewhere clears focus
-                _focusedElement = null;
-                ElementStateManager.Instance.SetFocusedElement(null);
+                // Check if element is focusable
+                bool isFocusable = false;
+                if (tag == "a" && !string.IsNullOrEmpty(element.GetAttribute("href"))) isFocusable = true;
+                else if (tag == "input" || tag == "textarea" || tag == "button" || tag == "select") isFocusable = true;
+                else if (!string.IsNullOrEmpty(element.GetAttribute("tabindex"))) isFocusable = true;
+                else if (element.GetAttribute("contenteditable") == "true") isFocusable = true;
+
+                if (isFocusable)
+                {
+                    _focusedElement = element;
+                    ElementStateManager.Instance.SetFocusedElement(element);
+                    try { FenLogger.Debug($"[BrowserApi] Element focused: {element.Tag} (ID: {element.GetAttribute("id")})", LogCategory.General); } catch {}
+                }
+                else
+                {
+                    // Clicking non-focusable element clears focus (unless we want to keep previous focus? Standard behavior is blur usually)
+                    // Actually, clicking a div usually blurs the active input.
+                    _focusedElement = null;
+                    ElementStateManager.Instance.SetFocusedElement(null);
+                }
                 
-                // Trigger repaint to clear focus ring
+                // Trigger repaint 
                 try { RepaintReady?.Invoke(this, _engine.GetActiveDom()); } catch {}
             }
         }
