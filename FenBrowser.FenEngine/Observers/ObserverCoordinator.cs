@@ -337,7 +337,7 @@ namespace FenBrowser.FenEngine.Observers
                     try
                     {
                         var fn = _callback.AsFunction();
-                        fn?.Invoke(new IValue[] { FenValue.FromObject(entriesArray) }, null);
+                        fn?.Invoke(new FenValue[] { FenValue.FromObject(entriesArray) }, null);
                     }
                     catch { /* Callback errors don't break observers */ }
                 });
@@ -507,7 +507,7 @@ namespace FenBrowser.FenEngine.Observers
                     {
                         var fn = _callback.AsFunction();
                         // Callback signature: (entries, observer) => void
-                        fn?.Invoke(new IValue[] { FenValue.FromObject(entriesArray) }, null);
+                        fn?.Invoke(new FenValue[] { FenValue.FromObject(entriesArray) }, null);
                     }
                     catch { /* Callback errors don't break observers */ }
                 });
