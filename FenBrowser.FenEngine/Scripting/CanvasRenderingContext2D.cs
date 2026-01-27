@@ -132,7 +132,7 @@ namespace FenBrowser.FenEngine.Scripting
 
         #region IObject Implementation
         
-        public IValue Get(string key, IExecutionContext context = null)
+        public FenValue Get(string key, IExecutionContext context = null)
         {
             switch (key)
             {
@@ -274,10 +274,14 @@ namespace FenBrowser.FenEngine.Scripting
                     if (args.Length >= 1 && args[0].IsObject)
                     {
                         var arr = args[0].AsObject();
-                        var len = (int)(arr?.Get("length")?.ToNumber() ?? 0);
+                        var lenVal = arr != null ? arr.Get("length") : FenValue.Undefined;
+                        var len = (int)(lenVal.IsNumber ? lenVal.ToNumber() : 0);
                         var dashes = new float[len];
                         for (int i = 0; i < len; i++)
-                            dashes[i] = (float)(arr?.Get(i.ToString())?.ToNumber() ?? 0);
+                        {
+                            var dashVal = arr != null ? arr.Get(i.ToString()) : FenValue.Undefined;
+                            dashes[i] = (float)(dashVal.IsNumber ? dashVal.ToNumber() : 0);
+                        }
                         setLineDash(dashes);
                     }
                 });
@@ -349,7 +353,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
         }
         
-        private IValue CreateMethod(string name, Action<IValue[]> action)
+        private FenValue CreateMethod(string name, Action<FenValue[]> action)
         {
             return FenValue.FromFunction(new FenFunction(name, (args, thisVal) => {
                 action(args);
@@ -357,7 +361,7 @@ namespace FenBrowser.FenEngine.Scripting
             }));
         }
 
-        public void Set(string key, IValue value, IExecutionContext context = null)
+        public void Set(string key, FenValue value, IExecutionContext context = null)
         {
             switch (key)
             {
@@ -403,11 +407,11 @@ namespace FenBrowser.FenEngine.Scripting
         {
             try
             {
-                if (_bitmap == null)
+                if (_bitmap  == null)
                 {
                     _bitmap = JavaScriptEngine.GetCanvasBitmap(_element);
                     
-                    if (_bitmap == null)
+                    if (_bitmap  == null)
                     {
                         var wStr = _element.Attr.ContainsKey("width") ? _element.Attr["width"] : "300";
                         var hStr = _element.Attr.ContainsKey("height") ? _element.Attr["height"] : "150";
@@ -427,7 +431,7 @@ namespace FenBrowser.FenEngine.Scripting
             // [MIGRATION] Removed Dispatcher.UIThread.Post. Executing synchronously on current thread (JS thread).
             // This is generally safe for offscreen canvas.
             EnsureSurface();
-            if (_bitmap == null) return;
+            if (_bitmap  == null) return;
 
             // Just draw to the bitmap
             using (var canvas = new SKCanvas(_bitmap))
@@ -949,7 +953,7 @@ namespace FenBrowser.FenEngine.Scripting
                 : SKShader.CreateRadialGradient(new SKPoint(_x0, _y0), _r1, colors, positions, SKShaderTileMode.Clamp);
         }
         
-        public IValue Get(string key, IExecutionContext context = null)
+        public FenValue Get(string key, IExecutionContext context = null)
         {
             if (key == "addColorStop")
             {
@@ -962,7 +966,7 @@ namespace FenBrowser.FenEngine.Scripting
             return FenValue.Undefined;
         }
         
-        public void Set(string key, IValue value, IExecutionContext context = null) { }
+        public void Set(string key, FenValue value, IExecutionContext context = null) { }
         public bool Has(string key, IExecutionContext context = null) => key == "addColorStop";
         public bool Delete(string key, IExecutionContext context = null) => false;
         public IEnumerable<string> Keys(IExecutionContext context = null) => new[] { "addColorStop" };
@@ -988,7 +992,7 @@ namespace FenBrowser.FenEngine.Scripting
             Data = new byte[width * height * 4]; // RGBA
         }
         
-        public IValue Get(string key, IExecutionContext context = null)
+        public FenValue Get(string key, IExecutionContext context = null)
         {
             switch (key)
             {
@@ -1004,7 +1008,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
         }
         
-        public void Set(string key, IValue value, IExecutionContext context = null) { }
+        public void Set(string key, FenValue value, IExecutionContext context = null) { }
         public bool Has(string key, IExecutionContext context = null) => key == "width" || key == "height" || key == "data";
         public bool Delete(string key, IExecutionContext context = null) => false;
         public IEnumerable<string> Keys(IExecutionContext context = null) => new[] { "width", "height", "data" };

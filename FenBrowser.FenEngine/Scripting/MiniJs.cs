@@ -80,7 +80,7 @@ namespace FenBrowser.FenEngine.Scripting.MiniJs
 
         public string AsString()
         {
-            if (_val == null)
+            if (_val  == null)
                 return "";
             return _val.ToString();
         }
@@ -166,7 +166,7 @@ namespace FenBrowser.FenEngine.Scripting.MiniJs
     {
         public static void InitEnvironment(Engine engine, System.Collections.Generic.Dictionary<string, JsValue> globals)
         {
-            if (engine == null || globals == null)
+            if (engine  == null || globals  == null)
                 return;
         }
     }

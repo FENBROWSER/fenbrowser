@@ -37,7 +37,7 @@ namespace FenBrowser.FenEngine.Scripting
 
         public JsZeroRuntime(JavaScriptEngine inner)
         {
-            if (inner == null) throw new ArgumentNullException("inner");
+            if (inner  == null) throw new ArgumentNullException("inner");
             _inner = inner;
         }
 

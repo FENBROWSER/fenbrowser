@@ -23,7 +23,7 @@ namespace FenBrowser.FenEngine.Scripting
 
         public Task ExecuteModuleTagAsync(Element node, Uri sourceUri, Uri baseUri)
         {
-            if (node == null) return Task.Delay(0);
+            if (node  == null) return Task.Delay(0);
             if (sourceUri != null)
             {
                 var key = sourceUri.AbsoluteUri;
@@ -59,14 +59,14 @@ namespace FenBrowser.FenEngine.Scripting
                 return;
             }
 
-            if (module == null || string.IsNullOrWhiteSpace(module.Source))
+            if (module  == null || string.IsNullOrWhiteSpace(module.Source))
                 return;
 
             var deps = CollectDependencies(module.Source);
             foreach (var dep in deps)
             {
                 var resolved = ResolveModuleUri(module.ModuleUri ?? module.BaseUri, dep);
-                if (resolved == null) continue;
+                if (resolved  == null) continue;
                 var depKey = resolved.AbsoluteUri;
                 await ExecuteModuleAsync(depKey, () => LoadModuleFromNetworkAsync(resolved, module.ModuleUri ?? module.BaseUri)).ConfigureAwait(false);
             }
@@ -87,7 +87,7 @@ namespace FenBrowser.FenEngine.Scripting
 
         private async Task<ModuleCode> LoadModuleFromNetworkAsync(Uri uri, Uri referer)
         {
-            if (uri == null) return null;
+            if (uri  == null) return null;
             string source = null;
             try
             {

@@ -18,6 +18,8 @@ using System.Reflection;
 using System.Globalization;
 using Math = System.Math;
 using FenBrowser.FenEngine.Core;
+using FenBrowser.FenEngine.Core.Interfaces;
+using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType; // Added for IExecutionContext
 using FenBrowser.FenEngine.Security;
 using SkiaSharp;
 using FenBrowser.FenEngine.DOM;
@@ -106,7 +108,7 @@ namespace FenBrowser.FenEngine.Scripting
             context.ExecuteFunction = (fn, args) => 
             {
                 var interpreter = new FenBrowser.FenEngine.Core.Interpreter();
-                return interpreter.ApplyFunction(fn, new System.Collections.Generic.List<FenBrowser.FenEngine.Core.Interfaces.IValue>(args), context);
+                return interpreter.ApplyFunction(fn, new System.Collections.Generic.List<FenBrowser.FenEngine.Core.FenValue>(args), context);
             };
             
             // Configure callbacks to run via EventLoop
@@ -139,7 +141,7 @@ namespace FenBrowser.FenEngine.Scripting
             _fenRuntime.OnConsoleMessage = msg => 
             {
                 FenLogger.Debug($"[JavaScriptEngine] Received console message from runtime: {msg}", LogCategory.JavaScript);
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[JSConsole] {msg}\n"); } catch {}
+                // Console messages are logged via FenLogger and passed to the host
                 try { _host?.Log(msg); } catch (Exception ex) { FenLogger.Error($"[JavaScriptEngine] Host log error: {ex}", LogCategory.JavaScript); }
             };
 
@@ -157,80 +159,69 @@ namespace FenBrowser.FenEngine.Scripting
             // Register Fetch API with lazy delegate resolution to support property injection after constructor
             FenBrowser.FenEngine.WebAPIs.FetchApi.Register(_fenRuntime.Context, async (req) => 
             {
-                 if (FetchHandler == null) throw new Exception("FetchHandler not configured on engine");
+                 if (FetchHandler  == null) throw new Exception("FetchHandler not configured on engine");
                  return await FetchHandler(req);
             });
         }
         
         // IDomBridge Implementation
-        public FenBrowser.FenEngine.Core.Interfaces.IValue GetElementById(string id)
+        public FenValue GetElementById(string id)
         {
-            if (_domRoot == null) return FenValue.Null;
+            if (_domRoot  == null) return FenValue.Null;
             var doc = new JsDocument(this, _domRoot);
             var result = doc.getElementById(id);
-            return result is FenBrowser.FenEngine.Core.Interfaces.IObject obj ? FenValue.FromObject(obj) : FenValue.Null;
+            return result is IObject obj ? FenValue.FromObject(obj) : FenValue.Null;
         }
 
-        public FenBrowser.FenEngine.Core.Interfaces.IValue QuerySelector(string selector)
+        public FenValue QuerySelector(string selector)
         {
-             if (_domRoot == null) return FenValue.Null;
+             if (_domRoot  == null) return FenValue.Null;
              var doc = new JsDocument(this, _domRoot);
              var result = doc.querySelector(selector);
-             return result is FenBrowser.FenEngine.Core.Interfaces.IObject obj ? FenValue.FromObject(obj) : FenValue.Null;
+             return result is IObject obj ? FenValue.FromObject(obj) : FenValue.Null;
         }
 
-        public void AddEventListener(string elementId, string eventName, FenBrowser.FenEngine.Core.Interfaces.IValue callback)
+        public void AddEventListener(string elementId, string eventName, FenValue callback)
         {
              var elVal = GetElementById(elementId);
              if (elVal.IsObject)
              {
                  AddEventListenerNative(
-                     new FenBrowser.FenEngine.Core.Interfaces.IValue[] { FenValue.FromString(eventName), callback },
-                     elVal.AsObject());
+                     new FenValue[] { FenValue.FromString(eventName), callback },
+                     elVal);
              }
         }
 
-        public FenBrowser.FenEngine.Core.Interfaces.IValue CreateElement(string tagName)
+        public FenValue CreateElement(string tagName)
         {
-            if (_domRoot == null) return FenValue.Null;
+            if (_domRoot  == null) return FenValue.Null;
             var doc = new JsDocument(this, _domRoot);
-            var el = doc.createElement(tagName);
+            var el = doc.createElement(tagName) as IObject;
             return el != null ? FenValue.FromObject(el) : FenValue.Null;
         }
 
-        public FenBrowser.FenEngine.Core.Interfaces.IValue CreateTextNode(string text)
+        public FenValue CreateTextNode(string text)
         {
-             // JsDomText needs to be wrapped or implement IObject. 
-             // Currently returning Null if not IObject, but we should fix JsDomText later.
-             // For now, let's try to assume we'll fix JsDomText to implement IObject or use a generic wrapper.
-             if (_domRoot == null) return FenValue.Null;
+             if (_domRoot  == null) return FenValue.Null;
              var doc = new JsDocument(this, _domRoot);
              var txt = doc.createTextNode(text);
-             // Ensure JsDomText implements IObject or wrap it?
-             // If JsDomText doesn't implement IObject, this will fail if we try to cast.
-             // But valid JS node must be an object.
-             if (txt is FenBrowser.FenEngine.Core.Interfaces.IObject obj) return FenValue.FromObject(obj);
+             if (txt is IObject obj) return FenValue.FromObject(obj);
              return FenValue.Null; 
         }
 
-        public void AppendChild(FenBrowser.FenEngine.Core.Interfaces.IValue parent, FenBrowser.FenEngine.Core.Interfaces.IValue child)
+        public void AppendChild(FenValue parent, FenValue child)
         {
             if (parent.IsObject && child.IsObject)
             {
                 var pObj = parent.AsObject();
-                // Check if it's JsDomElement or JsDocument (body)
                 if (pObj is JsDomElement el)
                 {
-                     // Unwrap child
-                     object childNative = child.AsObject();
-                     if (childNative is FenObject fo) childNative = fo.NativeObject; // Unwrap wrapper if needed?
-                     // Actually JsDomElement.appendChild takes 'object child' and casts to JsDomNodeBase
                      el.appendChild(child.AsObject());
                 }
             }
         }
 
-        public void SetAttribute(FenBrowser.FenEngine.Core.Interfaces.IValue element, string name, string value)
+        public void SetAttribute(FenValue element, string name, string value)
         {
             if (element.IsObject)
             {
@@ -256,7 +247,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
         }
 
-        public FenValue AddEventListenerNative(FenBrowser.FenEngine.Core.Interfaces.IValue[] args, object thisVal)
+        public FenValue AddEventListenerNative(FenValue[] args, FenValue thisVal)
         {
             if (args.Length < 2) return FenValue.Undefined;
             var evt = args[0].ToString();
@@ -271,15 +262,20 @@ namespace FenBrowser.FenEngine.Scripting
                 // simplified: ignore for now, standard requires function or object with handleEvent
             }
             
-            if (callback == null) return FenValue.Undefined;
+            if (callback  == null) return FenValue.Undefined;
 
-            try { FenLogger.Debug($"[JS_API] addEventListener called for '{evt}' on {thisVal?.GetType().Name}", LogCategory.JavaScript); } catch { }
+            try { FenLogger.Debug($"[JS_API] addEventListener called for '{evt}' on {thisVal.ToString()}", LogCategory.JavaScript); } catch { }
 
             // Normalize target key
             // If thisVal is a wrapper (JsDomElement), key by the underlying Node to ensure identity persistence
-            object key = thisVal;
-            if (thisVal is JsDomElement elWrapper) key = elWrapper._node;
-            else if (thisVal is JsDomText textWrapper) key = textWrapper._node;
+            object key = thisVal.IsObject ? thisVal.AsObject() : null;
+            if (thisVal.IsObject)
+            {
+                 var obj = thisVal.AsObject();
+                 if (obj is JsDomElement elWrapper) key = elWrapper._node;
+                 else if (obj is JsDomText textWrapper) key = textWrapper._node;
+                 else key = obj;
+            }
 
             if (key != null)
             {
@@ -310,7 +306,7 @@ namespace FenBrowser.FenEngine.Scripting
         /// </summary>
         public void DispatchEvent(object target, string eventName, FenObject eventArgs = null)
         {
-            if (target == null || string.IsNullOrEmpty(eventName)) return;
+            if (target  == null || string.IsNullOrEmpty(eventName)) return;
 
             // Normalize key
             object key = target;
@@ -330,7 +326,7 @@ namespace FenBrowser.FenEngine.Scripting
                 // If 'thisContext' is not IValue/FenObject/JsObject, the interpreter might complain.
                 // JsDomElement implements IObject.
 
-                var args = new FenBrowser.FenEngine.Core.Interfaces.IValue[] {
+                var args = new FenValue[] {
                     eventArgs != null ? FenValue.FromObject(eventArgs) : FenValue.Undefined
                 };
 
@@ -361,7 +357,7 @@ namespace FenBrowser.FenEngine.Scripting
         /// </summary>
         public void DispatchEventForElement(Element el, string eventName)
         {
-            if (el == null) return;
+            if (el  == null) return;
             
             try 
             {
@@ -440,10 +436,35 @@ namespace FenBrowser.FenEngine.Scripting
             var docVal = FenValue.FromObject(docWrapper);
             _fenRuntime.SetGlobal("document", docVal);
             winObj.Set("document", docVal);
+
+            // [Compliance] Window Dimensions
+            winObj.Set("innerWidth", FenValue.FromFunction(new FenFunction("innerWidth", (args, ctx) => FenValue.FromNumber(WindowWidth))));
+            winObj.Set("innerHeight", FenValue.FromFunction(new FenFunction("innerHeight", (args, ctx) => FenValue.FromNumber(WindowHeight))));
+            winObj.Set("outerWidth", FenValue.FromFunction(new FenFunction("outerWidth", (args, ctx) => FenValue.FromNumber(WindowWidth)))); // Simplified
+            winObj.Set("outerHeight", FenValue.FromFunction(new FenFunction("outerHeight", (args, ctx) => FenValue.FromNumber(WindowHeight))));
+            winObj.Set("screenX", FenValue.FromNumber(0));
+            winObj.Set("screenY", FenValue.FromNumber(0));
             
+            // [Compliance] Screen Object
+            var screenObj = new FenBrowser.FenEngine.Core.FenObject();
+            screenObj.Set("width", FenValue.FromNumber(ScreenWidth));
+            screenObj.Set("height", FenValue.FromNumber(ScreenHeight));
+            screenObj.Set("availWidth", FenValue.FromNumber(ScreenWidth));
+            screenObj.Set("availHeight", FenValue.FromNumber(ScreenHeight - 40)); // Taskbar?
+            screenObj.Set("colorDepth", FenValue.FromNumber(24));
+            screenObj.Set("pixelDepth", FenValue.FromNumber(24));
+            
+            winObj.Set("screen", FenValue.FromObject(screenObj));
+            _fenRuntime.SetGlobal("screen", FenValue.FromObject(screenObj));
+
              // Note: DocumentWrapper now exposes addEventListener natively via Get/Has/Keys.
              // We don't need to overwrite it here.
         }
+
+        public double WindowWidth { get; set; } = 1024;
+        public double WindowHeight { get; set; } = 768;
+        public double ScreenWidth { get; set; } = 1920;
+        public double ScreenHeight { get; set; } = 1080;
 
 
         // timers
@@ -473,7 +494,7 @@ namespace FenBrowser.FenEngine.Scripting
             var moConstructor = new FenFunction("MutationObserver", (args, thisVal) =>
             {
                 if (args.Length < 1 || !args[0].IsFunction)
-                    return new ErrorValue("MutationObserver constructor requires a callback function");
+                    return FenValue.FromError("MutationObserver constructor requires a callback function");
 
                 // Use the new DOM-compliant wrapper
                 var callback = args[0].AsFunction();
@@ -503,7 +524,7 @@ namespace FenBrowser.FenEngine.Scripting
                 {
                     var onFulfilled = ((thenArgs != null && thenArgs.Length > 0 && thenArgs[0].IsFunction) ? thenArgs[0].AsFunction() : null);
                     
-                    if (onFulfilled == null) return FenValue.FromObject(thenable); // Chain?
+                    if (onFulfilled  == null) return FenValue.FromObject(thenable); // Chain?
 
                     // Async execution
                     var desc = (args.Length > 0 && args[0].IsObject) ? args[0].AsObject() : null;
@@ -543,7 +564,7 @@ namespace FenBrowser.FenEngine.Scripting
                             statusObj.Set("onchange", FenValue.Null); 
 
                             _fenRuntime.Context.ScheduleCallback(() => {
-                                try { onFulfilled.Invoke(new FenBrowser.FenEngine.Core.Interfaces.IValue[] { FenValue.FromObject(statusObj) }, _fenRuntime.Context); } catch {}
+                                try { onFulfilled.Invoke(new FenValue[] { FenValue.FromObject(statusObj) }, _fenRuntime.Context); } catch {}
                             }, 0);
                         }
                         catch { }
@@ -584,7 +605,7 @@ namespace FenBrowser.FenEngine.Scripting
                          pos.Set("timestamp", FenValue.FromNumber((DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())));
                          
                          _fenRuntime.Context.ScheduleCallback(() => {
-                            try { successCb.Invoke(new FenBrowser.FenEngine.Core.Interfaces.IValue[] { FenValue.FromObject(pos) }, _fenRuntime.Context); } catch {}
+                            try { successCb.Invoke(new FenValue[] { FenValue.FromObject(pos) }, _fenRuntime.Context); } catch {}
                          }, 0);
                     }
                     else
@@ -595,7 +616,7 @@ namespace FenBrowser.FenEngine.Scripting
                              err.Set("code", FenValue.FromNumber(1)); // PERMISSION_DENIED
                              err.Set("message", FenValue.FromString("User denied Geolocation"));
                              _fenRuntime.Context.ScheduleCallback(() => {
-                                try { errorCb.Invoke(new FenBrowser.FenEngine.Core.Interfaces.IValue[] { FenValue.FromObject(err) }, _fenRuntime.Context); } catch {}
+                                try { errorCb.Invoke(new FenValue[] { FenValue.FromObject(err) }, _fenRuntime.Context); } catch {}
                              }, 0);
                         }
                     }
@@ -619,12 +640,48 @@ namespace FenBrowser.FenEngine.Scripting
             // Basic navigator properties for detection
             navObj.Set("javaEnabled", FenValue.FromFunction(new FenFunction("javaEnabled", (args, ctx) => FenValue.FromBoolean(false))));
             navObj.Set("cookieEnabled", FenValue.FromBoolean(true));
+            // Detection Logic: 
+            // Chrome: appName="Netscape", vendor="Google Inc.", product="Gecko", appVersion="5.0 (...)"
             navObj.Set("userAgent", FenValue.FromString(BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent)));
-            navObj.Set("appName", FenValue.FromString("FenBrowser"));
-            navObj.Set("appVersion", FenValue.FromString("5.0"));
+            navObj.Set("appName", FenValue.FromString("Netscape")); // Standard for modern browsers
+            
+            // appVersion usually matches UA but without "Mozilla/" prefix
+            var fullUa = BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent);
+            var appVer = fullUa.StartsWith("Mozilla/") ? fullUa.Substring(8) : fullUa;
+            navObj.Set("appVersion", FenValue.FromString(appVer));
+            
             navObj.Set("platform", FenValue.FromString("Win32"));
-            navObj.Set("language", FenValue.FromString(CultureInfo.CurrentCulture.TwoLetterISOLanguageName));
-            navObj.Set("languages", FenValue.FromObject(new FenBrowser.FenEngine.Core.FenObject())); // Empty array-like
+            navObj.Set("vendor", FenValue.FromString("Google Inc.")); // Required for Chrome detection
+            navObj.Set("product", FenValue.FromString("Gecko"));      // Historical artifact required by many sites
+            navObj.Set("language", FenValue.FromString(CultureInfo.CurrentCulture.Name));
+            
+            var langsObj = new FenBrowser.FenEngine.Core.FenObject();
+            langsObj.Set("0", FenValue.FromString(CultureInfo.CurrentCulture.Name));
+            langsObj.Set("length", FenValue.FromNumber(1));
+            navObj.Set("languages", FenValue.FromObject(langsObj));
+
+            navObj.Set("hardwareConcurrency", FenValue.FromNumber(Environment.ProcessorCount));
+            navObj.Set("deviceMemory", FenValue.FromNumber(8));
+            navObj.Set("onLine", FenValue.FromBoolean(true));
+            navObj.Set("pdfViewerEnabled", FenValue.FromBoolean(true));
+            navObj.Set("webdriver", FenValue.FromBoolean(false)); 
+            
+            // [Compliance] userAgentData (Client Hints) - Simplified mock
+            var uaData = new FenBrowser.FenEngine.Core.FenObject();
+            uaData.Set("mobile", FenValue.FromBoolean(false));
+            uaData.Set("platform", FenValue.FromString("Windows"));
+            navObj.Set("userAgentData", FenValue.FromObject(uaData));
+
+            // [Compliance] Log Client-Side Identity
+            try
+            {
+                var ua = navObj.Get("userAgent").AsString();
+                var platform = navObj.Get("platform").AsString();
+                var vendor = navObj.Get("vendor").AsString();
+                var cookie = navObj.Get("cookieEnabled").AsBoolean();
+                FenLogger.Error($"[Compliance] JS Navigator: UA='{ua}' Platform='{platform}' Vendor='{vendor}' CookieEnabled={cookie}", LogCategory.JavaScript);
+            }
+            catch { }
 
             // Service Workers API - navigator.serviceWorker
             // Service Workers API - navigator.serviceWorker
@@ -703,7 +760,7 @@ namespace FenBrowser.FenEngine.Scripting
 
         public static void RegisterCanvasBitmap(Element element, SKBitmap bitmap)
         {
-            if (element == null || bitmap == null) return;
+            if (element  == null || bitmap  == null) return;
             // ConditionalWeakTable doesn't have indexer setter, use Remove/Add or GetValue to set
             _canvasBitmaps.Remove(element);
             _canvasBitmaps.Add(element, bitmap);
@@ -711,7 +768,7 @@ namespace FenBrowser.FenEngine.Scripting
 
         public static SKBitmap GetCanvasBitmap(Element element)
         {
-            if (element == null) return null;
+            if (element  == null) return null;
             _canvasBitmaps.TryGetValue(element, out var bitmap);
             return bitmap;
         }
@@ -906,13 +963,13 @@ namespace FenBrowser.FenEngine.Scripting
         {
             if (string.IsNullOrWhiteSpace(evt) || string.IsNullOrWhiteSpace(fnName)) return;
             List<string> list;
-            if (!bag.TryGetValue(evt, out list) || list == null) { list = new List<string>(); bag[evt] = list; }
+            if (!bag.TryGetValue(evt, out list) || list  == null) { list = new List<string>(); bag[evt] = list; }
             if (!list.Contains(fnName)) list.Add(fnName);
         }
 
         private void RemoveListener(Dictionary<string, List<string>> bag, string evt, string fnName)
         {
-            List<string> list; if (!bag.TryGetValue(evt, out list) || list == null) return;
+            List<string> list; if (!bag.TryGetValue(evt, out list) || list  == null) return;
             list.Remove(fnName);
         }
 
@@ -1022,11 +1079,11 @@ namespace FenBrowser.FenEngine.Scripting
             try
             {
                 Dictionary<string, List<string>> byEvt;
-                if (!_evtEl.TryGetValue(id, out byEvt) || byEvt == null)
+                if (!_evtEl.TryGetValue(id, out byEvt) || byEvt  == null)
                     return;
 
                 List<string> list;
-                if (!byEvt.TryGetValue(evt, out list) || list == null)
+                if (!byEvt.TryGetValue(evt, out list) || list  == null)
                     return;
 
                 list.Remove(fnName);
@@ -1049,35 +1106,35 @@ namespace FenBrowser.FenEngine.Scripting
         /*
         public void AddMiniDocumentListener(string evt, MiniJs.JsFunction fn)
         {
-            if (string.IsNullOrEmpty(evt) || fn == null) return;
-            System.Collections.Generic.List<MiniJs.JsFunction> list; if (!_miniEvtDoc.TryGetValue(evt, out list) || list == null) { list = new System.Collections.Generic.List<MiniJs.JsFunction>(); _miniEvtDoc[evt] = list; }
+            if (string.IsNullOrEmpty(evt) || fn  == null) return;
+            System.Collections.Generic.List<MiniJs.JsFunction> list; if (!_miniEvtDoc.TryGetValue(evt, out list) || list  == null) { list = new System.Collections.Generic.List<MiniJs.JsFunction>(); _miniEvtDoc[evt] = list; }
             if (!list.Contains(fn)) list.Add(fn);
         }
         public void RemoveMiniDocumentListener(string evt, MiniJs.JsFunction fn)
         {
-            System.Collections.Generic.List<MiniJs.JsFunction> list; if (!_miniEvtDoc.TryGetValue(evt, out list) || list == null) return; list.Remove(fn);
+            System.Collections.Generic.List<MiniJs.JsFunction> list; if (!_miniEvtDoc.TryGetValue(evt, out list) || list  == null) return; list.Remove(fn);
         }
         public void AddMiniWindowListener(string evt, MiniJs.JsFunction fn)
         {
-            if (string.IsNullOrEmpty(evt) || fn == null) return;
-            System.Collections.Generic.List<MiniJs.JsFunction> list; if (!_miniEvtWin.TryGetValue(evt, out list) || list == null) { list = new System.Collections.Generic.List<MiniJs.JsFunction>(); _miniEvtWin[evt] = list; }
+            if (string.IsNullOrEmpty(evt) || fn  == null) return;
+            System.Collections.Generic.List<MiniJs.JsFunction> list; if (!_miniEvtWin.TryGetValue(evt, out list) || list  == null) { list = new System.Collections.Generic.List<MiniJs.JsFunction>(); _miniEvtWin[evt] = list; }
             if (!list.Contains(fn)) list.Add(fn);
         }
         public void RemoveMiniWindowListener(string evt, MiniJs.JsFunction fn)
         {
-            System.Collections.Generic.List<MiniJs.JsFunction> list; if (!_miniEvtWin.TryGetValue(evt, out list) || list == null) return; list.Remove(fn);
+            System.Collections.Generic.List<MiniJs.JsFunction> list; if (!_miniEvtWin.TryGetValue(evt, out list) || list  == null) return; list.Remove(fn);
         }
         public void AddMiniElementListener(string id, string evt, MiniJs.JsFunction fn)
         {
-            if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(evt) || fn == null) return;
-            System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<MiniJs.JsFunction>> byEvt; if (!_miniEvtEl.TryGetValue(id, out byEvt) || byEvt == null) { byEvt = new System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<MiniJs.JsFunction>>(System.StringComparer.OrdinalIgnoreCase); _miniEvtEl[id] = byEvt; }
-            System.Collections.Generic.List<MiniJs.JsFunction> list; if (!byEvt.TryGetValue(evt, out list) || list == null) { list = new System.Collections.Generic.List<MiniJs.JsFunction>(); byEvt[evt] = list; }
+            if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(evt) || fn  == null) return;
+            System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<MiniJs.JsFunction>> byEvt; if (!_miniEvtEl.TryGetValue(id, out byEvt) || byEvt  == null) { byEvt = new System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<MiniJs.JsFunction>>(System.StringComparer.OrdinalIgnoreCase); _miniEvtEl[id] = byEvt; }
+            System.Collections.Generic.List<MiniJs.JsFunction> list; if (!byEvt.TryGetValue(evt, out list) || list  == null) { list = new System.Collections.Generic.List<MiniJs.JsFunction>(); byEvt[evt] = list; }
             if (!list.Contains(fn)) list.Add(fn);
         }
         public void RemoveMiniElementListener(string id, string evt, MiniJs.JsFunction fn)
         {
-            System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<MiniJs.JsFunction>> byEvt; if (!_miniEvtEl.TryGetValue(id, out byEvt) || byEvt == null) return;
-            System.Collections.Generic.List<MiniJs.JsFunction> list; if (!byEvt.TryGetValue(evt, out list) || list == null) return; list.Remove(fn);
+            System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<MiniJs.JsFunction>> byEvt; if (!_miniEvtEl.TryGetValue(id, out byEvt) || byEvt  == null) return;
+            System.Collections.Generic.List<MiniJs.JsFunction> list; if (!byEvt.TryGetValue(evt, out list) || list  == null) return; list.Remove(fn);
         }
         */
 
@@ -1107,7 +1164,7 @@ namespace FenBrowser.FenEngine.Scripting
             catch { }
             
             // Dispatch to FenRuntime (simulating bubbling to window)
-            FenLogger.Debug($"[RaiseElementEvent] Check _fenRuntime: {(_fenRuntime == null ? "NULL" : "OK")}", LogCategory.Events);
+            FenLogger.Debug($"[RaiseElementEvent] Check _fenRuntime: {(_fenRuntime  == null ? "NULL" : "OK")}", LogCategory.Events);
             if (_fenRuntime != null)
             {
                 try
@@ -1145,7 +1202,7 @@ namespace FenBrowser.FenEngine.Scripting
                             var ev = MiniEvent(id, evt);
                             if (evt == "change" || evt == "input")
                             {
-                                if (!string.IsNullOrEmpty(value)) ev.Obj["value"] = MiniJs.JsValue.From(value);
+                                if (!string == nullOrEmpty(value)) ev.Obj["value"] = MiniJs.JsValue.From(value);
                                 if (isChecked.HasValue) ev.Obj["checked"] = MiniJs.JsValue.From(isChecked.Value);
                             }
                             args.Add(ev);
@@ -1285,7 +1342,7 @@ namespace FenBrowser.FenEngine.Scripting
         // ---------------- Storage ----------------
         private static string OriginKey(Uri u)
         {
-            if (u == null) return "null://";
+            if (u  == null) return "null://";
             var port = u.IsDefaultPort ? "" : (":" + u.Port);
             return (u.Scheme ?? "http") + "://" + (u.Host ?? "localhost") + port;
         }
@@ -1334,7 +1391,7 @@ namespace FenBrowser.FenEngine.Scripting
                 {
                     foreach (var origin in _localStorageMap)
                     {
-                        if (origin.Value == null) continue;
+                        if (origin.Value  == null) continue;
                         foreach (var kv in origin.Value)
                         {
                             var line = (origin.Key ?? "") + "\t" + (kv.Key ?? "") + "\t" + (kv.Value ?? "");
@@ -1357,9 +1414,9 @@ namespace FenBrowser.FenEngine.Scripting
                 var folder = Windows.Storage.ApplicationData.Current.LocalFolder;
                 // Avoid first-chance FileNotFound by probing existence first
                 var item = await folder.GetItemAsync(LocalStorageFile) as Windows.Storage.StorageFile;
-                if (item == null) return;
+                if (item  == null) return;
                 var text = await Windows.Storage.FileIO.ReadTextAsync(item);
-                if (string.IsNullOrWhiteSpace(text)) return;
+                if (string == nullOrWhiteSpace(text)) return;
                 lock (_storageLock)
                 {
                     foreach (var ln in text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
@@ -1369,7 +1426,7 @@ namespace FenBrowser.FenEngine.Scripting
                             var parts = ln.Split('\t');
                             if (parts.Length < 3) continue;
                             Dictionary<string, string> bag;
-                            if (!_localStorageMap.TryGetValue(parts[0], out bag) || bag == null)
+                            if (!_localStorageMap.TryGetValue(parts[0], out bag) || bag  == null)
                             {
                                 bag = new Dictionary<string, string>(StringComparer.Ordinal);
                                 _localStorageMap[parts[0]] = bag;
@@ -1390,9 +1447,9 @@ namespace FenBrowser.FenEngine.Scripting
             if (!SandboxAllows(SandboxFeature.Storage, "document.cookie set")) return;
             try
             {
-                if (CookieBridge == null || scope == null || string.IsNullOrWhiteSpace(cookieString)) return;
+                if (CookieBridge  == null || scope  == null || string.IsNullOrWhiteSpace(cookieString)) return;
                 var jar = CookieBridge(scope);
-                if (jar == null) return;
+                if (jar  == null) return;
                 jar.SetCookies(scope, cookieString);
             }
             catch { }
@@ -1403,11 +1460,11 @@ namespace FenBrowser.FenEngine.Scripting
             if (!SandboxAllows(SandboxFeature.Storage, "document.cookie get")) return string.Empty;
             try
             {
-                if (CookieBridge == null || scope == null) return "";
+                if (CookieBridge  == null || scope  == null) return "";
                 var jar = CookieBridge(scope);
-                if (jar == null) return "";
+                if (jar  == null) return "";
                 var coll = jar.GetCookies(scope);
-                if (coll == null || coll.Count == 0) return "";
+                if (coll  == null || coll.Count == 0) return "";
 
                 var sb = new StringBuilder();
                 bool first = true;
@@ -1433,7 +1490,7 @@ namespace FenBrowser.FenEngine.Scripting
         {
             try
             {
-                if (u == null) return null;
+                if (u  == null) return null;
                 return u.GetComponents(UriComponents.SchemeAndServer | UriComponents.PathAndQuery, UriFormat.UriEscaped);
             }
             catch { return u != null ? ((u.Scheme ?? "") + "://" + (u.Host ?? "") + (u.PathAndQuery ?? "")) : null; }
@@ -1441,7 +1498,7 @@ namespace FenBrowser.FenEngine.Scripting
 
         private void HistoryPush(Uri u)
         {
-            if (u == null) return;
+            if (u  == null) return;
             if (!SandboxAllows(SandboxFeature.Navigation, "history.pushState -> " + (u?.AbsoluteUri ?? ""))) return;
             Uri prev = null; if (_historyIndex >= 0 && _historyIndex < _history.Count) prev = _history[_historyIndex];
             if (_historyIndex >= 0 && _historyIndex < _history.Count - 1)
@@ -1453,7 +1510,7 @@ namespace FenBrowser.FenEngine.Scripting
 
         private void HistoryReplace(Uri u)
         {
-            if (u == null) return;
+            if (u  == null) return;
             if (!SandboxAllows(SandboxFeature.Navigation, "history.replaceState -> " + (u?.AbsoluteUri ?? ""))) return;
             Uri prev = null; if (_historyIndex >= 0 && _historyIndex < _history.Count) prev = _history[_historyIndex];
             if (_historyIndex < 0) { _history.Add(u); _historyIndex = _history.Count - 1; }
@@ -1864,10 +1921,10 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                     var rawResult = _fenRuntime.ExecuteSimple(script);
                     
                     // Unwrap ReturnValue wrapper (from return statements)
-                    FenBrowser.FenEngine.Core.Interfaces.IValue result = rawResult;
-                    while (result is FenBrowser.FenEngine.Core.ReturnValue retVal)
+                    FenBrowser.FenEngine.Core.FenValue result = (FenBrowser.FenEngine.Core.FenValue)rawResult;
+                    while (result.Type == JsValueType.ReturnValue)
                     {
-                        result = retVal.Value;
+                        result = (FenBrowser.FenEngine.Core.FenValue)result.ToNativeObject();
                     }
                     
                     // Now result is the actual value (FenValue)
@@ -1876,7 +1933,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                         if (fv.IsNumber) return fv.ToNumber();
                         if (fv.IsString) return fv.ToString();
                         if (fv.IsBoolean) return fv.ToBoolean();
-                        if (fv.IsNull) return null;
+                        if (fv == null) return null;
                         if (fv.IsUndefined) return null;
                         // Return FenValue for objects/arrays so ToNativeObject can convert them
                         return fv;
@@ -1886,7 +1943,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                     if (result.IsNumber) return result.ToNumber();
                     if (result.IsString) return result.ToString();
                     if (result.IsBoolean) return result.ToBoolean();
-                    if (result.IsNull) return null;
+                    if (result == null) return null;
                     if (result.IsUndefined) return null;
                     return result;
                 }
@@ -1950,7 +2007,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         {
             try
             {
-                if (_mini == null) return;
+                if (_mini  == null) return;
 
                 // Wire standard environment & bridges
                 MiniJs.Bootstrap.InitEnvironment(
@@ -2102,7 +2159,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                     {
                         // Safely get context
                         var context = _fenRuntime?.Context;
-                        if (context == null) continue;
+                        if (context  == null) continue;
 
                         // Get records as FenObjects, correctly serialized with ElementWrappers
                         var recordObjs = wrapper.TakeRecords(context);
@@ -2168,7 +2225,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
 
         private void HandleDynamicScript(Element scriptEl)
         {
-            if (scriptEl == null) return;
+            if (scriptEl  == null) return;
 
             // Check src
             string src = null;
@@ -2194,11 +2251,11 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                 content = await FetchOverride(uri);
                             
                             // Legacy generic fetcher
-                            if (content == null && ExternalScriptFetcher != null) 
+                            if (content  == null && ExternalScriptFetcher != null) 
                                 content = await ExternalScriptFetcher(uri, baseUri);
                             
                             // Fallback to internal fetch
-                            if (content == null) 
+                            if (content  == null) 
                                 content = await FetchAsync(uri);
 
                             // Dispatch result on main thread
@@ -2264,7 +2321,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             if (handler.SupportsAutomaticDecompression)
                 handler.AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate;
             
-            if (cookies == null && uri != null && CookieBridge != null)
+            if (cookies  == null && uri != null && CookieBridge != null)
                 cookies = CookieBridge(uri);
 
             if (cookies != null && handler.SupportsRedirectConfiguration)
@@ -2363,13 +2420,13 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
 
             public object querySelector(string sel)
             {
-                if (_engine._domRoot == null) return null;
+                if (_engine._domRoot  == null) return null;
                 return new JsDocument(_engine, _engine._domRoot).querySelector(sel);
             }
 
             public object[] querySelectorAll(string sel)
             {
-                if (_engine._domRoot == null) return new object[0];
+                if (_engine._domRoot  == null) return new object[0];
                 return new JsDocument(_engine, _engine._domRoot).querySelectorAll(sel);
             }
         }
@@ -2773,7 +2830,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
 
         private static string CollectScriptText(Node n, int depth = 0)
         {
-            if (n == null) return "";
+            if (n  == null) return "";
             if (depth > 200) // Safety break
             {
                 /* [PERF-REMOVED] */
@@ -2803,14 +2860,14 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         private void SanitizeForScriptingEnabled(Element rootArg = null)
         {
             var root = rootArg ?? _domRoot;          // OK in instance method
-            if (root == null) return;
+            if (root  == null) return;
 
             // flip no-js ? js on <html>/<body>
             Action<Element> flipClass = n =>
             {
-                if (n == null) return;
+                if (n  == null) return;
                 var attrs = n.Attr;
-                if (attrs == null) return;
+                if (attrs  == null) return;
 
                 string cls;
                 if (!attrs.TryGetValue("class", out cls) || string.IsNullOrWhiteSpace(cls)) return;
@@ -2858,9 +2915,9 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         {
             try
             {
-                if (_domRoot == null || string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(cls)) return;
+                if (_domRoot  == null || string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(cls)) return;
                 var doc = new JsDocument(this, _domRoot);
-                var el = doc.getElementById(id) as JsDomElement; if (el == null) return;
+                var el = doc.getElementById(id) as JsDomElement; if (el  == null) return;
                 var cur = el.getAttribute("class") ?? string.Empty;
                 var set = new HashSet<string>(cur.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries), StringComparer.Ordinal);
                 bool changed = false;
@@ -2961,15 +3018,15 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         public JsCrypto()
         {
             Set("getRandomValues", FenValue.FromFunction(new FenFunction("getRandomValues", GetRandomValues)));
-            Set("subtle", FenValue.FromObject(new FenBrowser.FenEngine.Core.FenObject())); // Minimal mock
+            Set("subtle", FenValue.FromObject(new FenObject())); // Minimal mock
         }
         
-        private FenBrowser.FenEngine.Core.Interfaces.IValue GetRandomValues(FenBrowser.FenEngine.Core.Interfaces.IValue[] args, FenBrowser.FenEngine.Core.Interfaces.IValue thisVal)
+        private FenValue GetRandomValues(FenValue[] args, FenValue thisVal)
         {
             if (args.Length < 1) return FenValue.Undefined;
             try
             {
-                var arr = args[0] as FenBrowser.FenEngine.Core.FenObject; // TypedArray usually
+                var arr = args[0].IsObject ? args[0].AsObject() as FenBrowser.FenEngine.Core.FenObject : null; // TypedArray usually
                 // In NilJS TypedArrays might be FenObjects with numeric keys
                 // For now, assume it's a typed array and fill it with random bytes.
                 // Since bridging typed arrays is complex, we'll just try to fill standard array-like object
