@@ -397,6 +397,65 @@ namespace FenBrowser.Host
 
                 // 1. Logging Setup
                 FenBrowser.Core.Logging.LogManager.InitializeFromSettings();
+                if (args.Contains("--debug-css"))
+                {
+                    var sb = new StringBuilder();
+                    sb.AppendLine("[DEBUG-CSS] Starting CSS Parser Test...");
+                    
+                    try 
+                    {
+                        string css = "body { background: white; } " +
+                                     ".gb_Cd.gb_Va.gb_od:not(.gb_Md) { color: blue; } " +
+                                     ":is(.a, .b, .c) > div { display: none; } " +
+                                     "div:not(:where(.x, .y)) { opacity: 0.5; }";
+                        sb.AppendLine($"Testing CSS: {css}");
+
+                        var tokenizer = new FenBrowser.FenEngine.Rendering.Css.CssTokenizer(css);
+                        var parser = new FenBrowser.FenEngine.Rendering.Css.CssSyntaxParser(tokenizer);
+                        var sheet = parser.ParseStylesheet();
+
+                        Console.WriteLine($"Parsed Rules Count: {sheet.Rules.Count}");
+                        
+                        // Create dummy DOM
+                        var root = new FenBrowser.Core.Dom.Element("BODY");
+                        var container = new FenBrowser.Core.Dom.Element("DIV");
+                        container.SetAttribute("class", "a b c");
+                        root.AppendChild(container);
+                        
+                        var child = new FenBrowser.Core.Dom.Element("DIV");
+                        container.AppendChild(child);
+                        
+                        var target = new FenBrowser.Core.Dom.Element("DIV");
+                        target.SetAttribute("class", "gb_Cd gb_Va gb_od");
+                        root.AppendChild(target);
+
+                        foreach(var rule in sheet.Rules)
+                        {
+                            if (rule is FenBrowser.FenEngine.Rendering.Css.CssStyleRule style)
+                            {
+                                sb.AppendLine($"Rule Selector: {style.Selector?.Raw}");
+                                
+                                bool matchRoot = FenBrowser.FenEngine.Rendering.Css.SelectorMatcher.Matches(root, style.Selector);
+                                bool matchContainer = FenBrowser.FenEngine.Rendering.Css.SelectorMatcher.Matches(container, style.Selector);
+                                bool matchChild = FenBrowser.FenEngine.Rendering.Css.SelectorMatcher.Matches(child, style.Selector);
+                                bool matchTarget = FenBrowser.FenEngine.Rendering.Css.SelectorMatcher.Matches(target, style.Selector);
+                                
+                                sb.AppendLine($"  Matches ROOT: {matchRoot}");
+                                sb.AppendLine($"  Matches CONTAINER: {matchContainer}");
+                                sb.AppendLine($"  Matches CHILD: {matchChild}");
+                                sb.AppendLine($"  Matches TARGET: {matchTarget}");
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        sb.AppendLine($"CRASH: {ex}");
+                    }
+                    
+                    File.WriteAllText("css_debug.txt", sb.ToString());
+                    return;
+                }
+
                 if (args.Contains("--log-level") && args.Length > Array.IndexOf(args, "--log-level") + 1)
                 {
                     var levelStr = args[Array.IndexOf(args, "--log-level") + 1];
