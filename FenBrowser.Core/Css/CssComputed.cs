@@ -208,6 +208,7 @@ namespace FenBrowser.Core.Css
         public string Perspective { get; set; }          // perspective value (e.g., "1000px")
         public string PerspectiveOrigin { get; set; }    // perspective-origin (e.g., "50% 50%")
         public string Float { get; set; }
+        public string Clear { get; set; }
         public double? Opacity { get; set; }        // 0.0 to 1.0
         public string TextShadow { get; set; }      // CSS text-shadow value
         public string BoxShadow { get; set; }       // CSS box-shadow value
@@ -517,7 +518,7 @@ namespace FenBrowser.Core.Css
             
             // Typography (inherited by default)
             ["color"] = "canvastext",
-            ["font-family"] = "serif",
+            ["font-family"] = "sans-serif",
             ["font-size"] = "medium",
             ["font-weight"] = "normal",
             ["font-style"] = "normal",
