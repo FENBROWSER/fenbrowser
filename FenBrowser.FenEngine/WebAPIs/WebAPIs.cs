@@ -25,13 +25,13 @@ namespace FenBrowser.FenEngine.WebAPIs
             {
                 if (args.Length < 1) return FenValue.Undefined;
                 
-                var successCallback = args[0] as FenValue;
-                var errorCallback = args.Length > 1 ? args[1] as FenValue : null;
+                var successCallback = args[0];
+                var errorCallback = args.Length > 1 ? args[1] : FenValue.Undefined;
                 
                 if (!_permissionGranted)
                 {
                     // Call error callback with permission denied
-                    if (errorCallback?.AsFunction() is FenFunction errFn)
+                    if (!errorCallback.IsUndefined && errorCallback.AsFunction() is FenFunction errFn)
                     {
                         var error = new FenObject();
                         error.Set("code", FenValue.FromNumber(1)); // PERMISSION_DENIED

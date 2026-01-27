@@ -12,7 +12,7 @@ namespace FenBrowser.FenEngine.WebAPIs
     {
         private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, ConcurrentDictionary<string, IValue>>> _databases = new();
 
-        public static IValue Constructor(IValue[] args, IValue thisVal)
+        public static IValue Constructor(FenValue[] args, FenValue thisVal)
         {
             return FenValue.FromObject(new IndexedDBService());
         }
@@ -32,7 +32,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             global.Set("indexedDB", FenValue.FromObject(indexedDB));
         }
 
-        private static IValue OpenDatabase(string name, int version, IExecutionContext context)
+        private static FenValue OpenDatabase(string name, int version, IExecutionContext context)
         {
             var request = new FenObject();
             request.Set("onsuccess", FenValue.Null);
@@ -72,7 +72,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             return FenValue.FromObject(request);
         }
 
-        private static IValue CreateObjectStore(string dbName, string storeName)
+        private static FenValue CreateObjectStore(string dbName, string storeName)
         {
             var db = _databases.GetOrAdd(dbName, _ => new ConcurrentDictionary<string, ConcurrentDictionary<string, IValue>>());
             db.GetOrAdd(storeName, _ => new ConcurrentDictionary<string, IValue>());
@@ -82,7 +82,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             return FenValue.FromObject(store);
         }
 
-        private static IValue CreateTransaction(string dbName, IValue[] args, IExecutionContext context)
+        private static FenValue CreateTransaction(string dbName, FenValue[] args, IExecutionContext context)
         {
             var trans = new FenObject();
             trans.Set("objectStore", FenValue.FromFunction(new FenFunction("objectStore", (osArgs, osThis) => 
@@ -93,7 +93,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             return FenValue.FromObject(trans);
         }
 
-        private static IValue GetObjectStore(string dbName, string storeName)
+        private static FenValue GetObjectStore(string dbName, string storeName)
         {
             var os = new FenObject();
             os.Set("add", FenValue.FromFunction(new FenFunction("add", (args, thisVal) => 
@@ -118,13 +118,13 @@ namespace FenBrowser.FenEngine.WebAPIs
                 var store = db.GetOrAdd(storeName, _ => new ConcurrentDictionary<string, IValue>());
                 
                 store.TryGetValue(key, out var val);
-                return CreateRequest(val ?? FenValue.Null);
+                return CreateRequest((FenValue)val );
             })));
 
             return FenValue.FromObject(os);
         }
 
-        private static IValue CreateRequest(IValue result)
+        private static FenValue CreateRequest(FenValue result)
         {
             var req = new FenObject();
             req.Set("result", result);

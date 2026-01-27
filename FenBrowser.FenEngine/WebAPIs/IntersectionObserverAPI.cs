@@ -27,7 +27,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             {
                 if (args.Length < 1 || !args[0].IsFunction)
                 {
-                    return new ErrorValue("IntersectionObserver requires a callback function");
+                    return FenValue.FromError("IntersectionObserver requires a callback function");
                 }
 
                 var callback = args[0];

@@ -55,14 +55,14 @@ namespace FenBrowser.FenEngine.WebAPIs
             if (Get("onreadystatechange") is FenValue fn && fn.IsFunction)
             {
                  _context.ScheduleCallback(() => {
-                     try { fn.AsFunction().Invoke(new IValue[0], _context); } catch {}
+                     try { fn.AsFunction().Invoke(Array.Empty<FenValue>(), _context); } catch {}
                  }, 0);
             }
         }
 
-        private IValue Open(IValue[] args, IValue thisVal)
+        private FenValue Open(FenValue[] args, FenValue thisVal)
         {
-            if (args.Length < 2) throw new Exception("TypeError: Not enough arguments");
+            if (args.Length < 2) return FenValue.FromError("TypeError: Not enough arguments");
             _method = args[0].ToString();
             _url = args[1].ToString();
             _async = args.Length > 2 ? args[2].ToBoolean() : true;
@@ -71,17 +71,17 @@ namespace FenBrowser.FenEngine.WebAPIs
             return FenValue.Undefined;
         }
 
-        private IValue SetRequestHeader(IValue[] args, IValue thisVal)
+        private FenValue SetRequestHeader(FenValue[] args, FenValue thisVal)
         {
-            if (_readyState != OPENED) throw new Exception("InvalidStateError");
+            if (_readyState != OPENED) return FenValue.FromError("InvalidStateError");
             if (args.Length < 2) return FenValue.Undefined;
             _requestHeaders[args[0].ToString()] = args[1].ToString();
             return FenValue.Undefined;
         }
 
-        private IValue Send(IValue[] args, IValue thisVal)
+        private FenValue Send(FenValue[] args, FenValue thisVal)
         {
-            if (_readyState != OPENED) throw new Exception("InvalidStateError");
+            if (_readyState != OPENED) return FenValue.FromError("InvalidStateError");
             
             string body = args.Length > 0 ? args[0].ToString() : null;
             
@@ -126,7 +126,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                              
                              // onload
                              if (Get("onload") is FenValue fn && fn.IsFunction)
-                                 fn.AsFunction().Invoke(new IValue[0], _context);
+                                 fn.AsFunction().Invoke(Array.Empty<FenValue>(), _context);
                         }, 0);
                     }
                 }
@@ -135,7 +135,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                      _context.ScheduleCallback(() => {
                          // Error handling
                          if (Get("onerror") is FenValue fn && fn.IsFunction)
-                             fn.AsFunction().Invoke(new IValue[0], _context);
+                             fn.AsFunction().Invoke(Array.Empty<FenValue>(), _context);
                      }, 0);
                 }
             });
@@ -143,13 +143,13 @@ namespace FenBrowser.FenEngine.WebAPIs
             return FenValue.Undefined;
         }
         
-        private IValue GetAllResponseHeaders(IValue[] args, IValue thisVal)
+        private FenValue GetAllResponseHeaders(FenValue[] args, FenValue thisVal)
         {
             if (_readyState < HEADERS_RECEIVED) return FenValue.FromString("");
             return FenValue.FromString(_response?.Headers.ToString() ?? "");
         }
         
-        private IValue GetResponseHeader(IValue[] args, IValue thisVal)
+        private FenValue GetResponseHeader(FenValue[] args, FenValue thisVal)
         {
              if (_readyState < HEADERS_RECEIVED || args.Length < 1) return FenValue.Null;
              var name = args[0].ToString();

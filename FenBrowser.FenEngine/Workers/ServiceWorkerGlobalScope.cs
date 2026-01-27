@@ -35,7 +35,7 @@ namespace FenBrowser.FenEngine.Workers
             {
                  // Trigger skipWaiting in manager
                  // For now, assume auto-skip in mock
-                 return FenValue.FromObject(CreatePromise(() => Task.FromResult<IValue>(FenValue.Undefined)));
+                 return FenValue.FromObject(CreatePromise(() => Task.FromResult(FenValue.Undefined)));
             })));
 
             Set("clients", FenValue.FromObject(new FenObject())); // TODO: Implement Clients interface
@@ -47,17 +47,17 @@ namespace FenBrowser.FenEngine.Workers
         }
 
         // Helper to dispatch ExtendableEvent
-        public void DispatchExtendableEvent(string type, IValue evtObj)
+        public void DispatchExtendableEvent(string type, FenValue evtObj)
         {
              var handler = Get($"on{type}");
-             if (handler != null && handler.IsFunction)
+             if (!handler.IsUndefined && handler.IsFunction)
              {
-                 handler.AsFunction().Invoke(new IValue[] { evtObj }, Runtime.Context);
+                 handler.AsFunction().Invoke(new FenValue[] { evtObj }, Runtime.Context);
              }
         }
 
         // --- Promise Helper ---
-        private FenObject CreatePromise(Func<Task<IValue>> valueFactory)
+        private FenObject CreatePromise(Func<Task<FenValue>> valueFactory)
         {
             var promise = new FenObject();
             Task.Run(async () =>
@@ -69,15 +69,23 @@ namespace FenBrowser.FenEngine.Workers
             return promise;
         }
 
-        private void ResolvePromise(FenObject promise, IValue result)
+        private void ResolvePromise(FenObject promise, FenValue result)
         {
-             if (promise.Has("onFulfilled")) promise.Get("onFulfilled").AsFunction()?.Invoke(new[] { result }, null);
+             if (promise.Has("onFulfilled")) 
+             {
+                 var cb = promise.Get("onFulfilled");
+                 if (cb.IsFunction) cb.AsFunction().Invoke(new[] { result }, null);
+             }
              else { promise.Set("__result", result); promise.Set("__state", FenValue.FromString("fulfilled")); }
         }
 
         private void RejectPromise(FenObject promise, string error)
         {
-             if (promise.Has("onRejected")) promise.Get("onRejected").AsFunction()?.Invoke(new[] { FenValue.FromString(error) }, null);
+             if (promise.Has("onRejected")) 
+             {
+                 var cb = promise.Get("onRejected");
+                 if (cb.IsFunction) cb.AsFunction().Invoke(new[] { FenValue.FromString(error) }, null);
+             }
              else { promise.Set("__reason", FenValue.FromString(error)); promise.Set("__state", FenValue.FromString("rejected")); }
         }
 
@@ -87,9 +95,18 @@ namespace FenBrowser.FenEngine.Workers
             {
                 if (args.Length > 0) promise.Set("onFulfilled", args[0]);
                 if (args.Length > 1) promise.Set("onRejected", args[1]);
-                var state = promise.Get("__state")?.ToString();
-                if (state == "fulfilled") args[0]?.AsFunction()?.Invoke(new[] { promise.Get("__result") }, null);
-                else if (state == "rejected") args[1]?.AsFunction()?.Invoke(new[] { promise.Get("__reason") }, null);
+                var stateVal = promise.Get("__state");
+                var state = !stateVal.IsUndefined ? stateVal.ToString() : null;
+                
+                if (state == "fulfilled") 
+                {
+                    if (args.Length > 0 && args[0].IsFunction) args[0].AsFunction().Invoke(new[] { promise.Get("__result") }, null);
+                }
+                else if (state == "rejected") 
+                {
+                    if (args.Length > 1 && args[1].IsFunction) args[1].AsFunction().Invoke(new[] { promise.Get("__reason") }, null);
+                }
+                
                 return FenValue.FromObject(promise);
             })));
         }

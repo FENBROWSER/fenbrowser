@@ -156,7 +156,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 Set("length", FenValue.FromNumber(store.Count));
             }
 
-            private IValue GetItem(IValue[] args, IValue thisVal)
+            private FenValue GetItem(FenValue[] args, FenValue thisVal)
             {
                 if (args.Length == 0) return FenValue.Null;
                 var key = args[0].ToString();
@@ -164,7 +164,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 return store.TryGetValue(key, out var val) ? FenValue.FromString(val) : FenValue.Null;
             }
 
-            private IValue SetItem(IValue[] args, IValue thisVal)
+            private FenValue SetItem(FenValue[] args, FenValue thisVal)
             {
                 if (args.Length < 2) return FenValue.Undefined;
                 var key = args[0].ToString();
@@ -178,7 +178,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 return FenValue.Undefined;
             }
 
-            private IValue RemoveItem(IValue[] args, IValue thisVal)
+            private FenValue RemoveItem(FenValue[] args, FenValue thisVal)
             {
                 if (args.Length == 0) return FenValue.Undefined;
                 var key = args[0].ToString();
@@ -191,7 +191,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 return FenValue.Undefined;
             }
 
-            private IValue Clear(IValue[] args, IValue thisVal)
+            private FenValue Clear(FenValue[] args, FenValue thisVal)
             {
                 var store = GetStore();
                 store.Clear();
@@ -200,7 +200,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 return FenValue.Undefined;
             }
 
-            private IValue Key(IValue[] args, IValue thisVal)
+            private FenValue Key(FenValue[] args, FenValue thisVal)
             {
                 if (args.Length == 0) return FenValue.Null;
                 var index = (int)args[0].ToNumber();

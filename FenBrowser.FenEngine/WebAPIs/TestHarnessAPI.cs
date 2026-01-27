@@ -203,7 +203,7 @@ namespace FenBrowser.FenEngine.WebAPIs
         /// </summary>
         public static void Register(FenRuntime runtime)
         {
-            if (runtime == null) return;
+            if (runtime  == null) return;
             
             var testRunner = CreateTestRunnerObject();
             runtime.GlobalEnv.Set("testRunner", FenValue.FromObject(testRunner));

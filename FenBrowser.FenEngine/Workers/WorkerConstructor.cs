@@ -31,9 +31,9 @@ namespace FenBrowser.FenEngine.Workers
             return new FenFunction("Worker", CreateWorker);
         }
 
-        private IValue CreateWorker(IValue[] args, IValue thisVal)
+        private FenValue CreateWorker(FenValue[] args, FenValue thisVal)
         {
-            if (args.Length == 0 || args[0].IsNull || args[0].IsUndefined)
+            if (args.Length == 0 || args[0] == null || args[0].IsUndefined)
             {
                 FenLogger.Debug("[WorkerConstructor] Missing script URL", LogCategory.Errors);
                 throw new ArgumentException("Worker constructor requires a script URL");
@@ -87,7 +87,7 @@ namespace FenBrowser.FenEngine.Workers
                     var fn = onmessage.AsFunction();
                     if (fn.IsNative && fn.NativeImplementation != null)
                     {
-                        fn.NativeImplementation(new IValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
+                        fn.NativeImplementation(new FenValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
                     }
                 }
             };
@@ -104,7 +104,7 @@ namespace FenBrowser.FenEngine.Workers
                     var fn = onerror.AsFunction();
                     if (fn.IsNative && fn.NativeImplementation != null)
                     {
-                        fn.NativeImplementation(new IValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
+                        fn.NativeImplementation(new FenValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
                     }
                 }
             };
@@ -131,16 +131,16 @@ namespace FenBrowser.FenEngine.Workers
         /// </summary>
         public int ActiveWorkerCount => _activeWorkers.Count;
 
-        private IValue ConvertToFenValue(object obj)
+        private FenValue ConvertToFenValue(object obj)
         {
-            if (obj == null) return FenValue.Null;
+            if (obj  == null) return FenValue.Null;
             if (obj is bool b) return FenValue.FromBoolean(b);
             if (obj is string s) return FenValue.FromString(s);
             if (obj is int i) return FenValue.FromNumber(i);
             if (obj is long l) return FenValue.FromNumber(l);
             if (obj is float f) return FenValue.FromNumber(f);
             if (obj is double d) return FenValue.FromNumber(d);
-            if (obj is IValue v) return v;
+            if (obj is IValue v) return (FenValue)v;
 
             if (obj is IDictionary<string, object> dict)
             {

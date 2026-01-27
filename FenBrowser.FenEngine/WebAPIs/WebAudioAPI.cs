@@ -135,7 +135,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 FenLogger.Debug("[WebAudio] suspend()", LogCategory.JavaScript);
                 ctx.Set("state", FenValue.FromString("suspended"));
                 return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("ex", (eArgs, eThis) => {
-                    eArgs[0].AsFunction().Invoke(new IValue[0], context);
+                    eArgs[0].AsFunction().Invoke(new FenValue[0], context);
                     return FenValue.Undefined;
                 })), context));
             })));
@@ -145,7 +145,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 FenLogger.Debug("[WebAudio] resume()", LogCategory.JavaScript);
                 ctx.Set("state", FenValue.FromString("running"));
                 return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("ex", (eArgs, eThis) => {
-                    eArgs[0].AsFunction().Invoke(new IValue[0], context);
+                    eArgs[0].AsFunction().Invoke(new FenValue[0], context);
                     return FenValue.Undefined;
                 })), context));
             })));
@@ -155,7 +155,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 FenLogger.Debug("[WebAudio] close()", LogCategory.JavaScript);
                 ctx.Set("state", FenValue.FromString("closed"));
                 return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("ex", (eArgs, eThis) => {
-                    eArgs[0].AsFunction().Invoke(new IValue[0], context);
+                    eArgs[0].AsFunction().Invoke(new FenValue[0], context);
                     return FenValue.Undefined;
                 })), context));
             })));
