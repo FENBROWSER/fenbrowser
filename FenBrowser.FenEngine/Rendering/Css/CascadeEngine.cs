@@ -22,11 +22,25 @@ namespace FenBrowser.FenEngine.Rendering
         private List<CssStyleRule> _universalRules;                  // * and attribute-only rules
         private bool _indexed = false;
         private HashSet<CssStyleRule> _processedRules;               // Track duplicates
+        
+        // PERF: Track which pseudo-elements have any rules to skip cascade for unused ones
+        private HashSet<string> _pseudoElementsWithRules;
 
         public CascadeEngine(CssStylesheet stylesheet)
         {
             _stylesheet = stylesheet;
-            _logCascade = FenBrowser.Core.Logging.DebugConfig.LogCssCascade;
+            _logCascade = true; // FenBrowser.Core.Logging.DebugConfig.LogCssCascade;
+            FenBrowser.Core.FenLogger.Info($"[DEBUG-CASCADE] Created Engine with {_stylesheet.Rules.Count} rules", FenBrowser.Core.Logging.LogCategory.CSS);
+        }
+        
+        /// <summary>
+        /// Returns true if any CSS rule targets the specified pseudo-element.
+        /// Use this to skip ComputeCascadedValues calls for pseudo-elements with no rules.
+        /// </summary>
+        public bool HasPseudoRules(string pseudoElement)
+        {
+            EnsureIndex();
+            return _pseudoElementsWithRules?.Contains(pseudoElement.ToLowerInvariant()) ?? false;
         }
 
         private void EnsureIndex()
@@ -38,6 +52,7 @@ namespace FenBrowser.FenEngine.Rendering
             _tagIndex = new Dictionary<string, List<CssStyleRule>>(StringComparer.OrdinalIgnoreCase);
             _universalRules = new List<CssStyleRule>();
             _processedRules = new HashSet<CssStyleRule>();
+            _pseudoElementsWithRules = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             
             IndexRules(_stylesheet.Rules);
         }
@@ -59,17 +74,43 @@ namespace FenBrowser.FenEngine.Rendering
         
         private void IndexStyleRule(CssStyleRule styleRule)
         {
-            // Get the rightmost (key) segment from selector - this is what must match
-            SelectorSegment keySeg = null;
             if (styleRule.Selector?.Chains?.Count > 0)
             {
-                var firstChain = styleRule.Selector.Chains[0];
-                if (firstChain.Segments?.Count > 0)
+                // PERF: Track pseudo-elements used by this rule
+                foreach (var chain in styleRule.Selector.Chains)
                 {
-                    keySeg = firstChain.Segments[firstChain.Segments.Count - 1];
+                    if (chain.Segments == null) continue;
+                    foreach (var seg in chain.Segments)
+                    {
+                        if (seg.PseudoElements != null)
+                        {
+                            foreach (var pe in seg.PseudoElements)
+                            {
+                                _pseudoElementsWithRules.Add(pe.Name.ToLowerInvariant());
+                            }
+                        }
+                    }
+
+                    // Index based on this chain's key segment (Rightmost)
+                    if (chain.Segments.Count > 0)
+                    {
+                        var keySeg = chain.Segments[chain.Segments.Count - 1];
+                        IndexKeySegment(keySeg, styleRule);
+                    }
+                    else
+                    {
+                        _universalRules.Add(styleRule);
+                    }
                 }
             }
-            
+            else
+            {
+                _universalRules.Add(styleRule);
+            }
+        }
+
+        private void IndexKeySegment(SelectorSegment keySeg, CssStyleRule styleRule)
+        {
             if (keySeg == null)
             {
                 _universalRules.Add(styleRule);
@@ -107,7 +148,7 @@ namespace FenBrowser.FenEngine.Rendering
             list.Add(rule);
         }
 
-        public Dictionary<string, CssDeclaration> ComputeCascadedValues(Element element, string pseudoElement = null, RenderDeadline deadline = null)
+        public Dictionary<string, CssDeclaration> ComputeCascadedValues(Element element, string pseudoElement = null, FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
             EnsureIndex();
             var results = new List<MatchedDeclaration>();
@@ -116,6 +157,7 @@ namespace FenBrowser.FenEngine.Rendering
             // 1. Gather all declarations from matching rules (priority order: ID > Classes > Tag > Universal)
             CollectMatches(element, results, pseudoElement);
 
+            /*
             if (_logCascade && results.Count > 0)
             {
                 var uniqueSources = results.Select(r => new { r.SelectorText, Spec = r.Specificity, r.Origin }).Distinct().OrderBy(x => x.Spec).ToList();
@@ -127,6 +169,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 global::FenBrowser.Core.FenLogger.Log(msg.ToString().TrimEnd(), global::FenBrowser.Core.Logging.LogCategory.Cascade);
             }
+            */
 
             // 2. Sort declarations
             deadline?.Check();
@@ -245,7 +288,7 @@ namespace FenBrowser.FenEngine.Rendering
                     bool found = false;
                     foreach (var pe in lastSeg.PseudoElements)
                     {
-                        if (pe.name.Equals(pseudoElement, StringComparison.OrdinalIgnoreCase))
+                        if (pe.Name.Equals(pseudoElement, StringComparison.OrdinalIgnoreCase))
                         {
                             found = true;
                             break;

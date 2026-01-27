@@ -43,19 +43,23 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 return best;
             }
             // Fallback for raw string
-            if (Matches(element, selector.Raw, depth + 1))
+            if (selector.Chains == null)
             {
-                 var chains = ParseSelectorList(selector.Raw);
-                 SelectorChain best = null;
-                 foreach (var chain in chains)
-                 {
-                     if (MatchesChain(element, chain, depth + 2))
-                     {
-                         if (best == null || chain.Specificity.CompareTo(best.Specificity) > 0)
+                 selector.Chains = ParseSelectorList(selector.Raw);
+            }
+            
+            if (selector.Chains != null && selector.Chains.Count > 0)
+            {
+                SelectorChain best = null;
+                foreach (var chain in selector.Chains)
+                {
+                    if (MatchesChain(element, chain, depth + 1))
+                    {
+                        if (best == null || chain.Specificity.CompareTo(best.Specificity) > 0)
                             best = chain;
-                     }
-                 }
-                 return best;
+                    }
+                }
+                return best;
             }
             return null;
         }
@@ -226,9 +230,9 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     }
 
                     if (isElement)
-                        segment.PseudoElements.Add((name, args));
+                        segment.PseudoElements.Add(new PseudoSelector { Name = name, Args = args });
                     else
-                        segment.PseudoClasses.Add((name, args));
+                        segment.PseudoClasses.Add(new PseudoSelector { Name = name, Args = args });
                     continue;
                 }
 
@@ -346,6 +350,12 @@ namespace FenBrowser.FenEngine.Rendering.Css
             
             if (combinator == ' ') // Descendant
             {
+                // Phase 2.1: Ancestor Bloom Filter Optimization
+                if (CanFastReject(element, chain, index - 1))
+                {
+                    return false;
+                }
+
                 var ancestor = element.Parent as Element;
                 while (ancestor != null)
                 {
@@ -381,14 +391,13 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
         private static Element GetPreviousSibling(Element el)
         {
-            var parent = el.Parent as Element;
-            if (parent?.Children == null) return null;
-            // Optimization: Iterate backwards instead of using IndexOf which is O(N)
-            // But we don't have linked list.
-            // Using IndexOf is acceptable for now.
-            var siblings = parent.Children.OfType<Element>().ToList();
-            int idx = siblings.IndexOf(el);
-            return idx > 0 ? siblings[idx - 1] : null;
+            var p = el.PreviousSibling;
+            while (p != null)
+            {
+                if (p is Element e) return e;
+                p = p.PreviousSibling;
+            }
+            return null;
         }
 
         private static bool MatchesSegment(Element el, SelectorSegment seg, int depth)
@@ -431,9 +440,22 @@ namespace FenBrowser.FenEngine.Rendering.Css
             }
 
             // Pseudo-classes
-            foreach (var (name, args) in seg.PseudoClasses)
+            foreach (var ps in seg.PseudoClasses)
             {
-                if (!MatchesPseudoClass(el, name, args, depth + 1)) return false;
+                if (!MatchesPseudoClass(el, ps.Name, ps.Args, ps.ParsedArgs, depth + 1)) return false;
+            }
+            
+            // Pseudo-elements (::slotted)
+            foreach (var ps in seg.PseudoElements)
+            {
+                if (string.Equals(ps.Name, "slotted", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (el.Parent is Element parent && parent.ShadowRoot != null)
+                    {
+                        return string.IsNullOrEmpty(ps.Args) || Matches(el, ps.Args, depth + 1);
+                    }
+                    return false;
+                }
             }
 
             return true;
@@ -462,7 +484,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
             };
         }
 
-        private static bool MatchesPseudoClass(Element el, string name, string args, int depth)
+        private static bool MatchesPseudoClass(Element el, string name, string args, List<SelectorChain> parsedArgs, int depth)
         {
             if (depth > 64) return false;
             switch (name.ToLowerInvariant())
@@ -475,9 +497,19 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "only-of-type": return IsFirstOfType(el) && IsLastOfType(el);
                 case "empty": return el.Children == null || el.Children.Count == 0;
                 case "root": return el.Parent == null || el.Tag?.ToUpperInvariant() == "HTML";
-                case "not": return !Matches(el, args, depth + 1);
+                case "not": 
+                {
+                    if (parsedArgs != null && parsedArgs.Count > 0)
+                        return !parsedArgs.Any(chain => MatchesChain(el, chain, depth + 1));
+                    return !Matches(el, args, depth + 1);
+                }
                 case "is":
-                case "where": return ParseSelectorList(args).Any(chain => MatchesChain(el, chain, depth + 1));
+                case "where": 
+                {
+                    if (parsedArgs != null && parsedArgs.Count > 0)
+                        return parsedArgs.Any(chain => MatchesChain(el, chain, depth + 1));
+                    return ParseSelectorList(args).Any(chain => MatchesChain(el, chain, depth + 1));
+                }
                 case "has": return MatchesHas(el, args, depth + 1);
                 case "nth-child": return MatchesNthChild(el, args);
                 case "nth-last-child": return MatchesNthLastChild(el, args);
@@ -491,6 +523,30 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "active":
                 case "visited":
                 case "link": return false; // State-dependent not implemented in static matcher
+                
+                // Shadow DOM Scoping
+                case "host": 
+                    // Matches if element is a Shadow Host
+                    // Ideally we should check if we are matching a rule from the corresponding ShadowRoot,
+                    // but without context, we check if it *is* a host.
+                    // If args provided :host(.foo), check that too.
+                    if (el.ShadowRoot == null) return false;
+                    return string.IsNullOrEmpty(args) || Matches(el, args, depth + 1);
+
+                case "host-context":
+                    // Matches if element is a Shadow Host AND has an ancestor matching the selector
+                    if (el.ShadowRoot == null) return false;
+                    if (string.IsNullOrEmpty(args)) return true;
+                    
+                    // Check ancestors
+                    var curr = el; // host-context checks self? Spec says "search up the tree... including the host itself".
+                    while (curr != null)
+                    {
+                        if (Matches(curr, args, depth + 1)) return true;
+                        curr = curr.Parent as Element;
+                    }
+                    return false;
+
                 default: return false;
             }
         }
@@ -602,22 +658,25 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
         private static Element GetNextSibling(Element el)
         {
-             var parent = el.Parent as Element;
-             if (parent?.Children == null) return null;
-             var siblings = parent.Children.OfType<Element>().ToList();
-             int idx = siblings.IndexOf(el);
-             if (idx >= 0 && idx < siblings.Count - 1) return siblings[idx + 1];
-             return null;
+            var p = el.NextSibling;
+            while (p != null)
+            {
+                if (p is Element e) return e;
+                p = p.NextSibling;
+            }
+            return null;
         }
 
         private static List<Element> GetFollowingSiblings(Element el)
         {
-             var parent = el.Parent as Element;
-             if (parent?.Children == null) return new List<Element>();
-             var siblings = parent.Children.OfType<Element>().ToList();
-             int idx = siblings.IndexOf(el);
-             if (idx >= 0 && idx < siblings.Count - 1) return siblings.Skip(idx + 1).ToList();
-             return new List<Element>();
+             var result = new List<Element>();
+             var p = el.NextSibling;
+             while (p != null)
+             {
+                 if (p is Element e) result.Add(e);
+                 p = p.NextSibling;
+             }
+             return result;
         }
 
         private static bool MatchesNthFormula(int n, string formula)
@@ -650,6 +709,62 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
             if (a == 0) return n == b;
             return (n - b) % a == 0 && (n - b) / a >= 0;
+        }
+
+        #endregion
+        #region Bloom Filter Optimization
+
+        private static bool CanFastReject(Element element, SelectorChain chain, int index)
+        {
+            // We need to check if the ancestor filter LACKS any bits required by the target segment.
+            // The target segment (at 'index') is what we are looking for in the ancestors.
+            // If the selector is "div.container span", we are at span, looking for "div.container".
+            // So we compute the hash of "div.container" (segment[index]) and check if element.AncestorFilter has it.
+            
+            var targetSegment = chain.Segments[index];
+            long requiredMask = ComputeSegmentHash(targetSegment);
+
+            // If requiredMask has bits that are 0 in AncestorFilter, then the ancestor definitely doesn't exist.
+            // (element.AncestorFilter & requiredMask) must equal requiredMask
+            return (element.AncestorFilter & requiredMask) != requiredMask;
+        }
+
+        private static long ComputeSegmentHash(SelectorSegment seg)
+        {
+            long hash = 0;
+
+            // Tag
+            if (!string.IsNullOrEmpty(seg.Tag) && seg.Tag != "*")
+            {
+                hash |= FilterHash(seg.Tag);
+            }
+
+            // ID
+            if (!string.IsNullOrEmpty(seg.Id))
+            {
+                hash |= FilterHash("#" + seg.Id);
+            }
+
+            // Classes
+            foreach (var cls in seg.Classes)
+            {
+                hash |= FilterHash("." + cls);
+            }
+
+            return hash;
+        }
+
+        private static long FilterHash(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return 0;
+            uint h = 2166136261;
+            for (int i = 0; i < s.Length; i++)
+            {
+                h = (h ^ s[i]) * 16777619;
+            }
+            int b1 = (int)(h % 64);
+            int b2 = (int)((h >> 6) % 64);
+            return (1L << b1) | (1L << b2);
         }
 
         #endregion

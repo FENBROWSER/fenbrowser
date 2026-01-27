@@ -126,13 +126,20 @@ namespace FenBrowser.FenEngine.Rendering.Css
         public string Id { get; set; }
         public List<string> Classes { get; } = new List<string>();
         public List<AttributeSelector> Attributes { get; } = new List<AttributeSelector>();
-        public List<(string name, string args)> PseudoClasses { get; } = new List<(string, string)>();
-        public List<(string name, string args)> PseudoElements { get; } = new List<(string, string)>();
+        public List<PseudoSelector> PseudoClasses { get; } = new List<PseudoSelector>();
+        public List<PseudoSelector> PseudoElements { get; } = new List<PseudoSelector>();
         public char Combinator { get; set; } = ' ';
 
         public bool IsEmpty => string.IsNullOrEmpty(Tag) && string.IsNullOrEmpty(Id) && 
                                Classes.Count == 0 && Attributes.Count == 0 && 
                                PseudoClasses.Count == 0 && PseudoElements.Count == 0;
+    }
+
+    public class PseudoSelector
+    {
+        public string Name { get; set; }
+        public string Args { get; set; }
+        public List<SelectorChain> ParsedArgs { get; set; } = new List<SelectorChain>();
     }
 
     public class AttributeSelector

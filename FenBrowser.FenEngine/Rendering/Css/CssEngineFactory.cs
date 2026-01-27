@@ -26,14 +26,15 @@ namespace FenBrowser.FenEngine.Rendering.Css
             Uri baseUri,
             Func<Uri, Task<string>> fetchExternalCssAsync,
             double? viewportWidth = null,
-            double? viewportHeight = null)
+            double? viewportHeight = null,
+            FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
             try
             {
                 // Use existing CssLoader
                 var result = await CssLoader.ComputeWithResultAsync(
                     root, baseUri, fetchExternalCssAsync, 
-                    viewportWidth, viewportHeight, null);
+                    viewportWidth, viewportHeight, null, deadline);
                 
                 _lastComputed = result.Computed;
                 // Don't store sources - causes memory issues on complex sites like GitHub
