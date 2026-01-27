@@ -18,7 +18,7 @@ namespace FenBrowser.FenEngine.DOM
             _context = context;
         }
 
-        public IValue Get(string key, IExecutionContext context = null)
+        public FenValue Get(string key, IExecutionContext context = null)
         {
             switch(key)
             {
@@ -50,7 +50,7 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.Undefined;
         }
 
-        private IValue CallRangeMethod(System.Action<Node, int> method, IValue[] args)
+        private FenValue CallRangeMethod(System.Action<Node, int> method, FenValue[] args)
         {
             if (args.Length < 2) return FenValue.Undefined;
             var obj = args[0].AsObject();
@@ -67,7 +67,7 @@ namespace FenBrowser.FenEngine.DOM
         }
 
 
-        private IValue CallNodeMethod(System.Action<Node> method, IValue[] args)
+        private FenValue CallNodeMethod(System.Action<Node> method, FenValue[] args)
         {
              if (args.Length < 1) return FenValue.Undefined;
              var obj = args[0].AsObject();
@@ -88,7 +88,7 @@ namespace FenBrowser.FenEngine.DOM
         public void SetPrototype(IObject prototype) => _prototype = prototype;
         public bool Delete(string key, IExecutionContext context = null) => false;
         public System.Collections.Generic.IEnumerable<string> Keys(IExecutionContext context = null) => new string[0];
-        public void Set(string key, IValue value, IExecutionContext context = null) { }
+        public void Set(string key, FenValue value, IExecutionContext context = null) { }
         public bool Has(string key, IExecutionContext context = null) => false;
     }
 }

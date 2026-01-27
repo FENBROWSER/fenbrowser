@@ -20,7 +20,7 @@ namespace FenBrowser.FenEngine.DOM
 
         public object NativeObject { get; set; }
 
-        public IValue Get(string key, IExecutionContext context = null)
+        public FenValue Get(string key, IExecutionContext context = null)
         {
             if (int.TryParse(key, out int index))
             {
@@ -29,7 +29,7 @@ namespace FenBrowser.FenEngine.DOM
 
             // Named access support (id or name)
             var named = NamedItem(key);
-            if (!named.IsNull) return named;
+            if (named != null && !named.IsNull) return named;
 
             switch (key)
             {
@@ -56,29 +56,29 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.Undefined;
         }
 
-        private IValue Item(int index)
+        private FenValue Item(int index)
         {
             var el = _source.ElementAtOrDefault(index);
             return WrapElement(el);
         }
         
-        private IValue NamedItem(string name)
+        private FenValue NamedItem(string name)
         {
             // id then name
             var el = _source.FirstOrDefault(e => e.Attr != null && e.Attr.ContainsKey("id") && e.Attr["id"] == name);
-            if (el == null)
+            if (el  == null)
                 el = _source.FirstOrDefault(e => e.Attr != null && e.Attr.ContainsKey("name") && e.Attr["name"] == name);
             
             return WrapElement(el);
         }
 
-        private IValue WrapElement(Element el)
+        private FenValue WrapElement(Element el)
         {
-            if (el == null) return FenValue.Null;
+            if (el  == null) return FenValue.Null;
             return DomWrapperFactory.Wrap(el, _context);
         }
 
-        public void Set(string key, IValue value, IExecutionContext context = null)
+        public void Set(string key, FenValue value, IExecutionContext context = null)
         {
             // Read-only
         }

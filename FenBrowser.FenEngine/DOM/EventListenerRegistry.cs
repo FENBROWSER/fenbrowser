@@ -16,7 +16,7 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// The callback function to invoke
         /// </summary>
-        public IValue Callback { get; set; }
+        public FenValue Callback { get; set; }
 
         /// <summary>
         /// If true, listener is invoked during capture phase
@@ -38,7 +38,7 @@ namespace FenBrowser.FenEngine.DOM
         /// </summary>
         public object Signal { get; set; }
 
-        public EventListener(IValue callback, bool capture = false, bool once = false, bool passive = false)
+        public EventListener(FenValue callback, bool capture = false, bool once = false, bool passive = false)
         {
             Callback = callback;
             Capture = capture;
@@ -50,7 +50,7 @@ namespace FenBrowser.FenEngine.DOM
         /// Check if two listeners are the same (for removal purposes)
         /// Same callback + same capture flag = same listener
         /// </summary>
-        public bool Matches(IValue callback, bool capture)
+        public bool Matches(FenValue callback, bool capture)
         {
             // Per spec: listeners are matched by callback reference and capture flag
             return Capture == capture && ReferenceEquals(Callback, callback);
@@ -72,9 +72,9 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Add an event listener to an element
         /// </summary>
-        public void Add(Element element, string type, IValue callback, bool capture = false, bool once = false, bool passive = false)
+        public void Add(Element element, string type, FenValue callback, bool capture = false, bool once = false, bool passive = false)
         {
-            if (element == null || string.IsNullOrEmpty(type) || callback == null)
+            if (element  == null || string.IsNullOrEmpty(type) || callback  == null)
                 return;
 
             lock (_lock)
@@ -106,9 +106,9 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Remove an event listener from an element
         /// </summary>
-        public void Remove(Element element, string type, IValue callback, bool capture = false)
+        public void Remove(Element element, string type, FenValue callback, bool capture = false)
         {
-            if (element == null || string.IsNullOrEmpty(type) || callback == null)
+            if (element  == null || string.IsNullOrEmpty(type) || callback  == null)
                 return;
 
             lock (_lock)
@@ -150,7 +150,7 @@ namespace FenBrowser.FenEngine.DOM
         {
             var result = new List<EventListener>();
 
-            if (element == null || string.IsNullOrEmpty(type))
+            if (element  == null || string.IsNullOrEmpty(type))
                 return result;
 
             lock (_lock)
@@ -179,7 +179,7 @@ namespace FenBrowser.FenEngine.DOM
         {
             var result = new List<EventListener>();
 
-            if (element == null || string.IsNullOrEmpty(type))
+            if (element  == null || string.IsNullOrEmpty(type))
                 return result;
 
             lock (_lock)
@@ -202,7 +202,7 @@ namespace FenBrowser.FenEngine.DOM
         /// </summary>
         public void RemoveOnce(Element element, string type, EventListener listener)
         {
-            if (element == null || string.IsNullOrEmpty(type) || listener == null)
+            if (element  == null || string.IsNullOrEmpty(type) || listener  == null)
                 return;
 
             lock (_lock)
@@ -224,7 +224,7 @@ namespace FenBrowser.FenEngine.DOM
         /// </summary>
         public void ClearElement(Element element)
         {
-            if (element == null) return;
+            if (element  == null) return;
 
             lock (_lock)
             {

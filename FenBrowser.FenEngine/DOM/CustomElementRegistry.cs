@@ -78,13 +78,13 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Get the constructor for a defined custom element
         /// </summary>
-        public IValue Get(string name)
+        public FenValue Get(string name)
         {
-            if (string.IsNullOrEmpty(name)) return null;
+            if (string.IsNullOrEmpty(name)) return FenValue.Null;
 
             lock (_lock)
             {
-                return _definitions.TryGetValue(name, out var def) ? def.Constructor : null;
+                return _definitions.TryGetValue(name, out var def) ? (FenValue)def.Constructor : FenValue.Null;
             }
         }
 
@@ -93,7 +93,7 @@ namespace FenBrowser.FenEngine.DOM
         /// </summary>
         public string GetName(IValue constructor)
         {
-            if (constructor == null) return null;
+            if (constructor  == null) return null;
 
             lock (_lock)
             {
@@ -147,7 +147,7 @@ namespace FenBrowser.FenEngine.DOM
         /// </summary>
         public void Upgrade(Element element)
         {
-            if (element == null) return;
+            if (element  == null) return;
 
             var tag = element.Tag?.ToLowerInvariant();
             if (string.IsNullOrEmpty(tag)) return;
@@ -182,7 +182,7 @@ namespace FenBrowser.FenEngine.DOM
         /// </summary>
         public void UpgradeSubtree(Element root)
         {
-            if (root == null) return;
+            if (root  == null) return;
 
             Upgrade(root);
             foreach (var child in root.Descendants())
@@ -202,7 +202,7 @@ namespace FenBrowser.FenEngine.DOM
             obj.Set("define", FenValue.FromFunction(new FenFunction("define", (args, thisVal) =>
             {
                 if (args.Length < 2)
-                    return new ErrorValue("customElements.define requires name and constructor");
+                    return FenValue.FromString("Error: customElements.define requires name and constructor");
 
                 var name = args[0].ToString();
                 var constructor = args[1];
@@ -215,7 +215,7 @@ namespace FenBrowser.FenEngine.DOM
                     {
                         options = new CustomElementOptions
                         {
-                            Extends = optObj.Get("extends")?.ToString()
+                            Extends = optObj.Get("extends").ToString()
                         };
                     }
                 }
@@ -227,7 +227,7 @@ namespace FenBrowser.FenEngine.DOM
                 }
                 catch (Exception ex)
                 {
-                    return new ErrorValue(ex.Message);
+                    return FenValue.FromString("Error: " + ex.Message);
                 }
             })));
 
@@ -285,7 +285,7 @@ namespace FenBrowser.FenEngine.DOM
             return obj;
         }
 
-        private FenValue CreateResolvedPromise(IValue value)
+        private FenValue CreateResolvedPromise(FenValue value)
         {
             var promise = new FenObject();
             promise.Set("__isPromise__", FenValue.FromBoolean(true));
@@ -296,7 +296,7 @@ namespace FenBrowser.FenEngine.DOM
                 if (args.Length > 0 && args[0].IsFunction)
                 {
                     var fn = args[0].AsFunction() as FenFunction;
-                    return fn?.Invoke(new IValue[] { value }, null) ?? FenValue.Undefined;
+                    return fn?.Invoke(new FenValue[] { value }, null) ?? FenValue.Undefined;
                 }
                 return (FenValue)value;
             })));
@@ -314,7 +314,7 @@ namespace FenBrowser.FenEngine.DOM
                 if (args.Length > 0 && args[0].IsFunction)
                 {
                     var fn = args[0].AsFunction() as FenFunction;
-                    return fn?.Invoke(new IValue[] { FenValue.FromString(reason) }, null) ?? FenValue.Undefined;
+                    return fn?.Invoke(new FenValue[] { FenValue.FromString(reason) }, null) ?? FenValue.Undefined;
                 }
                 return FenValue.Undefined;
             })));

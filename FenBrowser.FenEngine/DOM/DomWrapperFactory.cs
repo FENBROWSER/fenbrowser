@@ -6,9 +6,9 @@ namespace FenBrowser.FenEngine.DOM
 {
     public static class DomWrapperFactory
     {
-        public static IValue Wrap(Node node, IExecutionContext context)
+        public static FenValue Wrap(Node node, IExecutionContext context)
         {
-            if (node == null) return FenValue.Null;
+            if (node  == null) return FenValue.Null;
 
             // TODO: Add identity map caching (WeakReference) to ensure same wrapper for same node
             

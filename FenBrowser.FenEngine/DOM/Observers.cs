@@ -24,7 +24,7 @@ namespace FenBrowser.FenEngine.DOM
         
         public void Observe(Element target)
         {
-            if (target == null) return;
+            if (target  == null) return;
             if (!_observedElements.Contains(target))
             {
                 _observedElements.Add(target);
@@ -90,7 +90,7 @@ namespace FenBrowser.FenEngine.DOM
                 try
                 {
                     var arrObj = CreateArrayFromEntries(entries);
-                    _callback.Invoke(new IValue[] { FenValue.FromObject(arrObj) }, context);
+                    _callback.Invoke(new FenValue[] { FenValue.FromObject(arrObj) }, context);
                 }
                 catch (Exception ex)
                 {
@@ -157,7 +157,7 @@ namespace FenBrowser.FenEngine.DOM
         
         public void Observe(Element target)
         {
-            if (target == null) return;
+            if (target  == null) return;
             if (!_observedElements.Contains(target))
             {
                 _observedElements.Add(target);
@@ -224,7 +224,7 @@ namespace FenBrowser.FenEngine.DOM
                 try
                 {
                     var arrObj = CreateArrayFromEntries(entries);
-                    _callback.Invoke(new IValue[] { FenValue.FromObject(arrObj) }, context);
+                    _callback.Invoke(new FenValue[] { FenValue.FromObject(arrObj) }, context);
                 }
                 catch (Exception ex)
                 {

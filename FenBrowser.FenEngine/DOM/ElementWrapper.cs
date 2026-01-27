@@ -30,7 +30,7 @@ namespace FenBrowser.FenEngine.DOM
 
         public Element Element => _element;
 
-        public IValue Get(string key, IExecutionContext context = null)
+        public override FenValue Get(string key, IExecutionContext context = null)
         {
             _context?.CheckExecutionTimeLimit();
             
@@ -197,7 +197,7 @@ namespace FenBrowser.FenEngine.DOM
         }
 
 
-        public void Set(string key, IValue value, IExecutionContext context = null)
+        public void Set(string key, FenValue value, IExecutionContext context = null)
         {
             if (_context != null)
             {
@@ -225,7 +225,7 @@ namespace FenBrowser.FenEngine.DOM
             => new[] { "attachShadow", "shadowRoot", "innerHTML", "textContent", "tagName", "id", "attributes", "getAttribute", "setAttribute", "hasAttribute", "removeAttribute", "getAttributeNode", "setAttributeNode", "removeAttributeNode", "getContext", "width", "height", "clientWidth", "clientHeight" };
         // IObject.GetPrototype/SetPrototype handled by NodeWrapper
 
-        private IValue GetContext(IValue[] args, IValue thisVal)
+        private FenValue GetContext(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0) return FenValue.Null;
             var type = args[0].ToString()?.ToLowerInvariant();
@@ -292,7 +292,7 @@ namespace FenBrowser.FenEngine.DOM
                 _methods = methods as Dictionary<string, object> ?? new Dictionary<string, object>();
             }
             
-            public IValue Get(string key, IExecutionContext context = null)
+            public FenValue Get(string key, IExecutionContext context = null)
             {
                 if (_methods.TryGetValue(key, out var value))
                 {
@@ -364,7 +364,7 @@ namespace FenBrowser.FenEngine.DOM
                             return bytes;
                         }
                     }
-                    return null;
+                    return FenValue.Null;
                 }
                 if (targetType == typeof(float[]))
                 {
@@ -384,7 +384,7 @@ namespace FenBrowser.FenEngine.DOM
                             return floats;
                         }
                     }
-                    return null;
+                    return FenValue.Null;
                 }
                 // WebGL objects - check if it's already the correct type
                 if (arg.IsObject)
@@ -393,12 +393,12 @@ namespace FenBrowser.FenEngine.DOM
                     if (targetType.IsAssignableFrom(obj.GetType()))
                         return obj;
                 }
-                return null;
+                return FenValue.Null;
             }
             
-            private IValue ConvertResult(object result)
+            private FenValue ConvertResult(object result)
             {
-                if (result == null) return FenValue.Null;
+                if (result  == null) return FenValue.Null;
                 if (result is uint ui) return FenValue.FromNumber(ui);
                 if (result is int i) return FenValue.FromNumber(i);
                 if (result is float f) return FenValue.FromNumber(f);
@@ -428,14 +428,14 @@ namespace FenBrowser.FenEngine.DOM
             }
             
             public bool Has(string key, IExecutionContext context = null) => _methods.ContainsKey(key) || key == "drawingBufferWidth" || key == "drawingBufferHeight" || key == "canvas";
-            public void Set(string key, IValue value, IExecutionContext context = null) { /* WebGL context properties are read-only */ }
+            public void Set(string key, FenValue value, IExecutionContext context = null) { /* WebGL context properties are read-only */ }
             public bool Delete(string key, IExecutionContext context = null) => false;
             public IEnumerable<string> Keys(IExecutionContext context = null) => _methods.Keys;
             public IObject GetPrototype() => _prototype;
             public void SetPrototype(IObject prototype) => _prototype = prototype;
         }
 
-        private IValue GetInnerHTML()
+        private FenValue GetInnerHTML()
         {
             if (!_context.Permissions.CheckAndLog(JsPermissions.DomRead, "innerHTML"))
                 throw new FenSecurityError("DOM read permission required");
@@ -445,11 +445,11 @@ namespace FenBrowser.FenEngine.DOM
 
         private string CollectInnerHtml(Node node)
         {
-            if (node == null) return "";
+            if (node  == null) return "";
             if (!(node is Element element))
                 return node.NodeType == NodeType.Text ? node.NodeValue ?? "" : "";
             
-            if (element.Children == null || element.Children.Count == 0)
+            if (element.Children  == null || element.Children.Count == 0)
                 return element.Text ?? "";
 
             var sb = new StringBuilder();
@@ -478,7 +478,7 @@ namespace FenBrowser.FenEngine.DOM
             return sb.ToString();
         }
 
-        private void SetInnerHTML(IValue value)
+        private void SetInnerHTML(FenValue value)
         {
             var removed = _element.Children != null ? new System.Collections.Generic.List<Element>(_element.Children.OfType<Element>()) : new System.Collections.Generic.List<Element>();
 
@@ -521,7 +521,7 @@ namespace FenBrowser.FenEngine.DOM
             });
         }
 
-        private IValue GetTextContent()
+        private FenValue GetTextContent()
         {
             if (!_context.Permissions.CheckAndLog(JsPermissions.DomRead, "textContent"))
                 throw new FenSecurityError("DOM read permission required");
@@ -531,9 +531,9 @@ namespace FenBrowser.FenEngine.DOM
 
         private string CollectText(Node node)
         {
-            if (node == null) return "";
+            if (node  == null) return "";
             if (node.IsText) return node.Text ?? "";
-            if (node.Children == null) return "";
+            if (node.Children  == null) return "";
             
             var sb = new StringBuilder();
             foreach (var child in node.Children)
@@ -543,7 +543,7 @@ namespace FenBrowser.FenEngine.DOM
             return sb.ToString();
         }
 
-        private void SetTextContent(IValue value)
+        private void SetTextContent(FenValue value)
         {
             var text = value.ToString();
             
@@ -558,7 +558,7 @@ namespace FenBrowser.FenEngine.DOM
             ));
         }
 
-        private IValue GetAttribute(IValue[] args, IValue thisVal)
+        private FenValue CreateElement(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0) return FenValue.Null;
             var attrName = args[0].ToString();
@@ -567,7 +567,16 @@ namespace FenBrowser.FenEngine.DOM
                 : FenValue.Null;
         }
 
-        private IValue SetAttribute(IValue[] args, IValue thisVal)
+        private FenValue GetAttribute(FenValue[] args, FenValue thisVal)
+        {
+            if (args.Length == 0) return FenValue.Null;
+            var attrName = args[0].ToString();
+            return _element.Attr != null && _element.Attr.TryGetValue(attrName, out var value)
+                ? FenValue.FromString(value)
+                : FenValue.Null;
+        }
+
+        private FenValue SetAttribute(FenValue[] args, FenValue thisVal)
         {
             if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "setAttribute"))
                 throw new FenSecurityError("DOM write permission required");
@@ -596,13 +605,13 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.Undefined;
         }
 
-        private IValue HasAttribute(IValue[] args, IValue thisVal)
+        private FenValue HasAttribute(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0) return FenValue.FromBoolean(false);
             return FenValue.FromBoolean(_element.HasAttribute(args[0].ToString()));
         }
 
-        private IValue RemoveAttribute(IValue[] args, IValue thisVal)
+        private FenValue RemoveAttribute(FenValue[] args, FenValue thisVal)
         {
             if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "removeAttribute"))
                 throw new FenSecurityError("DOM write permission required");
@@ -612,14 +621,14 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.Undefined;
         }
 
-        private IValue GetAttributeNode(IValue[] args, IValue thisVal)
+        private FenValue GetAttributeNode(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0) return FenValue.Null;
             var attr = _element.GetAttributeNode(args[0].ToString());
             return attr != null ? FenValue.FromObject(new AttrWrapper(attr, _context)) : FenValue.Null;
         }
 
-        private IValue SetAttributeNode(IValue[] args, IValue thisVal)
+        private FenValue SetAttributeNode(FenValue[] args, FenValue thisVal)
         {
             if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "setAttributeNode"))
                 throw new FenSecurityError("DOM write permission required");
@@ -627,7 +636,7 @@ namespace FenBrowser.FenEngine.DOM
              if (args.Length == 0 || !args[0].IsObject) return FenValue.Null;
              
              var wrapper = args[0].AsObject() as AttrWrapper;
-             if (wrapper == null) throw new FenSecurityError("Argument must be an Attr node");
+             if (wrapper  == null) throw new FenSecurityError("Argument must be an Attr node");
 
              try
              {
@@ -640,7 +649,7 @@ namespace FenBrowser.FenEngine.DOM
              }
         }
 
-        private IValue RemoveAttributeNode(IValue[] args, IValue thisVal)
+        private FenValue RemoveAttributeNode(FenValue[] args, FenValue thisVal)
         {
              if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "removeAttributeNode"))
                 throw new FenSecurityError("DOM write permission required");
@@ -648,7 +657,7 @@ namespace FenBrowser.FenEngine.DOM
              if (args.Length == 0 || !args[0].IsObject) return FenValue.Null;
              
              var wrapper = args[0].AsObject() as AttrWrapper;
-             if (wrapper == null) throw new FenSecurityError("Argument must be an Attr node");
+             if (wrapper  == null) throw new FenSecurityError("Argument must be an Attr node");
 
              try
              {
@@ -693,7 +702,7 @@ namespace FenBrowser.FenEngine.DOM
             return GetDimension("height");
         }
 
-        private IValue AppendChild(IValue[] args, IValue thisVal)
+        private FenValue AppendChild(FenValue[] args, FenValue thisVal)
         {
             if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "appendChild"))
                 throw new FenSecurityError("DOM write permission required");
@@ -720,7 +729,7 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.Null;
         }
 
-        private IValue RemoveChild(IValue[] args, IValue thisVal)
+        private FenValue RemoveChild(FenValue[] args, FenValue thisVal)
         {
             if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "removeChild"))
                 throw new FenSecurityError("DOM write permission required");
@@ -750,7 +759,7 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Implements element.matches(selector) - checks if element matches a CSS selector
         /// </summary>
-        private IValue MatchesSelector(IValue[] args, IValue thisVal)
+        private FenValue MatchesSelector(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0 || !args[0].IsString) return FenValue.FromBoolean(false);
             
@@ -769,7 +778,7 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Implements element.closest(selector) - finds nearest ancestor matching selector
         /// </summary>
-        private IValue ClosestSelector(IValue[] args, IValue thisVal)
+        private FenValue ClosestSelector(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0 || !args[0].IsString) return FenValue.Null;
             
@@ -798,7 +807,7 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Implements element.querySelector(selector) - finds first descendant matching selector
         /// </summary>
-        private IValue QuerySelector(IValue[] args, IValue thisVal)
+        private FenValue QuerySelector(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0 || !args[0].IsString) return FenValue.Null;
             
@@ -817,14 +826,14 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Implements element.querySelectorAll(selector) - finds all descendants matching selector
         /// </summary>
-        private IValue QuerySelectorAll(IValue[] args, IValue thisVal)
+        private FenValue QuerySelectorAll(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0 || !args[0].IsString) return CreateEmptyArray();
             
             try
             {
                 var selector = args[0].ToString();
-                var results = new List<IValue>();
+                var results = new List<FenValue>();
                 FindAllDescendants(_element, selector, results);
                 return CreateArrayFromResults(results);
             }
@@ -836,7 +845,7 @@ namespace FenBrowser.FenEngine.DOM
 
         private Element FindFirstDescendant(Element parent, string selector)
         {
-            if (parent.Children == null) return null;
+            if (parent.Children  == null) return null;
             
             foreach (var child in parent.Children.OfType<Element>())
             {
@@ -852,9 +861,9 @@ namespace FenBrowser.FenEngine.DOM
             return null;
         }
 
-        private void FindAllDescendants(Element parent, string selector, List<IValue> results)
+        private void FindAllDescendants(Element parent, string selector, List<FenValue> results)
         {
-            if (parent.Children == null) return;
+            if (parent.Children  == null) return;
             
             foreach (var child in parent.Children.OfType<Element>())
             {
@@ -870,7 +879,7 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Create an array-like FenObject from a list of LiteElements
         /// </summary>
-        private IValue CreateArrayFromElements(List<Element> elements)
+        private FenValue CreateArrayFromElements(List<Element> elements)
         {
             var arr = new FenObject();
             for (int i = 0; i < elements.Count; i++)
@@ -882,9 +891,9 @@ namespace FenBrowser.FenEngine.DOM
         }
 
         /// <summary>
-        /// Create an array-like FenObject from a list of IValue results
+        /// Create an array-like FenObject from a list of FenValue results
         /// </summary>
-        private IValue CreateArrayFromResults(List<IValue> results)
+        private FenValue CreateArrayFromResults(List<FenValue> results)
         {
             var arr = new FenObject();
             for (int i = 0; i < results.Count; i++)
@@ -898,7 +907,7 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Create an empty array-like FenObject
         /// </summary>
-        private IValue CreateEmptyArray()
+        private FenValue CreateEmptyArray()
         {
             var arr = new FenObject();
             arr.Set("length", FenValue.FromNumber(0));
@@ -908,7 +917,7 @@ namespace FenBrowser.FenEngine.DOM
         // Expose underlying element to other wrappers
 
 
-        private IValue FocusMethod(IValue[] args, IValue thisVal)
+        private FenValue FocusMethod(FenValue[] args, FenValue thisVal)
         {
             if (_element.OwnerDocument != null)
             {
@@ -932,7 +941,7 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.Undefined;
         }
 
-        private IValue BlurMethod(IValue[] args, IValue thisVal)
+        private FenValue BlurMethod(FenValue[] args, FenValue thisVal)
         {
              if (_element.OwnerDocument != null && _element.OwnerDocument.ActiveElement == _element)
              {
@@ -942,7 +951,7 @@ namespace FenBrowser.FenEngine.DOM
              return FenValue.Undefined;
         }
 
-        private IValue CloneNodeMethod(IValue[] args, IValue thisVal)
+        private FenValue CloneNodeMethod(FenValue[] args, FenValue thisVal)
         {
             bool deep = false;
             if (args.Length > 0) deep = args[0].ToBoolean();
@@ -967,7 +976,7 @@ namespace FenBrowser.FenEngine.DOM
             _context = context;
         }
 
-        public IValue Get(string key, IExecutionContext context = null)
+        public FenValue Get(string key, IExecutionContext context = null)
         {
             var val = _element.Attr != null && _element.Attr.ContainsKey(_attrName) ? _element.Attr[_attrName] : "";
             var tokens = new List<string>(val.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries));
@@ -986,14 +995,14 @@ namespace FenBrowser.FenEngine.DOM
             }
         }
 
-        private IValue Modify(List<string> tokens, IValue[] args, Action<string, List<string>> action)
+        private FenValue Modify(List<string> tokens, FenValue[] args, Action<string, List<string>> action)
         {
             foreach (var arg in args) action(arg.ToString(), tokens);
             Update(tokens);
             return FenValue.Undefined;
         }
 
-        private IValue Toggle(List<string> tokens, IValue[] args)
+        private FenValue Toggle(List<string> tokens, FenValue[] args)
         {
              if (args.Length == 0) return FenValue.FromBoolean(false);
              var token = args[0].ToString();
@@ -1010,7 +1019,7 @@ namespace FenBrowser.FenEngine.DOM
             _context?.RequestRender?.Invoke();
         }
 
-        public void Set(string key, IValue value, IExecutionContext context = null) { }
+        public void Set(string key, FenValue value, IExecutionContext context = null) { }
         public bool Has(string key, IExecutionContext context = null) => !Get(key, context).IsUndefined;
         public bool Delete(string key, IExecutionContext context = null) => false;
         public IEnumerable<string> Keys(IExecutionContext context = null) => new string[0];
@@ -1031,7 +1040,7 @@ namespace FenBrowser.FenEngine.DOM
             _context = context;
         }
 
-        public IValue Get(string key, IExecutionContext context = null)
+        public FenValue Get(string key, IExecutionContext context = null)
         {
             var attrName = "data-" + CamelToKebab(key);
             if (_element.Attr != null && _element.Attr.TryGetValue(attrName, out var val))
@@ -1039,7 +1048,7 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.Undefined;
         }
 
-        public void Set(string key, IValue value, IExecutionContext context = null)
+        public void Set(string key, FenValue value, IExecutionContext context = null)
         {
             var attrName = "data-" + CamelToKebab(key);
             _element.SetAttribute(attrName, value.ToString());
@@ -1071,7 +1080,7 @@ namespace FenBrowser.FenEngine.DOM
             _context = context;
         }
 
-        public IValue Get(string key, IExecutionContext context = null)
+        public FenValue Get(string key, IExecutionContext context = null)
         {
             // Get style property from element attributes (style="key:value")
             // Simplified: parsing style attribute every time is slow but works for now
@@ -1085,10 +1094,19 @@ namespace FenBrowser.FenEngine.DOM
             if (string.Equals(key, "removeProperty", StringComparison.OrdinalIgnoreCase))
                 return FenValue.FromFunction(new FenFunction("removeProperty", RemoveProperty));
                 
-            return styles.ContainsKey(key) ? FenValue.FromString(styles[key]) : FenValue.Undefined;
+            var cssKey = CamelToKebab(key);
+            return styles.ContainsKey(cssKey) ? FenValue.FromString(styles[cssKey]) : FenValue.Undefined;
         }
 
-        public void Set(string key, IValue value, IExecutionContext context = null)
+        private string CamelToKebab(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return s;
+            // Handle --custom-properties as-is
+            if (s.StartsWith("--")) return s;
+            return System.Text.RegularExpressions.Regex.Replace(s, "(?<!^)([A-Z])", "-$1").ToLower();
+        }
+
+        public void Set(string key, FenValue value, IExecutionContext context = null)
         {
              if (_context != null)
             {
@@ -1098,7 +1116,8 @@ namespace FenBrowser.FenEngine.DOM
 
             var styleStr = _element.Attr?.ContainsKey("style") == true ? _element.Attr["style"] : "";
             var styles = ParseStyle(styleStr);
-            styles[key] = value.ToString();
+            var cssKey = CamelToKebab(key);
+            styles[cssKey] = value.ToString();
             
             // Rebuild style string
             var sb = new StringBuilder();
@@ -1107,11 +1126,9 @@ namespace FenBrowser.FenEngine.DOM
                 sb.Append($"{kvp.Key}:{kvp.Value};");
             }
             
-            if (_element.Attr != null)
+            if (_element != null)
             {
-                _element.Attr["style"] = sb.ToString();
-                // Debug: Log element tag and final style value
-                /* [PERF-REMOVED] */
+                _element.SetAttribute("style", sb.ToString());
             }
             else
             {
@@ -1122,21 +1139,21 @@ namespace FenBrowser.FenEngine.DOM
             _context.RequestRender?.Invoke();
         }
 
-        private IValue SetProperty(IValue[] args, IValue thisVal)
+        private FenValue SetProperty(FenValue[] args, FenValue thisVal)
         {
             if (args.Length < 2) return FenValue.Undefined;
             Set(args[0].ToString(), args[1]);
             return FenValue.Undefined;
         }
 
-        private IValue GetPropertyValue(IValue[] args, IValue thisVal)
+        private FenValue GetPropertyValue(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0) return FenValue.FromString("");
             var val = Get(args[0].ToString());
             return val.IsUndefined ? FenValue.FromString("") : val;
         }
 
-        private IValue RemoveProperty(IValue[] args, IValue thisVal)
+        private FenValue RemoveProperty(FenValue[] args, FenValue thisVal)
         {
              if (args.Length == 0) return FenValue.FromString("");
              var key = args[0].ToString();
@@ -1151,7 +1168,7 @@ namespace FenBrowser.FenEngine.DOM
                 // Rebuild
                 var sb = new StringBuilder();
                 foreach (var kvp in styles) sb.Append($"{kvp.Key}:{kvp.Value};");
-                if (_element.Attr != null) _element.Attr["style"] = sb.ToString();
+                if (_element != null) _element.SetAttribute("style", sb.ToString());
                 
                  _context?.RequestRender?.Invoke();
                  return FenValue.FromString(val);
@@ -1188,7 +1205,7 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Show the dialog element (non-modal)
         /// </summary>
-        private IValue ShowDialog(IValue[] args, IValue thisValue)
+        private FenValue ShowDialog(FenValue[] args, FenValue thisValue)
         {
             if (_element.Tag?.ToUpperInvariant() != "DIALOG")
                 return FenValue.Undefined;
@@ -1204,7 +1221,7 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Show the dialog element as a modal (with backdrop)
         /// </summary>
-        private IValue ShowModalDialog(IValue[] args, IValue thisValue)
+        private FenValue ShowModalDialog(FenValue[] args, FenValue thisValue)
         {
             if (_element.Tag?.ToUpperInvariant() != "DIALOG")
                 return FenValue.Undefined;
@@ -1229,7 +1246,7 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Close the dialog element
         /// </summary>
-        private IValue CloseDialog(IValue[] args, IValue thisValue)
+        private FenValue CloseDialog(FenValue[] args, FenValue thisValue)
         {
             if (_element.Tag?.ToUpperInvariant() != "DIALOG")
                 return FenValue.Undefined;
@@ -1267,14 +1284,14 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// element.addEventListener(type, listener, options)
         /// </summary>
-        private IValue AddEventListenerMethod(IValue[] args, IValue thisValue)
+        private FenValue AddEventListenerMethod(FenValue[] args, FenValue thisValue)
         {
             if (args.Length < 2) return FenValue.Undefined;
 
             var type = args[0].ToString();
             var callback = args[1];
 
-            if (string.IsNullOrEmpty(type) || callback == null || !callback.IsFunction)
+            if (string.IsNullOrEmpty(type) || callback  == null || !callback.IsFunction)
                 return FenValue.Undefined;
 
             // Parse options (can be boolean for capture, or object with options)
@@ -1293,9 +1310,12 @@ namespace FenBrowser.FenEngine.DOM
                     var opts = args[2].AsObject() as FenObject;
                     if (opts != null)
                     {
-                        capture = opts.Get("capture")?.ToBoolean() ?? false;
-                        once = opts.Get("once")?.ToBoolean() ?? false;
-                        passive = opts.Get("passive")?.ToBoolean() ?? false;
+                        var cVal = opts.Get("capture");
+                        capture = !cVal.IsUndefined ? cVal.ToBoolean() : false;
+                        var oVal = opts.Get("once");
+                        once = !oVal.IsUndefined ? oVal.ToBoolean() : false;
+                        var pVal = opts.Get("passive");
+                        passive = !pVal.IsUndefined ? pVal.ToBoolean() : false;
                     }
                 }
             }
@@ -1307,14 +1327,14 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// element.removeEventListener(type, listener, options)
         /// </summary>
-        private IValue RemoveEventListenerMethod(IValue[] args, IValue thisValue)
+        private FenValue RemoveEventListenerMethod(FenValue[] args, FenValue thisValue)
         {
             if (args.Length < 2) return FenValue.Undefined;
 
             var type = args[0].ToString();
             var callback = args[1];
 
-            if (string.IsNullOrEmpty(type) || callback == null)
+            if (string.IsNullOrEmpty(type) || callback  == null)
                 return FenValue.Undefined;
 
             // Parse capture option
@@ -1328,7 +1348,8 @@ namespace FenBrowser.FenEngine.DOM
                 else if (args[2].IsObject)
                 {
                     var opts = args[2].AsObject() as FenObject;
-                    capture = opts?.Get("capture")?.ToBoolean() ?? false;
+                    var cVal = opts?.Get("capture") ?? FenValue.Undefined;
+                    capture = !cVal.IsUndefined ? cVal.ToBoolean() : false;
                 }
             }
 
@@ -1340,21 +1361,24 @@ namespace FenBrowser.FenEngine.DOM
         /// element.dispatchEvent(event)
         /// Implements W3C event dispatch algorithm with capture/target/bubble phases
         /// </summary>
-        private IValue DispatchEventMethod(IValue[] args, IValue thisValue)
+        private FenValue DispatchEventMethod(FenValue[] args, FenValue thisValue)
         {
             if (args.Length == 0 || !args[0].IsObject)
                 return FenValue.FromBoolean(false);
 
             var eventObj = args[0].AsObject() as DomEvent;
-            if (eventObj == null)
+            if (eventObj  == null)
             {
                 // May be a FenObject with event-like properties - create a DomEvent from it
                 var obj = args[0].AsObject() as FenObject;
-                if (obj == null) return FenValue.FromBoolean(false);
+                if (obj  == null) return FenValue.FromBoolean(false);
 
-                var type = obj.Get("type")?.ToString() ?? "";
-                var bubbles = obj.Get("bubbles")?.ToBoolean() ?? false;
-                var cancelable = obj.Get("cancelable")?.ToBoolean() ?? false;
+                var typeVal = obj.Get("type");
+                var type = !typeVal.IsUndefined ? typeVal.ToString() : "";
+                var bVal = obj.Get("bubbles");
+                var bubbles = !bVal.IsUndefined ? bVal.ToBoolean() : false;
+                var cVal = obj.Get("cancelable");
+                var cancelable = !cVal.IsUndefined ? cVal.ToBoolean() : false;
                 eventObj = new DomEvent(type, bubbles, cancelable);
             }
 
@@ -1363,17 +1387,17 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.FromBoolean(result);
         }
 
-        private IValue AttachShadow(IValue[] args, IValue thisVal)
+        private FenValue AttachShadow(FenValue[] args, FenValue thisVal)
         {
             if (args.Length < 1 || !args[0].IsObject)
-                return new ErrorValue("attachShadow requires an options object with 'mode'");
+                return FenValue.FromObject(CreateError("attachShadow requires an options object with 'mode'"));
             
             var options = args[0].AsObject();
             var modeVal = options.Get("mode");
-            var mode = modeVal?.ToString();
+            var mode = !modeVal.IsUndefined ? modeVal.ToString() : null;
             
             if (mode != "open" && mode != "closed")
-                return new ErrorValue("ShadowRoot mode must be 'open' or 'closed'");
+                return FenValue.FromObject(CreateError("ShadowRoot mode must be 'open' or 'closed'"));
             
             try 
             {
@@ -1382,8 +1406,16 @@ namespace FenBrowser.FenEngine.DOM
             }
             catch (InvalidOperationException ex)
             {
-                return new ErrorValue(ex.Message);
+                return FenValue.FromObject(CreateError(ex.Message));
             }
+        }
+
+        private FenObject CreateError(string msg)
+        {
+             var err = new FenObject();
+             err.Set("name", FenValue.FromString("Error"));
+             err.Set("message", FenValue.FromString(msg));
+             return err;
         }
     }
 }

@@ -28,7 +28,7 @@ namespace FenBrowser.FenEngine.DOM
 
         public Attr Attr => _attr;
 
-        public IValue Get(string key, IExecutionContext context = null)
+        public FenValue Get(string key, IExecutionContext context = null)
         {
             _context?.CheckExecutionTimeLimit();
 
@@ -61,7 +61,7 @@ namespace FenBrowser.FenEngine.DOM
             }
         }
 
-        public void Set(string key, IValue value, IExecutionContext context = null)
+        public void Set(string key, FenValue value, IExecutionContext context = null)
         {
             _context?.CheckExecutionTimeLimit();
 

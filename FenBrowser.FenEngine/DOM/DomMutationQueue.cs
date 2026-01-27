@@ -91,7 +91,7 @@ namespace FenBrowser.FenEngine.DOM
         /// </summary>
         public void EnqueueMutation(DomMutation mutation)
         {
-            if (mutation == null) return;
+            if (mutation  == null) return;
 
             // Phase assertion: must be in JSExecution to enqueue mutations
             EnginePhaseManager.AssertNotInPhase(

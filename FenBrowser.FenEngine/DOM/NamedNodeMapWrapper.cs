@@ -26,7 +26,7 @@ namespace FenBrowser.FenEngine.DOM
             NativeObject = map;
         }
 
-        public IValue Get(string key, IExecutionContext context = null)
+        public FenValue Get(string key, IExecutionContext context = null)
         {
             _context?.CheckExecutionTimeLimit();
 
@@ -71,7 +71,7 @@ namespace FenBrowser.FenEngine.DOM
             }
         }
 
-        public void Set(string key, IValue value, IExecutionContext context = null)
+        public void Set(string key, FenValue value, IExecutionContext context = null)
         {
             // Read-only collection structure, though items can be modified via methods
         }
@@ -96,7 +96,7 @@ namespace FenBrowser.FenEngine.DOM
 
         // --- Methods ---
 
-        private IValue Item(IValue[] args, IValue thisVal)
+        private FenValue Item(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0) return FenValue.Null;
             var idx = (int)args[0].ToNumber();
@@ -104,7 +104,7 @@ namespace FenBrowser.FenEngine.DOM
             return attr != null ? FenValue.FromObject(new AttrWrapper(attr, _context)) : FenValue.Null;
         }
 
-        private IValue GetNamedItem(IValue[] args, IValue thisVal)
+        private FenValue GetNamedItem(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0) return FenValue.Null;
             var name = args[0].ToString();
@@ -112,7 +112,7 @@ namespace FenBrowser.FenEngine.DOM
             return attr != null ? FenValue.FromObject(new AttrWrapper(attr, _context)) : FenValue.Null;
         }
 
-        private IValue SetNamedItem(IValue[] args, IValue thisVal)
+        private FenValue SetNamedItem(FenValue[] args, FenValue thisVal)
         {
             if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "NamedNodeMap.setNamedItem"))
                  throw new FenSecurityError("DOM write permission required");
@@ -120,7 +120,7 @@ namespace FenBrowser.FenEngine.DOM
             if (args.Length == 0 || !args[0].IsObject) return FenValue.Null;
             
             var wrapper = args[0].AsObject() as AttrWrapper;
-            if (wrapper == null) throw new FenSecurityError("Argument 1 of setNamedItem is not an Attr.");
+            if (wrapper  == null) throw new FenSecurityError("Argument 1 of setNamedItem is not an Attr.");
 
             // Setting an attribute on map triggers owner element update internally in Core.NamedNodeMap
             // Exception: InUseAttributeError is handled in Core
@@ -135,7 +135,7 @@ namespace FenBrowser.FenEngine.DOM
             }
         }
 
-        private IValue RemoveNamedItem(IValue[] args, IValue thisVal)
+        private FenValue RemoveNamedItem(FenValue[] args, FenValue thisVal)
         {
             if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "NamedNodeMap.removeNamedItem"))
                  throw new FenSecurityError("DOM write permission required");

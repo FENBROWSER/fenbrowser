@@ -35,7 +35,7 @@ namespace FenBrowser.FenEngine.DOM
 
         internal Node Node => _root;
 
-        public IValue Get(string key, IExecutionContext context = null)
+        public FenValue Get(string key, IExecutionContext context = null)
         {
             _context?.CheckExecutionTimeLimit();
 
@@ -96,7 +96,7 @@ namespace FenBrowser.FenEngine.DOM
                 case "activeelement":
                     var active = _root.ActiveElement;
                      // Default to body if no focus
-                    if (active == null) active = FindElementByTag(_root, "body");
+                    if (active  == null) active = FindElementByTag(_root, "body");
                     return active != null ? FenValue.FromObject(new ElementWrapper(active, _context)) : FenValue.Null;
 
                 case "readystate":
@@ -139,7 +139,7 @@ namespace FenBrowser.FenEngine.DOM
             }
         }
 
-        public void Set(string key, IValue value, IExecutionContext context = null)
+        public void Set(string key, FenValue value, IExecutionContext context = null)
         {
             if (key.ToLowerInvariant() == "cookie")
             {
@@ -157,7 +157,7 @@ namespace FenBrowser.FenEngine.DOM
         public IObject GetPrototype() => _prototype;
         public void SetPrototype(IObject prototype) => _prototype = prototype;
 
-        private IValue CreateElement(IValue[] args, IValue thisVal)
+        private FenValue CreateElement(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0) return FenValue.Null;
             var tagName = args[0].ToString();
@@ -166,7 +166,7 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.FromObject(new ElementWrapper(element, _context));
         }
 
-        private IValue GetElementById(IValue[] args, IValue thisVal)
+        private FenValue GetElementById(FenValue[] args, FenValue thisVal)
         {
             if (!_context.Permissions.CheckAndLog(JsPermissions.DomRead, "getElementById"))
                 throw new FenSecurityError("DOM read permission required");
@@ -189,7 +189,7 @@ namespace FenBrowser.FenEngine.DOM
             }
         }
 
-        private IValue QuerySelector(IValue[] args, IValue thisVal)
+        private FenValue QuerySelector(FenValue[] args, FenValue thisVal)
         {
             if (!_context.Permissions.CheckAndLog(JsPermissions.DomRead, "querySelector"))
                 throw new FenSecurityError("DOM read permission required");
@@ -222,7 +222,7 @@ namespace FenBrowser.FenEngine.DOM
             {
                 try
                 {
-                    l.Callback.AsFunction().Invoke(new IValue[] { FenValue.FromObject(evt) }, _context);
+                    l.Callback.AsFunction().Invoke(new FenValue[] { FenValue.FromObject(evt) }, _context);
                     if (l.Once) ElementWrapper.EventRegistry.Remove(_root, evt.Type, l.Callback, l.Capture);
                 }
                 catch (Exception ex)
@@ -232,14 +232,14 @@ namespace FenBrowser.FenEngine.DOM
             }
         }
 
-        private IValue CreateDocumentFragment(IValue[] args, IValue thisVal)
+        private FenValue CreateDocumentFragment(FenValue[] args, FenValue thisVal)
         {
             var doc = _root as Document ?? _root.OwnerDocument;
             var frag = doc != null ? doc.CreateDocumentFragment() : new DocumentFragment();
             return DomWrapperFactory.Wrap(frag, _context);
         }
 
-        private IValue CreateTextNode(IValue[] args, IValue thisVal)
+        private FenValue CreateTextNode(FenValue[] args, FenValue thisVal)
         {
             var text = args.Length > 0 ? args[0].ToString() : "";
             var doc = _root as Document ?? _root.OwnerDocument;
@@ -247,7 +247,7 @@ namespace FenBrowser.FenEngine.DOM
             return DomWrapperFactory.Wrap(node, _context);
         }
 
-        private IValue CreateComment(IValue[] args, IValue thisVal)
+        private FenValue CreateComment(FenValue[] args, FenValue thisVal)
         {
             var text = args.Length > 0 ? args[0].ToString() : "";
             var doc = _root as Document ?? _root.OwnerDocument;
@@ -255,20 +255,20 @@ namespace FenBrowser.FenEngine.DOM
             return DomWrapperFactory.Wrap(node, _context);
         }
 
-        private IValue CreateRange(IValue[] args, IValue thisVal)
+        private FenValue CreateRange(FenValue[] args, FenValue thisVal)
         {
             var doc = _root as Document ?? _root.OwnerDocument;
             return FenValue.FromObject(new RangeWrapper(new Range(doc), _context));
         }
 
-        private IValue CreateEvent(IValue[] args, IValue thisVal)
+        private FenValue CreateEvent(FenValue[] args, FenValue thisVal)
         {
             var type = args.Length > 0 ? args[0].ToString() : "";
             // Pass context to event so it can wrap nodes in composedPath
             return FenValue.FromObject(new DomEvent(type, false, false, false, _context));
         }
 
-        private IValue QuerySelectorAll(IValue[] args, IValue thisVal)
+        private FenValue QuerySelectorAll(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0) return FenValue.Null;
             var selector = args[0].ToString();
@@ -281,7 +281,7 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.FromObject(list);
         }
 
-        private IValue GetElementsByClassName(IValue[] args, IValue thisVal)
+        private FenValue GetElementsByClassName(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0) return FenValue.Null;
             var classNames = args[0].ToString().Split(new[]{' '}, StringSplitOptions.RemoveEmptyEntries);
@@ -294,7 +294,7 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.FromObject(list);
         }
 
-        private IValue GetElementsByTagName(IValue[] args, IValue thisVal)
+        private FenValue GetElementsByTagName(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0) return FenValue.Null;
             var tagName = args[0].ToString();
@@ -345,7 +345,7 @@ namespace FenBrowser.FenEngine.DOM
 
         private Element FindElementById(Element element, string id)
         {
-            if (element == null) return null;
+            if (element  == null) return null;
 
             // Check if this element has the ID
             if (element.Attr != null && 
@@ -370,7 +370,7 @@ namespace FenBrowser.FenEngine.DOM
 
         private Element FindElementByTag(Element element, string tagName)
         {
-            if (element == null) return null;
+            if (element  == null) return null;
 
             // Check if this element matches
             if (string.Equals(element.Tag, tagName, StringComparison.OrdinalIgnoreCase))
@@ -393,14 +393,14 @@ namespace FenBrowser.FenEngine.DOM
 
         // --- Event Listener Implementation ---
 
-        private IValue AddEventListenerMethod(IValue[] args, IValue thisValue)
+        private FenValue AddEventListenerMethod(FenValue[] args, FenValue thisValue)
         {
             if (args.Length < 2) return FenValue.Undefined;
 
             var type = args[0].ToString();
             var callback = args[1];
 
-            if (string.IsNullOrEmpty(type) || callback == null || !callback.IsFunction)
+            if (string.IsNullOrEmpty(type) || callback  == null || !callback.IsFunction)
                 return FenValue.Undefined;
             
             FenLogger.Debug($"[DocumentWrapper] addEventListener called for '{type}'", FenBrowser.Core.Logging.LogCategory.JavaScript);
@@ -411,7 +411,7 @@ namespace FenBrowser.FenEngine.DOM
                 FenLogger.Debug($"[DocumentWrapper] Immediate execution of {type}", FenBrowser.Core.Logging.LogCategory.JavaScript);
                 try {
                     var evt = new DomEvent(type);
-                    callback.AsFunction().Invoke(new IValue[] { FenValue.FromObject(evt) }, _context);
+                    callback.AsFunction().Invoke(new FenValue[] { FenValue.FromObject(evt) }, _context);
                 } catch (Exception ex) {
                     FenLogger.Error($"[DocumentWrapper] Error executing immediate {type}: {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript);
                 }
@@ -432,9 +432,14 @@ namespace FenBrowser.FenEngine.DOM
                     var opts = args[2].AsObject() as FenObject;
                     if (opts != null)
                     {
-                        capture = opts.Get("capture")?.ToBoolean() ?? false;
-                        once = opts.Get("once")?.ToBoolean() ?? false;
-                        passive = opts.Get("passive")?.ToBoolean() ?? false;
+                        var cVal = opts.Get("capture");
+                        capture = cVal.IsBoolean ? cVal.ToBoolean() : false;
+                        
+                        var oVal = opts.Get("once");
+                        once = oVal.IsBoolean ? oVal.ToBoolean() : false;
+                        
+                        var pVal = opts.Get("passive");
+                        passive = pVal.IsBoolean ? pVal.ToBoolean() : false;
                     }
                 }
             }
@@ -443,7 +448,7 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.Undefined;
         }
 
-        private IValue RemoveEventListenerMethod(IValue[] args, IValue thisValue)
+        private FenValue RemoveEventListenerMethod(FenValue[] args, FenValue thisValue)
         {
             if (args.Length < 2) return FenValue.Undefined;
             var type = args[0].ToString();
@@ -455,17 +460,18 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.Undefined;
         }
 
-        private IValue DispatchEventMethod(IValue[] args, IValue thisValue)
+        private FenValue DispatchEventMethod(FenValue[] args, FenValue thisValue)
         {
             if (args.Length == 0 || !args[0].IsObject) return FenValue.FromBoolean(false);
             
             var eventObj = args[0].AsObject() as DomEvent;
             // Create proper event object if needed
-            if (eventObj == null)
+            if (eventObj  == null)
             {
                 var obj = args[0].AsObject() as FenObject;
-                if (obj == null) return FenValue.FromBoolean(false);
-                var type = obj.Get("type")?.ToString() ?? "";
+                if (obj  == null) return FenValue.FromBoolean(false);
+                var typeVal = obj.Get("type");
+                var type = !typeVal.IsUndefined ? typeVal.ToString() : "";
                 eventObj = new DomEvent(type);
             }
 
@@ -480,7 +486,7 @@ namespace FenBrowser.FenEngine.DOM
             var listeners = ElementWrapper.EventRegistry.Get(_root, eventObj.Type, false);
             foreach(var l in listeners) 
             {
-                 try { l.Callback.AsFunction().Invoke(new IValue[] { FenValue.FromObject(eventObj) }, _context); } catch {}
+                 try { l.Callback.AsFunction().Invoke(new FenValue[] { FenValue.FromObject(eventObj) }, _context); } catch {}
             }
             
             return FenValue.FromBoolean(true);
