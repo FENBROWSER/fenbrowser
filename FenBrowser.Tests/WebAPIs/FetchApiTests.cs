@@ -36,7 +36,7 @@ namespace FenBrowser.Tests.WebAPIs
         public void Fetch_ShouldReturnThenable()
         {
             var fetch = _context.Environment.Get("fetch").AsFunction();
-            var promise = fetch.Invoke(new IValue[] { FenValue.FromString("http://example.com") }, _context);
+            var promise = fetch.Invoke(new FenValue[] { FenValue.FromString("http://example.com") }, _context);
 
             Assert.NotNull(promise);
             Assert.True(promise.IsObject);
@@ -57,7 +57,7 @@ namespace FenBrowser.Tests.WebAPIs
              };
              
              var fetch = _context.Environment.Get("fetch").AsFunction();
-             var promise = fetch.Invoke(new IValue[] { FenValue.FromString("http://test.com") }, _context);
+             var promise = fetch.Invoke(new FenValue[] { FenValue.FromString("http://test.com") }, _context);
              
              // Verify resolution using .then()
              var tcs = new TaskCompletionSource<IValue>();
@@ -74,7 +74,7 @@ namespace FenBrowser.Tests.WebAPIs
 
              // promise.then(onFulfilled, onRejected)
              promise.AsObject().Get("then").AsFunction().Invoke(
-                 new IValue[] { FenValue.FromFunction(onFulfilled), FenValue.FromFunction(onRejected) },
+                 new FenValue[] { FenValue.FromFunction(onFulfilled), FenValue.FromFunction(onRejected) },
                  _context
              );
 
@@ -105,7 +105,7 @@ namespace FenBrowser.Tests.WebAPIs
              });
 
              var fetch = _context.Environment.Get("fetch").AsFunction();
-             var promise = fetch.Invoke(new IValue[] { FenValue.FromString("http://api.com") }, _context);
+             var promise = fetch.Invoke(new FenValue[] { FenValue.FromString("http://api.com") }, _context);
              
              // Chain fetch().then(res => res.text()).then(txt => ...)
              var tcs = new TaskCompletionSource<string>();
@@ -119,7 +119,7 @@ namespace FenBrowser.Tests.WebAPIs
                  // However, we are manually hooking 'then'.
                  // Let's just invoke text().then(final) inside here.
                  
-                 var textPromise = textFunc.Invoke(new IValue[]{}, _context);
+                 var textPromise = textFunc.Invoke(new FenValue[]{}, _context);
                  
                  var onTextFulfilled = new FenFunction("onTextFulfilled", (tArgs, tThis) => {
                      tcs.SetResult(tArgs[0].ToString());
@@ -127,14 +127,14 @@ namespace FenBrowser.Tests.WebAPIs
                  });
                  
                  textPromise.AsObject().Get("then").AsFunction().Invoke(
-                     new IValue[] { FenValue.FromFunction(onTextFulfilled) }, _context
+                     new FenValue[] { FenValue.FromFunction(onTextFulfilled) }, _context
                  );
                  
                  return FenValue.Undefined;
              });
 
              promise.AsObject().Get("then").AsFunction().Invoke(
-                 new IValue[] { FenValue.FromFunction(onFetchFulfilled) }, _context
+                 new FenValue[] { FenValue.FromFunction(onFetchFulfilled) }, _context
              );
              
              if (await Task.WhenAny(tcs.Task, Task.Delay(5000)) != tcs.Task)

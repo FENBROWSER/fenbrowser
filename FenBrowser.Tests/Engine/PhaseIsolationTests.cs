@@ -195,7 +195,7 @@ namespace FenBrowser.Tests.Engine
             proxyFunc.ProxyTarget = FenValue.FromFunction(new FenFunction("target", (args, thisVal) => FenValue.FromNumber(1)));
 
             // Act - should work fine in JSExecution phase
-            var result = proxyFunc.Invoke(new IValue[] { }, null);
+            var result = proxyFunc.Invoke(new FenValue[] { }, null);
 
             // Assert - trap was called successfully in JSExecution phase
             Assert.True(trapCalled);

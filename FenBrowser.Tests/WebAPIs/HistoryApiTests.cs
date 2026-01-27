@@ -89,7 +89,7 @@ namespace FenBrowser.Tests.WebAPIs
             stateObj.Set("foo", FenValue.FromString("bar"));
             
             // pushState(state, title, url)
-            pushState.Invoke(new IValue[] { 
+            pushState.Invoke(new FenValue[] { 
                 FenValue.FromObject(stateObj), 
                 FenValue.FromString("New Page"), 
                 FenValue.FromString("/new-url") 
@@ -114,7 +114,7 @@ namespace FenBrowser.Tests.WebAPIs
             var history = _context.Environment.Get("history").AsObject();
             var replaceState = history.Get("replaceState").AsFunction();
             
-            replaceState.Invoke(new IValue[] { 
+            replaceState.Invoke(new FenValue[] { 
                 FenValue.FromString("stateStr"), 
                 FenValue.FromString("Title"), 
             }, _context);
@@ -129,7 +129,7 @@ namespace FenBrowser.Tests.WebAPIs
             var history = _context.Environment.Get("history").AsObject();
             var back = history.Get("back").AsFunction();
             
-            back.Invoke(new IValue[] { }, _context);
+            back.Invoke(new FenValue[] { }, _context);
             
             Assert.True(_bridge.GoCalled);
             Assert.Equal(-1, _bridge.LastDelta);
@@ -141,7 +141,7 @@ namespace FenBrowser.Tests.WebAPIs
             var history = _context.Environment.Get("history").AsObject();
             var forward = history.Get("forward").AsFunction();
             
-            forward.Invoke(new IValue[] { }, _context);
+            forward.Invoke(new FenValue[] { }, _context);
             
             Assert.True(_bridge.GoCalled);
             Assert.Equal(1, _bridge.LastDelta);
@@ -153,7 +153,7 @@ namespace FenBrowser.Tests.WebAPIs
             var history = _context.Environment.Get("history").AsObject();
             var go = history.Get("go").AsFunction();
             
-            go.Invoke(new IValue[] { FenValue.FromNumber(-2) }, _context);
+            go.Invoke(new FenValue[] { FenValue.FromNumber(-2) }, _context);
             
             Assert.True(_bridge.GoCalled);
             Assert.Equal(-2, _bridge.LastDelta);

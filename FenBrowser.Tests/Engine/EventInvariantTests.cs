@@ -106,19 +106,13 @@ namespace FenBrowser.Tests.Engine
             public Action<Action> ScheduleMicrotask { get; set; } = (a) => a();
             
             // Critical part: ExecuteFunction
-            public Func<IValue, IValue[], IValue> ExecuteFunction { get; set; } = (funcVal, args) =>
+            public Func<FenValue, FenValue[], FenValue> ExecuteFunction { get; set; } = (funcVal, args) =>
             {
                 // Simple executor that calls Invoke directly
                 // We assume funcVal is FenFunction (wrapped in FenValue)
                 if (funcVal.IsFunction)
                 {
-                    return funcVal.AsFunction().Invoke(args, null); // Pass null as context to avoid recursion? or pass 'this'?
-                    // Invoke takes (args, context). 
-                    // If we pass 'this', it ends up as recursive call?
-                    // But Invoke logic calls NativeImplementation.
-                    // It only calls context.ExecuteFunction if it's NOT Native? 
-                    // No, FenFunction.Invoke calls context.ExecuteFunction if context!=null.
-                    // To break recursion: pass null context to Invoke.
+                    return funcVal.AsFunction().Invoke(args.Cast<FenValue>().ToArray(), null); // Pass null as context to avoid recursion
                 }
                 return FenValue.Undefined;
             };
@@ -132,7 +126,7 @@ namespace FenBrowser.Tests.Engine
             public void PopCallFrame() { }
             public void CheckCallStackLimit() { }
             public void CheckExecutionTimeLimit() { }
-            public IValue ThisBinding { get; set; } // Added missing member
+            public FenValue ThisBinding { get; set; } // Added missing member
         }
 
         private readonly TestContext _context = new TestContext();

@@ -44,7 +44,7 @@ namespace FenBrowser.Tests.WebAPIs
             var jsonPromiseValue = jsResponse.Get("json", context);
             Assert.True(jsonPromiseValue.IsFunction);
             
-            var promise = jsonPromiseValue.AsFunction().Invoke(new IValue[0], null).AsObject() as JsPromise;
+            var promise = jsonPromiseValue.AsFunction().Invoke(new FenValue[0], null).AsObject() as JsPromise;
             Assert.NotNull(promise);
 
             IValue result = null;
