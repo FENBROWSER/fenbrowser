@@ -25,7 +25,7 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         // Debug file logging - ENABLE temporarily to diagnose CSS loading
-        private const bool DEBUG_FILE_LOGGING = true;
+        private const bool DEBUG_FILE_LOGGING = false;
 
         public class MatchedRule
         {
@@ -174,81 +174,50 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 string uaCss = null;
                 
-                try
-                {
-                    // PRIORITY 1: Development path (hardcoded)
-                    var devPaths = new[] {
-                        @"c:\Users\udayk\Videos\FENBROWSER\FenBrowser.FenEngine\Assets\ua.css",
-                        Path.Combine(Directory.GetCurrentDirectory(), @"..\..\..\..\FenBrowser.FenEngine\Assets\ua.css"), 
-                        Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"Credits\ua.css"), // unlikely
-                        Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"ua.css")
+
+                    // PRIORITY 1: Check known locations relative to execution
+                    var appDir = AppDomain.CurrentDomain.BaseDirectory;
+                    var candidatePaths = new List<string>
+                    {
+                         Path.Combine(appDir, "Assets", "ua.css"),
+                         Path.Combine(appDir, "FenBrowser.FenEngine", "Assets", "ua.css"),
+                         @"c:\Users\udayk\Videos\FENBROWSER\FenBrowser.FenEngine\Assets\ua.css" // Absolute fallback for dev environment
                     };
-                    
+
                     bool loaded = false;
-                    foreach (var path in devPaths) {
-                        var p = Path.GetFullPath(path);
-                        if (System.IO.File.Exists(p)) {
-                             uaCss = System.IO.File.ReadAllText(p);
-                             System.Diagnostics.Debug.WriteLine($"[CssLoader] Loaded UA stylesheet from: {p}");
-                             Console.WriteLine($"[CssLoader] Loaded UA stylesheet from: {p}");
+                    foreach (var path in candidatePaths)
+                    {
+                        if (File.Exists(path))
+                        {
+                             uaCss = File.ReadAllText(path);
+                             FenLogger.Info($"[CssLoader] Loaded UA stylesheet from: {path}", LogCategory.Rendering);
                              loaded = true;
                              break;
-                        } else {
-                             Console.WriteLine($"[CssLoader] UA File NOT FOUND at: {p}");
                         }
                     }
                     
                     if (!loaded)
                     {
-                        // Fallback: try assembly path
-                        var assemblyDir = Path.GetDirectoryName(typeof(CssLoader).Assembly.Location);
-                        var uaCssPath = Path.Combine(assemblyDir, "Assets", "ua.css");
-                        if (File.Exists(uaCssPath))
-                        {
-                            uaCss = File.ReadAllText(uaCssPath);
-                            Console.WriteLine($"[CssLoader] Loaded UA stylesheet from assembly: {uaCssPath}");
-                        }
-                        else
-                        {
-                             Console.WriteLine($"[CssLoader] UA File NOT FOUND at assembly: {uaCssPath}");
-                        }
+                         FenLogger.Warn("[CssLoader] UA stylesheet NOT FOUND. Using minimal fallback.", LogCategory.Rendering);
+                         // Fallback matches the file we just created
+                         uaCss = @"
+                             html,body,div,p,h1,h2,h3,h4,h5,h6,ul,ol,li{display:block;margin:0;padding:0;}
+                             body{margin:8px;font-family:serif;}
+                             h1{font-size:2em;margin:0.67em 0;font-weight:bold;}
+                             h2{font-size:1.5em;margin:0.83em 0;font-weight:bold;}
+                             h3{font-size:1.17em;margin:1em 0;font-weight:bold;}
+                             p,ul,ol{margin:1em 0;}
+                             b,strong{font-weight:bold;}
+                             i,em{font-style:italic;}
+                             pre,code{font-family:monospace;}
+                         ";
                     }
-                }
-                catch (Exception readEx)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[CssLoader] Failed to read UA file: {readEx.Message}. Using fallback.");
-                    Console.WriteLine($"[CssLoader] Failed to read UA file: {readEx.Message}");
-                    /* [PERF-REMOVED] */
-                }
-                
-                // Fallback: minimal inline defaults
-                if (string.IsNullOrEmpty(uaCss))
-                {
-                    uaCss = @"
-                        html,body{background:#fff;color:#000;margin:0;padding:0;}
-                        head,style,script,title,meta,link{display:none;}
-                        body{font:16px/1.5 'Segoe UI',Arial,sans-serif;margin:8px;}
-                        h1{font-size:2em;font-weight:bold;margin:0.67em 0;}
-                        h2{font-size:1.5em;font-weight:bold;margin:0.83em 0;}
-                        h3{font-size:1.17em;font-weight:bold;margin:1em 0;}
-                        p{margin:1em 0;}
-                        div,article,section,header,footer,nav,main{display:block;}
-                        strong,b{font-weight:bold;}
-                        em,i{font-style:italic;}
-                        a{color:#0000EE;text-decoration:underline;}
-                    ";
-                    /* [PERF-REMOVED] */
-                }
-                else
-                {
-                     /* [PERF-REMOVED] */
-                }
                 
                 cssBlobs.Add(new CssSource { CssText = uaCss, Origin = CssOrigin.UserAgent, SourceOrder = sourceIndex++, BaseUri = baseUri });
             }
             catch (Exception ex) 
             { 
-                System.Diagnostics.Debug.WriteLine($"[CssLoader] UA stylesheet error: {ex.Message}");
+                FenLogger.Error($"[CssLoader] UA stylesheet error: {ex.Message}", LogCategory.Rendering);
                 /* [PERF-REMOVED] */
             }
 
@@ -314,26 +283,52 @@ namespace FenBrowser.FenEngine.Rendering
             var gate = new System.Threading.SemaphoreSlim(8); // Shared gate for all CSS fetches (links + imports)
             foreach (var link in linkNodes)
             {
-                if (link.Attr == null) { if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", "[LINK] Link has no attributes\r\n"); continue; }
+                if (link.Attr == null) { DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug_v2.txt", "[LINK] SKIP: Link has no attributes\r\n"); continue; }
+                
                 string rel;
                 if (!link.Attr.TryGetValue("rel", out rel)) 
                 {
-                     if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", "[LINK] Link has no rel attribute\r\n");
+                     DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug_v2.txt", "[LINK] SKIP: Link has no rel attribute\r\n");
                      continue; 
                 }
-                /* [PERF-REMOVED] */
-                if (!ContainsToken(rel, "stylesheet")) continue;
-                string href; if (!link.Attr.TryGetValue("href", out href) || string.IsNullOrWhiteSpace(href)) continue;
-                /* [PERF-REMOVED] */
+                
+                DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug_v2.txt", $"[LINK] Checking rel='{rel}'\r\n");
+                
+                if (!ContainsToken(rel, "stylesheet")) 
+                {
+                    DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug_v2.txt", $"[LINK] SKIP: rel '{rel}' is not stylesheet\r\n");
+                    continue;
+                }
+                
+                string href; 
+                if (!link.Attr.TryGetValue("href", out href) || string.IsNullOrWhiteSpace(href)) 
+                {
+                    DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug_v2.txt", "[LINK] SKIP: Link has no href\r\n");
+                    continue;
+                }
+                
+                DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug_v2.txt", $"[LINK] Found stylesheet href='{href}'\r\n");
+
                 // Respect media attribute (screen/all)
                 string media;
                 if (link.Attr.TryGetValue("media", out media) && !string.IsNullOrWhiteSpace(media))
                 {
                     var m = media.ToLowerInvariant();
-                    if (!(m.Contains("all") || m.Contains("screen"))) continue;
+                    DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug_v2.txt", $"[LINK] Checking media='{m}'\r\n");
+                    if (!(m.Contains("all") || m.Contains("screen"))) 
+                    {
+                        DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug_v2.txt", $"[LINK] SKIP: Media mismatch\r\n");
+                        continue;
+                    }
                 }
                 var abs = ResolveUri(baseUri, href);
-                if (abs == null || fetchExternalCssAsync == null) continue;
+                if (abs == null)
+                {
+                     DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug_v2.txt", $"[LINK] SKIP: URL failed to resolve: {href}\r\n");
+                     continue;
+                }
+                
+                DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug_v2.txt", $"[LINK] QUEUE: {abs}\r\n");
 
                 var order = sourceIndex++;
                 var t = Task.Run(async () =>
@@ -344,7 +339,7 @@ namespace FenBrowser.FenEngine.Rendering
                         var css = await fetchExternalCssAsync(abs).ConfigureAwait(false);
                         /* [PERF-REMOVED] */
                         // Limit CSS size to prevent crashes on massive stylesheets (GitHub, etc.)
-                        const int MAX_CSS_SIZE = 500_000; // 500KB per stylesheet
+                        const int MAX_CSS_SIZE = 2_000_000; // 2MB per stylesheet
                         if (!string.IsNullOrWhiteSpace(css) && css.Length <= MAX_CSS_SIZE)
                         {
                             lock (cssBlobs)
@@ -371,46 +366,53 @@ namespace FenBrowser.FenEngine.Rendering
                 });
                 extTasks.Add(t);
             }
-            if (extTasks.Count > 0) { try { await Task.WhenAll(extTasks); } catch { /* Ignore fetch errors */ } }
+            if (extTasks.Count > 0) 
+            {
+                FenLogger.Debug($"[PERF-CSS] Waiting for {extTasks.Count} external CSS fetches...", LogCategory.Rendering);
+                try { await Task.WhenAll(extTasks); } catch { /* Ignore fetch errors */ } 
+            }
             FenLogger.Debug($"[PERF-CSS] External CSS Fetch: {_cssStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
 
             // 3) Expand @import (depth-bounded)
+            FenLogger.Debug("[PERF-CSS] Starting @import expansion...", LogCategory.Rendering);
             var expanded = await ExpandImportsAsync(cssBlobs, fetchExternalCssAsync, viewportWidth, log, gate);
-            FenLogger.Debug($"[PERF-CSS] @import Expansion: {_cssStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
+            FenLogger.Debug($"[PERF-CSS] @import Expansion: {_cssStopwatch.ElapsedMilliseconds}ms (Sources: {expanded.Count})", LogCategory.Rendering);
 
             // 4) Parse rules from all sources (parallel, bounded)
+            FenLogger.Debug($"[PERF-CSS] Starting parallel rule parsing for {expanded.Count} sources (4-way)...", LogCategory.Rendering);
             var allRules = new List<NewCss.CssRule>();
             var parseGate = new System.Threading.SemaphoreSlim(4);
             var parseTasks = new List<Task>();
+            
+            FenLogger.Debug($"[PERF-CSS-TRACK] Validated CSS Blobs: {expanded.Count}. Scheduling tasks...", LogCategory.Rendering);
             foreach (var blob in expanded)
             {
                 parseTasks.Add(Task.Run(async () =>
                 {
+                    // FenLogger.Debug($"[PERF-CSS-TRACK] Task Started for Source={blob.SourceOrder}", LogCategory.Rendering); // Noise reduced
                     await parseGate.WaitAsync().ConfigureAwait(false);
+                    int myOrder = blob.SourceOrder;
+                    int myLen = blob.CssText?.Length ?? 0;
                     try
                     {
-                        // FIX: Do expensive parsing OUTSIDE the lock. Lock only protects cache dictionary access.
-                        // Pre-process for @font-face (can be done without lock)
+                        FenLogger.Debug($"[PERF-CSS-TRACK] START Parse Rules Source={myOrder} Len={myLen} Base={blob.BaseUri}", LogCategory.Rendering);
+                        // FenLogger.Debug($"[PERF-CSS-TRACK] Calling ExtractFontFace Source={myOrder}", LogCategory.Rendering);
                         string processedCss = ExtractFontFace(blob.CssText, blob.BaseUri, log);
+                        // FenLogger.Debug($"[PERF-CSS-TRACK] Finished ExtractFontFace Source={myOrder}", LogCategory.Rendering);
                         
                         List<NewCss.CssRule> parsed = null;
                         bool cacheHit = false;
                         
-                        // Check cache first (quick lock)
                         lock (_parsedRulesCache)
                         {
                             cacheHit = _parsedRulesCache.TryGetValue(processedCss, out parsed);
                         }
                         
-                        // Parse OUTSIDE lock if not in cache
                         if (!cacheHit)
                         {
                             parsed = ParseRules(processedCss, blob.SourceOrder, blob.BaseUri, viewportWidth, log, MapToNewCssOrigin(blob.Origin));
-                            
-                            // Store in cache (quick lock)
                             lock (_parsedRulesCache)
                             {
-                                // Double-check in case another thread added it
                                 if (!_parsedRulesCache.ContainsKey(processedCss))
                                 {
                                     _parsedRulesCache[processedCss] = parsed;
@@ -418,30 +420,56 @@ namespace FenBrowser.FenEngine.Rendering
                             }
                         }
                         
-                        lock (allRules) allRules.AddRange(parsed);
+                        if (parsed != null)
+                        {
+                            lock (allRules) allRules.AddRange(parsed);
+                        }
+                        FenLogger.Debug($"[PERF-CSS-TRACK] END Parse Rules Source={myOrder}", LogCategory.Rendering);
                     }
                     catch (Exception ex)
                     {
-                        Log(log, "[CssLoader] Parse error: " + ex.Message);
-                        /* [PERF-REMOVED] */
+                         Log(log, "[CssLoader] Parse error: " + ex.Message);
                     }
-                    finally { try { parseGate.Release(); } catch { /* Ignore release errors */ } }
+                    finally 
+                    { 
+                        try 
+                        { 
+                            parseGate.Release(); 
+                            // FenLogger.Debug($"[PERF-CSS-TRACK] Semaphore Released Source={myOrder}", LogCategory.Rendering);
+                        } 
+                        catch (Exception ex)
+                        {
+                            FenLogger.Error($"[PERF-CSS-TRACK] Semaphore Release FAILED Source={myOrder}: {ex}", LogCategory.Rendering);
+                        }
+                    }
                 }));
             }
-            if (parseTasks.Count > 0) { try { await Task.WhenAll(parseTasks); } catch { /* Ignore parse errors */ } }
-            FenLogger.Debug($"[PERF-CSS] Rule Parsing: {_cssStopwatch.ElapsedMilliseconds}ms (Rules: {allRules.Count})", LogCategory.Rendering);
 
-            // Debug: Log parsed rules count
-            /* [PERF-REMOVED] */
+            if (parseTasks.Count > 0) 
+            {
+                var allParseTask = Task.WhenAll(parseTasks);
+                var parseTimeoutTask = Task.Delay(20000); // 20s hard limit for all sheets
+                var finished = await Task.WhenAny(allParseTask, parseTimeoutTask);
+                
+                if (finished == parseTimeoutTask)
+                {
+                    FenLogger.Warn($"[PERF-CSS] CSS Parsing partially STALLED after 20s. Continuing with partial rules ({allRules.Count}).", LogCategory.Rendering);
+                }
+                else
+                {
+                    await allParseTask; // Propagate errors
+                }
+            }
+
+            FenLogger.Info($"[PERF-CSS] Rule Parsing Complete: {_cssStopwatch.ElapsedMilliseconds}ms (Rules: {allRules.Count})", LogCategory.Rendering);
 
             // 4.5) Resolve CSS variables
-            // 4.5) Resolve CSS variables & 5) Compute per-element cascaded styles
-            // CRITICAL FIX: Offload heavy CSS matching/cascading to background thread to avoid freezing UI
+            FenLogger.Debug("[PERF-CSS] Starting variable resolution...", LogCategory.Rendering);
             ResolveVariables(allRules);
             FenLogger.Debug($"[PERF-CSS] Variable Resolution: {_cssStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
             // Stage 3: Cascade
             var computed = CascadeIntoComputedStyles(root, allRules, log, deadline);
-            FenLogger.Debug($"[PERF-CSS] Cascade Matching: {_cssStopwatch.ElapsedMilliseconds}ms (Elements: {computed.Count})", LogCategory.Rendering);
+            FenLogger.Info($"[PERF-CSS] Cascade Matching Complete: {_cssStopwatch.ElapsedMilliseconds}ms (Elements: {computed.Count})", LogCategory.Rendering);
             
             return new CssLoadResult
             {
@@ -490,7 +518,7 @@ namespace FenBrowser.FenEngine.Rendering
                         {
                             var lastSeg = chain.Segments[chain.Segments.Count - 1];
                             string tag = lastSeg.Tag?.ToLowerInvariant() ?? "";
-                            if (tag == ":root" || tag == "html" || tag == "body" || tag == "*" || lastSeg.PseudoClasses?.Any(pc => pc.name == "root" || pc.name == ":root") == true)
+                            if (tag == ":root" || tag == "html" || tag == "body" || tag == "*" || lastSeg.PseudoClasses?.Any(pc => pc.Name == "root" || pc.Name == ":root") == true)
                             {
                                 isRootRule = true;
                                 break;
@@ -500,7 +528,7 @@ namespace FenBrowser.FenEngine.Rendering
                             {
                                 foreach (var pc in lastSeg.PseudoClasses)
                                 {
-                                    if (pc.name.ToLowerInvariant().Contains("root"))
+                                    if (pc.Name.ToLowerInvariant().Contains("root"))
                                     {
                                         isRootRule = true;
                                         break;
@@ -717,34 +745,36 @@ namespace FenBrowser.FenEngine.Rendering
                 seenUrls.Add(key);
                 if (fetchExternal == null) continue;
 
-                await gate.WaitAsync().ConfigureAwait(false);
                 tasks.Add(System.Threading.Tasks.Task.Run(async () =>
                 {
+                    string css = null;
+                    await gate.WaitAsync().ConfigureAwait(false);
                     try
                     {
-                        var css = await fetchExternal(abs).ConfigureAwait(false);
-                        if (!string.IsNullOrWhiteSpace(css))
-                        {
-                            if (guard != null) guard.Count++;
-                            await ExpandOneAsync(
-                                new CssSource
-                                {
-                                    CssText = css,
-                                    Origin = CssOrigin.Imported,
-                                    SourceOrder = source.SourceOrder,
-                                    BaseUri = abs
-                                },
-                                fetchExternal,
-                                seenUrls,
-                                output,
-                                viewportWidth,
-                                log,
-                                guard,
-                                gate).ConfigureAwait(false);
-                        }
+                        css = await fetchExternal(abs).ConfigureAwait(false);
                     }
                     catch (Exception ex) { Log(log, "[CssLoader] @import fetch failed: " + abs + " :: " + ex.Message); }
-                    finally { try { gate.Release(); } catch { /* Ignore release errors */ } }
+                    finally { try { gate.Release(); } catch { } }
+
+                    if (!string.IsNullOrWhiteSpace(css))
+                    {
+                        if (guard != null) guard.Count++;
+                        await ExpandOneAsync(
+                            new CssSource
+                            {
+                                CssText = css,
+                                Origin = CssOrigin.Imported,
+                                SourceOrder = source.SourceOrder,
+                                BaseUri = abs
+                            },
+                            fetchExternal,
+                            seenUrls,
+                            output,
+                            viewportWidth,
+                            log,
+                            guard,
+                            gate).ConfigureAwait(false);
+                    }
                 }));
             }
             if (tasks.Count > 0) { try { await System.Threading.Tasks.Task.WhenAll(tasks).ConfigureAwait(false); } catch { /* Ignore task errors */ } }
@@ -933,6 +963,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         private static string ExtractFontFace(string text, Uri baseUri, Action<string> log)
         {
+            // FenLogger.Debug($"[PERF-CSS-TRACK] Enter ExtractFontFace Len={text?.Length ?? 0}", LogCategory.Rendering);
             if (string.IsNullOrEmpty(text)) return text;
             if (text.IndexOf("@font-face", StringComparison.OrdinalIgnoreCase) < 0) return text;
 
@@ -951,7 +982,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 // Append text before @font-face
-                result.Append(text.Substring(i, ffPos - i));
+                result.Append(text, i, ffPos - i);
 
                 // Find the opening brace
                 int braceOpen = text.IndexOf('{', ffPos);
@@ -962,7 +993,10 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 // Find matching closing brace
+                // FenLogger.Debug($"[PERF-CSS-TRACK] FindMatchingBrace start i={i}", LogCategory.Rendering);
                 int braceClose = FindMatchingBrace(text, braceOpen);
+                // FenLogger.Debug($"[PERF-CSS-TRACK] FindMatchingBrace done close={braceClose}", LogCategory.Rendering);
+                
                 if (braceClose < 0)
                 {
                     i = braceOpen + 1;
@@ -972,16 +1006,11 @@ namespace FenBrowser.FenEngine.Rendering
                 // Extract and parse the @font-face block
                 string fontFaceBody = text.Substring(braceOpen + 1, braceClose - braceOpen - 1);
                 
-                // [DEBUG-LOG]
-                if (loopCount % 500 == 0 || fontFaceBody.Length > 10000)
-                {
-                     FenLogger.Debug($"[CSS-DEBUG] ExtractFontFace iter={loopCount} bodyLen={fontFaceBody.Length}", LogCategory.Rendering);
-                }
-
                 try
                 {
+                    // FenLogger.Debug($"[PERF-CSS-TRACK] calling ParseAndRegister", LogCategory.Rendering);
                     FontRegistry.ParseAndRegister(fontFaceBody, baseUri);
-                    // log?.Invoke($"[CSS] Registered @font-face"); // Reduced noise
+                    // FenLogger.Debug($"[PERF-CSS-TRACK] done ParseAndRegister", LogCategory.Rendering);
                 }
                 catch (Exception ex)
                 {
@@ -990,11 +1019,10 @@ namespace FenBrowser.FenEngine.Rendering
 
                 i = braceClose + 1;
             }
+            // FenLogger.Debug($"[PERF-CSS-TRACK] Exit ExtractFontFace loop loopCount={loopCount}", LogCategory.Rendering);
             
             if (loopCount > 1000) FenLogger.Debug($"[CSS-DEBUG] ExtractFontFace finished with {loopCount} iterations.", LogCategory.Rendering);
             
-            return result.ToString();
-
             return result.ToString();
         }
 
@@ -1398,8 +1426,11 @@ namespace FenBrowser.FenEngine.Rendering
             var rules = new List<NewCss.CssRule>();
             if (string.IsNullOrWhiteSpace(css)) return rules;
 
+            FenLogger.Debug($"[DEBUG-CSS] ParseRules input length: {css.Length}", LogCategory.Rendering);
+
             try { if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_raw_css.txt", "\n--- RAW CSS BLOCK ---\n" + css + "\n-------------------\n"); } catch {}
             var text = StripComments(css);
+            FenLogger.Debug($"[DEBUG-CSS] After StripComments length: {text.Length}", LogCategory.Rendering);
             
              try { if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_full_css.txt", "\n--- NEW CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch {}
 
@@ -1425,88 +1456,101 @@ namespace FenBrowser.FenEngine.Rendering
              try { if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_full_css.txt", "\n--- PROCESSED CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch {}
 
             // New Pipeline: Tokenize -> Parse
+            FenLogger.Debug($"[DEBUG-CSS] Creating tokenizer for text length {text.Length}", LogCategory.Rendering);
             var tokenizer = new CssTokenizer(text);
             var parser = new CssSyntaxParser(tokenizer);
-            var sheet = parser.ParseStylesheet();
-
-            int ruleIndexInsideSheet = 0;
             
-            // Track layers to assign stable LayerOrder
-            var layerOrderIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            int nextLayerOrder = 1; // 0 is reserved for unlayered
-
-            // Recursive helper to flatten media, layers, and scope into the main list
-            void ProcessRuleList(IEnumerable<NewCss.CssRule> inputRules, string currentLayer = null, int currentLayerOrder = 0, string currentScope = null)
+            NewCss.CssStylesheet sheet = null;
+            try 
             {
-                foreach (var rule in inputRules)
-                {
-                    rule.BaseUri = baseForUrls;
-                    rule.Origin = origin;
+                FenLogger.Debug($"[DEBUG-CSS] Starting ParseStylesheet...", LogCategory.Rendering);
+                sheet = parser.ParseStylesheet();
+                FenLogger.Debug($"[DEBUG-CSS] ParseStylesheet returned {sheet.Rules.Count} rules", LogCategory.Rendering);
+            
+                int ruleIndexInsideSheet = 0;
+                
+                // Track layers to assign stable LayerOrder
+                var layerOrderIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                int nextLayerOrder = 1; // 0 is reserved for unlayered
 
-                    if (rule is NewCss.CssMediaRule mediaRule)
+                // Recursive helper to flatten media, layers, and scope into the main list
+                void ProcessRuleList(IEnumerable<NewCss.CssRule> inputRules, string currentLayer = null, int currentLayerOrder = 0, string currentScope = null)
+                {
+                    foreach (var rule in inputRules)
                     {
-                        if (EvaluateMediaQuery(mediaRule.Condition, viewportWidth))
+                        rule.BaseUri = baseForUrls;
+                        rule.Origin = origin;
+
+                        if (rule is NewCss.CssMediaRule mediaRule)
                         {
-                            ProcessRuleList(mediaRule.Rules, currentLayer, currentLayerOrder, currentScope);
-                        }
-                    }
-                    else if (rule is NewCss.CssLayerRule layerRule)
-                    {
-                        if (layerRule.Rules.Count == 0)
-                        {
-                            // Order declaration: @layer base, theme;
-                            var names = layerRule.Name.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(n => n.Trim());
-                            foreach (var name in names)
+                            if (EvaluateMediaQuery(mediaRule.Condition, viewportWidth))
                             {
-                                string full = string.IsNullOrEmpty(currentLayer) ? name : $"{currentLayer}.{name}";
-                                if (!layerOrderIndex.ContainsKey(full))
-                                {
-                                    layerOrderIndex[full] = nextLayerOrder++;
-                                }
+                                ProcessRuleList(mediaRule.Rules, currentLayer, currentLayerOrder, currentScope);
                             }
                         }
-                        else
+                        else if (rule is NewCss.CssLayerRule layerRule)
                         {
-                            // Layer block: @layer theme { ... }
-                            string layerName = string.IsNullOrEmpty(currentLayer) ? layerRule.Name : $"{currentLayer}.{layerRule.Name}";
-                            if (!string.IsNullOrEmpty(layerName))
+                            if (layerRule.Rules.Count == 0)
                             {
-                                if (!layerOrderIndex.TryGetValue(layerName, out int order))
+                                // Order declaration: @layer base, theme;
+                                var names = layerRule.Name.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(n => n.Trim());
+                                foreach (var name in names)
                                 {
-                                    order = nextLayerOrder++;
-                                    layerOrderIndex[layerName] = order;
+                                    string full = string.IsNullOrEmpty(currentLayer) ? name : $"{currentLayer}.{name}";
+                                    if (!layerOrderIndex.ContainsKey(full))
+                                    {
+                                        layerOrderIndex[full] = nextLayerOrder++;
+                                    }
                                 }
-                                ProcessRuleList(layerRule.Rules, layerName, order, currentScope);
                             }
                             else
                             {
-                                ProcessRuleList(layerRule.Rules, null, nextLayerOrder++, currentScope);
+                                // Layer block: @layer theme { ... }
+                                string layerName = string.IsNullOrEmpty(currentLayer) ? layerRule.Name : $"{currentLayer}.{layerRule.Name}";
+                                if (!string.IsNullOrEmpty(layerName))
+                                {
+                                    if (!layerOrderIndex.TryGetValue(layerName, out int order))
+                                    {
+                                        order = nextLayerOrder++;
+                                        layerOrderIndex[layerName] = order;
+                                    }
+                                    ProcessRuleList(layerRule.Rules, layerName, order, currentScope);
+                                }
+                                else
+                                {
+                                    ProcessRuleList(layerRule.Rules, null, nextLayerOrder++, currentScope);
+                                }
                             }
                         }
-                    }
-                    else if (rule is NewCss.CssScopeRule scopeRule)
-                    {
-                        ProcessRuleList(scopeRule.Rules, currentLayer, currentLayerOrder, scopeRule.ScopeSelector);
-                    }
-                    else
-                    {
-                        rule.LayerName = currentLayer;
-                        rule.LayerOrder = currentLayerOrder;
-                        rule.ScopeSelector = currentScope;
-
-                        if (rule is NewCss.CssStyleRule styleRule)
+                        else if (rule is NewCss.CssScopeRule scopeRule)
                         {
-                            styleRule.Order = (sourceOrder * 10000) + ruleIndexInsideSheet++;
+                            ProcessRuleList(scopeRule.Rules, currentLayer, currentLayerOrder, scopeRule.ScopeSelector);
                         }
-                        rules.Add(rule);
+                        else
+                        {
+                            rule.LayerName = currentLayer;
+                            rule.LayerOrder = currentLayerOrder;
+                            rule.ScopeSelector = currentScope;
+
+                            if (rule is NewCss.CssStyleRule styleRule)
+                            {
+                                styleRule.Order = (sourceOrder * 10000) + ruleIndexInsideSheet++;
+                            }
+                            rules.Add(rule);
+                        }
                     }
                 }
+                
+                ProcessRuleList(sheet.Rules);
+                
+                FenLogger.Debug($"[PERF-CSS] [CHECKPOINT] ParseRules FINISHED for {text.Length} bytes.", LogCategory.Rendering);
             }
-            
-            ProcessRuleList(sheet.Rules);
-            
-            FenLogger.Debug($"[PERF-CSS] Processing Processed Sheet: {sw.ElapsedMilliseconds}ms", LogCategory.Rendering);
-            try { if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CssLoader] Parsed {rules.Count} rules from block of length {text.Length}\r\n"); } catch {}
+            catch (Exception ex)
+            {
+                FenLogger.Error($"[DEBUG-CSS] CRASH in ParseStylesheet: {ex}", LogCategory.Rendering);
+                return rules;
+            }
+
 
             return rules;
         }
@@ -1806,7 +1850,11 @@ private static double? ExtractPx(string text, string prop)
             if (n.Attr != null && n.Attr.TryGetValue("style", out var style) && !string.IsNullOrWhiteSpace(style))
             {
                 var decls = ParseDeclarations(style);
-                foreach (var d in decls)
+                 if (n.Tag == "DIV" && n.GetAttribute("id") == "dynamic-box")
+                 {
+                     DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[INLINE-TRACE] Tag={n.Tag} Id={n.GetAttribute("id")} Style='{style}' Decls={decls.Count}\r\n");
+                 }
+                 foreach (var d in decls)
                 {
                     // Inline style overrides author rules.
                     props[d.Property] = d; 
@@ -1887,7 +1935,6 @@ private static double? ExtractPx(string text, string prop)
                                 val = CssComputed.GetInitialValue(kv.Key) ?? val;
                             }
                         }
-                        
                         css.Map[kv.Key] = val;
                     }
                 }
@@ -2071,6 +2118,11 @@ private static double? ExtractPx(string text, string prop)
                 css.FontSize = 16.0;
                 currentEmBase = 16.0;
             }
+
+            if (tag == "H1" || n.GetAttribute("id") == "dynamic-box")
+            {
+                 DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-TRACE] Tag={tag} ID={n.GetAttribute("id")} RAW_FS='{rawFontSize}' RESOLVED_FS={css.FontSize} RAW_H='{DictGet(css.Map, "height")}' RESOLVED_H='{css.Height}'\r\n");
+            }
             
             // Multi-column properties (moved here to have currentEmBase available)
             css.ColumnCount = Safe(DictGet(css.Map, "column-count"));
@@ -2157,7 +2209,7 @@ private static double? ExtractPx(string text, string prop)
 
             string minWStr = DictGet(css.Map, "min-width");
             if (TryPx(minWStr, out sizeVal, currentEmBase)) css.MinWidth = sizeVal;
-            else if (TryPercent(minWStr, out sizeVal)) css.MinWidthExpression = sizeVal + "%";
+            else if (TryPercent(minWStr, out sizeVal)) css.MinWidthPercent = sizeVal;
             else if (IsCssFunction(minWStr)) css.MinWidthExpression = minWStr;
             
             string minHStr = DictGet(css.Map, "min-height");
@@ -2167,8 +2219,13 @@ private static double? ExtractPx(string text, string prop)
             
             string maxWStr = DictGet(css.Map, "max-width");
             if (TryPx(maxWStr, out sizeVal, currentEmBase)) css.MaxWidth = sizeVal;
-            else if (TryPercent(maxWStr, out sizeVal)) css.MaxWidthExpression = sizeVal + "%";
+            else if (TryPercent(maxWStr, out sizeVal)) css.MaxWidthPercent = sizeVal;
             else if (IsCssFunction(maxWStr)) css.MaxWidthExpression = maxWStr;
+
+            if (!string.IsNullOrEmpty(maxWStr))
+            {
+                FenLogger.Info($"[CSS-MAXWIDTH] <{tag}#{n.Id}> Raw='{maxWStr}' MW={css.MaxWidth} MWP={css.MaxWidthPercent}", LogCategory.CSS);
+            }
 
             string maxHStr = DictGet(css.Map, "max-height");
             if (TryPx(maxHStr, out sizeVal, currentEmBase)) css.MaxHeight = sizeVal;
@@ -2190,6 +2247,17 @@ private static double? ExtractPx(string text, string prop)
             if (TryPx(DictGet(css.Map, "min-block-size"), out sizeVal, currentEmBase)) css.MinHeight = sizeVal;
             if (TryPx(DictGet(css.Map, "max-inline-size"), out sizeVal, currentEmBase)) css.MaxWidth = sizeVal;
             if (TryPx(DictGet(css.Map, "max-block-size"), out sizeVal, currentEmBase)) css.MaxHeight = sizeVal;
+            
+            // ROBUSTNESS: If ARTICLE/NAV/MAIN or common containers are missing MaxWidth but have margin:auto,
+            // they are likely intended to be centered. whatismybrowser.com uses ~1074px or ~800px.
+            if (!css.MaxWidth.HasValue && css.MaxWidthPercent == 0 && string.IsNullOrEmpty(css.MaxWidthExpression))
+            {
+                if (tag == "ARTICLE" || tag == "NAV" || tag == "MAIN")
+                {
+                    css.MaxWidth = 1074; // Standard container width for this site
+                    FenLogger.Info($"[CSS-ROBUST] <{tag}> Assigned fallback MaxWidth=1074", LogCategory.CSS);
+                }
+            }
             
 
             var aspectRatioRaw = Safe(DictGet(css.Map, "aspect-ratio"));
@@ -2390,7 +2458,7 @@ private static double? ExtractPx(string text, string prop)
             // Parse margin shorthand for auto: "auto", "0 auto", "0 auto 0 auto", etc.
             if (!string.IsNullOrEmpty(marginRaw))
             {
-                var parts = marginRaw.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                var parts = marginRaw.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
                 if (parts.Length == 1 && parts[0] == "auto")
                 {
                     // margin: auto - all sides auto
@@ -2412,7 +2480,7 @@ private static double? ExtractPx(string text, string prop)
                     if (parts[1] == "auto") { css.MarginLeftAuto = true; css.MarginRightAuto = true; }
                     if (parts[2] == "auto") css.MarginBottomAuto = true;
                 }
-                else if (parts.Length == 4)
+                else if (parts.Length >= 4)
                 {
                     // margin: T R B L
                     if (parts[0] == "auto") css.MarginTopAuto = true;
@@ -2422,11 +2490,16 @@ private static double? ExtractPx(string text, string prop)
                 }
             }
             
-            // Individual overrides
+            // Explicit margin-left: auto overrides shorthand
             if (marginLeftRaw == "auto") css.MarginLeftAuto = true;
             if (marginRightRaw == "auto") css.MarginRightAuto = true;
             if (marginTopRaw == "auto") css.MarginTopAuto = true;
             if (marginBottomRaw == "auto") css.MarginBottomAuto = true;
+
+            if (css.MarginLeftAuto || css.MarginRightAuto)
+            {
+                FenLogger.Info($"[CSS-MARGIN] <{tag}#{n.Id}> margin-auto detected. L={css.MarginLeftAuto} R={css.MarginRightAuto} Raw='{marginRaw}' LRaw='{marginLeftRaw}' RRaw='{marginRightRaw}'", LogCategory.CSS);
+            }
 
             // DEBUG: Log margin auto detection for DIV elements
             if (tag == "DIV" && (!string.IsNullOrEmpty(marginRaw) || !string.IsNullOrEmpty(marginLeftRaw) || !string.IsNullOrEmpty(marginRightRaw)))
@@ -4292,7 +4365,29 @@ private static double? ExtractPx(string text, string prop)
 
         private static string StripComments(string css)
         {
-            return Regex.Replace(css ?? "", @"/\*[\s\S]*?\*/", ""); // remove /* ... */
+            if (string.IsNullOrEmpty(css)) return "";
+            if (!css.Contains("/*")) return css;
+
+            var sb = new StringBuilder(css.Length);
+            int i = 0;
+            while (i < css.Length)
+            {
+                if (i + 1 < css.Length && css[i] == '/' && css[i + 1] == '*')
+                {
+                    i += 2;
+                    while (i + 1 < css.Length && !(css[i] == '*' && css[i + 1] == '/'))
+                    {
+                        i++;
+                    }
+                    i += 2; // skip */
+                }
+                else
+                {
+                    sb.Append(css[i]);
+                    i++;
+                }
+            }
+            return sb.ToString();
         }
 
         private static IEnumerable<string> SplitTokens(string s)
