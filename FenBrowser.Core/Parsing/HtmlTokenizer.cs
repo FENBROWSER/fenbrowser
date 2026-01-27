@@ -25,6 +25,9 @@ namespace FenBrowser.Core.Parsing
         
         private string _lastAttrName;
         private StringBuilder _attrValueBuffer = new StringBuilder();
+        
+        private TokenizerState _returnState;
+        private uint _charRefValue;
 
         public HtmlTokenizer(string input)
         {
@@ -91,7 +94,13 @@ namespace FenBrowser.Core.Parsing
             DoctypeName,
             AfterDoctypeName,
             AfterDoctypeSystemIdentifier,
-            BogusDoctype
+            BogusDoctype,
+            // Character Reference States
+            NumericCharacterReference,
+            HexadecimalCharacterReferenceStart,
+            DecimalCharacterReference,
+            HexadecimalCharacterReference,
+            NumericCharacterReferenceEnd
         }
 
         public IEnumerable<HtmlToken> Tokenize()
@@ -120,9 +129,10 @@ namespace FenBrowser.Core.Parsing
                     case TokenizerState.Data:
                         if (c == '&')
                         {
-                            // TODO: Handle character reference
                             Consume();
-                            return new CharacterToken('&'); 
+                            _returnState = TokenizerState.Data;
+                            SwitchTo(TokenizerState.CharacterReference);
+                            continue;
                         }
                         else if (c == '<')
                         {
@@ -139,6 +149,96 @@ namespace FenBrowser.Core.Parsing
                             return EmitCharacter(c);
                         }
                         break;
+
+                    case TokenizerState.CharacterReference:
+                        if (c == '#')
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.NumericCharacterReference);
+                        }
+                        else
+                        {
+                            // Named reference or just literal &
+                            // Simplified for now: treat as literal & if not numeric
+                            SwitchTo(_returnState);
+                            return EmitCharacter('&');
+                        }
+                        break;
+
+                    case TokenizerState.NumericCharacterReference:
+                        _charRefValue = 0;
+                        if (c == 'x' || c == 'X')
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.HexadecimalCharacterReferenceStart);
+                        }
+                        else if (char.IsDigit(c))
+                        {
+                            SwitchTo(TokenizerState.DecimalCharacterReference);
+                            // Reconsume done by not calling Consume()
+                        }
+                        else
+                        {
+                            EmitError("Invalid Numeric Character Reference");
+                            SwitchTo(_returnState);
+                            return EmitCharacter('&'); // and # ?
+                        }
+                        break;
+
+                    case TokenizerState.DecimalCharacterReference:
+                        if (char.IsDigit(c))
+                        {
+                            Consume();
+                            _charRefValue = (_charRefValue * 10) + (uint)(c - '0');
+                        }
+                        else if (c == ';')
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.NumericCharacterReferenceEnd);
+                        }
+                        else
+                        {
+                            // Missing semicolon but valid number
+                            SwitchTo(TokenizerState.NumericCharacterReferenceEnd);
+                        }
+                        break;
+
+                    case TokenizerState.HexadecimalCharacterReferenceStart:
+                        if (IsHexDigit(c))
+                        {
+                            SwitchTo(TokenizerState.HexadecimalCharacterReference);
+                        }
+                        else
+                        {
+                            EmitError("Invalid Hex Character Reference");
+                            SwitchTo(_returnState);
+                            return EmitCharacter('&');
+                        }
+                        break;
+
+                    case TokenizerState.HexadecimalCharacterReference:
+                        if (IsHexDigit(c))
+                        {
+                            Consume();
+                            _charRefValue = (_charRefValue * 16) + (uint)GetHexValue(c);
+                        }
+                        else if (c == ';')
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.NumericCharacterReferenceEnd);
+                        }
+                        else
+                        {
+                            SwitchTo(TokenizerState.NumericCharacterReferenceEnd);
+                        }
+                        break;
+
+                    case TokenizerState.NumericCharacterReferenceEnd:
+                        // Convert value to char
+                        char resolved;
+                        try { resolved = (char)_charRefValue; } catch { resolved = ' '; }
+                        SwitchTo(_returnState);
+                        return EmitCharacter(resolved);
 
                     case TokenizerState.TagOpen:
                         if (c == '!')
@@ -184,9 +284,10 @@ namespace FenBrowser.Core.Parsing
                         }
                         else if (c == '&')
                         {
-                             // TODO: Character reference
-                             Consume();
-                             return EmitCharacter('&');
+                            Consume();
+                            _returnState = TokenizerState.RcData;
+                            SwitchTo(TokenizerState.CharacterReference);
+                            continue;
                         }
                         else if (c == '\0' && IsEof())
                         {
@@ -1093,6 +1194,19 @@ namespace FenBrowser.Core.Parsing
                     _currentTag.Attributes[attrIndex].Value = _attrValueBuffer.ToString();
                 }
             }
+        }
+
+        private bool IsHexDigit(char c)
+        {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        }
+
+        private int GetHexValue(char c)
+        {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+            if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+            return 0;
         }
     }
 }

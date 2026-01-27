@@ -8,14 +8,17 @@ using FenBrowser.Core.Logging;
 using System.Text.RegularExpressions;
 using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType;
 using FenBrowser.FenEngine.DevTools;
+using FenBrowser.FenEngine.Jit;
+using FenValue = FenBrowser.FenEngine.Core.FenValue;
 
 namespace FenBrowser.FenEngine.Core
 {
     public partial class Interpreter
     {
         private FenObject _stringPrototype;
+        private static bool _jitInitialized = false;
 
-        public IValue Eval(AstNode node, FenEnvironment env, IExecutionContext context)
+        public FenValue Eval(AstNode node, FenEnvironment env, IExecutionContext context)
         {
             // Debugger Hook
             if (node != null && context != null && !string.IsNullOrEmpty(context.CurrentUrl))
@@ -36,13 +39,16 @@ namespace FenBrowser.FenEngine.Core
             switch (node)
             {
                 case Program program:
-                    return EvalProgram(program, env, context);
+                    return (FenValue)EvalProgram(program, env, context);
                 
                 case ExpressionStatement exprStmt:
                     return Eval(exprStmt.Expression, env, context);
                 
                 case IntegerLiteral intLit:
                     return FenValue.FromNumber(intLit.Value);
+                
+                case DoubleLiteral doubleLit:
+                    return FenValue.FromNumber(doubleLit.Value);
                 
                 case BooleanLiteral boolLit:
                     return FenValue.FromBoolean(boolLit.Value);
@@ -57,11 +63,23 @@ namespace FenBrowser.FenEngine.Core
                     return FenValue.Undefined;
 
                 case PrefixExpression prefixExpr:
+                    if (prefixExpr.Operator == "++" || prefixExpr.Operator == "--")
+                    {
+                        return EvalPrefixUpdate(prefixExpr, env, context);
+                    }
                     var right = Eval(prefixExpr.Right, env, context);
                     if (IsError(right)) return right;
                     return EvalPrefixExpression(prefixExpr.Operator, right);
 
                 case InfixExpression infixExpr:
+                    if (infixExpr.Operator == "++" && infixExpr.Right  == null)
+                    {
+                        return EvalPostfixUpdate(infixExpr.Left, "++", env, context);
+                    }
+                    if (infixExpr.Operator == "--" && infixExpr.Right  == null)
+                    {
+                        return EvalPostfixUpdate(infixExpr.Left, "--", env, context);
+                    }
                     var left = Eval(infixExpr.Left, env, context);
                     if (IsError(left)) return left;
                     var rightInfix = Eval(infixExpr.Right, env, context);
@@ -69,15 +87,15 @@ namespace FenBrowser.FenEngine.Core
                     return EvalInfixExpression(infixExpr.Operator, left, rightInfix);
 
                 case BlockStatement blockStmt:
-                    return EvalBlockStatement(blockStmt, env, context);
+                    return (FenValue)EvalBlockStatement(blockStmt, env, context);
 
                 case IfExpression ifExpr:
-                    return EvalIfExpression(ifExpr, env, context);
+                    return (FenValue)EvalIfExpression(ifExpr, env, context);
 
                 case ReturnStatement returnStmt:
                     var val = Eval(returnStmt.ReturnValue, env, context);
                     if (IsError(val)) return val;
-                    return new ReturnValue(val);
+                    return FenValue.FromReturnValue(val);
 
                 case LetStatement letStmt:
                     var valLet = Eval(letStmt.Value, env, context);
@@ -85,7 +103,7 @@ namespace FenBrowser.FenEngine.Core
 
                     if (letStmt.DestructuringPattern != null)
                     {
-                        return EvalDestructuringAssignment(letStmt.DestructuringPattern, valLet, env, context);
+                        return (FenValue)EvalDestructuringAssignment(letStmt.DestructuringPattern, valLet, env, context);
                     }
 
                     // Use SetConst for const declarations to prevent reassignment
@@ -96,10 +114,10 @@ namespace FenBrowser.FenEngine.Core
                     return valLet;
 
                 case Identifier ident:
-                    return EvalIdentifier(ident, env);
+                    return (FenValue)EvalIdentifier(ident, env);
 
                 case PrivateIdentifier privateIdent:
-                    return EvalPrivateIdentifier(privateIdent, env);
+                    return (FenValue)EvalPrivateIdentifier(privateIdent, env);
 
                 case FunctionLiteral funcLit:
                     var fenFunc = new FenFunction(funcLit.Parameters, funcLit.Body, env);
@@ -112,16 +130,16 @@ namespace FenBrowser.FenEngine.Core
                     return FenValue.FromFunction(fenFunc);
 
                 case MemberExpression memberExpr:
-                    return EvalMemberExpression(memberExpr, env, context);
+                    return (FenValue)EvalMemberExpression(memberExpr, env, context);
 
                 case TaggedTemplateExpression taggedExpr:
-                    return EvalTaggedTemplate(taggedExpr, env, context);
+                    return (FenValue)EvalTaggedTemplate(taggedExpr, env, context);
 
                 case IndexExpression indexExpr:
-                    return EvalIndexExpression(indexExpr, env, context);
+                    return (FenValue)EvalIndexExpression(indexExpr, env, context);
 
                 case NewExpression newExpr:
-                    return EvalNewExpression(newExpr, env, context);
+                    return (FenValue)EvalNewExpression(newExpr, env, context);
 
                 case AssignmentExpression assignExpr:
                     // Evaluate the right side first
@@ -131,7 +149,7 @@ namespace FenBrowser.FenEngine.Core
                     // Handle destructuring assignment
                     if (assignExpr.Left is ArrayLiteral || assignExpr.Left is ObjectLiteral)
                     {
-                        return EvalDestructuringAssignment(assignExpr.Left, value, env, context);
+                        return (FenValue)EvalDestructuringAssignment(assignExpr.Left, value, env, context);
                     }
                     
                     // Handle assignment to identifier (var x = ...)
@@ -145,9 +163,9 @@ namespace FenBrowser.FenEngine.Core
                     if (assignExpr.Left is PrivateIdentifier leftPrivate)
                     {
                         var thisVal = env.Get("this");
-                        if (thisVal == null || !thisVal.IsObject)
+                        if (thisVal  == null || !thisVal.IsObject)
                         {
-                            return new ErrorValue($"Cannot assign to private field '#${leftPrivate.Name}' outside of a class");
+                            return FenValue.FromError($"Cannot assign to private field '#${leftPrivate.Name}' outside of a class");
                         }
                         var thisObj = thisVal.AsObject();
                         string privateKey = "#" + leftPrivate.Name;
@@ -208,12 +226,12 @@ namespace FenBrowser.FenEngine.Core
                     return FenValue.Undefined;
 
                 case CallExpression callExpr:
-                    IValue function = null;
-                    IValue thisContext = null;
+                    FenValue function = FenValue.Undefined;
+                    FenValue thisContext = FenValue.Undefined;
 
                     if (callExpr.Function is MemberExpression me)
                     {
-                        var obj = Eval(me.Object, env, context);
+                        var obj = ToFenValue(Eval(me.Object, env, context));
                         if (IsError(obj)) return obj;
                         
                         try { FenLogger.Debug($"[Interpreter] Resolving call to {me.Property} on object type {obj.Type}", LogCategory.JavaScript); } catch { }
@@ -229,11 +247,11 @@ namespace FenBrowser.FenEngine.Core
                             {
                                 // bind(thisArg, ...args) - Returns a bound function
                                 var boundThis = fnArgs.Count > 0 ? fnArgs[0] : FenValue.Undefined;
-                                var boundArgs = fnArgs.Count > 1 ? fnArgs.Skip(1).ToList() : new List<IValue>();
+                                var boundArgs = fnArgs.Count > 1 ? fnArgs.Skip(1).ToList() : new List<FenValue>();
                                 
                                 var boundFn = new FenFunction("bound " + targetFn.Name, (invokeArgs, _) =>
                                 {
-                                    var allArgs = new List<IValue>(boundArgs);
+                                    var allArgs = new List<FenValue>(boundArgs);
                                     allArgs.AddRange(invokeArgs);
                                     return targetFn.Invoke(allArgs.ToArray(), context);
                                 });
@@ -244,7 +262,7 @@ namespace FenBrowser.FenEngine.Core
                             {
                                 // call(thisArg, ...args) - Invokes with thisArg
                                 var callThis = fnArgs.Count > 0 ? fnArgs[0] : FenValue.Undefined;
-                                var callArgs = fnArgs.Count > 1 ? fnArgs.Skip(1).ToArray() : new IValue[0];
+                                var callArgs = fnArgs.Count > 1 ? fnArgs.Skip(1).ToArray() : new FenValue[0];
                                 
                                 return ApplyFunction(obj, callArgs.ToList(), context, callThis);
                             }
@@ -252,17 +270,17 @@ namespace FenBrowser.FenEngine.Core
                             {
                                 // apply(thisArg, argsArray) - Invokes with thisArg and args from array
                                 var applyThis = fnArgs.Count > 0 ? fnArgs[0] : FenValue.Undefined;
-                                var applyArgs = new List<IValue>();
+                                var applyArgs = new List<FenValue>();
                                 
                                 if (fnArgs.Count > 1 && fnArgs[1].IsObject)
                                 {
                                     var argsArray = fnArgs[1].AsObject();
                                     var lenVal = argsArray?.Get("length", context);
-                                    int len = lenVal != null && lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                                    int len = (lenVal != null && lenVal.Value.IsNumber) ? (int)lenVal.Value.ToNumber() : 0;
                                     for (int i = 0; i < len; i++)
                                     {
                                         var argVal = argsArray.Get(i.ToString(), context);
-                                        applyArgs.Add(argVal ?? FenValue.Undefined);
+                                        applyArgs.Add(argVal );
                                     }
                                 }
                                 
@@ -271,7 +289,6 @@ namespace FenBrowser.FenEngine.Core
                         }
                         
                         {
-
                             thisContext = obj;
                             
                             // Resolve property on the object
@@ -284,81 +301,81 @@ namespace FenBrowser.FenEngine.Core
                             {
                                 // String methods lookup (not length, as it is a property, but methods like substring if we had them)
                                 var proto = GetStringPrototype();
-                                function = proto?.Get(me.Property, context);
+                                function = proto?.Get(me.Property, context) ?? FenValue.Undefined;
                             }
                             else if (obj.IsNumber)
                             {
                                 // Number methods lookup (toFixed, toPrecision, toExponential, toString)
                                 var proto = GetNumberPrototype();
-                                function = proto?.Get(me.Property, context);
+                                function = proto?.Get(me.Property, context) ?? FenValue.Undefined;
                             }
 
-                            if (function == null) function = FenValue.Undefined;
+                            if (function.IsUndefined && function.IsNull) function = FenValue.Undefined;
                         }
                     }
                     else
                     {
-                        function = Eval(callExpr.Function, env, context);
+                        function = ToFenValue(Eval(callExpr.Function, env, context));
                     }
 
-                    if (IsError(function)) return function;
+                    if (function.Type == JsValueType.Error) return (FenValue)function;
                     
                     var args = EvalExpressionsWithSpread(callExpr.Arguments, env, context);
                     if (args.Count == 1 && IsError(args[0])) return args[0];
 
-                    return ApplyFunction(function, args, context, thisContext);
+                    return ApplyFunction((FenValue)function, args, context, thisContext);
 
                 case TryStatement tryStmt:
-                    return EvalTryStatement(tryStmt, env, context);
+                    return ToFenValue(EvalTryStatement(tryStmt, env, context));
 
                 case ThrowStatement throwStmt:
-                    return EvalThrowStatement(throwStmt, env, context);
+                    return ToFenValue(EvalThrowStatement(throwStmt, env, context));
 
                 case WhileStatement whileStmt:
-                    return EvalWhileStatement(whileStmt, env, context);
+                    return ToFenValue(EvalWhileStatement(whileStmt, env, context));
 
                 case ForStatement forStmt:
-                    return EvalForStatement(forStmt, env, context);
+                    return ToFenValue(EvalForStatement(forStmt, env, context));
 
                 case ArrayLiteral arrayLit:
-                    return EvalArrayLiteral(arrayLit, env, context);
+                    return ToFenValue(EvalArrayLiteral(arrayLit, env, context));
 
                 case ObjectLiteral objectLit:
-                    return EvalObjectLiteral(objectLit, env, context);
+                    return ToFenValue(EvalObjectLiteral(objectLit, env, context));
 
                 // Ternary conditional: condition ? consequent : alternate
                 case ConditionalExpression condExpr:
-                    return EvalConditionalExpression(condExpr, env, context);
+                    return ToFenValue(EvalConditionalExpression(condExpr, env, context));
 
                 case ClassStatement classStmt:
-                    return EvalClassStatement(classStmt, env, context);
+                    return (FenValue)EvalClassStatement(classStmt, env, context);
 
                 case ImportDeclaration importDecl:
-                    return EvalImportDeclaration(importDecl, env, context);
+                    return (FenValue)EvalImportDeclaration(importDecl, env, context);
 
                 case ExportDeclaration exportDecl:
-                    return EvalExportDeclaration(exportDecl, env, context);
+                    return (FenValue)EvalExportDeclaration(exportDecl, env, context);
 
                 // Arrow function: (params) => body
                 case ArrowFunctionExpression arrowExpr:
-                    return EvalArrowFunctionExpression(arrowExpr, env);
+                    return (FenValue)EvalArrowFunctionExpression(arrowExpr, env);
 
                 case AsyncFunctionExpression asyncExpr:
-                    return EvalAsyncFunctionExpression(asyncExpr, env);
+                    return (FenValue)EvalAsyncFunctionExpression(asyncExpr, env);
 
                 case AwaitExpression awaitExpr:
-                    return EvalAwaitExpression(awaitExpr, env, context);
+                    return (FenValue)EvalAwaitExpression(awaitExpr, env, context);
 
                 case RegexLiteral regexLit:
-                    return EvalRegexLiteral(regexLit, env);
+                    return (FenValue)EvalRegexLiteral(regexLit, env);
 
                 // for-in loop: for (x in obj) { ... }
                 case ForInStatement forInStmt:
-                    return EvalForInStatement(forInStmt, env, context);
+                    return (FenValue)EvalForInStatement(forInStmt, env, context);
 
                 // for-of loop: for (x of iterable) { ... }
                 case ForOfStatement forOfStmt:
-                    return EvalForOfStatement(forOfStmt, env, context);
+                    return (FenValue)EvalForOfStatement(forOfStmt, env, context);
 
 
 
@@ -368,55 +385,55 @@ namespace FenBrowser.FenEngine.Core
 
                 // Switch statement
                 case SwitchStatement switchStmt:
-                    return EvalSwitchStatement(switchStmt, env, context);
+                    return (FenValue)EvalSwitchStatement(switchStmt, env, context);
 
                 // Break statement
                 case BreakStatement breakStmt:
-                    return new BreakValue();
+                    return FenValue.Break;
 
                 // Continue statement
                 case ContinueStatement continueStmt:
-                    return new ContinueValue();
+                    return FenValue.Continue;
 
                 // Do-while loop
                 case DoWhileStatement doWhileStmt:
-                    return EvalDoWhileStatement(doWhileStmt, env, context);
+                    return (FenValue)EvalDoWhileStatement(doWhileStmt, env, context);
                 
                 // Yield expression (for generator functions)
                 case YieldExpression yieldExpr:
-                    return EvalYieldExpression(yieldExpr, env, context);
+                    return (FenValue)EvalYieldExpression(yieldExpr, env, context);
 
                 // ES6+ Optional chaining: obj?.prop
                 case OptionalChainExpression optChainExpr:
-                    return EvalOptionalChainExpression(optChainExpr, env, context);
+                    return (FenValue)EvalOptionalChainExpression(optChainExpr, env, context);
 
                 // ES6+ Nullish coalescing: a ?? b
                 case NullishCoalescingExpression nullishExpr:
-                    return EvalNullishCoalescingExpression(nullishExpr, env, context);
+                    return (FenValue)EvalNullishCoalescingExpression(nullishExpr, env, context);
 
                 // ES6+ Logical assignment: a ||= b, a &&= b, a ??= b
                 case LogicalAssignmentExpression logicalAssignExpr:
-                    return EvalLogicalAssignmentExpression(logicalAssignExpr, env, context);
+                    return (FenValue)EvalLogicalAssignmentExpression(logicalAssignExpr, env, context);
 
                 // ES6+ Exponentiation: a ** b
                 case ExponentiationExpression expExpr:
-                    return EvalExponentiationExpression(expExpr, env, context);
+                    return (FenValue)EvalExponentiationExpression(expExpr, env, context);
 
                 // ES6+ Bitwise NOT: ~x
                 case BitwiseNotExpression bitwiseNotExpr:
-                    return EvalBitwiseNotExpression(bitwiseNotExpr, env, context);
+                    return (FenValue)EvalBitwiseNotExpression(bitwiseNotExpr, env, context);
 
                 // ES6+ BigInt literal: 123n
                 case BigIntLiteral bigIntLit:
-                    return EvalBigIntLiteral(bigIntLit);
+                    return (FenValue)EvalBigIntLiteral(bigIntLit);
 
                 // ES6+ Compound assignment: a += b, a **= b, etc.
                 case CompoundAssignmentExpression compoundExpr:
-                    return EvalCompoundAssignmentExpression(compoundExpr, env, context);
+                    return (FenValue)EvalCompoundAssignmentExpression(compoundExpr, env, context);
 
             }
 
-            return FenValue.Null;
+            return FenValue.Undefined;
         }
         
         /// <summary>
@@ -425,7 +442,7 @@ namespace FenBrowser.FenEngine.Core
         private IValue EvalYieldExpression(YieldExpression yieldExpr, FenEnvironment env, IExecutionContext context)
         {
             var value = yieldExpr.Value != null ? Eval(yieldExpr.Value, env, context) : FenValue.Undefined;
-            return new YieldValue(value, yieldExpr.Delegate);
+            return FenValue.FromYield(value);
         }
 
         private IValue EvalArrayLiteral(ArrayLiteral node, FenEnvironment env, IExecutionContext context)
@@ -451,10 +468,10 @@ namespace FenBrowser.FenEngine.Core
             _arrayPrototype = new FenObject();
 
             // Array.prototype.push
-            _arrayPrototype.Set("push", FenValue.FromFunction(new FenFunction("push", (args, thisVal) =>
+            _arrayPrototype.Set("push", FenValue.FromFunction(new FenFunction("push", (FenValue[] args, FenValue thisVal) =>
             {
                 var obj = thisVal.AsObject();
-                if (obj == null) 
+                if (obj  == null) 
                 {
                     /* [PERF-REMOVED] */
                     return FenValue.FromNumber(0);
@@ -476,10 +493,10 @@ namespace FenBrowser.FenEngine.Core
             })));
 
             // Array.prototype.join
-            _arrayPrototype.Set("join", FenValue.FromFunction(new FenFunction("join", (args, thisVal) =>
+            _arrayPrototype.Set("join", FenValue.FromFunction(new FenFunction("join", (FenValue[] args, FenValue thisVal) =>
             {
                 var obj = thisVal.AsObject();
-                if (obj == null) return FenValue.FromString("");
+                if (obj  == null) return FenValue.FromString("");
                 
                 var separator = args.Length > 0 ? args[0].ToString() : ",";
                 var lenVal = obj.Get("length", null);
@@ -490,7 +507,7 @@ namespace FenBrowser.FenEngine.Core
                 {
                     if (i > 0) sb.Append(separator);
                     var val = obj.Get(i.ToString(), null);
-                    if (val != null && !val.IsUndefined && !val.IsNull)
+                    if (val != null && !val.IsUndefined && !val == null)
                     {
                         sb.Append(val.ToString());
                     }
@@ -500,10 +517,10 @@ namespace FenBrowser.FenEngine.Core
             })));
 
             // Array.prototype.pop()
-            _arrayPrototype.Set("pop", FenValue.FromFunction(new FenFunction("pop", (args, thisVal) =>
+            _arrayPrototype.Set("pop", FenValue.FromFunction(new FenFunction("pop", (FenValue[] args, FenValue thisVal) =>
             {
                 var obj = thisVal.AsObject();
-                if (obj == null) return FenValue.Undefined;
+                if (obj  == null) return FenValue.Undefined;
                 var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 if (len == 0) return FenValue.Undefined;
@@ -511,14 +528,14 @@ namespace FenBrowser.FenEngine.Core
                 var val = obj.Get(lastIdx, null);
                 obj.Delete(lastIdx, null);
                 obj.Set("length", FenValue.FromNumber(len - 1), null);
-                return val ?? FenValue.Undefined;
+                return val ;
             })));
 
             // Array.prototype.shift()
-            _arrayPrototype.Set("shift", FenValue.FromFunction(new FenFunction("shift", (args, thisVal) =>
+            _arrayPrototype.Set("shift", FenValue.FromFunction(new FenFunction("shift", (FenValue[] args, FenValue thisVal) =>
             {
                 var obj = thisVal.AsObject();
-                if (obj == null) return FenValue.Undefined;
+                if (obj  == null) return FenValue.Undefined;
                 var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 if (len == 0) return FenValue.Undefined;
@@ -526,18 +543,18 @@ namespace FenBrowser.FenEngine.Core
                 for (int i = 1; i < len; i++)
                 {
                     var val = obj.Get(i.ToString(), null);
-                    obj.Set((i - 1).ToString(), val ?? FenValue.Undefined, null);
+                    obj.Set((i - 1).ToString(), val , null);
                 }
                 obj.Delete((len - 1).ToString(), null);
                 obj.Set("length", FenValue.FromNumber(len - 1), null);
-                return first ?? FenValue.Undefined;
+                return first ;
             })));
 
             // Array.prototype.unshift(...elements)
             _arrayPrototype.Set("unshift", FenValue.FromFunction(new FenFunction("unshift", (args, thisVal) =>
             {
                 var obj = thisVal.AsObject();
-                if (obj == null) return FenValue.FromNumber(0);
+                if (obj  == null) return FenValue.FromNumber(0);
                 var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 int argCount = args.Length;
@@ -545,7 +562,7 @@ namespace FenBrowser.FenEngine.Core
                 for (int i = len - 1; i >= 0; i--)
                 {
                     var val = obj.Get(i.ToString(), null);
-                    obj.Set((i + argCount).ToString(), val ?? FenValue.Undefined, null);
+                    obj.Set((i + argCount).ToString(), val , null);
                 }
                 // Insert new elements
                 for (int i = 0; i < argCount; i++)
@@ -560,7 +577,7 @@ namespace FenBrowser.FenEngine.Core
             _arrayPrototype.Set("slice", FenValue.FromFunction(new FenFunction("slice", (args, thisVal) =>
             {
                 var obj = thisVal.AsObject();
-                if (obj == null) return FenValue.FromObject(new FenObject());
+                if (obj  == null) return FenValue.FromObject(new FenObject());
                 var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
@@ -576,7 +593,7 @@ namespace FenBrowser.FenEngine.Core
                 for (int i = start; i < end; i++)
                 {
                     var val = obj.Get(i.ToString(), null);
-                    result.Set(idx.ToString(), val ?? FenValue.Undefined, null);
+                    result.Set(idx.ToString(), val , null);
                     idx++;
                 }
                 result.Set("length", FenValue.FromNumber(idx), null);
@@ -587,7 +604,7 @@ namespace FenBrowser.FenEngine.Core
             _arrayPrototype.Set("splice", FenValue.FromFunction(new FenFunction("splice", (args, thisVal) =>
             {
                 var obj = thisVal.AsObject();
-                if (obj == null) return FenValue.FromObject(new FenObject());
+                if (obj  == null) return FenValue.FromObject(new FenObject());
                 var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
@@ -602,7 +619,7 @@ namespace FenBrowser.FenEngine.Core
                 for (int i = 0; i < deleteCount; i++)
                 {
                     var val = obj.Get((start + i).ToString(), null);
-                    deleted.Set(i.ToString(), val ?? FenValue.Undefined, null);
+                    deleted.Set(i.ToString(), val , null);
                 }
                 deleted.Set("length", FenValue.FromNumber(deleteCount), null);
                 
@@ -615,7 +632,7 @@ namespace FenBrowser.FenEngine.Core
                     for (int i = len - 1; i >= start + deleteCount; i--)
                     {
                         var val = obj.Get(i.ToString(), null);
-                        obj.Set((i + shift).ToString(), val ?? FenValue.Undefined, null);
+                        obj.Set((i + shift).ToString(), val , null);
                     }
                 }
                 else if (shift < 0)
@@ -623,7 +640,7 @@ namespace FenBrowser.FenEngine.Core
                     for (int i = start + deleteCount; i < len; i++)
                     {
                         var val = obj.Get(i.ToString(), null);
-                        obj.Set((i + shift).ToString(), val ?? FenValue.Undefined, null);
+                        obj.Set((i + shift).ToString(), val , null);
                     }
                     for (int i = len + shift; i < len; i++)
                     {
@@ -653,7 +670,7 @@ namespace FenBrowser.FenEngine.Core
                     var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                     for (int i = 0; i < len; i++)
                     {
-                        result.Set(idx.ToString(), obj.Get(i.ToString(), null) ?? FenValue.Undefined, null);
+                        result.Set(idx.ToString(), obj.Get(i.ToString(), null) , null);
                         idx++;
                     }
                 }
@@ -669,7 +686,7 @@ namespace FenBrowser.FenEngine.Core
                             int len = (int)arrLen.ToNumber();
                             for (int i = 0; i < len; i++)
                             {
-                                result.Set(idx.ToString(), arrObj.Get(i.ToString(), null) ?? FenValue.Undefined, null);
+                                result.Set(idx.ToString(), arrObj.Get(i.ToString(), null) , null);
                                 idx++;
                             }
                         }
@@ -694,7 +711,7 @@ namespace FenBrowser.FenEngine.Core
             _arrayPrototype.Set("indexOf", FenValue.FromFunction(new FenFunction("indexOf", (args, thisVal) =>
             {
                 var obj = thisVal.AsObject();
-                if (obj == null || args.Length == 0) return FenValue.FromNumber(-1);
+                if (obj  == null || args.Length == 0) return FenValue.FromNumber(-1);
                 var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 var search = args[0];
@@ -713,7 +730,7 @@ namespace FenBrowser.FenEngine.Core
             _arrayPrototype.Set("lastIndexOf", FenValue.FromFunction(new FenFunction("lastIndexOf", (args, thisVal) =>
             {
                 var obj = thisVal.AsObject();
-                if (obj == null || args.Length == 0) return FenValue.FromNumber(-1);
+                if (obj  == null || args.Length == 0) return FenValue.FromNumber(-1);
                 var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 var search = args[0];
@@ -733,7 +750,7 @@ namespace FenBrowser.FenEngine.Core
             _arrayPrototype.Set("includes", FenValue.FromFunction(new FenFunction("includes", (args, thisVal) =>
             {
                 var obj = thisVal.AsObject();
-                if (obj == null || args.Length == 0) return FenValue.FromBoolean(false);
+                if (obj  == null || args.Length == 0) return FenValue.FromBoolean(false);
                 var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 var search = args[0];
@@ -753,7 +770,7 @@ namespace FenBrowser.FenEngine.Core
             _arrayPrototype.Set("reverse", FenValue.FromFunction(new FenFunction("reverse", (args, thisVal) =>
             {
                 var obj = thisVal.AsObject();
-                if (obj == null) return thisVal;
+                if (obj  == null) return thisVal;
                 var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
@@ -761,8 +778,8 @@ namespace FenBrowser.FenEngine.Core
                 {
                     var left = obj.Get(i.ToString(), null);
                     var right = obj.Get((len - 1 - i).ToString(), null);
-                    obj.Set(i.ToString(), right ?? FenValue.Undefined, null);
-                    obj.Set((len - 1 - i).ToString(), left ?? FenValue.Undefined, null);
+                    obj.Set(i.ToString(), right , null);
+                    obj.Set((len - 1 - i).ToString(), left , null);
                 }
                 return thisVal;
             })));
@@ -771,15 +788,15 @@ namespace FenBrowser.FenEngine.Core
             _arrayPrototype.Set("sort", FenValue.FromFunction(new FenFunction("sort", (args, thisVal) =>
             {
                 var obj = thisVal.AsObject();
-                if (obj == null) return thisVal;
+                if (obj  == null) return thisVal;
                 var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 if (len <= 1) return thisVal;
                 
-                var items = new List<IValue>();
+                var items = new List<FenValue>();
                 for (int i = 0; i < len; i++)
                 {
-                    items.Add(obj.Get(i.ToString(), null) ?? FenValue.Undefined);
+                    items.Add(obj.Get(i.ToString(), null) );
                 }
                 
                 FenFunction compareFn = args.Length > 0 ? args[0].AsFunction() : null;
@@ -788,7 +805,7 @@ namespace FenBrowser.FenEngine.Core
                 {
                     if (compareFn != null)
                     {
-                        var result = compareFn.Invoke(new IValue[] { a, b }, null);
+                        var result = compareFn.Invoke(new FenValue[] { a, b }, null);
                         return (int)result.ToNumber();
                     }
                     return string.Compare(a.ToString(), b.ToString(), StringComparison.Ordinal);
@@ -805,9 +822,9 @@ namespace FenBrowser.FenEngine.Core
             _arrayPrototype.Set("forEach", FenValue.FromFunction(new FenFunction("forEach", (args, thisVal) =>
             {
                 var obj = thisVal.AsObject();
-                if (obj == null || args.Length == 0) return FenValue.Undefined;
+                if (obj  == null || args.Length == 0) return FenValue.Undefined;
                 var callback = args[0].AsFunction();
-                if (callback == null) return FenValue.Undefined;
+                if (callback  == null) return FenValue.Undefined;
                 var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 var thisArg = args.Length > 1 ? args[1] : FenValue.Undefined;
@@ -815,7 +832,7 @@ namespace FenBrowser.FenEngine.Core
                 for (int i = 0; i < len; i++)
                 {
                     var val = obj.Get(i.ToString(), null);
-                    callback.Invoke(new IValue[] { val ?? FenValue.Undefined, FenValue.FromNumber(i), thisVal }, null);
+                    callback.Invoke(new FenValue[] { val , FenValue.FromNumber(i), thisVal }, null);
                 }
                 return FenValue.Undefined;
             })));
@@ -825,13 +842,13 @@ namespace FenBrowser.FenEngine.Core
             {
                 var obj = thisVal.AsObject();
                 var result = new FenObject();
-                if (obj == null || args.Length == 0)
+                if (obj  == null || args.Length == 0)
                 {
                     result.Set("length", FenValue.FromNumber(0), null);
                     return FenValue.FromObject(result);
                 }
                 var callback = args[0].AsFunction();
-                if (callback == null)
+                if (callback  == null)
                 {
                     result.Set("length", FenValue.FromNumber(0), null);
                     return FenValue.FromObject(result);
@@ -842,11 +859,124 @@ namespace FenBrowser.FenEngine.Core
                 for (int i = 0; i < len; i++)
                 {
                     var val = obj.Get(i.ToString(), null);
-                    var mapped = callback.Invoke(new IValue[] { val ?? FenValue.Undefined, FenValue.FromNumber(i), thisVal }, null);
+                    var mapped = callback.Invoke(new FenValue[] { val , FenValue.FromNumber(i), thisVal }, null);
                     result.Set(i.ToString(), mapped, null);
                 }
                 result.Set("length", FenValue.FromNumber(len), null);
                 return FenValue.FromObject(result);
+            })));
+
+            // Array.prototype.flat(depth)
+            _arrayPrototype.Set("flat", FenValue.FromFunction(new FenFunction("flat", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj  == null) return FenValue.FromObject(new FenObject());
+                var lenVal = obj.Get("length", null);
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                var depth = args.Length > 0 ? args[0].ToNumber() : 1;
+                
+                var result = new FenObject();
+                int idx = 0;
+                
+                void Flatten(IObject source, int sourceLen, double currentDepth)
+                {
+                    for (int i = 0; i < sourceLen; i++)
+                    {
+                        var val = source.Get(i.ToString(), null);
+                        if (val  == null || val.IsUndefined) continue; // Skip empty slots
+                        
+                        // Check if array (has length and is object)
+                        var isArr = val.IsObject && val.AsObject().Get("length", null).IsNumber; // Simplified check
+                        // Better check: is it Array constructor instance? Difficult without access to global Array. 
+                        // Duck typing "length" property is often used in simplified engines.
+                        
+                        if (currentDepth > 0 && isArr)
+                        {
+                            var subObj = val.AsObject();
+                            var subLen = (int)subObj.Get("length", null).ToNumber();
+                            Flatten(subObj, subLen, currentDepth - 1);
+                        }
+                        else
+                        {
+                            result.Set(idx.ToString(), val, null);
+                            idx++;
+                        }
+                    }
+                }
+                
+                Flatten(obj, len, depth);
+                result.Set("length", FenValue.FromNumber(idx), null);
+                return FenValue.FromObject(result);
+            })));
+
+            // Array.prototype.flatMap(callback, thisArg)
+            _arrayPrototype.Set("flatMap", FenValue.FromFunction(new FenFunction("flatMap", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj  == null || args.Length == 0 || !args[0].IsFunction) return FenValue.FromObject(new FenObject());
+                
+                var callback = args[0].AsFunction();
+                var thisArg = args.Length > 1 ? args[1] : FenValue.Undefined;
+                var lenVal = obj.Get("length", null);
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                
+                var result = new FenObject();
+                int idx = 0;
+                
+                for (int i = 0; i < len; i++)
+                {
+                    var val = obj.Get(i.ToString(), null);
+                    var mapped = callback.Invoke(new FenValue[] { val , FenValue.FromNumber(i), thisVal }, null);
+                    
+                    // Flatten 1 level
+                     var isArr = mapped.IsObject && mapped.AsObject().Get("length", null).IsNumber;
+                     if (isArr)
+                     {
+                        var subObj = mapped.AsObject();
+                        var subLen = (int)subObj.Get("length", null).ToNumber();
+                        for (int k = 0; k < subLen; k++)
+                        {
+                            var subVal = subObj.Get(k.ToString(), null);
+                            if (subVal != null && !subVal.IsUndefined)
+                            {
+                                result.Set(idx.ToString(), subVal, null);
+                                idx++;
+                            }
+                        }
+                     }
+                     else
+                     {
+                        result.Set(idx.ToString(), mapped, null);
+                        idx++;
+                     }
+                }
+                
+                result.Set("length", FenValue.FromNumber(idx), null);
+                return FenValue.FromObject(result);
+            })));
+
+            // Array.prototype.fill(value, start, end)
+            _arrayPrototype.Set("fill", FenValue.FromFunction(new FenFunction("fill", (args, thisVal) =>
+            {
+                var obj = thisVal.AsObject();
+                if (obj  == null) return thisVal;
+                var lenVal = obj.Get("length", null);
+                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                
+                var value = args.Length > 0 ? args[0] : FenValue.Undefined;
+                var start = args.Length > 1 ? (int)args[1].ToNumber() : 0;
+                var end = args.Length > 2 ? (int)args[2].ToNumber() : len;
+                
+                if (start < 0) start = Math.Max(len + start, 0);
+                if (end < 0) end = Math.Max(len + end, 0);
+                start = Math.Min(start, len);
+                end = Math.Min(end, len);
+                
+                for (int i = start; i < end; i++)
+                {
+                    obj.Set(i.ToString(), value, null);
+                }
+                return thisVal;
             })));
 
             // Array.prototype.filter(callback, thisArg)
@@ -855,13 +985,13 @@ namespace FenBrowser.FenEngine.Core
                 var obj = thisVal.AsObject();
                 var result = new FenObject();
                 int idx = 0;
-                if (obj == null || args.Length == 0)
+                if (obj  == null || args.Length == 0)
                 {
                     result.Set("length", FenValue.FromNumber(0), null);
                     return FenValue.FromObject(result);
                 }
                 var callback = args[0].AsFunction();
-                if (callback == null)
+                if (callback  == null)
                 {
                     result.Set("length", FenValue.FromNumber(0), null);
                     return FenValue.FromObject(result);
@@ -872,10 +1002,10 @@ namespace FenBrowser.FenEngine.Core
                 for (int i = 0; i < len; i++)
                 {
                     var val = obj.Get(i.ToString(), null);
-                    var keep = callback.Invoke(new IValue[] { val ?? FenValue.Undefined, FenValue.FromNumber(i), thisVal }, null);
+                    var keep = callback.Invoke(new FenValue[] { val , FenValue.FromNumber(i), thisVal }, null);
                     if (keep.ToBoolean())
                     {
-                        result.Set(idx.ToString(), val ?? FenValue.Undefined, null);
+                        result.Set(idx.ToString(), val , null);
                         idx++;
                     }
                 }
@@ -887,9 +1017,9 @@ namespace FenBrowser.FenEngine.Core
             _arrayPrototype.Set("reduce", FenValue.FromFunction(new FenFunction("reduce", (args, thisVal) =>
             {
                 var obj = thisVal.AsObject();
-                if (obj == null || args.Length == 0) return FenValue.Undefined;
+                if (obj  == null || args.Length == 0) return FenValue.Undefined;
                 var callback = args[0].AsFunction();
-                if (callback == null) return FenValue.Undefined;
+                if (callback  == null) return FenValue.Undefined;
                 var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
@@ -901,26 +1031,26 @@ namespace FenBrowser.FenEngine.Core
                 }
                 else
                 {
-                    if (len == 0) return new ErrorValue("Reduce of empty array with no initial value");
-                    accumulator = obj.Get("0", null) ?? FenValue.Undefined;
+                    if (len == 0) return FenValue.FromError("Reduce of empty array with no initial value");
+                    accumulator = obj.Get("0", null) ;
                     start = 1;
                 }
                 
                 for (int i = start; i < len; i++)
                 {
                     var val = obj.Get(i.ToString(), null);
-                    accumulator = callback.Invoke(new IValue[] { accumulator, val ?? FenValue.Undefined, FenValue.FromNumber(i), thisVal }, null);
+                    accumulator = ToFenValue(callback.Invoke(new FenValue[] { ToFenValue(accumulator), val , FenValue.FromNumber(i), thisVal }, null));
                 }
-                return accumulator;
+                return (FenValue)accumulator;
             })));
 
             // Array.prototype.reduceRight(callback, initialValue)
             _arrayPrototype.Set("reduceRight", FenValue.FromFunction(new FenFunction("reduceRight", (args, thisVal) =>
             {
                 var obj = thisVal.AsObject();
-                if (obj == null || args.Length == 0) return FenValue.Undefined;
+                if (obj  == null || args.Length == 0) return FenValue.Undefined;
                 var callback = args[0].AsFunction();
-                if (callback == null) return FenValue.Undefined;
+                if (callback  == null) return FenValue.Undefined;
                 var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
@@ -932,33 +1062,33 @@ namespace FenBrowser.FenEngine.Core
                 }
                 else
                 {
-                    if (len == 0) return new ErrorValue("Reduce of empty array with no initial value");
-                    accumulator = obj.Get((len - 1).ToString(), null) ?? FenValue.Undefined;
+                    if (len == 0) return FenValue.FromError("Reduce of empty array with no initial value");
+                    accumulator = obj.Get((len - 1).ToString(), null) ;
                     start = len - 2;
                 }
                 
                 for (int i = start; i >= 0; i--)
                 {
                     var val = obj.Get(i.ToString(), null);
-                    accumulator = callback.Invoke(new IValue[] { accumulator, val ?? FenValue.Undefined, FenValue.FromNumber(i), thisVal }, null);
+                    accumulator = ToFenValue(callback.Invoke(new FenValue[] { ToFenValue(accumulator), val , FenValue.FromNumber(i), thisVal }, null));
                 }
-                return accumulator;
+                return (FenValue)accumulator;
             })));
 
             // Array.prototype.find(callback, thisArg)
             _arrayPrototype.Set("find", FenValue.FromFunction(new FenFunction("find", (args, thisVal) =>
             {
                 var obj = thisVal.AsObject();
-                if (obj == null || args.Length == 0) return FenValue.Undefined;
+                if (obj  == null || args.Length == 0) return FenValue.Undefined;
                 var callback = args[0].AsFunction();
-                if (callback == null) return FenValue.Undefined;
+                if (callback  == null) return FenValue.Undefined;
                 var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
                 for (int i = 0; i < len; i++)
                 {
-                    var val = obj.Get(i.ToString(), null) ?? FenValue.Undefined;
-                    var result = callback.Invoke(new IValue[] { val, FenValue.FromNumber(i), thisVal }, null);
+                    var val = obj.Get(i.ToString(), null) ;
+                    var result = callback.Invoke(new FenValue[] { val, FenValue.FromNumber(i), thisVal }, null);
                     if (result.ToBoolean()) return val;
                 }
                 return FenValue.Undefined;
@@ -968,16 +1098,16 @@ namespace FenBrowser.FenEngine.Core
             _arrayPrototype.Set("findIndex", FenValue.FromFunction(new FenFunction("findIndex", (args, thisVal) =>
             {
                 var obj = thisVal.AsObject();
-                if (obj == null || args.Length == 0) return FenValue.FromNumber(-1);
+                if (obj  == null || args.Length == 0) return FenValue.FromNumber(-1);
                 var callback = args[0].AsFunction();
-                if (callback == null) return FenValue.FromNumber(-1);
+                if (callback  == null) return FenValue.FromNumber(-1);
                 var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
                 for (int i = 0; i < len; i++)
                 {
-                    var val = obj.Get(i.ToString(), null) ?? FenValue.Undefined;
-                    var result = callback.Invoke(new IValue[] { val, FenValue.FromNumber(i), thisVal }, null);
+                    var val = obj.Get(i.ToString(), null) ;
+                    var result = callback.Invoke(new FenValue[] { val, FenValue.FromNumber(i), thisVal }, null);
                     if (result.ToBoolean()) return FenValue.FromNumber(i);
                 }
                 return FenValue.FromNumber(-1);
@@ -987,21 +1117,26 @@ namespace FenBrowser.FenEngine.Core
             _arrayPrototype.Set("some", FenValue.FromFunction(new FenFunction("some", (args, thisVal) =>
             {
                 var obj = thisVal.AsObject();
-                if (obj == null || args.Length == 0) return FenValue.FromBoolean(false);
+                if (obj  == null || args.Length == 0) return FenValue.FromBoolean(false);
                 var callback = args[0].AsFunction();
-                if (callback == null) return FenValue.FromBoolean(false);
+                if (callback  == null) return FenValue.FromBoolean(false);
                 var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
                 for (int i = 0; i < len; i++)
                 {
-                    var val = obj.Get(i.ToString(), null) ?? FenValue.Undefined;
-                    var result = callback.Invoke(new IValue[] { val, FenValue.FromNumber(i), thisVal }, null);
+                    var val = obj.Get(i.ToString(), null) ;
+                    var result = callback.Invoke(new FenValue[] { val, FenValue.FromNumber(i), thisVal }, null);
+                    if (result.ToBoolean()) return FenValue.FromBoolean(true);
+                }
+                return FenValue.FromBoolean(false);
+            })));
+
             // Array.prototype.flat(depth)
             _arrayPrototype.Set("flat", FenValue.FromFunction(new FenFunction("flat", (args, thisVal) =>
             {
                 var obj = thisVal.AsObject();
-                if (obj == null) return FenValue.FromObject(CreateArray(new string[0]));
+                if (obj  == null) return FenValue.FromObject(CreateArray(new string[0]));
                 int depth = args.Length > 0 ? (int)args[0].ToNumber() : 1;
                 var result = FlattenArray(obj, depth);
                 return FenValue.FromObject(result);
@@ -1011,7 +1146,7 @@ namespace FenBrowser.FenEngine.Core
             _arrayPrototype.Set("flatMap", FenValue.FromFunction(new FenFunction("flatMap", (args, thisVal) =>
             {
                 var obj = thisVal.AsObject();
-                if (obj == null || args.Length == 0) return FenValue.FromObject(CreateArray(new string[0]));
+                if (obj  == null || args.Length == 0) return FenValue.FromObject(CreateArray(new string[0]));
                 var callback = args[0].AsFunction();
                 var thisArg = args.Length > 1 ? args[1] : FenValue.Undefined;
                 
@@ -1022,7 +1157,7 @@ namespace FenBrowser.FenEngine.Core
                 for (int i = 0; i < len; i++)
                 {
                     var val = obj.Get(i.ToString(), null);
-                    var res = callback.Invoke(new IValue[] { val ?? FenValue.Undefined, FenValue.FromNumber(i), thisVal }, null);
+                    var res = callback.Invoke(new FenValue[] { val , FenValue.FromNumber(i), thisVal }, null);
                     mapped.Set(i.ToString(), res, null);
                 }
                 mapped.Set("length", FenValue.FromNumber(len), null);
@@ -1035,7 +1170,7 @@ namespace FenBrowser.FenEngine.Core
             _arrayPrototype.Set("fill", FenValue.FromFunction(new FenFunction("fill", (args, thisVal) =>
             {
                 var obj = thisVal.AsObject();
-                if (obj == null) return thisVal;
+                if (obj  == null) return thisVal;
                 var value = args.Length > 0 ? args[0] : FenValue.Undefined;
                 var lenVal = obj.Get("length", null);
                 int len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
@@ -1059,85 +1194,67 @@ namespace FenBrowser.FenEngine.Core
             _arrayPrototype.Set("every", FenValue.FromFunction(new FenFunction("every", (args, thisVal) =>
             {
                 var obj = thisVal.AsObject();
-                if (obj == null || args.Length == 0) return FenValue.FromBoolean(true);
+                if (obj  == null || args.Length == 0) return FenValue.FromBoolean(true);
                 var callback = args[0].AsFunction();
-                if (callback == null) return FenValue.FromBoolean(true);
+                if (callback  == null) return FenValue.FromBoolean(true);
                 var lenVal = obj.Get("length", null);
                 var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
                 
                 for (int i = 0; i < len; i++)
                 {
-                    var val = obj.Get(i.ToString(), null) ?? FenValue.Undefined;
-                    var result = callback.Invoke(new IValue[] { val, FenValue.FromNumber(i), thisVal }, null);
+                    var val = obj.Get(i.ToString(), null) ;
+                    var result = callback.Invoke(new FenValue[] { val, FenValue.FromNumber(i), thisVal }, null);
                     if (!result.ToBoolean()) return FenValue.FromBoolean(false);
                 }
                 return FenValue.FromBoolean(true);
             })));
 
-            // Array.prototype.fill(value, start, end)
-            _arrayPrototype.Set("fill", FenValue.FromFunction(new FenFunction("fill", (args, thisVal) =>
-            {
-                var obj = thisVal.AsObject();
-                if (obj == null) return thisVal;
-                var value = args.Length > 0 ? args[0] : FenValue.Undefined;
-                var lenVal = obj.Get("length", null);
-                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
-                
-                int start = args.Length > 1 ? (int)args[1].ToNumber() : 0;
-                int end = args.Length > 2 ? (int)args[2].ToNumber() : len;
-                if (start < 0) start = Math.Max(len + start, 0);
-                if (end < 0) end = Math.Max(len + end, 0);
-                start = Math.Min(start, len);
-                end = Math.Min(end, len);
-                
-                for (int i = start; i < end; i++)
-                {
-                    obj.Set(i.ToString(), value, null);
-                }
-                return thisVal;
-            })));
 
-            // Array.prototype.flat(depth)
-            _arrayPrototype.Set("flat", FenValue.FromFunction(new FenFunction("flat", (args, thisVal) =>
-            {
-                var obj = thisVal.AsObject();
-                var result = new FenObject();
-                if (obj == null)
-                {
-                    result.Set("length", FenValue.FromNumber(0), null);
-                    return FenValue.FromObject(result);
-                }
-                int depth = args.Length > 0 ? (int)args[0].ToNumber() : 1;
-                var lenVal = obj.Get("length", null);
-                var len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
-                
-                int idx = 0;
-                void Flatten(IObject arr, int currentDepth)
-                {
-                    var arrLen = arr.Get("length", null);
-                    int l = arrLen != null && arrLen.IsNumber ? (int)arrLen.ToNumber() : 0;
-                    for (int i = 0; i < l; i++)
-                    {
-                        var val = arr.Get(i.ToString(), null);
-                        if (currentDepth > 0 && val != null && val.IsObject)
-                        {
-                            var innerLen = val.AsObject()?.Get("length", null);
-                            if (innerLen != null && innerLen.IsNumber)
-                            {
-                                Flatten(val.AsObject(), currentDepth - 1);
-                                continue;
-                            }
-                        }
-                        result.Set(idx.ToString(), val ?? FenValue.Undefined, null);
-                        idx++;
-                    }
-                }
-                Flatten(obj, depth);
-                result.Set("length", FenValue.FromNumber(idx), null);
-                return FenValue.FromObject(result);
-            })));
 
             return _arrayPrototype;
+        }
+
+        private FenObject CreateArray(string[] items)
+        {
+            var arr = new FenObject();
+            for(int i=0; i<items.Length; i++)
+            {
+                arr.Set(i.ToString(), FenValue.FromString(items[i]), null);
+            }
+            arr.Set("length", FenValue.FromNumber(items.Length), null);
+            return arr;
+        }
+
+        private FenObject FlattenArray(IObject arr, int depth)
+        {
+            var result = new FenObject();
+            int idx = 0;
+            
+            void FlattenRecursive(IObject source, int currentDepth)
+            {
+                var arrLen = source.Get("length", null);
+                int l = arrLen != null && arrLen.IsNumber ? (int)arrLen.ToNumber() : 0;
+                for (int i = 0; i < l; i++)
+                {
+                    var val = source.Get(i.ToString(), null);
+                    if (currentDepth > 0 && val != null && val.IsObject)
+                    {
+                        var inner = val.AsObject();
+                        var innerLen = inner?.Get("length", null);
+                        if (innerLen != null && innerLen.Value.IsNumber)
+                        {
+                            FlattenRecursive(inner, currentDepth - 1);
+                            continue;
+                        }
+                    }
+                    result.Set(idx.ToString(), val , null);
+                    idx++;
+                }
+            }
+            
+            FlattenRecursive(arr, depth);
+            result.Set("length", FenValue.FromNumber(idx), null);
+            return result;
         }
 
         private IValue EvalObjectLiteral(ObjectLiteral node, FenEnvironment env, IExecutionContext context)
@@ -1154,18 +1271,18 @@ namespace FenBrowser.FenEngine.Core
 
         private IValue EvalProgram(Program program, FenEnvironment env, IExecutionContext context)
         {
-            IValue result = FenValue.Null;
+            FenValue result = FenValue.Null;
 
             foreach (var stmt in program.Statements)
             {
                 result = Eval(stmt, env, context);
 
-                if (result is ReturnValue returnValue)
+                if (result.Type == JsValueType.ReturnValue)
                 {
-                    return returnValue.Value;
+                    return result.GetReturnValue();
                 }
                 
-                if (result is ErrorValue)
+                if (result.Type == JsValueType.Error)
                 {
                     return result;
                 }
@@ -1176,7 +1293,7 @@ namespace FenBrowser.FenEngine.Core
 
         private IValue EvalBlockStatement(BlockStatement block, FenEnvironment env, IExecutionContext context)
         {
-            IValue result = FenValue.Null;
+            FenValue result = FenValue.Null;
             
             // TDZ: First pass - scan for all let/const declarations and add them to TDZ
             // This ensures accessing them before initialization throws an error
@@ -1196,8 +1313,8 @@ namespace FenBrowser.FenEngine.Core
                 if (result != null && (
                     result.Type == JsValueType.ReturnValue || 
                     result.Type == JsValueType.Error ||
-                    result is BreakValue ||
-                    result is ContinueValue))
+                    result.Type == JsValueType.Break ||
+                    result.Type == JsValueType.Continue))
                 {
                     return result;
                 }
@@ -1206,7 +1323,7 @@ namespace FenBrowser.FenEngine.Core
             return result;
         }
 
-        private IValue EvalPrefixExpression(string op, IValue right)
+        private FenValue EvalPrefixExpression(string op, FenValue right)
         {
             switch (op)
             {
@@ -1221,21 +1338,14 @@ namespace FenBrowser.FenEngine.Core
                 case "delete":
                     return FenValue.FromBoolean(true);  // Simplified
                 case "++":
-                    // Prefix increment - return incremented value
-                    if (right.Type == JsValueType.Number)
-                        return FenValue.FromNumber(right.ToNumber() + 1);
-                    return FenValue.FromNumber(double.NaN);
                 case "--":
-                    // Prefix decrement - return decremented value
-                    if (right.Type == JsValueType.Number)
-                        return FenValue.FromNumber(right.ToNumber() - 1);
-                    return FenValue.FromNumber(double.NaN);
+                    return FenValue.FromError($"operator {op} must be handled by EvalPrefixUpdate");
                 default:
-                    return new ErrorValue($"unknown operator: {op}{right.Type}");
+                    return FenValue.FromError($"unknown operator: {op}{right.Type}");
             }
         }
 
-        private IValue EvalTypeofExpression(IValue val)
+        private FenValue EvalTypeofExpression(FenValue val)
         {
             switch (val.Type)
             {
@@ -1256,33 +1366,24 @@ namespace FenBrowser.FenEngine.Core
             }
         }
 
-        private IValue EvalBangOperatorExpression(IValue right)
+        private FenValue EvalBangOperatorExpression(FenValue right)
         {
             return FenValue.FromBoolean(!right.ToBoolean());
         }
 
-        private IValue EvalMinusPrefixOperatorExpression(IValue right)
+        private FenValue EvalMinusPrefixOperatorExpression(FenValue right)
         {
             if (right.Type != JsValueType.Number)
             {
-                return new ErrorValue($"unknown operator: -{right.Type}");
+                return FenValue.FromError($"unknown operator: -{right.Type}");
             }
-            return FenValue.FromNumber(-right.ToNumber());
+            return FenValue.FromNumber(-right.AsNumber());
         }
 
-        private IValue EvalInfixExpression(string op, IValue left, IValue right)
+        private FenValue EvalInfixExpression(string op, FenValue left, FenValue right)
         {
-            // Handle postfix ++/-- (right is null)
-            if (op == "++" && right == null)
-            {
-                // Postfix increment - return original value
-                return left;
-            }
-            if (op == "--" && right == null)
-            {
-                // Postfix decrement - return original value
-                return left;
-            }
+            // Increment/decrement are handled by Eval in the main switch
+
 
             if (op == "&&")
             {
@@ -1312,16 +1413,16 @@ namespace FenBrowser.FenEngine.Core
             {
                 if (!right.IsFunction) return FenValue.FromBoolean(false);
                 var constructor = right.AsFunction();
-                if (constructor == null) return FenValue.FromBoolean(false);
+                if (constructor  == null) return FenValue.FromBoolean(false);
                 
                 // Get the prototype property of the constructor
                 var prototype = constructor.Prototype;
-                if (prototype == null) return FenValue.FromBoolean(false);
+                if (prototype  == null) return FenValue.FromBoolean(false);
                 
                 // Check if left is an object and walk its prototype chain
                 if (!left.IsObject) return FenValue.FromBoolean(false);
                 var obj = left.AsObject() as FenObject;
-                if (obj == null) return FenValue.FromBoolean(false);
+                if (obj  == null) return FenValue.FromBoolean(false);
                 
                 // Walk the prototype chain
                 var currentProto = obj.GetPrototype();
@@ -1382,7 +1483,7 @@ namespace FenBrowser.FenEngine.Core
                     case ">=":
                         return FenValue.FromBoolean(string.Compare(left.ToString(), right.ToString(), StringComparison.Ordinal) >= 0);
                     default:
-                        return new ErrorValue($"unknown operator: {left.Type} {op} {right.Type}");
+                        return FenValue.FromError($"unknown operator: {left.Type} {op} {right.Type}");
                 }
             }
             if (op == "==")
@@ -1395,15 +1496,15 @@ namespace FenBrowser.FenEngine.Core
             }
             if (left.Type != right.Type)
             {
-                return new ErrorValue($"type mismatch: {left.Type} {op} {right.Type}");
+                return FenValue.FromError($"type mismatch: {left.Type} {op} {right.Type}");
             }
-            return new ErrorValue($"unknown operator: {left.Type} {op} {right.Type}");
+            return FenValue.FromError($"unknown operator: {left.Type} {op} {right.Type}");
         }
 
-        private IValue EvalIntegerInfixExpression(string op, IValue left, IValue right)
+        private FenValue EvalIntegerInfixExpression(string op, FenValue left, FenValue right)
         {
-            var leftVal = left.ToNumber();
-            var rightVal = right.ToNumber();
+            var leftVal = left.AsNumber();
+            var rightVal = right.AsNumber();
 
             switch (op)
             {
@@ -1434,17 +1535,17 @@ namespace FenBrowser.FenEngine.Core
                 case "!==":
                     return FenValue.FromBoolean(leftVal != rightVal);
                 default:
-                    return new ErrorValue($"unknown operator: {left.Type} {op} {right.Type}");
+                    return FenValue.FromError($"unknown operator: {left.Type} {op} {right.Type}");
             }
         }
 
-        private IValue EvalStringInfixExpression(string op, IValue left, IValue right)
+        private FenValue EvalStringInfixExpression(string op, FenValue left, FenValue right)
         {
             if (op != "+")
             {
-                return new ErrorValue($"unknown operator: {left.Type} {op} {right.Type}");
+                return FenValue.FromError($"unknown operator: {left.Type} {op} {right.Type}");
             }
-            return FenValue.FromString(left.ToString() + right.ToString());
+            return FenValue.FromString(left.AsString() + right.AsString());
         }
 
         private IValue EvalIfExpression(IfExpression ie, FenEnvironment env, IExecutionContext context)
@@ -1469,9 +1570,9 @@ namespace FenBrowser.FenEngine.Core
         private IValue EvalIdentifier(Identifier node, FenEnvironment env)
         {
             var val = env.Get(node.Value);
-            if (val == null)
+            if (val  == null)
             {
-                return new ErrorValue($"identifier not found: {node.Value}");
+                return FenValue.FromError($"identifier not found: {node.Value}");
             }
             return val;
         }
@@ -1481,15 +1582,15 @@ namespace FenBrowser.FenEngine.Core
             // Private identifier access: this.#field
             // We need to access from 'this' in the environment
             var thisVal = env.Get("this");
-            if (thisVal == null || !thisVal.IsObject)
+            if (thisVal  == null || !thisVal.IsObject)
             {
-                return new ErrorValue($"Cannot use private field '#${node.Name}' outside of a class");
+                return FenValue.FromError($"Cannot use private field '#${node.Name}' outside of a class");
             }
             
             var thisObj = thisVal.AsObject();
-            if (thisObj == null)
+            if (thisObj  == null)
             {
-                return new ErrorValue($"Cannot use private field '#${node.Name}' outside of a class");
+                return FenValue.FromError($"Cannot use private field '#${node.Name}' outside of a class");
             }
             
             // Private fields are stored with a # prefix
@@ -1499,19 +1600,19 @@ namespace FenBrowser.FenEngine.Core
                 return thisObj.Get(privateKey);
             }
             
-            return new ErrorValue($"Cannot read private member #{node.Name} from an object whose class did not declare it");
+            return FenValue.FromError($"Cannot read private member #{node.Name} from an object whose class did not declare it");
         }
 
-        private List<IValue> EvalExpressions(List<Expression> exps, FenEnvironment env, IExecutionContext context)
+        private List<FenValue> EvalExpressions(List<Expression> exps, FenEnvironment env, IExecutionContext context)
         {
-            var result = new List<IValue>();
+            var result = new List<FenValue>();
 
             foreach (var e in exps)
             {
                 var evaluated = Eval(e, env, context);
                 if (IsError(evaluated))
                 {
-                    return new List<IValue> { evaluated };
+                    return new List<FenValue> { evaluated };
                 }
                 result.Add(evaluated);
             }
@@ -1519,8 +1620,26 @@ namespace FenBrowser.FenEngine.Core
             return result;
         }
 
-        public IValue ApplyFunction(IValue fn, List<IValue> args, IExecutionContext context, IValue thisContext = null)
+        private FenValue ToFenValue(IValue val)
         {
+            if (val == null) return FenValue.Undefined;
+            if (val is IObject obj) return FenValue.FromObject(obj);
+            // FenValue is a struct implementing IValue, so it will be boxed
+            // Try to cast as object first, then unbox
+            var boxed = val as object;
+            if (boxed != null && boxed.GetType() == typeof(FenValue))
+                return (FenValue)boxed;
+            // Handle other IValue implementations
+            return FenValue.Undefined;
+        }
+
+        public FenBrowser.FenEngine.Core.FenValue ApplyFunction(FenBrowser.FenEngine.Core.FenValue fn, List<FenBrowser.FenEngine.Core.FenValue> args, IExecutionContext context, FenBrowser.FenEngine.Core.FenValue thisContext = default)
+        {
+            if (!_jitInitialized)
+            {
+                JitRuntime.Initialize(this);
+                _jitInitialized = true;
+            }
             var function = fn.AsFunction();
             if (function != null)
             {
@@ -1531,7 +1650,7 @@ namespace FenBrowser.FenEngine.Core
                 if (function.IsNative)
                 {
                     var prevThis = context.ThisBinding;
-                    context.ThisBinding = thisContext ?? FenValue.Undefined;
+                    context.ThisBinding = thisContext ;
                     try
                     {
                         return function.Invoke(args.ToArray(), context);
@@ -1542,8 +1661,63 @@ namespace FenBrowser.FenEngine.Core
                     }
                 }
                 
-                // Handle user-defined functions
-                // Handle user-defined functions
+                // JIT INTEGRATION
+                function.CallCount++;
+                if (!function.IsJitCompiled && function.CallCount >= 50 && !function.IsGenerator && !function.IsAsync)
+                {
+                    try
+                    {
+                        var compiler = new BytecodeCompiler();
+                        var unit = function.Body is BlockStatement bs ? 
+                                    compiler.CompileFunction(new FunctionLiteral { Body = bs, Parameters = function.Parameters }) : 
+                                    null; // Need better handling for non-block bodies
+                        
+                        if (unit != null)
+                        {
+                            // DEBUG: Log bytecode
+                            FenLogger.Info($"[JIT] Bytecode for {function.Name}:", LogCategory.JavaScript);
+                            for (int i = 0; i < unit.Instructions.Count; i++)
+                            {
+                                FenLogger.Info($"  {i}: {unit.Instructions[i].OpCode} {unit.Instructions[i].Operand}", LogCategory.JavaScript);
+                            }
+
+                            var jit = new JitCompiler();
+                            function.JittedDelegate = jit.Compile(unit);
+                            function.LocalMap = unit.LocalMap;
+                            function.IsJitCompiled = true;
+                            FenLogger.Info($"[JIT] Compiled function: {function.Name}", LogCategory.JavaScript);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        FenLogger.Error($"[JIT] Failed to compile function {function.Name}: {ex.Message}", LogCategory.JavaScript);
+                        function.CallCount = -1000; // Stop trying to JIT for a while
+                    }
+                }
+
+                if (function.IsJitCompiled && function.JittedDelegate != null)
+                {
+                    context.PushCallFrame(function.Name ?? "anonymous (JIT)");
+                    var jittedExtendedEnv = ExtendFunctionEnv(function, args, context, thisContext);
+                    try
+                    {
+                        return function.JittedDelegate(args.ToArray(), jittedExtendedEnv, context);
+                    }
+                    catch (Exception ex)
+                    {
+                        FenLogger.Error($"[JIT] Runtime error in {function.Name}: {ex.Message}\n{ex.StackTrace}", LogCategory.JavaScript);
+                        // Fallback to interpreter
+                        function.IsJitCompiled = false;
+                        function.JittedDelegate = null;
+                        function.CallCount = -10000;
+                    }
+                    finally
+                    {
+                        context.PopCallFrame();
+                    }
+                }
+                
+                // Handle user-defined functions (Interpreter fallback)
                 context.PushCallFrame(function.Name ?? "anonymous");
                 var extendedEnv = ExtendFunctionEnv(function, args, context, thisContext);
                 
@@ -1561,15 +1735,16 @@ namespace FenBrowser.FenEngine.Core
                     context.PopCallFrame();
                 }
                 
-                return UnwrapReturnValue(evaluated);
+                return UnwrapReturnValue(ToFenValue(evaluated));
             }
             
-            return new ErrorValue($"not a function: {fn.Type}");
+            return FenValue.FromError($"not a function: {fn.Type}");
         }
 
-        private FenEnvironment ExtendFunctionEnv(FenFunction fn, List<IValue> args, IExecutionContext context, IValue thisContext = null)
+        private FenEnvironment ExtendFunctionEnv(FenFunction fn, List<FenValue> args, IExecutionContext context, FenValue thisContext = default)
         {
             var env = new FenEnvironment(fn.Env);
+            if (fn.LocalMap != null) env.InitializeFastStore(fn.LocalMap.Count);
             
             // Bind 'this'
             if (thisContext != null)
@@ -1584,6 +1759,7 @@ namespace FenBrowser.FenEngine.Core
                 // Let's set it to undefined if not provided.
                 env.Set("this", FenValue.Undefined);
             }
+            if (fn.LocalMap != null && fn.LocalMap.TryGetValue("this", out int thisIdx)) env.SetFast(thisIdx, env.Get("this"));
 
             // Create 'arguments' object for non-arrow functions
             // Arrow functions do NOT have their own arguments object
@@ -1597,6 +1773,7 @@ namespace FenBrowser.FenEngine.Core
                 argumentsObj.Set("length", FenValue.FromNumber(args.Count), context);
                 env.Set("arguments", FenValue.FromObject(argumentsObj));
             }
+            if (fn.LocalMap != null && fn.LocalMap.TryGetValue("arguments", out int argsIdx)) env.SetFast(argsIdx, env.Get("arguments"));
 
             for (int i = 0; i < fn.Parameters.Count; i++)
             {
@@ -1619,6 +1796,7 @@ namespace FenBrowser.FenEngine.Core
                 if (i < args.Count && !args[i].IsUndefined)
                 {
                     env.Set(param.Value, args[i]);
+                    if (fn.LocalMap != null && fn.LocalMap.TryGetValue(param.Value, out int pIdx)) env.SetFast(pIdx, args[i]);
                 }
                 else if (param.DefaultValue != null)
                 {
@@ -1635,27 +1813,23 @@ namespace FenBrowser.FenEngine.Core
             return env;
         }
 
-        private IValue UnwrapReturnValue(IValue obj)
+        private FenValue UnwrapReturnValue(FenValue obj)
         {
-            if (obj is ReturnValue returnValue)
+            if (obj.Type == JsValueType.ReturnValue)
             {
-                return returnValue.Value;
+                return (FenValue)obj.ToNativeObject(); // Since we boxed it in FromReturnValue
             }
             return obj;
         }
 
-        private bool IsTruthy(IValue obj)
+        private bool IsTruthy(FenValue obj)
         {
             return obj.ToBoolean();
         }
 
-        private bool IsError(IValue obj)
+        private bool IsError(FenValue obj)
         {
-            if (obj != null)
-            {
-                return obj.Type == JsValueType.Error;
-            }
-            return false;
+            return obj.Type == JsValueType.Error;
         }
 
         // Evaluate tagged template literals: tag`Hello ${name}!`
@@ -1668,7 +1842,7 @@ namespace FenBrowser.FenEngine.Core
             
             if (!tagFn.IsFunction)
             {
-                return new ErrorValue($"Tagged template: '{taggedExpr.Tag.String()}' is not a function");
+                return FenValue.FromError($"Tagged template: '{taggedExpr.Tag.String()}' is not a function");
             }
             
             // Create the strings array (first argument)
@@ -1689,7 +1863,7 @@ namespace FenBrowser.FenEngine.Core
             stringsArray.Set("raw", FenValue.FromObject(rawArray), context);
             
             // Build the arguments list: [stringsArray, ...evaluatedExpressions]
-            var args = new List<IValue>();
+            var args = new List<FenValue>();
             args.Add(FenValue.FromObject(stringsArray));
             
             // Evaluate each interpolated expression
@@ -1764,9 +1938,9 @@ namespace FenBrowser.FenEngine.Core
             if (args.Count == 1 && IsError(args[0])) return args[0];
 
             var fn = function.AsFunction();
-            if (fn == null)
+            if (fn  == null)
             {
-                return new ErrorValue($"not a constructor: {function.Type}");
+                return FenValue.FromError($"not a constructor: {function.Type}");
             }
 
             // Create new instance
@@ -1786,7 +1960,7 @@ namespace FenBrowser.FenEngine.Core
                }
                catch (Exception ex)
                {
-                   return new ErrorValue(ex.Message);
+                   return FenValue.FromError(ex.Message);
                }
             }
             
@@ -1807,9 +1981,9 @@ namespace FenBrowser.FenEngine.Core
                         if (initializer != null)
                         {
                             fieldValue = Eval(initializer, newEnv, context);
-                            if (IsError(fieldValue)) return fieldValue;
+                            if (IsError(ToFenValue(fieldValue))) return ToFenValue(fieldValue);
                         }
-                        instance.Set(fieldName, fieldValue);
+                        instance.Set(fieldName, ToFenValue(fieldValue));
                     }
                 }
             }
@@ -1850,12 +2024,12 @@ namespace FenBrowser.FenEngine.Core
             var val = Eval(ts.Value, env, context);
             if (IsError(val)) return val;
 
-            return new ErrorValue(val.ToString());
+            return FenValue.FromError(val.ToString());
         }
 
         private IValue EvalTryStatement(TryStatement ts, FenEnvironment env, IExecutionContext context)
         {
-            IValue result = FenValue.Undefined;
+            FenValue result = FenValue.Undefined;
             IValue controlFlowValue = null; // Store return/break/continue for later
 
             try
@@ -1863,7 +2037,7 @@ namespace FenBrowser.FenEngine.Core
                 result = Eval(ts.Block, env, context);
 
                 // Check if result is a control flow value (return/break/continue)
-                if (result is ReturnValue || result is BreakValue || result is ContinueValue)
+                if (result.Type == JsValueType.ReturnValue || result.Type == JsValueType.Break || result.Type == JsValueType.Continue)
                 {
                     controlFlowValue = result;
                     result = FenValue.Undefined;
@@ -1872,25 +2046,25 @@ namespace FenBrowser.FenEngine.Core
             catch (Exception ex)
             {
                 // Handle .NET exceptions as ErrorValue
-                result = new ErrorValue(ex.Message);
+                result = FenValue.FromError(ex.Message);
             }
 
             // Catch block handling
-            if (result is ErrorValue errorVal && ts.CatchBlock != null)
+            if (result.Type == JsValueType.Error && ts.CatchBlock != null)
             {
                 var catchEnv = new FenEnvironment(env);
                 if (ts.CatchParameter != null)
                 {
                     // Create error object with message and name properties
                     var errorObj = new FenObject();
-                    errorObj.Set("message", FenValue.FromString(errorVal.Message));
+                    errorObj.Set("message", FenValue.FromString(result.AsError()));
                     errorObj.Set("name", FenValue.FromString("Error"));
                     catchEnv.Set(ts.CatchParameter.Value, FenValue.FromObject(errorObj));
                 }
                 result = Eval(ts.CatchBlock, catchEnv, context);
                 
                 // Check for control flow in catch block
-                if (result is ReturnValue || result is BreakValue || result is ContinueValue)
+                if (result.Type == JsValueType.ReturnValue || result.Type == JsValueType.Break || result.Type == JsValueType.Continue)
                 {
                     controlFlowValue = result;
                     result = FenValue.Undefined;
@@ -1903,7 +2077,7 @@ namespace FenBrowser.FenEngine.Core
                 var finallyResult = Eval(ts.FinallyBlock, env, context);
                 
                 // If finally has its own control flow, it takes precedence
-                if (finallyResult is ReturnValue || finallyResult is BreakValue || finallyResult is ContinueValue)
+                if (finallyResult.Type == JsValueType.ReturnValue || finallyResult.Type == JsValueType.Break || finallyResult.Type == JsValueType.Continue)
                 {
                     return finallyResult;
                 }
@@ -1920,7 +2094,7 @@ namespace FenBrowser.FenEngine.Core
 
         private IValue EvalWhileStatement(WhileStatement ws, FenEnvironment env, IExecutionContext context)
         {
-            IValue result = FenValue.Null;
+            FenValue result = FenValue.Null;
 
             while (true)
             {
@@ -1936,9 +2110,9 @@ namespace FenBrowser.FenEngine.Core
 
                 if (result != null)
                 {
-                    if (result is ReturnValue || result is ErrorValue) return result;
-                    if (result is BreakValue) return FenValue.Null;
-                    if (result is ContinueValue) continue;
+                    if (result.Type == JsValueType.ReturnValue || result.Type == JsValueType.Error) return result;
+                    if (result.Type == JsValueType.Break) return FenValue.Null;
+                    if (result.Type == JsValueType.Continue) continue;
                 }
             }
 
@@ -1955,7 +2129,7 @@ namespace FenBrowser.FenEngine.Core
                 if (IsError(init)) return init;
             }
 
-            IValue result = FenValue.Null;
+            FenValue result = FenValue.Null;
 
             while (true)
             {
@@ -1968,10 +2142,10 @@ namespace FenBrowser.FenEngine.Core
 
                 result = Eval(fs.Body, loopEnv, context);
 
-                if (result != null)
+                if (!result.IsUndefined && !result.IsNull)
                 {
-                    if (result is ReturnValue || result is ErrorValue) return result;
-                    if (result is BreakValue) return FenValue.Null;
+                    if (result.Type == JsValueType.ReturnValue || result.Type == JsValueType.Error) return result;
+                    if (result.Type == JsValueType.Break) return FenValue.Null;
                     // Continue just falls through to update
                 }
 
@@ -1992,7 +2166,7 @@ namespace FenBrowser.FenEngine.Core
             var objVal = Eval(fs.Object, env, context);
             if (IsError(objVal)) return objVal;
 
-            IValue result = FenValue.Null;
+            FenValue result = FenValue.Null;
 
             // If object, iterate over its keys
             if (objVal.IsObject)
@@ -2008,11 +2182,11 @@ namespace FenBrowser.FenEngine.Core
                         
                         result = Eval(fs.Body, loopEnv, context);
                         
-                        if (result != null)
+                        if (!result.IsUndefined && !result.IsNull)
                         {
-                            if (result is ReturnValue || result is ErrorValue) return result;
-                            if (result is BreakValue) return FenValue.Null;
-                            if (result is ContinueValue) continue;
+                            if (result.Type == JsValueType.ReturnValue || result.Type == JsValueType.Error) return result;
+                            if (result.Type == JsValueType.Break) return FenValue.Null;
+                            if (result.Type == JsValueType.Continue) continue;
                         }
                     }
                 }
@@ -2029,7 +2203,7 @@ namespace FenBrowser.FenEngine.Core
             var iterableVal = Eval(fs.Iterable, env, context);
             if (IsError(iterableVal)) return iterableVal;
 
-            IValue result = FenValue.Null;
+            FenValue result = FenValue.Null;
 
             // Handle strings first (iterate over characters)
             if (iterableVal.IsString)
@@ -2041,11 +2215,11 @@ namespace FenBrowser.FenEngine.Core
                     
                     result = Eval(fs.Body, loopEnv, context);
                     
-                    if (result != null)
+                    if (!result.IsUndefined && !result.IsNull)
                     {
-                        if (result is ReturnValue || result is ErrorValue) return result;
-                        if (result is BreakValue) return FenValue.Null;
-                        if (result is ContinueValue) continue;
+                        if (result.Type == JsValueType.ReturnValue || result.Type == JsValueType.Error) return result;
+                        if (result.Type == JsValueType.Break) return FenValue.Null;
+                        if (result.Type == JsValueType.Continue) continue;
                     }
                 }
                 return result;
@@ -2071,7 +2245,7 @@ namespace FenBrowser.FenEngine.Core
                     
                     // Also check for a method keyed by Symbol.iterator object reference
                     // Maps, Sets, and custom iterables may use this
-                    if (iteratorMethod == null)
+                    if (iteratorMethod  == null)
                     {
                         // Check for __iterator__ (some implementations use this)
                         var altIterator = obj.Get("__iterator__");
@@ -2085,7 +2259,7 @@ namespace FenBrowser.FenEngine.Core
                     if (iteratorMethod != null && iteratorMethod.IsFunction)
                     {
                         // Call the iterator method to get the iterator object
-                        var iterator = ApplyFunction(iteratorMethod, new List<IValue>(), context, iterableVal);
+                        var iterator = ApplyFunction(FenValue.FromFunction(iteratorMethod.AsFunction()), new List<FenValue>(), context, ToFenValue(iterableVal));
                         if (IsError(iterator)) return iterator;
                         
                         if (iterator.IsObject)
@@ -2093,12 +2267,12 @@ namespace FenBrowser.FenEngine.Core
                             var iterObj = iterator.AsObject();
                             var nextMethod = iterObj?.Get("next");
                             
-                            if (nextMethod != null && nextMethod.IsFunction)
+                            if (nextMethod != null && nextMethod.Value.IsFunction)
                             {
                                 // Iterate using next() until done is true
                                 while (true)
                                 {
-                                    var iterResult = ApplyFunction(nextMethod, new List<IValue>(), context, iterator);
+                                    var iterResult = ApplyFunction(FenValue.FromFunction(nextMethod.Value.AsFunction()), new List<FenValue>(), context, iterator);
                                     if (IsError(iterResult)) return iterResult;
                                     
                                     if (iterResult.IsObject)
@@ -2107,7 +2281,7 @@ namespace FenBrowser.FenEngine.Core
                                         var doneVal = resultObj?.Get("done");
                                         var valueVal = resultObj?.Get("value");
                                         
-                                        if (doneVal != null && IsTruthy(doneVal))
+                                        if (doneVal != null && IsTruthy(doneVal.Value))
                                         {
                                             break; // Iteration complete
                                         }
@@ -2115,11 +2289,11 @@ namespace FenBrowser.FenEngine.Core
                                         loopEnv.Set(fs.Variable.Value, valueVal ?? FenValue.Undefined);
                                         result = Eval(fs.Body, loopEnv, context);
                                         
-                                        if (result != null)
+                                        if (!result.IsUndefined && !result.IsNull)
                                         {
-                                            if (result is ReturnValue || result is ErrorValue) return result;
-                                            if (result is BreakValue) return FenValue.Null;
-                                            if (result is ContinueValue) continue;
+                                            if (result.Type == JsValueType.ReturnValue || result.Type == JsValueType.Error) return result;
+                                            if (result.Type == JsValueType.Break) return FenValue.Null;
+                                            if (result.Type == JsValueType.Continue) continue;
                                         }
                                     }
                                     else
@@ -2142,15 +2316,15 @@ namespace FenBrowser.FenEngine.Core
                             for (int i = 0; i < len; i++)
                             {
                                 var val = obj.Get(i.ToString());
-                                loopEnv.Set(fs.Variable.Value, val ?? FenValue.Undefined);
+                                loopEnv.Set(fs.Variable.Value, val );
 
                                 result = Eval(fs.Body, loopEnv, context);
 
-                                if (result != null)
+                                if (!result.IsUndefined && !result.IsNull)
                                 {
-                                    if (result is ReturnValue || result is ErrorValue) return result;
-                                    if (result is BreakValue) return FenValue.Null;
-                                    if (result is ContinueValue) continue;
+                                    if (result.Type == JsValueType.ReturnValue || result.Type == JsValueType.Error) return result;
+                                    if (result.Type == JsValueType.Break) return FenValue.Null;
+                                    if (result.Type == JsValueType.Continue) continue;
                                 }
                             }
                             return result;
@@ -2158,11 +2332,11 @@ namespace FenBrowser.FenEngine.Core
                     }
                     
                     // Plain objects without length are not iterable
-                    return new ErrorValue($"{iterableVal} is not iterable");
+                    return FenValue.FromError($"{iterableVal} is not iterable");
                 }
             }
 
-            return new ErrorValue($"{iterableVal} is not iterable");
+            return FenValue.FromError($"{iterableVal} is not iterable");
         }
 
         // Evaluate ternary conditional: condition ? consequent : alternate
@@ -2203,7 +2377,7 @@ namespace FenBrowser.FenEngine.Core
             // Find matching case
             foreach (var c in ss.Cases)
             {
-                if (c.Test == null) continue; // Skip default for now
+                if (c.Test  == null) continue; // Skip default for now
 
                 var test = Eval(c.Test, env, context);
                 if (IsError(test)) return test;
@@ -2221,7 +2395,7 @@ namespace FenBrowser.FenEngine.Core
             {
                 foreach (var c in ss.Cases)
                 {
-                    if (c.Test == null)
+                    if (c.Test  == null)
                     {
                         match = c;
                         break;
@@ -2232,7 +2406,7 @@ namespace FenBrowser.FenEngine.Core
             // Execute cases
             if (match != null)
             {
-                IValue result = FenValue.Null;
+                FenValue result = FenValue.Null;
                 int index = ss.Cases.IndexOf(match);
                 
                 for (int i = index; i < ss.Cases.Count; i++)
@@ -2242,9 +2416,9 @@ namespace FenBrowser.FenEngine.Core
                     {
                         result = Eval(stmt, env, context);
                         
-                        if (result is ReturnValue || result is ErrorValue) return result;
-                        if (result is BreakValue) return FenValue.Null; // Break exits switch
-                        if (result is ContinueValue) return new ErrorValue("Illegal continue statement: no surrounding loop");
+                        if (result.Type == JsValueType.ReturnValue || result.Type == JsValueType.Error) return result;
+                        if (result.Type == JsValueType.Break) return FenValue.Null; // Break exits switch
+                        if (result.Type == JsValueType.Continue) return FenValue.FromError("Illegal continue statement: no surrounding loop");
                     }
                 }
                 return result;
@@ -2256,16 +2430,16 @@ namespace FenBrowser.FenEngine.Core
         // Evaluate do-while loop
         private IValue EvalDoWhileStatement(DoWhileStatement ds, FenEnvironment env, IExecutionContext context)
         {
-            IValue result = FenValue.Null;
+            FenValue result = FenValue.Null;
             var loopEnv = new FenEnvironment(env);
 
             do
             {
                 result = Eval(ds.Body, loopEnv, context);
 
-                if (result is ReturnValue || result is ErrorValue) return result;
-                if (result is BreakValue) return FenValue.Null;
-                if (result is ContinueValue) 
+                if (result.Type == JsValueType.ReturnValue || result.Type == JsValueType.Error) return result;
+                if (result.Type == JsValueType.Break) return FenValue.Null;
+                if (result.Type == JsValueType.Continue) 
                 {
                     // Continue goes to condition check
                 }
@@ -2279,7 +2453,7 @@ namespace FenBrowser.FenEngine.Core
             return result;
         }
 
-        private IValue EvalDestructuringAssignment(Expression pattern, IValue value, FenEnvironment env, IExecutionContext context)
+        private IValue EvalDestructuringAssignment(Expression pattern, FenValue value, FenEnvironment env, IExecutionContext context)
         {
             if (pattern is ArrayLiteral arrayPattern)
             {
@@ -2293,7 +2467,7 @@ namespace FenBrowser.FenEngine.Core
                         for (int i = 0; i < arrayPattern.Elements.Count; i++)
                         {
                             var element = arrayPattern.Elements[i];
-                            var val = obj.Get(i.ToString()) ?? FenValue.Undefined;
+                            var val = obj.Get(i.ToString()) ;
 
                             if (element is Identifier ident)
                             {
@@ -2362,7 +2536,7 @@ namespace FenBrowser.FenEngine.Core
                         {
                             var key = pair.Key;
                             var target = pair.Value;
-                            var val = obj.Get(key) ?? FenValue.Undefined;
+                            var val = obj.Get(key) ;
 
                             if (target is Identifier ident)
                             {
@@ -2472,16 +2646,16 @@ namespace FenBrowser.FenEngine.Core
             return FenValue.Undefined;
         }
 
-        private List<IValue> EvalExpressionsWithSpread(List<Expression> exps, FenEnvironment env, IExecutionContext context)
+        private List<FenValue> EvalExpressionsWithSpread(List<Expression> exps, FenEnvironment env, IExecutionContext context)
         {
-            var result = new List<IValue>();
+            var result = new List<FenValue>();
 
             foreach (var e in exps)
             {
                 if (e is SpreadElement spread)
                 {
                     var val = Eval(spread.Argument, env, context);
-                    if (IsError(val)) return new List<IValue> { val };
+                    if (IsError(val)) return new List<FenValue> { val };
 
                     if (val.IsObject)
                     {
@@ -2514,7 +2688,7 @@ namespace FenBrowser.FenEngine.Core
                     var evaluated = Eval(e, env, context);
                     if (IsError(evaluated))
                     {
-                        return new List<IValue> { evaluated };
+                        return new List<FenValue> { evaluated };
                     }
                     result.Add(evaluated);
                 }
@@ -2524,11 +2698,11 @@ namespace FenBrowser.FenEngine.Core
         }
 
 
-        public Dictionary<string, IValue> Exports { get; } = new Dictionary<string, IValue>();
+        public Dictionary<string, FenValue> Exports { get; } = new Dictionary<string, FenValue>();
 
         private IValue EvalImportDeclaration(ImportDeclaration stmt, FenEnvironment env, IExecutionContext context)
         {
-            if (context.ModuleLoader == null) return FenValue.Undefined;
+            if (context.ModuleLoader  == null) return FenValue.Undefined;
 
             string path = context.ModuleLoader.Resolve(stmt.Source, ""); // Referrer unknown for now
             IObject moduleExports = context.ModuleLoader.LoadModule(path);
@@ -2854,7 +3028,7 @@ namespace FenBrowser.FenEngine.Core
             {
                 var str = thisVal.ToString();
                 int count = args.Length > 0 ? (int)args[0].ToNumber() : 0;
-                if (count < 0) return new ErrorValue("Invalid count value");
+                if (count < 0) return FenValue.FromError("Invalid count value");
                 if (count == 0 || str.Length == 0) return FenValue.FromString("");
                 return FenValue.FromString(string.Concat(Enumerable.Repeat(str, count)));
             })));
@@ -3036,150 +3210,22 @@ namespace FenBrowser.FenEngine.Core
             }
             catch (Exception ex)
             {
-                return new ErrorValue($"Invalid regular expression: {ex.Message}");
+                return FenValue.FromError($"Invalid regular expression: {ex.Message}");
             }
         }
-    }
-
-    // Helper classes for internal interpreter state
-    public class ReturnValue : IValue
-    {
-        public IValue Value { get; }
-        public JsValueType Type => JsValueType.ReturnValue;
-
-        public ReturnValue(IValue value)
-        {
-            Value = value;
-        }
-
-        public bool ToBoolean() => Value.ToBoolean();
-        public double ToNumber() => Value.ToNumber();
-        public override string ToString() => Value.ToString();
-        public IObject ToObject() => Value.ToObject();
-        public bool StrictEquals(IValue other) => Value.StrictEquals(other);
-        public bool LooseEquals(IValue other) => Value.LooseEquals(other);
-        public bool IsUndefined => false;
-        public bool IsNull => false;
-        public bool IsBoolean => false;
-        public bool IsNumber => false;
-        public bool IsString => false;
-        public bool IsObject => false;
-        public bool IsFunction => false;
-        public FenFunction AsFunction() => null;
-        public IObject AsObject() => null;
-    }
-
-    public class ErrorValue : IValue
-    {
-        public string Message { get; }
-        public JsValueType Type => JsValueType.Error;
-
-        public ErrorValue(string message)
-        {
-            Message = message;
-        }
-
-        public bool ToBoolean() => false;
-        public double ToNumber() => double.NaN;
-        public override string ToString() => $"Error: {Message}";
-        public IObject ToObject() => null;
-        public bool StrictEquals(IValue other) => false;
-        public bool LooseEquals(IValue other) => false;
-        public bool IsUndefined => false;
-        public bool IsNull => false;
-        public bool IsBoolean => false;
-        public bool IsNumber => false;
-        public bool IsString => false;
-        public bool IsObject => false;
-        public bool IsFunction => false;
-        public FenFunction AsFunction() => null;
-        public IObject AsObject() => null;
-
-    }
-
-    // Break control flow value
-    public class BreakValue : IValue
-    {
-        public JsValueType Type => JsValueType.Undefined;
-        public bool ToBoolean() => false;
-        public double ToNumber() => double.NaN;
-        public override string ToString() => "break";
-        public IObject ToObject() => null;
-        public bool StrictEquals(IValue other) => false;
-        public bool LooseEquals(IValue other) => false;
-        public bool IsUndefined => true;
-        public bool IsNull => false;
-        public bool IsBoolean => false;
-        public bool IsNumber => false;
-        public bool IsString => false;
-        public bool IsObject => false;
-        public bool IsFunction => false;
-        public FenFunction AsFunction() => null;
-        public IObject AsObject() => null;
-    }
-
-    // Continue control flow value
-    public class ContinueValue : IValue
-    {
-        public JsValueType Type => JsValueType.Undefined;
-        public bool ToBoolean() => false;
-        public double ToNumber() => double.NaN;
-        public override string ToString() => "continue";
-        public IObject ToObject() => null;
-        public bool StrictEquals(IValue other) => false;
-        public bool LooseEquals(IValue other) => false;
-        public bool IsUndefined => true;
-        public bool IsNull => false;
-        public bool IsBoolean => false;
-        public bool IsNumber => false;
-        public bool IsString => false;
-        public bool IsObject => false;
-        public bool IsFunction => false;
-        public FenFunction AsFunction() => null;
-        public IObject AsObject() => null;
-    }
-    
-    // Yield control flow value (for generator functions)
-    public class YieldValue : IValue
-    {
-        public IValue Value { get; }
-        public bool IsDelegate { get; } // yield*
-        
-        public YieldValue(IValue value, bool isDelegate = false)
-        {
-            Value = value ?? FenValue.Undefined;
-            IsDelegate = isDelegate;
-        }
-        
-        public JsValueType Type => JsValueType.Object;
-        public bool ToBoolean() => true;
-        public double ToNumber() => double.NaN;
-        public override string ToString() => $"yield {Value}";
-        public IObject ToObject() => null;
-        public bool StrictEquals(IValue other) => ReferenceEquals(this, other);
-        public bool LooseEquals(IValue other) => StrictEquals(other);
-        public bool IsUndefined => false;
-        public bool IsNull => false;
-        public bool IsBoolean => false;
-        public bool IsNumber => false;
-        public bool IsString => false;
-        public bool IsObject => false;
-        public bool IsFunction => false;
-        public FenFunction AsFunction() => null;
-        public IObject AsObject() => null;
     }
 
     // ES6+ Interpreter Extensions - partial class
     public partial class Interpreter
     {
         // ES6+ Optional chaining: obj?.prop, obj?.[key], obj?.()
-        private IValue EvalOptionalChainExpression(OptionalChainExpression expr, FenEnvironment env, IExecutionContext context)
+        private FenValue EvalOptionalChainExpression(OptionalChainExpression expr, FenEnvironment env, IExecutionContext context)
         {
             var objVal = Eval(expr.Object, env, context);
             if (IsError(objVal)) return objVal;
             
             // Short-circuit: if null or undefined, return undefined
-            if (objVal.IsNull || objVal.IsUndefined)
+            if (objVal == null || objVal.IsUndefined)
             {
                 return FenValue.Undefined;
             }
@@ -3192,7 +3238,7 @@ namespace FenBrowser.FenEngine.Core
                     return FenValue.Undefined;
                 }
                 var args = EvalExpressionsWithSpread(expr.Arguments, env, context);
-                return ApplyFunction(objVal, args, context, null);
+                return ApplyFunction(objVal, args, context, FenValue.Undefined);
             }
             else if (expr.IsComputed)
             {
@@ -3218,146 +3264,109 @@ namespace FenBrowser.FenEngine.Core
         }
 
         // ES6+ Nullish coalescing: a ?? b
-        private IValue EvalNullishCoalescingExpression(NullishCoalescingExpression expr, FenEnvironment env, IExecutionContext context)
+        private FenValue EvalNullishCoalescingExpression(NullishCoalescingExpression expr, FenEnvironment env, IExecutionContext context)
         {
-            var leftVal = Eval(expr.Left, env, context);
-            if (IsError(leftVal)) return leftVal;
+            var left = Eval(expr.Left, env, context);
+            if (IsError(left)) return left;
             
-            // Return right only if left is null or undefined (not falsy like 0 or "")
-            if (leftVal.IsNull || leftVal.IsUndefined)
+            if (left == null || left.IsUndefined)
             {
                 return Eval(expr.Right, env, context);
             }
-            return leftVal;
+            return left;
         }
 
         // ES6+ Logical assignment: a ||= b, a &&= b, a ??= b
-        private IValue EvalLogicalAssignmentExpression(LogicalAssignmentExpression expr, FenEnvironment env, IExecutionContext context)
+        private FenValue EvalLogicalAssignmentExpression(LogicalAssignmentExpression expr, FenEnvironment env, IExecutionContext context)
         {
-            var leftVal = Eval(expr.Left, env, context);
-            if (IsError(leftVal)) return leftVal;
+            var left = Eval(expr.Left, env, context);
+            if (IsError(left)) return left;
             
             bool shouldAssign = false;
             switch (expr.Operator)
             {
-                case "||=":
-                    // Assign if left is falsy
-                    shouldAssign = !leftVal.ToBoolean();
-                    break;
-                case "&&=":
-                    // Assign if left is truthy
-                    shouldAssign = leftVal.ToBoolean();
-                    break;
-                case "??=":
-                    // Assign if left is null/undefined
-                    shouldAssign = leftVal.IsNull || leftVal.IsUndefined;
-                    break;
+                case "||=": shouldAssign = !left.ToBoolean(); break;
+                case "&&=": shouldAssign = left.ToBoolean(); break;
+                case "??=": shouldAssign = left == null || left.IsUndefined; break;
             }
             
             if (shouldAssign)
             {
-                var rightVal = Eval(expr.Right, env, context);
-                if (IsError(rightVal)) return rightVal;
+                var right = Eval(expr.Right, env, context);
+                if (IsError(right)) return right;
                 
-                // Assign to the left side
+                // Assign back
                 if (expr.Left is Identifier ident)
                 {
-                    env.Update(ident.Value, rightVal);
-                    return rightVal;
+                    env.Update(ident.Value, right);
                 }
                 else if (expr.Left is MemberExpression member)
                 {
-                    var obj = Eval(member.Object, env, context);
-                    if (obj.IsObject)
-                    {
-                        obj.AsObject()?.Set(member.Property, rightVal, context);
-                    }
-                    return rightVal;
+                    var target = Eval(member.Object, env, context);
+                    if (target.IsObject) target.AsObject()?.Set(member.Property, right, context);
                 }
-                return rightVal;
+                return right;
             }
-            return leftVal;
+            return left;
         }
 
         // ES6+ Exponentiation: a ** b
-        private IValue EvalExponentiationExpression(ExponentiationExpression expr, FenEnvironment env, IExecutionContext context)
+        private FenValue EvalExponentiationExpression(ExponentiationExpression expr, FenEnvironment env, IExecutionContext context)
         {
-            var leftVal = Eval(expr.Left, env, context);
-            if (IsError(leftVal)) return leftVal;
-            var rightVal = Eval(expr.Right, env, context);
-            if (IsError(rightVal)) return rightVal;
+            var left = Eval(expr.Left, env, context);
+            if (IsError(left)) return left;
+            var right = Eval(expr.Right, env, context);
+            if (IsError(right)) return right;
             
-            double baseNum = leftVal.ToNumber();
-            double expNum = rightVal.ToNumber();
-            return FenValue.FromNumber(Math.Pow(baseNum, expNum));
+            return FenValue.FromNumber(Math.Pow(left.AsNumber(), right.AsNumber()));
         }
 
         // ES6+ Bitwise NOT: ~x
-        private IValue EvalBitwiseNotExpression(BitwiseNotExpression expr, FenEnvironment env, IExecutionContext context)
+        private FenValue EvalBitwiseNotExpression(BitwiseNotExpression expr, FenEnvironment env, IExecutionContext context)
         {
-            var operand = Eval(expr.Operand, env, context);
-            if (IsError(operand)) return operand;
-            
-            int intVal = (int)operand.ToNumber();
-            return FenValue.FromNumber(~intVal);
+            var val = Eval(expr.Operand, env, context);
+            if (IsError(val)) return val;
+            return FenValue.FromNumber(~(int)val.AsNumber());
         }
 
         // ES6+ BigInt literal: 123n
-        private IValue EvalBigIntLiteral(BigIntLiteral bigIntLit)
+        private FenValue EvalBigIntLiteral(BigIntLiteral node)
         {
-            // For now, store as a FenObject with special type marker
-            // Full BigInt support would require a dedicated BigInt type
-            var bigIntObj = new FenObject();
-            bigIntObj.Set("__type__", FenValue.FromString("BigInt"));
-            bigIntObj.Set("value", FenValue.FromString(bigIntLit.Value));
-            
-            // Provide valueOf for numeric context
-            bigIntObj.Set("valueOf", FenValue.FromFunction(new FenFunction("valueOf", (args, thisVal) =>
-            {
-                if (long.TryParse(bigIntLit.Value, out long val))
-                    return FenValue.FromNumber(val);
-                return FenValue.FromNumber(double.NaN);
-            })));
-            
-            bigIntObj.Set("toString", FenValue.FromFunction(new FenFunction("toString", (args, thisVal) =>
-            {
-                return FenValue.FromString(bigIntLit.Value + "n");
-            })));
-            
-            return FenValue.FromObject(bigIntObj);
+            // Simplified: treat as number for now until BigInt is fully implemented
+            try { return FenValue.FromNumber(Convert.ToDouble(node.Value)); } catch { return FenValue.FromNumber(0); }
         }
 
         // ES6+ Compound assignment: a += b, a **= b, etc.
-        private IValue EvalCompoundAssignmentExpression(CompoundAssignmentExpression expr, FenEnvironment env, IExecutionContext context)
+        private FenValue EvalCompoundAssignmentExpression(CompoundAssignmentExpression expr, FenEnvironment env, IExecutionContext context)
         {
             var leftVal = Eval(expr.Left, env, context);
             if (IsError(leftVal)) return leftVal;
             var rightVal = Eval(expr.Right, env, context);
             if (IsError(rightVal)) return rightVal;
             
-            IValue result;
+            FenValue result;
             switch (expr.Operator)
             {
                 case "+=":
                     if (leftVal.IsString || rightVal.IsString)
-                        result = FenValue.FromString(leftVal.ToString() + rightVal.ToString());
+                        result = FenValue.FromString(leftVal.AsString() + rightVal.AsString());
                     else
-                        result = FenValue.FromNumber(leftVal.ToNumber() + rightVal.ToNumber());
+                        result = FenValue.FromNumber(leftVal.AsNumber() + rightVal.AsNumber());
                     break;
                 case "-=":
-                    result = FenValue.FromNumber(leftVal.ToNumber() - rightVal.ToNumber());
+                    result = FenValue.FromNumber(leftVal.AsNumber() - rightVal.AsNumber());
                     break;
                 case "*=":
-                    result = FenValue.FromNumber(leftVal.ToNumber() * rightVal.ToNumber());
+                    result = FenValue.FromNumber(leftVal.AsNumber() * rightVal.AsNumber());
                     break;
                 case "/=":
-                    result = FenValue.FromNumber(leftVal.ToNumber() / rightVal.ToNumber());
+                    result = FenValue.FromNumber(leftVal.AsNumber() / rightVal.AsNumber());
                     break;
                 case "%=":
-                    result = FenValue.FromNumber(leftVal.ToNumber() % rightVal.ToNumber());
+                    result = FenValue.FromNumber(leftVal.AsNumber() % rightVal.AsNumber());
                     break;
                 case "**=":
-                    result = FenValue.FromNumber(Math.Pow(leftVal.ToNumber(), rightVal.ToNumber()));
+                    result = FenValue.FromNumber(Math.Pow(leftVal.AsNumber(), rightVal.AsNumber()));
                     break;
                 default:
                     result = FenValue.Undefined;
@@ -3379,6 +3388,64 @@ namespace FenBrowser.FenEngine.Core
             }
             
             return result;
+        }
+
+        private FenValue EvalPrefixUpdate(PrefixExpression expr, FenEnvironment env, IExecutionContext context)
+        {
+            var val = Eval(expr.Right, env, context);
+            if (IsError(val)) return val;
+            
+            double num = val.AsNumber();
+            double resultNum = expr.Operator == "++" ? num + 1 : num - 1;
+            var result = FenValue.FromNumber(resultNum);
+            
+            // Assign result back
+            if (expr.Right is Identifier ident)
+            {
+                env.Update(ident.Value, result);
+            }
+            else if (expr.Right is MemberExpression member)
+            {
+                var obj = Eval(member.Object, env, context);
+                if (obj.IsObject) obj.AsObject()?.Set(member.Property, result, context);
+            }
+            else if (expr.Right is IndexExpression index)
+            {
+                var obj = Eval(index.Left, env, context);
+                var idx = Eval(index.Index, env, context);
+                if (obj.IsObject) obj.AsObject()?.Set(idx.ToString(), result, context);
+            }
+            
+            return result;
+        }
+
+        private FenValue EvalPostfixUpdate(Expression operand, string op, FenEnvironment env, IExecutionContext context)
+        {
+            var originalValue = Eval(operand, env, context);
+            if (IsError(originalValue)) return originalValue;
+            
+            double num = originalValue.AsNumber();
+            double resultNum = op == "++" ? num + 1 : num - 1;
+            var result = FenValue.FromNumber(resultNum);
+            
+            // Assign result back
+            if (operand is Identifier ident)
+            {
+                env.Update(ident.Value, result);
+            }
+            else if (operand is MemberExpression member)
+            {
+                var obj = Eval(member.Object, env, context);
+                if (obj.IsObject) obj.AsObject()?.Set(member.Property, result, context);
+            }
+            else if (operand is IndexExpression index)
+            {
+                var obj = Eval(index.Left, env, context);
+                var idx = Eval(index.Index, env, context);
+                if (obj.IsObject) obj.AsObject()?.Set(idx.ToString(), result, context);
+            }
+            
+            return originalValue; // Return OLD value
         }
     }
 }

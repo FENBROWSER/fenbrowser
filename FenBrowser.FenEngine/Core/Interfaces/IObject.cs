@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using FenBrowser.FenEngine.Core;
 
 namespace FenBrowser.FenEngine.Core.Interfaces
 {
@@ -11,12 +12,12 @@ namespace FenBrowser.FenEngine.Core.Interfaces
         /// <summary>
         /// Get a property value
         /// </summary>
-        IValue Get(string key, IExecutionContext context = null);
+        FenValue Get(string key, IExecutionContext context = null);
 
         /// <summary>
         /// Set a property value
         /// </summary>
-        void Set(string key, IValue value, IExecutionContext context = null);
+        void Set(string key, FenValue value, IExecutionContext context = null);
 
         /// <summary>
         /// Check if object has a property

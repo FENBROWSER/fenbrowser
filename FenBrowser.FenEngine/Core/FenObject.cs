@@ -6,15 +6,16 @@ using FenBrowser.Core.Engine; // Phase enum
 namespace FenBrowser.FenEngine.Core
 {
     /// <summary>
-    /// Represents a JavaScript object in FenEngine
+    /// Represents a JavaScript object in FenEngine.
+    /// Updated to use FenValue structs for properties to eliminate boxing.
     /// </summary>
     public class FenObject : IObject
     {
-        private readonly Dictionary<string, IValue> _properties = new Dictionary<string, IValue>();
+        private readonly Dictionary<string, FenValue> _properties = new Dictionary<string, FenValue>();
         private IObject _prototype;
         public object NativeObject { get; set; } // Holds underlying .NET object (Regex, Date, etc.)
 
-        public virtual IValue Get(string key, IExecutionContext context = null)
+        public virtual FenValue Get(string key, IExecutionContext context = null)
         {
             // PROXY TRAP: Get
             if (_properties.TryGetValue("__isProxy__", out var isProxy) && isProxy.ToBoolean())
@@ -22,12 +23,12 @@ namespace FenBrowser.FenEngine.Core
                 // Phase D spec 2.3: Proxy traps MUST NOT execute during Measure, Layout, or Paint
                 EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
                 
-                if (_properties.TryGetValue("__proxyGet__", out var proxyGet) && proxyGet is FenValue fnVal && fnVal.IsFunction)
+                if (_properties.TryGetValue("__proxyGet__", out var proxyGet) && proxyGet.IsFunction)
                 {
                     // Invoke proxy getter: (target, prop, receiver)
                     _properties.TryGetValue("__proxyTarget__", out var target);
-                    var fn = fnVal.AsFunction();
-                    return fn.Invoke(new IValue[] { target ?? FenValue.Undefined, FenValue.FromString(key), FenValue.FromObject(this) }, context);
+                    var fn = proxyGet.AsFunction();
+                    return fn.Invoke(new FenValue[] { target, FenValue.FromString(key), FenValue.FromObject(this) }, context);
                 }
             }
 
@@ -41,7 +42,7 @@ namespace FenBrowser.FenEngine.Core
             return FenValue.Undefined;
         }
 
-        public virtual void Set(string key, IValue value, IExecutionContext context = null)
+        public virtual void Set(string key, FenValue value, IExecutionContext context = null)
         {
             // PROXY TRAP: Set
             if (_properties.TryGetValue("__isProxy__", out var isProxy) && isProxy.ToBoolean())
@@ -49,12 +50,12 @@ namespace FenBrowser.FenEngine.Core
                 // Phase D spec 2.3: Proxy traps MUST NOT execute during Measure, Layout, or Paint
                 EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
                 
-                if (_properties.TryGetValue("__proxySet__", out var proxySet) && proxySet is FenValue fnVal && fnVal.IsFunction)
+                if (_properties.TryGetValue("__proxySet__", out var proxySet) && proxySet.IsFunction)
                 {
                     // Invoke proxy setter: (target, prop, value, receiver)
                     _properties.TryGetValue("__proxyTarget__", out var target);
-                    var fn = fnVal.AsFunction();
-                    fn.Invoke(new IValue[] { target ?? FenValue.Undefined, FenValue.FromString(key), value, FenValue.FromObject(this) }, context);
+                    var fn = proxySet.AsFunction();
+                    fn.Invoke(new FenValue[] { target, FenValue.FromString(key), value, FenValue.FromObject(this) }, context);
                     return;
                 }
             }
@@ -67,11 +68,11 @@ namespace FenBrowser.FenEngine.Core
             // PROXY TRAP: Has
             if (_properties.TryGetValue("__isProxy__", out var isProxy) && isProxy.ToBoolean())
             {
-                if (_properties.TryGetValue("__proxyHas__", out var proxyHas) && proxyHas is FenValue fnVal && fnVal.IsFunction)
+                if (_properties.TryGetValue("__proxyHas__", out var proxyHas) && proxyHas.IsFunction)
                 {
                     _properties.TryGetValue("__proxyTarget__", out var target);
-                    var fn = fnVal.AsFunction();
-                    var res = fn.Invoke(new IValue[] { target ?? FenValue.Undefined, FenValue.FromString(key) }, context);
+                    var fn = proxyHas.AsFunction();
+                    var res = fn.Invoke(new FenValue[] { target, FenValue.FromString(key) }, context);
                     return res.ToBoolean();
                 }
             }
@@ -83,11 +84,6 @@ namespace FenBrowser.FenEngine.Core
 
         public virtual bool Delete(string key, IExecutionContext context = null)
         {
-             // PROXY TRAP: DeleteProperty
-            if (_properties.TryGetValue("__isProxy__", out var isProxy) && isProxy.ToBoolean())
-            {
-                // Note: DeleteProperty trap not yet fully wired in runtime, but placeholder checks won't hurt
-            }
             return _properties.Remove(key);
         }
 
@@ -96,19 +92,14 @@ namespace FenBrowser.FenEngine.Core
              // PROXY TRAP: OwnKeys
             if (_properties.TryGetValue("__isProxy__", out var isProxy) && isProxy.ToBoolean())
             {
-                if (_properties.TryGetValue("__proxyOwnKeys__", out var proxyKeys) && proxyKeys is FenValue fnVal && fnVal.IsFunction)
+                if (_properties.TryGetValue("__proxyOwnKeys__", out var proxyKeys) && proxyKeys.IsFunction)
                 {
-                    var fn = fnVal.AsFunction();
-                    var res = fn.Invoke(new IValue[0], context);
-                    // Convert result to enumerable string
-                    // Assuming result is Array-like
-                    var list = new List<string>();
-                    // Basic handling: check if it's an array and iterate (simplified)
-                    // ...
+                    var fn = proxyKeys.AsFunction();
+                    var res = fn.Invoke(new FenValue[0], context);
+                    // Simplified: in a real implementation we would convert the returned array to an enumerable
                 }
             }
             
-            // Filter out internal properties (starting with __) and Symbols (starting with @@)
             foreach (var k in _properties.Keys)
             {
                 if (!k.StartsWith("__") && !k.StartsWith("@@"))

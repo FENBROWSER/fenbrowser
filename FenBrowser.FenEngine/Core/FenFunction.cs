@@ -6,32 +6,36 @@ using FenBrowser.Core.Engine; // Phase enum
 namespace FenBrowser.FenEngine.Core
 {
     /// <summary>
-    /// Represents a JavaScript function in FenEngine
+    /// Represents a JavaScript function in FenEngine.
+    /// Updated to use FenValue structs for high-performance execution.
     /// </summary>
-    public class FenFunction
+    public class FenFunction : FenObject
     {
         public string Name { get; }
-        public Func<IValue[], IValue, IValue> NativeImplementation { get; }
+        public Func<FenValue[], FenValue, FenValue> NativeImplementation { get; }
         public bool IsNative { get; }
-        public bool IsAsync { get; set; } // For async functions
-        public bool IsGenerator { get; set; } // For generator functions (function*)
-        public bool IsArrowFunction { get; set; } // Arrow functions don't have own `arguments`
-
-        // User-defined function properties
-        public List<Identifier> Parameters { get; }
-        public AstNode Body { get; }  // Can be BlockStatement or Expression (arrow functions)
-        public FenEnvironment Env { get; }
-        public FenObject Prototype { get; set; } // For classes/constructors
+        public bool IsAsync { get; set; }
+        public bool IsGenerator { get; set; }
+        public bool IsArrowFunction { get; set; }
         
-        // Class field definitions for initialization during `new`
-        // (fieldName, isPrivate, isStatic, initializer)
+        // JIT Support
+        public int CallCount { get; set; }
+        public bool IsJitCompiled { get; set; }
+        public Jit.FenJittedDelegate JittedDelegate { get; set; }
+        public Dictionary<string, int> LocalMap { get; set; } // NEW: Maps names to indices
+
+        public List<Identifier> Parameters { get; }
+        public AstNode Body { get; }
+        public FenEnvironment Env { get; }
+        public FenObject Prototype { get; set; }
+        
         public List<(string name, bool isPrivate, bool isStatic, Expression initializer)> FieldDefinitions { get; set; }
 
         // Proxy Support
-        public IValue ProxyHandler { get; set; }
-        public IValue ProxyTarget { get; set; }
+        public FenValue ProxyHandler { get; set; }
+        public FenValue ProxyTarget { get; set; }
 
-        public FenFunction(string name, Func<IValue[], IValue, IValue> nativeImplementation)
+        public FenFunction(string name, Func<FenValue[], FenValue, FenValue> nativeImplementation)
         {
             Name = name;
             NativeImplementation = nativeImplementation;
@@ -44,10 +48,9 @@ namespace FenBrowser.FenEngine.Core
             Body = body;
             Env = env;
             IsNative = false;
-            Name = "anonymous"; // Could be improved
+            Name = "anonymous";
         }
 
-        // Constructor for arrow functions with expression body
         public FenFunction(List<Identifier> parameters, AstNode body, FenEnvironment env)
         {
             Parameters = parameters;
@@ -57,58 +60,45 @@ namespace FenBrowser.FenEngine.Core
             Name = "arrow";
         }
 
-        public IValue Invoke(IValue[] args, IExecutionContext context)
+        public FenValue Invoke(FenValue[] args, IExecutionContext context)
         {
             // PROXY TRAP: Apply
-            if (ProxyHandler != null && ProxyHandler.IsObject)
+            if (!ProxyHandler.IsUndefined && ProxyHandler.IsObject)
             {
-                // Phase D spec 2.3: Proxy traps MUST NOT execute during Measure, Layout, or Paint
                 EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
                 
                 var handlerObj = ProxyHandler.AsObject();
-                if (handlerObj.Has("apply"))
+                var trap = handlerObj.Get("apply");
+                if (trap.IsFunction)
                 {
-                    var trap = handlerObj.Get("apply");
-                    if (trap.IsFunction)
-                    {
-                        var thisVal = context?.ThisBinding ?? FenValue.Undefined;
-                        var argsArray = new FenObject(); 
-                        for(int i=0; i<args.Length; i++) argsArray.Set(i.ToString(), args[i]);
-                        argsArray.Set("length", FenValue.FromNumber(args.Length));
+                    var thisVal = context?.ThisBinding ?? FenValue.Undefined;
+                    var argsArray = new FenObject(); 
+                    for(int i=0; i<args.Length; i++) argsArray.Set(i.ToString(), args[i]);
+                    argsArray.Set("length", FenValue.FromNumber(args.Length));
 
-                        // trap(target, thisArg, argumentsList)
-                        return trap.AsFunction().Invoke(new IValue[] 
-                        { 
-                            ProxyTarget ?? FenValue.FromFunction(this), 
-                            thisVal, 
-                            FenValue.FromObject(argsArray) 
-                        }, context);
-                    }
+                    return trap.AsFunction().Invoke(new FenValue[] 
+                    { 
+                        ProxyTarget.Type != Interfaces.ValueType.Undefined ? ProxyTarget : FenValue.FromObject(this), 
+                        thisVal, 
+                        FenValue.FromObject(argsArray) 
+                    }, context);
                 }
             }
-
 
             if (IsNative)
             {
                 try
                 {
-                    var thisVal = context?.ThisBinding ?? FenValue.Undefined;
+                    var thisVal = context != null ? context.ThisBinding : FenValue.Undefined;
                     return NativeImplementation(args, thisVal);
                 }
                 catch (Exception ex)
                 {
-                    // Convert native exceptions to FenError
-                    throw new Errors.FenInternalError($"Error executing native function {Name}: {ex.Message}", ex);
+                    return FenValue.FromString($"Error: {ex.Message}");
                 }
             }
-            
-            // User-defined functions are executed by the Interpreter directly
-            // But if invoked from host (e.g. Timer), we need to delegate back to interpreter
-            if (context != null && context.ExecuteFunction != null)
-            {
-                return context.ExecuteFunction(FenValue.FromFunction(this), args);
-            }
 
+            // User-defined functions are handled by the Interpreter.ApplyFunction
             return FenValue.Undefined;
         }
     }

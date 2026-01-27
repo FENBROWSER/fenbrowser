@@ -1,7 +1,8 @@
 using FenBrowser.Core.Dom;
-using System;
-using System.Collections.Generic;
+using FenBrowser.Core.Deadlines;
 using System.Threading.Tasks;
+using System.Collections.Generic;
+using System;
 
 namespace FenBrowser.Core.Css
 {
@@ -12,11 +13,16 @@ namespace FenBrowser.Core.Css
     public interface ICssEngine
     {
         /// <summary>
+        /// Engine name for debugging/logging.
+        /// </summary>
+        string EngineName { get; }
+
+        /// <summary>
         /// Compute styles for all elements in a DOM tree.
         /// </summary>
         /// <param name="root">The root element (usually the HTML element)</param>
         /// <param name="baseUri">Base URI for resolving relative URLs</param>
-        /// <param name="fetchExternalCssAsync">Function to fetch external CSS files</param>
+        /// <param name="cssFetcher">Function to fetch external CSS files</param>
         /// <param name="viewportWidth">Viewport width for media queries</param>
         /// <param name="viewportHeight">Viewport height for media queries</param>
         /// <returns>Dictionary mapping nodes to their computed styles</returns>
@@ -25,7 +31,8 @@ namespace FenBrowser.Core.Css
             Uri baseUri,
             Func<Uri, Task<string>> fetchExternalCssAsync,
             double? viewportWidth = null,
-            double? viewportHeight = null);
+            double? viewportHeight = null,
+            FrameDeadline deadline = null);
 
         /// <summary>
         /// Get computed style for a single element (useful for JS getComputedStyle).
@@ -37,10 +44,6 @@ namespace FenBrowser.Core.Css
         /// </summary>
         Dictionary<string, string> ParseInlineStyle(string styleValue);
 
-        /// <summary>
-        /// Engine name for debugging/logging.
-        /// </summary>
-        string EngineName { get; }
     }
 
     /// <summary>

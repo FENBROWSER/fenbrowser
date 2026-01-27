@@ -55,7 +55,7 @@ namespace FenBrowser.FenEngine.Core.Interfaces
         /// <summary>
         /// Get the function value if this is a function, otherwise null
         /// </summary>
-        FenFunction AsFunction();
+        Core.FenFunction AsFunction();
 
         /// <summary>
         /// Get the object value if this is an object, otherwise null
@@ -78,6 +78,9 @@ namespace FenBrowser.FenEngine.Core.Interfaces
         Symbol,    // Future
         BigInt,    // Future
         ReturnValue, // Internal
-        Error      // Internal
+        Error,       // Internal
+        Break,       // Internal
+        Continue,    // Internal
+        Yield        // Internal
     }
 }

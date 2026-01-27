@@ -807,7 +807,7 @@ namespace FenBrowser.FenEngine.Core
         }
         private bool IsRegexStart(Token prev)
         {
-            if (prev == null) return true; // Start of file
+            if (prev  == null) return true; // Start of file
             
             switch (prev.Type)
             {

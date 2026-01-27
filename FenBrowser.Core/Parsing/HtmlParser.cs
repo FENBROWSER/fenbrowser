@@ -8,9 +8,14 @@ namespace FenBrowser.Core.Parsing
     {
         private readonly string _html;
 
-        public HtmlParser(string html)
+        private readonly Uri _baseUri;
+        private readonly Network.ResourcePrefetcher _prefetcher;
+
+        public HtmlParser(string html, Uri baseUri = null, Network.ResourcePrefetcher prefetcher = null)
         {
             _html = html;
+            _baseUri = baseUri ?? new Uri("about:blank");
+            _prefetcher = prefetcher;
         }
 
         public Document Parse()
@@ -20,8 +25,17 @@ namespace FenBrowser.Core.Parsing
 
         public Document Parse(string html)
         {
+            // Phase 2.2: Speculative Preload Scanning
+            if (_prefetcher != null)
+            {
+                var scanner = new PreloadScanner(html, _baseUri, _prefetcher);
+                // Fire and forget, don't block parsing
+                scanner.ScanAsync();
+            }
+
             var builder = new HtmlTreeBuilder(html);
             var doc = builder.Build();
+            doc.BaseUri = _baseUri.AbsoluteUri; // Ensure doc knows its base
             return doc;
         }
         

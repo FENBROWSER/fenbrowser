@@ -13,7 +13,7 @@ namespace FenBrowser.FenEngine.Core.Types
             public bool Equals(IValue x, IValue y)
             {
                 if (ReferenceEquals(x, y)) return true;
-                if (x == null || y == null) return false;
+                if (x  == null || y  == null) return false;
                 return x.StrictEquals(y);
             }
             public int GetHashCode(IValue obj)
@@ -42,7 +42,7 @@ namespace FenBrowser.FenEngine.Core.Types
             Set("get", FenValue.FromFunction(new FenFunction("get", (args, thisVal) =>
             {
                 var key = args.Length > 0 ? args[0] : FenValue.Undefined;
-                return _storage.TryGetValue(key, out var val) ? val : FenValue.Undefined;
+                return _storage.TryGetValue(key, out var val) ? (FenValue)val : FenValue.Undefined;
             })));
 
             Set("has", FenValue.FromFunction(new FenFunction("has", (args, thisVal) =>
@@ -68,17 +68,17 @@ namespace FenBrowser.FenEngine.Core.Types
 
             Set("keys", FenValue.FromFunction(new FenFunction("keys", (args, thisVal) =>
             {
-                 return FenValue.FromObject(CreateIteratorResult(_storage.Keys));
+                 return FenValue.FromObject(CreateIteratorResult(_storage.Keys.Select(k => (FenValue)k)));
             })));
             
             Set("values", FenValue.FromFunction(new FenFunction("values", (args, thisVal) =>
             {
-                 return FenValue.FromObject(CreateIteratorResult(_storage.Values));
+                 return FenValue.FromObject(CreateIteratorResult(_storage.Values.Select(v => (FenValue)v)));
             })));
             
              Set("entries", FenValue.FromFunction(new FenFunction("entries", (args, thisVal) =>
             {
-                 var entries = _storage.Select(kv => FenValue.FromObject(CreateArray(new IValue[] { kv.Key, kv.Value })));
+                 var entries = _storage.Select(kv => FenValue.FromObject(CreateArray(new FenValue[] { (FenValue)kv.Key, (FenValue)kv.Value })));
                  return FenValue.FromObject(CreateIteratorResult(entries));
             })));
             
@@ -92,13 +92,13 @@ namespace FenBrowser.FenEngine.Core.Types
                 // Also standard map.forEach passes (value, key, map)
                 foreach(var kv in _storage)
                 {
-                    callback.Invoke(new IValue[] { kv.Value, kv.Key, FenValue.FromObject(this) }, _context); 
+                    callback.Invoke(new FenValue[] { (FenValue)kv.Value, (FenValue)kv.Key, FenValue.FromObject((IObject)this) }, _context); 
                 }
                 return FenValue.Undefined;
             })));
         }
 
-        private FenObject CreateIteratorResult(IEnumerable<IValue> items)
+        private FenObject CreateIteratorResult(IEnumerable<FenValue> items)
         {
             var iterator = new FenObject();
             var enumerator = items.GetEnumerator();
@@ -117,7 +117,7 @@ namespace FenBrowser.FenEngine.Core.Types
             return iterator;
         }
 
-        private FenObject CreateArray(IValue[] items)
+        private FenObject CreateArray(FenValue[] items)
         {
             var obj = new FenObject();
             for(int i=0; i<items.Length; i++) obj.Set(i.ToString(), items[i]);

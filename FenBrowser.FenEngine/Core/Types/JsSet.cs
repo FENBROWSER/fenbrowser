@@ -8,21 +8,20 @@ namespace FenBrowser.FenEngine.Core.Types
 {
     public class JsSet : FenObject
     {
-        private class JsValueEqualityComparer : IEqualityComparer<IValue>
+        private class JsValueEqualityComparer : IEqualityComparer<FenValue>
         {
-            public bool Equals(IValue x, IValue y)
+            public bool Equals(FenValue x, FenValue y)
             {
-                if (ReferenceEquals(x, y)) return true;
-                if (x == null || y == null) return false;
+                if (x.Type != y.Type) return false;
                 return x.StrictEquals(y);
             }
-            public int GetHashCode(IValue obj)
+            public int GetHashCode(FenValue obj)
             {
                 return obj.GetHashCode();
             }
         }
 
-        private readonly HashSet<IValue> _storage = new HashSet<IValue>(new JsValueEqualityComparer());
+        private readonly HashSet<FenValue> _storage = new HashSet<FenValue>(new JsValueEqualityComparer());
         private readonly IExecutionContext _context;
 
         public JsSet(IExecutionContext context)
@@ -74,7 +73,7 @@ namespace FenBrowser.FenEngine.Core.Types
             Set("entries", FenValue.FromFunction(new FenFunction("entries", (args, thisVal) =>
             {
                  // Entries in Set are [value, value]
-                 var entries = _storage.Select(v => FenValue.FromObject(CreateArray(new IValue[] { v, v })));
+                 var entries = _storage.Select(v => FenValue.FromObject(CreateArray(new FenValue[] { v, v })));
                  return FenValue.FromObject(CreateIteratorResult(entries));
             })));
 
@@ -85,13 +84,13 @@ namespace FenBrowser.FenEngine.Core.Types
                 
                 foreach(var val in _storage)
                 {
-                    callback.Invoke(new IValue[] { val, val, FenValue.FromObject(this) }, _context);
+                    callback.Invoke(new FenValue[] { (FenValue)val, (FenValue)val, FenValue.FromObject(this) }, _context);
                 }
                 return FenValue.Undefined;
             })));
         }
 
-        private FenObject CreateIteratorResult(IEnumerable<IValue> items)
+        private FenObject CreateIteratorResult(IEnumerable<FenValue> items)
         {
             var iterator = new FenObject();
             var enumerator = items.GetEnumerator();
@@ -99,7 +98,7 @@ namespace FenBrowser.FenEngine.Core.Types
             iterator.Set("next", FenValue.FromFunction(new FenFunction("next", (a, t) => {
                 bool hasNext = enumerator.MoveNext();
                 var res = new FenObject();
-                res.Set("value", hasNext ? enumerator.Current : FenValue.Undefined);
+                res.Set("value", hasNext ? (FenValue)enumerator.Current : FenValue.Undefined);
                 res.Set("done", FenValue.FromBoolean(!hasNext));
                 return FenValue.FromObject(res);
             })));
@@ -110,7 +109,7 @@ namespace FenBrowser.FenEngine.Core.Types
             return iterator;
         }
 
-        private FenObject CreateArray(IValue[] items)
+        private FenObject CreateArray(FenValue[] items)
         {
             var obj = new FenObject();
             for(int i=0; i<items.Length; i++) obj.Set(i.ToString(), items[i]);

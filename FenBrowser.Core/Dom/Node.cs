@@ -46,7 +46,23 @@ namespace FenBrowser.Core.Dom
         public abstract string NodeName { get; }
         public virtual string NodeValue { get; set; }
 
-        public Node Parent { get; internal set; }
+        private Node _parent;
+        public Node Parent 
+        { 
+            get => _parent; 
+            internal set 
+            {
+                if (_parent != value)
+                {
+                    var oldParent = _parent;
+                    _parent = value;
+                    OnParentChanged(oldParent, value);
+                }
+            } 
+        }
+
+        protected virtual void OnParentChanged(Node oldParent, Node newParent) { }
+
         public List<Node> Children { get; private set; } = new List<Node>();
         public Document OwnerDocument { get; internal set; }
 
@@ -62,6 +78,13 @@ namespace FenBrowser.Core.Dom
 
         public bool PaintDirty { get; private set; }
         public bool ChildPaintDirty { get; private set; }
+
+        // --- Computed Style (attached directly to node for reliable lookup) ---
+        /// <summary>
+        /// Computed CSS style for this node. Set during CSS cascade.
+        /// Using this property instead of dictionary lookup avoids node identity issues.
+        /// </summary>
+        public Css.CssComputed ComputedStyle { get; set; }
 
         /// <summary>
         /// Marks this node as dirty for a specific subsystem and propagates "ChildDirty" up the tree.
@@ -362,12 +385,14 @@ namespace FenBrowser.Core.Dom
             child.OwnerDocument = this is Document doc ? doc : this.OwnerDocument;
             Children.Add(child);
 
+            /*
             if (DebugConfig.LogDomTree)
             {
                  var el = child as Element;
                  var idInfo = !string.IsNullOrEmpty(el?.Id) ? $"#{el.Id}" : "";
                  FenLogger.Log($"[DOM] Append {child.NodeName}{idInfo} -> {this.NodeName}", LogCategory.DOM);
             }
+            */
 
             // Notify MutationObserver
             NotifyMutation(new MutationRecord

@@ -21,7 +21,7 @@ namespace FenBrowser.Core.Logging
         private static bool _globalEnabled = true;
         
         // Log file base path
-        private static string _basePath = @"C:\Users\udayk\Videos\FENBROWSER\logs";
+        private static string _basePath = Path.Combine(AppContext.BaseDirectory, "logs");
         
         /// <summary>
         /// Initialize the structured logger with optional base path.

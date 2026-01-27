@@ -70,8 +70,8 @@ namespace FenBrowser.FenEngine.Core
                 // 2. Check Dirty Flags & Render
                 if (_treeIsDirty)
                 {
-                    // Create a deadline based on remaining budget (e.g., 100% of 16ms for now)
-                    var deadline = new RenderDeadline(FrameBudgetMs, "FullRender");
+// using FenBrowser.FenEngine.System;
+                    var deadline = new FenBrowser.Core.Deadlines.FrameDeadline(FrameBudgetMs, "FullRender");
                     PerformRendering(deadline);
                 }
                 
@@ -82,7 +82,8 @@ namespace FenBrowser.FenEngine.Core
                    FenLogger.Warn($"[EngineLoop] Frame exceeded budget: {elapsed:F2}ms", LogCategory.Performance);
                 }
             }
-            catch (DeadlineExceededException ex)
+            // Use fully qualified name if namespace mismatch, or add using
+            catch (FenBrowser.Core.Deadlines.DeadlineExceededException ex)
             {
                 FenLogger.Warn($"[EngineLoop] Frame aborted due to deadline: {ex.Phase}", LogCategory.Performance);
             }
@@ -92,9 +93,9 @@ namespace FenBrowser.FenEngine.Core
             }
         }
         
-        private void PerformRendering(RenderDeadline deadline = null)
+        private void PerformRendering(FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
-            if (_root == null) return;
+            if (_root  == null) return;
             
             // Phase 1: Style Recalc (TODO: Traverse checking StyleDirty)
             deadline?.Check();

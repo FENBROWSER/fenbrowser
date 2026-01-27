@@ -14,6 +14,91 @@ namespace FenBrowser.Core.Dom
 
         public string TagName { get; private set; }
 
+        // --- Ancestor Bloom Filter (Phase 2.1) ---
+        /// <summary>
+        /// 64-bit Bloom Filter containing hashes of all ancestor tags, ids, and classes.
+        /// Used for fast rejection in CSS selector matching.
+        /// </summary>
+        public long AncestorFilter { get; private set; }
+
+        protected override void OnParentChanged(Node oldParent, Node newParent)
+        {
+            base.OnParentChanged(oldParent, newParent);
+            UpdateAncestorFilter();
+        }
+
+        public void UpdateAncestorFilter()
+        {
+             long newFilter = 0;
+             if (Parent is Element parentEl)
+             {
+                 newFilter = parentEl.AncestorFilter | parentEl.ComputeFeatureHash();
+             }
+
+             if (newFilter != AncestorFilter)
+             {
+                 AncestorFilter = newFilter;
+                 // Propagate to children
+                 foreach (var child in Children)
+                 {
+                     if (child is Element childEl)
+                     {
+                         childEl.UpdateAncestorFilter();
+                     }
+                 }
+             }
+        }
+
+        /// <summary>
+        /// Compute a bitmask of this element's features (Tag, ID, Classes).
+        /// </summary>
+        public long ComputeFeatureHash()
+        {
+            long hash = 0;
+            
+            // Hash Tag
+            if (!string.IsNullOrEmpty(TagName))
+                hash |= FilterHash(TagName);
+
+            // Hash ID
+            var id = Id;
+            if (!string.IsNullOrEmpty(id))
+                hash |= FilterHash("#" + id);
+
+            // Hash Classes
+            if (Attributes.TryGetValue("class", out var classAttr))
+            {
+                 // We don't want to allocate split arrays here for perf.
+                 // Just simple naive scan or use the existing ClassList if built?
+                 // Using ClassList is safe but might alloc.
+                 // Let's rely on cached ClassList if available or raw string processing.
+                 // For now, simple reliable ClassList iteration.
+                 foreach(var cls in Classes)
+                 {
+                     hash |= FilterHash("." + cls);
+                 }
+            }
+
+            return hash;
+        }
+
+        // Simple string hash to bitmask
+        private static long FilterHash(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return 0;
+            // FNV-1a like mixing
+            uint h = 2166136261;
+            for (int i = 0; i < s.Length; i++)
+            {
+                h = (h ^ s[i]) * 16777619;
+            }
+            // Map to 1 of 64 bits (or 2 bits to reduce false positives)
+            // Using 2 bits
+            int b1 = (int)(h % 64);
+            int b2 = (int)((h >> 6) % 64);
+            return (1L << b1) | (1L << b2);
+        }
+
         public ShadowRoot ShadowRoot { get; private set; }
 
         public ShadowRoot AttachShadow(string mode)
@@ -272,6 +357,30 @@ namespace FenBrowser.Core.Dom
                 Target = this,
                 AttributeName = newAttr.Name.ToLowerInvariant()
             });
+
+            // Phase 2.1: Invalidate Child Ancestor Filters if ID or Class changes
+            if (newAttr.Name.Equals("id", StringComparison.OrdinalIgnoreCase) || 
+                newAttr.Name.Equals("class", StringComparison.OrdinalIgnoreCase))
+            {
+                // My features changed, so my children's AncestorFilter (which includes me) needs update.
+                foreach (var child in Children)
+                {
+                     if (child is Element childEl)
+                     {
+                         childEl.UpdateAncestorFilter();
+                     }
+                }
+            }
+
+            // CRITICAL FIX: Invalidate Style if critical attributes change
+            // This ensures JS-driven style updates (e.g. element.style.color = 'red') 
+            // trigger a CSS re-cascade in the layout engine.
+            if (newAttr.Name.Equals("style", StringComparison.OrdinalIgnoreCase) ||
+                newAttr.Name.Equals("id", StringComparison.OrdinalIgnoreCase) ||
+                newAttr.Name.Equals("class", StringComparison.OrdinalIgnoreCase))
+            {
+                MarkDirty(InvalidationKind.Style);
+            }
 
             return result;
         }

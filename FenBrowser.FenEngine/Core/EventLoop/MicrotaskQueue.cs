@@ -23,7 +23,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         /// </summary>
         public void Enqueue(Action microtask)
         {
-            if (microtask == null) throw new ArgumentNullException(nameof(microtask));
+            if (microtask  == null) throw new ArgumentNullException(nameof(microtask));
 
             lock (_lock)
             {
