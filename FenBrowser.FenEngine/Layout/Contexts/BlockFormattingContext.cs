@@ -22,7 +22,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             
             // DEBUG: Entry log
             string dbgTag = (blockBox.SourceNode as FenBrowser.Core.Dom.Element)?.TagName ?? "?";
-            System.Console.WriteLine($"[BFC-ENTRY] <{dbgTag}> AvailH={state.AvailableSize.Height} ViewH={state.ViewportHeight}");
+            FenLogger.Info($"[BFC-ENTRY] <{dbgTag}> AvailH={state.AvailableSize.Height} ViewH={state.ViewportHeight}", LogCategory.Layout);
 
             // 1. Resolve Width
             ResolveWidth(blockBox, state);
@@ -33,18 +33,23 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             yOffset += (float)blockBox.Geometry.Padding.Top + (float)blockBox.Geometry.Border.Top;
             
             float xOffset = (float)blockBox.Geometry.Padding.Left + (float)blockBox.Geometry.Border.Left;
-
-            // Content width for children
             float contentWidth = blockBox.Geometry.ContentBox.Width;
 
             // 3. Iterate Children
             var outOfFlow = new List<LayoutBox>();
             var floatManager = new FloatManager();
-            float currentY = yOffset; // Track Y relative to content box top
+            
+            // Cursor relative to content box top
+            float currentY = 0; 
+            float maxBottom = 0;
+            float lastMarginBottom = 0;
+            bool isFirstChild = true;
 
+            // Does parent prevent top margin collapse? (Padding/border/overflow etc)
+            bool parentPreventsTopCollapse = (blockBox.Geometry.Padding.Top > 0 || blockBox.Geometry.Border.Top > 0);
+            
             foreach (var child in blockBox.Children)
             {
-                // Reliability Gate: Check intra-frame deadline
                 state.Deadline?.Check();
 
                 if (child.IsOutOfFlow)
@@ -53,96 +58,122 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     continue;
                 }
 
-                // Check Float
+                // Floats and Clearance
                 string floatStyle = child.ComputedStyle?.Float?.ToLowerInvariant() ?? "none";
                 string clearStyle = child.ComputedStyle?.Clear?.ToLowerInvariant() ?? "none";
-
-                // Handle Clearance (for both floats and blocks)
+                
                 if (clearStyle != "none")
                 {
-                    float clearY = floatManager.GetClearanceY(clearStyle, currentY);
-                    if (clearY > currentY)
+                    float clearY = floatManager.GetClearanceY(clearStyle, currentY + lastMarginBottom);
+                    if (clearY > currentY + lastMarginBottom)
                     {
-                        // Add top margin to satisfy clearance?
-                        // Or just move yOffset
                         currentY = clearY;
+                        lastMarginBottom = 0; // Clearance resets collapsing
                     }
                 }
 
-                // Create child state
-                float childAvailableHeight = state.ContainingBlockHeight > 0 ? state.ContainingBlockHeight : state.ViewportHeight;
-                var childState = new LayoutState(
-                    new SKSize(contentWidth, childAvailableHeight),
-                    contentWidth,
-                    childAvailableHeight,
-                    state.ViewportWidth,
-                    state.ViewportHeight
-                );
-
-                var context = FormattingContext.Resolve(child);
-
                 if (floatStyle == "left" || floatStyle == "right")
                 {
-                    // Float Layout
-                    context.Layout(child, childState);
+                    // Float Layout (Simplified - ignores margins for simplicity in this context)
+                    var childState = CreateChildState(contentWidth, state);
+                    FormattingContext.Resolve(child).Layout(child, childState);
                     
-                    // Box is sized. Now place it.
                     float floatWidth = child.Geometry.MarginBox.Width;
+                    float fx = (floatStyle == "left") ? xOffset : (xOffset + contentWidth - floatWidth);
                     
-                    // Simple placement: At current Y, find side
-                    // If doesn't fit? (Not implemented: Float drop)
-                    
-                    float fx = 0;
-                    if (floatStyle == "left")
-                    {
-                        fx = xOffset; // Left edge of content
-                        // Check if we need to push down due to existing left floats?
-                        // FloatManager will handle complex stacking if we expanded it.
-                        // For now, assume it stacks against previous left float or edge.
-                        // Simplified: floats stack vertically if width > available?
-                        // Correct: They try to go as high as possible.
-                    }
-                    else
-                    {
-                        fx = xOffset + contentWidth - floatWidth;
-                    }
-                    
-                    // Add to manager
-                    LayoutBoxOps.SetPosition(child, fx, currentY);
-                    child.Geometry.MarginBox = new SKRect(fx, currentY, fx + floatWidth, currentY + child.Geometry.MarginBox.Height); // Refix absolute
-                    
+                    LayoutBoxOps.SetPosition(child, fx, yOffset + currentY);
                     floatManager.AddFloat(child, floatStyle == "left");
                     
-                    // Floats don't advance the normal flow Y immediately for subsequent blocks,
-                    // BUT they take up space.
-                    // Block flow continues at currentY (unless cleared).
+                    // [Compliance] Ensure float contributes to container height if it establishes a BFC
+                    // For now, we always include it if height is auto
+                    maxBottom = Math.Max(maxBottom, currentY + child.Geometry.MarginBox.Height);
                 }
                 else
                 {
                     // Normal Flow Block
-                    // Check available space due to floats (Intrusion)
-                    // If this block creates a new BFC (e.g. overflow: hidden), it narrows next to floats.
-                    // If it is a normal block, it overlaps floats but its *text* (inline) wraps.
+                    var childState = CreateChildState(contentWidth, state);
+                    FormattingContext.Resolve(child).Layout(child, childState);
                     
-                    // Simplified: We implement BFC narrowing for ALL blocks for better out-of-the-box appearance
-                    // (simulating overflow: hidden behavior which is common for layouts)
+                    float childMarginTop = (float)child.Geometry.Margin.Top;
+                    float childMarginBottom = (float)child.Geometry.Margin.Bottom;
+
+                    // MARGIN COLLAPSING
+                    float collapsedMargin = 0;
+                    if (isFirstChild)
+                    {
+                        if (parentPreventsTopCollapse)
+                        {
+                            collapsedMargin = childMarginTop;
+                        }
+                        else
+                        {
+                            // Bubbles up to parent - child sits at 0 relative to content box
+                            collapsedMargin = 0;
+                            // (We should ideally update parent's bubbled margin, but BFC usually handles it)
+                        }
+                    }
+                    else
+                    {
+                        collapsedMargin = Math.Max(lastMarginBottom, childMarginTop);
+                    }
+
+                    currentY += collapsedMargin;
                     
-                    var space = floatManager.GetAvailableSpace(currentY, 0, contentWidth);
-                    // If tight space, might need to move down?
+                    float childX = xOffset + (float)child.Geometry.Margin.Left;
+                    float childY = yOffset + currentY; // Absolute to container BorderBox top
                     
-                    // Layout
-                     context.Layout(child, childState);
-                     
-                     float childX = xOffset + (float)child.Geometry.Margin.Left;
-                     float childY = currentY + (float)child.Geometry.Margin.Top; // Collapsing skipped
-                     
-                     LayoutBoxOps.SetPosition(child, childX, childY);
-                     
-                     currentY += child.Geometry.MarginBox.Height;
+                    LayoutBoxOps.SetPosition(child, childX, childY);
+                    
+                    // Advance cursor by CONTENT (BorderBox) height
+                    currentY += child.Geometry.BorderBox.Height;
+                    
+                    lastMarginBottom = childMarginBottom;
+                    isFirstChild = false;
+                    
+                    maxBottom = Math.Max(maxBottom, currentY);
                 }
             }
             
-            yOffset = currentY; // Final Y
+            // Include last margin if it doesn't collapse with parent bottom
+            bool parentPreventsBottomCollapse = (blockBox.Geometry.Padding.Bottom > 0 || blockBox.Geometry.Border.Bottom > 0);
+            if (parentPreventsBottomCollapse)
+            {
+                currentY += lastMarginBottom;
+            }
+            // Handle intrinsic height for empty replaced elements (IMG, SVG, etc.)
+            if (blockBox.Children.Count == 0)
+            {
+                string t = (blockBox.SourceNode as FenBrowser.Core.Dom.Element)?.TagName?.ToUpperInvariant();
+                if (t == "IMG" || t == "SVG" || t == "INPUT" || t == "BUTTON")
+                {
+                    // Basic intrinsic height resolution if not explicit
+                    float h = (float)(blockBox.ComputedStyle?.Height ?? 0);
+                    if (h <= 0) h = 24f; // Default for icons/inputs
+                    maxBottom = Math.Max(maxBottom, h);
+                }
+            }
+
+            yOffset += maxBottom; // Total height from Border Top to last content/margin edge
+
+            // SHRINK-TO-FIT: If width was auto and available was infinity, we shrink to widest child
+            if (blockBox.ComputedStyle != null && !blockBox.ComputedStyle.Width.HasValue && float.IsInfinity(state.AvailableSize.Width))
+            {
+                float maxWidth = 0;
+                foreach (var child in blockBox.Children)
+                {
+                    maxWidth = Math.Max(maxWidth, child.Geometry.MarginBox.Width);
+                }
+                
+                // Update ContentBox width
+                blockBox.Geometry.ContentBox = new SKRect(
+                    blockBox.Geometry.ContentBox.Left,
+                    blockBox.Geometry.ContentBox.Top,
+                    blockBox.Geometry.ContentBox.Left + maxWidth,
+                    blockBox.Geometry.ContentBox.Bottom
+                );
+                
+                SyncBoxes(blockBox.Geometry);
+            }
 
             // 4. Resolve Height
             // Auto height = content bottom + padding bottom + border bottom
@@ -214,48 +245,106 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         private void ResolveWidth(BlockBox box, LayoutState state)
         {
             float available = state.AvailableSize.Width;
-            float used = 0;
-
-            // Get properties
-            Thickness padding = box.ComputedStyle?.Padding ?? new Thickness();
-            Thickness border = box.ComputedStyle?.BorderThickness ?? new Thickness();
-            Thickness margin = box.ComputedStyle?.Margin ?? new Thickness();
-
-            // Store in geometry
-            box.Geometry.Padding = padding;
-            box.Geometry.Border = border;
-            box.Geometry.Margin = margin;
-
-            // Calculate used width
-            // For width: auto, we subtract margins, borders, padding from available.
-            // But for content-box, width is just the content.
+            if (float.IsInfinity(available) || float.IsNaN(available)) available = state.ViewportWidth;
+            if (float.IsInfinity(available) || float.IsNaN(available)) available = 1920f; // Fallback if Viewport is invalid
             
-            // Logic:
-            // 1. If explicit width exists -> use it.
-            // 2. If auto -> available - (margin + border + padding)
-            
-            float explicitWidth = -1;
-            if (box.ComputedStyle != null && box.ComputedStyle.Width.HasValue)
+            FenLogger.Info($"[BFC-RESOLVE-START] Avail={state.AvailableSize.Width} Sanitized={available} VP={state.ViewportWidth}", LogCategory.Layout);
+
+            // 1. Initial values from computed style
+            var style = box.ComputedStyle;
+            Thickness padding = style?.Padding ?? new Thickness();
+            Thickness border = style?.BorderThickness ?? new Thickness();
+            Thickness margin = style?.Margin ?? new Thickness();
+
+            string tag = (box.SourceNode as FenBrowser.Core.Dom.Element)?.TagName ?? "?";
+            string id = (box.SourceNode as FenBrowser.Core.Dom.Element)?.GetAttribute("id") ?? "";
+
+            // 2. Resolve width vs percentages
+            float? width = null;
+            if (style != null)
             {
-                explicitWidth = (float)box.ComputedStyle.Width.Value;
-                // Console.WriteLine($"[BlockBFC] Explicit Width found: {explicitWidth} ...
-            }
-            else 
-            {
-                 // Console.WriteLine($"[BlockBFC] No explicit width. Available: {available} ...
+                if (style.Width.HasValue) width = (float)style.Width.Value;
+                else if (style.WidthPercent.HasValue) width = (float)(style.WidthPercent.Value / 100.0 * available);
             }
 
-            if (explicitWidth >= 0)
+            // 3. Resolve Max/Min constraints
+            float? maxWidth = null;
+            if (style != null)
             {
-                box.Geometry.ContentBox = new SKRect(box.Geometry.ContentBox.Left, box.Geometry.ContentBox.Top, box.Geometry.ContentBox.Left + explicitWidth, box.Geometry.ContentBox.Top);
+                if (style.MaxWidth.HasValue) maxWidth = (float)style.MaxWidth.Value;
+                else if (style.MaxWidthPercent.HasValue) maxWidth = (float)(style.MaxWidthPercent.Value / 100.0 * available);
+            }
+
+            float minWidth = 0;
+            if (style != null)
+            {
+                if (style.MinWidth.HasValue) minWidth = (float)style.MinWidth.Value;
+                else if (style.MinWidthPercent.HasValue) minWidth = (float)(style.MinWidthPercent.Value / 100.0 * available);
+            }
+
+            FenLogger.Info($"[BFC-RESOLVE] <{tag}> W={style?.Width} WP={style?.WidthPercent} MW={style?.MaxWidth} MWP={style?.MaxWidthPercent} Avail={available}", LogCategory.Layout);
+
+            // 4. Calculate content width before margins
+            float resolvedContentWidth;
+            float horizontalExtras = (float)(padding.Left + padding.Right + border.Left + border.Right);
+
+            if (width.HasValue)
+            {
+                resolvedContentWidth = width.Value;
             }
             else
             {
-                // Auto
-                float extras = (float)(padding.Left + padding.Right + border.Left + border.Right + margin.Left + margin.Right);
-                float contentWidth = Math.Max(0, available - extras);
-                box.Geometry.ContentBox = new SKRect(box.Geometry.ContentBox.Left, box.Geometry.ContentBox.Top, box.Geometry.ContentBox.Left + contentWidth, box.Geometry.ContentBox.Top);
+                // Width auto fills available space minus margins
+                float marginExtras = (float)(margin.Left + margin.Right);
+                resolvedContentWidth = Math.Max(0, available - horizontalExtras - marginExtras);
             }
+
+            // Apply constraints
+            if (maxWidth.HasValue) resolvedContentWidth = Math.Min(resolvedContentWidth, maxWidth.Value);
+            resolvedContentWidth = Math.Max(resolvedContentWidth, minWidth);
+
+            // 5. Handle Margin Auto (Centering)
+            float marginLeft = (float)margin.Left;
+            float marginRight = (float)margin.Right;
+            bool leftAuto = style?.MarginLeftAuto ?? false;
+            bool rightAuto = style?.MarginRightAuto ?? false;
+
+            if (leftAuto || rightAuto)
+            {
+                float remainingSpace = available - (resolvedContentWidth + horizontalExtras);
+                
+                if (leftAuto && rightAuto)
+                {
+                    marginLeft = Math.Max(0, remainingSpace / 2f);
+                    marginRight = Math.Max(0, remainingSpace / 2f);
+                }
+                else if (leftAuto)
+                {
+                    marginLeft = Math.Max(0, remainingSpace - marginRight);
+                }
+                else if (rightAuto)
+                {
+                    marginRight = Math.Max(0, remainingSpace - marginLeft);
+                }
+                
+                FenLogger.Info($"[BFC-WIDTH] <{tag}#{id}> Centered: ML={marginLeft} MR={marginRight} Cont={resolvedContentWidth} Avail={available}", LogCategory.Layout);
+            }
+
+            if (float.IsNaN(resolvedContentWidth) || float.IsInfinity(resolvedContentWidth))
+            {
+                 FenLogger.Error($"[BFC-RESOLVE-ERROR] ResolvedWidth is {resolvedContentWidth}. Forcing 0.", LogCategory.Layout);
+                 resolvedContentWidth = 0;
+            }
+
+            box.Geometry.ContentBox = new SKRect(
+                box.Geometry.ContentBox.Left, 
+                box.Geometry.ContentBox.Top, 
+                box.Geometry.ContentBox.Left + resolvedContentWidth, 
+                box.Geometry.ContentBox.Bottom);
+            
+            box.Geometry.Padding = padding;
+            box.Geometry.Border = border;
+            box.Geometry.Margin = new Thickness(marginLeft, margin.Top, marginRight, margin.Bottom);
 
             SyncBoxes(box.Geometry);
         }
@@ -299,6 +388,19 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             geometry.PaddingBox.Offset(dx, dy);
             geometry.BorderBox.Offset(dx, dy);
             geometry.MarginBox.Offset(dx, dy);
+        }
+
+        private LayoutState CreateChildState(float contentWidth, LayoutState state)
+        {
+             float childAvailableHeight = state.ContainingBlockHeight > 0 ? state.ContainingBlockHeight : state.ViewportHeight;
+             return new LayoutState(
+                new SKSize(contentWidth, childAvailableHeight),
+                contentWidth,
+                childAvailableHeight,
+                state.ViewportWidth,
+                state.ViewportHeight,
+                state.Deadline
+            );
         }
     }
 
