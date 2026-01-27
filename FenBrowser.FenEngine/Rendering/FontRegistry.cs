@@ -82,11 +82,11 @@ namespace FenBrowser.FenEngine.Rendering
                 list.Add(descriptor);
             }
 
-            // Trigger load in background
             if (!string.IsNullOrEmpty(descriptor.Source))
             {
                 FenLogger.Debug($"[FontRegistry] Registering font: {descriptor.Family}", LogCategory.Rendering);
-                _ = LoadFontFaceAsync(descriptor);
+                // Offload to background to avoid blocking parser thread with synchronous init/DNS
+                _ = Task.Run(() => LoadFontFaceAsync(descriptor));
             }
         }
 
@@ -299,6 +299,44 @@ namespace FenBrowser.FenEngine.Rendering
                 // Check generic family name
                 if (_loadedFonts.TryGetValue(familyName, out cached))
                     return cached;
+
+                // Generic Fallbacks
+                string lower = familyName.ToLowerInvariant();
+                string fallbackName = null;
+
+                if (lower == "serif") fallbackName = "Times New Roman";
+                else if (lower == "sans-serif") fallbackName = "Segoe UI"; // Primary for Windows
+                else if (lower == "monospace") fallbackName = "Consolas";
+                else if (lower == "cursive") fallbackName = "Comic Sans MS";
+                else if (lower == "fantasy") fallbackName = "Impact";
+                
+                // Secondary Fallbacks for high-unicode support if primary fails or generic
+                if (fallbackName == "Segoe UI") 
+                {
+                    // If Segoe UI is not available (rare on Windows) or for better unicode:
+                    var alt = SKTypeface.FromFamilyName("Arial");
+                    if (alt != null) _loadedFonts["sans-serif-alt"] = alt;
+                }
+
+                if (fallbackName != null)
+                {
+                     try 
+                     {
+                         // Try to load system font for fallback
+                         var skTypeface = SKTypeface.FromFamilyName(
+                            fallbackName, 
+                            (SKFontStyleWeight)weight, 
+                            SKFontStyleWidth.Normal, 
+                            style);
+                         
+                         if (skTypeface != null)
+                         {
+                             _loadedFonts[familyName] = skTypeface; // Cache under generic name
+                             return skTypeface;
+                         }
+                     }
+                     catch {}
+                }
 
                 // If registered but not loaded, it might be loading or failed. 
                 // We return null here which triggers fallback.
