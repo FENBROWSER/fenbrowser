@@ -37,7 +37,7 @@ namespace FenBrowser.FenEngine.DOM
 
         public void Observe(Element target, MutationObserverOptions options)
         {
-            if (target == null) return;
+            if (target  == null) return;
             var init = new MutationObserverInit
             {
                 ChildList = options?.ChildList ?? false,
@@ -130,7 +130,8 @@ namespace FenBrowser.FenEngine.DOM
                         if (attrFilterVal is FenValue afv && afv.IsObject)
                         {
                             options.AttributeFilter = new List<string>();
-                            var len = afv.AsObject().Get("length")?.ToNumber() ?? 0;
+                            var lenVal = afv.AsObject().Get("length");
+                            var len = lenVal.IsNumber ? lenVal.ToNumber() : 0;
                             for (int i = 0; i < len; i++)
                             {
                                 var item = afv.AsObject().Get(i.ToString());

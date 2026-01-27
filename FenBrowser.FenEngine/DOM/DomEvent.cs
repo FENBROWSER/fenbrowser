@@ -121,7 +121,7 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Cancels the event if it is cancelable
         /// </summary>
-        private IValue PreventDefault(IValue[] args, IValue thisVal)
+        private FenValue PreventDefault(FenValue[] args, FenValue thisVal)
         {
             if (Cancelable)
             {
@@ -134,7 +134,7 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Prevents further propagation of the current event in the capturing and bubbling phases
         /// </summary>
-        private IValue StopPropagation(IValue[] args, IValue thisVal)
+        private FenValue StopPropagation(FenValue[] args, FenValue thisVal)
         {
             PropagationStopped = true;
             return FenValue.Undefined;
@@ -143,7 +143,7 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Prevents other listeners of the same event from being called
         /// </summary>
-        private IValue StopImmediatePropagation(IValue[] args, IValue thisVal)
+        private FenValue StopImmediatePropagation(FenValue[] args, FenValue thisVal)
         {
             PropagationStopped = true;
             ImmediatePropagationStopped = true;
@@ -153,10 +153,10 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Returns the event's path (ancestors from target to root)
         /// </summary>
-        private IValue ComposedPath(IValue[] args, IValue thisVal)
+        private FenValue ComposedPath(FenValue[] args, FenValue thisVal)
         {
             // Requires context to wrap nodes
-            if (_context == null) return FenValue.FromObject(new NodeListWrapper(new List<Node>(), null));
+            if (_context  == null) return FenValue.FromObject(new NodeListWrapper(new List<Node>(), null));
 
             var nodes = new List<Node>();
             if (Path != null)
@@ -176,7 +176,7 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.FromObject(arr);
         }
 
-        private IValue InitEvent(IValue[] args, IValue thisVal)
+        private FenValue InitEvent(FenValue[] args, FenValue thisVal)
         {
             if (args.Length >= 1) Type = args[0].ToString();
             if (args.Length >= 2) Bubbles = args[1].ToBoolean();

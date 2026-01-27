@@ -19,7 +19,7 @@ namespace FenBrowser.FenEngine.DOM
 
         internal Node Node => _node;
 
-        public virtual IValue Get(string key, IExecutionContext context = null)
+        public virtual FenValue Get(string key, IExecutionContext context = null)
         {
             switch (key)
             {
@@ -87,7 +87,7 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.Undefined;
         }
 
-        public virtual void Set(string key, IValue value, IExecutionContext context = null)
+        public virtual void Set(string key, FenValue value, IExecutionContext context = null)
         {
             switch(key)
             {
@@ -125,11 +125,11 @@ namespace FenBrowser.FenEngine.DOM
 
         // --- Helpers ---
 
-        protected IValue WrapNode(Node n) => DomWrapperFactory.Wrap(n, _context);
+        protected FenValue WrapNode(Node n) => DomWrapperFactory.Wrap(n, _context);
 
         // --- Methods ---
 
-        private IValue AppendChild(IValue[] args, IValue thisVal)
+        private FenValue AppendChild(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0) return FenValue.Null; // Throw error ideally
             var nodeWrapper = args[0].AsObject() as NodeWrapper;
@@ -145,7 +145,7 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.Null;
         }
 
-        private IValue RemoveChild(IValue[] args, IValue thisVal)
+        private FenValue RemoveChild(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0) return FenValue.Null;
             var wrapper = args[0].AsObject();
@@ -163,7 +163,7 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.Null; // Or throw NotFoundError
         }
 
-        private IValue ReplaceChild(IValue[] args, IValue thisVal)
+        private FenValue ReplaceChild(FenValue[] args, FenValue thisVal)
         {
             // newChild, oldChild
             if (args.Length < 2) return FenValue.Null;
@@ -183,7 +183,7 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.Null;
         }
 
-        private IValue InsertBefore(IValue[] args, IValue thisVal)
+        private FenValue InsertBefore(FenValue[] args, FenValue thisVal)
         {
              // newNode, referenceNode
             if (args.Length < 2) return FenValue.Null;
@@ -192,7 +192,7 @@ namespace FenBrowser.FenEngine.DOM
             Node newNode = (newW as NodeWrapper)?._node ?? (newW as ElementWrapper)?.Element;
             
             Node refNode = null;
-            if (!args[1].IsNull)
+            if (args[1] != null)
             {
                 var refW = args[1].AsObject();
                 refNode = (refW as NodeWrapper)?._node ?? (refW as ElementWrapper)?.Element;
@@ -206,7 +206,7 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.Null;
         }
         
-        private IValue CloneNode(IValue[] args, IValue thisVal)
+        private FenValue CloneNode(FenValue[] args, FenValue thisVal)
         {
             bool deep = false;
             if (args.Length > 0) deep = args[0].ToBoolean();
@@ -215,7 +215,7 @@ namespace FenBrowser.FenEngine.DOM
             return WrapNode(clone);
         }
 
-        private IValue AddEventListener(IValue[] args, IValue thisVal)
+        private FenValue AddEventListener(FenValue[] args, FenValue thisVal)
         {
             if (args.Length >= 2)
             {
@@ -227,7 +227,7 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.Undefined;
         }
 
-        private IValue RemoveEventListener(IValue[] args, IValue thisVal)
+        private FenValue RemoveEventListener(FenValue[] args, FenValue thisVal)
         {
              if (args.Length >= 2)
             {
@@ -237,7 +237,7 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.Undefined;
         }
         
-        private IValue DispatchEvent(IValue[] args, IValue thisVal)
+        private FenValue DispatchEvent(FenValue[] args, FenValue thisVal)
         {
              // Todo: Implement bridging to EventTarget.DispatchEvent
              return FenValue.FromBoolean(true); 

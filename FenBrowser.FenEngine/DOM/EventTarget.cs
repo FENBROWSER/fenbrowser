@@ -28,7 +28,7 @@ namespace FenBrowser.FenEngine.DOM
         /// <returns>True if the event was not cancelled (defaultPrevented is false), otherwise false.</returns>
         public static bool DispatchEvent(Element target, DomEvent evt, IExecutionContext context)
         {
-            if (target == null || evt == null) return true;
+            if (target  == null || evt  == null) return true;
 
             // 1. Initialize Event
             evt.Target = target;
@@ -123,7 +123,7 @@ namespace FenBrowser.FenEngine.DOM
                     if (func != null)
                     {
                         var evtVal = FenValue.FromObject(evt); 
-                        var args = new IValue[] { evtVal };
+                        var args = new FenValue[] { evtVal };
                         var thisBinding = FenValue.FromObject(new ElementWrapper(element, context));
 
                         if (context.ExecuteFunction != null)
@@ -149,15 +149,15 @@ namespace FenBrowser.FenEngine.DOM
         private class ContextShim : IExecutionContext
         {
             private readonly IExecutionContext _inner;
-            private readonly IValue _thisBinding;
+            private readonly FenValue _thisBinding;
 
-            public ContextShim(IExecutionContext inner, IValue thisBinding)
+            public ContextShim(IExecutionContext inner, FenValue thisBinding)
             {
                 _inner = inner;
                 _thisBinding = thisBinding;
             }
 
-            public IValue ThisBinding { get => _thisBinding; set { } }
+            public FenValue ThisBinding { get => _thisBinding; set { } }
             public IPermissionManager Permissions => _inner.Permissions;
             public FenBrowser.FenEngine.Security.IResourceLimits Limits => _inner.Limits;
             public int CallStackDepth => _inner.CallStackDepth;
@@ -167,7 +167,7 @@ namespace FenBrowser.FenEngine.DOM
             public void SetRequestRender(Action action) => _inner.SetRequestRender(action);
             public Action<Action, int> ScheduleCallback { get => _inner.ScheduleCallback; set => _inner.ScheduleCallback = value; }
             public Action<Action> ScheduleMicrotask { get => _inner.ScheduleMicrotask; set => _inner.ScheduleMicrotask = value; }
-            public Func<IValue, IValue[], IValue> ExecuteFunction { get => _inner.ExecuteFunction; set => _inner.ExecuteFunction = value; }
+            public Func<FenValue, FenValue[], FenValue> ExecuteFunction { get => _inner.ExecuteFunction; set => _inner.ExecuteFunction = value; }
             public IModuleLoader ModuleLoader { get => _inner.ModuleLoader; set => _inner.ModuleLoader = value; }
             public Action<MutationRecord> OnMutation { get => _inner.OnMutation; set => _inner.OnMutation = value; }
             public string CurrentUrl { get => _inner.CurrentUrl; set => _inner.CurrentUrl = value; }

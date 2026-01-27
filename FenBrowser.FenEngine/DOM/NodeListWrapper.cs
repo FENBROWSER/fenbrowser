@@ -23,7 +23,7 @@ namespace FenBrowser.FenEngine.DOM
 
         public object NativeObject { get; set; }
 
-        public IValue Get(string key, IExecutionContext context = null)
+        public FenValue Get(string key, IExecutionContext context = null)
         {
             // Array index support
             if (int.TryParse(key, out int index))
@@ -54,7 +54,7 @@ namespace FenBrowser.FenEngine.DOM
                             foreach (var node in _source)
                             {
                                 var val = WrapNode(node);
-                                callback.Invoke(new IValue[] { val, FenValue.FromNumber(i), FenValue.FromObject(this) }, _context);
+                                callback.Invoke(new FenValue[] { val, FenValue.FromNumber(i), FenValue.FromObject(this) }, _context);
                                 i++;
                             }
                         }
@@ -65,15 +65,15 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.Undefined;
         }
 
-        private IValue Item(int index)
+        private FenValue Item(int index)
         {
             var node = _source.ElementAtOrDefault(index);
             return WrapNode(node);
         }
 
-        private IValue WrapNode(Node node)
+        private FenValue WrapNode(Node node)
         {
-            if (node == null) return FenValue.Null;
+            if (node  == null) return FenValue.Null;
             // Delegation to factory or localized wrapper logic
             // Ideally we call back into a shared wrapper factory
             return FenEngine.DOM.DomWrapperFactory.Wrap(node, _context); 
@@ -86,6 +86,6 @@ namespace FenBrowser.FenEngine.DOM
         public bool Delete(string key, IExecutionContext context = null) => false;
         public System.Collections.Generic.IEnumerable<string> Keys(IExecutionContext context = null) => new string[0];
         public bool Has(string key, IExecutionContext context = null) => Get(key, context) != FenValue.Undefined;
-        public void Set(string key, IValue value, IExecutionContext context = null) { }
+        public void Set(string key, FenValue value, IExecutionContext context = null) { }
     }
 }

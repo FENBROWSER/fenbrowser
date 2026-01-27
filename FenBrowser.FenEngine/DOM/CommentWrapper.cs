@@ -14,7 +14,7 @@ namespace FenBrowser.FenEngine.DOM
             _commentNode = commentNode;
         }
 
-        public override IValue Get(string key, IExecutionContext context = null)
+        public override FenValue Get(string key, IExecutionContext context = null)
         {
             switch (key)
             {
@@ -26,7 +26,7 @@ namespace FenBrowser.FenEngine.DOM
             return base.Get(key, context);
         }
         
-        public override void Set(string key, IValue value, IExecutionContext context = null)
+        public override void Set(string key, FenValue value, IExecutionContext context = null)
         {
              if (key == "data")
              {

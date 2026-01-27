@@ -26,10 +26,10 @@ namespace FenBrowser.FenEngine.DOM
         public CustomEvent(string type, bool bubbles = false, bool cancelable = false, IValue detail = null)
             : base(type, bubbles, cancelable)
         {
-            Detail = detail ?? FenValue.Null;
+            Detail = detail ;
             
             // Add detail property to JavaScript-accessible object
-            Set("detail", Detail);
+            Set("detail", (FenValue)Detail);
         }
     }
 }
