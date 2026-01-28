@@ -1,36 +1,39 @@
-# FenBrowser 🚀
+# FenBrowser
 
-Welcome to **FenBrowser**, a modern, high-performance browser engine built from the ground up with modularity, privacy, and speed in mind. This isn't just another Chromium skin—it's a clean-slate implementation designed to explore the future of web rendering and secure browsing.
+FenBrowser is an experimental, clean-slate browser engine written in C#. Instead of pinning onto an existing engine like Chromium or WebKit, this project is a ground-up implementation of the web stack—from the network layer and HTML parser to the CSS layout engine and Skia-based renderer.
 
-## Why FenBrowser?
+> [!WARNING]
+> **Experimental Status**: This is a hobby/research project. It's nowhere near being a "daily driver" browser. Many websites will not render correctly (or at all) yet. We're building this to understand the complexity of the modern web, not to replace your current browser.
 
-Most modern browsers are built on engines with decades of legacy baggage. FenBrowser is our attempt to build something fresh, focusing on:
+## The Objective
 
-- **Clean Architecture**: A strictly decoupled engine, core, and host system.
-- **Privacy First**: Deny-by-default security model and a custom networking stack.
-- **Performance**: High-efficiency layout and rendering powered by SkiaSharp.
-- **Developer Friendly**: Built-in high-fidelity WebDriver and DevTools protocol support.
+The goal of FenBrowser is to implement a standards-compliant engine using modern .NET. We prioritize architectural clarity and modularity over a massive feature list.
+
+### What's inside?
+
+- **Custom Layout Engine**: Supporting Block, Inline, Flex, and Grid formatting contexts.
+- **Standards-Based Parsing**: An HTML5 tree builder and CSS tokenizer following WHATWG/W3C specs as closely as possible.
+- **Native Rendering**: Using SkiaSharp for primitive drawing, with a custom-built paint tree and z-index resolver.
+- **Automation First**: Deep integration with the WebDriver protocol and a basic DevTools implementation for engine inspection.
 
 ## Project Structure
 
-- **`FenBrowser.FenEngine`**: The heart of the project. Handles HTML/CSS parsing, layout (BFC/IFC/Flex/Grid), and painting.
-- **`FenBrowser.Core`**: Shared types, logging infrastructure, and fundamental DOM definitions.
-- **`FenBrowser.Host`**: The desktop application wrapper (Windows-first).
-- **`FenBrowser.WebDriver` & `DevTools`**: Standards-compliant automation and debugging interfaces.
+- **`FenBrowser.FenEngine`**: The core layout and rendering logic. This is where the "heavy lifting" happens (Measure/Arrange passes).
+- **`FenBrowser.Core`**: Shared primitives, the DOM tree implementation, and the HTTP stack.
+- **`FenBrowser.Host`**: The desktop shell. Currently Windows-focused for debugging and rapid prototyping.
+- **`FenBrowser.WebDriver` & `DevTools`**: Specialized projects for controlling and inspecting the engine via standard protocols.
 
-## Getting Started
+## For Developers
 
-Since we're in active development, things move fast.
+If you want to poke around the code:
 
-1. **Clone the repo.**
-2. **Open `FenBrowser.sln`** in Visual Studio 2022.
-3. **Build and Run** the `FenBrowser.Host` project.
-4. Check the `logs/` directory for detailed execution traces and `debug_screenshot.png` for visual verification.
+1. Open `FenBrowser.sln` in Visual Studio 2022.
+2. Run the `FenBrowser.Host` project.
+3. Check the `logs/` folder. We output a lot of diagnostic data:
+   - `dom_dump.txt`: The state of the DOM and Layout boxes.
+   - `debug_screenshot.png`: A raw frame capture of the current render.
+   - `fenbrowser_*.log`: Module-specific traces (CSS, Layout, Performance).
 
 ## License
 
-This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for more details.
-
----
-
-_Built with ❤️ by the FenBrowser Team._
+MIT License. See [LICENSE](LICENSE) for details.
