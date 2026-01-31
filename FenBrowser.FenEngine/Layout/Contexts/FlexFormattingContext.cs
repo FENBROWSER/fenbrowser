@@ -98,7 +98,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             foreach (var item in items)
             {
-                float itemMainSize = GetFlexBasis(item, isRow);
+                float itemMainSize = isRow ? item.Geometry.MarginBox.Width : item.Geometry.MarginBox.Height;
                 totalMainSize += itemMainSize;
 
                 if (item.ComputedStyle?.FlexGrow.HasValue == true)
