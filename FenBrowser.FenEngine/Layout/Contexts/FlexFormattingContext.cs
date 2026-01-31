@@ -94,19 +94,70 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             // Calculate remaining space
             float totalMainSize = 0;
             float totalFlexGrow = 0;
+            float totalWeightedShrink = 0; // For flex-shrink calculation
 
             foreach (var item in items)
             {
-                float itemMainSize = isRow ? item.Geometry.MarginBox.Width : item.Geometry.MarginBox.Height;
+                float itemMainSize = GetFlexBasis(item, isRow);
                 totalMainSize += itemMainSize;
 
                 if (item.ComputedStyle?.FlexGrow.HasValue == true)
                     totalFlexGrow += (float)item.ComputedStyle.FlexGrow.Value;
+                
+                if (item.ComputedStyle?.FlexShrink.HasValue == true)
+                {
+                    float shrink = (float)item.ComputedStyle.FlexShrink.Value;
+                    float basis = isRow ? item.Geometry.MarginBox.Width : item.Geometry.MarginBox.Height;
+                    totalWeightedShrink += shrink * basis;
+                }
             }
 
             float remainingSpace = containerMainSize - totalMainSize;
 
-            if (remainingSpace > 0 && totalFlexGrow > 0)
+            // Handle Flex-Shrink (when items overflow the container)
+            if (remainingSpace < 0 && totalWeightedShrink > 0)
+            {
+                float overflow = -remainingSpace; // Positive value representing how much to shrink
+                foreach (var item in items)
+                {
+                    float shrink = (float)(item.ComputedStyle?.FlexShrink ?? 1);
+                    float basis = isRow ? item.Geometry.MarginBox.Width : item.Geometry.MarginBox.Height;
+                    float weight = shrink * basis;
+                    
+                    // DEFENSIVE: Use IsSafeDivision and SafeDivide to prevent NaN/Infinity
+                    if (LayoutValidator.IsSafeDivision(totalWeightedShrink) && weight > 0)
+                    {
+                        float ratio = LayoutValidator.SafeDivide(weight, totalWeightedShrink, 0f, "FlexShrink ratio");
+                        float shrinkAmount = overflow * ratio;
+
+                        if (isRow)
+                        {
+                            float newWidth = Math.Max(0, item.Geometry.ContentBox.Width - shrinkAmount);
+                            LayoutBoxOps.ComputeBoxModelFromContent(item, newWidth, item.Geometry.ContentBox.Height);
+
+                            var reState = state.Clone();
+                            reState.AvailableSize = new SKSize(item.Geometry.ContentBox.Width, item.Geometry.ContentBox.Height);
+                            reState.ContainingBlockWidth = item.Geometry.ContentBox.Width;
+                            reState.ContainingBlockHeight = item.Geometry.ContentBox.Height;
+                            FormattingContext.Resolve(item).Layout(item, reState);
+                        }
+                        else // Column
+                        {
+                            float newHeight = Math.Max(0, item.Geometry.ContentBox.Height - shrinkAmount);
+                            LayoutBoxOps.ComputeBoxModelFromContent(item, item.Geometry.ContentBox.Width, newHeight);
+
+                            var reState = state.Clone();
+                            reState.AvailableSize = new SKSize(item.Geometry.ContentBox.Width, newHeight);
+                            reState.ContainingBlockWidth = item.Geometry.ContentBox.Width;
+                            reState.ContainingBlockHeight = newHeight;
+                            FormattingContext.Resolve(item).Layout(item, reState);
+                        }
+                    }
+                }
+                // Recalculate total after shrink
+                totalMainSize = containerMainSize; 
+            }
+            else if (remainingSpace > 0 && totalFlexGrow > 0)
             {
                 // Distribute space
                 foreach (var item in items)
@@ -114,7 +165,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     float grow = (float)(item.ComputedStyle?.FlexGrow ?? 0);
                     if (grow > 0)
                     {
-                        float share = remainingSpace * (grow / totalFlexGrow);
+                        // DEFENSIVE: Use Safe Divide to prevent NaN/Infinity
+                        float share = remainingSpace * LayoutValidator.SafeDivide(grow, totalFlexGrow, 0f, "FlexGrow ratio");
                         // Resize item main size
                         if (isRow)
                         {
