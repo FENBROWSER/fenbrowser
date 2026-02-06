@@ -1,0 +1,196 @@
+# FenBrowser Codex - Volume IV: The Host Application
+
+**State as of:** 2026-02-06
+**Codex Version:** 1.0
+
+## 1. Overview
+
+`FenBrowser.Host` is the executable entry point that users interact with. It provides the operating system window, handles native inputs, and hosts the rendering surface. Unlike traditional C# apps (WPF/WinForms), FenBrowser uses a **custom high-performance rendering stack** based on Silk.NET and SkiaSharp.
+
+## 2. Technology Stack
+
+- **Windowing**: [Silk.NET](https://github.com/dotnet/Silk.NET) (GLFW backend) provides cross-platform window creation and input handling.
+- **Graphics Context**: OpenGL via Silk.NET.
+- **2D Rendering**: [SkiaSharp](https://github.com/mono/SkiaSharp) (Hardware Accelerated) renders directly to the OpenGL context.
+- **CLI**: Custom argument parsing for specialized modes.
+
+## 3. Architecture
+
+### 3.1 The Entry Point (`Program.cs`)
+
+The application bootstraps in `Main(string[] args)`.
+
+- **Modes**:
+  - `Default`: Launches the UI options with the given URL.
+  - `--headless`: runs without a window (for tests).
+  - `--test262`: Runs the ECMA-262 compliance suite.
+  - `--wpt`: Runs the Web Platform Tests adapter.
+  - `--acid2`: Specialized Acid2 test runner.
+- **High-DPI**: Enforces `PerMonitorV2` awareness on Windows via P/Invoke.
+
+### 3.2 WindowManager (`WindowManager.cs`)
+
+A Singleton that manages the native window lifecycle.
+
+- **Surface Creation**:
+  1. Creates an OpenGL Context (`GRGlInterface`).
+  2. Wraps it in a Skia `GRContext`.
+  3. Creates an `SKSurface` backed by the OpenGL Framebuffer (`GRBackendRenderTarget`).
+- **Input Proxying**: Bridges Silk.NET input events (Keyboard/Mouse) to the internal `InputManager`.
+- **Main Loop**: Drives the application refresh loop (`Window.Render` event).
+
+### 3.3 The Integration Layer (`BrowserIntegration.cs`)
+
+This class acts as the "Glue" between the Host and the Engine.
+
+- **Coordinate Systems**: Translates between **Window Space** (Physical Pixels), **UI Space** (Logical Pixels), and **Document Space** (Scroll-offset Pixels).
+- **Render Loop**:
+  - `RecordFrame()`: Engine produces a paint tree (Background thread).
+  - `Render()`: Host draws the paint tree to the canvas (UI thread).
+
+## 4. UI System (`Widgets/`, `ChromeManager.cs`)
+
+FenBrowser does not use standard UI controls. It renders its own UI (Tabs, URL Bar, Buttons) using the same Skia pipeline as the web content.
+
+- **ChromeManager**: Manages the browser chrome (UI) layout.
+- **MsgPass**: A simple messaging system for UI events.
+
+## 5. Development Features
+
+- **Crash Handling**: Global exception handlers for Unobserved Tasks and Domain exceptions.
+- **Crashes**: Logs strictly to `FENBROWSER/logs`.
+- **Debug Overlays**: Supports drawing debug information (FPS, Layer Borders) directly on the canvas.
+
+---
+
+## 6. Comprehensive Source Encyclopedia
+
+This section maps **every key file** in the Host application.
+
+### 6.1 Integration Layer (`FenBrowser.Host`)
+
+#### `BrowserIntegration.cs` (Lines 1-1258)
+
+The vital bridge connecting the Engine's `BrowserHost` to the Silk.NET UI loop.
+
+- **Lines 876-923**: **`PerformHitTest`**: Transforms Window coordinates to Document coordinates (handling DPI and scroll).
+- **Lines 430-456**: **`Render`**: Draws the current display list to the UI canvas.
+- **Lines 336-404**: **`NavigateAsync`**: Triggers navigation and updates UI state.
+
+#### `ChromeManager.cs` (Lines 1-557)
+
+Manages the "Chrome" (UI outside the web content).
+
+- **Lines 155-173**: **`InitializeDevTools`**: Bootstraps the DevTools system.
+- **Lines 285-304**: **`OnActiveTabChanged`**: Updates the URL bar and tab strip when switching tabs.
+- **Lines 385-411**: **`OnKeyDown`**: Routes global hotkeys (Ctrl+T, Ctrl+W).
+
+### 6.2 Application Entry
+
+#### `Program.cs` (Lines 1-530)
+
+The application entry point.
+
+- **Lines 19-506**: **`Main`**: Bootstraps `WindowManager` and `ChromeManager`, handling CLI args.
+- **Lines 520-526**: **`CopyToClipboard`**: Platform-specific clipboard bridging.
+
+#### `WindowManager.cs` (Lines 1-418)
+
+Manages the Silk.NET window and input context.
+
+- Handles Window creation, resizing, and raw input dispatching to the `InputManager`.
+
+### 6.3 UI Widgets (`FenBrowser.Host.Widgets`)
+
+#### `SettingsPageWidget.cs` (Lines 1-1358)
+
+The browser's internal settings page (`fen://settings`).
+
+- **Lines 111-469**: **`InitializeControls`**: Builds the massive UI tree for settings.
+- **Lines 746-1138**: **`Paint`**: Custom rendering logic for the settings interface.
+
+#### `TabBarWidget.cs` (Lines 1-400) & `TabWidget.cs` (Lines 1-250)
+
+The visual implementation of the browser tabs.
+
+- **TabWidget**: Renders the individual tab shape (trapezoid/rounded), title, and close button.
+- **TabBarWidget**: Manages the collection of tabs, scrolling, and dragging logic.
+
+#### `ToolbarWidget.cs` (Lines 1-200)
+
+Container for the Back/Forward buttons and Address Bar.
+
+#### `WebContentWidget.cs` (Lines 1-300)
+
+The viewport container that hosting the rendered `SKPicture` from the engine.
+
+- Bridges mouse/keyboard IO from the Host to the Engine's `InputManager`.
+
+#### `StatusBarWidget.cs` (Lines 1-150)
+
+Displays hover link URLs and loading status at the bottom of the window.
+
+#### `BookmarksBarWidget.cs` (Lines 1-150)
+
+Rendering of the bookmark icons below the address bar.
+
+#### `ContextMenuWidget.cs` (Lines 1-250) & `DropdownWidget.cs` (Lines 1-250)
+
+Overlay primitives for popups.
+
+- **ContextMenu**: Right-click menus.
+- **Dropdown**: Select box options and autocomplete lists.
+
+#### `ButtonWidget.cs` (Lines 1-180)
+
+Standard skinnable button control (Hover/Active states).
+
+#### `StackPanel.cs` (Lines 1-80) & `DockPanel.cs` (Lines 1-120)
+
+Layout containers for arranging child widgets.
+
+#### `InspectorPopupWidget.cs` (Lines 1-200)
+
+The container window for the undocked DevTools.
+
+#### `SiteInfoPopupWidget.cs` (Lines 1-300)
+
+The "Lock Icon" popup showing SSL certificate details and cookies.
+
+#### `SwitchWidget.cs` (Lines 1-100)
+
+Toggle switch UI (used in Settings).
+
+#### `TextInputWidget.cs` (Lines 1-400)
+
+Base class for text entry fields (cursor rendering, selection handling).
+
+#### `AddressBarWidget.cs` (Lines 1-675)
+
+The Omnibox implementation.
+
+- **Lines 605-624**: **`RequestAutocomplete`**: Triggers history/bookmark suggestion logic.
+- **Lines 650-662**: **`GetSecurityIconColor`**: Visualizes SSL/TLS state (Green/Red/Gray).
+
+### 6.4 Supplemental Files (Gap Fill)
+
+#### Input & Windowing (`FenBrowser.Host.Input`)
+
+- **`InputManager.cs`**: Aggregates raw Silk.NET events and dispatches them to widgets/web content.
+- **`KeyboardDispatcher.cs`**: Translates scancodes to virtual keys and handles shortcuts.
+- **`CursorManager.cs`**: Changes the mouse cursor (Text, Pointer, Hand).
+- **`FocusManager.cs`**: Tracks which widget currently holds keyboard focus.
+
+#### Infrastructure (`FenBrowser.Host`)
+
+- **`Compositor.cs`**: Manages the OpenGL context swapping and VSync.
+- **`RootWidget.cs`**: The top-level container for the entire window UI.
+- **`ThemeManager.cs`**: Loads logic for Light/Dark mode colors.
+- **`DevToolsHostAdapter.cs`**: Adapter for docking the DevTools window found in `FenBrowser.DevTools`.
+
+#### Testing/Driver (`FenBrowser.Host.Driver`)
+
+- **`FenBrowserDriver.cs`**: The external-facing WebDriver API implementation.
+- **`HostBrowserDriver.cs`**: Internal hooks for automated testing.
+
+_End of Volume IV_
