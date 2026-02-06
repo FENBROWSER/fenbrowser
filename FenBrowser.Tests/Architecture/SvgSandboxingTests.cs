@@ -1,5 +1,6 @@
 using Xunit;
 using FenBrowser.FenEngine.Adapters;
+using SkiaSharp;
 
 namespace FenBrowser.Tests.Architecture
 {
@@ -116,6 +117,40 @@ namespace FenBrowser.Tests.Architecture
                 result.ErrorMessage.ToLower().Contains("limit") ||
                 result.ErrorMessage.ToLower().Contains("count"),
                 $"Expected filter-related error but got: {result.ErrorMessage}");
+        }
+
+        [Fact]
+        public void SvgSkiaRenderer_NegativeViewBoxOrigin_RendersVisiblePixels()
+        {
+            // Arrange
+            var renderer = new SvgSkiaRenderer();
+            var svg = @"<svg xmlns=""http://www.w3.org/2000/svg"" viewBox=""0 -960 960 960"">
+    <path fill=""#000000"" d=""M440 -120v-123q-104-14-172-93t-68-184h80q0 83 58.5 141.5T480-320q83 0 141.5-58.5T680-520h80q0 105-68 184t-172 93v123h-80Z""/>
+</svg>";
+
+            // Act
+            var result = renderer.Render(svg);
+
+            // Assert
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.NotNull(result.Bitmap);
+            Assert.True(BitmapHasVisiblePixels(result.Bitmap));
+        }
+
+        private static bool BitmapHasVisiblePixels(SKBitmap bitmap)
+        {
+            for (int y = 0; y < bitmap.Height; y++)
+            {
+                for (int x = 0; x < bitmap.Width; x++)
+                {
+                    if (bitmap.GetPixel(x, y).Alpha > 0)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
         }
     }
 }
