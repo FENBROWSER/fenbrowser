@@ -39,3 +39,6 @@ build_*.log
 erro_*.log
 .agent/
 .github/instructions/
+artifacts/
+build.binlog
+nul
