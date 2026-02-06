@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -31,7 +31,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
 
             var inlineKey = "inline:" + Guid.NewGuid().ToString("n");
-            var inlineSource = node.Text ?? string.Empty;
+            var inlineSource = node.TextContent ?? string.Empty;
             return ExecuteModuleAsync(inlineKey, () => Task.FromResult(new ModuleCode
             {
                 Key = inlineKey,
@@ -212,4 +212,5 @@ namespace FenBrowser.FenEngine.Scripting
         }
     }
 }
+
 

@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -380,7 +380,7 @@ namespace FenBrowser.FenEngine.Scripting
                     // Update currentTarget if we were reusing event object
                     // For now, simple dispatch
                     DispatchEvent(current, eventName, evtObj);
-                    current = current.Parent as Element;
+                    current = current.ParentElement;
                 }
 
                 // 4. Document & Window
@@ -679,7 +679,7 @@ namespace FenBrowser.FenEngine.Scripting
                 var platform = navObj.Get("platform").AsString();
                 var vendor = navObj.Get("vendor").AsString();
                 var cookie = navObj.Get("cookieEnabled").AsBoolean();
-                FenLogger.Error($"[Compliance] JS Navigator: UA='{ua}' Platform='{platform}' Vendor='{vendor}' CookieEnabled={cookie}", LogCategory.JavaScript);
+                FenLogger.Debug($"[Compliance] JS Navigator: UA='{ua}' Platform='{platform}' Vendor='{vendor}' CookieEnabled={cookie}", LogCategory.JavaScript);
             }
             catch { }
 
@@ -745,7 +745,7 @@ namespace FenBrowser.FenEngine.Scripting
         }
         
         /// <summary>Get the DOM root that JS is using (for repaint sync)</summary>
-        public Element DomRoot => _domRoot;
+        public Node DomRoot => _domRoot;
         
         // Document ready state (for document.readyState property)
 
@@ -842,7 +842,7 @@ namespace FenBrowser.FenEngine.Scripting
         private static System.WeakReference _visualRoot;
 
         // DOM root exposed to the engine
-        private Element _domRoot;
+        private Node _domRoot;
 
         private readonly object _sandboxLogLock = new object();
         private readonly Queue<SandboxBlockRecord> _sandboxBlocks = new Queue<SandboxBlockRecord>();
@@ -2206,7 +2206,14 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             {
                 foreach (var wrapper in _fenMutationObservers)
                 {
-                    wrapper.RecordMutation(record.Target, record.Type, record.AttributeName, record.OldValue, record.AddedNodes, record.RemovedNodes);
+                    string typeString = record.Type switch
+                    {
+                        MutationRecordType.ChildList => "childList",
+                        MutationRecordType.Attributes => "attributes",
+                        MutationRecordType.CharacterData => "characterData",
+                        _ => record.Type.ToString().ToLowerInvariant()
+                    };
+                    wrapper.RecordMutation(record.Target, typeString, record.AttributeName, record.OldValue, record.AddedNodes?.ToList(), record.RemovedNodes?.ToList());
                 }
             }
             
@@ -2386,13 +2393,13 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             
             public object getElementById(string id) 
             { 
-                var el = _engine._domRoot?.QueryByTag("*").FirstOrDefault(e => e.Attr != null && e.Attr.ContainsKey("id") && e.Attr["id"] == id);
+                var el = _engine._domRoot?.Descendants().OfType<Element>().FirstOrDefault(e => e.GetAttribute("id") == id);
                 return el != null ? new JsDomElement(_engine, el) : null;
             }
 
-            public object body => _engine._domRoot != null ? new JsDomElement(_engine, _engine._domRoot.FindById("body") ?? _engine._domRoot.QueryByTag("body").FirstOrDefault() ?? _engine._domRoot) : null;
+            public object body => _engine._domRoot != null ? new JsDomElement(_engine, (_engine._domRoot as Element)?.Descendants().OfType<Element>().FirstOrDefault(e => e.GetAttribute("id") == "body") ?? (_engine._domRoot as Element)?.Descendants().OfType<Element>().FirstOrDefault(e => e.TagName.Equals("body", StringComparison.OrdinalIgnoreCase)) ?? _engine._domRoot as Element) : null;
             
-            public object head => _engine._domRoot != null ? new JsDomElement(_engine, _engine._domRoot.QueryByTag("head").FirstOrDefault()) : null;
+            public object head => _engine._domRoot != null ? new JsDomElement(_engine, (_engine._domRoot as Element)?.Descendants().OfType<Element>().FirstOrDefault(e => e.TagName.Equals("head", StringComparison.OrdinalIgnoreCase))) : null;
 
             public string title 
             { 
@@ -2601,7 +2608,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         private readonly Dictionary<string, JsFuncDef> _userFunctionsEx = new Dictionary<string, JsFuncDef>(StringComparer.Ordinal);
 
         /// <summary>Expose current DOM to the engine (for document.* bridge).</summary>
-        public async Task SetDomAsync(Element domRoot, Uri baseUri = null)
+        public async Task SetDomAsync(Node domRoot, Uri baseUri = null)
         {
             /* [PERF-REMOVED] */
             _domRoot = domRoot;
@@ -2651,126 +2658,129 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                     int scriptIndex = 0;
                     foreach (var s in _domRoot.SelfAndDescendants())
                     {
-                        if (string.Equals(s.Tag, "script", StringComparison.OrdinalIgnoreCase))
+                        if (s is Element el)
                         {
-                            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[ScriptFound] Found script tag. Attrs: {(s.Attr != null ? string.Join(",", s.Attr.Keys) : "none")}\n"); } catch {}
-                            scriptIndex++;
-                            string code = null;
-                            string srcInfo = "inline";
-
-                            // Attribute checks
-                            var attrs = s.Attr ?? new Dictionary<string, string>();
-                            string type = attrs.ContainsKey("type") ? attrs["type"].ToLowerInvariant() : "";
-                            string src = attrs.ContainsKey("src") ? attrs["src"] : null;
-                            string nonce = attrs.ContainsKey("nonce") ? attrs["nonce"] : null;
-                            bool isModule = type == "module";
-                            
-                            // Filter invalid types
-                            if (!string.IsNullOrEmpty(type) && 
-                                type != "text/javascript" && 
-                                type != "application/javascript" && 
-                                type != "module")
+                            string tagName = el.TagName?.ToLowerInvariant() ?? "";
+                            if (string.Equals(tagName, "script", StringComparison.OrdinalIgnoreCase))
                             {
-                                continue;
-                            }
-                            
-                            if (attrs.ContainsKey("nomodule")) continue;
+                                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[ScriptFound] Found script tag.\n"); } catch {}
+                                scriptIndex++;
+                                string code = null;
+                                string srcInfo = "inline";
 
-                            // CSP Check (Enhanced with Nonce)
-                            if (SubresourceAllowed != null) 
-                            {
-                                Uri checkUri = null;
-                                if (!string.IsNullOrEmpty(src) && baseUri != null) Uri.TryCreate(baseUri, src, out checkUri);
+                                // Attribute checks
+                                string type = el.GetAttribute("type")?.ToLowerInvariant() ?? "";
+                                string src = el.GetAttribute("src");
+                                string nonce = el.GetAttribute("nonce");
+                                bool isModule = type == "module";
+                            
+                                // Filter invalid types
+                                if (!string.IsNullOrEmpty(type) && 
+                                    type != "text/javascript" && 
+                                    type != "application/javascript" && 
+                                    type != "module")
+                                {
+                                    continue;
+                                }
                                 
-                                if (NonceAllowed != null)
+                                if (el.HasAttribute("nomodule")) continue;
+
+                                // CSP Check (Enhanced with Nonce)
+                                if (SubresourceAllowed != null) 
                                 {
-                                    bool isAllowed = NonceAllowed(nonce);
+                                    Uri checkUri = null;
+                                    if (!string.IsNullOrEmpty(src) && baseUri != null) Uri.TryCreate(baseUri, src, out checkUri);
+                                    
+                                    if (NonceAllowed != null)
+                                    {
+                                        bool isAllowed = NonceAllowed(nonce);
 
-                                    if (string.IsNullOrEmpty(src))
-                                    {
-                                         // Inline Script: Check nonce
-                                         if (!isAllowed) continue;
-                                    }
-                                    else
-                                    {
-                                        // External Script: If nonce check PASSED, we allow it immediately.
-                                        // If failed or missing, we fall back to URL whitelist.
-                                        if (!isAllowed || string.IsNullOrEmpty(nonce)) 
+                                        if (string.IsNullOrEmpty(src))
                                         {
-                                            // Fallback to URL check
-                                             if (!string.IsNullOrEmpty(src) && checkUri != null && !SubresourceAllowed(checkUri, "script")) 
-                                             {
-                                                 continue;
-                                             }
-                                        }
-                                    }
-                                }
-                                else
-                                {
-                                    // URL Check (External Only) if NonceAllowed not available
-                                    if (!string.IsNullOrEmpty(src) && checkUri != null && !SubresourceAllowed(checkUri, "script")) 
-                                    {
-                                        continue;
-                                    }
-                                }
-                            }
-
-                            // 1. External Script
-                            if (!string.IsNullOrEmpty(src)) 
-                            {
-                                if (!SandboxAllows(SandboxFeature.ExternalScripts, "script src")) continue;
-
-                                if (baseUri != null)
-                                {
-                                    try 
-                                    {
-                                        var scriptUri = new Uri(baseUri, src);
-                                        srcInfo = scriptUri.ToString();
-                                        
-                                        if (isModule)
-                                        {
-                                            try { moduleLoader.LoadModule(scriptUri.AbsoluteUri); } catch { }
-                                            continue;
-                                        }
-
-                                        if (ExternalScriptFetcher != null)
-                                        {
-                                            code = await ExternalScriptFetcher(scriptUri, baseUri).ConfigureAwait(false);
+                                             // Inline Script: Check nonce
+                                             if (!isAllowed) continue;
                                         }
                                         else
                                         {
-                                            using (var client = new System.Net.Http.HttpClient())
+                                            // External Script: If nonce check PASSED, we allow it immediately.
+                                            // If failed or missing, we fall back to URL whitelist.
+                                            if (!isAllowed || string.IsNullOrEmpty(nonce)) 
                                             {
-                                                client.Timeout = TimeSpan.FromSeconds(5);
-                                                code = await client.GetStringAsync(scriptUri).ConfigureAwait(false);
+                                                // Fallback to URL check
+                                                 if (!string.IsNullOrEmpty(src) && checkUri != null && !SubresourceAllowed(checkUri, "script")) 
+                                                 {
+                                                     continue;
+                                                 }
                                             }
                                         }
                                     }
-                                    catch { }
+                                    else
+                                    {
+                                        // URL Check (External Only) if NonceAllowed not available
+                                        if (!string.IsNullOrEmpty(src) && checkUri != null && !SubresourceAllowed(checkUri, "script")) 
+                                        {
+                                            continue;
+                                        }
+                                    }
                                 }
-                            }
-                            // 2. Inline Script
-                            else
-                            {
-                                if (!SandboxAllows(SandboxFeature.InlineScripts, "inline script")) continue;
-                                code = CollectScriptText(s);
-                                
-                                if (isModule && !string.IsNullOrWhiteSpace(code))
+
+                                // 1. External Script
+                                if (!string.IsNullOrEmpty(src)) 
                                 {
-                                    try { moduleLoader.LoadModuleSrc(code, $"inline-module-{Guid.NewGuid()}.js"); } catch { }
-                                    continue; 
+                                    if (!SandboxAllows(SandboxFeature.ExternalScripts, "script src")) continue;
+
+                                    if (baseUri != null)
+                                    {
+                                        try 
+                                        {
+                                            var scriptUri = new Uri(baseUri, src);
+                                            srcInfo = scriptUri.ToString();
+                                            
+                                            if (isModule)
+                                            {
+                                                try { moduleLoader.LoadModule(scriptUri.AbsoluteUri); } catch { }
+                                                continue;
+                                            }
+
+                                            if (ExternalScriptFetcher != null)
+                                            {
+                                                code = await ExternalScriptFetcher(scriptUri, baseUri).ConfigureAwait(false);
+                                            }
+                                            else
+                                            {
+                                                using (var client = new System.Net.Http.HttpClient())
+                                                {
+                                                    client.Timeout = TimeSpan.FromSeconds(5);
+                                                    code = await client.GetStringAsync(scriptUri).ConfigureAwait(false);
+                                                }
+                                            }
+                                        }
+                                        catch { }
+                                    }
                                 }
-                            }
-                            
-                            if (!string.IsNullOrWhiteSpace(code))
-                            {
-                                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[ScriptRun] Executing script: Length={code.Length}, Info={srcInfo}\n"); } catch {}
-                                _fenRuntime.ExecuteSimple(code, srcInfo);
-                                /* [PERF-REMOVED] */
-                            }
-                            else
-                            {
-                                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[ScriptSkip] Code empty or skipped. Type={type}, Src={src}\n"); } catch {}
+                                // 2. Inline Script
+                                else
+                                {
+                                    if (!SandboxAllows(SandboxFeature.InlineScripts, "inline script")) continue;
+                                    code = CollectScriptText(s);
+                                    
+                                    if (isModule && !string.IsNullOrWhiteSpace(code))
+                                    {
+                                        try { moduleLoader.LoadModuleSrc(code, $"inline-module-{Guid.NewGuid()}.js"); } catch { }
+                                        continue; 
+                                    }
+                                }
+                                
+                                if (!string.IsNullOrWhiteSpace(code))
+                                {
+                                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[ScriptRun] Executing script: Length={code.Length}, Info={srcInfo}\n"); } catch {}
+                                    _fenRuntime.ExecuteSimple(code, srcInfo);
+                                    /* [PERF-REMOVED] */
+                                }
+                                else
+                                {
+                                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[ScriptSkip] Code empty or skipped. Type={type}, Src={src}\n"); } catch {}
+                                }
                             }
                         }
                     }
@@ -2815,7 +2825,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         }
 
         // Backward compatibility wrapper (deprecated)
-        public void SetDom(Element domRoot, Uri baseUri = null)
+        public void SetDom(Node domRoot, Uri baseUri = null)
         {
              // This is dangerous if called on UI thread, but provided for compatibility compilation
              // Ideally calls should move to SetDomAsync
@@ -2837,7 +2847,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                 return "";
             }
 
-            if (n.IsText)
+            if (n.IsText())
             {
                 var tel = n as Element;
                 if (tel != null) return tel.Text ?? "";
@@ -2857,7 +2867,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
 
         #region JS enabled sanitizer
         // INSIDE: public sealed class JavaScriptEngine { ... }
-        private void SanitizeForScriptingEnabled(Element rootArg = null)
+        private void SanitizeForScriptingEnabled(Node rootArg = null)
         {
             var root = rootArg ?? _domRoot;          // OK in instance method
             if (root  == null) return;
@@ -2884,9 +2894,9 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
 
             try
             {
-                var html = (root.QueryByTag("html") ?? Enumerable.Empty<Element>()).FirstOrDefault();
+                var html = (root as ContainerNode)?.GetElementsByTagName("html").FirstOrDefault();
                 if (html != null) flipClass(html);
-                var body = (root.QueryByTag("body") ?? Enumerable.Empty<Element>()).FirstOrDefault();
+                var body = (root as ContainerNode)?.GetElementsByTagName("body").FirstOrDefault();
                 if (body != null) flipClass(body);
             }
             catch { }
@@ -2895,9 +2905,9 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             {
                 var toRemove = new List<Element>();
                 foreach (var n in root.Descendants().OfType<Element>())
-                    if (string.Equals(n.Tag, "noscript", StringComparison.OrdinalIgnoreCase))
+                    if (string.Equals(n.TagName, "noscript", StringComparison.OrdinalIgnoreCase))
                         toRemove.Add(n);
-                foreach (var n in toRemove) (n.Parent as Element)?.Children.Remove(n);
+                foreach (var n in toRemove) n.Remove();
             }
             catch { }
 
@@ -3070,4 +3080,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
     }
 
 }
+
+
+
 
