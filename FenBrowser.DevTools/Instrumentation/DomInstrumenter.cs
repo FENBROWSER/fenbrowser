@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.DevTools.Core;
 using FenBrowser.DevTools.Domains.DTOs;
 using System.Collections.Generic;
@@ -142,9 +142,12 @@ public class DomInstrumenter
 
     private int GetPreviousNodeId(Node parent, Node node)
     {
-        int idx = parent.Children.IndexOf(node);
+        int idx = -1;
+        var nodes = parent.ChildNodes;
+        for(int i=0; i<nodes.Length; i++) { if(nodes[i] == node) { idx = i; break; } }
+        
         if (idx <= 0) return 0;
-        return _registry.GetId(parent.Children[idx - 1]);
+        return _registry.GetId(nodes[idx - 1]);
     }
 
     private DomNodeDto BuildNodeDto(Node node)
@@ -154,13 +157,13 @@ public class DomInstrumenter
         // and the UI can request children later if needed.
         
         int nodeId = _registry.GetId(node);
-        int? parentId = node.Parent != null ? (int?)_registry.GetId(node.Parent) : null;
+        int? parentId = node.ParentNode != null ? (int?)_registry.GetId(node.ParentNode) : null;
 
         int nodeType = node switch
         {
-            FenBrowser.Core.Dom.Document => 9,
-            FenBrowser.Core.Dom.Text => 3,
-            FenBrowser.Core.Dom.Element => 1,
+            Document => 9,
+            Text => 3,
+            Element => 1,
             _ => 0
         };
 
@@ -173,9 +176,14 @@ public class DomInstrumenter
         };
 
         Dictionary<string, string>? attributes = null;
-        if (node is Element e && e.Attributes.Count > 0)
+        if (node is Element element && element.Attributes.Length > 0)
         {
-            attributes = new Dictionary<string, string>(e.Attributes);
+            attributes = new Dictionary<string, string>();
+            // Use iterator if indexer is missing
+            foreach (var attr in element.Attributes)
+            {
+                 attributes[attr.Name] = attr.Value;
+            }
         }
 
         return new DomNodeDto
@@ -186,7 +194,7 @@ public class DomInstrumenter
             NodeName = nodeName,
             NodeValue = node is Text t ? t.Data : null,
             Attributes = attributes,
-            ChildNodeCount = node.Children.Count
+            ChildNodeCount = node.ChildNodes.Length
         };
     }
 }

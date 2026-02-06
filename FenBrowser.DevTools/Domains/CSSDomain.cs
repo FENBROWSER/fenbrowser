@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.DevTools.Core;
 using FenBrowser.DevTools.Core.Protocol;
 using FenBrowser.Core.Css;
@@ -167,7 +167,7 @@ public class CSSDomain : IProtocolHandler
             
             // Inline styles
             CssStyleDto? inlineStyle = null;
-            if (node is Element element && element.Attributes.TryGetValue("style", out var styleStr))
+            if (node is Element element && (element.GetAttribute("style") is string styleStr))
             {
                 var cssProperties = new List<CssPropertyDto>();
                 var parts = styleStr.Split(';', StringSplitOptions.RemoveEmptyEntries);
@@ -248,7 +248,7 @@ public class CSSDomain : IProtocolHandler
             var inherited = new List<InheritedStyleEntryDto>();
              if (node is Element currentElement)
             {
-                var parent = currentElement.Parent;
+                var parent = currentElement.ParentNode;
                 while (parent != null && parent is Element parentElement)
                 {
                     var inheritedEntry = new InheritedStyleEntryDto();
@@ -284,7 +284,7 @@ public class CSSDomain : IProtocolHandler
                         inheritedEntry.MatchedCSSRules = ancestorMatchedRules;
                         if (ancestorMatchedRules.Count > 0) inherited.Add(inheritedEntry);
                     }
-                    parent = parentElement.Parent;
+                    parent = parentElement.ParentNode;
                 }
             }
             

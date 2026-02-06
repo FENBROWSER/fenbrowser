@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.DevTools.Core.Protocol;
 using FenBrowser.DevTools.Domains;
 using FenBrowser.Core.Css;
