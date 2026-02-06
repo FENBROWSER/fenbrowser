@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 
 namespace FenBrowser.FenEngine.HTML
 {
@@ -9,6 +9,7 @@ namespace FenBrowser.FenEngine.HTML
     {
         private enum State
         {
+            // Original states
             Data,
             TagOpen,
             EndTagOpen,
@@ -32,7 +33,69 @@ namespace FenBrowser.FenEngine.HTML
             BeforeDoctypeName,
             DoctypeName,
             AfterDoctypeName,
-            Doctype
+            Doctype,
+            
+            // RCDATA states (for <title>, <textarea>)
+            RcData,
+            RcDataLessThanSign,
+            RcDataEndTagOpen,
+            RcDataEndTagName,
+            
+            // RAWTEXT states (for <style>, <xmp>, etc.)
+            RawText,
+            RawTextLessThanSign,
+            RawTextEndTagOpen,
+            RawTextEndTagName,
+            
+            // Script data states
+            ScriptData,
+            ScriptDataLessThanSign,
+            ScriptDataEndTagOpen,
+            ScriptDataEndTagName,
+            ScriptDataEscapeStart,
+            ScriptDataEscapeStartDash,
+            ScriptDataEscaped,
+            ScriptDataEscapedDash,
+            ScriptDataEscapedDashDash,
+            ScriptDataEscapedLessThanSign,
+            ScriptDataEscapedEndTagOpen,
+            ScriptDataEscapedEndTagName,
+            ScriptDataDoubleEscapeStart,
+            ScriptDataDoubleEscaped,
+            ScriptDataDoubleEscapedDash,
+            ScriptDataDoubleEscapedDashDash,
+            ScriptDataDoubleEscapedLessThanSign,
+            ScriptDataDoubleEscapeEnd,
+            
+            // Character reference states
+            CharacterReference,
+            NamedCharacterReference,
+            AmbiguousAmpersand,
+            NumericCharacterReference,
+            HexadecimalCharacterReferenceStart,
+            DecimalCharacterReferenceStart,
+            HexadecimalCharacterReference,
+            DecimalCharacterReference,
+            NumericCharacterReferenceEnd,
+            
+            // CDATA states
+            CdataSection,
+            CdataSectionBracket,
+            CdataSectionEnd,
+            
+            // Extended DOCTYPE states
+            AfterDoctypePublicKeyword,
+            BeforeDoctypePublicIdentifier,
+            DoctypePublicIdentifierDoubleQuoted,
+            DoctypePublicIdentifierSingleQuoted,
+            AfterDoctypePublicIdentifier,
+            BetweenDoctypePublicAndSystemIdentifiers,
+            AfterDoctypeSystemKeyword,
+            BeforeDoctypeSystemIdentifier,
+            DoctypeSystemIdentifierDoubleQuoted,
+            DoctypeSystemIdentifierSingleQuoted,
+            AfterDoctypeSystemIdentifier,
+            BogusDoctype
         }
 
         private readonly string _input;
@@ -42,9 +105,41 @@ namespace FenBrowser.FenEngine.HTML
         private TagToken _currentTagToken; // Typed ref to _currentToken if it's a tag
         private readonly List<HtmlToken> _emitQueue = new List<HtmlToken>();
         
+        // Character reference handling (WHATWG 13.2.5.72-13.2.5.80)
+        private State _returnState;
+        private StringBuilder _temporaryBuffer = new StringBuilder();
+        private StringBuilder _charRefBuffer = new StringBuilder();
+        private int _charRefCode;
+        
+        // Last start tag name for end tag matching (RCDATA, RAWTEXT, script)
+        private string _lastStartTagName;
+        
         // Debug/Context info
         public int Line { get; private set; } = 1;
         public int Column { get; private set; } = 0;
+        
+        /// <summary>
+        /// Set the tokenizer state externally (called by tree builder).
+        /// </summary>
+        public void SetState(string stateName)
+        {
+            switch (stateName.ToUpperInvariant())
+            {
+                case "RCDATA": _state = State.RcData; break;
+                case "RAWTEXT": _state = State.RawText; break;
+                case "SCRIPTDATA": _state = State.ScriptData; break;
+                case "PLAINTEXT": _state = State.RawText; break; // Treat PLAINTEXT as RAWTEXT
+                default: _state = State.Data; break;
+            }
+        }
+        
+        /// <summary>
+        /// Set the last start tag name (for end tag matching).
+        /// </summary>
+        public void SetLastStartTagName(string tagName)
+        {
+            _lastStartTagName = tagName?.ToUpperInvariant();
+        }
 
         public HtmlTokenizer(string input)
         {
@@ -72,6 +167,35 @@ namespace FenBrowser.FenEngine.HTML
                          // Empty input
                          yield return new EofToken();
                          yield break;
+                    }
+                    
+                    // Handle pending character reference at EOF
+                    if (_state == State.NumericCharacterReferenceEnd)
+                    {
+                        HandleNumericCharacterReferenceEnd();
+                    }
+                    else if (_state == State.DecimalCharacterReference || 
+                             _state == State.HexadecimalCharacterReference)
+                    {
+                        // Missing semicolon - emit what we have
+                        HandleNumericCharacterReferenceEnd();
+                    }
+                    else if (_state == State.CharacterReference ||
+                             _state == State.NamedCharacterReference ||
+                             _state == State.NumericCharacterReference ||
+                             _state == State.DecimalCharacterReferenceStart ||
+                             _state == State.HexadecimalCharacterReferenceStart)
+                    {
+                        // Incomplete character reference - flush buffer
+                        FlushCharacterReference();
+                    }
+                    
+                    // Emit any queued tokens before EOF
+                    while (_emitQueue.Count > 0)
+                    {
+                        var queued = _emitQueue[0];
+                        _emitQueue.RemoveAt(0);
+                        yield return queued;
                     }
                     
                     // Flush EOF
@@ -158,6 +282,86 @@ namespace FenBrowser.FenEngine.HTML
                     case State.BogusComment:
                         HandleBogusComment(c);
                         break;
+                    
+                    // RCDATA states
+                    case State.RcData:
+                        HandleRcData(c);
+                        break;
+                    case State.RcDataLessThanSign:
+                        HandleRcDataLessThanSign(c);
+                        break;
+                    case State.RcDataEndTagOpen:
+                        HandleRcDataEndTagOpen(c);
+                        break;
+                    case State.RcDataEndTagName:
+                        HandleRcDataEndTagName(c);
+                        break;
+                        
+                    // RAWTEXT states
+                    case State.RawText:
+                        HandleRawText(c);
+                        break;
+                    case State.RawTextLessThanSign:
+                        HandleRawTextLessThanSign(c);
+                        break;
+                    case State.RawTextEndTagOpen:
+                        HandleRawTextEndTagOpen(c);
+                        break;
+                    case State.RawTextEndTagName:
+                        HandleRawTextEndTagName(c);
+                        break;
+                        
+                    // ScriptData states
+                    case State.ScriptData:
+                        HandleScriptData(c);
+                        break;
+                    case State.ScriptDataLessThanSign:
+                        HandleScriptDataLessThanSign(c);
+                        break;
+                    case State.ScriptDataEndTagOpen:
+                        HandleScriptDataEndTagOpen(c);
+                        break;
+                    case State.ScriptDataEndTagName:
+                        HandleScriptDataEndTagName(c);
+                        break;
+                        
+                    // Character reference states
+                    case State.CharacterReference:
+                        HandleCharacterReference(c);
+                        break;
+                    case State.NamedCharacterReference:
+                        HandleNamedCharacterReference(c);
+                        break;
+                    case State.NumericCharacterReference:
+                        HandleNumericCharacterReference(c);
+                        break;
+                    case State.HexadecimalCharacterReferenceStart:
+                        HandleHexadecimalCharacterReferenceStart(c);
+                        break;
+                    case State.DecimalCharacterReferenceStart:
+                        HandleDecimalCharacterReferenceStart(c);
+                        break;
+                    case State.HexadecimalCharacterReference:
+                        HandleHexadecimalCharacterReference(c);
+                        break;
+                    case State.DecimalCharacterReference:
+                        HandleDecimalCharacterReference(c);
+                        break;
+                    case State.NumericCharacterReferenceEnd:
+                        HandleNumericCharacterReferenceEnd();
+                        break;
+                        
+                    // CDATA states
+                    case State.CdataSection:
+                        HandleCdataSection(c);
+                        break;
+                    case State.CdataSectionBracket:
+                        HandleCdataSectionBracket(c);
+                        break;
+                    case State.CdataSectionEnd:
+                        HandleCdataSectionEnd(c);
+                        break;
+                        
                      default:
                          // Simple fallback for unimplemented states
                         Advance();
@@ -201,7 +405,13 @@ namespace FenBrowser.FenEngine.HTML
 
         private void HandleData(char c)
         {
-            if (c == '<')
+            if (c == '&')
+            {
+                _returnState = State.Data;
+                SwitchTo(State.CharacterReference);
+                Advance();
+            }
+            else if (c == '<')
             {
                 SwitchTo(State.TagOpen);
                 Advance();
@@ -425,6 +635,12 @@ namespace FenBrowser.FenEngine.HTML
                 SwitchTo(State.AfterAttributeValue);
                 Advance();
             }
+            else if (c == '&')
+            {
+                _returnState = State.AttributeValueDoubleQuoted;
+                SwitchTo(State.CharacterReference);
+                Advance();
+            }
             else
             {
                 _currentTagToken.AppendAttributeValue(c);
@@ -439,6 +655,12 @@ namespace FenBrowser.FenEngine.HTML
                 SwitchTo(State.AfterAttributeValue);
                 Advance();
             }
+            else if (c == '&')
+            {
+                _returnState = State.AttributeValueSingleQuoted;
+                SwitchTo(State.CharacterReference);
+                Advance();
+            }
             else
             {
                 _currentTagToken.AppendAttributeValue(c);
@@ -451,6 +673,12 @@ namespace FenBrowser.FenEngine.HTML
             if (IsSpace(c))
             {
                 SwitchTo(State.BeforeAttributeName);
+                Advance();
+            }
+            else if (c == '&')
+            {
+                _returnState = State.AttributeValueUnquoted;
+                SwitchTo(State.CharacterReference);
                 Advance();
             }
             else if (c == '>')
@@ -761,5 +989,558 @@ namespace FenBrowser.FenEngine.HTML
         {
             return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
         }
+        
+        private bool IsAsciiDigit(char c) => c >= '0' && c <= '9';
+        private bool IsHexDigit(char c) => IsAsciiDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        private bool IsAlphanumeric(char c) => IsAlpha(c) || IsAsciiDigit(c);
+        
+        // --- RCDATA State Handlers (WHATWG 13.2.5.2-13.2.5.5) ---
+        
+        private void HandleRcData(char c)
+        {
+            if (c == '&')
+            {
+                _returnState = State.RcData;
+                SwitchTo(State.CharacterReference);
+                Advance();
+            }
+            else if (c == '<')
+            {
+                SwitchTo(State.RcDataLessThanSign);
+                Advance();
+            }
+            else
+            {
+                Emit(new CharacterToken(c));
+                Advance();
+            }
+        }
+        
+        private void HandleRcDataLessThanSign(char c)
+        {
+            if (c == '/')
+            {
+                _temporaryBuffer.Clear();
+                SwitchTo(State.RcDataEndTagOpen);
+                Advance();
+            }
+            else
+            {
+                Emit(new CharacterToken('<'));
+                SwitchTo(State.RcData);
+                // Re-consume
+            }
+        }
+        
+        private void HandleRcDataEndTagOpen(char c)
+        {
+            if (IsAlpha(c))
+            {
+                _currentToken = new EndTagToken();
+                _currentTagToken = (TagToken)_currentToken;
+                SwitchTo(State.RcDataEndTagName);
+                // Re-consume
+            }
+            else
+            {
+                Emit(new CharacterToken('<'));
+                Emit(new CharacterToken('/'));
+                SwitchTo(State.RcData);
+                // Re-consume
+            }
+        }
+        
+        private void HandleRcDataEndTagName(char c)
+        {
+            if (IsSpace(c) && IsAppropriateEndTagToken())
+            {
+                SwitchTo(State.BeforeAttributeName);
+                Advance();
+            }
+            else if (c == '/' && IsAppropriateEndTagToken())
+            {
+                SwitchTo(State.SelfClosingStartTag);
+                Advance();
+            }
+            else if (c == '>' && IsAppropriateEndTagToken())
+            {
+                SwitchTo(State.Data);
+                EmitCurrentToken();
+                Advance();
+            }
+            else if (IsAlpha(c))
+            {
+                _currentTagToken.TagName += char.ToUpperInvariant(c);
+                _temporaryBuffer.Append(c);
+                Advance();
+            }
+            else
+            {
+                Emit(new CharacterToken('<'));
+                Emit(new CharacterToken('/'));
+                foreach (char ch in _temporaryBuffer.ToString())
+                    Emit(new CharacterToken(ch));
+                SwitchTo(State.RcData);
+                // Re-consume
+            }
+        }
+        
+        // --- RAWTEXT State Handlers (WHATWG 13.2.5.6-13.2.5.9) ---
+        
+        private void HandleRawText(char c)
+        {
+            if (c == '<')
+            {
+                SwitchTo(State.RawTextLessThanSign);
+                Advance();
+            }
+            else
+            {
+                Emit(new CharacterToken(c));
+                Advance();
+            }
+        }
+        
+        private void HandleRawTextLessThanSign(char c)
+        {
+            if (c == '/')
+            {
+                _temporaryBuffer.Clear();
+                SwitchTo(State.RawTextEndTagOpen);
+                Advance();
+            }
+            else
+            {
+                Emit(new CharacterToken('<'));
+                SwitchTo(State.RawText);
+            }
+        }
+        
+        private void HandleRawTextEndTagOpen(char c)
+        {
+            if (IsAlpha(c))
+            {
+                _currentToken = new EndTagToken();
+                _currentTagToken = (TagToken)_currentToken;
+                SwitchTo(State.RawTextEndTagName);
+            }
+            else
+            {
+                Emit(new CharacterToken('<'));
+                Emit(new CharacterToken('/'));
+                SwitchTo(State.RawText);
+            }
+        }
+        
+        private void HandleRawTextEndTagName(char c)
+        {
+            if (IsSpace(c) && IsAppropriateEndTagToken())
+            {
+                SwitchTo(State.BeforeAttributeName);
+                Advance();
+            }
+            else if (c == '/' && IsAppropriateEndTagToken())
+            {
+                SwitchTo(State.SelfClosingStartTag);
+                Advance();
+            }
+            else if (c == '>' && IsAppropriateEndTagToken())
+            {
+                SwitchTo(State.Data);
+                EmitCurrentToken();
+                Advance();
+            }
+            else if (IsAlpha(c))
+            {
+                _currentTagToken.TagName += char.ToUpperInvariant(c);
+                _temporaryBuffer.Append(c);
+                Advance();
+            }
+            else
+            {
+                Emit(new CharacterToken('<'));
+                Emit(new CharacterToken('/'));
+                foreach (char ch in _temporaryBuffer.ToString())
+                    Emit(new CharacterToken(ch));
+                SwitchTo(State.RawText);
+            }
+        }
+        
+        // --- Script Data State Handlers (WHATWG 13.2.5.10+) ---
+        
+        private void HandleScriptData(char c)
+        {
+            if (c == '<')
+            {
+                SwitchTo(State.ScriptDataLessThanSign);
+                Advance();
+            }
+            else
+            {
+                Emit(new CharacterToken(c));
+                Advance();
+            }
+        }
+        
+        private void HandleScriptDataLessThanSign(char c)
+        {
+            if (c == '/')
+            {
+                _temporaryBuffer.Clear();
+                SwitchTo(State.ScriptDataEndTagOpen);
+                Advance();
+            }
+            else if (c == '!')
+            {
+                Emit(new CharacterToken('<'));
+                Emit(new CharacterToken('!'));
+                SwitchTo(State.ScriptDataEscapeStart);
+                Advance();
+            }
+            else
+            {
+                Emit(new CharacterToken('<'));
+                SwitchTo(State.ScriptData);
+            }
+        }
+        
+        private void HandleScriptDataEndTagOpen(char c)
+        {
+            if (IsAlpha(c))
+            {
+                _currentToken = new EndTagToken();
+                _currentTagToken = (TagToken)_currentToken;
+                SwitchTo(State.ScriptDataEndTagName);
+            }
+            else
+            {
+                Emit(new CharacterToken('<'));
+                Emit(new CharacterToken('/'));
+                SwitchTo(State.ScriptData);
+            }
+        }
+        
+        private void HandleScriptDataEndTagName(char c)
+        {
+            if (IsSpace(c) && IsAppropriateEndTagToken())
+            {
+                SwitchTo(State.BeforeAttributeName);
+                Advance();
+            }
+            else if (c == '/' && IsAppropriateEndTagToken())
+            {
+                SwitchTo(State.SelfClosingStartTag);
+                Advance();
+            }
+            else if (c == '>' && IsAppropriateEndTagToken())
+            {
+                SwitchTo(State.Data);
+                EmitCurrentToken();
+                Advance();
+            }
+            else if (IsAlpha(c))
+            {
+                _currentTagToken.TagName += char.ToUpperInvariant(c);
+                _temporaryBuffer.Append(c);
+                Advance();
+            }
+            else
+            {
+                Emit(new CharacterToken('<'));
+                Emit(new CharacterToken('/'));
+                foreach (char ch in _temporaryBuffer.ToString())
+                    Emit(new CharacterToken(ch));
+                SwitchTo(State.ScriptData);
+            }
+        }
+        
+        // --- Character Reference State Handlers (WHATWG 13.2.5.72+) ---
+        
+        private void HandleCharacterReference(char c)
+        {
+            _charRefBuffer.Clear();
+            _charRefBuffer.Append('&');
+            
+            if (IsAlphanumeric(c))
+            {
+                SwitchTo(State.NamedCharacterReference);
+                // Re-consume
+            }
+            else if (c == '#')
+            {
+                _charRefBuffer.Append(c);
+                SwitchTo(State.NumericCharacterReference);
+                Advance();
+            }
+            else
+            {
+                // Flush as ampersand
+                FlushCharacterReference();
+                SwitchTo(_returnState);
+                // Re-consume
+            }
+        }
+        
+        private void HandleNamedCharacterReference(char c)
+        {
+            // Simplified: collect until ; or non-alphanumeric
+            if (IsAlphanumeric(c))
+            {
+                _charRefBuffer.Append(c);
+                Advance();
+            }
+            else if (c == ';')
+            {
+                _charRefBuffer.Append(c);
+                var entityName = _charRefBuffer.ToString().Substring(1); // Remove &
+                var decoded = HtmlEntities.Decode(entityName);
+                if (decoded != null)
+                {
+                    EmitCharacterReferenceResult(decoded);
+                }
+                else
+                {
+                    FlushCharacterReference();
+                }
+                SwitchTo(_returnState);
+                Advance();
+            }
+            else
+            {
+                // Try to match without semicolon
+                var entityName = _charRefBuffer.ToString().Substring(1);
+                var decoded = HtmlEntities.Decode(entityName);
+                if (decoded != null)
+                {
+                    EmitCharacterReferenceResult(decoded);
+                }
+                else
+                {
+                    FlushCharacterReference();
+                }
+                SwitchTo(_returnState);
+                // Re-consume
+            }
+        }
+        
+        private void HandleNumericCharacterReference(char c)
+        {
+            _charRefCode = 0;
+            if (c == 'x' || c == 'X')
+            {
+                _charRefBuffer.Append(c);
+                SwitchTo(State.HexadecimalCharacterReferenceStart);
+                Advance();
+            }
+            else
+            {
+                SwitchTo(State.DecimalCharacterReferenceStart);
+                // Re-consume
+            }
+        }
+        
+        private void HandleHexadecimalCharacterReferenceStart(char c)
+        {
+            if (IsHexDigit(c))
+            {
+                SwitchTo(State.HexadecimalCharacterReference);
+                // Re-consume
+            }
+            else
+            {
+                FlushCharacterReference();
+                SwitchTo(_returnState);
+                // Re-consume
+            }
+        }
+        
+        private void HandleDecimalCharacterReferenceStart(char c)
+        {
+            if (IsAsciiDigit(c))
+            {
+                SwitchTo(State.DecimalCharacterReference);
+                // Re-consume
+            }
+            else
+            {
+                FlushCharacterReference();
+                SwitchTo(_returnState);
+                // Re-consume
+            }
+        }
+        
+        private void HandleHexadecimalCharacterReference(char c)
+        {
+            if (IsAsciiDigit(c))
+            {
+                _charRefCode = _charRefCode * 16 + (c - '0');
+                Advance();
+            }
+            else if (c >= 'A' && c <= 'F')
+            {
+                _charRefCode = _charRefCode * 16 + (c - 'A' + 10);
+                Advance();
+            }
+            else if (c >= 'a' && c <= 'f')
+            {
+                _charRefCode = _charRefCode * 16 + (c - 'a' + 10);
+                Advance();
+            }
+            else if (c == ';')
+            {
+                SwitchTo(State.NumericCharacterReferenceEnd);
+                Advance();
+            }
+            else
+            {
+                SwitchTo(State.NumericCharacterReferenceEnd);
+                // Re-consume
+            }
+        }
+        
+        private void HandleDecimalCharacterReference(char c)
+        {
+            if (IsAsciiDigit(c))
+            {
+                _charRefCode = _charRefCode * 10 + (c - '0');
+                Advance();
+            }
+            else if (c == ';')
+            {
+                SwitchTo(State.NumericCharacterReferenceEnd);
+                Advance();
+            }
+            else
+            {
+                SwitchTo(State.NumericCharacterReferenceEnd);
+                // Re-consume
+            }
+        }
+        
+        private void HandleNumericCharacterReferenceEnd()
+        {
+            // Convert code point to character per WHATWG 13.2.5.80
+            string decoded;
+            if (_charRefCode == 0)
+            {
+                decoded = "\uFFFD"; // NULL → REPLACEMENT CHARACTER
+            }
+            else if (_charRefCode > 0x10FFFF)
+            {
+                decoded = "\uFFFD"; // Out of range
+            }
+            else if (_charRefCode >= 0xD800 && _charRefCode <= 0xDFFF)
+            {
+                decoded = "\uFFFD"; // Surrogate
+            }
+            else if (_charRefCode <= 0xFFFF)
+            {
+                decoded = ((char)_charRefCode).ToString();
+            }
+            else
+            {
+                // Supplementary character (surrogate pair)
+                _charRefCode -= 0x10000;
+                decoded = new string(new char[] {
+                    (char)(0xD800 + (_charRefCode >> 10)),
+                    (char)(0xDC00 + (_charRefCode & 0x3FF))
+                });
+            }
+            EmitCharacterReferenceResult(decoded);
+            SwitchTo(_returnState);
+        }
+        
+        // --- CDATA State Handlers (WHATWG 13.2.5.68-70) ---
+        
+        private void HandleCdataSection(char c)
+        {
+            if (c == ']')
+            {
+                SwitchTo(State.CdataSectionBracket);
+                Advance();
+            }
+            else
+            {
+                Emit(new CharacterToken(c));
+                Advance();
+            }
+        }
+        
+        private void HandleCdataSectionBracket(char c)
+        {
+            if (c == ']')
+            {
+                SwitchTo(State.CdataSectionEnd);
+                Advance();
+            }
+            else
+            {
+                Emit(new CharacterToken(']'));
+                SwitchTo(State.CdataSection);
+                // Re-consume
+            }
+        }
+        
+        private void HandleCdataSectionEnd(char c)
+        {
+            if (c == ']')
+            {
+                Emit(new CharacterToken(']'));
+                Advance();
+            }
+            else if (c == '>')
+            {
+                SwitchTo(State.Data);
+                Advance();
+            }
+            else
+            {
+                Emit(new CharacterToken(']'));
+                Emit(new CharacterToken(']'));
+                SwitchTo(State.CdataSection);
+                // Re-consume
+            }
+        }
+        
+        // --- Helper methods for character references ---
+        
+        private bool IsAppropriateEndTagToken()
+        {
+            return _currentTagToken != null && 
+                   _lastStartTagName != null &&
+                   _currentTagToken.TagName == _lastStartTagName;
+        }
+        
+        private void FlushCharacterReference()
+        {
+            foreach (char ch in _charRefBuffer.ToString())
+            {
+                if (_returnState == State.AttributeValueDoubleQuoted ||
+                    _returnState == State.AttributeValueSingleQuoted ||
+                    _returnState == State.AttributeValueUnquoted)
+                {
+                    _currentTagToken?.AppendAttributeValue(ch);
+                }
+                else
+                {
+                    Emit(new CharacterToken(ch));
+                }
+            }
+        }
+        
+        private void EmitCharacterReferenceResult(string chars)
+        {
+            if (_returnState == State.AttributeValueDoubleQuoted ||
+                _returnState == State.AttributeValueSingleQuoted ||
+                _returnState == State.AttributeValueUnquoted)
+            {
+                _currentTagToken?.AppendAttributeValue(chars);
+            }
+            else
+            {
+                Emit(new CharacterToken(chars));
+            }
+        }
     }
 }
+
