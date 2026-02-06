@@ -9,8 +9,6 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.FenEngine", "Fen
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.Host", "FenBrowser.Host\FenBrowser.Host.csproj", "{7E0C6E93-641B-4192-9FE7-7200FDF1DFBD}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.Tests", "FenBrowser.Tests\FenBrowser.Tests.csproj", "{1F5C302D-C050-48AB-B31A-94DBD8FD41B8}"
-EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.DevTools", "FenBrowser.DevTools\FenBrowser.DevTools.csproj", "{0116A6EB-BB85-4414-AC96-28AFC02F36CE}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.WebDriver", "FenBrowser.WebDriver\FenBrowser.WebDriver.csproj", "{DAD19852-9F27-4D7D-A345-6543A1F0D7EB}"
@@ -61,18 +59,6 @@ Global
 		{7E0C6E93-641B-4192-9FE7-7200FDF1DFBD}.Release|x64.Build.0 = Release|Any CPU
 		{7E0C6E93-641B-4192-9FE7-7200FDF1DFBD}.Release|x86.ActiveCfg = Release|Any CPU
 		{7E0C6E93-641B-4192-9FE7-7200FDF1DFBD}.Release|x86.Build.0 = Release|Any CPU
-		{1F5C302D-C050-48AB-B31A-94DBD8FD41B8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{1F5C302D-C050-48AB-B31A-94DBD8FD41B8}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{1F5C302D-C050-48AB-B31A-94DBD8FD41B8}.Debug|x64.ActiveCfg = Debug|Any CPU
-		{1F5C302D-C050-48AB-B31A-94DBD8FD41B8}.Debug|x64.Build.0 = Debug|Any CPU
-		{1F5C302D-C050-48AB-B31A-94DBD8FD41B8}.Debug|x86.ActiveCfg = Debug|Any CPU
-		{1F5C302D-C050-48AB-B31A-94DBD8FD41B8}.Debug|x86.Build.0 = Debug|Any CPU
-		{1F5C302D-C050-48AB-B31A-94DBD8FD41B8}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{1F5C302D-C050-48AB-B31A-94DBD8FD41B8}.Release|Any CPU.Build.0 = Release|Any CPU
-		{1F5C302D-C050-48AB-B31A-94DBD8FD41B8}.Release|x64.ActiveCfg = Release|Any CPU
-		{1F5C302D-C050-48AB-B31A-94DBD8FD41B8}.Release|x64.Build.0 = Release|Any CPU
-		{1F5C302D-C050-48AB-B31A-94DBD8FD41B8}.Release|x86.ActiveCfg = Release|Any CPU
-		{1F5C302D-C050-48AB-B31A-94DBD8FD41B8}.Release|x86.Build.0 = Release|Any CPU
 		{0116A6EB-BB85-4414-AC96-28AFC02F36CE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{0116A6EB-BB85-4414-AC96-28AFC02F36CE}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{0116A6EB-BB85-4414-AC96-28AFC02F36CE}.Debug|x64.ActiveCfg = Debug|Any CPU

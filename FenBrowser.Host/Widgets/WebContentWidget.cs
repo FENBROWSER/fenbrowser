@@ -63,8 +63,17 @@ public class WebContentWidget : Widget
     protected override void OnArrange(SKRect finalRect)
     {
         FenLogger.Info($"[WebContentWidget] OnArrange: {finalRect}", FenBrowser.Core.Logging.LogCategory.General);
-        string logPath = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FenBrowser", "click_debug.log");
-        System.IO.File.AppendAllText(logPath, $"[WebContentWidget.OnArrange] finalRect={finalRect}, this.Bounds={Bounds}\n");
+        try
+        {
+            string logDir = System.IO.Path.Combine(Environment.CurrentDirectory, "logs");
+            System.IO.Directory.CreateDirectory(logDir);
+            string logPath = System.IO.Path.Combine(logDir, "click_debug.log");
+            System.IO.File.AppendAllText(logPath, $"[WebContentWidget.OnArrange] finalRect={finalRect}, this.Bounds={Bounds}\n");
+        }
+        catch (Exception ex)
+        {
+            FenLogger.Error($"[WebContentWidget] click_debug log write failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.General);
+        }
         
         // Bounds set by parent
         var activeTab = TabManager.Instance.ActiveTab;

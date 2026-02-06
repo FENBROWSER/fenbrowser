@@ -7,7 +7,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.WebDriver.Commands;
 using FenBrowser.WebDriver.Protocol;
 
@@ -49,13 +49,13 @@ namespace FenBrowser.Host.WebDriver
             if (root == null) return null;
             
             // Look for <title> in <head>
-            var head = root.Children.FirstOrDefault(c => (c as Element)?.TagName?.Equals("head", StringComparison.OrdinalIgnoreCase) == true) as Element;
+            var head = root.ChildNodes.OfType<Element>().FirstOrDefault(c => c.TagName?.Equals("head", StringComparison.OrdinalIgnoreCase) == true);
             if (head != null)
             {
-                var title = head.Children.FirstOrDefault(c => (c as Element)?.TagName?.Equals("title", StringComparison.OrdinalIgnoreCase) == true) as Element;
+                var title = head.ChildNodes.OfType<Element>().FirstOrDefault(c => c.TagName?.Equals("title", StringComparison.OrdinalIgnoreCase) == true);
                 if (title != null)
                 {
-                    return title.Children.FirstOrDefault(c => c is Text)?.Text;
+                    return title.ChildNodes.OfType<Text>().FirstOrDefault()?.Data;
                 }
             }
             
@@ -139,11 +139,11 @@ namespace FenBrowser.Host.WebDriver
         {
             if (root.TagName?.Equals("a", StringComparison.OrdinalIgnoreCase) == true)
             {
-                var elText = string.Join("", root.Children.OfType<Text>().Select(t => t.Data));
+                var elText = string.Join("", root.ChildNodes.OfType<Text>().Select(t => t.Data));
                 if (elText.Trim() == text) return root;
             }
                 
-            foreach (var child in root.Children.OfType<Element>())
+            foreach (var child in root.ChildNodes.OfType<Element>())
             {
                 var found = FindElementByLinkText(child, text);
                 if (found != null) return found;
@@ -153,10 +153,10 @@ namespace FenBrowser.Host.WebDriver
         
         private Element FindElementById(Element root, string id)
         {
-            if (root.Attr != null && root.Attr.TryGetValue("id", out var val) && val == id)
+            if (root.Id == id)
                 return root;
                 
-            foreach (var child in root.Children.OfType<Element>())
+            foreach (var child in root.ChildNodes.OfType<Element>())
             {
                 var found = FindElementById(child, id);
                 if (found != null) return found;
@@ -166,10 +166,10 @@ namespace FenBrowser.Host.WebDriver
         
         private Element FindElementByClass(Element root, string className)
         {
-            if (root.Attr != null && root.Attr.TryGetValue("class", out var val) && val.Split(' ').Contains(className))
+            if (root.GetAttribute("class")?.Split(' ').Contains(className) == true)
                 return root;
                 
-            foreach (var child in root.Children.OfType<Element>())
+            foreach (var child in root.ChildNodes.OfType<Element>())
             {
                 var found = FindElementByClass(child, className);
                 if (found != null) return found;
@@ -182,7 +182,7 @@ namespace FenBrowser.Host.WebDriver
             if (root.TagName?.Equals(tag, StringComparison.OrdinalIgnoreCase) == true)
                 return root;
                 
-            foreach (var child in root.Children.OfType<Element>())
+            foreach (var child in root.ChildNodes.OfType<Element>())
             {
                 var found = FindElementByTag(child, tag);
                 if (found != null) return found;
@@ -195,7 +195,7 @@ namespace FenBrowser.Host.WebDriver
             if (root.TagName?.Equals(tag, StringComparison.OrdinalIgnoreCase) == true)
                 results.Add(root);
                 
-            foreach (var child in root.Children.OfType<Element>())
+            foreach (var child in root.ChildNodes.OfType<Element>())
             {
                 CollectElementsByTag(child, tag, results);
             }
@@ -238,9 +238,9 @@ namespace FenBrowser.Host.WebDriver
         
         public Task<string> GetElementAttributeAsync(object element, string name)
         {
-            if (element is Element el && el.Attr != null && el.Attr.TryGetValue(name, out var val))
+            if (element is Element el)
             {
-                return Task.FromResult(val);
+                return Task.FromResult(el.GetAttribute(name));
             }
             return Task.FromResult<string>(null);
         }

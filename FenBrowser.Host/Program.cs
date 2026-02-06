@@ -18,6 +18,12 @@ namespace FenBrowser.Host
     {
         public static void Main(string[] args)
         {
+            // Enable High-DPI Awareness (Per-Monitor V2)
+            if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows))
+            {
+                try { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); } catch { }
+            }
+
             try
             {
                 // Force UTF-8 Console Output if possible (may fail if no console attached)
@@ -417,15 +423,15 @@ namespace FenBrowser.Host
                         Console.WriteLine($"Parsed Rules Count: {sheet.Rules.Count}");
                         
                         // Create dummy DOM
-                        var root = new FenBrowser.Core.Dom.Element("BODY");
-                        var container = new FenBrowser.Core.Dom.Element("DIV");
+                        var root = new FenBrowser.Core.Dom.V2.Element("BODY");
+                        var container = new FenBrowser.Core.Dom.V2.Element("DIV");
                         container.SetAttribute("class", "a b c");
                         root.AppendChild(container);
                         
-                        var child = new FenBrowser.Core.Dom.Element("DIV");
+                        var child = new FenBrowser.Core.Dom.V2.Element("DIV");
                         container.AppendChild(child);
                         
-                        var target = new FenBrowser.Core.Dom.Element("DIV");
+                        var target = new FenBrowser.Core.Dom.V2.Element("DIV");
                         target.SetAttribute("class", "gb_Cd gb_Va gb_od");
                         root.AppendChild(target);
 
@@ -479,6 +485,12 @@ namespace FenBrowser.Host
                 // Hook into Window Load event to avoiding init before GL context
                 windowManager.OnLoad += () => {
                     ChromeManager.Instance.Initialize(initialUrl);
+
+                    // DIAGNOSTIC LOGGING
+                    var wm = WindowManager.Instance;
+                    FenLogger.Info($"[DPI-CHECK] Physical: {wm.Window.FramebufferSize.X}x{wm.Window.FramebufferSize.Y}", LogCategory.General);
+                    FenLogger.Info($"[DPI-CHECK] Logical:  {wm.Window.Size.X}x{wm.Window.Size.Y}", LogCategory.General);
+                    FenLogger.Info($"[DPI-CHECK] Scale:    {wm.DpiScale}", LogCategory.General);
                 };
 
                 // 5. Run Application
@@ -496,6 +508,10 @@ namespace FenBrowser.Host
         [System.Runtime.InteropServices.DllImport("kernel32.dll")]
         private static extern bool AttachConsole(int dwProcessId);
         private const int ATTACH_PARENT_PROCESS = -1;
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool SetProcessDpiAwarenessContext(int dpiContext);
+        private const int DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4;
 
         // Bridge for legacy static calls from DevTools or other components
         public static Task<T> RunOnMainThread<T>(Func<T> func) => WindowManager.Instance.RunOnMainThread(func);
