@@ -1,8 +1,8 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
 
-using Range = FenBrowser.Core.Dom.Range;
+using Range = FenBrowser.Core.Dom.V2.Range;
 
 namespace FenBrowser.FenEngine.DOM
 {

@@ -1,6 +1,6 @@
 using FenBrowser.Core.Css;
 
-namespace FenBrowser.Core.Dom
+namespace FenBrowser.Core.Dom.V2
 {
     /// <summary>
     /// Represents a generated pseudo-element (::before, ::after).

@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using FenBrowser.FenEngine.Core;
-using FenBrowser.Core.Dom; // For InvalidationKind
+using FenBrowser.Core.Dom.V2; // For InvalidationKind
 using FenBrowser.Core.Engine; // Phase enum
 
 namespace FenBrowser.FenEngine.DOM
@@ -140,7 +140,7 @@ namespace FenBrowser.FenEngine.DOM
 
                     // --- Final Architecture: Granular Invalidation ---
                     // Instead of just returning a global flag, we dirty the specific node.
-                    if (mutation.Target is FenBrowser.Core.Dom.Node node)
+                    if (mutation.Target is FenBrowser.Core.Dom.V2.Node node)
                     {
                         node.MarkDirty(mutation.Invalidation);
                     }
@@ -175,3 +175,4 @@ namespace FenBrowser.FenEngine.DOM
         }
     }
 }
+

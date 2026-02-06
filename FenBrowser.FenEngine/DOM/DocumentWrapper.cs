@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using System;
 using System.Linq;
 using System.Collections.Generic;
@@ -7,7 +7,7 @@ using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Security;
 using FenBrowser.FenEngine.Errors;
-using Range = FenBrowser.Core.Dom.Range;
+using Range = FenBrowser.Core.Dom.V2.Range;
 
 using FenBrowser.FenEngine.Rendering;
 
@@ -19,14 +19,14 @@ namespace FenBrowser.FenEngine.DOM
     /// </summary>
     public class DocumentWrapper : IObject
     {
-        private readonly Element _root;
+        private readonly Node _root;
         private readonly IExecutionContext _context;
         private readonly Uri _baseUri;
         private IObject _prototype;
         private string _readyState = "loading"; // Spec compliant default
         public object NativeObject { get; set; }
 
-        public DocumentWrapper(Element root, IExecutionContext context, Uri baseUri = null)
+        public DocumentWrapper(Node root, IExecutionContext context, Uri baseUri = null)
         {
             _root = root ?? throw new ArgumentNullException(nameof(root));
             _context = context ?? throw new ArgumentNullException(nameof(context));
@@ -85,18 +85,23 @@ namespace FenBrowser.FenEngine.DOM
                 case "title":
                     // ... (existing title logic)
                     var titleEl = FindElementByTag(_root, "title");
-                    return FenValue.FromString(titleEl?.Text ?? "");
+                    return FenValue.FromString(titleEl?.TextContent ?? "");
 
                 case "documentelement":
                     var htmlEl = FindElementByTag(_root, "html");
-                    return htmlEl != null 
-                        ? FenValue.FromObject(new ElementWrapper(htmlEl, _context))
-                        : FenValue.FromObject(new ElementWrapper(_root, _context));
+                    if (htmlEl != null)
+                        return FenValue.FromObject(new ElementWrapper(htmlEl, _context));
+                    if (_root is Element rootEl)
+                        return FenValue.FromObject(new ElementWrapper(rootEl, _context));
+                    return FenValue.Null;
 
                 case "activeelement":
-                    var active = _root.ActiveElement;
-                     // Default to body if no focus
-                    if (active  == null) active = FindElementByTag(_root, "body");
+                    var active = _root.OwnerDocument?.ActiveElement; // Access via OwnerDocument or _root if it tracks it? Document tracks it.
+                    // If _root is just an element, we might need access to Document object.
+                    // Assuming _root IS the document element, or we act as document. 
+                    // Document logic for ActiveElement should be on Document class.
+                    // V2 Document has ActiveElement.
+                    if (active == null) active = FindElementByTag(_root, "body");
                     return active != null ? FenValue.FromObject(new ElementWrapper(active, _context)) : FenValue.Null;
 
                 case "readystate":
@@ -127,9 +132,9 @@ namespace FenBrowser.FenEngine.DOM
                          var newLite = new Element("html"); 
                          // Minimal structure
                          var head = new Element("head");
-                         if (!string.IsNullOrEmpty(title)) { var t = new Element("title") { Text = title }; head.Append(t); }
-                         newLite.Append(head);
-                         newLite.Append(new Element("body"));
+                         if (!string.IsNullOrEmpty(title)) { var t = new Element("title") { TextContent = title }; head.AppendChild(t); }
+                         newLite.AppendChild(head);
+                         newLite.AppendChild(new Element("body"));
                          return FenValue.FromObject(new DocumentWrapper(newLite, _context));
                     })));
                     return FenValue.FromObject(impl);
@@ -258,7 +263,7 @@ namespace FenBrowser.FenEngine.DOM
         private FenValue CreateRange(FenValue[] args, FenValue thisVal)
         {
             var doc = _root as Document ?? _root.OwnerDocument;
-            return FenValue.FromObject(new RangeWrapper(new Range(doc), _context));
+            return FenValue.FromObject(new RangeWrapper(new Range(doc ?? new Document()), _context)); // Guard null doc
         }
 
         private FenValue CreateEvent(FenValue[] args, FenValue thisVal)
@@ -307,11 +312,14 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.FromObject(list);
         }
 
-        private Element FindFirstSelector(Element el, string selector)
+        private Element FindFirstSelector(Node node, string selector)
         {
-            if (CssLoader.MatchesSelector(el, selector)) return el;
-            if (el.Children != null) {
-                foreach(var c in el.Children.OfType<Element>()) {
+            if (node is Element el)
+            {
+                if (CssLoader.MatchesSelector(el, selector)) return el;
+            }
+            if (node.ChildNodes != null) {
+                foreach(var c in node.ChildNodes.OfType<Element>()) {
                     var f = FindFirstSelector(c, selector);
                     if (f != null) return f;
                 }
@@ -319,46 +327,50 @@ namespace FenBrowser.FenEngine.DOM
             return null;
         }
 
-        private void RecursiveQuerySelector(Element el, string selector, List<Element> results)
+        private void RecursiveQuerySelector(Node node, string selector, List<Element> results)
         {
-            if (CssLoader.MatchesSelector(el, selector)) results.Add(el);
-            if (el.Children != null) foreach(var c in el.Children.OfType<Element>()) RecursiveQuerySelector(c, selector, results);
+            if (node is Element el && CssLoader.MatchesSelector(el, selector)) results.Add(el);
+            if (node.ChildNodes != null) foreach(var c in node.ChildNodes) RecursiveQuerySelector(c, selector, results); // Recurse on all nodes
         }
 
-        private void RecursiveClassName(Element el, string[] classes, List<Element> results)
+        private void RecursiveClassName(Node node, string[] classes, List<Element> results)
         {
-            var elClasses = el.Classes;
-            bool match = true;
-            foreach (var cls in classes) {
-                if (!elClasses.Contains(cls, StringComparer.Ordinal)) { match = false; break; }
+            if (node is Element el)
+            {
+                var elClass = el.GetAttribute("class") ?? "";
+                var elClasses = elClass.Split(new[]{' '}, StringSplitOptions.RemoveEmptyEntries);
+                bool match = true;
+                foreach (var cls in classes) {
+                    if (!elClasses.Contains(cls, StringComparer.Ordinal)) { match = false; break; }
+                }
+                if (match && classes.Length > 0) results.Add(el);
             }
-            if (match && classes.Length > 0) results.Add(el);
-            
-            if (el.Children != null) foreach(var c in el.Children.OfType<Element>()) RecursiveClassName(c, classes, results);
+            if (node.ChildNodes != null) foreach(var c in node.ChildNodes) RecursiveClassName(c, classes, results);
         }
 
-        private void RecursiveTagName(Element el, string tagName, List<Element> results)
+        private void RecursiveTagName(Node node, string tagName, List<Element> results)
         {
-            if (string.Equals(el.Tag, tagName, StringComparison.OrdinalIgnoreCase) || tagName == "*") results.Add(el);
-            if (el.Children != null) foreach(var c in el.Children.OfType<Element>()) RecursiveTagName(c, tagName, results);
+            if (node is Element el)
+            {
+                if (string.Equals(el.NodeName, tagName, StringComparison.OrdinalIgnoreCase) || tagName == "*") results.Add(el);
+            }
+            if (node.ChildNodes != null) foreach(var c in node.ChildNodes) RecursiveTagName(c, tagName, results);
         }
 
-        private Element FindElementById(Element element, string id)
+        private Element FindElementById(Node node, string id)
         {
-            if (element  == null) return null;
+            if (node  == null) return null;
 
             // Check if this element has the ID
-            if (element.Attr != null && 
-                element.Attr.TryGetValue("id", out var eleId) && 
-                string.Equals(eleId, id, StringComparison.OrdinalIgnoreCase))
+            if (node is Element el && string.Equals(el.GetAttribute("id"), id, StringComparison.OrdinalIgnoreCase))
             {
-                return element;
+                return el;
             }
 
             // Search children recursively
-            if (element.Children != null)
+            if (node.ChildNodes != null)
             {
-                foreach (var child in element.Children.OfType<Element>())
+                foreach (var child in node.ChildNodes)
                 {
                     var found = FindElementById(child, id);
                     if (found != null) return found;
@@ -368,20 +380,23 @@ namespace FenBrowser.FenEngine.DOM
             return null;
         }
 
-        private Element FindElementByTag(Element element, string tagName)
+        private Element FindElementByTag(Node node, string tagName)
         {
-            if (element  == null) return null;
+            if (node == null) return null;
 
-            // Check if this element matches
-            if (string.Equals(element.Tag, tagName, StringComparison.OrdinalIgnoreCase))
+            // If node is an element, check if it matches
+            if (node is Element element)
             {
-                return element;
+                if (string.Equals(element.NodeName, tagName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return element;
+                }
             }
 
             // Search children recursively
-            if (element.Children != null)
+            if (node.ChildNodes != null)
             {
-                foreach (var child in element.Children.OfType<Element>())
+                foreach (var child in node.ChildNodes.OfType<Element>())
                 {
                     var found = FindElementByTag(child, tagName);
                     if (found != null) return found;

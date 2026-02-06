@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
 using FenBrowser.FenEngine.Core;
@@ -83,7 +83,7 @@ namespace FenBrowser.FenEngine.DOM
         {
             var record = new MutationRecord
             {
-                Type = type,
+                Type = (MutationRecordType)Enum.Parse(typeof(MutationRecordType), type, true),
                 Target = target,
                 AttributeName = attributeName,
                 OldValue = oldValue,
@@ -173,8 +173,8 @@ namespace FenBrowser.FenEngine.DOM
         private FenObject RecordToFenObject(MutationRecord rec, IExecutionContext context)
         {
             var obj = new FenObject();
-            obj.Set("type", FenValue.FromString(rec.Type ?? ""));
-            obj.Set("target", rec.Target != null ? FenValue.FromObject(new ElementWrapper(rec.Target as Element, context)) : FenValue.Null);
+            obj.Set("type", FenValue.FromString(rec.Type.ToString()));
+            obj.Set("target", DomWrapperFactory.Wrap(rec.Target, context));
             obj.Set("attributeName", rec.AttributeName != null ? FenValue.FromString(rec.AttributeName) : FenValue.Null);
             obj.Set("oldValue", rec.OldValue != null ? FenValue.FromString(rec.OldValue) : FenValue.Null);
 

@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Generic;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Security;
@@ -54,7 +54,7 @@ namespace FenBrowser.FenEngine.DOM
                 case "nodevalue":
                     return FenValue.FromString(_attr.Value);
                 case "nodetype":
-                    return FenValue.FromNumber((int)_attr.NodeType);
+                    return FenValue.FromNumber(2); // ATTRIBUTE_NODE
 
                 default:
                     return FenValue.Undefined;
