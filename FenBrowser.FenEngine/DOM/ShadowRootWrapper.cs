@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
 
@@ -21,7 +21,7 @@ namespace FenBrowser.FenEngine.DOM
             switch (key)
             {
                 case "mode":
-                    return FenValue.FromString(_shadowRoot.Mode);
+                    return FenValue.FromString(_shadowRoot.Mode.ToString().ToLowerInvariant());
                 case "host":
                     return DomWrapperFactory.Wrap(_shadowRoot.Host, _context); // Wraps the host element
                 case "getElementById":
@@ -44,11 +44,11 @@ namespace FenBrowser.FenEngine.DOM
             // IMPORTANT: Do not cross boundary into nested Shadow Roots (unless spec says so, typically encapsulation blocks it)
             // But we must search descendants.
             
-            if (root.Children == null) return null;
+            if (root.ChildNodes == null) return null;
             
             // Queue for BFS
             var queue = new System.Collections.Generic.Queue<Node>();
-            foreach(var c in root.Children) queue.Enqueue(c);
+            foreach(var c in root.ChildNodes) queue.Enqueue(c);
             
             while(queue.Count > 0)
             {
@@ -59,14 +59,14 @@ namespace FenBrowser.FenEngine.DOM
                 }
                 
                 // Don't recurse into nested Shadow Roots?
-                // The DOM tree structure in FenEngine: Shadow Roots are not usually children in `Children` list of Host?
+                // The DOM tree structure in FenEngine: Shadow Roots are not usually children in `ChildNodes` list of Host?
                 // `Element.ShadowRoot` property holds it.
-                // So normal traversal of `Children` stays in light DOM (of the shadow tree).
-                // So we are safe just walking `Children`.
+                // So normal traversal of `ChildNodes` stays in light DOM (of the shadow tree).
+                // So we are safe just walking `ChildNodes`.
                 
-                if (current.Children != null)
+                if (current.ChildNodes != null)
                 {
-                    foreach (var c in current.Children) queue.Enqueue(c);
+                    foreach (var c in current.ChildNodes) queue.Enqueue(c);
                 }
             }
             return null;

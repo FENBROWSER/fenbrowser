@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
 using FenBrowser.Core;
@@ -53,7 +53,7 @@ namespace FenBrowser.FenEngine.DOM
         public bool Matches(FenValue callback, bool capture)
         {
             // Per spec: listeners are matched by callback reference and capture flag
-            return Capture == capture && ReferenceEquals(Callback, callback);
+            return Capture == capture && Callback.Equals(callback);
         }
     }
 
@@ -99,7 +99,7 @@ namespace FenBrowser.FenEngine.DOM
                 }
 
                 list.Add(new EventListener(callback, capture, once, passive));
-                FenLogger.Debug($"[EventListenerRegistry] Added listener for '{type}' on <{element.Tag}> (capture={capture}, once={once})", LogCategory.Events);
+                FenLogger.Debug($"[EventListenerRegistry] Added listener for '{type}' on <{element.TagName}> (capture={capture}, once={once})", LogCategory.Events);
             }
         }
 
@@ -126,7 +126,7 @@ namespace FenBrowser.FenEngine.DOM
                     if (list[i].Matches(callback, capture))
                     {
                         list.RemoveAt(i);
-                        FenLogger.Debug($"[EventListenerRegistry] Removed listener for '{type}' on <{element.Tag}>", LogCategory.Events);
+                        FenLogger.Debug($"[EventListenerRegistry] Removed listener for '{type}' on <{element.TagName}>", LogCategory.Events);
                         break;
                     }
                 }
@@ -215,7 +215,7 @@ namespace FenBrowser.FenEngine.DOM
                     return;
 
                 byType[type].Remove(listener);
-                FenLogger.Debug($"[EventListenerRegistry] Removed 'once' listener for '{type}' on <{element.Tag}>", LogCategory.Events);
+                FenLogger.Debug($"[EventListenerRegistry] Removed 'once' listener for '{type}' on <{element.TagName}>", LogCategory.Events);
             }
         }
 

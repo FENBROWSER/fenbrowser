@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using System;
 using System.Linq;
 using System.Collections.Generic;
@@ -20,7 +20,6 @@ namespace FenBrowser.FenEngine.DOM
     {
         private readonly Element _element;
         // _context is in base
-        private IObject _prototype;
 
         public ElementWrapper(Element element, IExecutionContext context) : base(element, context)
         {
@@ -34,8 +33,6 @@ namespace FenBrowser.FenEngine.DOM
         {
             _context?.CheckExecutionTimeLimit();
             
-
-
             switch (key.ToLowerInvariant())
             {
                 case "innerhtml":
@@ -45,10 +42,10 @@ namespace FenBrowser.FenEngine.DOM
                     return GetTextContent();
                 
                 case "tagname":
-                    return FenValue.FromString(_element.Tag?.ToUpperInvariant() ?? "");
+                    return FenValue.FromString(_element.NodeName?.ToUpperInvariant() ?? "");
                 
                 case "id":
-                    return FenValue.FromString(_element.Attr?.ContainsKey("id") == true ? _element.Attr["id"] : "");
+                    return FenValue.FromString(_element.Id ?? "");
                 
                 case "getattribute":
                     return FenValue.FromFunction(new FenFunction("getAttribute", GetAttribute));
@@ -63,7 +60,7 @@ namespace FenBrowser.FenEngine.DOM
                     return FenValue.FromFunction(new FenFunction("removeAttribute", RemoveAttribute));
 
                 case "attributes":
-                    return FenValue.FromObject(new NamedNodeMapWrapper(_element.NamedAttributes, _context));
+                    return FenValue.FromObject(new NamedNodeMapWrapper(_element.Attributes, _context));
 
                 case "getattributenode":
                     return FenValue.FromFunction(new FenFunction("getAttributeNode", GetAttributeNode));
@@ -117,24 +114,24 @@ namespace FenBrowser.FenEngine.DOM
                     return FenValue.FromFunction(new FenFunction("querySelectorAll", QuerySelectorAll));
 
                 case "classname":
-                    return FenValue.FromString(_element.Attr?.ContainsKey("class") == true ? _element.Attr["class"] : "");
+                    return FenValue.FromString(_element.GetAttribute("class") ?? "");
 
                 case "parentelement":
                 case "parentnode":
-                    if (_element.Parent != null && _element.Parent is Element parentEl)
+                    if (_element.ParentNode != null && _element.ParentNode is Element parentEl)
                         return FenValue.FromObject(new ElementWrapper(parentEl, _context));
                     return FenValue.Null;
 
                 case "children":
-                    var childElements = _element.Children?.OfType<Element>().Where(c => !c.IsText); // HTMLCollection is live ideally, but for now snapshot or wrap list
-                    return FenValue.FromObject(new HTMLCollectionWrapper(childElements, _context));
+                    var childElements = _element.ChildNodes?.OfType<Element>(); // HTMLCollection is live ideally, but for now snapshot or wrap list
+                    return FenValue.FromObject(new HTMLCollectionWrapper(childElements ?? Enumerable.Empty<Element>(), _context));
 
                 case "firstelementchild":
-                    var firstChild = _element.Children?.OfType<Element>().FirstOrDefault(c => !c.IsText);
+                    var firstChild = _element.ChildNodes?.OfType<Element>().FirstOrDefault();
                     return firstChild != null ? FenValue.FromObject(new ElementWrapper(firstChild, _context)) : FenValue.Null;
 
                 case "lastelementchild":
-                    var lastChild = _element.Children?.OfType<Element>().LastOrDefault(c => !c.IsText);
+                    var lastChild = _element.ChildNodes?.OfType<Element>().LastOrDefault();
                     return lastChild != null ? FenValue.FromObject(new ElementWrapper(lastChild, _context)) : FenValue.Null;
                 
                 // DIALOG ELEMENT METHODS
@@ -149,8 +146,8 @@ namespace FenBrowser.FenEngine.DOM
                 
                 case "open":
                     // Check if dialog is open
-                    if (_element.Tag?.ToUpperInvariant() == "DIALOG")
-                        return FenValue.FromBoolean(_element.Attr?.ContainsKey("open") == true);
+                    if (_element.TagName?.ToUpperInvariant() == "DIALOG")
+                        return FenValue.FromBoolean(_element.HasAttribute("open"));
                     return FenValue.Undefined;
                 
                 
@@ -161,8 +158,9 @@ namespace FenBrowser.FenEngine.DOM
                 case "shadowroot":
                     if (_element.ShadowRoot != null)
                     {
-                        if (_element.ShadowRoot.Mode == "closed") return FenValue.Null;
+                        if (_element.ShadowRoot.Mode == ShadowRootMode.Closed) return FenValue.Null;
                         return FenValue.FromObject(new ShadowRootWrapper(_element.ShadowRoot, _context));
+                        // ShadowRootWrapper needs update to V2 ShadowRoot
                     }
                     return FenValue.Null;
                 
@@ -223,24 +221,21 @@ namespace FenBrowser.FenEngine.DOM
 
         public override System.Collections.Generic.IEnumerable<string> Keys(IExecutionContext context = null) 
             => new[] { "attachShadow", "shadowRoot", "innerHTML", "textContent", "tagName", "id", "attributes", "getAttribute", "setAttribute", "hasAttribute", "removeAttribute", "getAttributeNode", "setAttributeNode", "removeAttributeNode", "getContext", "width", "height", "clientWidth", "clientHeight" };
-        // IObject.GetPrototype/SetPrototype handled by NodeWrapper
-
+        
         private FenValue GetContext(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0) return FenValue.Null;
             var type = args[0].ToString()?.ToLowerInvariant();
             
             // Check if element is canvas
-            if (!string.Equals(_element.Tag, "canvas", StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(_element.TagName, "canvas", StringComparison.OrdinalIgnoreCase))
                 return FenValue.Null;
             
             // Get canvas dimensions
             int width = 300, height = 150; // Default canvas size per HTML spec
-            if (_element.Attr != null)
-            {
-                if (_element.Attr.TryGetValue("width", out var w) && int.TryParse(w, out var pw)) width = pw;
-                if (_element.Attr.TryGetValue("height", out var h) && int.TryParse(h, out var ph)) height = ph;
-            }
+            // V2 Element Helper for getting int attributes
+            if (int.TryParse(_element.GetAttribute("width"), out var pw)) width = pw;
+            if (int.TryParse(_element.GetAttribute("height"), out var ph)) height = ph;
             
             // 2D Canvas Context
             if (type == "2d")
@@ -251,7 +246,7 @@ namespace FenBrowser.FenEngine.DOM
             // WebGL Context
             if (type == "webgl" || type == "experimental-webgl")
             {
-                var canvasId = _element.Attr?.GetValueOrDefault("id") ?? _element.GetHashCode().ToString();
+                var canvasId = _element.GetAttribute("id") ?? _element.GetHashCode().ToString();
                 var context = FenBrowser.FenEngine.Rendering.WebGL.WebGLContextManager.GetContext(canvasId, width, height, webgl2: false);
                 if (context != null)
                 {
@@ -264,7 +259,7 @@ namespace FenBrowser.FenEngine.DOM
             // WebGL2 Context
             if (type == "webgl2")
             {
-                var canvasId = _element.Attr?.GetValueOrDefault("id") ?? _element.GetHashCode().ToString();
+                var canvasId = _element.GetAttribute("id") ?? _element.GetHashCode().ToString();
                 var context = FenBrowser.FenEngine.Rendering.WebGL.WebGLContextManager.GetContext(canvasId, width, height, webgl2: true);
                 if (context != null)
                 {
@@ -449,30 +444,28 @@ namespace FenBrowser.FenEngine.DOM
             if (!(node is Element element))
                 return node.NodeType == NodeType.Text ? node.NodeValue ?? "" : "";
             
-            if (element.Children  == null || element.Children.Count == 0)
-                return element.Text ?? "";
+            if (element.ChildNodes == null || element.ChildNodes.Length == 0)
+                return element.TextContent ?? "";
 
             var sb = new StringBuilder();
-            foreach (var child in element.Children)
+            foreach (var child in element.ChildNodes)
             {
                 // Simple reconstruction - in real app would need proper serialization
-                if (child.IsText)
+                if (child.NodeType == NodeType.Text)
                 {
-                    sb.Append(child.Text);
+                    sb.Append(child.TextContent);
                 }
                 else if (child is Element childEl)
                 {
-                    sb.Append($"<{childEl.Tag}");
-                    if (childEl.Attr != null)
+                    sb.Append($"<{childEl.TagName}");
+                    // Reconstruct attributes
+                    foreach (var attr in childEl.Attributes)
                     {
-                        foreach (var kvp in childEl.Attr)
-                        {
-                            sb.Append($" {kvp.Key}=\"{kvp.Value}\"");
-                        }
+                         sb.Append($" {attr.Name}=\"{attr.Value}\"");
                     }
                     sb.Append(">");
                     sb.Append(CollectInnerHtml(childEl));
-                    sb.Append($"</{childEl.Tag}>");
+                    sb.Append($"</{childEl.TagName}>");
                 }
             }
             return sb.ToString();
@@ -480,12 +473,13 @@ namespace FenBrowser.FenEngine.DOM
 
         private void SetInnerHTML(FenValue value)
         {
-            var removed = _element.Children != null ? new System.Collections.Generic.List<Element>(_element.Children.OfType<Element>()) : new System.Collections.Generic.List<Element>();
+            var removed = _element.ChildNodes != null ? new System.Collections.Generic.List<Node>(_element.ChildNodes) : new System.Collections.Generic.List<Node>();
 
-            _element.Children?.Clear();
+            // NodeList is read-only, clear via TextContent
+            _element.TextContent = "";
             var htmlString = value.ToString();
             
-            var added = new System.Collections.Generic.List<Element>();
+            var added = new System.Collections.Generic.List<Node>();
 
             if (!string.IsNullOrEmpty(htmlString))
             {
@@ -494,30 +488,35 @@ namespace FenBrowser.FenEngine.DOM
                     var tokenizer = new FenBrowser.FenEngine.HTML.HtmlTokenizer(htmlString);
                     var builder = new FenBrowser.FenEngine.HTML.HtmlTreeBuilder(tokenizer);
                     var parsed = builder.Build();
-                    if (parsed?.Children != null)
+                    if (parsed?.ChildNodes != null)
                     {
-                        foreach (var child in parsed.Children.OfType<Element>())
+                        foreach (var child in parsed.ChildNodes.ToArray()) // Copy to avoid modification of source collection during iteration if active
                         {
-                            _element.Append(child);
-                            added.Add(child);
+                            // Detach from parsed root? Or Copy?
+                            // builder returns a tree. We can probably just reparent.
+                            // But checking if child is Element
+                            if(child is Node n) {
+                                _element.AppendChild(n);
+                                added.Add(n);
+                            }
                         }
                     }
                 }
                 catch
                 {
-                    var textNode = new Element("#text") { Text = htmlString };
-                    _element.Append(textNode);
+                    var textNode = new Text(htmlString);
+                    _element.AppendChild(textNode);
                     added.Add(textNode);
                 }
             }
             _context.RequestRender?.Invoke();
 
-            _context.OnMutation?.Invoke(new FenBrowser.Core.Dom.MutationRecord
+            _context.OnMutation?.Invoke(new FenBrowser.Core.Dom.V2.MutationRecord
             {
-                Type = "childList",
+                Type = FenBrowser.Core.Dom.V2.MutationRecordType.ChildList,
                 Target = _element,
-                AddedNodes = added.Cast<Node>().ToList(),
-                RemovedNodes = removed.Cast<Node>().ToList()
+                AddedNodes = added,
+                RemovedNodes = removed
             });
         }
 
@@ -532,11 +531,11 @@ namespace FenBrowser.FenEngine.DOM
         private string CollectText(Node node)
         {
             if (node  == null) return "";
-            if (node.IsText) return node.Text ?? "";
-            if (node.Children  == null) return "";
+            if (node.NodeType == NodeType.Text) return node.TextContent ?? "";
+            if (node.ChildNodes  == null) return "";
             
             var sb = new StringBuilder();
-            foreach (var child in node.Children)
+            foreach (var child in node.ChildNodes)
             {
                 sb.Append(CollectText(child));
             }
@@ -562,8 +561,8 @@ namespace FenBrowser.FenEngine.DOM
         {
             if (args.Length == 0) return FenValue.Null;
             var attrName = args[0].ToString();
-            return _element.Attr != null && _element.Attr.TryGetValue(attrName, out var value)
-                ? FenValue.FromString(value)
+            return _element.GetAttribute(attrName) != null
+                ? FenValue.FromString(_element.GetAttribute(attrName))
                 : FenValue.Null;
         }
 
@@ -571,9 +570,8 @@ namespace FenBrowser.FenEngine.DOM
         {
             if (args.Length == 0) return FenValue.Null;
             var attrName = args[0].ToString();
-            return _element.Attr != null && _element.Attr.TryGetValue(attrName, out var value)
-                ? FenValue.FromString(value)
-                : FenValue.Null;
+            var val = _element.GetAttribute(attrName);
+            return val != null ? FenValue.FromString(val) : FenValue.Null;
         }
 
         private FenValue SetAttribute(FenValue[] args, FenValue thisVal)
@@ -585,7 +583,7 @@ namespace FenBrowser.FenEngine.DOM
 
             var name = args[0].ToString();
             var value = args[1].ToString();
-            var oldValue = _element.Attr.ContainsKey(name) ? _element.Attr[name] : null;
+            var oldValue = _element.GetAttribute(name);
 
             // Enqueue mutation (Deferred)
             // Invalidation: Attribute change usually affects Style and Layout
@@ -671,7 +669,8 @@ namespace FenBrowser.FenEngine.DOM
         }
         private double GetDimension(string attrName)
         {
-            if (_element.Attr != null && _element.Attr.TryGetValue(attrName, out var val))
+            var val = _element.GetAttribute(attrName);
+            if (val != null)
             {
                 if (double.TryParse(val, out var d)) return d;
             }
@@ -681,7 +680,7 @@ namespace FenBrowser.FenEngine.DOM
         private double GetClientWidth()
         {
             // For <html> element (documentElement), return viewport width
-            if (string.Equals(_element.Tag, "html", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(_element.TagName, "html", StringComparison.OrdinalIgnoreCase))
             {
                 // Return viewport width (typical desktop width)
                 return 1920;
@@ -693,7 +692,7 @@ namespace FenBrowser.FenEngine.DOM
         private double GetClientHeight()
         {
             // For <html> element (documentElement), return viewport height
-            if (string.Equals(_element.Tag, "html", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(_element.TagName, "html", StringComparison.OrdinalIgnoreCase))
             {
                 // Return viewport height (typical desktop height)
                 return 1080;
@@ -793,7 +792,7 @@ namespace FenBrowser.FenEngine.DOM
                     {
                         return FenValue.FromObject(new ElementWrapper(current, _context));
                     }
-                    current = current.Parent as Element;
+                    current = current.ParentNode as Element;
                 }
                 
                 return FenValue.Null;
@@ -804,92 +803,260 @@ namespace FenBrowser.FenEngine.DOM
             }
         }
 
-        /// <summary>
-        /// Implements element.querySelector(selector) - finds first descendant matching selector
-        /// </summary>
         private FenValue QuerySelector(FenValue[] args, FenValue thisVal)
         {
-            if (args.Length == 0 || !args[0].IsString) return FenValue.Null;
+            if (args.Length == 0) return FenValue.Null;
+            var selector = args[0].ToString();
             
-            try
-            {
-                var selector = args[0].ToString();
-                var result = FindFirstDescendant(_element, selector);
-                return result != null ? FenValue.FromObject(new ElementWrapper(result, _context)) : FenValue.Null;
-            }
-            catch
-            {
-                return FenValue.Null;
-            }
+            // Should probably use the DocumentWrapper implementation or a static helper
+            // For now simplified recursive search
+            var result = FindFirstDescendant(_element, selector);
+            return result != null ? FenValue.FromObject(new ElementWrapper(result, _context)) : FenValue.Null;
         }
-
-        /// <summary>
-        /// Implements element.querySelectorAll(selector) - finds all descendants matching selector
-        /// </summary>
+        
         private FenValue QuerySelectorAll(FenValue[] args, FenValue thisVal)
         {
-            if (args.Length == 0 || !args[0].IsString) return CreateEmptyArray();
-            
-            try
-            {
-                var selector = args[0].ToString();
-                var results = new List<FenValue>();
-                FindAllDescendants(_element, selector, results);
-                return CreateArrayFromResults(results);
-            }
-            catch
-            {
-                return CreateEmptyArray();
-            }
+            if (args.Length == 0) return CreateEmptyArray();
+            var selector = args[0].ToString();
+            var results = new List<FenValue>();
+            FindAllDescendants(_element, selector, results);
+            return CreateArrayFromResults(results);
         }
 
         private Element FindFirstDescendant(Element parent, string selector)
         {
-            if (parent.Children  == null) return null;
-            
-            foreach (var child in parent.Children.OfType<Element>())
-            {
-                if (child.IsText) continue;
-                
-                if (Rendering.CssLoader.MatchesSelector(child, selector))
-                    return child;
-                
-                var result = FindFirstDescendant(child, selector);
-                if (result != null) return result;
-            }
-            
-            return null;
+             if (parent.ChildNodes == null) return null;
+             
+             foreach (var child in parent.ChildNodes.OfType<Element>())
+             {
+                 if (Rendering.CssLoader.MatchesSelector(child, selector)) return child;
+                 var f = FindFirstDescendant(child, selector);
+                 if (f != null) return f;
+             }
+             return null;
         }
-
+        
         private void FindAllDescendants(Element parent, string selector, List<FenValue> results)
         {
-            if (parent.Children  == null) return;
-            
-            foreach (var child in parent.Children.OfType<Element>())
-            {
-                if (child.IsText) continue;
-                
-                if (Rendering.CssLoader.MatchesSelector(child, selector))
-                    results.Add(FenValue.FromObject(new ElementWrapper(child, _context)));
-                
-                FindAllDescendants(child, selector, results);
-            }
+             if (parent.ChildNodes == null) return;
+             
+             foreach (var child in parent.ChildNodes.OfType<Element>())
+             {
+                 if (Rendering.CssLoader.MatchesSelector(child, selector)) results.Add(FenValue.FromObject(new ElementWrapper(child, _context)));
+                 FindAllDescendants(child, selector, results);
+             }
         }
 
-        /// <summary>
-        /// Create an array-like FenObject from a list of LiteElements
-        /// </summary>
-        private FenValue CreateArrayFromElements(List<Element> elements)
+        private FenValue ShowDialog(FenValue[] args, FenValue thisVal)
         {
-            var arr = new FenObject();
-            for (int i = 0; i < elements.Count; i++)
-            {
-                arr.Set(i.ToString(), FenValue.FromObject(new ElementWrapper(elements[i], _context)));
-            }
-            arr.Set("length", FenValue.FromNumber(elements.Count));
-            return FenValue.FromObject(arr);
+            if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "show"))
+                throw new FenSecurityError("DOM write permission required");
+                
+            _element.SetAttribute("open", "");
+             // Enqueue mutation (Deferred)
+            DomMutationQueue.Instance.EnqueueMutation(new DomMutation(
+                MutationType.AttributeChange,
+                InvalidationKind.Style | InvalidationKind.Layout,
+                _element,
+                "open",
+                null,
+                ""
+            ));
+            return FenValue.Undefined;
+        }
+        
+        private FenValue ShowModalDialog(FenValue[] args, FenValue thisVal)
+        {
+             if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "showModal"))
+                throw new FenSecurityError("DOM write permission required");
+
+            _element.SetAttribute("open", "");
+             // Enqueue mutation (Deferred)
+            DomMutationQueue.Instance.EnqueueMutation(new DomMutation(
+                MutationType.AttributeChange,
+                InvalidationKind.Style | InvalidationKind.Layout,
+                _element,
+                "open",
+                null,
+                ""
+            ));
+            // TODO: Top layer support
+            return FenValue.Undefined;
+        }
+        
+        private FenValue CloseDialog(FenValue[] args, FenValue thisVal)
+        {
+             if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "close"))
+                throw new FenSecurityError("DOM write permission required");
+
+            _element.RemoveAttribute("open");
+             // Enqueue mutation (Deferred)
+            DomMutationQueue.Instance.EnqueueMutation(new DomMutation(
+                MutationType.AttributeChange,
+                InvalidationKind.Style | InvalidationKind.Layout,
+                _element,
+                "open",
+                "",
+                null
+            ));
+            return FenValue.Undefined;
         }
 
+        private FenValue AttachShadow(FenValue[] args, FenValue thisVal)
+        {
+            if (args.Length == 0 || !args[0].IsObject) return FenValue.Null; // Needs {mode: 'open'|'closed'}
+            
+            var options = args[0].AsObject() as FenObject;
+            var modeVal = options?.Get("mode");
+            var mode = modeVal?.ToString() ?? "closed";
+            
+            var init = new ShadowRootInit
+            {
+                Mode = mode == "open" ? ShadowRootMode.Open : ShadowRootMode.Closed,
+                DelegatesFocus = false,
+                SlotAssignment = SlotAssignmentMode.Named
+            };
+            
+            if (options != null)
+            {
+                var delegatesFocus = options.Get("delegatesFocus");
+                if (delegatesFocus != null && delegatesFocus.IsBoolean)
+                    init.DelegatesFocus = delegatesFocus.ToBoolean();
+                    
+                var slotAssignment = options.Get("slotAssignment");
+                if (slotAssignment != null && slotAssignment.ToString() == "manual")
+                    init.SlotAssignment = SlotAssignmentMode.Manual;
+            }
+
+            var shadow = _element.AttachShadow(init);
+            return FenValue.FromObject(new ShadowRootWrapper(shadow, _context)); 
+        }
+
+        // --- Event Listeners Reuse ---
+        private FenValue AddEventListenerMethod(FenValue[] args, FenValue thisValue)
+        {
+            if (args.Length < 2) return FenValue.Undefined;
+
+            var type = args[0].ToString();
+            var callback = args[1];
+
+            if (string.IsNullOrEmpty(type) || callback  == null || !callback.IsFunction)
+                return FenValue.Undefined;
+            
+             bool capture = false;
+             bool once = false;
+             bool passive = false;
+             if (args.Length >= 3)
+             {
+                if (args[2].IsBoolean) capture = args[2].ToBoolean();
+                else if (args[2].IsObject)
+                {
+                   var opts = args[2].AsObject() as FenObject;
+                   if (opts != null) {
+                       var cVal = opts.Get("capture"); capture = cVal.IsBoolean ? cVal.ToBoolean() : false;
+                       var oVal = opts.Get("once"); once = oVal.IsBoolean ? oVal.ToBoolean() : false;
+                       var pVal = opts.Get("passive"); passive = pVal.IsBoolean ? pVal.ToBoolean() : false;
+                   }
+                }
+             }
+
+            EventRegistry.Add(_element, type, callback, capture, once, passive);
+            return FenValue.Undefined;
+        }
+
+        private FenValue RemoveEventListenerMethod(FenValue[] args, FenValue thisValue)
+        {
+            if (args.Length < 2) return FenValue.Undefined;
+            var type = args[0].ToString();
+            var callback = args[1];
+            bool capture = false;
+            if (args.Length >= 3 && args[2].IsBoolean) capture = args[2].ToBoolean();
+            
+            EventRegistry.Remove(_element, type, callback, capture);
+            return FenValue.Undefined;
+        }
+
+        private FenValue DispatchEventMethod(FenValue[] args, FenValue thisValue)
+        {
+             if (args.Length == 0 || !args[0].IsObject) return FenValue.FromBoolean(false);
+             var eventObj = args[0].AsObject() as DomEvent;
+              // Simulate
+              var listeners = EventRegistry.Get(_element, eventObj.Type, false);
+            foreach(var l in listeners) 
+            {
+                 try { l.Callback.AsFunction().Invoke(new FenValue[] { FenValue.FromObject(eventObj) }, _context); } catch {}
+            }
+            return FenValue.FromBoolean(true);
+        }
+
+        private FenValue FocusMethod(FenValue[] args, FenValue thisVal)
+        {
+            if (!IsPotentiallyFocusable(_element))
+            {
+                return FenValue.Undefined;
+            }
+
+            var ownerDocument = _element.OwnerDocument;
+            if (ownerDocument != null)
+            {
+                var previous = ownerDocument.ActiveElement;
+                if (previous != null && !ReferenceEquals(previous, _element))
+                {
+                    var blurEvent = new DomEvent("blur", bubbles: false, cancelable: false, composed: true, context: _context);
+                    EventTarget.DispatchEvent(previous, blurEvent, _context);
+                }
+
+                ownerDocument.ActiveElement = _element;
+            }
+
+            var focusEvent = new DomEvent("focus", bubbles: false, cancelable: false, composed: true, context: _context);
+            EventTarget.DispatchEvent(_element, focusEvent, _context);
+            return FenValue.Undefined;
+        }
+
+        private FenValue BlurMethod(FenValue[] args, FenValue thisVal)
+        {
+            var ownerDocument = _element.OwnerDocument;
+            if (ownerDocument != null && ReferenceEquals(ownerDocument.ActiveElement, _element))
+            {
+                ownerDocument.ActiveElement = null;
+            }
+
+            var blurEvent = new DomEvent("blur", bubbles: false, cancelable: false, composed: true, context: _context);
+            EventTarget.DispatchEvent(_element, blurEvent, _context);
+            return FenValue.Undefined;
+        }
+
+        private static bool IsPotentiallyFocusable(Element element)
+        {
+            if (element == null) return false;
+            if (element.HasAttribute("disabled")) return false;
+            if (element.GetAttribute("tabindex") != null) return true;
+
+            var tag = element.TagName?.ToLowerInvariant() ?? string.Empty;
+            switch (tag)
+            {
+                case "input":
+                case "button":
+                case "select":
+                case "textarea":
+                    return true;
+                case "a":
+                    return element.GetAttribute("href") != null;
+                default:
+                    return false;
+            }
+        }
+
+        private FenValue CloneNodeMethod(FenValue[] args, FenValue thisVal)
+        {
+            bool deep = false;
+            if (args.Length > 0 && args[0].IsBoolean) deep = args[0].ToBoolean();
+            
+            var clone = _element.CloneNode(deep) as Element;
+            return FenValue.FromObject(new ElementWrapper(clone, _context));
+        }
+        
         /// <summary>
         /// Create an array-like FenObject from a list of FenValue results
         /// </summary>
@@ -914,50 +1081,45 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.FromObject(arr);
         }
 
-        // Expose underlying element to other wrappers
-
-
-        private FenValue FocusMethod(FenValue[] args, FenValue thisVal)
+        // Static Registry for Events (Global for simplicity or per Element?)
+        // Ideally per element. But for now using a static dictionary mapping Element -> Listeners
+        public static class EventRegistry
         {
-            if (_element.OwnerDocument != null)
+            // Map: Element -> EventType -> List<Listener>
+            private static readonly Dictionary<Node, Dictionary<string, List<EventListener>>> _listeners = new Dictionary<Node, Dictionary<string, List<EventListener>>>();
+
+            public static void Add(Node node, string type, FenValue callback, bool capture, bool once, bool passive)
             {
-                var prev = _element.OwnerDocument.ActiveElement;
-                if (prev != _element)
+                if (!_listeners.ContainsKey(node)) _listeners[node] = new Dictionary<string, List<EventListener>>();
+                if (!_listeners[node].ContainsKey(type)) _listeners[node][type] = new List<EventListener>();
+                
+                _listeners[node][type].Add(new EventListener { Callback = callback, Capture = capture, Once = once, Passive = passive });
+            }
+
+            public static void Remove(Node node, string type, FenValue callback, bool capture)
+            {
+                if (_listeners.ContainsKey(node) && _listeners[node].ContainsKey(type))
                 {
-                    if (prev != null)
-                    {
-                        // Blur previous
-                        var blurEvent = new DomEvent("blur");
-                        // Dispatch blur on prev? 
-                        // For now just set active element.
-                    }
-                    _element.OwnerDocument.ActiveElement = _element;
-                    _context?.RequestRender?.Invoke();
-                    // Dispatch focus event
-                    // Ensure we have 'new DomEvent' available.
-                    // Assuming basic support.
+                    _listeners[node][type].RemoveAll(l => l.Callback.Equals(callback) && l.Capture == capture);
                 }
             }
-            return FenValue.Undefined;
-        }
 
-        private FenValue BlurMethod(FenValue[] args, FenValue thisVal)
-        {
-             if (_element.OwnerDocument != null && _element.OwnerDocument.ActiveElement == _element)
-             {
-                 _element.OwnerDocument.ActiveElement = null; // Or body
-                 _context?.RequestRender?.Invoke();
-             }
-             return FenValue.Undefined;
-        }
-
-        private FenValue CloneNodeMethod(FenValue[] args, FenValue thisVal)
-        {
-            bool deep = false;
-            if (args.Length > 0) deep = args[0].ToBoolean();
-
-            var clone = _element.Clone(deep);
-            return FenValue.FromObject(new ElementWrapper(clone, _context));
+            public static List<EventListener> Get(Node node, string type, bool capture)
+            {
+                if (_listeners.ContainsKey(node) && _listeners[node].ContainsKey(type))
+                {
+                    return _listeners[node][type].Where(l => l.Capture == capture).ToList();
+                }
+                return new List<EventListener>();
+            }
+            
+            public struct EventListener
+            {
+                public FenValue Callback;
+                public bool Capture;
+                public bool Once;
+                public bool Passive;
+            }
         }
     }
 
@@ -978,7 +1140,7 @@ namespace FenBrowser.FenEngine.DOM
 
         public FenValue Get(string key, IExecutionContext context = null)
         {
-            var val = _element.Attr != null && _element.Attr.ContainsKey(_attrName) ? _element.Attr[_attrName] : "";
+            var val = _element.GetAttribute(_attrName) ?? "";
             var tokens = new List<string>(val.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries));
 
             switch (key.ToLowerInvariant())
@@ -1043,7 +1205,8 @@ namespace FenBrowser.FenEngine.DOM
         public FenValue Get(string key, IExecutionContext context = null)
         {
             var attrName = "data-" + CamelToKebab(key);
-            if (_element.Attr != null && _element.Attr.TryGetValue(attrName, out var val))
+            var val = _element.GetAttribute(attrName);
+            if (val != null)
                 return FenValue.FromString(val);
             return FenValue.Undefined;
         }
@@ -1084,7 +1247,7 @@ namespace FenBrowser.FenEngine.DOM
         {
             // Get style property from element attributes (style="key:value")
             // Simplified: parsing style attribute every time is slow but works for now
-            var styleStr = _element.Attr?.ContainsKey("style") == true ? _element.Attr["style"] : "";
+            var styleStr = _element.GetAttribute("style") ?? "";
             var styles = ParseStyle(styleStr);
             
             if (string.Equals(key, "setProperty", StringComparison.OrdinalIgnoreCase))
@@ -1111,10 +1274,9 @@ namespace FenBrowser.FenEngine.DOM
              if (_context != null)
             {
                 _context.CheckExecutionTimeLimit();
-                // Permission check should be here ideally
             }
 
-            var styleStr = _element.Attr?.ContainsKey("style") == true ? _element.Attr["style"] : "";
+            var styleStr = _element.GetAttribute("style") ?? "";
             var styles = ParseStyle(styleStr);
             var cssKey = CamelToKebab(key);
             styles[cssKey] = value.ToString();
@@ -1130,11 +1292,7 @@ namespace FenBrowser.FenEngine.DOM
             {
                 _element.SetAttribute("style", sb.ToString());
             }
-            else
-            {
-                // Debug: Attr is null!
-                /* [PERF-REMOVED] */
-            }
+
             FenLogger.Debug($"[CSS] Set style {key}={value}", LogCategory.CSS);
             _context.RequestRender?.Invoke();
         }
@@ -1158,7 +1316,7 @@ namespace FenBrowser.FenEngine.DOM
              if (args.Length == 0) return FenValue.FromString("");
              var key = args[0].ToString();
              
-            var styleStr = _element.Attr?.ContainsKey("style") == true ? _element.Attr["style"] : "";
+            var styleStr = _element.GetAttribute("style") ?? "";
             var styles = ParseStyle(styleStr);
             if (styles.ContainsKey(key))
             {
@@ -1178,7 +1336,12 @@ namespace FenBrowser.FenEngine.DOM
 
         public bool Has(string key, IExecutionContext context = null) => !Get(key, context).IsUndefined;
         public bool Delete(string key, IExecutionContext context = null) => false;
-        public IEnumerable<string> Keys(IExecutionContext context = null) => new string[0]; // TODO: Implement enumeration
+        public IEnumerable<string> Keys(IExecutionContext context = null)
+        {
+            var styleStr = _element.GetAttribute("style") ?? "";
+            var styles = ParseStyle(styleStr);
+            return styles.Keys;
+        }
         public IObject GetPrototype() => _prototype;
         public void SetPrototype(IObject prototype) => _prototype = prototype;
 
@@ -1198,225 +1361,4 @@ namespace FenBrowser.FenEngine.DOM
             return dict;
         }
     }
-    
-    // ElementWrapper partial class - dialog methods
-    public partial class ElementWrapper
-    {
-        /// <summary>
-        /// Show the dialog element (non-modal)
-        /// </summary>
-        private FenValue ShowDialog(FenValue[] args, FenValue thisValue)
-        {
-            if (_element.Tag?.ToUpperInvariant() != "DIALOG")
-                return FenValue.Undefined;
-            
-            if (_element.Attr != null)
-            {
-                _element.Attr["open"] = "";
-                _context?.RequestRender?.Invoke();
-            }
-            return FenValue.Undefined;
-        }
-        
-        /// <summary>
-        /// Show the dialog element as a modal (with backdrop)
-        /// </summary>
-        private FenValue ShowModalDialog(FenValue[] args, FenValue thisValue)
-        {
-            if (_element.Tag?.ToUpperInvariant() != "DIALOG")
-                return FenValue.Undefined;
-            
-            if (_element.Attr != null)
-            {
-                _element.Attr["open"] = "";
-                _element.Attr["modal"] = ""; // Mark as modal for backdrop rendering
-                
-                // Add to Top Layer
-                if (_element.OwnerDocument is FenBrowser.Core.Dom.Document doc)
-                {
-                    if (!doc.TopLayer.Contains(_element))
-                        doc.TopLayer.Add(_element);
-                }
-
-                _context?.RequestRender?.Invoke();
-            }
-            return FenValue.Undefined;
-        }
-        
-        /// <summary>
-        /// Close the dialog element
-        /// </summary>
-        private FenValue CloseDialog(FenValue[] args, FenValue thisValue)
-        {
-            if (_element.Tag?.ToUpperInvariant() != "DIALOG")
-                return FenValue.Undefined;
-            
-            _element.Attr?.Remove("open");
-            _element.Attr?.Remove("modal");
-            
-            // Remove from Top Layer
-            if (_element.OwnerDocument is FenBrowser.Core.Dom.Document doc)
-            {
-                doc.TopLayer.Remove(_element);
-            }
-
-            _context?.RequestRender?.Invoke();
-            return FenValue.Undefined;
-        }
-        
-        /// <summary>
-        /// Attach a shadow root to this element (Shadow DOM)
-        /// </summary>
-
-    }
-
-    // ElementWrapper partial class - DOM Level 3 Events
-    public partial class ElementWrapper
-    {
-        // Global event listener registry (shared across all ElementWrapper instances)
-        private static readonly EventListenerRegistry _eventRegistry = new EventListenerRegistry();
-
-        /// <summary>
-        /// Get the global event listener registry
-        /// </summary>
-        public static EventListenerRegistry EventRegistry => _eventRegistry;
-
-        /// <summary>
-        /// element.addEventListener(type, listener, options)
-        /// </summary>
-        private FenValue AddEventListenerMethod(FenValue[] args, FenValue thisValue)
-        {
-            if (args.Length < 2) return FenValue.Undefined;
-
-            var type = args[0].ToString();
-            var callback = args[1];
-
-            if (string.IsNullOrEmpty(type) || callback  == null || !callback.IsFunction)
-                return FenValue.Undefined;
-
-            // Parse options (can be boolean for capture, or object with options)
-            bool capture = false;
-            bool once = false;
-            bool passive = false;
-
-            if (args.Length >= 3)
-            {
-                if (args[2].IsBoolean)
-                {
-                    capture = args[2].ToBoolean();
-                }
-                else if (args[2].IsObject)
-                {
-                    var opts = args[2].AsObject() as FenObject;
-                    if (opts != null)
-                    {
-                        var cVal = opts.Get("capture");
-                        capture = !cVal.IsUndefined ? cVal.ToBoolean() : false;
-                        var oVal = opts.Get("once");
-                        once = !oVal.IsUndefined ? oVal.ToBoolean() : false;
-                        var pVal = opts.Get("passive");
-                        passive = !pVal.IsUndefined ? pVal.ToBoolean() : false;
-                    }
-                }
-            }
-
-            _eventRegistry.Add(_element, type, callback, capture, once, passive);
-            return FenValue.Undefined;
-        }
-
-        /// <summary>
-        /// element.removeEventListener(type, listener, options)
-        /// </summary>
-        private FenValue RemoveEventListenerMethod(FenValue[] args, FenValue thisValue)
-        {
-            if (args.Length < 2) return FenValue.Undefined;
-
-            var type = args[0].ToString();
-            var callback = args[1];
-
-            if (string.IsNullOrEmpty(type) || callback  == null)
-                return FenValue.Undefined;
-
-            // Parse capture option
-            bool capture = false;
-            if (args.Length >= 3)
-            {
-                if (args[2].IsBoolean)
-                {
-                    capture = args[2].ToBoolean();
-                }
-                else if (args[2].IsObject)
-                {
-                    var opts = args[2].AsObject() as FenObject;
-                    var cVal = opts?.Get("capture") ?? FenValue.Undefined;
-                    capture = !cVal.IsUndefined ? cVal.ToBoolean() : false;
-                }
-            }
-
-            _eventRegistry.Remove(_element, type, callback, capture);
-            return FenValue.Undefined;
-        }
-
-        /// <summary>
-        /// element.dispatchEvent(event)
-        /// Implements W3C event dispatch algorithm with capture/target/bubble phases
-        /// </summary>
-        private FenValue DispatchEventMethod(FenValue[] args, FenValue thisValue)
-        {
-            if (args.Length == 0 || !args[0].IsObject)
-                return FenValue.FromBoolean(false);
-
-            var eventObj = args[0].AsObject() as DomEvent;
-            if (eventObj  == null)
-            {
-                // May be a FenObject with event-like properties - create a DomEvent from it
-                var obj = args[0].AsObject() as FenObject;
-                if (obj  == null) return FenValue.FromBoolean(false);
-
-                var typeVal = obj.Get("type");
-                var type = !typeVal.IsUndefined ? typeVal.ToString() : "";
-                var bVal = obj.Get("bubbles");
-                var bubbles = !bVal.IsUndefined ? bVal.ToBoolean() : false;
-                var cVal = obj.Get("cancelable");
-                var cancelable = !cVal.IsUndefined ? cVal.ToBoolean() : false;
-                eventObj = new DomEvent(type, bubbles, cancelable);
-            }
-
-            // Execute dispatch algorithm
-            bool result = EventTarget.DispatchEvent(_element, eventObj, _context);
-            return FenValue.FromBoolean(result);
-        }
-
-        private FenValue AttachShadow(FenValue[] args, FenValue thisVal)
-        {
-            if (args.Length < 1 || !args[0].IsObject)
-                return FenValue.FromObject(CreateError("attachShadow requires an options object with 'mode'"));
-            
-            var options = args[0].AsObject();
-            var modeVal = options.Get("mode");
-            var mode = !modeVal.IsUndefined ? modeVal.ToString() : null;
-            
-            if (mode != "open" && mode != "closed")
-                return FenValue.FromObject(CreateError("ShadowRoot mode must be 'open' or 'closed'"));
-            
-            try 
-            {
-                var shadow = _element.AttachShadow(mode);
-                return FenBrowser.FenEngine.DOM.DomWrapperFactory.Wrap(shadow, _context);
-            }
-            catch (InvalidOperationException ex)
-            {
-                return FenValue.FromObject(CreateError(ex.Message));
-            }
-        }
-
-        private FenObject CreateError(string msg)
-        {
-             var err = new FenObject();
-             err.Set("name", FenValue.FromString("Error"));
-             err.Set("message", FenValue.FromString(msg));
-             return err;
-        }
-    }
 }
-

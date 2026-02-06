@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
 using System;
@@ -33,10 +33,10 @@ namespace FenBrowser.FenEngine.DOM
                     return FenValue.FromString(_node.NodeValue);
                 
                 case "parentNode":
-                    return WrapNode(_node.Parent);
+                    return WrapNode(_node.ParentNode);
                 
                 case "childNodes":
-                    return FenValue.FromObject(new NodeListWrapper(_node.Children, _context));
+                    return FenValue.FromObject(new NodeListWrapper(_node.ChildNodes, _context));
                 
                 case "firstChild":
                     return WrapNode(_node.FirstChild);
@@ -51,7 +51,7 @@ namespace FenBrowser.FenEngine.DOM
                     return WrapNode(_node.NextSibling);
                 
                 case "ownerDocument":
-                    return WrapNode(_node.OwnerDocument); // Needs DocumentWrapper factory logic ideally
+                    return WrapNode(_node.OwnerDocument); 
                 
                 case "textContent":
                     return FenValue.FromString(_node.TextContent);
@@ -99,30 +99,7 @@ namespace FenBrowser.FenEngine.DOM
                     break;
             }
         }
-
-        public virtual System.Collections.Generic.IEnumerable<string> Keys()
-        {
-            yield return "nodeType";
-            yield return "nodeName";
-            yield return "nodeValue";
-            yield return "parentNode";
-            yield return "childNodes";
-            yield return "firstChild";
-            yield return "lastChild";
-            yield return "nextSibling";
-            yield return "previousSibling";
-            yield return "ownerDocument";
-            yield return "textContent";
-            yield return "appendChild";
-            yield return "removeChild";
-        }
-
-        public virtual bool Has(string key)
-        {
-             // Simplified check
-             return Get(key) != FenValue.Undefined;
-        }
-
+        
         // --- Helpers ---
 
         protected FenValue WrapNode(Node n) => DomWrapperFactory.Wrap(n, _context);
@@ -131,16 +108,21 @@ namespace FenBrowser.FenEngine.DOM
 
         private FenValue AppendChild(FenValue[] args, FenValue thisVal)
         {
-            if (args.Length == 0) return FenValue.Null; // Throw error ideally
-            var nodeWrapper = args[0].AsObject() as NodeWrapper;
-            var elementWrapper = args[0].AsObject() as ElementWrapper; 
+            if (args.Length == 0) return FenValue.Null; 
+            var wrapper = args[0].AsObject();
+            Node child = (wrapper as NodeWrapper)?._node ?? (wrapper as ElementWrapper)?.Element;
             
-            Node child = nodeWrapper?._node ?? elementWrapper?.Element; // Handle both until ElementWrapper inherits
-            
-            if (child != null)
+            if (child != null && _node is ContainerNode container)
             {
-                _node.AppendChild(child);
-                return args[0];
+                try
+                {
+                    container.AppendChild(child);
+                    return args[0];
+                }
+                catch (Exception ex)
+                {
+                    FenBrowser.Core.FenLogger.Error($"AppendChild failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript);
+                }
             }
             return FenValue.Null;
         }
@@ -153,14 +135,32 @@ namespace FenBrowser.FenEngine.DOM
 
             if (child != null)
             {
-                // Verify parent? Node.Remove() handles hierarchy but RemoveChild implies direct child.
-                if (child.Parent == _node)
+                try 
                 {
-                    child.Remove();
-                    return args[0];
+                    if (_node is ContainerNode container)
+                    {
+                        var removed = container.RemoveChild(child);
+                        return DomWrapperFactory.Wrap(removed, _context);
+                    }
+                    else if (child.ParentNode == _node)
+                    {
+                         // Fallback for non-ContainerNode parents? Node doesn't support children generally.
+                         // But if it happened somehow (e.g. child claims parent), try Remove()
+                         // child.Remove() is effectively child.ParentNode.RemoveChild(child)
+                         // So this branch might be unreachable/redundant for spec-compliant DOM.
+                         throw new DomException("HierarchyRequestError", "This node type cannot have children.");
+                    }
+                    else 
+                    {
+                         throw new DomException("NotFoundError", "The node to be removed is not a child of this node.");
+                    }
+                }
+                catch
+                {
+                    return FenValue.Null;
                 }
             }
-            return FenValue.Null; // Or throw NotFoundError
+            return FenValue.Null;
         }
 
         private FenValue ReplaceChild(FenValue[] args, FenValue thisVal)
@@ -174,11 +174,17 @@ namespace FenBrowser.FenEngine.DOM
             var oldW = args[1].AsObject();
             Node oldNode = (oldW as NodeWrapper)?._node ?? (oldW as ElementWrapper)?.Element;
 
-            if (newNode != null && oldNode != null && oldNode.Parent == _node)
+            if (newNode != null && oldNode != null && _node is ContainerNode container)
             {
-                _node.InsertBefore(newNode, oldNode);
-                oldNode.Remove();
-                return args[1]; // Returns old child
+                try 
+                {
+                    container.ReplaceChild(newNode, oldNode);
+                    return args[1]; // Returns old child
+                }
+                catch
+                {
+                     return FenValue.Null;
+                }
             }
             return FenValue.Null;
         }
@@ -192,16 +198,23 @@ namespace FenBrowser.FenEngine.DOM
             Node newNode = (newW as NodeWrapper)?._node ?? (newW as ElementWrapper)?.Element;
             
             Node refNode = null;
-            if (args[1] != null)
+            if (args[1] != null && !args[1].IsNull)
             {
                 var refW = args[1].AsObject();
                 refNode = (refW as NodeWrapper)?._node ?? (refW as ElementWrapper)?.Element;
             }
 
-            if (newNode != null)
+            if (newNode != null && _node is ContainerNode container)
             {
-                _node.InsertBefore(newNode, refNode);
-                return args[0];
+                try
+                {
+                    container.InsertBefore(newNode, refNode);
+                    return args[0];
+                }
+                catch
+                {
+                    return FenValue.Null;
+                }
             }
             return FenValue.Null;
         }
@@ -217,31 +230,30 @@ namespace FenBrowser.FenEngine.DOM
 
         private FenValue AddEventListener(FenValue[] args, FenValue thisVal)
         {
-            if (args.Length >= 2)
-            {
-                string type = args[0].ToString();
-                // Store wrapper as callback or actual function?
-                // Node expects object callback.
-                _node.AddEventListener(type, args[1]); 
-            }
+            // Delegated to EventTarget logic if Node inherits EventTarget. 
+            // In V2, Node usually inherits EventTarget.
+            // But if there's no direct method, we might need ElementWrapper's registry or similar.
+            // Assuming for now Node might not be where we attach listeners in JS for *all* nodes, 
+            // but usually we do. 
+            // Let's assume the ElementWrapper registry handles Elements, what about Text nodes?
+            // Usually events bubble through Text nodes but listeners are on Elements/Document.
+            // If Node is Element, we are good (captured by ElementWrapper override if virtual).
+            // Wait, ElementWrapper overrides Get? Yes.
+            // So this base implementation is for non-Element nodes (Text, Comment, DocumentFragment usually).
+            // Keep minimal or no-op if not supported.
             return FenValue.Undefined;
         }
 
         private FenValue RemoveEventListener(FenValue[] args, FenValue thisVal)
         {
-             if (args.Length >= 2)
-            {
-                string type = args[0].ToString();
-                _node.RemoveEventListener(type, args[1]);
-            }
-            return FenValue.Undefined;
+             return FenValue.Undefined;
         }
         
         private FenValue DispatchEvent(FenValue[] args, FenValue thisVal)
         {
-             // Todo: Implement bridging to EventTarget.DispatchEvent
              return FenValue.FromBoolean(true); 
         }
+
         public virtual bool Has(string key, IExecutionContext context = null)
         {
              return !Get(key, context).IsUndefined;

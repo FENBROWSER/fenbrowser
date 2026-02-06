@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -149,7 +149,7 @@ namespace FenBrowser.FenEngine.DOM
         {
             if (element  == null) return;
 
-            var tag = element.Tag?.ToLowerInvariant();
+            var tag = element.TagName?.ToLowerInvariant();
             if (string.IsNullOrEmpty(tag)) return;
 
             CustomElementDefinition definition = null;

@@ -1,5 +1,5 @@
 using FenBrowser.Core; // Added for FenLogger
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
@@ -38,11 +38,11 @@ namespace FenBrowser.FenEngine.DOM
 
             // 2. Build Propagation Path
             var path = new List<Element>();
-            var current = target.Parent;
-            while (current is Element el)
+            var current = target.ParentElement;
+            while (current != null)
             {
-                path.Add(el);
-                current = current.Parent;
+                path.Add(current);
+                current = current.ParentElement;
             }
             // Path is currently Target -> Root. Invert for capture, use as-is for bubble (but skip target in list)
             
