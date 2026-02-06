@@ -39,9 +39,6 @@ namespace FenBrowser.FenEngine.Adapters
                 };
             }
             
-            // Deduplicate attributes (e.g. multiple 'fill') that break strict parsers
-            svgContent = DeduplicateAttributes(svgContent);
-
             // Strip external references if not allowed
             if (!limits.AllowExternalReferences)
             {
@@ -55,6 +52,9 @@ namespace FenBrowser.FenEngine.Adapters
                 // CRITICAL FIX: Inject default fill for paths without explicit fill
                 // Per SVG spec, the default fill is "black", but Svg.Skia renders unfilled paths as transparent
                 svgContent = InjectDefaultFill(svgContent);
+
+                // Normalize duplicated attributes after all content transforms.
+                svgContent = DeduplicateAttributes(svgContent);
                 
                 using var svg = new SKSvg();
                 var picture = svg.FromSvg(svgContent);
@@ -91,12 +91,15 @@ namespace FenBrowser.FenEngine.Adapters
                 
                 // CRITICAL FIX: Render to bitmap INSIDE the using scope BEFORE SKSvg is disposed
                 // SKPicture's internal resources are tied to SKSvg and become invalid after disposal
-                int bitmapWidth = (int)Math.Max(1, cullRect.Width);
-                int bitmapHeight = (int)Math.Max(1, cullRect.Height);
+                int bitmapWidth = (int)Math.Max(1, Math.Ceiling(cullRect.Width));
+                int bitmapHeight = (int)Math.Max(1, Math.Ceiling(cullRect.Height));
                 var bitmap = new SkiaSharp.SKBitmap(bitmapWidth, bitmapHeight);
                 using (var canvas = new SkiaSharp.SKCanvas(bitmap))
                 {
                     canvas.Clear(SkiaSharp.SKColors.Transparent);
+                    // CullRect can have a non-zero origin (for example viewBox="0 -960 960 960").
+                    // Shift into bitmap-local coordinates so geometry is not clipped away.
+                    canvas.Translate(-cullRect.Left, -cullRect.Top);
                     canvas.DrawPicture(picture);
                 }
                 
@@ -253,7 +256,7 @@ namespace FenBrowser.FenEngine.Adapters
                 return svgContent; // Has CSS fill, don't modify
             }
             
-            // Inject fill="black" on path, circle, rect, ellipse, polygon, polyline elements
+            // Inject fill on path, circle, rect, ellipse, polygon, polyline elements
             // Use regex to add fill attribute to these elements if they don't have it
             var shapes = new[] { "path", "circle", "rect", "ellipse", "polygon", "polyline", "line" };
             
@@ -264,14 +267,7 @@ namespace FenBrowser.FenEngine.Adapters
                 string pattern = $"<{shape} ";
                 if (svgContent.Contains(pattern, StringComparison.OrdinalIgnoreCase))
                 {
-                    svgContent = svgContent.Replace(pattern, $"<{shape} fill=\"#4285f4\" ", StringComparison.OrdinalIgnoreCase);
-                }
-                
-                // Also handle uppercase
-                string patternUpper = $"<{shape.ToUpperInvariant()} ";
-                if (svgContent.Contains(patternUpper, StringComparison.OrdinalIgnoreCase))
-                {
-                    svgContent = svgContent.Replace(patternUpper, $"<{shape.ToUpperInvariant()} fill=\"#4285f4\" ", StringComparison.OrdinalIgnoreCase);
+                    svgContent = svgContent.Replace(pattern, $"<{shape} fill=\"currentColor\" ", StringComparison.OrdinalIgnoreCase);
                 }
             }
             return svgContent;

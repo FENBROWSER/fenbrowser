@@ -25,8 +25,8 @@ caption         { display: table-caption }
 th              { font-weight: bolder; text-align: center }
 caption         { text-align: center }
 body            { margin: 8px; font-family: serif; }
-h1              { font-size: 2em; margin: 0.67em 0; font-weight: bold; }
-h2              { font-size: 1.5em; margin: 0.83em 0; font-weight: bold; }
+h1              { font-size: 2em; margin: 1.34em 0; font-weight: bold; }
+h2              { font-size: 1.5em; margin: 1.66em 0; font-weight: bold; }
 h3              { font-size: 1.17em; margin: 1em 0; font-weight: bold; }
 h4, p,
 blockquote, ul,
@@ -72,3 +72,4 @@ article, aside, dialog, figure, footer, header,
 hgroup, main, nav, section { display: block; }
 mark { background: yellow; color: black; }
 template { display: none; }
+[hidden] { display: none !important; }
