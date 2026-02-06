@@ -1,8 +1,9 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using FenBrowser.Core;
+using FenBrowser.FenEngine.Rendering;
 
 namespace FenBrowser.FenEngine.Rendering.Css
 {
@@ -239,14 +240,14 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 // Tag name or universal
                 if (c == '*')
                 {
-                    segment.Tag = "*";
+                    segment.TagName = "*";
                     i++;
                     continue;
                 }
 
                 if (char.IsLetter(c) || c == '-' || c == '_')
                 {
-                    segment.Tag = ReadIdent(selector, ref i);
+                    segment.TagName = ReadIdent(selector, ref i);
                     continue;
                 }
 
@@ -330,7 +331,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
         #region Matching
 
-        private static bool MatchesChain(Element element, SelectorChain chain, int depth = 0)
+        public static bool MatchesChain(Element element, SelectorChain chain, int depth = 0)
         {
             if (chain == null || chain.Segments.Count == 0 || depth > 64) return false;
             return MatchesChainRecursive(element, chain, chain.Segments.Count - 1, depth + 1);
@@ -356,18 +357,18 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     return false;
                 }
 
-                var ancestor = element.Parent as Element;
+                var ancestor = element.ParentElement; // Using ParentElement
                 while (ancestor != null)
                 {
                     if (MatchesChainRecursive(ancestor, chain, index - 1, depth + 1))
                         return true;
-                    ancestor = ancestor.Parent as Element;
+                    ancestor = ancestor.ParentElement;
                 }
                 return false;
             }
             else if (combinator == '>') // Child
             {
-                return MatchesChainRecursive(element.Parent as Element, chain, index - 1, depth + 1);
+                return MatchesChainRecursive(element.ParentElement, chain, index - 1, depth + 1);
             }
             else if (combinator == '+') // Adjacent Sibling
             {
@@ -391,7 +392,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
         private static Element GetPreviousSibling(Element el)
         {
-            var p = el.PreviousSibling;
+            var p = el.PreviousSibling; // Using V2 Node property
             while (p != null)
             {
                 if (p is Element e) return e;
@@ -400,21 +401,20 @@ namespace FenBrowser.FenEngine.Rendering.Css
             return null;
         }
 
-        private static bool MatchesSegment(Element el, SelectorSegment seg, int depth)
+        public static bool MatchesSegment(Element el, SelectorSegment seg, int depth)
         {
             if (el == null || depth > 64) return false;
 
             // Tag
-            if (!string.IsNullOrEmpty(seg.Tag) && seg.Tag != "*")
-            {
-                if (!string.Equals(el.Tag, seg.Tag, StringComparison.OrdinalIgnoreCase))
+            if (!string.IsNullOrEmpty(seg.TagName) && seg.TagName != "*")
+                if (!string.Equals(el.TagName, seg.TagName, StringComparison.OrdinalIgnoreCase)) // TagName
                     return false;
-            }
+
 
             // ID
             if (!string.IsNullOrEmpty(seg.Id))
             {
-                string elId = el.Attr?.ContainsKey("id") == true ? el.Attr["id"] : null;
+                string elId = el.Id; // Using V2 Property
                 if (!string.Equals(elId, seg.Id, StringComparison.OrdinalIgnoreCase))
                     return false;
             }
@@ -422,14 +422,10 @@ namespace FenBrowser.FenEngine.Rendering.Css
             // Classes
             if (seg.Classes.Count > 0)
             {
-                string elClass = el.Attr?.ContainsKey("class") == true ? el.Attr["class"] : "";
-                var elClasses = new HashSet<string>(
-                    elClass.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries),
-                    StringComparer.OrdinalIgnoreCase);
-                
+                // Using V2 ClassList
                 foreach (var cls in seg.Classes)
                 {
-                    if (!elClasses.Contains(cls)) return false;
+                    if (!el.ClassList.Contains(cls)) return false;
                 }
             }
 
@@ -450,7 +446,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
             {
                 if (string.Equals(ps.Name, "slotted", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (el.Parent is Element parent && parent.ShadowRoot != null)
+                    if (el.ParentElement is Element parent && parent.ShadowRoot != null) // ParentElement check
                     {
                         return string.IsNullOrEmpty(ps.Args) || Matches(el, ps.Args, depth + 1);
                     }
@@ -463,10 +459,10 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
         private static bool MatchesAttribute(Element el, AttributeSelector attr)
         {
-            string val = el.Attr?.ContainsKey(attr.Name) == true ? el.Attr[attr.Name] : null;
+            string val = el.GetAttribute(attr.Name); // V2 GetAttribute
 
             if (attr.Operator == null)
-                return val != null; // Presence check
+                return val != null; // Presence check (V2 returns null if missing)
 
             if (val == null) return false;
 
@@ -495,8 +491,8 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "first-of-type": return IsFirstOfType(el);
                 case "last-of-type": return IsLastOfType(el);
                 case "only-of-type": return IsFirstOfType(el) && IsLastOfType(el);
-                case "empty": return el.Children == null || el.Children.Count == 0;
-                case "root": return el.Parent == null || el.Tag?.ToUpperInvariant() == "HTML";
+                case "empty": return !el.HasChildNodes; // V2 HasChildNodes
+                case "root": return el.ParentElement == null || el.TagName?.ToUpperInvariant() == "HTML";
                 case "not": 
                 {
                     if (parsedArgs != null && parsedArgs.Count > 0)
@@ -515,21 +511,23 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "nth-last-child": return MatchesNthLastChild(el, args);
                 case "nth-of-type": return MatchesNthOfType(el, args);
                 case "nth-last-of-type": return MatchesNthLastOfType(el, args);
-                case "checked": return el.Attr?.ContainsKey("checked") == true;
-                case "disabled": return el.Attr?.ContainsKey("disabled") == true;
-                case "enabled": return el.Attr?.ContainsKey("disabled") != true;
-                case "focus":
-                case "hover":
-                case "active":
-                case "visited":
-                case "link": return false; // State-dependent not implemented in static matcher
+                case "checked": return ElementStateManager.Instance.IsChecked(el);
+                case "disabled": return ElementStateManager.Instance.IsDisabled(el);
+                case "enabled": return !ElementStateManager.Instance.IsDisabled(el);
+                case "focus": return ElementStateManager.Instance.IsFocused(el);
+                case "hover": return ElementStateManager.Instance.IsHovered(el);
+                case "active": return ElementStateManager.Instance.IsActive(el);
+                case "visited": return false; // History not tracked
+                case "link": 
+                case "any-link":
+                    if (!string.Equals(el.TagName, "a", StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(el.TagName, "area", StringComparison.OrdinalIgnoreCase))
+                        return false;
+                     return !string.IsNullOrWhiteSpace(el.GetAttribute("href"));
                 
                 // Shadow DOM Scoping
                 case "host": 
                     // Matches if element is a Shadow Host
-                    // Ideally we should check if we are matching a rule from the corresponding ShadowRoot,
-                    // but without context, we check if it *is* a host.
-                    // If args provided :host(.foo), check that too.
                     if (el.ShadowRoot == null) return false;
                     return string.IsNullOrEmpty(args) || Matches(el, args, depth + 1);
 
@@ -539,13 +537,37 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     if (string.IsNullOrEmpty(args)) return true;
                     
                     // Check ancestors
-                    var curr = el; // host-context checks self? Spec says "search up the tree... including the host itself".
+                    var curr = el; 
                     while (curr != null)
                     {
                         if (Matches(curr, args, depth + 1)) return true;
-                        curr = curr.Parent as Element;
+                        curr = curr.ParentElement;
                     }
                     return false;
+
+                case "dir":
+                    // Matches directionality: :dir(ltr) or :dir(rtl)
+                    string requiredDir = args?.Trim().ToLowerInvariant();
+                    if (requiredDir != "ltr" && requiredDir != "rtl") return false;
+
+                    // Find effective direction
+                    string effectiveDir = "ltr"; // Default
+                    var dNode = el;
+                    while (dNode != null)
+                    {
+                        var dVal = dNode.GetAttribute("dir"); // V2 GetAttribute
+                        if (dVal != null)
+                        {
+                            var v = dVal.Trim().ToLowerInvariant();
+                            if (v == "ltr" || v == "rtl")
+                            {
+                                effectiveDir = v;
+                                break;
+                            }
+                        }
+                        dNode = dNode.ParentElement;
+                    }
+                    return effectiveDir == requiredDir;
 
                 default: return false;
             }
@@ -553,63 +575,70 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
         private static bool IsFirstChild(Element el)
         {
-            if (el.Parent?.Children == null) return true;
-            return el.Parent.Children.FirstOrDefault(c => !c.IsText) == el;
+            var parent = el.ParentNode as ContainerNode; // Cast to ContainerNode
+            if (parent == null) return true;
+            return parent.ChildNodes.FirstOrDefault(c => !c.IsText()) == el; // IsText check via extension or flag
         }
 
         private static bool IsLastChild(Element el)
         {
-            if (el.Parent?.Children == null) return true;
-            return el.Parent.Children.LastOrDefault(c => !c.IsText) == el;
+            var parent = el.ParentNode as ContainerNode;
+            if (parent == null) return true;
+            return parent.ChildNodes.LastOrDefault(c => !c.IsText()) == el;
         }
 
         private static bool IsOnlyChild(Element el)
         {
-            if (el.Parent?.Children == null) return true;
-            return el.Parent.Children.Count(c => !c.IsText) == 1;
+            var parent = el.ParentNode as ContainerNode;
+            if (parent == null) return true;
+            return parent.ChildElementCount == 1; // V2 ContainerNode has ChildElementCount
         }
-
-
 
         private static bool IsFirstOfType(Element el)
         {
-             if (el.Parent?.Children == null) return true;
-             return el.Parent.Children.OfType<Element>().FirstOrDefault(c => string.Equals(c.Tag, el.Tag, StringComparison.OrdinalIgnoreCase)) == el;
+             var parent = el.ParentNode as ContainerNode;
+             if (parent == null) return true;
+             return parent.ChildNodes.OfType<Element>().FirstOrDefault(c => string.Equals(c.TagName, el.TagName, StringComparison.OrdinalIgnoreCase)) == el;
         }
 
         private static bool IsLastOfType(Element el)
         {
-             if (el.Parent?.Children == null) return true;
-             return el.Parent.Children.OfType<Element>().LastOrDefault(c => string.Equals(c.Tag, el.Tag, StringComparison.OrdinalIgnoreCase)) == el;
+             var parent = el.ParentNode as ContainerNode;
+             if (parent == null) return true;
+             return parent.ChildNodes.OfType<Element>().LastOrDefault(c => string.Equals(c.TagName, el.TagName, StringComparison.OrdinalIgnoreCase)) == el;
         }
 
         private static bool MatchesNthChild(Element el, string args)
         {
-            if (el.Parent?.Children == null) return false;
-            int index = el.Parent.Children.Where(c => !c.IsText).ToList().IndexOf(el) + 1;
+            var parent = el.ParentNode as ContainerNode;
+            if (parent == null) return false;
+            int index = parent.ChildNodes.Where(c => !c.IsText()).ToList().IndexOf(el) + 1;
             return MatchesNthFormula(index, args);
         }
 
         private static bool MatchesNthLastChild(Element el, string args)
         {
-            if (el.Parent?.Children == null) return false;
-            var siblings = el.Parent.Children.Where(c => !c.IsText).ToList();
+            var parent = el.ParentNode as ContainerNode;
+            if (parent == null) return false;
+            var siblings = parent.ChildNodes.Where(c => !c.IsText()).ToList();
             int index = siblings.Count - siblings.IndexOf(el);
             return MatchesNthFormula(index, args);
         }
 
         private static bool MatchesNthOfType(Element el, string args)
         {
-            if (el.Parent?.Children == null) return false;
-            var siblings = el.Parent.Children.OfType<Element>().Where(c => string.Equals(c.Tag, el.Tag, StringComparison.OrdinalIgnoreCase)).ToList();
+            var parent = el.ParentNode as ContainerNode;
+            if (parent == null) return false;
+            var siblings = parent.ChildNodes.OfType<Element>().Where(c => string.Equals(c.TagName, el.TagName, StringComparison.OrdinalIgnoreCase)).ToList();
             int index = siblings.IndexOf(el) + 1;
             return MatchesNthFormula(index, args);
         }
 
         private static bool MatchesNthLastOfType(Element el, string args)
         {
-            if (el.Parent?.Children == null) return false;
-            var siblings = el.Parent.Children.OfType<Element>().Where(c => string.Equals(c.Tag, el.Tag, StringComparison.OrdinalIgnoreCase)).ToList();
+            var parent = el.ParentNode as ContainerNode;
+            if (parent == null) return false;
+            var siblings = parent.ChildNodes.OfType<Element>().Where(c => string.Equals(c.TagName, el.TagName, StringComparison.OrdinalIgnoreCase)).ToList();
             int index = siblings.Count - siblings.IndexOf(el);
             return MatchesNthFormula(index, args);
         }
@@ -629,7 +658,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 
                 if (combinator == '>') // Child
                 {
-                    candidates = el.Children?.OfType<Element>();
+                    candidates = (el as ContainerNode).ChildNodes.OfType<Element>(); // Cast to ContainerNode
                 }
                 else if (combinator == '+') // Adjacent Sibling
                 {
@@ -642,7 +671,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 }
                 else // Descendant (Space)
                 {
-                    candidates = el.Descendants().OfType<Element>();
+                    candidates = el.Descendants().OfType<Element>(); // V2 Node has Descendants()
                 }
                 
                 if (candidates != null)
@@ -716,16 +745,15 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
         private static bool CanFastReject(Element element, SelectorChain chain, int index)
         {
-            // We need to check if the ancestor filter LACKS any bits required by the target segment.
-            // The target segment (at 'index') is what we are looking for in the ancestors.
-            // If the selector is "div.container span", we are at span, looking for "div.container".
-            // So we compute the hash of "div.container" (segment[index]) and check if element.AncestorFilter has it.
-            
             var targetSegment = chain.Segments[index];
             long requiredMask = ComputeSegmentHash(targetSegment);
 
-            // If requiredMask has bits that are 0 in AncestorFilter, then the ancestor definitely doesn't exist.
-            // (element.AncestorFilter & requiredMask) must equal requiredMask
+            // AncestorFilter is now public
+            if (element.AncestorFilter == 0)
+            {
+                // If filter not populated, skip fast-reject to avoid false negatives.
+                return false;
+            }
             return (element.AncestorFilter & requiredMask) != requiredMask;
         }
 
@@ -734,9 +762,9 @@ namespace FenBrowser.FenEngine.Rendering.Css
             long hash = 0;
 
             // Tag
-            if (!string.IsNullOrEmpty(seg.Tag) && seg.Tag != "*")
+            if (!string.IsNullOrEmpty(seg.TagName) && seg.TagName != "*")
             {
-                hash |= FilterHash(seg.Tag);
+                hash |= FilterHash(seg.TagName);
             }
 
             // ID

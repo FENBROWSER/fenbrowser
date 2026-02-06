@@ -1,5 +1,5 @@
 using FenBrowser.Core.Css;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using SkiaSharp;
 using System;
 using FenBrowser.Core;
@@ -23,7 +23,7 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
         public static void Apply(Element node, ref CssComputed style)
         {
             if (node == null) return;
-            string tag = node.Tag?.ToUpperInvariant();
+            string tag = node.TagName?.ToUpperInvariant();
             if (string.IsNullOrEmpty(tag)) return;
 
             // HTML and BODY
@@ -36,18 +36,22 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
                 {
                     style.HeightPercent = 100;
                 }
-                if (string.IsNullOrEmpty(style.Display)) style.Display = "flex";
-                if (string.IsNullOrEmpty(style.FlexDirection)) style.FlexDirection = "column";
+                // FIXED: Do not force Flexbox on Root/Body.
+                if (string.IsNullOrEmpty(style.Display)) style.Display = "block";
+
+                // DEFENSIVE: Force LTR and Left Align to prevent global shifting
+                if (string.IsNullOrEmpty(style.Direction)) style.Direction = "ltr";
+                if (!style.TextAlign.HasValue) style.TextAlign = SKTextAlign.Left;
             }
 
             if (tag == "BODY")
             {
                 if (style == null) style = new CssComputed();
-                // Default browser margin is 8px
+                // Reset default margin to 0 for debugging/cleanliness (Modern browsers use 8px, but 0 helps verify layout)
                 if (style.Margin.Left == 0 && style.Margin.Top == 0 && 
                     style.Margin.Right == 0 && style.Margin.Bottom == 0)
                 {
-                    style.Margin = new Thickness(8);
+                    style.Margin = new Thickness(0); 
                 }
             }
 
@@ -111,15 +115,18 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
                 
                 if (tag == "MAIN")
                 {
-                    // ARCHITECTURAL FIX: Centering via UA flex properties
-                    if (string.IsNullOrEmpty(style.Display) || style.Display == "block") 
-                        style.Display = "flex";
-                    
-                    if (string.IsNullOrEmpty(style.FlexDirection)) style.FlexDirection = "column";
-                    if (string.IsNullOrEmpty(style.JustifyContent)) style.JustifyContent = "center";
-                    if (string.IsNullOrEmpty(style.AlignItems)) style.AlignItems = "center";
-                    if (!style.FlexGrow.HasValue) style.FlexGrow = 1.0;
+                     // FIXED: MAIN should be block by default, not flex-centered.
+                     // The previous logic forced everything in <main> to center, which violates specs.
+                     if (string.IsNullOrEmpty(style.Display)) style.Display = "block";
                 }
+            }
+
+            // DIV specific (not covered by generic block elements)
+            if (tag == "DIV")
+            {
+                if (style == null) style = new CssComputed();
+                // Ensure DIVs don't inherit weird alignments if not specified (Standard behavior is to inherit, so do nothing for TextAlign)
+                if (string.IsNullOrEmpty(style.Direction)) style.Direction = "ltr";
             }
 
             // Center Tag (Legacy)
@@ -346,5 +353,7 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
         }
     }
 }
+
+
 
 

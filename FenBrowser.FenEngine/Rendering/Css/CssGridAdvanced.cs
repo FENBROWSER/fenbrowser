@@ -1,5 +1,5 @@
 using FenBrowser.Core.Css;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -631,7 +631,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         private ContainerInfo FindContainer(Element element, string name)
         {
-            var current = element?.Parent as Element;
+            var current = element?.ParentElement;
             while (current != null)
             {
                 if (_containers.TryGetValue(current, out var info))
@@ -639,7 +639,7 @@ namespace FenBrowser.FenEngine.Rendering
                     if (string.IsNullOrEmpty(name) || info.Name == name)
                         return info;
                 }
-                current = current.Parent as Element;
+                current = current.ParentElement;
             }
             return null;
         }
@@ -690,5 +690,6 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
+
 
 

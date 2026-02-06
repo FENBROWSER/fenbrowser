@@ -15,10 +15,45 @@ namespace FenBrowser.FenEngine.Rendering
     public static class CssParser
     {
         // Media query environment hints (set externally before parsing/cascade)
+        // Reference: https://www.w3.org/TR/mediaqueries-5/
+
+        // === Viewport Dimensions ===
         public static double? MediaViewportWidth { get; set; }
         public static double? MediaViewportHeight { get; set; }
-        public static double? MediaDppx { get; set; }
-        public static string MediaPrefersColorScheme { get; set; }
+
+        // === Resolution ===
+        public static double? MediaDppx { get; set; }  // Device pixel ratio (1.0 for standard, 2.0 for retina)
+
+        // === User Preferences ===
+        public static string MediaPrefersColorScheme { get; set; }  // "light" or "dark"
+        public static string MediaPrefersReducedMotion { get; set; }  // "no-preference" or "reduce"
+        public static string MediaPrefersContrast { get; set; }  // "no-preference", "more", "less", "custom"
+        public static string MediaPrefersReducedTransparency { get; set; }  // "no-preference" or "reduce"
+        public static string MediaPrefersReducedData { get; set; }  // "no-preference" or "reduce"
+        public static string MediaForcedColors { get; set; }  // "none" or "active"
+        public static string MediaInvertedColors { get; set; }  // "none" or "inverted"
+
+        // === Device Capabilities ===
+        public static string MediaPointer { get; set; }  // "none", "coarse", or "fine"
+        public static string MediaHover { get; set; }  // "none" or "hover"
+        public static string MediaAnyPointer { get; set; }  // "none", "coarse", or "fine"
+        public static string MediaAnyHover { get; set; }  // "none" or "hover"
+
+        // === Display Capabilities ===
+        public static string MediaColorGamut { get; set; }  // "srgb", "p3", or "rec2020"
+        public static string MediaDynamicRange { get; set; }  // "standard" or "high"
+        public static int? MediaColorIndex { get; set; }  // Number of colors in color lookup table
+        public static int? MediaMonochrome { get; set; }  // Bits per pixel in monochrome frame buffer
+        public static int? MediaColor { get; set; }  // Bits per color component
+
+        // === Scripting ===
+        public static string MediaScripting { get; set; }  // "none", "initial-only", or "enabled"
+
+        // === Update Frequency ===
+        public static string MediaUpdate { get; set; }  // "none", "slow", or "fast"
+
+        // === Display Mode ===
+        public static string MediaDisplayMode { get; set; }  // "fullscreen", "standalone", "minimal-ui", "browser"
 
         /// <summary>
         /// Evaluates a media query condition string against the current viewport state.
@@ -99,6 +134,60 @@ namespace FenBrowser.FenEngine.Rendering
                  return false;
             }
 
+            if (name == "orientation")
+            {
+                if (MediaViewportWidth.HasValue && MediaViewportHeight.HasValue)
+                {
+                    bool isLandscape = MediaViewportWidth.Value >= MediaViewportHeight.Value;
+                    if (val == "landscape") return isLandscape;
+                    if (val == "portrait") return !isLandscape;
+                }
+                return false;
+            }
+
+            // Media Query Level 5 User Preferences
+            if (name == "prefers-color-scheme")
+                return string.Equals(MediaPrefersColorScheme, val, StringComparison.OrdinalIgnoreCase);
+            
+            if (name == "prefers-reduced-motion")
+                return string.Equals(MediaPrefersReducedMotion, val, StringComparison.OrdinalIgnoreCase);
+
+            if (name == "prefers-contrast")
+                return string.Equals(MediaPrefersContrast, val, StringComparison.OrdinalIgnoreCase);
+                
+            if (name == "prefers-reduced-transparency")
+                return string.Equals(MediaPrefersReducedTransparency, val, StringComparison.OrdinalIgnoreCase);
+
+            if (name == "prefers-reduced-data")
+                return string.Equals(MediaPrefersReducedData, val, StringComparison.OrdinalIgnoreCase);
+
+            if (name == "forced-colors")
+                return string.Equals(MediaForcedColors, val, StringComparison.OrdinalIgnoreCase);
+                
+            if (name == "inverted-colors")
+                return string.Equals(MediaInvertedColors, val, StringComparison.OrdinalIgnoreCase);
+
+            // Device Capabilities
+            if (name == "hover")
+                return string.Equals(MediaHover, val, StringComparison.OrdinalIgnoreCase);
+                
+            if (name == "any-hover")
+                return string.Equals(MediaAnyHover, val, StringComparison.OrdinalIgnoreCase);
+                
+            if (name == "pointer")
+                return string.Equals(MediaPointer, val, StringComparison.OrdinalIgnoreCase);
+                
+            if (name == "any-pointer")
+                return string.Equals(MediaAnyPointer, val, StringComparison.OrdinalIgnoreCase);
+                
+            if (name == "scripting")
+                return string.Equals(MediaScripting, val, StringComparison.OrdinalIgnoreCase);
+                
+            if (name == "display-mode")
+                return string.Equals(MediaDisplayMode, val, StringComparison.OrdinalIgnoreCase);
+
+            // TODO: range context syntax (width >= 500px) requires fuller parser
+            
             return false; // Unknown feature, return false to be safe (spec: unknown = false)
         }
 
