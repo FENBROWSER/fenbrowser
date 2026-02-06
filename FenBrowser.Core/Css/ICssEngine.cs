@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Deadlines;
 using System.Threading.Tasks;
 using System.Collections.Generic;
