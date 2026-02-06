@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
 
@@ -35,7 +35,7 @@ namespace FenBrowser.Core.Parsing
 
             var builder = new HtmlTreeBuilder(html);
             var doc = builder.Build();
-            doc.BaseUri = _baseUri.AbsoluteUri; // Ensure doc knows its base
+            doc.BaseURI = _baseUri.AbsoluteUri; // Ensure doc knows its base
             return doc;
         }
         

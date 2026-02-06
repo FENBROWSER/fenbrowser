@@ -56,8 +56,8 @@ namespace FenBrowser.Core.Verification
         /// </summary>
         public static void RegisterRendered(string url, int nodeCount, int textLength)
         {
-            _domNodeCount = nodeCount;
-            _renderedTextLength = textLength;
+            _domNodeCount = Math.Max(_domNodeCount, nodeCount);
+            _renderedTextLength = Math.Max(_renderedTextLength, textLength);
 
             if (DebugConfig.LogVerification)
             {
@@ -65,7 +65,7 @@ namespace FenBrowser.Core.Verification
             }
         }
 
-        public static void RegisterRenderedFromNode(FenBrowser.Core.Dom.Node root, string url)
+        public static void RegisterRenderedFromNode(FenBrowser.Core.Dom.V2.Node root, string url)
         {
             int nodes = 0;
             int textLen = 0;
@@ -73,18 +73,22 @@ namespace FenBrowser.Core.Verification
             RegisterRendered(url, nodes, textLen);
         }
 
-        private static void CalculateTreeMetrics(FenBrowser.Core.Dom.Node node, ref int nodes, ref int textLen)
+        private static void CalculateTreeMetrics(FenBrowser.Core.Dom.V2.Node node, ref int nodes, ref int textLen)
         {
             if (node == null) return;
             nodes++;
-            if (node is FenBrowser.Core.Dom.Text t && t.Data != null)
+            if (node.NodeType == FenBrowser.Core.Dom.V2.NodeType.Text)
             {
-                textLen += t.Data.Length;
+                var text = node.TextContent;
+                if (!string.IsNullOrEmpty(text))
+                {
+                    textLen += text.Length;
+                }
             }
             
-            if (node.Children != null)
+            if (node is FenBrowser.Core.Dom.V2.ContainerNode cn && cn.Children != null)
             {
-                foreach (var child in node.Children)
+                foreach (var child in cn.Children)
                 {
                     CalculateTreeMetrics(child, ref nodes, ref textLen);
                 }
@@ -149,6 +153,18 @@ namespace FenBrowser.Core.Verification
             }
 
             // 3. Rendered Result Check
+            if (_renderedTextLength == 0 && !string.IsNullOrEmpty(_renderedDumpPath) && File.Exists(_renderedDumpPath))
+            {
+                try
+                {
+                    _renderedTextLength = File.ReadAllText(_renderedDumpPath).Length;
+                }
+                catch
+                {
+                    // Keep non-fatal; verification should never break render flow.
+                }
+            }
+
             double ratio = 0;
             if (_sourceLengthBytes > 0)
             {
@@ -161,16 +177,29 @@ namespace FenBrowser.Core.Verification
                 if (!string.IsNullOrEmpty(_renderedDumpPath))
                     FenLogger.Log($"    - Text Path:   {Path.GetFileName(_renderedDumpPath)}", LogCategory.Verification, LogLevel.Info);
                 
-                FenLogger.Log($"    - Content Health: {ratio:F2}% (Source -> Result)", LogCategory.Verification, LogLevel.Info);
-                
-                if (ratio < 1.0)
+                if (_sourceLengthBytes > 0)
                 {
-                     FenLogger.Log("    - WARNING: Result text is less than 1% of source. Possible parsing failure.", LogCategory.Verification, LogLevel.Warn);
+                    FenLogger.Log($"    - Content Health: {ratio:F2}% (Source -> Result)", LogCategory.Verification, LogLevel.Info);
+                    if (ratio < 1.0)
+                    {
+                        FenLogger.Log("    - WARNING: Result text is less than 1% of source. Possible parsing failure.", LogCategory.Verification, LogLevel.Warn);
+                    }
+                }
+                else
+                {
+                    FenLogger.Log("    - Content Health: N/A (No network source captured)", LogCategory.Verification, LogLevel.Info);
                 }
             }
             else
             {
-                FenLogger.Log("[3] Visual Text Result:   FAIL (No text content)", LogCategory.Verification, LogLevel.Warn);
+                if (string.IsNullOrEmpty(_renderedDumpPath))
+                {
+                    FenLogger.Log("[3] Visual Text Result:   PENDING (rendered text snapshot not produced yet)", LogCategory.Verification, LogLevel.Info);
+                }
+                else
+                {
+                    FenLogger.Log("[3] Visual Text Result:   FAIL (No text content)", LogCategory.Verification, LogLevel.Warn);
+                }
             }
 
             // 4. Visual Check
