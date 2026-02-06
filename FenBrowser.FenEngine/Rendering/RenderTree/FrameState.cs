@@ -1,5 +1,5 @@
 using SkiaSharp;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 
 namespace FenBrowser.FenEngine.Rendering
@@ -73,3 +73,4 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
+

@@ -1,5 +1,5 @@
 using FenBrowser.Core.Css;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
 using FenBrowser.Core;
@@ -98,11 +98,11 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             _boxPainter.PaintBorder(canvas, box, style, opacity);
 
             // 5. Content (text or image)
-            if (element.Tag?.ToLowerInvariant() == "img")
+            if (element.TagName?.ToLowerInvariant() == "img")
             {
                 _imagePainter.PaintImage(canvas, element, box, style);
             }
-            else if (element.IsText || !string.IsNullOrEmpty(element.Text))
+            else if (element.IsText() || !string.IsNullOrEmpty(element.Text))
             {
                 _textPainter.PaintText(canvas, element.Text ?? "", box, style);
             }
@@ -229,5 +229,8 @@ namespace FenBrowser.FenEngine.Rendering.Painting
         public ImagePainter ImagePainter => _imagePainter;
     }
 }
+
+
+
 
 

@@ -16,7 +16,7 @@ using System.Collections.Generic;
 using System.Linq;
 using FenBrowser.Core;
 using FenBrowser.Core.Css;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Logging;
 using SkiaSharp;
 
@@ -360,3 +360,4 @@ namespace FenBrowser.FenEngine.Rendering.Painting
         #endregion
     }
 }
+

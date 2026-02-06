@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Net;
 
 namespace FenBrowser.FenEngine.Rendering
@@ -100,14 +100,14 @@ public static string RenderSslError(string url, string details)
     <div style=""display:flex;align-items:center;gap:16px;margin-bottom:20px;"">
       {SslWarningIcon}
       <div style=""{GetTitleStyle(isDark)}"">
-        This connection isn’t secure
+        This connection isn't secure
       </div>
     </div>
 
     <!-- Primary Explanation -->
     <div style=""{GetMsgStyle(isDark)} margin-bottom:12px;"">
-      Fen Browser couldn’t verify the identity of this website.
-      The security certificate doesn’t match the site’s address.
+      Fen Browser couldn't verify the identity of this website.
+      The security certificate doesn't match the site's address.
     </div>
 
     <!-- Secondary Explanation (Muted) -->
@@ -131,7 +131,7 @@ public static string RenderSslError(string url, string details)
     <!-- Primary Actions -->
     <div style=""display:flex;gap:12px;margin-bottom:20px;"">
       <a href=""about:blank"" style=""{PrimaryBtnStyle}"">
-        ← Go back to safety
+        <- Go back to safety
       </a>
       <a href=""#"" style=""{SecondaryBtnStyle(isDark)}"">
         Retry
@@ -144,7 +144,7 @@ public static string RenderSslError(string url, string details)
                       font-size:14px;
                       color:#2563eb;
                       user-select:none;"">
-        Advanced ▸
+        Advanced >
       </summary>
 
       <div style=""margin-top:16px;font-size:13px;"">
@@ -194,7 +194,7 @@ public static string RenderSslError(string url, string details)
         public static string RenderConnectionFailed(string url, string details)
         {
             return RenderBase($@"
-<h1>Hmm… can’t reach this page</h1>
+<h1>Hmm... can't reach this page</h1>
 <p>{WebUtility.HtmlEncode(details)}</p>
 <a href=""{url}"" style=""{PrimaryBtnStyle}"">Refresh</a>");
         }

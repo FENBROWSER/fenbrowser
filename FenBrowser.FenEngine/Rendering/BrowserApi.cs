@@ -1,5 +1,5 @@
 using FenBrowser.Core.Css;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -15,6 +15,8 @@ using FenBrowser.FenEngine.Layout;
 using SkiaSharp;
 
 using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.FenEngine.Interaction;
+using FenBrowser.FenEngine.Rendering.Core;
 using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType; // For IHistoryBridge
 
 namespace FenBrowser.FenEngine.Rendering
@@ -188,6 +190,7 @@ namespace FenBrowser.FenEngine.Rendering
         private readonly ResourceManager _resources = new ResourceManager(new HttpClient());
         private readonly NavigationManager _navManager;
         private readonly FenBrowser.FenEngine.Core.EngineLoop _engineLoop; // Phase 5: Engine Loop
+        private readonly InputManager _inputManager = new InputManager();
         private Uri _current;
         private bool _disposed;
         
@@ -310,7 +313,7 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                          var dump = new Dictionary<string, string>(headers);
                          if (!dump.ContainsKey("User-Agent") && req.Headers.UserAgent != null) dump["User-Agent"] = req.Headers.UserAgent.ToString();
-                         FenLogger.Error($"[Compliance] HTTP Request: {req.Method} {req.RequestUri} Headers: {JsonSerializer.Serialize(dump)}", LogCategory.Network);
+                         FenLogger.Debug($"[Compliance] HTTP Request: {req.Method} {req.RequestUri} Headers: {JsonSerializer.Serialize(dump)}", LogCategory.Network);
                     }
                     catch { }
 
@@ -543,7 +546,8 @@ namespace FenBrowser.FenEngine.Rendering
 
         public Element GetDomRoot()
         {
-            return _engine.GetActiveDom();
+            var dom = _engine.GetActiveDom();
+            return (dom as Element) ?? (dom as Document)?.DocumentElement;
         }
 
         public string GetRawHtml()
@@ -653,7 +657,20 @@ namespace FenBrowser.FenEngine.Rendering
                 _engine.ActivePolicy = null;
                 CurrentPolicy = null;
 
-                var result = await _navManager.NavigateAsync(url);
+                const int maxTransientNavAttempts = 2;
+                FetchResult result = null;
+                for (int attempt = 1; attempt <= maxTransientNavAttempts; attempt++)
+                {
+                    result = await _navManager.NavigateAsync(url);
+                    if (!ShouldRetryTopLevelNavigation(result, url, attempt, maxTransientNavAttempts))
+                        break;
+
+                    int retryDelayMs = 350 * attempt;
+                    FenLogger.Warn(
+                        $"[BrowserHost] Transient navigation failure ({result.Status}) for '{url}'. Retrying {attempt}/{maxTransientNavAttempts - 1} after {retryDelayMs}ms.",
+                        LogCategory.Network);
+                    await Task.Delay(retryDelayMs);
+                }
                 
                 // Parse CSP
                 if (result.Headers != null && result.Headers.TryGetValues("Content-Security-Policy", out var cspValues))
@@ -776,8 +793,11 @@ pre {{
                 // Dump Engine Source (Processed DOM level)
                 try
                 {
-                    var activeDom = _engine.ActiveDom;
-                    string engineSource = activeDom?.ToHtml() ?? "";
+                    var activeNode = _engine.ActiveDom;
+                    string engineSource = "";
+                    if (activeNode is Document d) engineSource = d.DocumentElement?.OuterHTML ?? "";
+                    else if (activeNode is Element e) engineSource = e.OuterHTML;
+                    else engineSource = activeNode?.NodeValue ?? "";
                     string enginePath = StructuredLogger.DumpEngineSource(uri.AbsoluteUri, engineSource);
                     if (!string.IsNullOrEmpty(enginePath))
                     {
@@ -807,6 +827,12 @@ pre {{
                 try
                 {
                     string textContent = GetTextContent();
+                    var activeDom = _engine.GetActiveDom();
+                    int domNodeCount = activeDom?.SelfAndDescendants()?.Count() ?? 0;
+                    FenBrowser.Core.Verification.ContentVerifier.RegisterRendered(
+                        uri.AbsoluteUri,
+                        domNodeCount,
+                        textContent?.Length ?? 0);
                     string renderedPath = StructuredLogger.DumpRenderedText(uri.AbsoluteUri, textContent);
                     if (!string.IsNullOrEmpty(renderedPath))
                     {
@@ -905,12 +931,12 @@ pre {{
                 {
                     foreach (var n in root.SelfAndDescendants())
                     {
-                        if (n.Tag == "a" && n.Attr != null)
-                        {
-                            string href;
-                            if (n.Attr.TryGetValue("href", out href) && !string.IsNullOrWhiteSpace(href))
-                                list.Add(href);
-                        }
+                    if (n is Element el && string.Equals(el.TagName, "a", StringComparison.OrdinalIgnoreCase))
+                  {
+                      var href = el.GetAttribute("href");
+                      if (!string.IsNullOrWhiteSpace(href))
+                          list.Add(href);
+                  }
                     }
                 }
             }
@@ -927,8 +953,8 @@ pre {{
                 var sb = new System.Text.StringBuilder();
                 foreach (var n in root.SelfAndDescendants())
                 {
-                    if (n.IsText && !string.IsNullOrWhiteSpace(n.Text))
-                        sb.AppendLine(n.Text.Trim());
+                    if (n.NodeType == NodeType.Text && !string.IsNullOrWhiteSpace(n.TextContent))
+                        sb.AppendLine(n.TextContent.Trim());
                 }
                 return sb.ToString();
             }
@@ -941,8 +967,8 @@ pre {{
             var dom = _engine.GetActiveDom();
             if (dom != null)
             {
-                var titleNode = dom.Descendants().FirstOrDefault(n => n.Tag == "title");
-                if (titleNode != null) return titleNode.Text ?? "";
+                var titleNode = dom.Descendants().FirstOrDefault(n => string.Equals(n.NodeName, "title", StringComparison.OrdinalIgnoreCase));
+                if (titleNode != null) return titleNode.TextContent ?? "";
             }
             return "";
         }
@@ -966,16 +992,16 @@ pre {{
                 if (value.StartsWith("#"))
                 {
                     var id = value.Substring(1);
-                    found = dom.Descendants().OfType<Element>().FirstOrDefault(n => n.Attr != null && n.Attr.ContainsKey("id") && n.Attr["id"] == id);
+                    found = dom.Descendants().OfType<Element>().FirstOrDefault(n => n.Id == id);
                 }
                 else if (value.StartsWith("."))
                 {
                     var cls = value.Substring(1);
-                    found = dom.Descendants().OfType<Element>().FirstOrDefault(n => n.Attr != null && n.Attr.ContainsKey("class") && n.Attr["class"].Contains(cls));
+                    found = dom.Descendants().OfType<Element>().FirstOrDefault(n => n.GetAttribute("class") != null && n.GetAttribute("class").Contains(cls));
                 }
                 else
                 {
-                    found = dom.Descendants().OfType<Element>().FirstOrDefault(n => n.Tag == value);
+                    found = dom.Descendants().OfType<Element>().FirstOrDefault(n => string.Equals(n.TagName, value, StringComparison.OrdinalIgnoreCase));
                 }
             }
             else if (strategy == "xpath")
@@ -983,7 +1009,7 @@ pre {{
                 if (value.StartsWith("//"))
                 {
                     var tag = value.Substring(2);
-                    found = dom.Descendants().OfType<Element>().FirstOrDefault(n => n.Tag == tag);
+                    found = dom.Descendants().OfType<Element>().FirstOrDefault(n => string.Equals(n.TagName, tag, StringComparison.OrdinalIgnoreCase));
                 }
             }
 
@@ -1000,7 +1026,7 @@ pre {{
         {
             if (_elementMap.TryGetValue(elementId, out var element))
             {
-                if (element.Tag == "a" && element.Attr != null && element.Attr.TryGetValue("href", out var href))
+                if (element.TagName == "a" && element.Attr != null && element.Attr.TryGetValue("href", out var href))
                 {
                      await NavigateAsync(href);
                 }
@@ -1018,7 +1044,7 @@ pre {{
                 if (dom != null)
                 {
                     // Find <link rel="icon" ...>
-                    var links = dom.Descendants().OfType<Element>().Where(x => x.Tag == "link" && x.Attr != null && x.Attr.ContainsKey("rel"));
+                    var links = dom.Descendants().OfType<Element>().Where(x => x.TagName == "link" && x.Attr != null && x.Attr.ContainsKey("rel"));
                     var iconLink = links.FirstOrDefault(x => x.Attr["rel"].IndexOf("icon", StringComparison.OrdinalIgnoreCase) >= 0);
                     
                     if (iconLink != null && iconLink.Attr.ContainsKey("href"))
@@ -1171,7 +1197,7 @@ pre {{
             var dom = _engine.GetActiveDom();
             if (dom == null) return null;
 
-            Element searchRoot = dom;
+            Element searchRoot = (dom as Element) ?? (dom as Document)?.DocumentElement;
             if (!string.IsNullOrEmpty(parentId) && _elementMap.TryGetValue(parentId, out var parent))
                 searchRoot = parent;
 
@@ -1200,8 +1226,22 @@ pre {{
         public void OnMouseMove(float x, float y)
         {
              // TODO: Throttle mousemove?
-             // For now, queue it.
-             // QueueInputTask("mousemove", x, y, 0); 
+             QueueInputTask("mousemove", x, y, 0);
+        }
+
+        private static bool ShouldRetryTopLevelNavigation(FetchResult result, string url, int attempt, int maxAttempts)
+        {
+            if (attempt >= maxAttempts) return false;
+            if (!IsRetriableTopLevelScheme(url)) return false;
+            if (result == null) return true;
+            return result.Status == FetchStatus.ConnectionFailed || result.Status == FetchStatus.Timeout;
+        }
+
+        private static bool IsRetriableTopLevelScheme(string url)
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
+            return uri.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase) ||
+                   uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase);
         }
 
         public void OnClick(float x, float y, int button)
@@ -1219,71 +1259,56 @@ pre {{
 
         private void DispatchInputEvent(string type, float x, float y, int button)
         {
-             var layout = _engine.LastLayout;
-             if (layout == null && _engine.ActiveDom == null) return;
+            var eventType = MapToInputEventType(type);
+            var renderContext = _engine.BuildRenderContext();
+            var context = _engine.Context;
+            var inputEvent = new InputEvent
+            {
+                Type = eventType,
+                X = x,
+                Y = y,
+                Button = button,
+                Buttons = BuildButtonMask(button, type),
+                PointerId = 1,
+                PointerType = "mouse",
+                Pressure = button == 0 ? 0.5f : 0.8f,
+                IsPrimary = true,
+                PageX = x,
+                PageY = y,
+                ScreenX = x,
+                ScreenY = y
+            };
 
-             // Hit Test
-             Element target = _engine.ActiveDom; // Default to root
-             
-             if (layout != null)
-             {
-                 Element bestHit = null;
-                 float bestArea = float.MaxValue;
-                 int bestDepth = -1;
+            bool handled = _inputManager.ProcessEvent(inputEvent, renderContext, context);
 
-                 // Naive hit test against all known rects
-                 foreach (var kvp in layout.ElementRects)
-                 {
-                     var el = kvp.Key;
-                     var rect = kvp.Value;
-                     if (x >= rect.X && x <= rect.Right && y >= rect.Y && y <= rect.Bottom)
-                     {
-                         // Hit!
-                         // Calculate depth or use area as proxy (smaller area = usually deeper)
-                         float area = rect.Width * rect.Height;
-                         
-                         // Rough depth calc
-                         int depth = 0;
-                         var p = el.Parent;
-                         while (p != null) { depth++; p = p.Parent; }
+            if (handled && string.Equals(type, "click", StringComparison.OrdinalIgnoreCase) && inputEvent.Target != null)
+            {
+                HandleClickDefaultAction(inputEvent.Target);
+            }
+        }
 
-                         if (depth > bestDepth)
-                         {
-                             bestDepth = depth;
-                             bestHit = el;
-                             bestArea = area;
-                         }
-                         else if (depth == bestDepth && area < bestArea)
-                         {
-                             bestHit = el;
-                             bestArea = area;
-                         }
-                     }
-                 }
-                 if (bestHit != null) target = bestHit;
-             }
+        private static int BuildButtonMask(int button, string type)
+        {
+            if (string.Equals(type, "mouseup", StringComparison.OrdinalIgnoreCase)) return 0;
+            if (button < 0) return 0;
+            return 1 << Math.Min(button, 3);
+        }
 
-             if (target != null)
-             {
-                 var evt = new DOM.DomEvent(type, bubbles: true, cancelable: true);
-                 // TODO: MouseEvent subclass with coordinates (x, y) attached to event
-                 
-                 // Dispatch logic
-                 var context = _engine.Context;
-                 
-                 // If using FenEngine.DOM.EventTarget, we need to call DispatchEvent
-                 // Note: EventTarget is in FenBrowser.FenEngine.DOM namespace
-                 bool notCancelled = FenBrowser.FenEngine.DOM.EventTarget.DispatchEvent(target, evt, context);
-
-                 // Default Actions
-                 if (notCancelled)
-                 {
-                     if (type == "click")
-                     {
-                         HandleClickDefaultAction(target);
-                     }
-                 }
-             }
+        private static InputEventType MapToInputEventType(string type)
+        {
+            switch (type?.ToLowerInvariant())
+            {
+                case "mousedown": return InputEventType.MouseDown;
+                case "mouseup": return InputEventType.MouseUp;
+                case "mousemove": return InputEventType.MouseMove;
+                case "click": return InputEventType.Click;
+                case "keydown": return InputEventType.KeyDown;
+                case "keyup": return InputEventType.KeyUp;
+                case "touchstart": return InputEventType.TouchStart;
+                case "touchmove": return InputEventType.TouchMove;
+                case "touchend": return InputEventType.TouchEnd;
+                default: return InputEventType.MouseMove;
+            }
         }
 
         private void HandleClickDefaultAction(Element target)
@@ -1292,12 +1317,12 @@ pre {{
             var current = target;
             while (current != null)
             {
-                if (current.Tag == "a" && current.Attr != null && current.Attr.TryGetValue("href", out var href))
+                if (current.TagName == "a" && current.Attr != null && current.Attr.TryGetValue("href", out var href))
                 {
                     Task.Run(async () => await NavigateAsync(href));
                     return;
                 }
-                current = current.Parent as Element;
+                current = current.ParentElement;
             }
         }
 
@@ -1309,7 +1334,7 @@ pre {{
             var dom = _engine.GetActiveDom();
             if (dom == null) return Array.Empty<string>();
 
-            Element searchRoot = dom;
+            Element searchRoot = (dom as Element) ?? (dom as Document)?.DocumentElement;
             if (!string.IsNullOrEmpty(parentId) && _elementMap.TryGetValue(parentId, out var parent))
                 searchRoot = parent;
 
@@ -1340,25 +1365,25 @@ pre {{
                 }
                 else
                 {
-                    return root.Descendants().OfType<Element>().FirstOrDefault(n => n.Tag == value);
+                    return root.Descendants().OfType<Element>().FirstOrDefault(n => n.TagName == value);
                 }
             }
             else if (strategy == "xpath" && value.StartsWith("//"))
             {
                 var tag = value.Substring(2);
-                return root.Descendants().OfType<Element>().FirstOrDefault(n => n.Tag == tag);
+                return root.Descendants().OfType<Element>().FirstOrDefault(n => n.TagName == tag);
             }
             else if (strategy == "tag name")
             {
-                return root.Descendants().OfType<Element>().FirstOrDefault(n => n.Tag == value);
+                return root.Descendants().OfType<Element>().FirstOrDefault(n => string.Equals(n.NodeName, value, StringComparison.OrdinalIgnoreCase));
             }
             else if (strategy == "link text")
             {
-                return root.Descendants().OfType<Element>().FirstOrDefault(n => n.Tag == "a" && n.Text?.Trim() == value);
+                return root.Descendants().OfType<Element>().FirstOrDefault(n => string.Equals(n.NodeName, "a", StringComparison.OrdinalIgnoreCase) && n.TextContent?.Trim() == value);
             }
             else if (strategy == "partial link text")
             {
-                return root.Descendants().OfType<Element>().FirstOrDefault(n => n.Tag == "a" && n.Text?.Contains(value) == true);
+                return root.Descendants().OfType<Element>().FirstOrDefault(n => string.Equals(n.NodeName, "a", StringComparison.OrdinalIgnoreCase) && n.TextContent?.Contains(value) == true);
             }
             return null;
         }
@@ -1379,12 +1404,12 @@ pre {{
                 }
                 else
                 {
-                    return root.Descendants().OfType<Element>().Where(n => n.Tag == value);
+                    return root.Descendants().OfType<Element>().Where(n => n.TagName == value);
                 }
             }
             else if (strategy == "tag name")
             {
-                return root.Descendants().OfType<Element>().Where(n => n.Tag == value);
+                return root.Descendants().OfType<Element>().Where(n => n.TagName == value);
             }
             return Enumerable.Empty<Element>();
         }
@@ -1442,8 +1467,8 @@ pre {{
                 var sb = new System.Text.StringBuilder();
                 foreach (var n in el.SelfAndDescendants())
                 {
-                    if (n.IsText && !string.IsNullOrWhiteSpace(n.Text))
-                        sb.Append(n.Text.Trim()).Append(" ");
+                    if (n.IsText() && !string.IsNullOrWhiteSpace(n.TextContent))
+                        sb.Append(n.TextContent.Trim()).Append(" ");
                 }
                 return Task.FromResult(sb.ToString().Trim());
             }
@@ -1453,7 +1478,7 @@ pre {{
         public Task<string> GetElementTagNameAsync(string elementId)
         {
             if (_elementMap.TryGetValue(elementId, out var el))
-                return Task.FromResult(el.Tag?.ToLowerInvariant() ?? "");
+                return Task.FromResult(el.TagName?.ToLowerInvariant() ?? "");
             return Task.FromResult("");
         }
 
@@ -1480,7 +1505,7 @@ pre {{
                 if (el.Attr != null && el.Attr.TryGetValue("role", out var role))
                     return Task.FromResult(role);
                 // Default roles based on tag
-                return Task.FromResult(el.Tag switch
+                return Task.FromResult(el.TagName switch
                 {
                     "button" => "button",
                     "a" => "link",
@@ -1511,7 +1536,7 @@ pre {{
             // Clear input/textarea value
             if (_elementMap.TryGetValue(elementId, out var el))
             {
-                var tag = el.Tag?.ToLowerInvariant();
+                var tag = el.TagName?.ToLowerInvariant();
                 if (tag == "input" || tag == "textarea")
                 {
                     el.SetAttribute("value", "");
@@ -1525,7 +1550,7 @@ pre {{
             // Set value on input/textarea elements
             if (_elementMap.TryGetValue(elementId, out var el))
             {
-                var tag = el.Tag?.ToLowerInvariant();
+                var tag = el.TagName?.ToLowerInvariant();
                 if (tag == "input" || tag == "textarea")
                 {
                     var currentValue = el.GetAttribute("value") ?? "";
@@ -1537,11 +1562,11 @@ pre {{
 
         public Task<string> GetPageSourceAsync()
         {
-            // Serialize DOM back to HTML using Element.ToHtml()
+            // Serialize DOM back to HTML using Element.OuterHTML
             var dom = _engine.GetActiveDom();
             if (dom != null)
             {
-                return Task.FromResult(dom.ToHtml());
+                return Task.FromResult((dom as Element)?.OuterHTML ?? (dom as Document)?.DocumentElement?.OuterHTML ?? "");
             }
             return Task.FromResult("<html></html>");
         }
@@ -2010,18 +2035,19 @@ pre {{
 
             foreach (var node in _engine.ActiveDom.SelfAndDescendants())
             {
-                if (layout.TryGetElementRect(node, out var geo))
+                if (layout.TryGetElementRect(node as Element, out var geo))
                 {
                     // Check if point is inside
                     if (docX >= geo.Left && docX < geo.Right && 
                         docY >= geo.Top && docY < geo.Bottom)
                     {
-                        hit = node;
+                        if (node is Element el) hit = el;
+                        else if (node.ParentNode is Element parent) hit = parent;
                     }
                 }
             }
             
-            try { if (hit != null) FenLogger.Debug($"[BrowserApi] Hit test at ({docX},{docY}) found: {hit.Tag} (ID: {hit.Id})", LogCategory.General); } catch {}
+            try { if (hit != null) FenLogger.Debug($"[BrowserApi] Hit test at ({docX},{docY}) found: {hit.NodeName} (ID: {hit.Id})", LogCategory.General); } catch {}
             
             return hit;
         }
@@ -2034,7 +2060,7 @@ pre {{
         public async Task HandleClipboardCommand(string command, string data = null)
         {
              if (_focusedElement == null) return;
-             var tag = _focusedElement.Tag?.ToLowerInvariant();
+             var tag = _focusedElement.NodeName?.ToLowerInvariant();
              if (tag != "input" && tag != "textarea") return;
              
              var val = _focusedElement.GetAttribute("value") ?? "";
@@ -2105,7 +2131,7 @@ pre {{
                 return;
             }
             
-            var tag = element.Tag?.ToLowerInvariant();
+            var tag = element.NodeName?.ToLowerInvariant();
             
             // Handle anchor clicks
             if (tag == "a")
@@ -2122,7 +2148,7 @@ pre {{
                  element.GetAttribute("type")?.ToLowerInvariant() == "button")))
             {
                  // Verify if this is a search button (simplified check)
-                 try { FenLogger.Debug($"[BrowserApi] Button clicked: {element.Tag}", LogCategory.General); } catch {}
+                 try { FenLogger.Debug($"[BrowserApi] Button clicked: {element.NodeName}", LogCategory.General); } catch {}
             }
             // Handle input focus
             else if (tag == "input" || tag == "textarea")
@@ -2135,7 +2161,7 @@ pre {{
                 _cursorIndex = val.Length;
                 _selectionAnchor = -1;
                 
-                try { FenLogger.Debug($"[BrowserApi] Input focused: {element.Tag} (ID: {element.GetAttribute("id")})", LogCategory.General); } catch {}
+                try { FenLogger.Debug($"[BrowserApi] Input focused: {element.NodeName} (ID: {element.GetAttribute("id")})", LogCategory.General); } catch {}
                 
                 // Trigger a repaint to show caret (if we had one)
                 try { RepaintReady?.Invoke(this, _engine.GetActiveDom()); } catch {}
@@ -2153,7 +2179,7 @@ pre {{
                 {
                     _focusedElement = element;
                     ElementStateManager.Instance.SetFocusedElement(element);
-                    try { FenLogger.Debug($"[BrowserApi] Element focused: {element.Tag} (ID: {element.GetAttribute("id")})", LogCategory.General); } catch {}
+                    try { FenLogger.Debug($"[BrowserApi] Element focused: {element.NodeName} (ID: {element.GetAttribute("id")})", LogCategory.General); } catch {}
                 }
                 else
                 {
@@ -2174,7 +2200,7 @@ pre {{
             
             try
             {
-                var tag = _focusedElement.Tag?.ToLowerInvariant();
+                var tag = _focusedElement.NodeName?.ToLowerInvariant();
                 if (tag == "input" || tag == "textarea") // Added textarea support
                 {
                     var val = _focusedElement.GetAttribute("value") ?? "";
@@ -2419,4 +2445,7 @@ pre {{
         }
     }
 }
+
+
+
 

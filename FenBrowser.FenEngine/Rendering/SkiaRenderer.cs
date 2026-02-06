@@ -160,8 +160,10 @@ namespace FenBrowser.FenEngine.Rendering
             // INVARIANT: Skip invalid geometry, don't crash
             if (!IsValidBounds(node.Bounds)) return;
             
-            // Cull nodes outside viewport
-            if (!node.IntersectsViewport(viewport) && node.Bounds.Width > 0 && node.Bounds.Height > 0)
+            // Cull nodes outside viewport using robust bounds math.
+            // Some node types report viewport intersection incorrectly when bounds are runaway.
+            if (node.Bounds.Width > 0 && node.Bounds.Height > 0 &&
+                !IntersectsViewportBounds(node.Bounds, viewport))
             {
                 return;
             }
@@ -343,6 +345,14 @@ namespace FenBrowser.FenEngine.Rendering
                    !float.IsInfinity(bounds.Right) && !float.IsInfinity(bounds.Bottom) &&
                    bounds.Width < 100000 && bounds.Height < 100000; // Sanity check
         }
+
+        private static bool IntersectsViewportBounds(SKRect bounds, SKRect viewport)
+        {
+            return bounds.Right > viewport.Left &&
+                   bounds.Left < viewport.Right &&
+                   bounds.Bottom > viewport.Top &&
+                   bounds.Top < viewport.Bottom;
+        }
         
         /// <summary>
         /// Draws the node's own content (not children).
@@ -396,6 +406,7 @@ namespace FenBrowser.FenEngine.Rendering
         private void DrawBackground(IRenderBackend backend, BackgroundPaintNode node)
         {
             if (!node.Color.HasValue && node.Gradient == null) return;
+            if (node.Bounds.Width <= 0 || node.Bounds.Height <= 0) return;
             
             bool hasRadius = node.BorderRadius != null && HasNonZeroRadius(node.BorderRadius);
             
@@ -482,6 +493,7 @@ namespace FenBrowser.FenEngine.Rendering
         private void DrawBorder(IRenderBackend backend, BorderPaintNode node)
         {
             if (node.Widths == null || node.Colors == null) return;
+            if (node.Bounds.Width <= 0 || node.Bounds.Height <= 0) return;
             
             // Construct BorderStyle for backend
             // SkiaRenderer previously had logic to simplify rounded borders to uniform stroke
@@ -587,6 +599,14 @@ namespace FenBrowser.FenEngine.Rendering
                 string cleanText = node.FallbackText.Replace("\r", "").Replace("\n", "").Replace("\t", " ");
                 if (!string.IsNullOrWhiteSpace(cleanText))
                 {
+                    // DEBUG: Log text rendering
+                    // Log if text contains "centered" (case insensitive) or "This text"
+                    if (cleanText.IndexOf("centered", StringComparison.OrdinalIgnoreCase) >= 0 || 
+                        cleanText.Contains("This text"))
+                    {
+                        FenBrowser.Core.FenLogger.Info($"[DRAW-TEXT-DEBUG] Drawing '{cleanText}' at Origin=({node.TextOrigin.X:F2}, {node.TextOrigin.Y:F2}) Color={node.Color}", FenBrowser.Core.Logging.LogCategory.Layout);
+                    }
+                    
                     backend.DrawText(cleanText, node.TextOrigin, node.Color, fontSize, typeface);
                     // Measure text logic would be needed for correct decoration width...
                     // For fallback, we might skip precise decoration width or guess.
@@ -655,6 +675,11 @@ namespace FenBrowser.FenEngine.Rendering
             // 3. A bitmap was corrupted during async loading
             try
             {
+                if (node.Bounds.Width <= 0 || node.Bounds.Height <= 0)
+                {
+                    return;
+                }
+
                 FenLogger.Debug($"[SkiaRenderer] DrawImage called. Bounds={node.Bounds}, Bitmap={(node.Bitmap != null ? $"{node.Bitmap.Width}x{node.Bitmap.Height}" : "NULL")}");
                 
                 // Guard: Check bitmap validity before accessing

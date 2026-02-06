@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
 using FenBrowser.Core;
@@ -51,7 +51,11 @@ namespace FenBrowser.FenEngine.Rendering
         
         // Currently focused element (only one at a time)
         private Element _focusedElement;
-        
+
+        // Tracks whether the current focus was triggered by keyboard navigation
+        // This is used for :focus-visible pseudo-class matching per CSS Selectors Level 4
+        private bool _focusFromKeyboard;
+
         // Currently active (mouse down) element
         private Element _activeElement;
         
@@ -77,7 +81,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (_hoveredElement == element)
                 return;
                 
-            FenLogger.Debug($"[ElementState] Hover changed: {_hoveredElement?.Tag ?? "null"} -> {element?.Tag ?? "null"}", LogCategory.Layout);
+            FenLogger.Debug($"[ElementState] Hover changed: {_hoveredElement?.TagName ?? "null"} -> {element?.TagName ?? "null"}", LogCategory.Layout);
             
             // Build list of elements that need style update
             var toUpdate = new List<Element>();
@@ -102,7 +106,7 @@ namespace FenBrowser.FenEngine.Rendering
                     _hoverChain.Add(current);
                     if (!toUpdate.Contains(current))
                         toUpdate.Add(current);
-                    current = current.Parent as Element;
+                    current = current.ParentElement;
                 }
             }
             
@@ -133,12 +137,17 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Set the currently focused element. Builds the focus-within chain.
         /// </summary>
-        public void SetFocusedElement(Element element)
+        /// <param name="element">The element to focus</param>
+        /// <param name="fromKeyboard">True if focus was triggered by keyboard (Tab, Enter, arrow keys), false for mouse/touch</param>
+        public void SetFocusedElement(Element element, bool fromKeyboard = false)
         {
-            if (_focusedElement == element)
+            if (_focusedElement == element && _focusFromKeyboard == fromKeyboard)
                 return;
-                
-            FenLogger.Debug($"[ElementState] Focus changed: {_focusedElement?.Tag ?? "null"} -> {element?.Tag ?? "null"}", LogCategory.Layout);
+
+            // Update keyboard focus state
+            _focusFromKeyboard = fromKeyboard;
+
+            FenLogger.Debug($"[ElementState] Focus changed: {_focusedElement?.TagName ?? "null"} -> {element?.TagName ?? "null"} (keyboard={fromKeyboard})", LogCategory.Layout);
             
             // Build list of elements that need style update
             var toUpdate = new List<Element>();
@@ -166,7 +175,7 @@ namespace FenBrowser.FenEngine.Rendering
                     _focusWithinChain.Add(current);
                     if (!toUpdate.Contains(current))
                         toUpdate.Add(current);
-                    current = current.Parent as Element;
+                    current = current.ParentElement;
                 }
             }
             
@@ -201,8 +210,79 @@ namespace FenBrowser.FenEngine.Rendering
         /// Get the currently focused element
         /// </summary>
         public Element FocusedElement => _focusedElement;
+
+        /// <summary>
+        /// Check if an element matches :focus-visible pseudo-class.
+        /// Per CSS Selectors Level 4, :focus-visible matches when:
+        /// 1. The element is focused, AND
+        /// 2. The UA determines a visible focus indicator should be shown
+        ///    (typically when focus was triggered by keyboard navigation)
+        ///
+        /// Additionally, certain elements like text inputs always show focus-visible
+        /// when focused, regardless of how focus was triggered.
+        /// Reference: https://www.w3.org/TR/selectors-4/#focus-visible-pseudo
+        /// </summary>
+        public bool IsFocusVisible(Element element)
+        {
+            if (element == null || _focusedElement != element)
+                return false;
+
+            // If focus was triggered by keyboard, always show focus-visible
+            if (_focusFromKeyboard)
+                return true;
+
+            // Certain elements always show :focus-visible when focused,
+            // per the UA heuristic in the spec (e.g., text inputs)
+            if (element.TagName != null)
+            {
+                var tag = element.TagName.ToLowerInvariant();
+
+                // Text input elements always show focus ring
+                if (tag == "input")
+                {
+                    string type = null;
+                    element.Attr?.TryGetValue("type", out type);
+                    type = type?.ToLowerInvariant() ?? "text";
+
+                    // Text-like inputs always show focus-visible
+                    if (type == "text" || type == "password" || type == "email" ||
+                        type == "url" || type == "tel" || type == "number" ||
+                        type == "search" || type == "date" || type == "time" ||
+                        type == "datetime-local" || type == "month" || type == "week")
+                    {
+                        return true;
+                    }
+                }
+
+                // Textareas always show focus ring
+                if (tag == "textarea")
+                    return true;
+
+                // Select elements always show focus ring
+                if (tag == "select")
+                    return true;
+
+                // Elements with contenteditable always show focus ring
+                if (element.Attr?.ContainsKey("contenteditable") == true)
+                {
+                    string editable = null;
+                    element.Attr.TryGetValue("contenteditable", out editable);
+                    if (editable != "false")
+                        return true;
+                }
+            }
+
+            // For other elements (buttons, links, etc.), only show focus-visible
+            // if focus was from keyboard
+            return false;
+        }
+
+        /// <summary>
+        /// Check if the current focus was triggered by keyboard navigation
+        /// </summary>
+        public bool IsFocusFromKeyboard => _focusFromKeyboard;
         #endregion
-        
+
         #region Active State
         /// <summary>
         /// Set the currently active (mouse down) element
@@ -215,7 +295,7 @@ namespace FenBrowser.FenEngine.Rendering
             var oldActive = _activeElement;
             _activeElement = element;
             
-            FenLogger.Debug($"[ElementState] Active changed: {oldActive?.Tag ?? "null"} -> {element?.Tag ?? "null"}", LogCategory.Layout);
+            FenLogger.Debug($"[ElementState] Active changed: {oldActive?.TagName ?? "null"} -> {element?.TagName ?? "null"}", LogCategory.Layout);
             
             // Notify about both old and new
             if (oldActive != null)
@@ -239,7 +319,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 if (current == element)
                     return true;
-                current = current.Parent as Element;
+                current = current.ParentElement;
             }
             return false;
         }
@@ -279,6 +359,15 @@ namespace FenBrowser.FenEngine.Rendering
             if (element == null)
                 return false;
             return _checkedElements.Contains(element);
+        }
+
+        /// <summary>
+        /// Check if an element is disabled (has disabled attribute)
+        /// </summary>
+        public bool IsDisabled(Element element)
+        {
+            if (element == null) return false;
+            return element.Attr?.ContainsKey("disabled") == true;
         }
         #endregion
         
@@ -327,7 +416,7 @@ namespace FenBrowser.FenEngine.Rendering
         public static bool IsFormElement(Element element)
         {
             if (element == null) return false;
-            var tag = element.Tag?.ToLowerInvariant();
+            var tag = element.TagName?.ToLowerInvariant();
             return tag == "input" || tag == "select" || tag == "textarea" || 
                    tag == "button" || tag == "fieldset" || tag == "output";
         }
@@ -342,7 +431,7 @@ namespace FenBrowser.FenEngine.Rendering
             // Check required attribute
             bool required = element.Attr?.ContainsKey("required") == true;
             
-            if (element.Tag?.Equals("input", StringComparison.OrdinalIgnoreCase) == true)
+            if (element.TagName?.Equals("input", StringComparison.OrdinalIgnoreCase) == true)
             {
                 string type = null;
                 element.Attr?.TryGetValue("type", out type);
@@ -398,15 +487,15 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }
             }
-            else if (element.Tag?.Equals("textarea", StringComparison.OrdinalIgnoreCase) == true ||
-                     element.Tag?.Equals("select", StringComparison.OrdinalIgnoreCase) == true)
+            else if (element.TagName?.Equals("textarea", StringComparison.OrdinalIgnoreCase) == true ||
+                     element.TagName?.Equals("select", StringComparison.OrdinalIgnoreCase) == true)
             {
                 if (required)
                 {
                     string value = null;
                     element.Attr?.TryGetValue("value", out value);
                     // Check if element has any text content
-                    string textContent = element.Text;
+                    string textContent = element.TextContent;
                     if (string.IsNullOrEmpty(value) && string.IsNullOrEmpty(textContent))
                         return false;
                 }
@@ -450,6 +539,7 @@ namespace FenBrowser.FenEngine.Rendering
         {
             _hoveredElement = null;
             _focusedElement = null;
+            _focusFromKeyboard = false;
             _activeElement = null;
             _hoverChain.Clear();
             _focusWithinChain.Clear();
@@ -473,6 +563,8 @@ namespace FenBrowser.FenEngine.Rendering
                     return IsFocused(element);
                 case "focus-within":
                     return IsFocusWithin(element);
+                case "focus-visible":
+                    return IsFocusVisible(element);
                 case "active":
                     return IsActive(element);
                 // checked, disabled, enabled are attribute-based - handled separately
@@ -483,4 +575,7 @@ namespace FenBrowser.FenEngine.Rendering
         #endregion
     }
 }
+
+
+
 

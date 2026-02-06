@@ -1,11 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.FenEngine.Layout;
 using FenBrowser.Core.Logging;
 using SkiaSharp;
+using FenBrowser.FenEngine.Typography;
+using System.Text.RegularExpressions;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -86,7 +88,7 @@ namespace FenBrowser.FenEngine.Rendering
             
             // Populate Top Layer set
             Document doc = root as Document;
-            if (doc != null && doc.TopLayer != null)
+            if (doc != null)
             {
                 foreach (var el in doc.TopLayer)
                     builder._topLayerElements.Add(el);
@@ -159,19 +161,29 @@ namespace FenBrowser.FenEngine.Rendering
             // Only process Elements and Text nodes for actual painting
             if (!(node is Element) && !(node is Text)) return;
             
-            // Get box model - if no box, element is not rendered (e.g., display:none)
-            if (!_boxes.TryGetValue(node, out var box) || box == null) return;
-            
             // Get computed style
             // If node is Text, use parent's style
             CssComputed style = null;
-            if (node.NodeType == NodeType.Text && node.Parent != null)
+            if (node.NodeType == NodeType.Text && node.ParentNode != null)
             {
-                _styles.TryGetValue(node.Parent, out style);
+                _styles.TryGetValue(node.ParentNode, out style);
             }
             else
             {
                 _styles.TryGetValue(node, out style);
+            }
+
+            // Get box model. Some inline SVG elements fail to receive a direct layout box even though
+            // the parent wrapper is sized; synthesize a paint box from parent geometry in that case.
+            if (!TryResolvePaintBox(node, style, out var box) || box == null)
+            {
+                // If the element itself doesn't have a paint box, still allow its children to render.
+                // This prevents small inline wrappers (e.g., SPAN around SVG icons) from swallowing content.
+                if (node is Element && !ShouldHide(node, style))
+                {
+                    ProcessChildren(node, currentContext, depth + 1, escapeContext);
+                }
+                return;
             }
 
             // ABSOLUTE POSITION ESCAPE LOGIC
@@ -302,7 +314,7 @@ namespace FenBrowser.FenEngine.Rendering
                     
                     // Limit by Containing Block (Parent)
                     // The sticky element cannot escape its parent.
-                    if (node.Parent is Element parentEl && _boxes.TryGetValue(parentEl, out var parentBox))
+                    if (node.ParentElement is Element parentEl && _boxes.TryGetValue(parentEl, out var parentBox))
                     {
                         float limitY = parentBox.ContentBox.Bottom - box.MarginBox.Height - (float)style.Margin.Bottom;
                         targetY = Math.Min(targetY, limitY);
@@ -472,9 +484,226 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
+        private bool TryResolvePaintBox(Node node, CssComputed style, out Layout.BoxModel box)
+        {
+            box = null;
+            if (node is not Element element)
+            {
+                return _boxes.TryGetValue(node, out box) && box != null;
+            }
+
+            string tag = element.TagName?.ToUpperInvariant() ?? string.Empty;
+            bool isSvg = tag == "SVG" || tag.EndsWith(":SVG", StringComparison.Ordinal);
+
+            bool hasExisting = _boxes.TryGetValue(node, out var existingBox) && existingBox != null;
+            if (!isSvg)
+            {
+                box = existingBox;
+                return hasExisting;
+            }
+
+            bool hasExplicitWidth = style?.Width.HasValue == true && style.Width.Value > 0;
+            bool hasExplicitHeight = style?.Height.HasValue == true && style.Height.Value > 0;
+            bool hasExplicitAttrWidth = TryParseSvgLengthAttribute(element, "width", out var attrW);
+            bool hasExplicitAttrHeight = TryParseSvgLengthAttribute(element, "height", out var attrH);
+            bool hasExplicitSize = hasExplicitWidth || hasExplicitHeight || hasExplicitAttrWidth || hasExplicitAttrHeight;
+
+            // Keep normal layout boxes when they look sane.
+            if (hasExisting)
+            {
+                float bw = existingBox.ContentBox.Width;
+                float bh = existingBox.ContentBox.Height;
+                bool hasUsableSize = bw > 2f && bh > 2f;
+                bool explicitNonZero = hasExplicitSize && bw > 0f && bh > 0f;
+                if (hasUsableSize || explicitNonZero)
+                {
+                    box = existingBox;
+                    return true;
+                }
+            }
+
+            // Some inline SVG icons (Google material icons, search controls) miss direct layout boxes.
+            // Walk up to the nearest ancestor with geometry and synthesize a paint box.
+            Layout.BoxModel parentBox = null;
+            Node anchor = element.ParentNode;
+            while (anchor != null)
+            {
+                if (_boxes.TryGetValue(anchor, out parentBox) &&
+                    parentBox != null &&
+                    parentBox.ContentBox.Width > 0f &&
+                    parentBox.ContentBox.Height > 0f)
+                {
+                    break;
+                }
+                anchor = anchor.ParentNode;
+            }
+
+            if (parentBox == null)
+            {
+                box = existingBox;
+                return box != null;
+            }
+
+            float width = 0f;
+            float height = 0f;
+
+            if (hasExplicitWidth)
+            {
+                width = (float)style.Width.Value;
+            }
+            if (hasExplicitHeight)
+            {
+                height = (float)style.Height.Value;
+            }
+
+            if (width <= 0f && hasExplicitAttrWidth)
+            {
+                width = attrW;
+            }
+            if (height <= 0f && hasExplicitAttrHeight)
+            {
+                height = attrH;
+            }
+
+            float parentW = parentBox.ContentBox.Width;
+            float parentH = parentBox.ContentBox.Height;
+
+            // Use viewBox ratio when available.
+            if ((width <= 0f || height <= 0f) && TryParseSvgViewBoxSize(element, out var vbW, out var vbH))
+            {
+                if (parentW > 0f && parentH > 0f)
+                {
+                    float scale = Math.Min(parentW / vbW, parentH / vbH);
+                    if (!float.IsNaN(scale) && !float.IsInfinity(scale) && scale > 0f)
+                    {
+                        if (width <= 0f) width = vbW * scale;
+                        if (height <= 0f) height = vbH * scale;
+                    }
+                }
+                else
+                {
+                    if (width <= 0f) width = vbW;
+                    if (height <= 0f) height = vbH;
+                }
+            }
+
+            if (width <= 0f)
+            {
+                // Icon wrappers are generally <= 64px and should default to 24px glyphs.
+                if (parentW > 0f && parentW <= 64f)
+                {
+                    width = Math.Min(parentW, 24f);
+                }
+                else
+                {
+                    width = parentW > 0f ? parentW : 24f;
+                }
+            }
+            if (height <= 0f)
+            {
+                if (style?.LineHeight.HasValue == true && style.LineHeight.Value > 0)
+                {
+                    height = (float)style.LineHeight.Value;
+                }
+                else
+                {
+                    float parentHeight = parentH > 0 ? parentH : 24f;
+                    height = Math.Min(parentHeight, width);
+                }
+            }
+
+            parentW = parentW > 0 ? parentW : width;
+            parentH = parentH > 0 ? parentH : height;
+
+            width = Math.Max(1f, Math.Min(width, parentW));
+            height = Math.Max(1f, Math.Min(height, parentH));
+
+            float left = parentBox.ContentBox.Left;
+            float top = parentBox.ContentBox.Top;
+
+            if (parentW > width)
+            {
+                left += (parentW - width) * 0.5f;
+            }
+            if (parentH > height)
+            {
+                top += (parentH - height) * 0.5f;
+            }
+
+            box = Layout.BoxModel.FromContentBox(left, top, width, height);
+            return true;
+        }
+
+        private static bool TryParseSvgLengthAttribute(Element element, string attributeName, out float value)
+        {
+            value = 0f;
+            string raw = element.GetAttribute(attributeName);
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return false;
+            }
+
+            raw = raw.Trim();
+            int count = 0;
+            while (count < raw.Length)
+            {
+                char ch = raw[count];
+                if ((ch >= '0' && ch <= '9') || ch == '.' || ch == '-')
+                {
+                    count++;
+                    continue;
+                }
+
+                break;
+            }
+
+            if (count == 0)
+            {
+                return false;
+            }
+
+            string numeric = raw.Substring(0, count);
+            if (!float.TryParse(numeric, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out value))
+            {
+                value = 0f;
+                return false;
+            }
+
+            value = Math.Max(0f, value);
+            return true;
+        }
+
+        private static bool TryParseSvgViewBoxSize(Element element, out float width, out float height)
+        {
+            width = 0f;
+            height = 0f;
+
+            string raw = element.GetAttribute("viewBox") ?? element.GetAttribute("viewbox");
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return false;
+            }
+
+            var parts = raw.Split(new[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 4)
+            {
+                return false;
+            }
+
+            if (!float.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var w) ||
+                !float.TryParse(parts[3], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var h))
+            {
+                return false;
+            }
+
+            width = Math.Abs(w);
+            height = Math.Abs(h);
+            return width > 0f && height > 0f;
+        }
+
         private Element FindNearestScrollContainer(Element startNode)
         {
-            var curr = startNode?.Parent as Element;
+            var curr = startNode?.ParentElement;
             while (curr != null)
             {
                 if (_styles.TryGetValue(curr, out var s))
@@ -483,7 +712,7 @@ namespace FenBrowser.FenEngine.Rendering
                                    s.OverflowY == "scroll" || s.OverflowY == "auto");
                     if (scroll) return curr;
                 }
-                curr = curr.Parent as Element;
+                curr = curr.ParentElement;
             }
             return null; // Viewport
         }
@@ -535,7 +764,7 @@ namespace FenBrowser.FenEngine.Rendering
             // CRITICAL FIX: Disable focus ring for root elements (HTML/BODY) to prevent "Blue Edge" 
             if (elemNode != null)
             {
-                string tag = elemNode.Tag?.ToUpperInvariant();
+                string tag = elemNode.TagName?.ToUpperInvariant();
                 // Prevent focus ring on root document/body which causes persistent blue borders
                 if (tag == "HTML" || tag == "BODY")
                 {
@@ -582,21 +811,21 @@ namespace FenBrowser.FenEngine.Rendering
             }
             else if (node is Element elem)
             {
-                string tagUpper = elem.Tag?.ToUpperInvariant();
+                string tagUpper = elem.TagName?.ToUpperInvariant();
                 if (tagUpper == "IMG")
                 {
                     global::FenBrowser.Core.FenLogger.Debug($"[PAINT-BUILD] Found IMG element id={elem.GetAttribute("id")} src={(elem.GetAttribute("src")?.Length > 60 ? elem.GetAttribute("src")?.Substring(0,60) + "..." : elem.GetAttribute("src"))}");
                 }
                 if (tagUpper.Contains("SVG"))
                 {
-                     global::FenBrowser.Core.FenLogger.Debug($"[SVG-CANDIDATE] <{elem.Tag}> id={elem.GetAttribute("id")} class={elem.GetAttribute("class")} src={elem.GetAttribute("src")}", FenBrowser.Core.Logging.LogCategory.Rendering);
+                     global::FenBrowser.Core.FenLogger.Debug($"[SVG-CANDIDATE] <{elem.TagName}> id={elem.GetAttribute("id")} class={elem.GetAttribute("class")} src={elem.GetAttribute("src")}", FenBrowser.Core.Logging.LogCategory.Rendering);
                 }
                 if (IsImageElement(elem) || tagUpper == "SVG" || tagUpper.EndsWith(":SVG")) // Handle namespace?
                 {
                     var imageNode = BuildImageOrSvgNode(elem, box, style, isFocused, isHovered);
                     if (imageNode != null) nodes.Add(imageNode);
                 }
-                else if (elem.Tag?.ToUpperInvariant() == "INPUT")
+                else if (elem.TagName?.ToUpperInvariant() == "INPUT")
                 {
                     string inputType = elem.GetAttribute("type")?.ToLowerInvariant() ?? "text";
                     if (inputType == "checkbox" || inputType == "radio" || inputType == "color" || inputType == "range" ||
@@ -611,28 +840,28 @@ namespace FenBrowser.FenEngine.Rendering
                         if (inputNode != null) nodes.Add(inputNode);
                     }
                 }
-                else if (elem.Tag?.ToUpperInvariant() == "TEXTAREA")
+                else if (elem.TagName?.ToUpperInvariant() == "TEXTAREA")
                 {
                     var inputNode = BuildInputTextNode(elem, box, style, isFocused, isHovered);
                     if (inputNode != null) nodes.Add(inputNode);
                 }
-                else if (elem.Tag?.ToUpperInvariant() == "RUBY")
+                else if (elem.TagName?.ToUpperInvariant() == "RUBY")
                 {
                     // Ruby annotation - render RT above base text
                     var rubyNodes = BuildRubyTextNode(elem, box, style);
                     if (rubyNodes != null) nodes.AddRange(rubyNodes);
                 }
-                else if (elem.Tag?.ToUpperInvariant() == "VIDEO")
+                else if (elem.TagName?.ToUpperInvariant() == "VIDEO")
                 {
                     var videoNode = BuildVideoPlaceholder(elem, box, style);
                     if (videoNode != null) nodes.Add(videoNode);
                 }
-                else if (elem.Tag?.ToUpperInvariant() == "AUDIO")
+                else if (elem.TagName?.ToUpperInvariant() == "AUDIO")
                 {
                     var audioNode = BuildAudioPlaceholder(elem, box, style);
                     if (audioNode != null) nodes.Add(audioNode);
                 }
-                else if (elem.Tag?.ToUpperInvariant() == "IFRAME")
+                else if (elem.TagName?.ToUpperInvariant() == "IFRAME")
                 {
                     var iframeNode = BuildIframePlaceholder(elem, box, style);
                     if (iframeNode != null) nodes.Add(iframeNode);
@@ -1038,7 +1267,7 @@ namespace FenBrowser.FenEngine.Rendering
                  if (node is Element elem)
                  {
                      _styles.TryGetValue(elem, out var style);
-                     bool isAtomic = style?.Display == "inline-block" || elem.Tag == "IMG" || elem.Tag == "INPUT" || elem.Tag == "BUTTON";
+                     bool isAtomic = style?.Display == "inline-block" || elem.TagName == "IMG" || elem.TagName == "INPUT" || elem.TagName == "BUTTON";
                      if (isAtomic)
                      {
                          rects.Add(box.BorderBox);
@@ -1099,7 +1328,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 if (node is Element e)
                 {
-                    string tag = e.Tag?.ToUpperInvariant();
+                    string tag = e.TagName?.ToUpperInvariant();
                     string type = e.GetAttribute("type")?.ToLowerInvariant();
                     
                     if (tag == "INPUT" && type != "hidden")
@@ -1289,7 +1518,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                  if (node is Element e)
                  {
-                    string tag = e.Tag?.ToUpperInvariant();
+                    string tag = e.TagName?.ToUpperInvariant();
                     string type = e.GetAttribute("type")?.ToLowerInvariant();
                     
                     if ((tag == "INPUT" && type != "hidden") || tag == "BUTTON" || (tag == "INPUT" && (type == "button" || type == "submit" || type == "reset")))
@@ -1402,16 +1631,18 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
         
+        private static readonly SkiaFontService _fontService = new SkiaFontService();
+
         // CHANGED: Returned list of nodes to support multi-line text
-        private List<TextPaintNode> BuildTextNode(FenBrowser.Core.Dom.Text textNode, Layout.BoxModel box, CssComputed style, bool isFocused, bool isHovered)
+        private List<TextPaintNode> BuildTextNode(Text textNode, Layout.BoxModel box, CssComputed style, bool isFocused, bool isHovered)
         {
             if (string.IsNullOrEmpty(textNode.Data)) return null;
             
             // Get parent style for text rendering
             var parentStyle = style;
-            if (parentStyle == null && textNode.Parent != null)
+            if (parentStyle == null && textNode.ParentElement != null)
             {
-                _styles.TryGetValue(textNode.Parent, out parentStyle);
+                _styles.TryGetValue(textNode.ParentElement, out parentStyle);
             }
             
             string fontFamily = parentStyle?.FontFamilyName;
@@ -1440,19 +1671,19 @@ namespace FenBrowser.FenEngine.Rendering
             else
             {
                 // UA Default: Underline for links - ONLY if property is not specified
-                var ancestor = textNode.Parent as Element;
+                var ancestor = textNode.ParentElement;
                 bool inNav = false;
                 Element anchorEl = null;
                 while (ancestor != null)
                 {
-                    string tag = ancestor.Tag?.ToUpperInvariant();
+                    string tag = ancestor.TagName?.ToUpperInvariant();
                     if (tag == "NAV" || tag == "HEADER" || ancestor.Id == "main-nav" || ancestor.Id == "site") inNav = true;
                     if (tag == "A") 
                     {
                         anchorEl = ancestor;
                         break; 
                     }
-                    ancestor = ancestor.Parent as Element;
+                    ancestor = ancestor.ParentElement;
                 }
                 
                 if (anchorEl != null && !inNav)
@@ -1477,13 +1708,78 @@ namespace FenBrowser.FenEngine.Rendering
             // If BoxModel has Lines populated (from TextLayoutComputer), use them.
             if (box.Lines != null && box.Lines.Count > 0)
             {
+                // DEBUG: Log geometry for alignment test nodes
+                if (textNode.NodeName == "#text" && (box.Lines.Count < 5 || box.Lines.Count > 50))
+                {
+                    FenBrowser.Core.FenLogger.Debug($"[PAINT-GEOMETRY] Node={textNode.GetHashCode()} Lines={box.Lines.Count} Box={box.ContentBox}");
+                    foreach(var l in box.Lines)
+                    {
+                         var finalX = box.ContentBox.Left + l.Origin.X;
+                         var finalY = box.ContentBox.Top + l.Origin.Y;
+                         FenBrowser.Core.FenLogger.Debug($"   - Line: '{l.Text}' Origin=({l.Origin.X}, {l.Origin.Y}) Final=({finalX}, {finalY})");
+                    }
+                }
+
                 var list = new List<TextPaintNode>();
+
+                
+                // Calculate total line height to determine vertical centering offset
+                float totalLineHeight = 0;
+                foreach (var l in box.Lines)
+                {
+                    totalLineHeight += l.Height;
+                }
+                
+                // FIX: Vertically center text when parent container is taller than text content
+                // For stretched flex items, parent box height > text line height, so we offset the text
+                float mlContainerHeight = totalLineHeight; // Default: no centering
+                SKRect parentContentBox = box.ContentBox; // Default: use text's own box
+                
+                if (textNode.ParentNode != null && _boxes.TryGetValue(textNode.ParentNode, out var mlParentBox))
+                {
+                    parentContentBox = mlParentBox.ContentBox;
+                    mlContainerHeight = parentContentBox.Height;
+                }
+                
+                float verticalCenterOffset = 0;
+                if (mlContainerHeight > totalLineHeight && totalLineHeight > 0)
+                {
+                    // FIXED: This logic was conflicting with InlineLayoutComputer which already positions lines.
+                    // The line boxes are already laid out relative to their container.
+                    // Vertically centering them again here pushes them out of bounds if container is taller.
+                    verticalCenterOffset = 0;
+                }
+                
+                // DEBUG: Log multi-line positioning values
+                var sampleText = box.Lines.Count > 0 ? box.Lines[0].Text : "";
+                // Show full text to debug whitespace
+                FenBrowser.Core.FenLogger.Info($"[ML-TEXT-POS] '{sampleText}' (Len={sampleText.Length}) TextTop={box.ContentBox.Top:F1} ParentTop={parentContentBox.Top:F1} ContainerH={mlContainerHeight:F1} TotalLH={totalLineHeight:F1} Lines={box.Lines.Count} Offset={verticalCenterOffset:F1}", FenBrowser.Core.Logging.LogCategory.Layout);
+                
                 foreach (var line in box.Lines)
                 {
+                    if (string.IsNullOrEmpty(line.Text))
+                    {
+                        continue;
+                    }
+
                     // Calculate absolute bounds for this line
                     float absX = box.ContentBox.Left + line.Origin.X;
-                    float absY = box.ContentBox.Top + line.Origin.Y;
-                    var lineBounds = new SKRect(absX, absY, absX + line.Width, absY + line.Height);
+                    float absY = box.ContentBox.Top + line.Origin.Y + verticalCenterOffset;
+                    float resolvedLineWidth = line.Width;
+                    if (resolvedLineWidth <= 0 && !string.IsNullOrEmpty(line.Text))
+                    {
+                        var measurementStyle = parentStyle ?? style ?? new CssComputed();
+                        string measurementFamily = measurementStyle.FontFamilyName ?? "Segoe UI";
+                        float measurementSize = (float)(measurementStyle.FontSize ?? 16);
+                        int measurementWeight = measurementStyle.FontWeight ?? 400;
+                        resolvedLineWidth = _fontService.MeasureTextWidth(line.Text, measurementFamily, measurementSize, measurementWeight);
+                        if (resolvedLineWidth <= 0) resolvedLineWidth = measurementSize * 0.6f;
+                    }
+                    if (resolvedLineWidth <= 0.01f || line.Height <= 0.01f)
+                    {
+                        continue;
+                    }
+                    var lineBounds = new SKRect(absX, absY, absX + resolvedLineWidth, absY + line.Height);
                     
                     // Origin for text drawing (Baseline)
                     var textOrigin = new SKPoint(absX, absY + line.Baseline);
@@ -1502,8 +1798,11 @@ namespace FenBrowser.FenEngine.Rendering
                         IsHovered = isHovered
                     });
                 }
+                if (list.Count == 0) return null;
                 return list;
             }
+
+
 
             // FALLBACK (Single Line) - OLD LOGIC
             string displayText = System.Text.RegularExpressions.Regex.Replace(textNode.Data, @"\s+", " ");
@@ -1519,17 +1818,49 @@ namespace FenBrowser.FenEngine.Rendering
                                          .Replace("&#x2718;", "✘");
             }
             if (displayText.Contains("&amp;")) displayText = displayText.Replace("&amp;", "&");
+            if (string.IsNullOrWhiteSpace(displayText))
+            {
+                return null;
+            }
+
+            float fallbackTextWidth = _fontService.MeasureTextWidth(
+                displayText,
+                parentStyle?.FontFamilyName ?? style?.FontFamilyName ?? "Segoe UI",
+                fontSize,
+                parentStyle?.FontWeight ?? style?.FontWeight ?? 400);
+            if (fallbackTextWidth <= 0.01f && box.ContentBox.Width <= 0.01f)
+            {
+                return null;
+            }
+            
+            float fbLineHeight = fontSize * 1.2f;
+            float resolvedBoxHeight = Math.Max(box.ContentBox.Height, fbLineHeight);
+            float resolvedBoxWidth = Math.Max(box.ContentBox.Width, fallbackTextWidth);
+            if (resolvedBoxWidth <= 0.01f || resolvedBoxHeight <= 0.01f)
+            {
+                return null;
+            }
+
+            var drawBounds = new SKRect(
+                box.ContentBox.Left,
+                box.ContentBox.Top,
+                box.ContentBox.Left + resolvedBoxWidth,
+                box.ContentBox.Top + resolvedBoxHeight);
+            float baselineY = drawBounds.Top + fontSize * 0.85f;
+            
+            // DEBUG: Log positioning values to understand the issue
+            FenBrowser.Core.FenLogger.Info($"[TEXT-POS] '{displayText.Substring(0, Math.Min(20, displayText.Length))}...' TextBoxTop={drawBounds.Top} TextBoxH={drawBounds.Height} TextBoxW={drawBounds.Width} LineH={fbLineHeight} BaselineY={baselineY}", FenBrowser.Core.Logging.LogCategory.Layout);
             
             return new List<TextPaintNode> 
             {
                 new TextPaintNode
                 {
-                    Bounds = box.ContentBox,
+                    Bounds = drawBounds,
                     SourceNode = textNode,
                     Color = color,
                     FontSize = fontSize,
                     Typeface = typeface,
-                    TextOrigin = new SKPoint(box.ContentBox.Left, box.ContentBox.Top + fontSize * 0.9f),
+                    TextOrigin = new SKPoint(drawBounds.Left, baselineY),
                     FallbackText = displayText,
                     TextDecorations = textDecorations,
                     WritingMode = parentStyle?.WritingMode,
@@ -1537,12 +1868,13 @@ namespace FenBrowser.FenEngine.Rendering
                     IsHovered = isHovered
                 }
             };
+
         }
         
         private ImagePaintNode BuildImageOrSvgNode(Element elem, Layout.BoxModel box, CssComputed style, bool isFocused, bool isHovered)
         {
             string url = null;
-            string tag = elem.Tag?.ToUpperInvariant();
+            string tag = elem.TagName?.ToUpperInvariant();
             
             if (tag == "IMG")
             {
@@ -1586,7 +1918,7 @@ namespace FenBrowser.FenEngine.Rendering
                     ObjectFit = style?.ObjectFit ?? "fill"
                 };
             }
-            else if (tag == "SVG")
+            else if (tag == "SVG" || tag.EndsWith(":SVG", StringComparison.Ordinal))
             {
                 // Internal method to re-render SVG with color resolution
                 string svgContent = elem.ToHtml(); // Basic capture
@@ -1603,13 +1935,46 @@ namespace FenBrowser.FenEngine.Rendering
                         }
                     }
                 }
-                
-                // Final currentColor fallback if any left
-                if (style != null && svgContent.Contains("currentColor"))
+
+                // Resolve remaining CSS var() usage so Skia receives concrete paint values.
+                if (svgContent.Contains("var("))
                 {
-                    var fg = style.ForegroundColor ?? SKColors.Black;
+                    // Use fallback value when present: var(--x, fallback) -> fallback
+                    svgContent = Regex.Replace(
+                        svgContent,
+                        @"var\(\s*--[^,\)]+\s*,\s*([^)]+)\)",
+                        "$1",
+                        RegexOptions.IgnoreCase);
+
+                    // Remaining unresolved custom properties fallback to currentColor.
+                    svgContent = Regex.Replace(
+                        svgContent,
+                        @"var\([^)]+\)",
+                        "currentColor",
+                        RegexOptions.IgnoreCase);
+                }
+                
+                // Final currentColor fallback if any left.
+                // Some inline SVG icons (notably Google material symbols) rely on inherited color;
+                // if computed style is missing on the SVG node, fall back to parent/black so the icon stays visible.
+                if (svgContent.IndexOf("currentColor", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    var fg = style?.ForegroundColor ?? SKColors.Empty;
+                    if (fg == SKColors.Empty && elem.ParentElement != null)
+                    {
+                        try
+                        {
+                            var parentStyle = elem.ParentElement.GetComputedStyle();
+                            if (parentStyle?.ForegroundColor != null)
+                                fg = parentStyle.ForegroundColor.Value;
+                        }
+                        catch { }
+                    }
+                    if (fg == SKColors.Empty)
+                        fg = SKColors.Black;
+
                     string hexColor = $"#{fg.Red:X2}{fg.Green:X2}{fg.Blue:X2}";
-                    svgContent = svgContent.Replace("currentColor", hexColor);
+                    svgContent = Regex.Replace(svgContent, "currentColor", hexColor, RegexOptions.IgnoreCase);
                 }
 
                 if (!svgContent.Contains("xmlns=\"http://www.w3.org/2000/svg\"") && 
@@ -1706,10 +2071,11 @@ namespace FenBrowser.FenEngine.Rendering
              using var paint = new SKPaint { Typeface = typeface, TextSize = fontSize, IsAntialias = true };
              float textWidth = paint.MeasureText(value);
              
-             // Fix: Use ContentBox to respect padding
-             float x = box.ContentBox.Left;
-             // Fix: Center vertically within the ContentBox (assuming single line)
-             float y = box.ContentBox.Top + (box.ContentBox.Height / 2) + (fontSize * 0.35f);
+             // Use PaddingBox for alignment so submit/button text centers within padded controls.
+             float x = box.PaddingBox.Left;
+             var metrics = paint.FontMetrics;
+             float textHeight = metrics.Descent - metrics.Ascent;
+             float y = box.PaddingBox.Top + (box.PaddingBox.Height - textHeight) / 2f - metrics.Ascent;
 
              // Alignment logic
              SKTextAlign align = style?.TextAlign ?? SKTextAlign.Left;
@@ -1723,12 +2089,12 @@ namespace FenBrowser.FenEngine.Rendering
              if (align == SKTextAlign.Center)
              {
                  // Center within ContentBox
-                 x = box.ContentBox.Left + (box.ContentBox.Width - textWidth) / 2;
+                 x = box.PaddingBox.Left + (box.PaddingBox.Width - textWidth) / 2;
              }
              else if (align == SKTextAlign.Right)
              {
                  // Right align within ContentBox
-                 x = box.ContentBox.Right - textWidth;
+                 x = box.PaddingBox.Right - textWidth;
              }
              // else Left: x is already ContentBox.Left
 
@@ -2362,7 +2728,7 @@ namespace FenBrowser.FenEngine.Rendering
         
         private static bool IsImageElement(Element elem)
         {
-            return elem.Tag?.ToUpperInvariant() == "IMG";
+            return elem.TagName?.ToUpperInvariant() == "IMG";
         }
         
         private PaintNodeBase BuildListMarkerNode(Node node, Layout.BoxModel box, CssComputed style, bool isFocused, bool isHovered)
@@ -2834,3 +3200,5 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
+
+

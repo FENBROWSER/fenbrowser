@@ -1,5 +1,5 @@
 using FenBrowser.Core.Css;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
 using FenBrowser.Core;
@@ -49,7 +49,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             state.ScrollX = Math.Max(0, Math.Min(scrollX, state.MaxScrollX));
             state.ScrollY = Math.Max(0, Math.Min(scrollY, state.MaxScrollY));
 
-            FenLogger.Debug($"[ScrollManager] {element.Tag} scroll: ({state.ScrollX}, {state.ScrollY})", LogCategory.Rendering);
+            FenLogger.Debug($"[ScrollManager] {element.TagName} scroll: ({state.ScrollX}, {state.ScrollY})", LogCategory.Rendering);
         }
 
         /// <summary>
@@ -479,5 +479,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         public bool IsAnimating => SmoothScrollStartTime.HasValue;
     }
 }
+
+
 
 

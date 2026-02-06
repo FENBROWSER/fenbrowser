@@ -21,7 +21,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using FenBrowser.Core.Css;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -496,3 +496,4 @@ namespace FenBrowser.FenEngine.Rendering
         public HashSet<Node> GetGlobalLayerRoots() => _globalLayerRoots;
     }
 }
+
