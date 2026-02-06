@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Logging;
 using System;
 using System.Collections.Generic;
@@ -171,7 +171,7 @@ namespace FenBrowser.Core.Parsing
                 var doctypeNode = new DocumentType(dt.Name, dt.PublicIdentifier, dt.SystemIdentifier);
                 _document.AppendChild(doctypeNode);
                 
-                // TODO: Quirks mode detection logic
+                _document.Mode = DetermineQuirksMode(dt);
                 SwitchTo(InsertionMode.BeforeHtml);
                 return true;
             }
@@ -197,43 +197,44 @@ namespace FenBrowser.Core.Parsing
                     return HandleInHead(token);
                 }
                 
-                // Pop template mode and push new one based on tag?
-                // Simplified: Just process in InBody for now, but handle 'template' end tag.
-                // The spec for InTemplate is complex (dispatch to current template insertion mode).
-                // We'll mimic this by checking the stack.
-                
-                if (_templateInsertionModes.Count > 0)
+                if (st.TagName == "caption" || st.TagName == "colgroup" || st.TagName == "tbody" || st.TagName == "tfoot" || st.TagName == "thead")
                 {
-                    var currentTemplateMode = _templateInsertionModes.Peek();
-                    // Dispatch to that mode?
-                    // We can't easily recurse ProcessToken without changing _insertionMode.
-                    // But changing _insertionMode changes it for everyone.
-                    // So we effectively temporarily switch mode?
-                    
-                    var oldMode = _insertionMode;
-                    _insertionMode = currentTemplateMode;
-                    // Process
-                    // BUT avoiding infinite recursion if it comes back here.
-                    // For now, let's treat InTemplate as InBody for content.
-                    return HandleInBody(token);
+                    SetCurrentTemplateInsertionMode(InsertionMode.InTable);
+                    SwitchTo(InsertionMode.InTable);
+                    return false; // Reprocess
                 }
+
+                if (st.TagName == "col")
+                {
+                    SetCurrentTemplateInsertionMode(InsertionMode.InColumnGroup);
+                    SwitchTo(InsertionMode.InColumnGroup);
+                    return false; // Reprocess
+                }
+
+                if (st.TagName == "tr")
+                {
+                    SetCurrentTemplateInsertionMode(InsertionMode.InTableBody);
+                    SwitchTo(InsertionMode.InTableBody);
+                    return false; // Reprocess
+                }
+
+                if (st.TagName == "td" || st.TagName == "th")
+                {
+                    SetCurrentTemplateInsertionMode(InsertionMode.InRow);
+                    SwitchTo(InsertionMode.InRow);
+                    return false; // Reprocess
+                }
+
+                SetCurrentTemplateInsertionMode(InsertionMode.InBody);
+                SwitchTo(InsertionMode.InBody);
+                return false; // Reprocess
             }
             
             if (token is EndTagToken et)
             {
                 if (et.TagName == "template")
                 {
-                    if (!InScope("template", new[] { "html" })) 
-                    {
-                        return true; // Error
-                    }
-                    GenerateImpliedEndTags();
-                    if ((CurrentNode as Element)?.TagName != "template") { /* Parse error */ }
-                    PopUntil("template");
-                    ClearActiveFormattingElementsMarker();
-                    if (_templateInsertionModes.Count > 0) _templateInsertionModes.Pop();
-                    ResetInsertionMode();
-                    return true;
+                    return CloseTemplateElement();
                 }
             }
             
@@ -384,7 +385,7 @@ namespace FenBrowser.Core.Parsing
                 {
                    InsertHtmlElement(st);
                    _openElements.Pop();
-                   // TODO: Handle charset extraction
+                   ApplyMetaCharset(st);
                    return true;
                 }
                 
@@ -423,12 +424,26 @@ namespace FenBrowser.Core.Parsing
                      _tokenizer.LastStartTagName = "script";
                      return true;
                 }
+
+                if (st.TagName == "template")
+                {
+                    InsertHtmlElement(st);
+                    _activeFormattingElements.Add(null); // Marker
+                    _templateInsertionModes.Push(InsertionMode.InTemplate);
+                    SwitchTo(InsertionMode.InTemplate);
+                    return true;
+                }
                 
                 if (st.TagName == "head") return true; // Ignore
             }
             
             if (token is EndTagToken et)
             {
+                if (et.TagName == "template")
+                {
+                    return CloseTemplateElement();
+                }
+
                 if (et.TagName == "head")
                 {
                     _openElements.Pop(); // Pop head
@@ -532,7 +547,7 @@ namespace FenBrowser.Core.Parsing
                     return true;
                 }
                 
-                if (st.TagName == "base" || st.TagName == "link" || st.TagName == "meta" || st.TagName == "script" || st.TagName == "style" || st.TagName == "title")
+                if (st.TagName == "base" || st.TagName == "link" || st.TagName == "meta" || st.TagName == "script" || st.TagName == "style" || st.TagName == "title" || st.TagName == "template")
                 {
                     return HandleInHead(token);
                 }
@@ -723,6 +738,17 @@ namespace FenBrowser.Core.Parsing
                     // Should be handled in Text mode
                     return true;
                 }
+
+                // Fallback for ordinary end tags that are not in the explicit lists above.
+                // Without this, tags like </span>, </button>, </svg>, and </path> get ignored,
+                // which corrupts stack structure and causes large layout/render regressions.
+                if (StackHas(et.TagName))
+                {
+                    if (string.Equals(et.TagName, "form", StringComparison.OrdinalIgnoreCase))
+                        _formElement = null;
+                    PopUntil(et.TagName);
+                }
+                return true;
             }
             
             if (token is EofToken)
@@ -1145,9 +1171,9 @@ namespace FenBrowser.Core.Parsing
 
                 var text = new Text(ct.Data);
                 if (nextSibling != null && parent != null)
-                    parent.InsertBefore(text, nextSibling);
+                    ((ContainerNode)parent).InsertBefore(text, nextSibling);
                 else
-                    parent?.AppendChild(text);
+                    ((ContainerNode)parent)?.AppendChild(text);
                 return true;
             }
             
@@ -1169,9 +1195,9 @@ namespace FenBrowser.Core.Parsing
                 foreach(var a in st.Attributes) el.SetAttribute(a.Name, a.Value);
                 
                  if (nextSibling != null && parent != null)
-                    parent.InsertBefore(el, nextSibling);
+                    ((ContainerNode)parent).InsertBefore(el, nextSibling);
                 else
-                    parent?.AppendChild(el);
+                    ((ContainerNode)parent)?.AppendChild(el);
                     
                 // If not void, we should push it to stack?
                 // But then it's in stack but its parent is ouside table.
@@ -1282,6 +1308,27 @@ namespace FenBrowser.Core.Parsing
         {
             return InScope(tagName, new[] { "html", "table", "template" }); // Table scope limits
         }
+
+        private bool CloseTemplateElement()
+        {
+            if (!InScope("template", new[] { "html" }))
+                return true; // Parse error: ignore
+
+            GenerateImpliedEndTags();
+            PopUntil("template");
+            ClearActiveFormattingElementsMarker();
+            if (_templateInsertionModes.Count > 0)
+                _templateInsertionModes.Pop();
+            ResetInsertionMode();
+            return true;
+        }
+
+        private void SetCurrentTemplateInsertionMode(InsertionMode mode)
+        {
+            if (_templateInsertionModes.Count > 0)
+                _templateInsertionModes.Pop();
+            _templateInsertionModes.Push(mode);
+        }
         
         private void ClearStackBackToTableContext()
         {
@@ -1363,8 +1410,14 @@ namespace FenBrowser.Core.Parsing
                 if (tagName.Equals("colgroup", StringComparison.OrdinalIgnoreCase)) { SwitchTo(InsertionMode.InColumnGroup); return; }
                 if (tagName.Equals("table", StringComparison.OrdinalIgnoreCase)) { SwitchTo(InsertionMode.InTable); return; }
                 if (tagName.Equals("template", StringComparison.OrdinalIgnoreCase)) { 
-                     // TODO: Current template insertion mode
-                     SwitchTo(InsertionMode.InBody); // Simplified
+                     if (_templateInsertionModes.Count > 0)
+                     {
+                         SwitchTo(_templateInsertionModes.Peek());
+                     }
+                     else
+                     {
+                         SwitchTo(InsertionMode.InBody);
+                     }
                      return;
                 }
                 if (tagName.Equals("head", StringComparison.OrdinalIgnoreCase)) { SwitchTo(InsertionMode.InBody); return; } 
@@ -1375,7 +1428,7 @@ namespace FenBrowser.Core.Parsing
              SwitchTo(InsertionMode.InBody);
         }
         
-        private Node CurrentNode => _openElements.Count > 0 ? _openElements.Peek() : _document;
+        private ContainerNode CurrentNode => _openElements.Count > 0 ? (ContainerNode)_openElements.Peek() : (ContainerNode)_document;
         
         private void SwitchTo(InsertionMode mode)
         {
@@ -1490,8 +1543,8 @@ namespace FenBrowser.Core.Parsing
         private void InsertCharacter(CharacterToken token)
         {
             // Optimize: if current node's last child is text, append
-            var last = CurrentNode.Children.LastOrDefault();
-            if (last != null &&UnsafeIsText(last))
+            var last = CurrentNode.LastChild;
+            if (last != null && UnsafeIsText(last))
             {
                 last.NodeValue += token.Data;
             }
@@ -1585,6 +1638,124 @@ namespace FenBrowser.Core.Parsing
             _tokenizer.LastStartTagName = token.TagName?.ToLowerInvariant();
             _originalInsertionMode = _insertionMode;
             SwitchTo(InsertionMode.Text);
+        }
+
+        private QuirksMode DetermineQuirksMode(DoctypeToken dt)
+        {
+            if (dt == null) return QuirksMode.Quirks;
+            if (dt.ForceQuirks) return QuirksMode.Quirks;
+
+            var name = (dt.Name ?? string.Empty).Trim().ToLowerInvariant();
+            if (!string.Equals(name, "html", StringComparison.Ordinal))
+                return QuirksMode.Quirks;
+
+            var publicId = (dt.PublicIdentifier ?? string.Empty).Trim().ToLowerInvariant();
+            var systemId = (dt.SystemIdentifier ?? string.Empty).Trim().ToLowerInvariant();
+
+            if (publicId.StartsWith("+//silmaril//dtd html pro v0r11 19970101//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//advasoft ltd//dtd html 3.0 aswedit + extensions//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//as//dtd html 3.0 aswedit + extensions//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//ietf//dtd html 2.0 level 1//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//ietf//dtd html 2.0 level 2//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//ietf//dtd html 2.0 strict level 1//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//ietf//dtd html 2.0 strict level 2//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//ietf//dtd html 2.0 strict//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//ietf//dtd html 2.0//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//ietf//dtd html 2.1e//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//ietf//dtd html 3.0//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//ietf//dtd html 3.2 final//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//ietf//dtd html 3.2//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//ietf//dtd html 3//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//ietf//dtd html level 0//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//ietf//dtd html level 1//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//ietf//dtd html level 2//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//ietf//dtd html level 3//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//ietf//dtd html strict level 0//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//ietf//dtd html strict level 1//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//ietf//dtd html strict level 2//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//ietf//dtd html strict level 3//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//ietf//dtd html strict//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//ietf//dtd html//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//metrius//dtd metrius presentational//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//microsoft//dtd internet explorer 2.0 html strict//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//microsoft//dtd internet explorer 2.0 html//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//microsoft//dtd internet explorer 2.0 tables//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//microsoft//dtd internet explorer 3.0 html strict//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//microsoft//dtd internet explorer 3.0 html//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//microsoft//dtd internet explorer 3.0 tables//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//netscape comm. corp.//dtd html//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//netscape comm. corp.//dtd strict html//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//o'reilly and associates//dtd html 2.0//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//o'reilly and associates//dtd html extended 1.0//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//o'reilly and associates//dtd html extended relaxed 1.0//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//sq//dtd html 2.0 hotmetal + extensions//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//sun microsystems corp.//dtd hotjava html//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//sun microsystems corp.//dtd hotjava strict html//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//w3c//dtd html 3 1995-03-24//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//w3c//dtd html 3.2 draft//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//w3c//dtd html 3.2 final//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//w3c//dtd html 3.2//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//w3c//dtd html 3.2s draft//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//w3c//dtd html 4.0 frameset//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//w3c//dtd html 4.0 transitional//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//w3c//dtd html experimental 19960712//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//w3c//dtd html experimental 970421//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//w3c//dtd w3 html//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//w3o//dtd w3 html 3.0//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//webtechs//dtd mozilla html 2.0//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//webtechs//dtd mozilla html//", StringComparison.Ordinal))
+            {
+                return QuirksMode.Quirks;
+            }
+
+            if ((publicId.StartsWith("-//w3c//dtd xhtml 1.0 frameset//", StringComparison.Ordinal) ||
+                 publicId.StartsWith("-//w3c//dtd xhtml 1.0 transitional//", StringComparison.Ordinal)) ||
+                ((publicId.StartsWith("-//w3c//dtd html 4.01 frameset//", StringComparison.Ordinal) ||
+                  publicId.StartsWith("-//w3c//dtd html 4.01 transitional//", StringComparison.Ordinal)) &&
+                 string.IsNullOrEmpty(systemId)))
+            {
+                return QuirksMode.LimitedQuirks;
+            }
+
+            return QuirksMode.NoQuirks;
+        }
+
+        private void ApplyMetaCharset(StartTagToken st)
+        {
+            if (st?.Attributes == null || st.Attributes.Count == 0) return;
+
+            string charset = null;
+            string httpEquiv = null;
+            string content = null;
+
+            foreach (var attr in st.Attributes)
+            {
+                var name = attr.Name?.Trim().ToLowerInvariant();
+                if (name == "charset")
+                    charset = attr.Value?.Trim();
+                else if (name == "http-equiv")
+                    httpEquiv = attr.Value?.Trim();
+                else if (name == "content")
+                    content = attr.Value;
+            }
+
+            if (string.IsNullOrWhiteSpace(charset) &&
+                string.Equals(httpEquiv, "content-type", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(content))
+            {
+                var idx = content.IndexOf("charset", StringComparison.OrdinalIgnoreCase);
+                if (idx >= 0)
+                {
+                    var eq = content.IndexOf('=', idx);
+                    if (eq >= 0 && eq + 1 < content.Length)
+                    {
+                        charset = content[(eq + 1)..].Trim().Trim('"', '\'', ';');
+                    }
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(charset))
+                _document.CharacterSet = charset;
         }
     }
 }

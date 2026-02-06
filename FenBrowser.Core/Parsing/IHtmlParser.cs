@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 
 namespace FenBrowser.Core.Parsing
 {

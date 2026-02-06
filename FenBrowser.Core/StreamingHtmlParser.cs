@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using System;
 using System.IO;
 using System.Text;
@@ -344,7 +344,7 @@ namespace FenBrowser.Core
                 {
                     var endTag = token.Substring(1).Trim().ToLowerInvariant();
                     while (_stack.Count > 1 && 
-                           !string.Equals((_stack.Peek() as Element)?.TagName, endTag, StringComparison.OrdinalIgnoreCase))
+                           !string.Equals((_stack.Peek() as Element)?.NodeName, endTag, StringComparison.OrdinalIgnoreCase))
                     {
                         _stack.Pop();
                     }
@@ -372,7 +372,7 @@ namespace FenBrowser.Core
                 // Add to parent
                 if (_stack.Count > 0)
                 {
-                    _stack.Peek().AppendChild(element);
+                    ((ContainerNode)_stack.Peek()).AppendChild(element);
                 }
 
                 // FIX: Force SVG shapes to be self-closing to prevent incorrect nesting in streaming parser
@@ -397,8 +397,8 @@ namespace FenBrowser.Core
                 if (_stack.Count > 0)
                 {
                     var parent = _stack.Peek();
-                    var lastChild = parent.Children.Count > 0 
-                        ? parent.Children[parent.Children.Count - 1] 
+                    var lastChild = ((ContainerNode)parent).ChildNodes.Length > 0 
+                        ? ((ContainerNode)parent).ChildNodes[((ContainerNode)parent).ChildNodes.Length - 1] 
                         : null;
                     
                     if (lastChild != null && lastChild.NodeType == NodeType.Text)
@@ -407,7 +407,7 @@ namespace FenBrowser.Core
                     }
                     else
                     {
-                        parent.AppendChild(new Text(decoded));
+                        ((ContainerNode)parent).AppendChild(new Text(decoded));
                     }
                 }
             }
