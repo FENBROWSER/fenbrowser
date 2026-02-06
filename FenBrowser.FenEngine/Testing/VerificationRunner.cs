@@ -3,7 +3,7 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using SkiaSharp;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.Core;
 using FenBrowser.FenEngine.Layout;
@@ -30,7 +30,7 @@ namespace FenBrowser.FenEngine.Testing
             // 2. Compute Style
             Console.WriteLine("[Verify] Computing styles...");
             var baseUri = new Uri("file://" + htmlPath.Replace("\\", "/"));
-            var cssResult = await CssLoader.ComputeWithResultAsync(doc, baseUri, null, viewportW, viewportH);
+            var cssResult = await CssLoader.ComputeWithResultAsync(doc.DocumentElement, baseUri, null, viewportW, viewportH);
             var styles = cssResult.Computed;
 
             // 3. Compute Layout
@@ -65,3 +65,4 @@ namespace FenBrowser.FenEngine.Testing
         }
     }
 }
+
