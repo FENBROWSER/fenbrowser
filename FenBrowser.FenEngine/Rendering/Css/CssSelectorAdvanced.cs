@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -114,7 +114,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 // Adjacent sibling
                 string siblingSelector = relativeSelector.Substring(1).Trim();
-                var nextSibling = GetNextElementSibling(element);
+                var nextSibling = element.NextElementSibling;
                 return nextSibling != null && BasicMatch(nextSibling, siblingSelector);
             }
             else if (relativeSelector.StartsWith("~"))
@@ -252,7 +252,7 @@ namespace FenBrowser.FenEngine.Rendering
             // Type selector
             if (char.IsLetter(part[0]))
             {
-                return string.Equals(element.Tag, part, StringComparison.OrdinalIgnoreCase);
+                return string.Equals(element.TagName, part, StringComparison.OrdinalIgnoreCase);
             }
 
             // Class selector
@@ -365,12 +365,12 @@ namespace FenBrowser.FenEngine.Rendering
             }
             if (pseudoClass == ":empty")
             {
-                return (element.Children == null || element.Children.Count == 0) &&
-                       string.IsNullOrWhiteSpace(element.Text);
+                return (element.Children == null || element.Children.Length == 0) &&
+                       string.IsNullOrWhiteSpace(element.TextContent);
             }
             if (pseudoClass == ":root")
             {
-                return element.Parent == null || element.Tag?.ToUpperInvariant() == "HTML";
+                return element.ParentNode == null || element.NodeName?.ToUpperInvariant() == "HTML";
             }
 
             // nth-child variants
@@ -410,8 +410,8 @@ namespace FenBrowser.FenEngine.Rendering
             }
             if (pseudoClass == ":focus-visible")
             {
-                // For now, treat same as :focus (simplified)
-                return ElementStateManager.Instance.IsFocused(element);
+                // Per CSS Selectors Level 4: match when focus was from keyboard or for text inputs
+                return ElementStateManager.Instance.IsFocusVisible(element);
             }
             // Other state pseudo-classes that still need attribute checking
             if (pseudoClass == ":visited" || pseudoClass == ":link")
@@ -441,11 +441,11 @@ namespace FenBrowser.FenEngine.Rendering
             string arg = match.Groups[1].Value.Trim().ToLowerInvariant();
 
             // Get siblings
-            var parentEl = element.Parent as Element;
+            var parentEl = element.ParentNode as Element;
             if (parentEl == null) return false;
 
             var siblings = ofType
-                ? parentEl.Children.OfType<Element>().Where(c => string.Equals(c.Tag, element.Tag, StringComparison.OrdinalIgnoreCase)).ToList()
+                ? parentEl.Children.OfType<Element>().Where(c => string.Equals(c.TagName, element.TagName, StringComparison.OrdinalIgnoreCase)).ToList()
                 : parentEl.Children.OfType<Element>().ToList();
 
             int index = siblings.IndexOf(element);
@@ -501,7 +501,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static bool IsFirstChild(Element element)
         {
-            var parent = element.Parent as Element;
+            var parent = element.ParentNode as Element;
             if (parent?.Children == null) return true;
             var siblings = parent.Children.OfType<Element>().ToList();
             return siblings.Count > 0 && siblings[0] == element;
@@ -509,7 +509,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static bool IsLastChild(Element element)
         {
-            var parent = element.Parent as Element;
+            var parent = element.ParentNode as Element;
             if (parent?.Children == null) return true;
             var siblings = parent.Children.OfType<Element>().ToList();
             return siblings.Count > 0 && siblings[siblings.Count - 1] == element;
@@ -517,33 +517,25 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static bool IsFirstOfType(Element element)
         {
-            var parent = element.Parent as Element;
+            var parent = element.ParentNode as Element;
             if (parent?.Children == null) return true;
             return parent.Children.OfType<Element>().FirstOrDefault(c => 
-                string.Equals(c.Tag, element.Tag, StringComparison.OrdinalIgnoreCase)) == element;
+                string.Equals(c.TagName, element.TagName, StringComparison.OrdinalIgnoreCase)) == element;
         }
 
         private static bool IsLastOfType(Element element)
         {
-            var parent = element.Parent as Element;
+            var parent = element.ParentNode as Element;
             if (parent?.Children == null) return true;
             return parent.Children.OfType<Element>().LastOrDefault(c => 
-                string.Equals(c.Tag, element.Tag, StringComparison.OrdinalIgnoreCase)) == element;
+                string.Equals(c.TagName, element.TagName, StringComparison.OrdinalIgnoreCase)) == element;
         }
 
-        private static Element GetNextElementSibling(Element element)
-        {
-            var parent = element.Parent as Element;
-            if (parent?.Children == null) return null;
-            var siblings = parent.Children.OfType<Element>().ToList();
-            int index = siblings.IndexOf(element);
-            if (index < 0 || index >= siblings.Count - 1) return null;
-            return siblings[index + 1];
-        }
+
 
         private static List<Element> GetFollowingSiblings(Element element)
         {
-            var parent = element.Parent as Element;
+            var parent = element.ParentNode as Element;
             if (parent?.Children == null) return new List<Element>();
             var siblings = parent.Children.OfType<Element>().ToList();
             int index = siblings.IndexOf(element);
@@ -581,4 +573,6 @@ namespace FenBrowser.FenEngine.Rendering
         #endregion
     }
 }
+
+
 

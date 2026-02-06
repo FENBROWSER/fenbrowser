@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using FenBrowser.Core;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Rendering.Css;
 using FenBrowser.FenEngine.Core;
@@ -116,7 +116,7 @@ namespace FenBrowser.FenEngine.Rendering
                 _universalRules.Add(styleRule);
                 return;
             }
-            
+
             // Priority: ID > Class > Tag > Universal
             // Index by the most specific key available
             if (!string.IsNullOrEmpty(keySeg.Id))
@@ -128,9 +128,16 @@ namespace FenBrowser.FenEngine.Rendering
                 // Index by first class (most rules have 1-2 classes)
                 AddToIndex(_classIndex, keySeg.Classes[0], styleRule);
             }
-            else if (!string.IsNullOrEmpty(keySeg.Tag) && keySeg.Tag != "*")
+            else if (!string.IsNullOrEmpty(keySeg.TagName) && keySeg.TagName != "*")
             {
-                AddToIndex(_tagIndex, keySeg.Tag.ToUpperInvariant(), styleRule);
+                string upperTag = keySeg.TagName.ToUpperInvariant();
+                AddToIndex(_tagIndex, upperTag, styleRule);
+                // DEBUG: Log div rules
+                if (upperTag == "DIV")
+                {
+                    var props = string.Join(", ", styleRule.Declarations.Select(d => d.Property));
+                    FenBrowser.Core.FenLogger.Info($"[CASCADE-INDEX] Indexed DIV rule: {styleRule.Selector?.Raw} -> [{props}]", LogCategory.CSS);
+                }
             }
             else
             {
@@ -162,7 +169,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 var uniqueSources = results.Select(r => new { r.SelectorText, Spec = r.Specificity, r.Origin }).Distinct().OrderBy(x => x.Spec).ToList();
                 var msg = new System.Text.StringBuilder();
-                msg.AppendLine($"[CASCADE] Element <{element.Tag}> matched {uniqueSources.Count} rules:");
+                msg.AppendLine($"[CASCADE] Element <{element.TagName}> matched {uniqueSources.Count} rules:");
                 foreach(var src in uniqueSources)
                 {
                     msg.AppendLine($"   - [{src.Origin}] {src.SelectorText} :: {src.Spec}");
@@ -189,14 +196,9 @@ namespace FenBrowser.FenEngine.Rendering
 
         private void CollectMatches(Element element, List<MatchedDeclaration> results, string pseudoElement)
         {
-            // Get attributes via Attr dictionary
-            string elemId = null;
-            string elemClass = null;
-            if (element.Attr != null)
-            {
-                element.Attr.TryGetValue("id", out elemId);
-                element.Attr.TryGetValue("class", out elemClass);
-            }
+            // Get attributes via properties
+            string elemId = element.Id;
+            string elemClass = element.GetAttribute("class");
             
             // 1. Check ID-specific rules (highest priority index)
             if (!string.IsNullOrEmpty(elemId) && _idIndex.TryGetValue(elemId, out var idRules))
@@ -211,7 +213,7 @@ namespace FenBrowser.FenEngine.Rendering
             // 2. Check class-specific rules
             if (!string.IsNullOrEmpty(elemClass))
             {
-                var classes = elemClass.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                var classes = element.ClassList; // Use ClassList for splitting
                 foreach (var cls in classes)
                 {
                     if (_classIndex.TryGetValue(cls, out var classRules))
@@ -226,14 +228,23 @@ namespace FenBrowser.FenEngine.Rendering
             }
             
             // 3. Check tag-specific rules
-            string tag = element.Tag?.ToUpperInvariant();
+            string tag = element.TagName?.ToUpperInvariant();
             if (!string.IsNullOrEmpty(tag) && _tagIndex.TryGetValue(tag, out var tagRules))
             {
+                // DEBUG: Log div cascade
+                if (tag == "DIV")
+                {
+                    FenBrowser.Core.FenLogger.Info($"[CASCADE-DIV] Found {tagRules.Count} indexed rules for DIV element", LogCategory.CSS);
+                }
                 foreach (var rule in tagRules)
                 {
                     if (_processedRules.Add(rule))
                         TryMatchRule(element, rule, results, pseudoElement);
                 }
+            }
+            else if (tag == "DIV")
+            {
+                FenBrowser.Core.FenLogger.Warn($"[CASCADE-DIV] NO rules found in _tagIndex for DIV! Index contains: {string.Join(", ", _tagIndex.Keys.Take(20))}", LogCategory.CSS);
             }
             
             // 4. Always check universal rules
@@ -251,18 +262,18 @@ namespace FenBrowser.FenEngine.Rendering
             if (!string.IsNullOrEmpty(styleRule.ScopeSelector))
             {
                 // Find closest ancestor matching the scope selector
-                var current = element.Parent as Element;
+                var current = element.ParentElement;
                 int dist = 1;
                 bool scopeMatched = false;
                 while (current != null)
                 {
-                    if (CssLoader.MatchesSelector(current, styleRule.ScopeSelector))
+                    if (SelectorMatcher.Matches(current, styleRule.ScopeSelector))
                     {
                         scopeProximity = dist;
                         scopeMatched = true;
                         break;
                     }
-                    current = current.Parent as Element;
+                    current = current.ParentElement;
                     dist++;
                 }
                 
@@ -294,13 +305,13 @@ namespace FenBrowser.FenEngine.Rendering
                             break;
                         }
                     }
-                    if (!found) return;
-                }
+                if (!found) return;
+            }
 
-                foreach (var decl in styleRule.Declarations)
+            foreach (var decl in styleRule.Declarations)
+            {
+                results.Add(new MatchedDeclaration
                 {
-                    results.Add(new MatchedDeclaration
-                    {
                         Declaration = decl,
                         Origin = styleRule.Origin,
                         Specificity = matchedChain.Specificity,
@@ -391,3 +402,4 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
+

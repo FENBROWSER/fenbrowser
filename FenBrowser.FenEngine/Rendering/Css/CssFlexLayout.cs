@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using FenBrowser.Core;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Logging;
 using SkiaSharp;
@@ -84,10 +84,15 @@ namespace FenBrowser.FenEngine.Rendering.Css
             float mainGap = isRow ? colGap : rowGap;
             float crossGap = isRow ? rowGap : colGap;
 
-            var source = childrenSource ?? container.Children;
+            var source = childrenSource ?? container.ChildNodes;
             var children = source.Where(c => 
             {
-                if (c is Text t && !string.IsNullOrWhiteSpace(t.Data)) return true;
+                // Whitespace-only text nodes must not become flex items. If they do,
+                // they can consume large main-axis space and shift real content off-screen.
+                if (c is Text t)
+                {
+                    return !string.IsNullOrWhiteSpace(t.Data);
+                }
                 return !shouldHide(c, getStyle(c));
             }).ToList();
             
@@ -351,10 +356,14 @@ namespace FenBrowser.FenEngine.Rendering.Css
             // Spec compliance check
             SpecComplianceLogger.LogContentBox(container.TagName ?? "unknown", container.Id ?? "", contentBox.Width, contentBox.Height);
 
-            var source = childrenSource ?? container.Children;
+            var source = childrenSource ?? container.ChildNodes;
             var children = source.Where(c => 
             {
-                if (c is Text t && !string.IsNullOrWhiteSpace(t.Data)) return true;
+                // Match Measure() behavior: ignore whitespace-only text nodes in flex item list.
+                if (c is Text t)
+                {
+                    return !string.IsNullOrWhiteSpace(t.Data);
+                }
                 return !shouldHide(c, getStyle(c));
             }).ToList();
             if (children.Count == 0) return;
@@ -695,7 +704,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                      // DIAGNOSTIC LOG for Alignment (Moved here to fix build error)
                      if (align == "center" || isRow==false) 
                      {
-                         FenLogger.Debug($"[FLEX-ALIGN] Item={item.Node.Tag} Align={align} " +
+                          FenLogger.Debug($"[FLEX-ALIGN] Item={item.Node.NodeName} Align={align} " +
                                        $"CrossAvailable={crossAvailable} (Line={lineCrossSize} - Child={childCrossSize} - Margins={childCrossMargins}) " +
                                        $"AutoStart={crossAutoStart} AutoEnd={crossAutoEnd}", LogCategory.Layout);
                      }
@@ -732,7 +741,11 @@ namespace FenBrowser.FenEngine.Rendering.Css
                          finalCross = childCrossSize;
                      }
 
-                     if (align == "stretch" && crossAvailable > 0) finalCross += crossAvailable;
+                     if (align == "stretch" && crossAvailable > 0) 
+                     {
+                         FenLogger.Info($"[FLEX-STRETCH] Item stretch: childCross={childCrossSize:F1} crossAvail={crossAvailable:F1} lineCross={lineCrossSize:F1} -> finalCross={childCrossSize + crossAvailable:F1}", LogCategory.Layout);
+                         finalCross += crossAvailable;
+                     }
                      
                      // Enforce Cross-Axis Constraints
                      finalCross = Math.Max(item.MinCross, Math.Min(item.MaxCross, finalCross));

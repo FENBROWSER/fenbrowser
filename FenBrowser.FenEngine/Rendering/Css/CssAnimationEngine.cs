@@ -1,5 +1,5 @@
 using FenBrowser.Core.Css;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -298,45 +298,62 @@ namespace FenBrowser.FenEngine.Rendering
             // Parse animation properties
             string animationName = GetAnimationProperty(style, "animation-name");
             if (string.IsNullOrWhiteSpace(animationName) || animationName == "none") return;
-            
-            var keyframes = CssLoader.GetKeyframes(animationName);
-            if (keyframes == null)
+
+            var names = SplitAnimationList(animationName);
+            bool startedAny = false;
+
+            for (int i = 0; i < names.Count; i++)
             {
-                FenLogger.Debug($"[Animation] Keyframes not found: {animationName}", LogCategory.Layout);
-                return;
+                string currentName = names[i];
+                if (string.IsNullOrWhiteSpace(currentName) || currentName.Equals("none", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var keyframes = CssLoader.GetKeyframes(currentName);
+                if (keyframes == null)
+                {
+                    FenLogger.Debug($"[Animation] Keyframes not found: {currentName}", LogCategory.Layout);
+                    continue;
+                }
+
+                // Create animation instance
+                var animation = new ActiveAnimation
+                {
+                    Element = element,
+                    AnimationName = currentName,
+                    Keyframes = keyframes,
+                    DurationMs = ParseDuration(GetAnimationProperty(style, "animation-duration", i)),
+                    DelayMs = ParseDuration(GetAnimationProperty(style, "animation-delay", i)),
+                    IterationCount = ParseIterationCount(GetAnimationProperty(style, "animation-iteration-count", i)),
+                    Direction = GetAnimationProperty(style, "animation-direction", i) ?? "normal",
+                    FillMode = GetAnimationProperty(style, "animation-fill-mode", i) ?? "none",
+                    TimingFunction = GetAnimationProperty(style, "animation-timing-function", i) ?? "ease",
+                    PlayState = GetAnimationProperty(style, "animation-play-state", i) ?? "running",
+                    StartTime = DateTime.UtcNow
+                };
+
+                FenLogger.Debug($"[Animation] Starting: {currentName} on {element.TagName}, duration={animation.DurationMs}ms", LogCategory.Layout);
+
+                // Add to active animations
+                lock (_activeAnimations)
+                {
+                    if (!_activeAnimations.ContainsKey(element))
+                        _activeAnimations[element] = new List<ActiveAnimation>();
+
+                    // Remove existing animation with same name
+                    _activeAnimations[element].RemoveAll(a => a.AnimationName == currentName);
+                    _activeAnimations[element].Add(animation);
+                }
+
+                startedAny = true;
             }
-            
-            // Create animation instance
-            var animation = new ActiveAnimation
+
+            if (!startedAny && names.Count > 1)
             {
-                Element = element,
-                AnimationName = animationName,
-                Keyframes = keyframes,
-                DurationMs = ParseDuration(GetAnimationProperty(style, "animation-duration")),
-                DelayMs = ParseDuration(GetAnimationProperty(style, "animation-delay")),
-                IterationCount = ParseIterationCount(GetAnimationProperty(style, "animation-iteration-count")),
-                Direction = GetAnimationProperty(style, "animation-direction") ?? "normal",
-                FillMode = GetAnimationProperty(style, "animation-fill-mode") ?? "none",
-                TimingFunction = GetAnimationProperty(style, "animation-timing-function") ?? "ease",
-                PlayState = GetAnimationProperty(style, "animation-play-state") ?? "running",
-                StartTime = DateTime.UtcNow
-            };
-            
-            FenLogger.Debug($"[Animation] Starting: {animationName} on {element.Tag}, duration={animation.DurationMs}ms", LogCategory.Layout);
-            
-            // Add to active animations
-            lock (_activeAnimations)
-            {
-                if (!_activeAnimations.ContainsKey(element))
-                    _activeAnimations[element] = new List<ActiveAnimation>();
-                
-                // Remove existing animation with same name
-                _activeAnimations[element].RemoveAll(a => a.AnimationName == animationName);
-                _activeAnimations[element].Add(animation);
+                FenLogger.Debug($"[Animation] No keyframes resolved from animation-name list: {animationName}", LogCategory.Layout);
             }
             
             // Start engine if not running
-            if (!_isRunning)
+            if (startedAny && !_isRunning)
                 Start();
         }
         
@@ -823,11 +840,11 @@ namespace FenBrowser.FenEngine.Rendering
         
         #region Parsing Helpers
         
-        private string GetAnimationProperty(CssComputed style, string property)
+        private string GetAnimationProperty(CssComputed style, string property, int listIndex = 0)
         {
             // Try direct property
             if (style.Map.TryGetValue(property, out var value))
-                return value;
+                return GetIndexedAnimationValue(value, listIndex);
             
             // Try shorthand 'animation'
             if (style.Map.TryGetValue("animation", out var shorthand))
@@ -863,6 +880,31 @@ namespace FenBrowser.FenEngine.Rendering
             }
             
             return null;
+        }
+
+        private static List<string> SplitAnimationList(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+                return new List<string>();
+
+            return raw
+                .Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(p => p.Trim())
+                .Where(p => p.Length > 0)
+                .ToList();
+        }
+
+        private static string GetIndexedAnimationValue(string raw, int listIndex)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+                return raw;
+
+            var parts = SplitAnimationList(raw);
+            if (parts.Count == 0)
+                return raw.Trim();
+
+            int index = Math.Max(0, Math.Min(listIndex, parts.Count - 1));
+            return parts[index];
         }
         
         private double ParseDuration(string value)
@@ -988,5 +1030,7 @@ namespace FenBrowser.FenEngine.Rendering
         #endregion
     }
 }
+
+
 
 

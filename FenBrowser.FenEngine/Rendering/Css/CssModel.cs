@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 
 namespace FenBrowser.FenEngine.Rendering.Css
 {
@@ -28,7 +28,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
         
         // CSS Scope Support
         public string ScopeSelector { get; set; }
-        public FenBrowser.Core.Dom.Element ScopeRoot { get; set; }
+        public FenBrowser.Core.Dom.V2.Element ScopeRoot { get; set; }
         public int ScopeProximity { get; set; } // Number of generations between scope root and matched element
     }
 
@@ -98,6 +98,12 @@ namespace FenBrowser.FenEngine.Rendering.Css
     {
         public List<SelectorSegment> Segments { get; } = new List<SelectorSegment>();
 
+        /// <summary>
+        /// Calculate CSS Specificity per Selectors Level 4.
+        /// - :where() has 0 specificity
+        /// - :is(), :not(), :has() take the specificity of their most specific argument
+        /// Reference: https://www.w3.org/TR/selectors-4/#specificity-rules
+        /// </summary>
         public Specificity Specificity
         {
             get
@@ -105,13 +111,123 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 int a = 0, b = 0, c = 0;
                 foreach (var seg in Segments)
                 {
+                    // ID selectors (#id)
                     if (!string.IsNullOrEmpty(seg.Id)) a++;
-                    b += seg.Classes.Count + seg.Attributes.Count + seg.PseudoClasses.Count;
-                    if (!string.IsNullOrEmpty(seg.Tag) && seg.Tag != "*") c++;
+
+                    // Class selectors (.class)
+                    b += seg.Classes.Count;
+
+                    // Attribute selectors ([attr])
+                    b += seg.Attributes.Count;
+
+                    // Pseudo-classes need special handling
+                    foreach (var pseudo in seg.PseudoClasses)
+                    {
+                        var name = pseudo.Name?.ToLowerInvariant();
+
+                        // :where() has 0 specificity (CSS Selectors Level 4)
+                        if (name == "where")
+                        {
+                            // Don't add any specificity
+                            continue;
+                        }
+
+                        // :is(), :not(), :has() take the specificity of their most specific argument
+                        if (name == "is" || name == "not" || name == "has")
+                        {
+                            // Get the highest specificity from the arguments
+                            var argSpec = GetHighestArgumentSpecificity(pseudo);
+                            a += argSpec.A;
+                            b += argSpec.B;
+                            c += argSpec.C;
+                            continue;
+                        }
+
+                        // :nth-child(), :nth-last-child() with selector argument take
+                        // the specificity of the selector (Selectors Level 4)
+                        // E.g., :nth-child(2 of .foo) has specificity of .foo
+                        if ((name == "nth-child" || name == "nth-last-child") &&
+                            !string.IsNullOrEmpty(pseudo.Args) &&
+                            pseudo.Args.Contains(" of "))
+                        {
+                            b++; // The :nth-child itself counts as pseudo-class
+                            var ofIdx = pseudo.Args.IndexOf(" of ", StringComparison.OrdinalIgnoreCase);
+                            if (ofIdx > 0)
+                            {
+                                var selectorArg = pseudo.Args.Substring(ofIdx + 4).Trim();
+                                var argSpec = GetHighestSpecificityFromSelector(selectorArg);
+                                a += argSpec.A;
+                                b += argSpec.B;
+                                c += argSpec.C;
+                            }
+                            continue;
+                        }
+
+                        // Regular pseudo-classes count as (0, 1, 0)
+                        b++;
+                    }
+
+                    // Type/Element selectors (div, span, etc.)
+                    if (!string.IsNullOrEmpty(seg.TagName) && seg.TagName != "*") c++;
+
+                    // Pseudo-elements (::before, ::after)
                     c += seg.PseudoElements.Count;
                 }
                 return new Specificity { A = a, B = b, C = c };
             }
+        }
+
+        /// <summary>
+        /// Get the highest specificity from a pseudo-class's parsed arguments.
+        /// </summary>
+        private static Specificity GetHighestArgumentSpecificity(PseudoSelector pseudo)
+        {
+            var highest = new Specificity { A = 0, B = 0, C = 0 };
+
+            // If we have pre-parsed arguments, use them
+            if (pseudo.ParsedArgs != null && pseudo.ParsedArgs.Count > 0)
+            {
+                foreach (var chain in pseudo.ParsedArgs)
+                {
+                    var spec = chain.Specificity;
+                    if (spec.CompareTo(highest) > 0)
+                        highest = spec;
+                }
+            }
+            else if (!string.IsNullOrEmpty(pseudo.Args))
+            {
+                // Parse the arguments as a selector list
+                highest = GetHighestSpecificityFromSelector(pseudo.Args);
+            }
+
+            return highest;
+        }
+
+        /// <summary>
+        /// Parse a selector string and return its highest specificity.
+        /// </summary>
+        private static Specificity GetHighestSpecificityFromSelector(string selector)
+        {
+            var highest = new Specificity { A = 0, B = 0, C = 0 };
+
+            if (string.IsNullOrWhiteSpace(selector)) return highest;
+
+            try
+            {
+                var chains = SelectorMatcher.ParseSelectorList(selector);
+                foreach (var chain in chains)
+                {
+                    var spec = chain.Specificity;
+                    if (spec.CompareTo(highest) > 0)
+                        highest = spec;
+                }
+            }
+            catch
+            {
+                // If parsing fails, return 0 specificity
+            }
+
+            return highest;
         }
 
         public int CompareTo(SelectorChain other)
@@ -122,7 +238,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
     public class SelectorSegment
     {
-        public string Tag { get; set; }
+        public string TagName { get; set; }
         public string Id { get; set; }
         public List<string> Classes { get; } = new List<string>();
         public List<AttributeSelector> Attributes { get; } = new List<AttributeSelector>();
@@ -130,7 +246,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
         public List<PseudoSelector> PseudoElements { get; } = new List<PseudoSelector>();
         public char Combinator { get; set; } = ' ';
 
-        public bool IsEmpty => string.IsNullOrEmpty(Tag) && string.IsNullOrEmpty(Id) && 
+        public bool IsEmpty => string.IsNullOrEmpty(TagName) && string.IsNullOrEmpty(Id) && 
                                Classes.Count == 0 && Attributes.Count == 0 && 
                                PseudoClasses.Count == 0 && PseudoElements.Count == 0;
     }
@@ -150,3 +266,4 @@ namespace FenBrowser.FenEngine.Rendering.Css
         public bool CaseInsensitive { get; set; }
     }
 }
+
