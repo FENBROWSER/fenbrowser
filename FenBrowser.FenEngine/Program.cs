@@ -1,4 +1,6 @@
 using System;
+using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.FenEngine.Testing;
 
@@ -50,22 +52,22 @@ namespace FenBrowser.FenEngine
                  Console.WriteLine("Parsing HTML...");
                  var builder = new FenBrowser.Core.Parsing.HtmlTreeBuilder(html);
                  var doc = builder.Build();
-                 Console.WriteLine($"HTML Parsed: {doc.Children.Count} children");
+                 Console.WriteLine($"HTML Parsed: {doc.Children.Length} children");
 
                  // Find elements
                  // Use simple iteration to verify structure
-                 FenBrowser.Core.Dom.Element div = null;
+                 FenBrowser.Core.Dom.V2.Element div = null;
                  foreach(var n in doc.Descendants()) 
                  {
-                     if (n.Tag.Equals("DIV", StringComparison.OrdinalIgnoreCase)) 
+                     if (n is FenBrowser.Core.Dom.V2.Element el && el.NodeName.Equals("DIV", StringComparison.OrdinalIgnoreCase)) 
                      {
-                         div = n as FenBrowser.Core.Dom.Element; 
+                         div = el; 
                          break; 
                      }
                  }
 
                  if (div == null) { Console.WriteLine("DIV not found!"); return; }
-                 Console.WriteLine($"Found DIV. Tag: {div.Tag}");
+                 Console.WriteLine($"Found DIV. Tag: {div.NodeName}");
                  if (div.Attr != null && div.Attr.ContainsKey("class"))
                     Console.WriteLine($"Class: {div.Attr["class"]}");
                  else
@@ -99,14 +101,14 @@ namespace FenBrowser.FenEngine
                  
                  var largeBuilder = new FenBrowser.Core.Parsing.HtmlTreeBuilder(largeHtml);
                  var largeDoc = largeBuilder.Build();
-                 var head = largeDoc.Children.FirstOrDefault(c => (c as FenBrowser.Core.Dom.Element)?.Tag == "HTML")
-                            ?.Children.FirstOrDefault(c => (c as FenBrowser.Core.Dom.Element)?.Tag == "HEAD");
-                 var style = head?.Children.FirstOrDefault(c => (c as FenBrowser.Core.Dom.Element)?.Tag == "STYLE");
+                 var head = largeDoc.Children.FirstOrDefault(c => (c as FenBrowser.Core.Dom.V2.Element)?.NodeName == "HTML")
+                            ?.ChildNodes.OfType<FenBrowser.Core.Dom.V2.Element>().FirstOrDefault(c => c.NodeName == "HEAD");
+                 var style = head?.ChildNodes.OfType<FenBrowser.Core.Dom.V2.Element>().FirstOrDefault(c => c.NodeName == "STYLE");
                  
-                 if (style != null && style is FenBrowser.Core.Dom.Element styleEl)
+                 if (style != null)
                  {
-                     Console.WriteLine($"Found Style Tag. Text Length: {styleEl.Text.Length}");
-                     if (styleEl.Text.Length < largeHtml.Length - 100)
+                     Console.WriteLine($"Found Style Tag. Text Length: {style.TextContent.Length}");
+                     if (style.TextContent.Length < largeHtml.Length - 100)
                          Console.WriteLine("WARNING: Style text truncated!");
                      else
                          Console.WriteLine("Style text length matches expectation.");
@@ -127,3 +129,6 @@ namespace FenBrowser.FenEngine
         }
     }
 }
+
+
+

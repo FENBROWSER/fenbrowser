@@ -1,14 +1,14 @@
 using System;
 using FenBrowser.FenEngine.Core;
 using System.Linq;
-using FenBrowser.Core.Dom; // Added for Node/Element/Text
-using System.Collections.Generic; // Added for IEnumerable
+using FenBrowser.Core.Dom.V2; // Updated to V2
+using System.Collections.Generic;
 
 namespace FenBrowser.FenEngine.Tests
 {
     public class LogicTestRunner
     {
-        public static void MainTest(string[] args)
+        public static async System.Threading.Tasks.Task MainTest(string[] args)
         {
             Console.WriteLine("=== FenEngine Test Suite ===\n");
 
@@ -63,7 +63,7 @@ namespace FenBrowser.FenEngine.Tests
 
             // Test 8: Architecture - Dirty Flag Propagation
             Console.WriteLine("\nTest 8: Dirty Flag Propagation");
-            var doc = new FenBrowser.Core.Dom.Document();
+            var doc = new Document();
             var docEl = doc.CreateElement("HTML");
             var body = doc.CreateElement("BODY");
             var div = doc.CreateElement("DIV");
@@ -77,7 +77,7 @@ namespace FenBrowser.FenEngine.Tests
             
             // Mark leaf dirty
             Console.WriteLine("Marking DIV dirty (Style)...");
-            div.MarkDirty(FenBrowser.Core.Dom.InvalidationKind.Style);
+            div.MarkDirty(InvalidationKind.Style);
 
             if (!div.StyleDirty) Console.WriteLine("✗ FAIL: Leaf StyleDirty not set");
             else if (!body.ChildStyleDirty) Console.WriteLine("✗ FAIL: Parent ChildStyleDirty not set");
@@ -90,7 +90,7 @@ namespace FenBrowser.FenEngine.Tests
             try
             {
                 var layoutEngine = new FenBrowser.FenEngine.Layout.LayoutEngine();
-                var layoutDoc = new FenBrowser.Core.Dom.Document();
+                var layoutDoc = new Document();
                 var layoutHtml = layoutDoc.CreateElement("HTML");
                 var layoutBody = layoutDoc.CreateElement("BODY");
                 var layoutDiv = layoutDoc.CreateElement("DIV");
@@ -128,7 +128,7 @@ namespace FenBrowser.FenEngine.Tests
             {
                 // New Scope (renamed vars to avoid collision with Test 8)
                 {
-                    var doc10 = new FenBrowser.Core.Dom.Document();
+                    var doc10 = new Document();
                     var html10 = doc10.CreateElement("HTML");
                     var body10 = doc10.CreateElement("BODY"); 
                     var child10 = doc10.CreateElement("DIV"); 
@@ -138,7 +138,7 @@ namespace FenBrowser.FenEngine.Tests
                     body10.AppendChild(child10);
                     
                     // Manually create Computed Styles since StyleSystem is not fully integrated in this test
-                    var styles = new System.Collections.Generic.Dictionary<FenBrowser.Core.Dom.Node, FenBrowser.Core.Css.CssComputed>();
+                    var styles = new Dictionary<Node, FenBrowser.Core.Css.CssComputed>();
                     
                     var bodyStyle = new FenBrowser.Core.Css.CssComputed();
                     bodyStyle.Display = "flex";
@@ -197,7 +197,7 @@ namespace FenBrowser.FenEngine.Tests
             Console.WriteLine("\nTest 11: Absolute Positioning");
             try
             {
-                var doc11 = new FenBrowser.Core.Dom.Document();
+                var doc11 = new Document();
                 var html11 = doc11.CreateElement("HTML");
                 var body11 = doc11.CreateElement("BODY"); 
                 var container11 = doc11.CreateElement("DIV"); 
@@ -208,7 +208,7 @@ namespace FenBrowser.FenEngine.Tests
                 body11.AppendChild(container11);
                 container11.AppendChild(child11);
                 
-                var styles = new System.Collections.Generic.Dictionary<FenBrowser.Core.Dom.Node, FenBrowser.Core.Css.CssComputed>();
+                var styles = new Dictionary<Node, FenBrowser.Core.Css.CssComputed>();
                 
                 var bodyStyle = new FenBrowser.Core.Css.CssComputed { Display = "block", Width = 800.0, Height = 600.0 };
                 styles[body11] = bodyStyle;
@@ -273,20 +273,20 @@ namespace FenBrowser.FenEngine.Tests
                      var builder12 = new FenBrowser.FenEngine.HTML.HtmlTreeBuilder(tokenizer12);
                      var doc12 = builder12.Build();
                      
-                     var div12 = (FenBrowser.Core.Dom.Element)doc12.Descendants().OfType<FenBrowser.Core.Dom.Element>().FirstOrDefault(e => e.Tag == "DIV");
+                     var div12 = (Element)doc12.Descendants().OfType<Element>().FirstOrDefault(e => e.TagName == "DIV");
                      if (div12 == null) 
                      {
                          Console.WriteLine("✗ FAIL: DIV not found");
                      }
                      else
                      {
-                         Console.WriteLine($"✓ PASS: Found DIV with id='{div12.Attr["id"]}'");
+                         Console.WriteLine($"✓ PASS: Found DIV with id='{div12.GetAttribute("id")}'");
                          
-                         var b12 = div12.Children.FirstOrDefault(c => (c as FenBrowser.Core.Dom.Element)?.Tag == "B");
+                         var b12 = div12.ChildNodes.FirstOrDefault(c => (c as Element)?.TagName == "B");
                          if (b12 != null) Console.WriteLine("✓ PASS: Found nested B tag");
                          else Console.WriteLine("✗ FAIL: Nested B tag missing");
     
-                         var p12 = div12.Children.FirstOrDefault(c => (c as FenBrowser.Core.Dom.Element)?.Tag == "P");
+                         var p12 = div12.ChildNodes.FirstOrDefault(c => (c as Element)?.TagName == "P");
                          if (p12 != null) Console.WriteLine("✓ PASS: Found nested P tag");
                          else Console.WriteLine("✗ FAIL: Nested P tag missing");
                      }
@@ -303,7 +303,7 @@ namespace FenBrowser.FenEngine.Tests
             {
                 // Test 13 Scope
                 {
-                    var doc_13 = new FenBrowser.Core.Dom.Document();
+                    var doc_13 = new Document();
                     var root_13 = doc_13.CreateElement("HTML"); doc_13.AppendChild(root_13);
                     var body_13 = doc_13.CreateElement("BODY"); root_13.AppendChild(body_13);
                     var div_13 = doc_13.CreateElement("DIV"); body_13.AppendChild(div_13);
@@ -312,7 +312,7 @@ namespace FenBrowser.FenEngine.Tests
                     var p2_13 = doc_13.CreateElement("P"); div_13.AppendChild(p2_13); // This is 2nd P
                     
                     // :nth-of-type(2)
-                    bool matchType = FenBrowser.FenEngine.Rendering.Css.SelectorMatcher.Matches(p2_13, "p:nth-of-type(2)");
+                    bool matchType = FenBrowser.FenEngine.Rendering.CssLoader.MatchesSelector(p2_13, "p:nth-of-type(2)");
                     Console.WriteLine($":nth-of-type(2) - Expected: True, Got: {matchType} " + (matchType ? "√" : "✗"));
    
                     // Test :has(> .child)
@@ -320,7 +320,7 @@ namespace FenBrowser.FenEngine.Tests
                     var child_13 = doc_13.CreateElement("DIV"); parent_13.AppendChild(child_13);
                     child_13.SetAttribute("class", "child");
                     
-                    bool matchHasChild = FenBrowser.FenEngine.Rendering.Css.SelectorMatcher.Matches(parent_13, ":has(> .child)");
+                    bool matchHasChild = FenBrowser.FenEngine.Rendering.CssLoader.MatchesSelector(parent_13, ":has(> .child)");
                     Console.WriteLine($":has(> .child) - Expected: True, Got: {matchHasChild} " + (matchHasChild ? "√" : "✗"));
    
                     // Test :has(+ sibling)
@@ -328,7 +328,7 @@ namespace FenBrowser.FenEngine.Tests
                     var next_13 = doc_13.CreateElement("DIV"); body_13.AppendChild(next_13);
                     next_13.SetAttribute("class", "sibling");
                     
-                    bool matchHasSibling = FenBrowser.FenEngine.Rendering.Css.SelectorMatcher.Matches(prev_13, ":has(+ .sibling)");
+                    bool matchHasSibling = FenBrowser.FenEngine.Rendering.CssLoader.MatchesSelector(prev_13, ":has(+ .sibling)");
                     Console.WriteLine($":has(+ .sibling) - Expected: True, Got: {matchHasSibling} " + (matchHasSibling ? "√" : "✗"));
                 }
             }
@@ -345,10 +345,11 @@ namespace FenBrowser.FenEngine.Tests
                 {
                     // Pass null host since this is a headless unit test
                     var engine_14 = new FenBrowser.FenEngine.Scripting.JavaScriptEngine(null);
-                    var doc_14 = new FenBrowser.Core.Dom.Document();
+                    var doc_14 = new Document();
                     
                     // Initialize Engine with DOM
-                    engine_14.SetDomAsync(doc_14, new Uri("about:blank")).Wait();
+                    // Initialize Engine with DOM
+                    await engine_14.SetDomAsync(doc_14, new Uri("about:blank"));
 
                     // Create Host
                     var host_14 = doc_14.CreateElement("DIV");
@@ -357,7 +358,7 @@ namespace FenBrowser.FenEngine.Tests
                     
                     // Add Light Child
                     var lightChild_14 = doc_14.CreateElement("SPAN");
-                    lightChild_14.Text = "Light Content";
+                    lightChild_14.TextContent = "Light Content";
                     host_14.AppendChild(lightChild_14);
                     
                     // Run Script to Attach Shadow
@@ -389,10 +390,10 @@ namespace FenBrowser.FenEngine.Tests
                         else
                         {
                             // Find the shadow text node
-                            if (host_14.ShadowRoot != null && host_14.ShadowRoot.Children.Count > 0)
+                            if (host_14.ShadowRoot != null && host_14.ShadowRoot.ChildNodes.Length > 0)
                             {
-                                var shadowDiv_14 = host_14.ShadowRoot.Children[0] as FenBrowser.Core.Dom.Element;
-                                var textNode_14 = shadowDiv_14?.Children.FirstOrDefault() as FenBrowser.Core.Dom.Text;
+                                var shadowDiv_14 = host_14.ShadowRoot.ChildNodes[0] as Element;
+                                var textNode_14 = shadowDiv_14?.ChildNodes.FirstOrDefault() as Text;
                                 
                                 if (textNode_14 != null)
                                 {
