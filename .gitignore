@@ -42,3 +42,4 @@ erro_*.log
 artifacts/
 build.binlog
 nul
+.claude/
