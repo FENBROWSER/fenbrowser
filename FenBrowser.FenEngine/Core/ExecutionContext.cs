@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using FenBrowser.FenEngine.Security;
 using FenBrowser.FenEngine.Core.Interfaces;
-using FenBrowser.Core.Dom; // MutationRecord
+using FenBrowser.Core.Dom.V2; // MutationRecord
 
 namespace FenBrowser.FenEngine.Core
 {
@@ -105,3 +105,4 @@ namespace FenBrowser.FenEngine.Core
         }
     }
 }
+

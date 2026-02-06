@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
 using FenBrowser.Core;
@@ -4050,7 +4050,7 @@ namespace FenBrowser.FenEngine.Core
         /// Sets the DOM root for this runtime.
         /// Creates the 'document' global object.
         /// </summary>
-        public void SetDom(Element root, Uri baseUri = null)
+        public void SetDom(Node root, Uri baseUri = null)
         {
             if (root  == null) return;
             this.BaseUri = baseUri;
@@ -6133,4 +6133,5 @@ namespace FenBrowser.FenEngine.Core
         #endregion
     }
 }
+
 
