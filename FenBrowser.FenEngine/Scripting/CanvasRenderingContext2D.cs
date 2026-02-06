@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
 // Avalonia imports removed for Skia/Silk migration
@@ -1016,5 +1016,6 @@ namespace FenBrowser.FenEngine.Scripting
         public void SetPrototype(IObject prototype) => _prototype = prototype;
     }
 }
+
 
 

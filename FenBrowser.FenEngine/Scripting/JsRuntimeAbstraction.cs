@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using System;
 using FenBrowser.Core;
 
@@ -117,3 +117,4 @@ namespace FenBrowser.FenEngine.Scripting
         public string EvaluateExpression(string expr, JsContext ctx) { return null; }
     }
 }
+
