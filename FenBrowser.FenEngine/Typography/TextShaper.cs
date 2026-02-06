@@ -211,6 +211,65 @@ namespace FenBrowser.FenEngine.Typography
             _fontCache.Clear();
         }
 
+        /// <summary>
+        /// Find a fallback font that supports the given text.
+        /// Returns the primary font if it supports the text, otherwise tries fallback chain.
+        /// </summary>
+        public FontDescriptor FindFallbackFont(string text, FontDescriptor primaryFont)
+        {
+            if (string.IsNullOrEmpty(text)) return primaryFont;
+
+            // Try primary font first
+            if (FontSupportsText(primaryFont, text))
+                return primaryFont;
+
+            // Fallback chain: Arial → Segoe UI → System default
+            var fallbacks = new[] { "Arial", "Segoe UI", "Segoe UI Symbol", "Microsoft Sans Serif" };
+
+            foreach (var fallbackFamily in fallbacks)
+            {
+                var fallbackFont = new FontDescriptor
+                {
+                    Family = fallbackFamily,
+                    Size = primaryFont.Size,
+                    Bold = primaryFont.Bold,
+                    Italic = primaryFont.Italic
+                };
+
+                if (FontSupportsText(fallbackFont, text))
+                {
+                    if (DebugConfig.LogTextShaping)
+                        global::FenBrowser.Core.FenLogger.Debug(
+                            $"[Text] Font fallback: '{primaryFont.Family}' → '{fallbackFamily}' for text '{text.Substring(0, Math.Min(20, text.Length))}'",
+                            LogCategory.Text
+                        );
+                    return fallbackFont;
+                }
+            }
+
+            // Last resort: return primary font anyway
+            return primaryFont;
+        }
+
+        /// <summary>
+        /// Check if a font supports the given text (has glyphs for all characters).
+        /// </summary>
+        private bool FontSupportsText(FontDescriptor font, string text)
+        {
+            try
+            {
+                var skFont = GetOrCreateFont(font);
+                var typeface = skFont.Typeface;
+
+                // Check if typeface contains glyphs for all characters
+                return typeface.ContainsGlyphs(text);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         public void Dispose()
         {
             if (_disposed) return;
