@@ -13,6 +13,11 @@ namespace FenBrowser.Core.Dom
         public override string NodeName => TagName;
 
         public string TagName { get; private set; }
+        
+        /// <summary>
+        /// Namespace URI for this element (SVG, MathML, or default HTML).
+        /// </summary>
+        public string NamespaceUri { get; set; } = "http://www.w3.org/1999/xhtml";
 
         // --- Ancestor Bloom Filter (Phase 2.1) ---
         /// <summary>
@@ -317,6 +322,15 @@ namespace FenBrowser.Core.Dom
         public override bool HasAttribute(string name)
         {
             return GetAttributeNode(name) != null;
+        }
+        
+        /// <summary>
+        /// Set attribute with namespace URI (for SVG/MathML foreign attributes).
+        /// </summary>
+        public void SetAttributeNS(string namespaceUri, string qualifiedName, string value)
+        {
+            // For now, store namespaced attributes with prefix in name
+            SetAttribute(qualifiedName, value);
         }
 
         public override bool RemoveAttribute(string name)
