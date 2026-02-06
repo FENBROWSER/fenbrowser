@@ -1,0 +1,127 @@
+# FenBrowser Codex - Volume V: Developer Tools
+
+**State as of:** 2026-02-06
+**Codex Version:** 1.0
+
+## 1. Overview
+
+`FenBrowser.DevTools` provides the inspection and debugging capabilities for the browser. It features a unique **Dual-Mode Architecture**:
+
+1.  **In-Process UI**: A native, high-performance overlay rendered directly by the Skia engine.
+2.  **Remote Protocol**: A fully compliant implementation of the Chrome DevTools Protocol (CDP), allowing external tools (VS Code, Chrome) to debug FenBrowser.
+
+## 2. In-Process UI (`Panels/`, `Core/`)
+
+Unlike most browsers that implement DevTools as a web page (HTML/JS), FenBrowser's internal DevTools are **native C# components** rendered via SkiaSharp. This ensures they remain responsive even if the page JS thread hangs.
+
+### 2.1 DevToolsController
+
+The central hub managing the UI.
+
+- **Docking**: Supports Bottom, Right, and Undocked modes.
+- **Input Handling**: Intercepts mouse/keyboard events before they reach the page (when active).
+- **Element Picker**: Provides "Select Element" functionality with visual highlighting.
+
+### 2.2 The Elements Panel (`ElementsPanel.cs`)
+
+A fully interactive DOM tree visualizer.
+
+- **Features**:
+  - Live DOM Tree navigation.
+  - CRUD operations on Attributes and Text.
+  - Real-time CSS Computed Style inspection (`FindPropertyOrigin` traces rules).
+  - Box Model visualization (Margin/Border/Padding diagrams).
+
+---
+
+## 3. Remote Debugging Protocol (`Core/RemoteDebugServer.cs`)
+
+FenBrowser implements a TCP Server on port `9222` to support the **Chrome DevTools Interface**.
+
+### 3.1 Architecture
+
+- **Transport**: WebSocket (RFC 6455) with support for 64-bit frames.
+- **Discovery**: Exposes `/json/version` and `/json/list` HTTP endpoints for client discovery.
+
+### 3.2 Supported Domains (`Domains/`)
+
+- **DOM**: Querying nodes, requesting child nodes, highlighting.
+- **CSS**: modifying stylesheets, computing styles.
+- **Network**: Request/Response monitoring (Basic).
+- **Runtime**: JS evaluation and console logging.
+
+## 4. Integration
+
+The DevTools bridge to the rest of the system via `IDevToolsHost`. This allows the tools to be decoupled from the specific `FenBrowser.Host` implementation, facilitating testing and headless operation.
+
+---
+
+## 5. Comprehensive Source Encyclopedia
+
+This section maps **every key file** in the DevTools library, covering the Native UI and Remote Debugging Server.
+
+### 5.1 Native UI Panels (`FenBrowser.DevTools.Panels`)
+
+#### `ElementsPanel.cs` (Lines 1-2035)
+
+The comprehensive DOM visualization and editing suite.
+
+- **Lines 438-642**: **`DrawDomTree`**: The recursive rendering engine for the DOM tree, handling indentation and expansion.
+- **Lines 1741-1785**: **`Search`**: Implements global search for nodes by tag, ID, or content.
+- **Lines 118-173**: **`HandleProtocolEvent`**: Updates the view in response to engine events.
+
+#### `ConsolePanel.cs` (Lines 1-500)
+
+Displays JavaScript console logs and errors.
+
+- **Lines 100-300**: **`DrawLogEntry`**: Renders text with syntax highlighting for objects/arrays.
+- **Lines 400-450**: **`EvaluateInput`**: REPL implementation sending commands to the Engine.
+
+#### `NetworkPanel.cs` (Lines 1-400)
+
+Visualizes network requests (Waterfall, Timing, Headers).
+
+- **UpdateList**: Subscribes to `BrowserHost.NetworkEvents`.
+- **DrawWaterfall**: Renders the timing bars (DNS/Connect/SSL/Wait/Download).
+
+### 5.2 Core Infrastructure (`FenBrowser.DevTools.Core`)
+
+#### `RemoteDebugServer.cs` (Lines 1-478)
+
+The WebSocket implementation of the Chrome DevTools Protocol.
+
+- **Lines 260-378**: **`ReceiveWebSocketLoop`**: Handles frame decoding and masking for incoming WebSocket messages.
+- **Lines 80-110**: **`SendPingToAllClients`**: Maintains connection health via heartbeats.
+- **Lines 184-234**: **`HandleHttpRequest`**: Serves discovery JSON endpoints.
+
+### 5.3 Controller & Utilities
+
+#### `DevToolsController.cs` (Lines 1-200+)
+
+Manages panel lifecycle and layout (Docked/Undocked state).
+
+#### `Core/Protocol/`
+
+Contains the generated CDP domain classes and DTOs.
+
+### 5.3 Supplemental Files (Gap Fill)
+
+#### Interfaces (`FenBrowser.DevTools`)
+
+- **`IDevToolsHost.cs`**: Abstract interface allowing DevTools to control the Browser Host.
+- **`IDevToolsPanel.cs`**: Common interface for all UI panels (`Console`, `Elements`).
+- **`DevToolsWidget.cs`**: The main container widget hosting the panels.
+
+#### Protocol Definitions (`FenBrowser.DevTools.Core.Protocol`)
+
+- **`CdpRequest.cs`**: JSON-RPC request wrapper.
+- **`CdpResponse.cs`**: JSON-RPC response wrapper.
+- **`CdpEvent.cs`**: JSON-RPC event notification wrapper.
+- **`Domains/*.cs`**: (e.g., `DomDomain.cs`, `PageDomain.cs`) generated handlers for each CDP domain.
+
+#### Utils
+
+- **`JsonHelper.cs`**: Serialization logic for protocol messages.
+- **`WebSocketFrame.cs`**: Low-level WebSocket framing logic.
+
+_End of Volume V_
