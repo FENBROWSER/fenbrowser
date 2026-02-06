@@ -4,7 +4,7 @@ using System.Linq;
 using System.Globalization;
 using System.Text;
 using SkiaSharp;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Rendering.UserAgent;
@@ -36,7 +36,7 @@ namespace FenBrowser.FenEngine.Layout
         public static bool ShouldHide(Node node, CssComputed style)
         {
             if (node == null) return true;
-            string tag = node.Tag?.ToUpperInvariant() ?? "";
+            string tag = (node as Element)?.TagName?.ToUpperInvariant() ?? "";
 
             if (style != null && style.Display == "none") return true;
             if (style != null && style.Visibility == "hidden") return true;
@@ -67,14 +67,14 @@ namespace FenBrowser.FenEngine.Layout
         public static void MeasureInputButtonText(Element node, CssComputed style, ref float width, ref float height)
         {
              string val = node.GetAttribute("value");
-             if (string.IsNullOrEmpty(val) && node.Tag == "BUTTON")
+             if (string.IsNullOrEmpty(val) && node.TagName == "BUTTON")
              {
                  val = GetTextContent(node);
              }
              
              if (string.IsNullOrEmpty(val))
              {
-                 if (node.Tag == "INPUT") val = "Submit"; 
+                 if (node.TagName == "INPUT") val = "Submit"; 
              }
 
              if (!string.IsNullOrEmpty(val))
@@ -185,3 +185,5 @@ namespace FenBrowser.FenEngine.Layout
         }
     }
 }
+
+

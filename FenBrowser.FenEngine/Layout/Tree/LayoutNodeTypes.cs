@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 
 namespace FenBrowser.FenEngine.Layout.Tree
@@ -58,3 +58,4 @@ namespace FenBrowser.FenEngine.Layout.Tree
         public override string ToString() => $"TextLayoutBox \"{TextContent.Replace("\n", "\\n").Replace("\r", "")}\"";
     }
 }
+

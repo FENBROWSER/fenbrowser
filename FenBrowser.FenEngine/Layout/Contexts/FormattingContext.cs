@@ -16,6 +16,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         /// </summary>
         public static FormattingContext Resolve(LayoutBox box)
         {
+            // Text runs always participate in inline formatting.
+            if (box is TextLayoutBox)
+            {
+                return InlineFormattingContext.Instance;
+            }
+
             // If the box establishes a new context for its children, use that.
             // E.g., a BlockBox establishes a BFC for its block-level children.
             // Or establishes an IFC if it contains only inline-level children.
@@ -29,14 +35,59 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             
             // 1. Check for explicit formatting context triggers
             string display = box.ComputedStyle?.Display?.ToLowerInvariant() ?? "block";
-            
-            if (display.Contains("grid")) return GridFormattingContext.Instance;
-            if (display.Contains("flex")) return FlexFormattingContext.Instance;
-            
-            // Inline-block, table-cell, etc. establish BFC for their children
-            if (display == "inline-block" || display == "table-cell" || display == "inline-flex" || display == "inline-grid")
-            {
+
+            // Grid contexts (grid and inline-grid)
+            if (display == "grid" || display == "inline-grid")
+                return GridFormattingContext.Instance;
+
+            // Flex contexts (flex and inline-flex)
+            if (display == "flex" || display == "inline-flex")
+                return FlexFormattingContext.Instance;
+
+            // Flow-root establishes a new BFC
+            if (display == "flow-root")
                 return BlockFormattingContext.Instance;
+
+            // Inline-block/table-cell establish block containers.
+            // If they only contain inline-level content, use IFC; otherwise BFC.
+            if (display == "inline-block" || display == "table-cell")
+            {
+                if (box.SourceNode is FenBrowser.Core.Dom.V2.Element controlElement)
+                {
+                    string controlTag = controlElement.TagName?.ToUpperInvariant() ?? string.Empty;
+                    if (controlTag == "INPUT" || controlTag == "BUTTON" || controlTag == "TEXTAREA" || controlTag == "SELECT")
+                    {
+                        return InlineFormattingContext.Instance;
+                    }
+                }
+
+                bool hasBlockChildren = false;
+                foreach (var child in box.Children)
+                {
+                    if (child is TextLayoutBox) continue;
+
+                    string childDisplay = child.ComputedStyle?.Display?.ToLowerInvariant() ?? "inline";
+                    if (child is BlockBox ||
+                        childDisplay == "block" ||
+                        childDisplay == "flex" ||
+                        childDisplay == "grid" ||
+                        childDisplay == "table" ||
+                        childDisplay == "flow-root" ||
+                        childDisplay == "list-item")
+                    {
+                        hasBlockChildren = true;
+                        break;
+                    }
+                }
+
+                return hasBlockChildren ? BlockFormattingContext.Instance : InlineFormattingContext.Instance;
+            }
+
+            // Contents - children are laid out as if the element doesn't exist
+            // (treat as if parent establishes the context)
+            if (display == "contents")
+            {
+                return BlockFormattingContext.Instance; // Simplified handling
             }
 
             if (box is BlockBox blockBox)

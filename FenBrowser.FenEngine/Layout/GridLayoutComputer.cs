@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using FenBrowser.Core.Css;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Logging;
 using SkiaSharp;
 
@@ -493,7 +493,7 @@ namespace FenBrowser.FenEngine.Layout
             Func<Node, SKSize, int, LayoutMetrics> measureNode,
             IEnumerable<Node> childrenSource = null)
         {
-            if (container == null || container.Children == null)
+            if (container == null || container.ChildNodes == null)
                 return new LayoutMetrics();
 
             var style = styles.TryGetValue(container, out var s) ? s : null;
@@ -514,9 +514,9 @@ namespace FenBrowser.FenEngine.Layout
             float rowGap = (float)(style.RowGap ?? style.Gap ?? 0);
 
             // Get grid items (exclude text nodes and hidden elements)
-            var source = childrenSource ?? container.Children;
+            var source = childrenSource ?? container.ChildNodes;
             var items = source
-                .Where(c => !c.IsText && c is Element)
+                .Where(c => !c.IsText() && c is Element)
                 .Cast<Element>()
                 .ToList();
 
@@ -597,7 +597,7 @@ namespace FenBrowser.FenEngine.Layout
             Func<Node, SKSize, int, LayoutMetrics> measureNode,
             IEnumerable<Node> childrenSource = null)
         {
-            if (container == null || container.Children == null) return;
+            if (container == null || container.ChildNodes == null) return;
 
             var style = styles.TryGetValue(container, out var s) ? s : null;
             if (style == null) return;
@@ -617,9 +617,9 @@ namespace FenBrowser.FenEngine.Layout
 
 
 
-            var source = childrenSource ?? container.Children;
+            var source = childrenSource ?? container.ChildNodes;
             var items = source
-                .Where(c => !c.IsText && c is Element)
+                .Where(c => !c.IsText() && c is Element)
                 .Cast<Element>()
                 .ToList();
 

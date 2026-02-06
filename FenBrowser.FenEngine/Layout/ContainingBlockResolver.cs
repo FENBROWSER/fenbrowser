@@ -18,7 +18,7 @@ using System;
 using System.Collections.Generic;
 using FenBrowser.Core;
 using FenBrowser.Core.Css;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Layout
@@ -103,7 +103,12 @@ namespace FenBrowser.FenEngine.Layout
                     result = ResolveForAbsolute(element);
                     break;
                 case "fixed":
-                    result = GetInitialContainingBlock();
+                    // Per CSS Transforms spec, transform/filter/perspective create containing blocks
+                    // Check ancestors for these properties
+                    var transformAncestor = FindTransformAncestor(element);
+                    result = transformAncestor != null
+                        ? ResolveForStaticOrRelative(transformAncestor)  // Use transform ancestor as CB
+                        : GetInitialContainingBlock();  // Otherwise use viewport
                     break;
                 case "sticky":
                     result = ResolveForStaticOrRelative(element);
@@ -119,28 +124,25 @@ namespace FenBrowser.FenEngine.Layout
 
         private ContainingBlock ResolveForStaticOrRelative(Element element)
         {
-            var parent = element.Parent;
+            var parent = element.ParentElement;
             while (parent != null)
             {
-                if (parent is Element parentElement && IsBlockContainer(parentElement))
-                    return BuildContainingBlock(parentElement, useContentBox: true);
-                parent = parent.Parent;
+                if (IsBlockContainer(parent))
+                    return BuildContainingBlock(parent, useContentBox: true);
+                parent = parent.ParentElement;
             }
             return GetInitialContainingBlock();
         }
 
         private ContainingBlock ResolveForAbsolute(Element element)
         {
-            var parent = element.Parent;
+            var parent = element.ParentElement;
             while (parent != null)
             {
-                if (parent is Element parentElement)
-                {
-                    var parentPosition = GetPosition(parentElement);
-                    if (parentPosition != "static")
-                        return BuildContainingBlock(parentElement, useContentBox: false);
-                }
-                parent = parent.Parent;
+                var parentPosition = GetPosition(parent);
+                if (parentPosition != "static")
+                    return BuildContainingBlock(parent, useContentBox: false);
+                parent = parent.ParentElement;
             }
             return GetInitialContainingBlock();
         }
@@ -205,5 +207,39 @@ namespace FenBrowser.FenEngine.Layout
         }
 
         public void ClearCache() => _cache.Clear();
+        /// <summary>
+        /// Find ancestor with transform/filter/perspective (creates CB for position:fixed).
+        /// </summary>
+        private Element FindTransformAncestor(Element element)
+        {
+            var current = element.ParentElement;
+            
+            while (current != null)
+            {
+                if (_styles.TryGetValue(current, out var style))
+                {
+                    // Check for transform
+                    if (style.Transform != null && style.Transform.Count() > 0)
+                        return current;
+                    
+                    // Check for filter (if implemented)
+                    if (!string.IsNullOrEmpty(style.Filter))
+                        return current;
+                    
+                    // Check for perspective (if implemented)
+                    var perspectiveStr = style.Map != null && style.Map.ContainsKey("perspective") 
+                        ? style.Map["perspective"]
+                        : null;
+                    
+                    if (!string.IsNullOrEmpty(perspectiveStr) && perspectiveStr != "none")
+                        return current;
+                }
+                
+                current = current.ParentElement;
+            }
+            
+            return null;
+        }
     }
 }
+

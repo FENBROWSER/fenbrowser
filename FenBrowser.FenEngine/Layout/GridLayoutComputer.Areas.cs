@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using FenBrowser.Core.Css;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 
 namespace FenBrowser.FenEngine.Layout
 {
@@ -68,3 +68,4 @@ namespace FenBrowser.FenEngine.Layout
         }
     }
 }
+

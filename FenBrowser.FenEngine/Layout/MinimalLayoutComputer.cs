@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Runtime.CompilerServices;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -6,7 +6,7 @@ using System.Linq;
 using FenBrowser.Core;
 using FenBrowser.FenEngine.Layout.Coordinates;
 using FenBrowser.Core.Css;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Logging;
 using SkiaSharp;
 using System.Text;
@@ -86,9 +86,9 @@ namespace FenBrowser.FenEngine.Layout
             if (node is PseudoElement pe) return pe.ComputedStyle;
             if (!_styles.TryGetValue(node, out var style) || style == null)
             {
-                if (node.IsText) 
+                if (node.IsText()) 
                 {
-                    var parentStyle = GetStyle(node.Parent);
+                    var parentStyle = GetStyle(node.ParentNode);
                     if (parentStyle != null) return parentStyle;
                 }
                 
@@ -176,7 +176,7 @@ namespace FenBrowser.FenEngine.Layout
             {
                  // Handle children of closed <details> - hide non-summary elements
                  // This is effectively: details:not([open]) > :not(summary) { display: none; }
-                 if (elem.Parent is Element parentEl && string.Equals(parentEl.TagName, "DETAILS", StringComparison.OrdinalIgnoreCase))
+                 if (elem.ParentElement is Element parentEl && string.Equals(parentEl.TagName, "DETAILS", StringComparison.OrdinalIgnoreCase))
                  {
                      bool isOpen = parentEl.HasAttribute("open");
                      bool isSummary = string.Equals(elem.TagName, "SUMMARY", StringComparison.OrdinalIgnoreCase);
@@ -218,7 +218,7 @@ namespace FenBrowser.FenEngine.Layout
         internal IEnumerable<Node> GetChildrenWithPseudosInternal(Element element, Node fallbackNode) => GetChildrenWithPseudos(element, fallbackNode);
         private IEnumerable<Node> GetChildrenWithPseudos(Element element, Node fallbackNode = null)
         {
-            var children = element?.Children ?? fallbackNode?.Children;
+            var children = element?.ChildNodes ?? fallbackNode?.ChildNodes;
             if (element == null) 
             {
                 if (children != null) foreach (var c in children) yield return c;
@@ -312,7 +312,7 @@ namespace FenBrowser.FenEngine.Layout
         public void Arrange(Node node, SKRect finalRect)
         {
             if (node == null) return;
-            FenLogger.Debug($"[MinimalLayoutComputer] Arrange node={node.Tag ?? "#text"} rect={finalRect}", LogCategory.Rendering);
+            FenLogger.Debug($"[MinimalLayoutComputer] Arrange node={node.NodeName ?? "#text"} rect={finalRect}", LogCategory.Rendering);
             
             _traversedCount = 0;
             _ancestorRects.Clear();
@@ -344,7 +344,7 @@ namespace FenBrowser.FenEngine.Layout
             // (V6: Removed V5 logging block)
 
             float w = 0, h = 0;
-            string tag = (node as Element)?.TagName?.ToUpperInvariant() ?? (node.IsText ? "#text" : "");
+            string tag = (node as Element)?.TagName?.ToUpperInvariant() ?? (node.IsText() ? "#text" : "");
             
             bool isExplicitWidth = false;
             bool isExplicitHeight = false;
@@ -454,10 +454,6 @@ namespace FenBrowser.FenEngine.Layout
             }
 
             // Min/Max Constraints
-            if (tag == "A")
-            {
-                 FenLogger.Error($"[MEASURE-NODE-TRACE] Measuring <A> Display={style?.Display} Parent={(node as Element)?.ParentElement?.TagName}");
-            }
 
             float minW = 0, maxW = float.PositiveInfinity;
             float minH = 0, maxH = float.PositiveInfinity;
@@ -536,7 +532,7 @@ namespace FenBrowser.FenEngine.Layout
 
             // CRITICAL FIX: If THIS element has an explicit height (e.g. html { height: 100% }),
             // pass that resolved height to children so they can resolve THEIR percentage heights.
-            // This establishes the CSS height chain: viewport → html → body → content
+            // This establishes the CSS height chain: viewport ? html ? body ? content
             if (isExplicitHeight && h > 0)
             {
                 // Use the resolved height (after min/max constraints) for children
@@ -587,7 +583,7 @@ namespace FenBrowser.FenEngine.Layout
             string id = (node as Element)?.GetAttribute("id")?.ToLowerInvariant();
             if (tag == "IMG" || tag == "SVG" || tag.EndsWith(":SVG")) {
                    var s = GetStyle(node as Element);
-                   var p = node.Parent as Element;
+                   var p = node.ParentNode as Element;
                    FenLogger.Debug($"[IMG-TRACE] Tag={tag} id={id} Opacity={s?.Opacity} Vis={s?.Visibility} Parent={p?.TagName} ParentClass={p?.GetAttribute("class")}");
                 }
             // REMOVED: isNewTab hack - flexbox now works generically
@@ -619,6 +615,8 @@ namespace FenBrowser.FenEngine.Layout
                 m = MeasureProgress(elem, childConstraint);
             else if (tag == "METER")
                 m = MeasureMeter(elem, childConstraint);
+            else if (tag == "DETAILS")
+                m = MeasureDetails(elem, childConstraint, depth + 1);
             else if (display == "flex" || display == "inline-flex") 
             {
                 FenLogger.Debug($"[MEASURE-FLEX] Node={elem.TagName} Class={elem.GetAttribute("class")} is being measured as FLEX. Avail={availableSize}", LogCategory.Layout);
@@ -640,7 +638,7 @@ namespace FenBrowser.FenEngine.Layout
                 _tableStates.AddOrUpdate(elem, tableState);
             }
 
-            else if (node.IsText) 
+            else if (node.IsText()) 
             {
                 // DIAGNOSTIC: Trace text nodes containing 'ai'
                 if (node is Text textNode)
@@ -648,7 +646,7 @@ namespace FenBrowser.FenEngine.Layout
                     string txt = textNode.Data?.ToLowerInvariant() ?? "";
                     if (txt.Contains("ai"))
                     {
-                         var parentEl = node.Parent as Element;
+                         var parentEl = node.ParentNode as Element;
                          bool isAiMode = txt.Contains("ai mode");
                          FenLogger.Debug($"[AI-TRACE] Text='{txt}' Parent={parentEl?.TagName} Class={parentEl?.GetAttribute("class")}");
                     }
@@ -704,7 +702,7 @@ namespace FenBrowser.FenEngine.Layout
             if (depth < 10 && elem != null)
             {
                 string childInfo = "";
-                if (elem.Children != null) childInfo = $"children={elem.Children.Count}";
+                if (elem.Children != null) childInfo = $"children={elem.Children.Length}";
                 // (V5: Removed logging block moved to start)
             }
 
@@ -829,7 +827,7 @@ namespace FenBrowser.FenEngine.Layout
                 bool isBlock = (display == "block" || display == null); 
                 bool isFloat = style?.Float?.ToLowerInvariant() == "left";
                 
-                if (!isExplicitWidth && isBlock && !node.IsText && tag != "IMG" && tag != "SVG" && !tag.EndsWith(":SVG") && 
+                if (!isExplicitWidth && isBlock && !node.IsText() && tag != "IMG" && tag != "SVG" && !tag.EndsWith(":SVG") && 
                     !isFloat && tag != "BUTTON" && tag != "INPUT" && tag != "TEXTAREA" && tag != "SELECT" && tag != "LABEL") 
                 {
                      // CRITICAL FIX for Flex Center Alignment:
@@ -851,7 +849,7 @@ namespace FenBrowser.FenEngine.Layout
                      w = float.IsInfinity(usedWidth) ? m.MaxChildWidth : Math.Max(0, usedWidth);
                      }
                 }
-                else if (w <= 0 && !node.IsText) 
+                else if (w <= 0 && !node.IsText() && !IsReplacedInlineElement(tag)) 
                 {
                      bool isInlineBlock = (display == "inline-block" || display == "inline");
                      if (!isFloat && !isInlineBlock && !shrinkToFit) {
@@ -905,19 +903,25 @@ namespace FenBrowser.FenEngine.Layout
             // because ArrangeBlock expects the full BorderBox size to allocate space.
             // ALSO FIX: If !isExplicitWidth (Auto Width), 'w' is derived from content measurement (e.g. flex children).
             // We must add padding/border to get the physical BorderBox size, regardless of box-sizing.
-            if (style != null && (style.BoxSizing != "border-box" || !isExplicitWidth))
+            // FIX: If content-box, we must add padding/border back to w/h for the LayoutMetrics 
+            // because ArrangeBlock expects the full BorderBox size to allocate space.
+            // Decouple Width/Height logic to handle cases like Fixed Width + Auto Height correctly.
+            if (style != null)
             {
                  var p = style.Padding;
                  var b = style.BorderThickness;
                  
-                 // If !isExplicitWidth, w is content width (from children). Add padding/border.
-                 // If content-box, w is content width. Add padding/border.
-                 // Result: w becomes BorderBox width.
-                 
-                 w += (float)(p.Left + p.Right + b.Left + b.Right);
-                 h += (float)(p.Top + p.Bottom + b.Top + b.Bottom);
+                 // Width Logic: Add padding if content-box OR auto-width
+                 if (style.BoxSizing != "border-box" || !isExplicitWidth)
+                 {
+                     w += (float)(p.Left + p.Right + b.Left + b.Right);
+                 }
 
-                 if (tag == "H1") FenLogger.Error($"[H1-DEBUG] Added borders. NetH={h} pT={p.Top} bT={b.Top}");
+                 // Height Logic: Add padding if content-box OR auto-height
+                 if (style.BoxSizing != "border-box" || !isExplicitHeight)
+                 {
+                     h += (float)(p.Top + p.Bottom + b.Top + b.Bottom);
+                 }
             }
             else
             {
@@ -974,7 +978,7 @@ namespace FenBrowser.FenEngine.Layout
             }
             catch (Exception ex)
             {
-                 FenLogger.Error($"[CRASH-GUARD] MeasureNode crashed for {node?.Tag ?? "null"}: {ex.Message}", LogCategory.General);
+                 FenLogger.Error($"[CRASH-GUARD] MeasureNode crashed for {(node as Element)?.TagName ?? node?.NodeName ?? "null"}: {ex.Message}", LogCategory.General);
                  return new LayoutMetrics();
             }
         }
@@ -1021,7 +1025,7 @@ namespace FenBrowser.FenEngine.Layout
             };
         }
 
-        var p = node.Parent;
+        var p = node.ParentNode;
         int loopCount = 0;
         while (p != null)
         {
@@ -1051,13 +1055,13 @@ namespace FenBrowser.FenEngine.Layout
                     };
                 }
             }
-            p = p.Parent;
+            p = p.ParentNode;
             
             // Loop Guard
             loopCount++;
             if (loopCount > 1000)
             {
-                FenLogger.Error($"[LAYOUT-LOOP] ResolveContainingBlock hit iteration limit for node {node?.Tag}", LogCategory.Layout);
+                FenLogger.Error($"[LAYOUT-LOOP] ResolveContainingBlock hit iteration limit for node {(node as Element)?.TagName}", LogCategory.Layout);
                 break;
             }
         }
@@ -1070,137 +1074,151 @@ namespace FenBrowser.FenEngine.Layout
     }
         private void ArrangeNodeCore(Node node, SKRect finalRect, int depth)
         {
-            if (node == null) return;
-            if (depth > 100) return;
-
-            var style = GetStyle(node);
-             if (node is Element eDebug)
+            try
             {
-                 if (eDebug.TagName == "IMG" || eDebug.TagName == "SVG" || eDebug.TagName.EndsWith(":SVG"))
-                 {
-                     FenLogger.Debug($"[ARRANGE-CORE] Tag={eDebug.TagName} Id={eDebug.GetAttribute("id")} ShouldHide={ShouldHide(node, style)} Rect={finalRect} StyleDisp={style?.Display}");
-                 }
-            }
+                if (node == null) return;
+                if (depth > 100) return;
 
-
-            if (ShouldHide(node, style)) return;
-
-            // Tracking for verification
-            if (node is Element && (finalRect.Width <= 0 || finalRect.Height <= 0))
-            {
-                _zeroSizedCount++;
-            }
-
-            string position = style?.Position?.ToLowerInvariant();
-            if (position == "absolute" || position == "fixed")
-            {
-                // Use AbsolutePositionSolver with CORRECT containing block from ancestors
-                var containingBlock = ResolveContainingBlock(node);
-                
-                // Fixed positioning logic is handled by ResolveContainingBlock returning ICB
-                
-                // Get intrinsic size from measure pass
-                float intrinsicWidth = 0, intrinsicHeight = 0;
-                if (_desiredSizes.TryGetValue(node, out var desiredSize))
+                var style = GetStyle(node);
+                if (node is Element eDebug)
                 {
-                    intrinsicWidth = desiredSize.Width;
-                    intrinsicHeight = desiredSize.Height;
+                    if (eDebug.TagName == "IMG" || eDebug.TagName == "SVG" || eDebug.TagName.EndsWith(":SVG"))
+                    {
+                        FenLogger.Debug($"[ARRANGE-CORE] Tag={eDebug.TagName} Id={eDebug.GetAttribute("id")} ShouldHide={ShouldHide(node, style)} Rect={finalRect} StyleDisp={style?.Display}");
+                    }
                 }
+
+
+                if (ShouldHide(node, style)) return;
+
+                string position = style?.Position?.ToLowerInvariant();
+                if (position == "absolute" || position == "fixed")
+                {
+                    // Guard against null style
+                    if (style == null) return;
+                    
+                    // Use AbsolutePositionSolver with CORRECT containing block from ancestors
+                    var containingBlock = ResolveContainingBlock(node);
+                    
+                    // Fixed positioning logic is handled by ResolveContainingBlock returning ICB
+                    
+                    // Get intrinsic size from measure pass
+                    float intrinsicWidth = 0, intrinsicHeight = 0;
+                    if (_desiredSizes.TryGetValue(node, out var desiredSize))
+                    {
+                        intrinsicWidth = desiredSize.Width;
+                        intrinsicHeight = desiredSize.Height;
+                    }
+                    
+                    // DEBUG: Log CSS position values
+                    // Guard against null style properties
+                    if (style == null) return; 
+                    FenLogger.Debug($"[ABS-POS] node={node.NodeName} left={style.Left} right={style.Right} top={style.Top} bottom={style.Bottom} cb=({containingBlock.Width}x{containingBlock.Height})", LogCategory.Rendering);
+                    
+                    // Solve the 7-variable equation
+                    var result = AbsolutePositionSolver.Solve(style, containingBlock, intrinsicWidth, intrinsicHeight);
+                    
+                    // DEBUG: Log solver result
+                    FenLogger.Debug($"[ABS-POS] result: X={result.X} Y={result.Y} W={result.Width} H={result.Height}", LogCategory.Rendering);
+                    
+                    finalRect = new SKRect(
+                        containingBlock.X + result.X - (float)(style?.Padding.Left ?? 0) - (float)(style?.BorderThickness.Left ?? 0),
+                        containingBlock.Y + result.Y - (float)(style?.Padding.Top ?? 0) - (float)(style?.BorderThickness.Top ?? 0),
+                        containingBlock.X + result.X + result.Width + (float)(style?.Padding.Right ?? 0) + (float)(style?.BorderThickness.Right ?? 0),
+                        containingBlock.Y + result.Y + result.Height + (float)(style?.Padding.Bottom ?? 0) + (float)(style?.BorderThickness.Bottom ?? 0)
+                    );
+                }
+
+                var box = new BoxModel { 
+                    Margin = style?.Margin ?? new Thickness(0),
+                    Border = style?.BorderThickness ?? new Thickness(0),
+                    Padding = style?.Padding ?? new Thickness(0),
+                    BorderBox = finalRect
+                };
                 
-                // DEBUG: Log CSS position values
-                FenLogger.Debug($"[ABS-POS] node={node.Tag} left={style.Left} right={style.Right} top={style.Top} bottom={style.Bottom} cb=({containingBlock.Width}x{containingBlock.Height})", LogCategory.Rendering);
+                float bL = (float)box.Border.Left, bT = (float)box.Border.Top, bR = (float)box.Border.Right, bB = (float)box.Border.Bottom;
+                float pL = (float)box.Padding.Left, pT = (float)box.Padding.Top, pR = (float)box.Padding.Right, pB = (float)box.Padding.Bottom;
                 
-                // Solve the 7-variable equation
-                var result = AbsolutePositionSolver.Solve(style, containingBlock, intrinsicWidth, intrinsicHeight);
+                // CRITICAL FIX: Clamp box dimensions to prevent negative sizes when padding/border exceeds available space
+                // This fixes FLEX-FAIL and negative dimension SPEC-WARN errors
+                float paddingRight = Math.Max(box.BorderBox.Left + bL, box.BorderBox.Right - bR);
+                float paddingBottom = Math.Max(box.BorderBox.Top + bT, box.BorderBox.Bottom - bB);
                 
-                // DEBUG: Log solver result
-                FenLogger.Debug($"[ABS-POS] result: X={result.X} Y={result.Y} W={result.Width} H={result.Height}", LogCategory.Rendering);
+                // If width is too small for border/padding, content width becomes 0 (not negative)
+                float contentW = Math.Max(0, box.BorderBox.Width - bL - bR - pL - pR);
+                float contentH = Math.Max(0, box.BorderBox.Height - bT - bB - pT - pB);
                 
-                finalRect = new SKRect(
-                    containingBlock.X + result.X - (float)style.Padding.Left - (float)style.BorderThickness.Left,
-                    containingBlock.Y + result.Y - (float)style.Padding.Top - (float)style.BorderThickness.Top,
-                    containingBlock.X + result.X + result.Width + (float)style.Padding.Right + (float)style.BorderThickness.Right,
-                    containingBlock.Y + result.Y + result.Height + (float)style.Padding.Bottom + (float)style.BorderThickness.Bottom
+                box.ContentBox = new SKRect(
+                    box.BorderBox.Left + bL + pL,
+                    box.BorderBox.Top + bT + pT,
+                    box.BorderBox.Left + bL + pL + contentW,
+                    box.BorderBox.Top + bT + pT + contentH
                 );
+
+                _boxes[node] = box;
+
+                if (node.IsText() && _textLines.TryGetValue(node, out var computedLines))
+                {
+                    box.Lines = computedLines;
+                }
+
+                // DEBUG: Trace test-case and sibling positioning
+                if (node is Element tcElem)
+                {
+                    var cls = tcElem.GetAttribute("class");
+                    if (cls != null && (cls.Contains("test-case") || cls == "label" || cls == "sibling" || cls == "ref"))
+                    {
+                        System.Console.WriteLine($"[POSITION] Class={cls} BorderBox={box.BorderBox}");
+                    }
+                }
+
+                string tag = (node as Element)?.TagName?.ToUpperInvariant() ?? "";
+                string display = style?.Display?.ToLowerInvariant() ?? "inline"; 
+                
+                var elem = node as Element;
+                
+                // AGGRESSIVE DEBUG: Trace Dispatch (General Category)
+                if (tag == "BODY" || tag == "HTML")
+                {
+                     FenLogger.Debug($"[ARRANGE-DISPATCH] Tag={tag} Display={display} Box={box.ContentBox} ViewportH={_viewportHeight}");
+                }
+
+                if ((display == "flex" || display == "inline-flex") && elem != null) 
+                {
+                    ArrangeFlex(elem, box.ContentBox, depth + 1, style, elem.Children);
+                }
+                else if (display == "grid" && elem != null)
+                    ArrangeGrid(elem, box.ContentBox, depth + 1);
+                else if (IsMultiColumn(style) && elem != null)
+                    ArrangeMultiColumn(elem, box.ContentBox);
+                else if (tag == "TABLE" && elem != null)
+                    ComputeTableLayout(elem, box.ContentBox, depth + 1);
+                else if (node.IsText()) 
+                    ArrangeText(node, box.ContentBox);
+                else 
+                {
+                     // Refactored to use BlockLayoutAlgorithm (Strategy Pattern)
+                     var context = new FenBrowser.FenEngine.Layout.Algorithms.LayoutContext
+                     {
+                         Node = elem,
+                         Style = style,
+                         AvailableSize = box.ContentBox.Size,
+                         Depth = depth + 1,
+                         Computer = this,
+                         FallbackNode = node,
+                         Exclusions = _activeBfcFloats.Count > 0 ? _activeBfcFloats.Peek() : null,
+                         Deadline = this.Deadline
+                     };
+                     new FenBrowser.FenEngine.Layout.Algorithms.BlockLayoutAlgorithm().Arrange(context, box.ContentBox);
+                }
             }
-
-            var box = new BoxModel { 
-                Margin = style?.Margin ?? new Thickness(0),
-                Border = style?.BorderThickness ?? new Thickness(0),
-                Padding = style?.Padding ?? new Thickness(0),
-                BorderBox = finalRect
-            };
-            
-            float bL = (float)box.Border.Left, bT = (float)box.Border.Top, bR = (float)box.Border.Right, bB = (float)box.Border.Bottom;
-            float pL = (float)box.Padding.Left, pT = (float)box.Padding.Top, pR = (float)box.Padding.Right, pB = (float)box.Padding.Bottom;
-            
-            // CRITICAL FIX: Clamp box dimensions to prevent negative sizes when padding/border exceeds available space
-            // This fixes FLEX-FAIL and negative dimension SPEC-WARN errors
-            float paddingRight = Math.Max(box.BorderBox.Left + bL, box.BorderBox.Right - bR);
-            float paddingBottom = Math.Max(box.BorderBox.Top + bT, box.BorderBox.Bottom - bB);
-            box.PaddingBox = new SKRect(box.BorderBox.Left + bL, box.BorderBox.Top + bT, paddingRight, paddingBottom);
-            
-            float contentRight = Math.Max(box.PaddingBox.Left + pL, box.PaddingBox.Right - pR);
-            float contentBottom = Math.Max(box.PaddingBox.Top + pT, box.PaddingBox.Bottom - pB);
-            box.ContentBox = new SKRect(box.PaddingBox.Left + pL, box.PaddingBox.Top + pT, contentRight, contentBottom);
-
-            if (node.IsText && _textLines.TryGetValue(node, out var computedLines))
+            catch (Exception ex)
             {
-                box.Lines = computedLines;
-            }
-
-            _boxes[node] = box;
-
-    // DEBUG: Trace test-case and sibling positioning
-    if (node is Element tcElem)
-    {
-        var cls = tcElem.GetAttribute("class");
-        if (cls != null && (cls.Contains("test-case") || cls == "label" || cls == "sibling" || cls == "ref"))
-        {
-            System.Console.WriteLine($"[POSITION] Class={cls} BorderBox={box.BorderBox}");
-        }
-    }
-
-            string tag = (node as Element)?.TagName?.ToUpperInvariant() ?? "";
-            string id = (node as Element)?.GetAttribute("id")?.ToLowerInvariant();
-            // REMOVED: isNewTab hack - flexbox now works generically
-            string display = style?.Display?.ToLowerInvariant(); 
-            
-            var elem = node as Element;
-            
-            // AGGRESSIVE DEBUG: Trace Dispatch (General Category)
-            if (tag == "BODY" || tag == "HTML")
-            {
-                 FenLogger.Debug($"[ARRANGE-DISPATCH] Tag={tag} Display={display} Box={box.ContentBox} ViewportH={_viewportHeight}");
-            }
-
-            if (display == "flex" || display == "inline-flex") 
-            {
-                ArrangeFlex(elem, box.ContentBox, depth + 1, style, elem.Children);
-            }
-            else if (display == "grid")
-                ArrangeGrid(elem, box.ContentBox, depth + 1);
-            else if (IsMultiColumn(style) && elem != null)
-                ArrangeMultiColumn(elem, box.ContentBox);
-            else if (tag == "TABLE")
-                ComputeTableLayout(elem, box.ContentBox, depth + 1);
-            else if (node.IsText) 
-                ArrangeText(node, box.ContentBox);
-            else 
-            {
-                 // Refactored to use BlockLayoutAlgorithm (Strategy Pattern)
-                 var context = new FenBrowser.FenEngine.Layout.Algorithms.LayoutContext
-                 {
-                     Node = elem,
-                     Style = style,
-                     AvailableSize = box.ContentBox.Size,
-                     Depth = depth + 1,
-                     Computer = this,
-                     FallbackNode = node,
-                     Exclusions = _activeBfcFloats.Count > 0 ? _activeBfcFloats.Peek() : null,
-                     Deadline = this.Deadline
-                 };
-                 new FenBrowser.FenEngine.Layout.Algorithms.BlockLayoutAlgorithm().Arrange(context, box.ContentBox);
+                var tag = (node as Element)?.TagName ?? node?.NodeType.ToString() ?? "NULL";
+                FenLogger.Error($"[ArrangeNodeCore] CRASH processing node {tag}: {ex.Message}\n{ex.StackTrace}", LogCategory.Layout);
+                // Don't rethrow to avoid crashing the whole renderer, but maybe we should?
+                // Re-throwing helps find the root cause if the catch above this handles it.
+                throw; 
             }
         }
 
@@ -1519,22 +1537,29 @@ namespace FenBrowser.FenEngine.Layout
 
         private void ArrangeBlockInternal(Element element, SKRect finalRect, int depth, Node fallbackNode)
         {
-            var childrenSource = GetChildrenWithPseudos(element, fallbackNode).ToList();
-            if (childrenSource == null) return;
+            // Null guard to prevent NullReferenceException
+            if (element == null && fallbackNode == null) return;
+            
+            try 
+            {
+                var childrenSource = GetChildrenWithPseudos(element, fallbackNode).Where(c => c != null).ToList();
+                if (childrenSource == null || childrenSource.Count == 0) return;
 
             // DEBUG: Trace BODY content box
-            if (element?.TagName == "BODY")
-            {
-                System.Console.WriteLine($"[BODY-ARRANGE] ContentBox={finalRect}");
-                var firstChild = childrenSource.FirstOrDefault(c => c is Element);
-                if (firstChild is Element fe)
+                if (element?.TagName == "BODY")
                 {
-                    var fStyle = GetStyle(fe);
-                    System.Console.WriteLine($"[BODY-FIRST-CHILD] Tag={fe.TagName} Class={fe.GetAttribute("class")} MarginTop={fStyle?.Margin.Top}");
+                    System.Console.WriteLine($"[BODY-ARRANGE] ContentBox={finalRect}");
+                    var firstChild = childrenSource.FirstOrDefault(c => c is Element);
+                    if (firstChild is Element fe)
+                    {
+                        var fStyle = GetStyle(fe);
+                        System.Console.WriteLine($"[BODY-FIRST-CHILD] Tag={fe.TagName} Class={fe.GetAttribute("class")} MarginTop={fStyle?.Margin.Top}");
+                    }
                 }
-            }
-            
-            var parentStyle = element != null ? GetStyle(element) : null;
+                
+                var parentStyle = element != null ? GetStyle(element) : null;
+
+
 
             // BFC Logic: Determine if this block establishes a new BFC
             bool newBfc = false;
@@ -1590,16 +1615,7 @@ namespace FenBrowser.FenEngine.Layout
             // Children of flex containers are flex ITEMS, not necessarily flex CONTAINERS.
             // They should be arranged according to their OWN display type (handled below).
             
-            if (element != null) 
-            {
-                 // Trace block layout usage
-                 // FenLogger.Debug($"[BLOCK-LAYOUT] Arranging <{element.TagName} class='{element.GetAttribute("class")}'> {childrenSource.Count()} children");
-                 var cls = element.GetAttribute("class");
-                 if (cls != null && cls.Contains("gb"))
-                 {
-                     FenLogger.Debug($"[HEADER-DEBUG] Tag={element.TagName} Class='{cls}' Display='{parentStyle?.Display}' Children={childrenSource.Count()}");
-                 }
-            }
+            
 
             string writingMode = parentStyle?.WritingMode ?? "horizontal-tb";
 
@@ -1623,8 +1639,10 @@ namespace FenBrowser.FenEngine.Layout
 
             foreach (var child in childrenSource)
             {
-                var childStyle = GetStyle(child);
-                if (ShouldHide(child, childStyle)) continue;
+                try
+                {
+                    var childStyle = GetStyle(child);
+                    if (ShouldHide(child, childStyle)) continue;
 
                 if (child is Text txt && string.IsNullOrWhiteSpace(txt.Data)) continue;
                 
@@ -1725,6 +1743,15 @@ namespace FenBrowser.FenEngine.Layout
                              FenLogger.Debug($"[ARRANGE-BLOCK-LOOP] Child={childStyle?.Display} BoxH={childLogSize.Block} Spacing={spacing} CurBlock={logicalCurBlock}");
                         }
                         
+
+
+
+                        // DEBUG: Trace layout for flex items - INFO level for visibility
+                        if (element != null && element.GetAttribute("class").Contains("flex-item"))
+                        {
+                             FenLogger.Info($"[BLOCK-LOOP] Child={(child is Element ? "Element" : "Text")} CurBlock={logicalCurBlock} Spacing={spacing} MarginTop={mt}", LogCategory.Layout);
+                        }
+
                         // Implement margin: auto for block-level elements
                         float autoMarginOffset = 0;
                         if (!isFloat && (childStyle?.Display == "block" || childStyle?.Display == "table" || childStyle?.Display == "flex"))
@@ -1773,6 +1800,12 @@ namespace FenBrowser.FenEngine.Layout
                         logicalCurBlock += childLogSize.Block;
                     }
                 }
+                }
+                catch (Exception ex)
+                {
+                     var tag = (child as Element)?.TagName ?? child?.NodeType.ToString() ?? "NULL";
+                     FenLogger.Error($"[ArrangeBlockInternal-LOOP] CRASH processing child {tag}: {ex.Message}", LogCategory.Layout);
+                }
             }
             // End
 
@@ -1792,6 +1825,13 @@ namespace FenBrowser.FenEngine.Layout
             {
                 bfcScope?.Dispose();
             }
+            }
+            catch (Exception ex)
+            {
+                var tag = (element)?.TagName ?? fallbackNode?.NodeType.ToString() ?? "NULL";
+                FenLogger.Error($"[ArrangeBlockInternal] CRASH processing node {tag}: {ex.Message}\n{ex.StackTrace}", LogCategory.Layout);
+                throw;
+            }
         }
         
         private LayoutMetrics MeasureFlexInternal(Element element, SKSize availableSize, bool isCenteredRoot, int depth, Node fallbackNode = null)
@@ -1803,7 +1843,7 @@ namespace FenBrowser.FenEngine.Layout
             string dbgCls = target.GetAttribute("class") ?? "";
             if (target.TagName == "DIV" && dbgCls.Contains("sites-grid"))
             {
-                 FenLogger.Debug($"[FLEX-ENTRY-V8] Measuring .sites-grid Children={target.Children.Count} Avail={availableSize.Width}x{availableSize.Height}", LogCategory.Rendering);
+                 FenLogger.Debug($"[FLEX-ENTRY-V8] Measuring .sites-grid Children={target.Children.Length} Avail={availableSize.Width}x{availableSize.Height}", LogCategory.Rendering);
                  foreach(var c in target.Children) {
                     var cEl = c as Element;
                     FenLogger.Debug($"  - Child <{cEl?.TagName} class='{cEl?.GetAttribute("class")}'>", LogCategory.Rendering);
@@ -1828,6 +1868,31 @@ namespace FenBrowser.FenEngine.Layout
             // Measure with unconstrained width to get intrinsic content size
             var shrinkConstraint = new SKSize(float.PositiveInfinity, availableSize.Height);
             var m = MeasureBlockInternal(element, shrinkConstraint, depth, element);
+
+            // Honor explicit width/height on buttons (common in icon-only controls).
+            var style = GetStyle(element);
+            bool hasExplicitWidth = style?.Width.HasValue == true && style.Width.Value > 0;
+            bool hasExplicitHeight = style?.Height.HasValue == true && style.Height.Value > 0;
+            if (style != null && (hasExplicitWidth || hasExplicitHeight))
+            {
+                float targetW = hasExplicitWidth ? (float)style.Width.Value : m.MaxChildWidth;
+                float targetH = hasExplicitHeight ? (float)style.Height.Value : m.ContentHeight;
+                if (style.BoxSizing != "border-box")
+                {
+                    targetW += (float)(style.Padding.Left + style.Padding.Right + style.BorderThickness.Left + style.BorderThickness.Right);
+                    targetH += (float)(style.Padding.Top + style.Padding.Bottom + style.BorderThickness.Top + style.BorderThickness.Bottom);
+                }
+
+                if (hasExplicitWidth)
+                {
+                    m.MaxChildWidth = Math.Max(m.MaxChildWidth, targetW);
+                }
+                if (hasExplicitHeight)
+                {
+                    m.ContentHeight = Math.Max(m.ContentHeight, targetH);
+                    m.ActualHeight = Math.Max(m.ActualHeight, targetH);
+                }
+            }
             
             // Ensure buttons have reasonable minimum dimensions
             if (m.MaxChildWidth < 10)
@@ -1900,6 +1965,19 @@ namespace FenBrowser.FenEngine.Layout
             return tag == "SPAN" || tag == "A" || tag == "B" || tag == "I" || tag == "IMG" || tag == "SVG" || tag == "INPUT" || tag == "BUTTON" || tag == "CANVAS" || tag == "SMALL" || tag == "CODE" || 
                    tag == "STRONG" || tag == "EM" || tag == "LABEL" || tag == "BR" || tag == "PICTURE" || tag == "TIME" || tag == "MARK" || tag == "KBD" || tag == "ABBR" || tag == "Q" || 
                    tag == "CITE" || tag == "SUB" || tag == "SUP" || tag == "DFN" || tag == "IFRAME";
+        }
+
+        /// <summary>
+        /// Checks if the element is a natively inline-level replaced element that should NOT
+        /// expand to full container width. These elements size to their content or intrinsic dimensions.
+        /// </summary>
+        private static bool IsReplacedInlineElement(string tag)
+        {
+            return tag == "BUTTON" || tag == "INPUT" || tag == "SELECT" || 
+                   tag == "TEXTAREA" || tag == "LABEL" || tag == "IMG" || 
+                   tag == "SVG" || tag == "CANVAS" || tag == "VIDEO" || 
+                   tag == "AUDIO" || tag == "IFRAME" || tag == "EMBED" || 
+                   tag == "OBJECT" || tag == "PICTURE" || tag.EndsWith(":SVG");
         }
 
         private LayoutMetrics MeasureInput(Element element, SKSize availableSize, int depth)
@@ -2157,6 +2235,7 @@ namespace FenBrowser.FenEngine.Layout
         {
             if (!_inlineCache.TryGetValue(container, out var result)) return;
 
+
             // CRITICAL FIX: If finalRect.Width differs from what was used during Measure,
             // re-run inline layout with the actual width to get correct text-align positioning.
             // This is especially important for table cells measured with infinity width.
@@ -2178,6 +2257,19 @@ namespace FenBrowser.FenEngine.Layout
                 );
                 _inlineCache[container] = newResult;
                 result = newResult;
+                
+                // DEBUG: Log text line positions
+                if (container.GetAttribute("class")?.Contains("center-text") == true)
+                {
+                    FenLogger.Info($"[TEXT-ALIGN-DEBUG] Container={container.TagName} Class={container.GetAttribute("class")} ArrangeWidth={arrangeWidth}", FenBrowser.Core.Logging.LogCategory.Layout);
+                    foreach(var kvp in result.TextLines)
+                    {
+                        foreach(var line in kvp.Value)
+                        {
+                            FenLogger.Info($"[TEXT-ALIGN-DEBUG] TextLine Origin=({line.Origin.X}, {line.Origin.Y}) Text={line.Text.Substring(0, Math.Min(20, line.Text.Length))}", FenBrowser.Core.Logging.LogCategory.Layout);
+                        }
+                    }
+                }
                 
                 // Also update _textLines with new positions
                 foreach (var kvp in result.TextLines)
@@ -2243,8 +2335,14 @@ namespace FenBrowser.FenEngine.Layout
                            // And box.ContentBox is the IFC container absolute rect.
                            // Then it works!
                            ArrangeNode(c, finalRect, currentDepth + 1);
+                        } else if (c.NodeName == "BR") {
+                           // BR elements need a minimal box for rendering tree traversal
+                           // They don't occupy visual space but need to exist in the box tree
+                           // Give them a zero-width, zero-height box at the container position
+                           var brRect = new SKRect(finalRect.Left, finalRect.Top, finalRect.Left, finalRect.Top);
+                           ArrangeNode(c, brRect, currentDepth + 1);
                         } else {
-                           // Nested inline (span, etc).
+                           // Nested inline (span, etc.).
                            // Ensure the inline container itself gets a box so PaintTreeBuilder can traverse it.
                            // We use the container's rect as a placeholder box.
                            ArrangeNode(c, finalRect, currentDepth + 1);
@@ -2565,6 +2663,48 @@ namespace FenBrowser.FenEngine.Layout
         private bool ShouldHide(Node node, CssComputed style)
         {
             if (node == null) return true;
+
+            // Ignore indentation/newline-only text in non-inline normal-flow containers.
+            if (node is Text textNode && string.IsNullOrWhiteSpace(textNode.Data))
+            {
+                var parent = node.ParentElement ?? node.ParentNode as Element;
+                if (parent != null)
+                {
+                    var parentStyle = GetStyleInternal(parent);
+                    string whiteSpace = parentStyle?.WhiteSpace?.ToLowerInvariant() ?? "normal";
+                    bool preserveWhitespace =
+                        whiteSpace == "pre" ||
+                        whiteSpace == "pre-wrap" ||
+                        whiteSpace == "break-spaces";
+
+                    string parentDisplay = parentStyle?.Display?.ToLowerInvariant() ?? "inline";
+                    bool inlineParent =
+                        parentDisplay == "inline" ||
+                        parentDisplay == "inline-block" ||
+                        parentDisplay == "inline-flex" ||
+                        parentDisplay == "inline-grid" ||
+                        parentDisplay == "contents";
+
+                    if (!preserveWhitespace && !inlineParent)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            // Native HTML behavior: closed <details> hides all direct children except <summary>.
+            var parentElement = node.ParentElement ?? node.ParentNode as Element;
+            if (parentElement is Element detailsElement &&
+                string.Equals(detailsElement.TagName, "DETAILS", StringComparison.OrdinalIgnoreCase) &&
+                !detailsElement.HasAttribute("open"))
+            {
+                bool isSummaryElement = node is Element summaryElement &&
+                    string.Equals(summaryElement.TagName, "SUMMARY", StringComparison.OrdinalIgnoreCase);
+                if (!isSummaryElement)
+                {
+                    return true;
+                }
+            }
             
             // CSS display:none always takes precedence (removes from layout tree entirely)
             // Note: visibility:hidden elements MUST still generate boxes and take up space, 
@@ -2652,7 +2792,7 @@ namespace FenBrowser.FenEngine.Layout
                 if (string.IsNullOrWhiteSpace(t.Data)) return true; 
 
                 // Hide text inside non-visible elements
-                var parent = t.Parent as Element;
+                var parent = t.ParentElement;
                 if (parent != null)
                 {
                     string ptag = parent.TagName?.ToLowerInvariant() ?? "";
@@ -2688,7 +2828,7 @@ namespace FenBrowser.FenEngine.Layout
             // Create containing block from parent dimensions
             var cb = new ContainingBlock
             {
-                Node = e.Parent,
+                Node = e.ParentElement,
                 Width = w,
                 Height = h,
                 X = x,
@@ -2741,7 +2881,7 @@ namespace FenBrowser.FenEngine.Layout
             var box = GetBox(node);
             string boxInfo = box != null ? $" [{box.BorderBox.Left:F1},{box.BorderBox.Top:F1} {box.BorderBox.Width:F1}x{box.BorderBox.Height:F1}]" : " [No Box]";
             
-            FenLogger.Error($"{indent}{node.Tag ?? "#text"}{boxInfo}", LogCategory.Rendering);
+            FenLogger.Error($"{indent}{(node is Element el ? el.TagName : node.NodeName)}{boxInfo}", LogCategory.Rendering);
 
             if (node is Element element && element.Children != null)
             {
@@ -2857,7 +2997,23 @@ namespace FenBrowser.FenEngine.Layout
             }
         }
 
+
+        // ILayoutComputer Implementation
+        LayoutMetrics ILayoutComputer.MeasureBlock(Element element, SKSize availableSize, int depth) => MeasureNode(element, availableSize, depth);
+        LayoutMetrics ILayoutComputer.MeasureFlex(Element element, SKSize availableSize, int depth) => MeasureFlexInternal(element, availableSize, element?.TagName == "BODY", depth, element);
+        LayoutMetrics ILayoutComputer.MeasureGrid(Element element, SKSize availableSize, int depth) => MeasureGrid(element, availableSize, depth);
+        LayoutMetrics ILayoutComputer.MeasureText(Node node, SKSize availableSize) => MeasureText(node, availableSize);
+
+        void ILayoutComputer.ArrangeBlock(Element element, SKRect finalRect, int depth) => ArrangeNode(element, finalRect, depth);
+        void ILayoutComputer.ArrangeFlex(Element element, SKRect finalRect, int depth) => ArrangeFlex(element, finalRect, depth, GetStyle(element), element?.ChildNodes);
+        // ArrangeGrid is public already
+        void ILayoutComputer.ArrangeText(Node node, SKRect finalRect) => ArrangeText(node, finalRect);
+
         public int GetZeroSizedCount() => _zeroSizedCount;
     }
 }
+
+
+
+
 

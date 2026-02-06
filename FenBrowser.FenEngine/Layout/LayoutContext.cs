@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Deadlines;
 
@@ -100,3 +100,4 @@ namespace FenBrowser.FenEngine.Layout
         }
     }
 }
+

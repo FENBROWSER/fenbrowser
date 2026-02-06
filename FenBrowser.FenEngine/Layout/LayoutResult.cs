@@ -1,5 +1,5 @@
 using System.Collections.Generic;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Layout
@@ -137,3 +137,4 @@ namespace FenBrowser.FenEngine.Layout
         }
     }
 }
+
