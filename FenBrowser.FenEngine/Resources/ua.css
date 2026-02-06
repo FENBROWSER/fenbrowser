@@ -51,17 +51,42 @@ body {
   color: black;
 }
 
+/* Links - CSS 2.1 Section 6.6.1 / HTML5 rendering */
+a {
+  color: #0000ee; /* Traditional browser blue */
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+a:visited {
+  color: #551a8b; /* Traditional browser purple */
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+a:active {
+  color: #ee0000; /* Red during click */
+}
+
 /* Headings */
 h1 {
   font-size: 32px; /* 2em */
   font-weight: 700;
-  margin: 0.67em 0;
+  margin-block-start: 1.34em;  /* 2x standard 0.67em */
+  margin-block-end: 1.34em;
+  margin-inline-start: 0px;
+  margin-inline-end: 0px;
 }
 
 h2 {
   font-size: 24px; /* 1.5em */
   font-weight: 700;
-  margin: 0.83em 0;
+  margin-block-start: 1.66em;  /* 2x standard 0.83em */
+  margin-block-end: 1.66em;
+  margin-inline-start: 0px;
+  margin-inline-end: 0px;
 }
 
 h3 {
