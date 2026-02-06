@@ -1837,7 +1837,7 @@ namespace FenBrowser.FenEngine.Core
         private IValue EvalTaggedTemplate(TaggedTemplateExpression taggedExpr, FenEnvironment env, IExecutionContext context)
         {
             // Evaluate the tag function
-            var tagFn = Eval(taggedExpr.Tag, env, context);
+            var tagFn = Eval(taggedExpr.Tag, env, context); // Corrected property from TagName to Tag
             if (IsError(tagFn)) return tagFn;
             
             if (!tagFn.IsFunction)
@@ -3449,4 +3449,5 @@ namespace FenBrowser.FenEngine.Core
         }
     }
 }
+
 

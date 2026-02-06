@@ -1,6 +1,6 @@
 using System;
 using FenBrowser.Core;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core.EventLoop;
 
@@ -13,7 +13,7 @@ namespace FenBrowser.FenEngine.Core
     /// </summary>
     public class EngineLoop
     {
-        private Element _root;
+        private Node _root;
         private readonly EventLoopCoordinator _coordinator;
         private bool _treeIsDirty = false;
         
@@ -24,7 +24,7 @@ namespace FenBrowser.FenEngine.Core
             _coordinator = EventLoopCoordinator.Instance;
         }
 
-        public void SetRoot(Element root)
+        public void SetRoot(Node root)
         {
             _root = root;
             
@@ -96,22 +96,57 @@ namespace FenBrowser.FenEngine.Core
         private void PerformRendering(FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
             if (_root  == null) return;
-            
-            // Phase 1: Style Recalc (TODO: Traverse checking StyleDirty)
-            deadline?.Check();
-            
-            // Phase 2: Layout (TODO: Traverse checking LayoutDirty)
-            // As we refactor, we will pass 'deadline' to LayoutEngine
-            deadline?.Check();
-            
-            // Phase 3: Paint (TODO: Traverse checking PaintDirty)
-            deadline?.Check();
-            
-            // For now, we just acknowledge the flag was handled to prevent infinite loop loops in logs,
-            // but in reality the legacy system (SkiaDomRenderer) acts on _coordinator.NotifyLayoutDirty() separately.
-            // As we refactor, we will move the calls here.
-            
+
+            var styleDirty = HasStyleDirty(_root);
+            var layoutDirty = HasLayoutDirty(_root);
+            var paintDirty = HasPaintDirty(_root);
+
+            // Phase 1: Style Recalc - currently represented by clearing style dirty flags.
+            if (styleDirty)
+            {
+                deadline?.Check();
+                ClearDirtyRecursive(_root, InvalidationKind.Style, deadline);
+            }
+
+            // Phase 2: Layout - currently represented by clearing layout dirty flags.
+            if (layoutDirty)
+            {
+                deadline?.Check();
+                ClearDirtyRecursive(_root, InvalidationKind.Layout, deadline);
+            }
+
+            // Phase 3: Paint - currently represented by clearing paint dirty flags.
+            if (paintDirty)
+            {
+                deadline?.Check();
+                ClearDirtyRecursive(_root, InvalidationKind.Paint, deadline);
+            }
+
             _treeIsDirty = false;
+        }
+
+        private static bool HasStyleDirty(Node node)
+            => node != null && (node.StyleDirty || node.ChildStyleDirty);
+
+        private static bool HasLayoutDirty(Node node)
+            => node != null && (node.LayoutDirty || node.ChildLayoutDirty);
+
+        private static bool HasPaintDirty(Node node)
+            => node != null && (node.PaintDirty || node.ChildPaintDirty);
+
+        private static void ClearDirtyRecursive(Node node, InvalidationKind kind, FenBrowser.Core.Deadlines.FrameDeadline deadline)
+        {
+            if (node == null) return;
+            deadline?.Check();
+
+            node.ClearDirty(kind);
+
+            if (node is ContainerNode container)
+            {
+                for (var child = container.FirstChild; child != null; child = child.NextSibling)
+                    ClearDirtyRecursive(child, kind, deadline);
+            }
         }
     }
 }
+

@@ -1,7 +1,7 @@
 using System;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Security;
-using FenBrowser.Core.Dom; // MutationRecord
+using FenBrowser.Core.Dom.V2; // MutationRecord
 
 namespace FenBrowser.FenEngine.Core.Interfaces
 {
@@ -110,3 +110,4 @@ namespace FenBrowser.FenEngine.Core.Interfaces
         FenEnvironment Environment { get; set; }
     }
 }
+
