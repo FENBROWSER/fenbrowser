@@ -1,5 +1,5 @@
 using System.Collections.Generic;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 
 namespace FenBrowser.FenEngine.Interaction
 {
@@ -53,3 +53,4 @@ namespace FenBrowser.FenEngine.Interaction
         // TODO: Implement Tab Navigation (FindNextFocusable)
     }
 }
+
