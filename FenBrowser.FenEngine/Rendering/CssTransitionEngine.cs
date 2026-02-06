@@ -4,7 +4,7 @@ using System.Linq;
 using System.Text.RegularExpressions;
 using FenBrowser.Core;
 using FenBrowser.Core.Css;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Rendering
@@ -335,3 +335,4 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
+
