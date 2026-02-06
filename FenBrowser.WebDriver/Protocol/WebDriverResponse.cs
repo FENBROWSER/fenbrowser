@@ -53,13 +53,13 @@ namespace FenBrowser.WebDriver.Protocol
     public class WebDriverError
     {
         [JsonPropertyName("error")]
-        public string Error { get; set; }
+        public string Error { get; set; } = string.Empty;
         
         [JsonPropertyName("message")]
-        public string Message { get; set; }
+        public string Message { get; set; } = string.Empty;
         
         [JsonPropertyName("stacktrace")]
-        public string Stacktrace { get; set; }
+        public string Stacktrace { get; set; } = string.Empty;
         
         [JsonPropertyName("data")]
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
