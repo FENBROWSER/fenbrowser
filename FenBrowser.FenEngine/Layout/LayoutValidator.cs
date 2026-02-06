@@ -103,5 +103,22 @@ namespace FenBrowser.FenEngine.Layout
         {
             return !float.IsNaN(value) && !float.IsInfinity(value) && value >= 0;
         }
+
+        /// <summary>
+        /// Sanitizes the geometry of a LayoutBox inplace.
+        /// </summary>
+        public static void SanitizeBox(FenBrowser.FenEngine.Layout.Tree.LayoutBox box, float viewportWidth, float viewportHeight)
+        {
+            if (box?.Geometry == null) return;
+            
+            // Use generous bounds to allow for scrolling content, but prevent overflow crashes
+            float maxWidth = Math.Max(viewportWidth * 10, 50000f);
+            float maxHeight = Math.Max(viewportHeight * 10, 50000f);
+
+            box.Geometry.ContentBox = SanitizeBounds(box.Geometry.ContentBox, maxWidth, maxHeight, "ContentBox");
+            box.Geometry.PaddingBox = SanitizeBounds(box.Geometry.PaddingBox, maxWidth, maxHeight, "PaddingBox");
+            box.Geometry.BorderBox = SanitizeBounds(box.Geometry.BorderBox, maxWidth, maxHeight, "BorderBox");
+            box.Geometry.MarginBox = SanitizeBounds(box.Geometry.MarginBox, maxWidth, maxHeight, "MarginBox");
+        }
     }
 }

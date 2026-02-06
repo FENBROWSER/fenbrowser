@@ -23,12 +23,12 @@ namespace FenBrowser.FenEngine.Rendering
             // while still hiding popups/overlays/clutter.
             if (Style.Display == "none")
             {
-                var tag = Node?.Tag?.ToUpperInvariant();
+                var tag = Node?.TagName?.ToUpperInvariant();
                 // Always show these structural tags even if hidden
                 bool forceShow = tag == "BODY" || tag == "MAIN" || tag == "ARTICLE" || tag == "SECTION" || tag == "HEADER" || tag == "FOOTER";
                 
                 // Also show DIVs that are direct children of BODY (often main wrappers)
-                if (!forceShow && tag == "DIV" && Node?.Parent?.Tag?.ToUpperInvariant() == "BODY")
+                if (!forceShow && tag == "DIV" && Node?.Parent?.TagName?.ToUpperInvariant() == "BODY")
                 {
                     forceShow = true;
                 }
@@ -69,7 +69,7 @@ namespace FenBrowser.FenEngine.Rendering
             
             if (Style.Display == null) // Default UA styles
             {
-                var tag = Node?.Tag?.ToUpperInvariant();
+                var tag = Node?.TagName?.ToUpperInvariant();
                 if (tag == "INPUT" || tag == "SELECT" || tag == "TEXTAREA" || tag == "BUTTON" || tag == "IMG") 
                     Style.Display = "inline-block";
                 else if (tag == "SPAN" || tag == "A" || tag == "LABEL" || tag == "B" || tag == "I" || tag == "STRONG" || tag == "EM")
@@ -83,7 +83,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (!Style.Width.HasValue && !Style.WidthPercent.HasValue)
             {
                 // Intrinsic widths for replaced elements
-                var tag = Node?.Tag?.ToUpperInvariant();
+                var tag = Node?.TagName?.ToUpperInvariant();
                 if (tag == "INPUT" || tag == "BUTTON" || tag == "SELECT")
                 {
                      targetWidth = 150; // Default generic width
@@ -182,7 +182,7 @@ namespace FenBrowser.FenEngine.Rendering
             // Intrinsic height for replaced elements if not specified
             if (!Style.Height.HasValue && !Style.HeightPercent.HasValue && contentHeight == 0)
             {
-                var tag = Node?.Tag?.ToUpperInvariant();
+                var tag = Node?.TagName?.ToUpperInvariant();
                 if (tag == "INPUT" || tag == "BUTTON" || tag == "SELECT") targetHeight = 30; // Default height
                 else if (tag == "IMG") targetHeight = 150; // Placeholder height
             }
@@ -212,7 +212,7 @@ namespace FenBrowser.FenEngine.Rendering
                 // Fallback for replaced elements with percentage width (which became Infinity) but no children
                 if (Children.Count == 0)
                 {
-                    var tag = Node?.Tag?.ToUpperInvariant();
+                    var tag = Node?.TagName?.ToUpperInvariant();
                     if (tag == "INPUT" || tag == "SELECT" || tag == "BUTTON" || tag == "TEXTAREA") 
                         targetWidth = Math.Max(targetWidth, 150 + padding.Left + padding.Right + border.Left + border.Right);
                     else if (tag == "IMG") 
@@ -560,4 +560,5 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
+
 

@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.Core;
 using SkiaSharp;
@@ -124,9 +124,9 @@ namespace FenBrowser.FenEngine.Layout
 
             
             // DUMP TREE FOR DEBUGGING
-            FenLogger.Error("--- NEW PIPELINE LAYOUT DUMP ---", LogCategory.Rendering);
+            FenLogger.Debug("--- NEW PIPELINE LAYOUT DUMP ---", LogCategory.Rendering);
             DumpBoxTree(rootBox, 0);
-            FenLogger.Error("--- END NEW PIPELINE DUMP ---", LogCategory.Rendering);
+            FenLogger.Debug("--- END NEW PIPELINE DUMP ---", LogCategory.Rendering);
 
             return new LayoutResult(
                 elementRects,
@@ -135,8 +135,10 @@ namespace FenBrowser.FenEngine.Layout
                 0,
                 rootBox.Geometry.ContentBox.Height // Approx content height
             );
+            
 
-            // LEGACY PIPELINE RESTORATION
+            // LEGACY PIPELINE RESTORATION (DISABLED)
+            /*
             // Ensure we use the computer to generate boxes
             if (_computer is MinimalLayoutComputer minComp)
             {
@@ -147,6 +149,7 @@ namespace FenBrowser.FenEngine.Layout
             _computer.Arrange(node, new SKRect(0, 0, availableWidth, availableHeight));
             
             return BuildResult(measureMetrics.MaxChildWidth, measureMetrics.ContentHeight);
+            */
         }
         
         private Dictionary<Node, FenBrowser.FenEngine.Layout.BoxModel> _generatedBoxes;
@@ -168,11 +171,16 @@ namespace FenBrowser.FenEngine.Layout
                         ContentBox = box.Geometry.ContentBox,
                         PaddingBox = box.Geometry.PaddingBox,
                         BorderBox = box.Geometry.BorderBox,
-                        MarginBox = box.Geometry.MarginBox
+                        MarginBox = box.Geometry.MarginBox,
+                        Lines = box.Geometry.Lines,  // Copy text lines for proper rendering
+                        Baseline = box.Geometry.Baseline,
+                        LineHeight = box.Geometry.LineHeight,
+                        Ascent = box.Geometry.Ascent,
+                        Descent = box.Geometry.Descent
                     };
-                    
+
                     FenBrowser.FenEngine.Layout.Contexts.LayoutBoxOps.ShiftBoxModel(absModel, parentContentAbsX, parentContentAbsY);
-                    
+
                     dict[box.SourceNode] = absModel;
                 }
             }
@@ -329,9 +337,9 @@ namespace FenBrowser.FenEngine.Layout
                     deepestHit = node;
                     
                     // Continue searching children for a deeper hit
-                    if (node.Children != null)
+                    if (node.ChildNodes != null)
                     {
-                        foreach (var child in node.Children)
+                        foreach (var child in node.ChildNodes)
                         {
                             HitTestRecursive(x, y, child, ref deepestHit);
                         }
@@ -341,9 +349,9 @@ namespace FenBrowser.FenEngine.Layout
             else
             {
                 // No box for this node - still check children (might be a wrapper)
-                if (node.Children != null)
+                if (node.ChildNodes != null)
                 {
-                    foreach (var child in node.Children)
+                    foreach (var child in node.ChildNodes)
                     {
                         HitTestRecursive(x, y, child, ref deepestHit);
                     }

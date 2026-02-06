@@ -4,6 +4,8 @@ using SkiaSharp;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core;
+using FenBrowser.Core.Dom.V2;
+using FenBrowser.FenEngine.Layout;
 
 namespace FenBrowser.FenEngine.Layout.Contexts
 {
@@ -18,10 +20,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         public override void Layout(LayoutBox box, LayoutState state)
         {
-            if (!(box is BlockBox blockBox)) return;
+            var blockBox = box;
             
             // DEBUG: Entry log
-            string dbgTag = (blockBox.SourceNode as FenBrowser.Core.Dom.Element)?.TagName ?? "?";
+            string dbgTag = (blockBox.SourceNode as FenBrowser.Core.Dom.V2.Element)?.TagName ?? "?";
             FenLogger.Info($"[BFC-ENTRY] <{dbgTag}> AvailH={state.AvailableSize.Height} ViewH={state.ViewportHeight}", LogCategory.Layout);
 
             // 1. Resolve Width
@@ -34,6 +36,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             
             float xOffset = (float)blockBox.Geometry.Padding.Left + (float)blockBox.Geometry.Border.Left;
             float contentWidth = blockBox.Geometry.ContentBox.Width;
+            bool shrinkToFitPass =
+                (blockBox.ComputedStyle == null ||
+                 (!blockBox.ComputedStyle.Width.HasValue &&
+                  !blockBox.ComputedStyle.WidthPercent.HasValue &&
+                  string.IsNullOrEmpty(blockBox.ComputedStyle.WidthExpression)))
+                && float.IsInfinity(state.AvailableSize.Width);
+            float childFlowWidth = shrinkToFitPass ? float.PositiveInfinity : contentWidth;
 
             // 3. Iterate Children
             var outOfFlow = new List<LayoutBox>();
@@ -58,6 +67,30 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     continue;
                 }
 
+                // Whitespace-only text between block-level siblings should not create
+                // anonymous blocks with line-height artifacts in normal block flow.
+                if (child is TextLayoutBox textChild)
+                {
+                    string textData = (textChild.SourceNode as Text)?.Data ?? textChild.TextContent ?? string.Empty;
+                    if (string.IsNullOrWhiteSpace(textData))
+                    {
+                        if (textChild.Geometry == null)
+                        {
+                            textChild.Geometry = new BoxModel();
+                        }
+
+                        float tx = textChild.Geometry.ContentBox.Left;
+                        float ty = textChild.Geometry.ContentBox.Top;
+                        textChild.Geometry.ContentBox = new SKRect(tx, ty, tx, ty);
+                        textChild.Geometry.Padding = new Thickness();
+                        textChild.Geometry.Border = new Thickness();
+                        textChild.Geometry.Margin = new Thickness();
+                        textChild.Geometry.Lines = new List<ComputedTextLine>();
+                        SyncBoxes(textChild.Geometry);
+                        continue;
+                    }
+                }
+
                 // Floats and Clearance
                 string floatStyle = child.ComputedStyle?.Float?.ToLowerInvariant() ?? "none";
                 string clearStyle = child.ComputedStyle?.Clear?.ToLowerInvariant() ?? "none";
@@ -75,7 +108,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 if (floatStyle == "left" || floatStyle == "right")
                 {
                     // Float Layout (Simplified - ignores margins for simplicity in this context)
-                    var childState = CreateChildState(contentWidth, state);
+                    var childState = CreateChildState(childFlowWidth, state);
                     FormattingContext.Resolve(child).Layout(child, childState);
                     
                     float floatWidth = child.Geometry.MarginBox.Width;
@@ -91,7 +124,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 else
                 {
                     // Normal Flow Block
-                    var childState = CreateChildState(contentWidth, state);
+                    var childState = CreateChildState(childFlowWidth, state);
                     FormattingContext.Resolve(child).Layout(child, childState);
                     
                     float childMarginTop = (float)child.Geometry.Margin.Top;
@@ -119,7 +152,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                     currentY += collapsedMargin;
                     
-                    float childX = xOffset + (float)child.Geometry.Margin.Left;
+                    // SetPosition aligns the child's margin box origin. Adding margin-left here
+                    // double-applies margins (notably `margin:auto`) and pushes boxes too far right.
+                    float childX = xOffset;
                     float childY = yOffset + currentY; // Absolute to container BorderBox top
                     
                     LayoutBoxOps.SetPosition(child, childX, childY);
@@ -143,13 +178,31 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             // Handle intrinsic height for empty replaced elements (IMG, SVG, etc.)
             if (blockBox.Children.Count == 0)
             {
-                string t = (blockBox.SourceNode as FenBrowser.Core.Dom.Element)?.TagName?.ToUpperInvariant();
-                if (t == "IMG" || t == "SVG" || t == "INPUT" || t == "BUTTON")
+                string t = (blockBox.SourceNode as FenBrowser.Core.Dom.V2.Element)?.TagName?.ToUpperInvariant();
+                if (t == "IMG" || t == "SVG" || t == "INPUT" || t == "TEXTAREA" || t == "BUTTON" || t == "SELECT")
                 {
+                    // Basic intrinsic width resolution for replaced/form controls when width is still auto/0.
+                    float w = blockBox.Geometry.ContentBox.Width;
+                    if (w <= 0)
+                    {
+                        if (t == "INPUT") w = 120f;
+                        else if (t == "TEXTAREA") w = 200f;
+                        else if (t == "BUTTON") w = 100f;
+                        else if (t == "SELECT") w = 120f;
+                        else if (t == "SVG") w = 24f;
+                        else w = 20f;
+                    }
+                    blockBox.Geometry.ContentBox = new SKRect(
+                        blockBox.Geometry.ContentBox.Left,
+                        blockBox.Geometry.ContentBox.Top,
+                        blockBox.Geometry.ContentBox.Left + w,
+                        blockBox.Geometry.ContentBox.Bottom);
+
                     // Basic intrinsic height resolution if not explicit
                     float h = (float)(blockBox.ComputedStyle?.Height ?? 0);
                     if (h <= 0) h = 24f; // Default for icons/inputs
                     maxBottom = Math.Max(maxBottom, h);
+                    SyncBoxes(blockBox.Geometry);
                 }
             }
 
@@ -181,7 +234,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             
             // ICB OVERRIDE: HTML and BODY must be at least viewport height
             // This is the Initial Containing Block invariant - required for CSS height chain
-            string tag = (blockBox.SourceNode as FenBrowser.Core.Dom.Element)?.TagName?.ToUpperInvariant() ?? "";
+            string tag = (blockBox.SourceNode as FenBrowser.Core.Dom.V2.Element)?.TagName?.ToUpperInvariant() ?? "";
             bool isRootElement = (tag == "HTML" || tag == "BODY");
             
             if (isRootElement && autoHeight < state.ViewportHeight)
@@ -190,63 +243,158 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 System.Console.WriteLine($"[BFC-ICB] <{tag}> auto-height forced to viewport: {state.ViewportHeight}px");
             }
             
-            // Check explicit height
+            // Check explicit height (px / % / calc)
             // (Simplified)
-             if (blockBox.ComputedStyle != null && blockBox.ComputedStyle.Height.HasValue)
+            float? explicitHeight = null;
+            if (blockBox.ComputedStyle != null)
+            {
+                if (blockBox.ComputedStyle.Height.HasValue)
+                {
+                    explicitHeight = (float)blockBox.ComputedStyle.Height.Value;
+                }
+                else if (blockBox.ComputedStyle.HeightPercent.HasValue)
+                {
+                    float parentHeight = state.AvailableSize.Height;
+                    if (float.IsInfinity(parentHeight) || parentHeight <= 0)
+                        parentHeight = state.ViewportHeight;
+                    if (!float.IsInfinity(parentHeight) && parentHeight > 0)
+                        explicitHeight = (float)(blockBox.ComputedStyle.HeightPercent.Value / 100.0 * parentHeight);
+                }
+                else if (!string.IsNullOrEmpty(blockBox.ComputedStyle.HeightExpression))
+                {
+                    float parentHeight = state.AvailableSize.Height;
+                    if (float.IsInfinity(parentHeight) || parentHeight <= 0)
+                        parentHeight = state.ViewportHeight;
+                    explicitHeight = LayoutHelper.EvaluateCssExpression(
+                        blockBox.ComputedStyle.HeightExpression,
+                        parentHeight,
+                        state.ViewportWidth,
+                        state.ViewportHeight);
+                }
+            }
+
+            float resolvedContentHeight;
+            if (explicitHeight.HasValue)
             {
                 // Explicit height wins
-                float explicitH = (float)blockBox.ComputedStyle.Height.Value;
-                blockBox.Geometry.ContentBox = new SKRect(
-                    blockBox.Geometry.ContentBox.Left,
-                    blockBox.Geometry.ContentBox.Top,
-                    blockBox.Geometry.ContentBox.Right,
-                    blockBox.Geometry.ContentBox.Top + explicitH
-                );
-                
-                // Reset outer boxes to match new content box + explicit padding/border default?
-                // Usually we sync.
-                SyncBoxes(blockBox.Geometry);
-                // Console.WriteLine($"[BlockBFC] Set Explicit Height: {explicitH}...");
-                // Recalculate boxes... needed?
+                resolvedContentHeight = explicitHeight.Value;
             }
             else
             {
                 // Console.WriteLine($"[BlockBFC] No Explicit Height. Auto height: {autoHeight}");
                 // Use auto height
                 // We need to set the height of the box model buffers
-                float h = autoHeight - ((float)blockBox.Geometry.Padding.Top + (float)blockBox.Geometry.Border.Top + (float)blockBox.Geometry.Padding.Bottom + (float)blockBox.Geometry.Border.Bottom);
-                blockBox.Geometry.ContentBox = new SKRect(
-                    blockBox.Geometry.ContentBox.Left, 
-                    blockBox.Geometry.ContentBox.Top, 
-                    blockBox.Geometry.ContentBox.Left + blockBox.Geometry.ContentBox.Width, 
-                    blockBox.Geometry.ContentBox.Top + Math.Max(0, h));
-                
-                // Re-sync outer boxes
-                // (Geometry logic usually centralized)
-                SyncBoxes(blockBox.Geometry);
+                resolvedContentHeight = autoHeight - ((float)blockBox.Geometry.Padding.Top + (float)blockBox.Geometry.Border.Top + (float)blockBox.Geometry.Padding.Bottom + (float)blockBox.Geometry.Border.Bottom);
+                if (resolvedContentHeight < 0) resolvedContentHeight = 0;
             }
+
+            // Apply min/max height constraints (px, %, calc)
+            if (blockBox.ComputedStyle != null)
+            {
+                float minH = 0f;
+                float maxH = float.PositiveInfinity;
+
+                if (blockBox.ComputedStyle.MinHeight.HasValue)
+                {
+                    minH = (float)blockBox.ComputedStyle.MinHeight.Value;
+                }
+                else if (blockBox.ComputedStyle.MinHeightPercent.HasValue)
+                {
+                    float parentHeight = state.AvailableSize.Height;
+                    if (float.IsInfinity(parentHeight) || parentHeight <= 0)
+                        parentHeight = state.ViewportHeight;
+                    if (!float.IsInfinity(parentHeight) && parentHeight > 0)
+                        minH = (float)(blockBox.ComputedStyle.MinHeightPercent.Value / 100.0 * parentHeight);
+                }
+                else if (!string.IsNullOrEmpty(blockBox.ComputedStyle.MinHeightExpression))
+                {
+                    float parentHeight = state.AvailableSize.Height;
+                    if (float.IsInfinity(parentHeight) || parentHeight <= 0)
+                        parentHeight = state.ViewportHeight;
+                    minH = LayoutHelper.EvaluateCssExpression(
+                        blockBox.ComputedStyle.MinHeightExpression,
+                        parentHeight,
+                        state.ViewportWidth,
+                        state.ViewportHeight);
+                }
+
+                if (blockBox.ComputedStyle.MaxHeight.HasValue)
+                {
+                    maxH = (float)blockBox.ComputedStyle.MaxHeight.Value;
+                }
+                else if (blockBox.ComputedStyle.MaxHeightPercent.HasValue)
+                {
+                    float parentHeight = state.AvailableSize.Height;
+                    if (float.IsInfinity(parentHeight) || parentHeight <= 0)
+                        parentHeight = state.ViewportHeight;
+                    if (!float.IsInfinity(parentHeight) && parentHeight > 0)
+                        maxH = (float)(blockBox.ComputedStyle.MaxHeightPercent.Value / 100.0 * parentHeight);
+                }
+                else if (!string.IsNullOrEmpty(blockBox.ComputedStyle.MaxHeightExpression))
+                {
+                    float parentHeight = state.AvailableSize.Height;
+                    if (float.IsInfinity(parentHeight) || parentHeight <= 0)
+                        parentHeight = state.ViewportHeight;
+                    maxH = LayoutHelper.EvaluateCssExpression(
+                        blockBox.ComputedStyle.MaxHeightExpression,
+                        parentHeight,
+                        state.ViewportWidth,
+                        state.ViewportHeight);
+                }
+
+                if (maxH < minH) maxH = minH;
+                resolvedContentHeight = Math.Max(minH, Math.Min(resolvedContentHeight, maxH));
+            }
+
+            blockBox.Geometry.ContentBox = new SKRect(
+                blockBox.Geometry.ContentBox.Left,
+                blockBox.Geometry.ContentBox.Top,
+                blockBox.Geometry.ContentBox.Left + blockBox.Geometry.ContentBox.Width,
+                blockBox.Geometry.ContentBox.Top + resolvedContentHeight);
+            
+            // Re-sync outer boxes
+            // (Geometry logic usually centralized)
+            SyncBoxes(blockBox.Geometry);
 
             // Layout Out of Flow
             foreach (var oof in outOfFlow)
             {
-                 LayoutPositioningLogic.ResolvePositionedBox(oof, blockBox, blockBox.Geometry);
-                 var context = FormattingContext.Resolve(oof);
-                 var childState = new LayoutState(
-                    new SKSize(blockBox.Geometry.ContentBox.Width, blockBox.Geometry.ContentBox.Height),
-                    blockBox.Geometry.ContentBox.Width,
-                    (float)blockBox.Geometry.ContentBox.Height,
+                var context = FormattingContext.Resolve(oof);
+
+                // Pass 1: intrinsic measurement (auto-size shrink-to-fit signal).
+                var intrinsicState = state.Clone();
+                intrinsicState.AvailableSize = new SKSize(float.PositiveInfinity, float.PositiveInfinity);
+                intrinsicState.ContainingBlockWidth = blockBox.Geometry.ContentBox.Width;
+                intrinsicState.ContainingBlockHeight = blockBox.Geometry.ContentBox.Height;
+                context.Layout(oof, intrinsicState);
+
+                // Solve abs/fixed geometry from intrinsic size and insets.
+                LayoutPositioningLogic.ResolvePositionedBox(oof, blockBox, blockBox.Geometry);
+
+                // Pass 2: layout contents using resolved box size.
+                var resolvedWidth = Math.Max(0f, oof.Geometry.ContentBox.Width);
+                var resolvedHeight = Math.Max(0f, oof.Geometry.ContentBox.Height);
+                var resolvedState = new LayoutState(
+                    new SKSize(resolvedWidth, resolvedHeight),
+                    resolvedWidth,
+                    resolvedHeight,
                     state.ViewportWidth,
-                    state.ViewportHeight
-                );
-                context.Layout(oof, childState);
+                    state.ViewportHeight,
+                    state.Deadline);
+                context.Layout(oof, resolvedState);
+
+                // Re-apply final absolute position after child layout potentially touched geometry.
+                LayoutPositioningLogic.ResolvePositionedBox(oof, blockBox, blockBox.Geometry);
             }
         }
 
-        private void ResolveWidth(BlockBox box, LayoutState state)
+        private void ResolveWidth(LayoutBox box, LayoutState state)
         {
-            float available = state.AvailableSize.Width;
-            if (float.IsInfinity(available) || float.IsNaN(available)) available = state.ViewportWidth;
-            if (float.IsInfinity(available) || float.IsNaN(available)) available = 1920f; // Fallback if Viewport is invalid
+            float rawAvailable = state.AvailableSize.Width;
+            bool widthUnconstrained = float.IsInfinity(rawAvailable) || float.IsNaN(rawAvailable);
+            float available = widthUnconstrained ? state.ViewportWidth : rawAvailable;
+            if (float.IsInfinity(available) || float.IsNaN(available) || available <= 0)
+                available = 1920f; // Fallback if viewport is invalid.
             
             FenLogger.Info($"[BFC-RESOLVE-START] Avail={state.AvailableSize.Width} Sanitized={available} VP={state.ViewportWidth}", LogCategory.Layout);
 
@@ -256,8 +404,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             Thickness border = style?.BorderThickness ?? new Thickness();
             Thickness margin = style?.Margin ?? new Thickness();
 
-            string tag = (box.SourceNode as FenBrowser.Core.Dom.Element)?.TagName ?? "?";
-            string id = (box.SourceNode as FenBrowser.Core.Dom.Element)?.GetAttribute("id") ?? "";
+            string tag = (box.SourceNode as FenBrowser.Core.Dom.V2.Element)?.TagName ?? "?";
+            string id = (box.SourceNode as FenBrowser.Core.Dom.V2.Element)?.GetAttribute("id") ?? "";
 
             // 2. Resolve width vs percentages
             float? width = null;
@@ -292,11 +440,16 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             {
                 resolvedContentWidth = width.Value;
             }
+            else if (widthUnconstrained)
+            {
+                // Unconstrained auto-width boxes use shrink-to-fit after children are laid out.
+                resolvedContentWidth = 0f;
+            }
             else
             {
                 // Width auto fills available space minus margins
                 float marginExtras = (float)(margin.Left + margin.Right);
-                resolvedContentWidth = Math.Max(0, available - horizontalExtras - marginExtras);
+                resolvedContentWidth = Math.Max(0, rawAvailable - horizontalExtras - marginExtras);
             }
 
             // Apply constraints
@@ -409,3 +562,4 @@ namespace FenBrowser.FenEngine.Layout.Contexts
     /// </summary>
 
 }
+

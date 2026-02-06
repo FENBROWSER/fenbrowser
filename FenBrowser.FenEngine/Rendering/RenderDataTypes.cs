@@ -1,5 +1,5 @@
 using System.Collections.Generic;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using SkiaSharp;
 using FenBrowser.Core.Css; // For Thickness/CornerRadius if needed (assuming based on partial view)
 // If Thickness not available, use struct or dummy. Assuming avalonia types removed, let's use what was in the file.
@@ -125,3 +125,4 @@ namespace FenBrowser.FenEngine.Rendering
         public string Style { get; set; } = "solid"; 
     }
 }
+

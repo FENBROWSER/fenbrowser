@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Generic;
-using FenBrowser.Core.Dom; // For consistency if needed
+using FenBrowser.Core.Dom.V2; // For consistency if needed
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -85,3 +85,4 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
+

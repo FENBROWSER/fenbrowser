@@ -1,5 +1,5 @@
 using FenBrowser.Core.Css;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
@@ -41,15 +41,15 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             {
                 _dirtyElements.Add(element);
                 // Also mark ancestors as needing partial re-layout
-                var parent = element.Parent as Element;
+                var parent = element.ParentElement;
                 while (parent != null)
                 {
                     _dirtyElements.Add(parent);
-                    parent = parent.Parent as Element;
+                    parent = parent.ParentElement;
                 }
             }
 
-            FenLogger.Debug($"[IncrementalLayout] Marked dirty: {element.Tag}", LogCategory.Layout);
+            FenLogger.Debug($"[IncrementalLayout] Marked dirty: {element.TagName}", LogCategory.Layout);
         }
 
         /// <summary>
@@ -229,5 +229,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             $"Layout: {LayoutCacheSize}, Style: {StyleCacheSize}, Dirty: {DirtyElementCount}, Full: {FullLayoutRequired}";
     }
 }
+
+
 
 

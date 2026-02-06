@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using SkiaSharp;
 using System;
 using System.Collections.Generic;
@@ -142,25 +142,38 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
                 {
                     var domNode = node.SourceNode;
                     var element = domNode as Element;
-                    if (element == null && domNode?.Parent is Element parentEl) element = parentEl;
+                    if (element == null && domNode?.ParentElement is Element parentEl) element = parentEl;
 
                     if (element != null)
                     {
                         // Found a hit! Resolve interactive ancestor.
                         var interactive = FindInteractiveAncestor(element);
-                        string tagName = element.Tag;
+                        string tagName = element.TagName;
                         string elementId = element.GetAttribute("id");
                         string href = null;
 
                         if (interactive != null)
                         {
-                            if (string.Equals(interactive.Tag, "a", StringComparison.OrdinalIgnoreCase))
+                            var interactiveTag = interactive.TagName ?? string.Empty;
+                            if (string.Equals(interactiveTag, "a", StringComparison.OrdinalIgnoreCase))
                             {
                                 href = interactive.GetAttribute("href");
+                                tagName = "a";
+                                element = interactive;
                             }
-                            else if (string.Equals(interactive.Tag, "button", StringComparison.OrdinalIgnoreCase))
+                            else if (string.Equals(interactiveTag, "button", StringComparison.OrdinalIgnoreCase) ||
+                                     string.Equals(interactiveTag, "input", StringComparison.OrdinalIgnoreCase) ||
+                                     string.Equals(interactiveTag, "textarea", StringComparison.OrdinalIgnoreCase) ||
+                                     string.Equals(interactiveTag, "select", StringComparison.OrdinalIgnoreCase) ||
+                                     string.Equals(interactiveTag, "label", StringComparison.OrdinalIgnoreCase))
                             {
-                                tagName = "button";
+                                tagName = interactiveTag;
+                                element = interactive;
+                            }
+                            else if (interactive.GetAttribute("contenteditable") == "true" ||
+                                     !string.IsNullOrEmpty(interactive.GetAttribute("tabindex")))
+                            {
+                                tagName = interactiveTag;
                                 element = interactive;
                             }
                         }
@@ -194,9 +207,15 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             while (current != null)
             {
                 if (string.Equals(current.TagName, "a", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(current.TagName, "button", StringComparison.OrdinalIgnoreCase))
+                    string.Equals(current.TagName, "button", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(current.TagName, "input", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(current.TagName, "textarea", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(current.TagName, "select", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(current.TagName, "label", StringComparison.OrdinalIgnoreCase) ||
+                    current.GetAttribute("contenteditable") == "true" ||
+                    !string.IsNullOrEmpty(current.GetAttribute("tabindex")))
                     return current;
-                current = current.Parent as Element;
+                current = current.ParentElement;
             }
             return null;
         }
@@ -233,11 +252,13 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             // Walk up to find clickable
              while (el != null)
             {
-                string tag = el.Tag?.ToUpperInvariant();
+                string tag = el.TagName?.ToUpperInvariant();
                 if (tag == "A" || tag == "BUTTON" || tag == "INPUT" || tag == "SELECT") return el;
-                el = el.Parent as Element;
+                el = el.ParentElement;
             }
             return null;
         }
     }
 }
+
+

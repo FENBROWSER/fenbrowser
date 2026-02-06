@@ -1,5 +1,5 @@
 using System;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Layout;
 
 namespace FenBrowser.FenEngine.Layout
@@ -65,3 +65,4 @@ namespace FenBrowser.FenEngine.Layout
         }
     }
 }
+

@@ -1,6 +1,7 @@
 using System;
 using FenBrowser.Core;
 using FenBrowser.Core.Css;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Layout.Tree;
 using SkiaSharp;
 
@@ -10,107 +11,128 @@ namespace FenBrowser.FenEngine.Layout
     {
         public static void ResolvePositionedBox(LayoutBox box, LayoutBox containingBlock, BoxModel containerGeometry)
         {
-            if (box.ComputedStyle == null) return;
-            
+            if (box?.ComputedStyle == null || box.Geometry == null || containerGeometry == null) return;
+
             var style = box.ComputedStyle;
-            var cb = containerGeometry.PaddingBox; // Positioning is typically relative to padding box of container (for absolute)
-            
-            // Fixed is relative to viewport - handled by passing Viewport as containerGeometry?
-            // Actually, if fixed, containing block is viewport. Caller must handle this.
-            
-            float left = 0;
-            float top = 0;
-            float right = 0;
-            float bottom = 0;
-            
-            bool hasLeft = style.Left.HasValue;
-            bool hasRight = style.Right.HasValue;
-            bool hasTop = style.Top.HasValue;
-            bool hasBottom = style.Bottom.HasValue;
-            
-            // Width/Height resolution
-            float width = 0;
-            float height = 0;
-            
-            // Simplistic Width Resolution
-            if (style.Width.HasValue)
+
+            // For abs/fixed positioning, CSS uses the containing block's padding box.
+            var cbRect = containerGeometry.PaddingBox;
+            if (cbRect.Width <= 0 || cbRect.Height <= 0)
             {
-                 width = (float)style.Width.Value;
+                cbRect = containerGeometry.ContentBox;
             }
-            else
+
+            float intrinsicWidth = box.Geometry.ContentBox.Width;
+            float intrinsicHeight = box.Geometry.ContentBox.Height;
+            EnsureIntrinsicSize(box, style, ref intrinsicWidth, ref intrinsicHeight);
+
+            var cb = new ContainingBlock
             {
-                // Auto width for absolute: shrink to fit?
-                // Or if left+right are set, stretch.
-                if (hasLeft && hasRight)
-                {
-                    width = cb.Width - (float)style.Left.Value - (float)style.Right.Value;
-                }
-                else
-                {
-                    // Shrink to fit / Intrinsic
-                     // Use existing logic? Need to measure.
-                     // For MVP, if auto, assume 0 or dummy measure.
-                     width = 100; // Placeholder for measure
-                }
-            }
-            
-            // Height
-             if (style.Height.HasValue)
-            {
-                 height = (float)style.Height.Value;
-            }
-            else
-            {
-                 if (hasTop && hasBottom)
-                {
-                    height = cb.Height - (float)style.Top.Value - (float)style.Bottom.Value;
-                }
-                else
-                {
-                    height = 50; // Placeholder
-                }
-            }
-            
-            // Horizontal Position
-            if (hasLeft)
-            {
-                left = cb.Left + (float)style.Left.Value;
-            }
-            else if (hasRight)
-            {
-                left = cb.Right - (float)style.Right.Value - width;
-            }
-            else
-            {
-                // Static position (where it would have been).
-                // Requires tracking the static position. 
-                // For MVP, default to 0 (top-left of container).
-                left = cb.Left;
-            }
-            
-            // Vertical Position
-            if (hasTop)
-            {
-                top = cb.Top + (float)style.Top.Value;
-            }
-            else if (hasBottom)
-            {
-                top = cb.Bottom - (float)style.Bottom.Value - height;
-            }
-            else
-            {
-                top = cb.Top;
-            }
-            
-            // Update Geometry
+                Width = Math.Max(0f, cbRect.Width),
+                Height = Math.Max(0f, cbRect.Height),
+                X = cbRect.Left,
+                Y = cbRect.Top,
+                PaddingBox = cbRect
+            };
+
+            var solved = AbsolutePositionSolver.Solve(
+                style,
+                cb,
+                Math.Max(0f, intrinsicWidth),
+                Math.Max(0f, intrinsicHeight));
+
+            float left = cbRect.Left + solved.X;
+            float top = cbRect.Top + solved.Y;
+            float width = Math.Max(0f, solved.Width);
+            float height = Math.Max(0f, solved.Height);
+
             box.Geometry.ContentBox = new SKRect(left, top, left + width, top + height);
-            
-            // Sync
             box.Geometry.Padding = style.Padding;
             box.Geometry.Border = style.BorderThickness;
-            box.Geometry.Margin = style.Margin;
-            
+            box.Geometry.Margin = new Thickness(
+                solved.MarginLeft,
+                solved.MarginTop,
+                solved.MarginRight,
+                solved.MarginBottom);
+
             SyncBoxes(box.Geometry);
+        }
+
+        private static void EnsureIntrinsicSize(LayoutBox box, CssComputed style, ref float width, ref float height)
+        {
+            if (!float.IsFinite(width) || width < 0f) width = 0f;
+            if (!float.IsFinite(height) || height < 0f) height = 0f;
+
+            if (style.Width.HasValue && style.Width.Value > 0)
+            {
+                width = (float)style.Width.Value;
+            }
+            if (style.Height.HasValue && style.Height.Value > 0)
+            {
+                height = (float)style.Height.Value;
+            }
+
+            if (box.SourceNode is not Element element)
+            {
+                if (height <= 0f && style.LineHeight.HasValue) height = (float)style.LineHeight.Value;
+                return;
+            }
+
+            string tag = element.TagName?.ToUpperInvariant() ?? string.Empty;
+
+            if (width <= 0f)
+            {
+                if (TryParseLengthAttribute(element, "width", out var attrW)) width = attrW;
+                else if (tag == "IMG") width = 300f;
+                else if (tag == "SVG" || tag == "CANVAS") width = 24f;
+                else if (tag == "INPUT") width = 150f;
+                else if (tag == "TEXTAREA") width = 200f;
+                else if (tag == "SELECT") width = 120f;
+                else if (tag == "BUTTON")
+                {
+                    string label = element.TextContent?.Trim();
+                    if (string.IsNullOrWhiteSpace(label)) label = "Button";
+                    width = Math.Max(54f, 16f + (label.Length * 7f));
+                }
+            }
+
+            if (height <= 0f)
+            {
+                if (TryParseLengthAttribute(element, "height", out var attrH)) height = attrH;
+                else if (style.LineHeight.HasValue && style.LineHeight.Value > 0) height = (float)style.LineHeight.Value;
+                else if (tag == "IMG") height = 150f;
+                else if (tag == "SVG" || tag == "CANVAS") height = 24f;
+                else if (tag == "INPUT" || tag == "SELECT") height = 24f;
+                else if (tag == "BUTTON") height = 36f;
+                else if (tag == "TEXTAREA") height = 48f;
+            }
+        }
+
+        private static bool TryParseLengthAttribute(Element element, string name, out float value)
+        {
+            value = 0f;
+            string raw = element.GetAttribute(name);
+            if (string.IsNullOrWhiteSpace(raw)) return false;
+
+            raw = raw.Trim();
+            int i = 0;
+            while (i < raw.Length)
+            {
+                char ch = raw[i];
+                if ((ch >= '0' && ch <= '9') || ch == '.' || ch == '-') { i++; continue; }
+                break;
+            }
+
+            if (i == 0) return false;
+
+            if (!float.TryParse(raw.Substring(0, i), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out value))
+            {
+                value = 0f;
+                return false;
+            }
+
+            value = Math.Max(0f, value);
+            return true;
         }
         
         private static void SyncBoxes(BoxModel geometry)

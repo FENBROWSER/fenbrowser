@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Logging;
 
@@ -30,6 +30,21 @@ namespace FenBrowser.FenEngine.Layout.Tree
         {
             var result = new List<LayoutBox>();
 
+            // HTML details/summary behavior:
+            // details:not([open]) > :not(summary) must not generate layout boxes.
+            var parentElement = node.ParentElement ?? node.ParentNode as Element;
+            if (parentElement is Element detailsParent &&
+                string.Equals(detailsParent.TagName, "DETAILS", StringComparison.OrdinalIgnoreCase) &&
+                !detailsParent.HasAttribute("open"))
+            {
+                bool isSummaryElement = node is Element elementNode &&
+                    string.Equals(elementNode.TagName, "SUMMARY", StringComparison.OrdinalIgnoreCase);
+                if (!isSummaryElement)
+                {
+                    return result;
+                }
+            }
+
             // Get style (handle nulls safely)
             bool found = _styles.TryGetValue(node, out var style);
             
@@ -41,7 +56,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
             // For text nodes, inherit from parent
             if (style == null && node is Text) style = parentStyle ?? new CssComputed();
 
-            var display = style?.Display?.ToLowerInvariant() ?? (node is Text ? "inline" : "block");
+            var display = ResolveDisplay(node, style);
 
             // 1. Handle Display: None and Hidden Tags
             if (display == "none") return result;
@@ -59,6 +74,30 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 // Preserve whitespace-only nodes but normalize them if they are too long? 
                 // For now, only drop IF they are totally empty (not even space).
                 if (string.IsNullOrEmpty(textNode.Data)) return result;
+
+                // In normal flow, indentation/newline-only text under block/flex/grid containers
+                // should not create standalone layout boxes.
+                if (string.IsNullOrWhiteSpace(textNode.Data))
+                {
+                    string whiteSpace = parentStyle?.WhiteSpace?.ToLowerInvariant() ?? "normal";
+                    bool preserveWhitespace =
+                        whiteSpace == "pre" ||
+                        whiteSpace == "pre-wrap" ||
+                        whiteSpace == "break-spaces";
+
+                    string parentDisplay = parentStyle?.Display?.ToLowerInvariant() ?? "inline";
+                    bool inlineParent =
+                        parentDisplay == "inline" ||
+                        parentDisplay == "inline-block" ||
+                        parentDisplay == "inline-flex" ||
+                        parentDisplay == "inline-grid" ||
+                        parentDisplay == "contents";
+
+                    if (!preserveWhitespace && !inlineParent)
+                    {
+                        return result;
+                    }
+                }
                 
                 // [Optimization] We could drop leading/trailing whitespace in blocks, 
                 // but for now let's be safe for IFC.
@@ -129,8 +168,78 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
         private IEnumerable<Node> GetChildren(Element element)
         {
-            if (element.ShadowRoot != null) return element.ShadowRoot.Children;
-            return element.Children;
+            if (element.ShadowRoot != null) return element.ShadowRoot.ChildNodes;
+            return element.ChildNodes;
+        }
+
+        private static string ResolveDisplay(Node node, CssComputed style)
+        {
+            if (node is Text) return "inline";
+
+            if (node is Element hiddenElement && hiddenElement.HasAttribute("hidden"))
+            {
+                return "none";
+            }
+
+            if (node is Element hiddenInputElement &&
+                string.Equals(hiddenInputElement.TagName, "INPUT", StringComparison.OrdinalIgnoreCase))
+            {
+                string typeValue = hiddenInputElement.GetAttribute("type")?.Trim();
+                if (string.Equals(typeValue, "hidden", StringComparison.OrdinalIgnoreCase))
+                {
+                    return "none";
+                }
+            }
+
+            string display = style?.Display?.Trim().ToLowerInvariant();
+            if (!string.IsNullOrEmpty(display)) return display;
+
+            if (node is Element element)
+            {
+                return GetDefaultDisplay(element.TagName?.ToUpperInvariant());
+            }
+
+            return "block";
+        }
+
+        private static string GetDefaultDisplay(string tag)
+        {
+            if (string.IsNullOrEmpty(tag)) return "block";
+
+            return tag switch
+            {
+                // Hidden metadata/script nodes.
+                "HEAD" or "SCRIPT" or "STYLE" or "META" or "LINK" or "TITLE" or "NOSCRIPT" or "TEMPLATE" => "none",
+
+                // Table defaults.
+                "TABLE" => "table",
+                "TR" => "table-row",
+                "THEAD" => "table-header-group",
+                "TBODY" => "table-row-group",
+                "TFOOT" => "table-footer-group",
+                "COL" => "table-column",
+                "COLGROUP" => "table-column-group",
+                "TD" or "TH" => "table-cell",
+                "CAPTION" => "table-caption",
+
+                // List defaults.
+                "LI" => "list-item",
+
+                // Inline form controls/replaced.
+                "INPUT" or "SELECT" or "TEXTAREA" or "BUTTON" => "inline-block",
+                "IMG" or "SVG" or "CANVAS" or "IFRAME" or "OBJECT" => "inline",
+
+                // Common inline content.
+                "A" or "ABBR" or "ACRONYM" or "B" or "BDI" or "BDO" or "BIG" or
+                "BR" or "CITE" or "CODE" or "DATA" or "DEL" or "DFN" or "EM" or
+                "I" or "INS" or "KBD" or "LABEL" or "MAP" or "MARK" or
+                "METER" or "OUTPUT" or "PICTURE" or "PROGRESS" or "Q" or "RUBY" or
+                "S" or "SAMP" or "SMALL" or "SPAN" or "STRONG" or "SUB" or "SUP" or
+                "TIME" or "TT" or "U" or "VAR" or "WBR" => "inline",
+
+                // Default block-level.
+                _ => "block"
+            };
         }
 
         private bool HasBlockLevelBox(IEnumerable<LayoutBox> boxes)
@@ -233,3 +342,4 @@ namespace FenBrowser.FenEngine.Layout.Tree
         private bool IsInlineLevel(LayoutBox box) => box is InlineBox || box is TextLayoutBox;
     }
 }
+

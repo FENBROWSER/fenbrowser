@@ -1,7 +1,7 @@
 using System;
 using System.Linq;
 using System.Collections.Generic;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.Core;
 using SkiaSharp;
@@ -62,6 +62,12 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
             float logicalAvailableInline = Math.Max(0, logicalAvailable.Inline - inlineOffset);
 
             if (context.Style != null) LayoutHelpers.ApplyContainerWidthConstraints(context.Style, writingMode, inlineOffset, ref logicalAvailableInline);
+            
+            var className = element?.GetAttribute("class");
+            if (element != null && element.TagName == "DIV")
+            {
+                FenLogger.Info($"[STYLE-DEBUG] Element {element.TagName}.{className}: Width={context.Style?.Width}, MaxWidth={context.Style?.MaxWidth}, TextAlign={context.Style?.TextAlign}, AvailableInline={logicalAvailableInline}", LogCategory.Layout);
+            }
 
             bool parentPreventCollapse = (context.Style?.Padding.Top ?? 0) > 0 || (context.Style?.BorderThickness.Top ?? 0) > 0;
             
@@ -76,6 +82,8 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
                 if (currentInlineRun.Count == 0) return;
 
                 // 1. Measure Run
+                // FIX: Guard against Infinite Width for Inline Context if needed? 
+                // InlineLayoutComputer works better with finite width, but handles wrapping.
                 var result = InlineLayoutComputer.Compute(
                     element, 
                     new SKSize(WritingModeConverter.ToPhysical(new LogicalSize(logicalAvailableInline, logicalAvailable.Block), writingMode).Width, float.PositiveInfinity),
@@ -198,9 +206,22 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
                     if (context.Exclusions != null)
                     {
                         // Simplified Float Placement (Block-Level Float)
-                        float floatX = (childStyle?.Float?.ToLowerInvariant() == "right") 
-                                     ? (logicalAvailableInline - floatInlineCursor - fullChildInline) 
-                                     : floatInlineCursor;
+                        float floatX = 0;
+                        // FIX: Guard for Right Float with Infinite Width
+                        if (childStyle?.Float?.ToLowerInvariant() == "right") 
+                        {
+                            if (float.IsInfinity(logicalAvailableInline)) 
+                                floatX = floatInlineCursor; 
+                            else
+                                floatX = logicalAvailableInline - floatInlineCursor - fullChildInline;
+                        }
+                        else
+                        {
+                            floatX = floatInlineCursor;
+                        }
+                        
+                        // FIX: Ensure floatX is finite
+                        if (float.IsNaN(floatX) || float.IsInfinity(floatX)) floatX = 0;
                                      
                         var floatRect = new SKRect(floatX, logicalCurBlock, floatX + fullChildInline, logicalCurBlock + fullChildBlock);
                         bool isLeft = childStyle?.Float?.ToLowerInvariant() != "right";
@@ -341,7 +362,14 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
 
         public void Arrange(LayoutContext context, SKRect finalRect)
         {
-            FenLogger.Error($"[BLOCK-ARRANGE-START] Node={context.Node?.Tag} children={(context.Node?.Children?.Count ?? 0)} finalRect={finalRect}");
+            // FIX: Guard against NaN input for Arrange
+            if (float.IsNaN(finalRect.Left) || float.IsNaN(finalRect.Top) || float.IsNaN(finalRect.Width) || float.IsNaN(finalRect.Height))
+            {
+                FenLogger.Error($"[BLOCK-ARRANGE-ERROR] Received NaN finalRect for {context.Node?.TagName}: {finalRect}");
+                return;
+            }
+
+            FenLogger.Error($"[BLOCK-ARRANGE-START] Node={context.Node?.NodeName} children={(context.Node?.Children?.Length ?? 0)} finalRect={finalRect}");
             // RE-IMPLEMENTATION of Arrange logic to support Anonymous Blocks
             // We must replicate the exact flow logic from Measure to position elements correctly.
             var element = context.Node as Element;
@@ -363,6 +391,8 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
             }
             if (!hasBlock && element != null)
             {
+                 // Guard for null element before delegating to IFC arrange
+                 if (element == null) return;
                  context.Computer.ArrangeBlockInternalInternal(element, finalRect, context.Depth, fallbackNode);
                  return;
             }
@@ -378,12 +408,17 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
             float inlineOffset = 0;
             if (context.Style != null) 
             {
-                 var logPadding = WritingModeConverter.ToLogicalMargin(context.Style.Padding, writingMode);
-                 var logBorder = WritingModeConverter.ToLogicalMargin(context.Style.BorderThickness, writingMode);
-                 inlineOffset = logPadding.InlineStart + logPadding.InlineEnd + logBorder.InlineStart + logBorder.InlineEnd;
-                 
-                 // logicalCurBlock starts at 0 relative to the provided finalRect content-box coords.
-                 // We don't add padding here because finalRect is already the ContentBox.
+                  var logPadding = WritingModeConverter.ToLogicalMargin(context.Style.Padding, writingMode);
+                  var logBorder = WritingModeConverter.ToLogicalMargin(context.Style.BorderThickness, writingMode);
+                  
+                  // FIX: Do NOT add inlineOffset here. finalRect is ContentBox. 
+                  // Subtracting padding/border from ContentBox size reduces available width incorrectly (causing wrap).
+                  inlineOffset = 0; 
+                  
+                  // inlineOffset = logPadding.InlineStart + logPadding.InlineEnd + logBorder.InlineStart + logBorder.InlineEnd;
+                  
+                  // logicalCurBlock starts at 0 relative to the provided finalRect content-box coords.
+                  // We don't add padding here because finalRect is already the ContentBox.
             }
             // Note: In Measure, logicalCurBlock started at 0 (content-relative). 
             // In Arrange, we assume finalRect includes padding/border area?? 
@@ -434,12 +469,15 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
                     }
                     
                     float startInline = 0;
-                    if (context.Style != null) 
-                    {
-                        var logPadding = WritingModeConverter.ToLogicalMargin(context.Style.Padding, writingMode);
-                        var logBorder = WritingModeConverter.ToLogicalMargin(context.Style.BorderThickness, writingMode);
-                        startInline = logPadding.InlineStart + logBorder.InlineStart;
-                    }
+                     if (context.Style != null) 
+                     {
+                         var logPadding = WritingModeConverter.ToLogicalMargin(context.Style.Padding, writingMode);
+                         var logBorder = WritingModeConverter.ToLogicalMargin(context.Style.BorderThickness, writingMode);
+                         // FIX: Do NOT add padding to startInline. finalRect is ContentBox.
+                         // Adding padding shifts content right (Double Padding).
+                         startInline = 0;
+                         // startInline = logPadding.InlineStart + logBorder.InlineStart;
+                     }
 
                     float blockOffset = logicalCurBlock;
                     
@@ -472,7 +510,8 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
                         context.Computer.RegisterTextLines(node, lines);
                         
                         // Fix: Ensure BoxModel is created for text node so renderer can find it
-                        context.Computer.ArrangeText(node, finalRect);
+                        FenBrowser.Core.FenLogger.Info($"[ARRANGE-TEXT-DEBUG] Node={node} FinalRect={finalRect} BlockOffset={blockOffset} LineCount={lines.Count} FirstLineY={(lines.Count>0?lines[0].Origin.Y:-999)}", FenBrowser.Core.Logging.LogCategory.Layout);
+                        context.Computer.ArrangeText(node, finalRect); // finalRect is ContentBox
                     }
 
                     // Advance
@@ -623,37 +662,22 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
                        }
                        else
                        {
-                           // Place child now
-                           if (inInitialMarginGroup)
-                           {
-                               inInitialMarginGroup = false;
-                               // Bubbled up to parent, child starts at 0 relative to current content cursor
-                           }
-                            // Important: Add collapsed margin BEFORE placing the child (unless it's the very first group)
+                            // Place child now.
+                            // Only non-initial groups advance by the collapsed inter-sibling margin.
                             if (inInitialMarginGroup)
                             {
-                                 inInitialMarginGroup = false;
-                                 // Bubbled up...
+                                inInitialMarginGroup = false;
                             }
                             else
                             {
-                                float margin = currentMarginGroup.Collapsed;
-                                FenLogger.Log($"[ARRANGE-BLOCK] Advancing Y by margin {margin} for {child.NodeName}", LogCategory.Layout);
-                                logicalCurBlock += margin;
+                                logicalCurBlock += currentMarginGroup.Collapsed;
                             }
 
-                            float startInline = 0;
-                            if (context.Style != null)
-                            {
-                                 var logPadding = WritingModeConverter.ToLogicalMargin(context.Style.Padding, writingMode);
-                                 var logBorder = WritingModeConverter.ToLogicalMargin(context.Style.BorderThickness, writingMode);
-                                 startInline = logPadding.InlineStart + logBorder.InlineStart;
-                            }
+                             float startInline = 0;
+                            // finalRect is already content-box coordinates; no extra padding/border offset here.
 
                             float absX = finalRect.Left + startInline + logicalMargin.InlineStart;
                             float absY = finalRect.Top + logicalCurBlock; 
-                            
-                            FenLogger.Error($"[ARRANGE-BLOCK] Node={child.NodeName} ID={((child as Element)?.GetAttribute("id") ?? "")} RelY={logicalCurBlock} AbsY={absY} H={childLogSize.Block} ParentTop={finalRect.Top}");
 
                            var finalChildRect = new SKRect(absX, absY, absX + childLogSize.Inline, absY + childLogSize.Block);
                            context.Computer.Arrange(child, finalChildRect);
@@ -673,3 +697,4 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
         }
     }
 }
+

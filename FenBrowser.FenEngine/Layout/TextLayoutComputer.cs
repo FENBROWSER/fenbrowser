@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using SkiaSharp;
 using FenBrowser.Core.Css;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core;
 
 namespace FenBrowser.FenEngine.Layout
@@ -22,6 +22,12 @@ namespace FenBrowser.FenEngine.Layout
         {
             if (!(node is Text textNode) || string.IsNullOrEmpty(textNode.Data))
                 return (new LayoutMetrics(), new List<ComputedTextLine>());
+
+            // DEBUG: Trace text input - FORCE VISIBILITY
+            if (textNode.Data != null && textNode.Data.IndexOf("Item", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                FenBrowser.Core.FenLogger.Info($"[TEXT-LAYOUT] Measuring '{textNode.Data.Replace("\n","\\n")}' AvailW={availableSize.Width} WS={style?.WhiteSpace} Font={style?.FontFamilyName}", FenBrowser.Core.Logging.LogCategory.Layout);
+            }
 
             // 1. Setup Paint
             using var paint = new SKPaint();
@@ -121,6 +127,7 @@ namespace FenBrowser.FenEngine.Layout
                 
                 if (shouldWrap)
                 {
+                    System.Console.WriteLine($"[TEXT-WRAP] Wrapping '{token.Text}' CurW={currentWidth} TokW={tokenWidth} MaxW={maxLineWidth}");
                     // If current token is a space and we are at EOL, we might ignore it or wrap it to next line (which becomes invisible trailing space)
                     // Standard: if wrap happens at space, space spills or disappears.
                     // Simplified: Flush then add.
@@ -185,9 +192,17 @@ namespace FenBrowser.FenEngine.Layout
             public bool IsNewline;
         }
 
+        private static int _debugLogCount = 0;
         private static List<TextToken> Tokenize(string text, bool collapseWhitespace, bool preserveNewlines)
         {
-            var tokens = new List<TextToken>();
+             // DEBUG trace - UNCONDITIONAL
+             if (_debugLogCount < 20) 
+             {
+                 _debugLogCount++;
+                 System.Console.WriteLine($"[TOKENIZE-ALL] '{text.Replace("\n","\\n")}' Len={text.Length} Collapse={collapseWhitespace}");
+             }
+             
+             var tokens = new List<TextToken>();
             if (string.IsNullOrEmpty(text)) return tokens;
 
             int i = 0;
@@ -209,14 +224,18 @@ namespace FenBrowser.FenEngine.Layout
                         // But we want to merge runs of whitespace+newlines into single space.
                     }
                     
-                    // Consume sequence of newlines/whitespace if collapsing
+                     // Consume sequence of newlines/whitespace if collapsing
                     if (collapseWhitespace)
                     {
                          // Check previous token. If space, ignore this. Else add space.
-                         var last = tokens.Count > 0 ? tokens[tokens.Count - 1] : new TextToken();
-                         if (!last.IsWhitespace) 
+                         // FIX: Do not add space if this is the start of the text (strip leading whitespace)
+                         if (tokens.Count > 0)
                          {
-                             tokens.Add(new TextToken { Text = " ", IsWhitespace = true });
+                             var last = tokens[tokens.Count - 1];
+                             if (!last.IsWhitespace) 
+                             {
+                                 tokens.Add(new TextToken { Text = " ", IsWhitespace = true });
+                             }
                          }
                     }
                     i++;
@@ -224,11 +243,16 @@ namespace FenBrowser.FenEngine.Layout
                 else if (char.IsWhiteSpace(c))
                 {
                     // Tab or Space
+                    // Tab or Space
                     if (collapseWhitespace)
                     {
-                        var last = tokens.Count > 0 ? tokens[tokens.Count - 1] : new TextToken();
-                        if (!last.IsWhitespace)
-                            tokens.Add(new TextToken { Text = " ", IsWhitespace = true });
+                        // FIX: Do not add space if this is the start of the text (strip leading whitespace)
+                        if (tokens.Count > 0)
+                        {
+                            var last = tokens[tokens.Count - 1];
+                            if (!last.IsWhitespace)
+                                tokens.Add(new TextToken { Text = " ", IsWhitespace = true });
+                        }
                         i++;
                     }
                     else
@@ -250,7 +274,19 @@ namespace FenBrowser.FenEngine.Layout
                     tokens.Add(new TextToken { Text = word, IsWhitespace = false });
                 }
             }
+
+            
+            // FIX: Strip trailing whitespace (HTML spec: sequence of white space at end of block is removed)
+            if (collapseWhitespace)
+            {
+                while (tokens.Count > 0 && tokens[tokens.Count - 1].IsWhitespace)
+                {
+                    tokens.RemoveAt(tokens.Count - 1);
+                }
+            }
+
             return tokens;
         }
     }
 }
+

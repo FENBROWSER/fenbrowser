@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Generic;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using SkiaSharp;
 using FenBrowser.Core.Logging;
@@ -51,8 +51,8 @@ namespace FenBrowser.FenEngine.Layout
              // Naive balance + account for largest child
              float totalHeight = m.ContentHeight;
              float maxChildH = 0;
-             if (elem.Children != null) {
-                 foreach(var c in elem.Children) {
+             if (elem.ChildNodes != null) {
+                 foreach(var c in elem.ChildNodes) {
                      if (_desiredSizes.TryGetValue(c, out var sz)) maxChildH = Math.Max(maxChildH, sz.Height);
                  }
              }
@@ -109,9 +109,9 @@ namespace FenBrowser.FenEngine.Layout
              float curY = 0;
              int curCol = 0;
              
-             if (elem.Children != null)
+             if (elem.ChildNodes != null)
              {
-                 foreach(var child in elem.Children)
+                 foreach(var child in elem.ChildNodes)
                  {
                      if (ShouldHide(child, GetStyle(child))) continue;
                      

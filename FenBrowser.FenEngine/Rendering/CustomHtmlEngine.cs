@@ -1,5 +1,5 @@
-﻿using FenBrowser.Core.Css;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Css;
+using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -18,6 +18,7 @@ using FenBrowser.FenEngine.Core.Interfaces; // Added for IExecutionContext
 using FenBrowser.FenEngine.Layout; // Added for LayoutResult
 using static FenBrowser.FenEngine.Rendering.CssLoader;
 using FenBrowser.FenEngine.Rendering;
+using FenBrowser.FenEngine.Rendering.Core;
 using FenBrowser.FenEngine.Rendering.Css;
 using FenBrowser.FenEngine.Core.EventLoop; // Added for EventLoopCoordinator
 using FenBrowser.Core.Engine; // Added for EnginePhase
@@ -53,6 +54,11 @@ namespace FenBrowser.FenEngine.Rendering
 
         public LayoutResult LastLayout { get; private set; }
         public IExecutionContext Context => _activeJs?.GlobalContext;
+
+        public RenderContext? BuildRenderContext()
+        {
+            return _cachedRenderer?.CreateRenderContext();
+        }
 
         public event Action<object> RepaintReady;
         private void OnRepaintReady(object control)
@@ -144,9 +150,9 @@ namespace FenBrowser.FenEngine.Rendering
             return null;
         }
 
-        public Element ActiveDom => _activeDom;
+        public Node ActiveDom => _activeDom;
         public JavaScriptEngine JsEngine => _activeJs;
-        private Element _activeDom;
+        private Node _activeDom;
         private string _lastRawHtml;
         private object _lastRenderedControl;
         private Uri _activeBaseUri;
@@ -383,7 +389,7 @@ namespace FenBrowser.FenEngine.Rendering
                 };
 
                 // Preload/Prefetch links
-                foreach (var link in root.Descendants().Where(n => n.Tag == "link" && n.Attr != null))
+                foreach (var link in root.Descendants().OfType<Element>().Where(n => n.TagName == "link" && n.Attr != null))
                 {
                     string rel;
                     if (link.Attr.TryGetValue("rel", out rel) && (rel == "preload" || rel == "prefetch"))
@@ -406,38 +412,41 @@ namespace FenBrowser.FenEngine.Rendering
                     if (budget <= 0) break;
                     try
                     {
-                        if (n.IsText) continue;
-                        if (n.Tag == "img" && n.Attr != null)
+                        if (n.IsText()) continue;
+                        if (n is Element el)
                         {
-                            string src = null; n.Attr.TryGetValue("src", out src);
-                            if (string.IsNullOrWhiteSpace(src))
+                            if (el.TagName == "img" && el.Attr != null)
                             {
-                                string v; 
-                                if (n.Attr.TryGetValue("data-src", out v)) src = v; 
-                                else if (n.Attr.TryGetValue("data-original", out v)) src = v; 
-                                else if (n.Attr.TryGetValue("data-lazy", out v)) src = v;
-                            }
-
-                            string srcset = null; n.Attr.TryGetValue("srcset", out srcset);
-                            string chosen = null;
-                            if (!string.IsNullOrWhiteSpace(srcset)) 
-                            {
-                                chosen = PickBestImageFromSrcSet(srcset, dw);
-                            }
-                            
-                            if (string.IsNullOrWhiteSpace(chosen)) chosen = src;
-                            queueLoad(chosen);
-                        }
-                        else if (n.Attr != null)
-                        {
-                            string style; 
-                            if (n.Attr.TryGetValue("style", out style) && !string.IsNullOrWhiteSpace(style))
-                            {
-                                // background-image/background shorthand regex
-                                var m = System.Text.RegularExpressions.Regex.Match(style, "url\\(['\"']?(?<u>[^)\"']+)['\"']?\\)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                                if (m.Success)
+                                string src = null; el.Attr.TryGetValue("src", out src);
+                                if (string.IsNullOrWhiteSpace(src))
                                 {
-                                    queueLoad(m.Groups["u"].Value);
+                                    string v; 
+                                    if (el.Attr.TryGetValue("data-src", out v)) src = v; 
+                                    else if (el.Attr.TryGetValue("data-original", out v)) src = v; 
+                                    else if (el.Attr.TryGetValue("data-lazy", out v)) src = v;
+                                }
+
+                                string srcset = null; el.Attr.TryGetValue("srcset", out srcset);
+                                string chosen = null;
+                                if (!string.IsNullOrWhiteSpace(srcset)) 
+                                {
+                                    chosen = PickBestImageFromSrcSet(srcset, dw);
+                                }
+                                
+                                if (string.IsNullOrWhiteSpace(chosen)) chosen = src;
+                                queueLoad(chosen);
+                            }
+                            else if (el.Attr != null)
+                            {
+                                string style; 
+                                if (el.Attr.TryGetValue("style", out style) && !string.IsNullOrWhiteSpace(style))
+                                {
+                                    // background-image/background shorthand regex
+                                    var m = System.Text.RegularExpressions.Regex.Match(style, "url\\(['\"']?(?<u>[^)\"']+)['\"']?\\)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                                    if (m.Success)
+                                    {
+                                        queueLoad(m.Groups["u"].Value);
+                                    }
                                 }
                             }
                         }
@@ -495,21 +504,20 @@ namespace FenBrowser.FenEngine.Rendering
             return null;
         }
 
-        private static string GatherPlainText(Element n)
+        private static string GatherPlainText(Node n)
         {
             if (n == null) return string.Empty;
             var sb = new System.Text.StringBuilder();
-            Action<Element> walk = null;
-            walk = (el) =>
+            Action<Node> walk = null;
+            walk = (node) =>
             {
-                if (el == null) return;
-                if (el.IsText) { var t = el.Text ?? string.Empty; sb.Append(t); return; }
-                if (el.Children != null)
+                if (node == null) return;
+                if (node.IsText()) { var t = node.TextContent ?? string.Empty; sb.Append(t); return; }
+                if (node.ChildNodes != null)
                 {
-                    for (int i = 0; i < el.Children.Count; i++)
+                    foreach (var child in node.ChildNodes)
                     {
-                        if (el.Children[i] is Element childEl)
-                            walk(childEl);
+                        walk(child);
                     }
                 }
             };
@@ -572,8 +580,8 @@ namespace FenBrowser.FenEngine.Rendering
             try
             {
                 string title = null;
-                var tnode = dom.Descendants().FirstOrDefault(n => n.Tag == "title");
-                if (tnode != null) title = tnode.Text;
+                var tnode = dom.Descendants().OfType<Element>().FirstOrDefault(n => string.Equals(n.NodeName, "title", StringComparison.OrdinalIgnoreCase));
+                if (tnode != null) title = tnode.TextContent;
                 
                 if (!string.IsNullOrWhiteSpace(title))
                 {
@@ -733,7 +741,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             var fetchCss = _activeFetchCss ?? (async _ => { await Task.CompletedTask; return string.Empty; });
             return await BuildVisualTreeAsync(
-                _activeDom,
+                (_activeDom as Element) ?? (_activeDom as Document)?.DocumentElement,
                 _activeBaseUri,
                 fetchCss,
                 _activeImageLoader,
@@ -790,7 +798,7 @@ namespace FenBrowser.FenEngine.Rendering
             EventLoopCoordinator.Instance.NotifyLayoutDirty();
         }
 
-        private async Task<Element> RunDomParseAsync(string html)
+        private async Task<Node> RunDomParseAsync(string html)
         {
             // CRITICAL FIX: Use production HtmlTreeBuilder from Core.Parsing
             // The FenEngine version doesn't properly implement RAWTEXT state for style/script,
@@ -799,13 +807,13 @@ namespace FenBrowser.FenEngine.Rendering
             try
             {
                 FenLogger.Debug("[RenderAsync] Starting parse (Production Parser)...", LogCategory.Rendering);
-                var doc = await Task.Run(() =>
+                var doc = await Task.Run<Node>(() =>
                 {
                     try { return builder.Build(); }
                     catch (Exception pex)
                     {
                         FenLogger.Error($"[RenderAsync] Parse exception: {pex.Message}", LogCategory.Rendering);
-                        return new FenBrowser.Core.Dom.Document();
+                        return new FenBrowser.Core.Dom.V2.Document();
                     }
                 });
                 
@@ -814,12 +822,12 @@ namespace FenBrowser.FenEngine.Rendering
                 // DEBUG: Dump DOM
                 try {
                      var sb = new StringBuilder();
-                     DumpTree(doc.DocumentElement ?? doc, sb, 0);
+                     DumpTree((doc as FenBrowser.Core.Dom.V2.Document)?.DocumentElement ?? doc, sb, 0);
                      System.IO.File.WriteAllText(@"c:\Users\udayk\Videos\FENBROWSER\dom_dump.txt", sb.ToString());
                 } catch {}
 
                 // Return DocumentElement (the HTML element), not the Document wrapper
-                return doc.DocumentElement ?? doc;
+                return (doc as FenBrowser.Core.Dom.V2.Document)?.DocumentElement ?? doc;
             }
             catch (Exception ex)
             {
@@ -1116,7 +1124,7 @@ namespace FenBrowser.FenEngine.Rendering
                 FenLogger.Debug($"[PERF] DOM Parse: {_pageLoadStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
 
                 // 2. Helper: Load CSS
-                await LoadCssAsync(dom, baseUri, fetchExternalCssAsync);
+                await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync);
                 FenLogger.Debug($"[PERF] CSS Load: {_pageLoadStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
 
                 // 2.5. Security: CSP Meta Parsing
@@ -1125,15 +1133,15 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     // Scan HEAD for <meta http-equiv="Content-Security-Policy">
                     // Simple search in all descendants or just head? Descendants is safer if HEAD parsing is loose.
-                    var metaCsp = dom.Descendants()
+                    var metaCsp = dom.Descendants().OfType<Element>()
                         .FirstOrDefault(n => 
-                            string.Equals(n.Tag, "meta", StringComparison.OrdinalIgnoreCase) &&
-                            n.Attr != null && 
-                            n.Attr.TryGetValue("http-equiv", out var equiv) && 
-                            string.Equals(equiv, "Content-Security-Policy", StringComparison.OrdinalIgnoreCase));
+                            string.Equals(n.TagName, "meta", StringComparison.OrdinalIgnoreCase) &&
+                            n.GetAttribute("http-equiv") != null && 
+                            string.Equals(n.GetAttribute("http-equiv"), "Content-Security-Policy", StringComparison.OrdinalIgnoreCase));
                     
-                    if (metaCsp != null && metaCsp.Attr.TryGetValue("content", out var cspContent))
+                    if (metaCsp != null && metaCsp.GetAttribute("content") != null)
                     {
+                         var cspContent = metaCsp.GetAttribute("content");
                          ActivePolicy = CspPolicy.Parse(cspContent);
                          FenLogger.Info($"[Security] Active CSP from Meta: {cspContent}", LogCategory.Rendering);
                     }
@@ -1146,18 +1154,18 @@ namespace FenBrowser.FenEngine.Rendering
                 // 3. Declarative Shadow DOM
                 try
                 {
-                    var templates = dom.Descendants().Where(n => n.Tag == "template" && n.Attr != null && n.Attr.ContainsKey("shadowrootmode")).ToList();
+                    var templates = dom.Descendants().OfType<Element>().Where(n => n.TagName == "template" && n.HasAttribute("shadowrootmode")).ToList();
                     foreach (var template in templates)
                     {
-                        var parent = template.Parent as Element;
+                        var parent = template.ParentElement;
                         if (parent != null)
                         {
-                            var mode = template.Attr["shadowrootmode"];
+                            var mode = template.GetAttribute("shadowrootmode");
                             if (mode == "open" || mode == "closed")
                             {
                                 try
                                 {
-                                    var shadow = parent.AttachShadow(mode);
+                                    var shadow = parent.AttachShadow(new ShadowRootInit { Mode = mode == "open" ? ShadowRootMode.Open : ShadowRootMode.Closed });
                                     // Move children from template to shadow root
                                     var children = template.Children?.ToList();
                                     if (children != null)
@@ -1168,7 +1176,7 @@ namespace FenBrowser.FenEngine.Rendering
                                         }
                                     }
                                     // Remove the template element itself
-                                    if (parent.Children != null) parent.Children.Remove(template);
+                                    template.Remove();
                                 }
                                 catch (Exception dsdEx)
                                 {
@@ -1182,7 +1190,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                 // 4. Prewarm Images
                 FenLogger.Debug("[CustomHtmlEngine] Prewarming images...", LogCategory.Rendering);
-                try { PrewarmImages(dom, baseUri, imageLoader, viewportWidth); } catch { }
+                try { PrewarmImages((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, imageLoader, viewportWidth); } catch { }
 
                 // 5. Setup Javascript
                 bool allowJs = EnableJavaScript;
@@ -1198,7 +1206,7 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     // DISABLED: FenBrowser has limited JS support, so we keep noscript 
                     // fallback content visible for sites that heavily depend on JS (like Google Search)
-                    // var noscripts = dom.Descendants().Where(n => string.Equals(n.Tag, "noscript", StringComparison.OrdinalIgnoreCase)).ToList();
+                    // var noscripts = dom.Descendants().Where(n => string.Equals(n.TagName, "noscript", StringComparison.OrdinalIgnoreCase)).ToList();
                     // foreach (var node in noscripts) node.Remove();
                 }
 
@@ -1207,14 +1215,14 @@ namespace FenBrowser.FenEngine.Rendering
                 // We must remove <style> tags from potentially visible <noscript> elements.
                 try
                 {
-                    var noscriptElements = dom.Descendants()
-                        .Where(n => string.Equals(n.Tag, "noscript", StringComparison.OrdinalIgnoreCase))
+                    var noscriptElements = dom.Descendants().OfType<Element>()
+                        .Where(n => string.Equals(n.TagName, "noscript", StringComparison.OrdinalIgnoreCase))
                         .ToList();
 
                     foreach (var ns in noscriptElements)
                     {
-                        var stylesInNoscript = ns.Descendants()
-                            .Where(s => string.Equals(s.Tag, "style", StringComparison.OrdinalIgnoreCase))
+                        var stylesInNoscript = ns.Descendants().OfType<Element>()
+                            .Where(s => string.Equals(s.TagName, "style", StringComparison.OrdinalIgnoreCase))
                             .ToList();
                         
                         foreach (var style in stylesInNoscript)
@@ -1234,25 +1242,25 @@ namespace FenBrowser.FenEngine.Rendering
                 FenLogger.Debug($"[PERF] JS Setup: {_pageLoadStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
 
                 var cssFetcher = fetchExternalCssAsync ?? (async _ => { await Task.CompletedTask; return string.Empty; });
-                await CaptureActiveContextAsync(dom, baseUri, cssFetcher, imageLoader, onNavigate, viewportWidth, onFixedBackground, _activeJs).ConfigureAwait(false);
+                await CaptureActiveContextAsync(dom as Element, baseUri, cssFetcher, imageLoader, onNavigate, viewportWidth, onFixedBackground, _activeJs).ConfigureAwait(false);
 
                 FenLogger.Debug("[CustomHtmlEngine] Calling BuildVisualTreeAsync...", LogCategory.Rendering);
                 var vh = (double?)GetPrimaryWindowHeight();
-                var control = await BuildVisualTreeAsync(dom, baseUri, cssFetcher, imageLoader, onNavigate, _activeJs, viewportWidth, vh, onFixedBackground, includeDiagnosticsBanner: false).ConfigureAwait(false);
+                var control = await BuildVisualTreeAsync(dom as Element, baseUri, cssFetcher, imageLoader, onNavigate, _activeJs, viewportWidth, vh, onFixedBackground, includeDiagnosticsBanner: false).ConfigureAwait(false);
                 FenLogger.Debug($"[PERF] Visual Tree 1: {_pageLoadStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
 
                 // 6. Run Scripts
                 object element = control; 
                 if (_activeJs != null)
                 {
-                    await RunScriptsAsync(_activeJs, dom, baseUri);
+                    await RunScriptsAsync(_activeJs, dom as Element, baseUri);
                     FenLogger.Debug($"[PERF] Script Run: {_pageLoadStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
                     // Re-build visual tree after scripts
                     FenLogger.Debug("[RenderAsync] Re-building visual tree...", LogCategory.Rendering);
                     try
                     {
                         var vh2 = (double?)GetPrimaryWindowHeight();
-                        element = await BuildVisualTreeAsync(dom, baseUri, cssFetcher, imageLoader, onNavigate, _activeJs, viewportWidth, vh2, onFixedBackground, includeDiagnosticsBanner: false).ConfigureAwait(false);
+                        element = await BuildVisualTreeAsync(dom as Element, baseUri, cssFetcher, imageLoader, onNavigate, _activeJs, viewportWidth, vh2, onFixedBackground, includeDiagnosticsBanner: false).ConfigureAwait(false);
                         FenLogger.Debug($"[PERF] Visual Tree 2: {_pageLoadStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
                     }
                     catch (Exception vtEx)
@@ -1291,7 +1299,7 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         /// <summary>Expose the current active Lite DOM (last parsed).</summary>
-        public Element GetActiveDom()
+        public Node GetActiveDom()
         {
             return _activeDom;
         }
@@ -1377,25 +1385,34 @@ namespace FenBrowser.FenEngine.Rendering
                 return $"Error: {ex.Message}";
             }
         }
-        private void DumpTree(FenBrowser.Core.Dom.Node node, StringBuilder sb, int depth)
+        private void DumpTree(FenBrowser.Core.Dom.V2.Node node, StringBuilder sb, int depth)
         {
             sb.Append(new string(' ', depth * 2));
-            sb.Append(node.NodeName);
-            if (node is FenBrowser.Core.Dom.Element el)
+            sb.Append(node is Element el1 ? el1.TagName : node.NodeName);
+            if (node is Element el)
             {
-                if (el.Attr != null) foreach(var k in el.Attr.Keys) sb.Append($" {k}='{el.Attr[k]}'");
+                if (el.Attributes != null)
+                {
+                    foreach (var attr in el.Attributes)
+                        sb.Append($" {attr.Name}='{attr.Value}'");
+                }
             }
-            if (node is FenBrowser.Core.Dom.Text txt)
+            if (node is Text txt)
             {
                 sb.Append($" \"{(txt.Data ?? "").Replace("\n", "\\n").Replace("\r", "\\r")}\"");
             }
             sb.AppendLine();
-            if (node.Children != null)
+            if (node.ChildNodes != null)
             {
-               foreach(var child in node.Children) DumpTree(child, sb, depth + 1);
+               foreach(var child in node.ChildNodes) DumpTree(child, sb, depth + 1);
             }
         }
     }
 }
+
+
+
+
+
 
 

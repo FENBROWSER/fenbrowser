@@ -309,13 +309,38 @@ namespace FenBrowser.FenEngine.Rendering
                     return result.Bitmap;
                 }
                 
-                // Scale the pre-rendered bitmap to target size
+                // Scale the pre-rendered bitmap to target size while preserving aspect ratio
                 var scaledBitmap = new SKBitmap(w, h);
                 using (var canvas = new SKCanvas(scaledBitmap))
                 {
                     canvas.Clear(SKColors.Transparent);
-                    var srcRect = new SKRect(0, 0, result.Bitmap.Width, result.Bitmap.Height);
-                    var destRect = new SKRect(0, 0, w, h);
+
+                    // Calculate scale that preserves aspect ratio (contain mode)
+                    float srcW = result.Bitmap.Width;
+                    float srcH = result.Bitmap.Height;
+                    float srcAspect = srcW / srcH;
+                    float destAspect = (float)w / h;
+
+                    float destW, destH, destX, destY;
+                    if (srcAspect > destAspect)
+                    {
+                        // Source is wider - fit to width
+                        destW = w;
+                        destH = w / srcAspect;
+                        destX = 0;
+                        destY = (h - destH) / 2;
+                    }
+                    else
+                    {
+                        // Source is taller - fit to height
+                        destH = h;
+                        destW = h * srcAspect;
+                        destX = (w - destW) / 2;
+                        destY = 0;
+                    }
+
+                    var srcRect = new SKRect(0, 0, srcW, srcH);
+                    var destRect = new SKRect(destX, destY, destX + destW, destY + destH);
                     canvas.DrawBitmap(result.Bitmap, srcRect, destRect);
                 }
                 
@@ -349,18 +374,36 @@ namespace FenBrowser.FenEngine.Rendering
             using (var canvas = new SKCanvas(bitmap))
             {
                 canvas.Clear(SKColors.Transparent);
-                
-                // Scale picture to fit target
+
+                // Scale picture to fit target while preserving aspect ratio
                 if (result.Width > 0 && result.Height > 0)
                 {
-                    float scaleX = wFallback / result.Width;
-                    float scaleY = hFallback / result.Height;
-                    canvas.Scale(scaleX, scaleY);
+                    float srcAspect = result.Width / result.Height;
+                    float destAspect = (float)wFallback / hFallback;
+
+                    float scale;
+                    float offsetX = 0, offsetY = 0;
+
+                    if (srcAspect > destAspect)
+                    {
+                        // Source is wider - fit to width
+                        scale = wFallback / result.Width;
+                        offsetY = (hFallback - result.Height * scale) / 2;
+                    }
+                    else
+                    {
+                        // Source is taller - fit to height
+                        scale = hFallback / result.Height;
+                        offsetX = (wFallback - result.Width * scale) / 2;
+                    }
+
+                    canvas.Translate(offsetX, offsetY);
+                    canvas.Scale(scale, scale);
                 }
-                
+
                 canvas.DrawPicture(result.Picture);
             }
-            
+
             return bitmap;
         }
         

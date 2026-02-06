@@ -1,5 +1,5 @@
 using System.Collections.Generic;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.FenEngine.Layout;
 
@@ -72,9 +72,11 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
         public override string ToString()
         {
-            var tag = SourceNode is Element e ? e.Tag : (SourceNode?.GetType().Name ?? "Anonymous");
+            var tag = SourceNode is Element e ? e.TagName : (SourceNode?.GetType().Name ?? "Anonymous");
             var type = GetType().Name;
             return $"{type} [{tag}]";
         }
     }
 }
+
+

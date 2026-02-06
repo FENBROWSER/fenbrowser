@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using SkiaSharp;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
@@ -53,7 +53,7 @@ namespace FenBrowser.FenEngine.Layout
                     textAlign = s.TextAlign.Value;
                     break;
                 }
-                current = current.Parent as Element;
+                current = current.ParentElement;
             }
             // Default to Left if no ancestor has it set
             
@@ -61,6 +61,8 @@ namespace FenBrowser.FenEngine.Layout
 
             float maxWidth = isVerticalRL ? availableSize.Height : availableSize.Width;
             if (float.IsInfinity(maxWidth)) maxWidth = 1920; // Guard (using reasonable viewport fallback)
+
+            FenBrowser.Core.FenLogger.Info($"[INLINE-DEBUG] Compute Start. Node={container.GetHashCode()} Avail={availableSize.Width} MaxW={maxWidth} Container={container.TagName} TextAlign={textAlign}", FenBrowser.Core.Logging.LogCategory.Layout);
 
             // RULE 2: Calculate the "strut" (the zero-width baseline-aligned box of the container)
             float containerFontSize = (float)(containerStyle?.FontSize ?? 16);
@@ -102,6 +104,16 @@ namespace FenBrowser.FenEngine.Layout
                 
                 // ADJUSTMENT: Trim trailing whitespace width for alignment calculation
                 float contentWidth = currentX - currentXStart; 
+                
+                // CRITICAL FIX: Guard against NaN/Infinity caused by layout overflows
+                if (float.IsNaN(contentWidth) || float.IsInfinity(contentWidth))
+                {
+                    contentWidth = 0;
+                    // Try to recover currentX from items if possible, or just reset to safe values behavior
+                    if (currentLineItems.Count > 0)
+                        contentWidth = currentLineItems.Sum(i => i.Rect.Width); // Fallback approximation
+                }
+
                 if (currentLineItems.Count > 0 && currentLineItems.Last().IsText && currentLineItems.Last().TextLine.Text.EndsWith(" "))
                 {
                     // Look up space width from the font used in the last item?
@@ -115,10 +127,15 @@ namespace FenBrowser.FenEngine.Layout
                 }
 
                 float availableWidthInBand = currentXMax - currentXStart;
+                
+                // Fix for Infinite Band
+                if (float.IsInfinity(availableWidthInBand)) availableWidthInBand = maxWidth;
+
                 float remainingSpace = availableWidthInBand - contentWidth;
 
                 // Clamp remaining space (can be negative if we overflowed)
                 if (remainingSpace < 0) remainingSpace = 0;
+                if (float.IsNaN(remainingSpace)) remainingSpace = 0;
 
                 float xOffset = 0;
                 
@@ -127,6 +144,8 @@ namespace FenBrowser.FenEngine.Layout
                     if (textAlign == SKTextAlign.Center) xOffset = remainingSpace / 2;
                     else if (textAlign == SKTextAlign.Right) xOffset = remainingSpace;
                 }
+                
+                FenBrowser.Core.FenLogger.Info($"[INLINE-FLUSH] Node={container.GetHashCode()} Line {lineCountGuard} Y={currentY} ContentW={contentWidth} Avail={availableWidthInBand} Rem={remainingSpace} Offset={xOffset} Align={textAlign} CurX={currentX} Start={currentXStart}", FenBrowser.Core.Logging.LogCategory.Layout);
                 
                 // Align relative to the band start
                 // items are positioned at item.X which is accumulating from currentXStart
@@ -146,13 +165,22 @@ namespace FenBrowser.FenEngine.Layout
                 }
                 
                 float alignedLineHeight = maxAscent + maxDescent;
+                
+                FenBrowser.Core.FenLogger.Info($"[INLINE-STRUT] Line {lineCountGuard} StrutAsc={strutAscent} MaxAsc={maxAscent} ContentWidth={contentWidth} Items={currentLineItems.Count}", FenBrowser.Core.Logging.LogCategory.Layout);
+                // 2. Commit Items to Result
+                // COALESCING LOGIC: Merge adjacent text items into single runs to reduce PaintNode count
+                // and fix potential rendering gaps.
+                ComputedTextLine? pendingText = null;
+                Node pendingNode = null;
 
                 foreach (var item in currentLineItems)
                 {
-                    // Apply offset and current Y logic
-                    // Align to baseline: Y = currentY + (maxAscent - item.Ascent)
-                    // This puts all baselines at the same vertical position (currentY + maxAscent)
-                    
+                    // Apply offset
+                    float finalX = item.X + xOffset;
+                    float baseAlignY = currentY + (maxAscent - item.Ascent);
+                    float finalY = baseAlignY; // Start with baseline alignment
+
+                    // Apply vertical-align adjustments
                     float verticalOffset = 0;
                     if (!string.IsNullOrEmpty(item.VerticalAlign))
                     {
@@ -160,58 +188,29 @@ namespace FenBrowser.FenEngine.Layout
                         else if (item.VerticalAlign == "super") verticalOffset = -item.Height * 0.3f;
                         else if (item.VerticalAlign == "middle") 
                         {
-                            // Middle aligns the midpoint of the element with the baseline + x-height/2
-                            // Simplified: Align centers of line and item
-                            // This is tricky without x-height, let's just center vertically within row
-                            // float lineMid = maxAscent - (maxAscent + maxDescent)/2; // relative to baseline
-                            // float itemMid = item.Ascent - item.Height/2;
-                            // verticalOffset = lineMid - itemMid; 
-                            
-                            // Alternative: Shift down slightly to center on x-height (approx 0.25em)
                             verticalOffset = -item.Height * 0.15f; 
                         }
                         else if (item.VerticalAlign == "top")
                         {
-                            // Align top of item with top of line
-                            // Line Top is at relative Y = 0 (currentY)
-                            // Item Top is at relative Y = maxAscent - item.Ascent
-                            // To make Item Top = 0, we need offset
-                            // targetY = 0. We usually draw at Y = maxAscent - item.Ascent
-                            // so offset = -(maxAscent - item.Ascent)
                             verticalOffset = -(maxAscent - item.Ascent);
                         }
                         else if (item.VerticalAlign == "bottom")
                         {
-                            // Align bottom of item with bottom of line
-                            // Line Bottom relative = maxAscent + maxDescent
-                            // Item Bottom relative = maxAscent - item.Ascent + item.Height
-                            // targetY = LineBottom - item.Height
-                            // currentY = maxAscent - item.Ascent
-                            // offset = targetY - currentY
-                            //        = (maxAscent + maxDescent - item.Height) - (maxAscent - item.Ascent)
-                            //        = maxDescent - item.Height + item.Ascent
-                            //        = maxDescent - (item.Height - item.Ascent)
-                            //        = maxDescent - item.Descent
                             verticalOffset = maxDescent - (item.Height - item.Ascent);
                         }
                         else if (item.VerticalAlign == "text-top")
                         {
-                            // Align top of item with top of text (baseline - ascent of parent font)
-                            // Similar to top but uses text metrics rather than line box
                             verticalOffset = -(maxAscent - item.Ascent);
                         }
                         else if (item.VerticalAlign == "text-bottom")
                         {
-                            // Align bottom of item with bottom of text area
                             verticalOffset = maxDescent - (item.Height - item.Ascent);
                         }
                         else if (item.VerticalAlign != null)
                         {
-                            // Try to parse as length (px) or percentage
                             string va = item.VerticalAlign.Trim();
                             if (va.EndsWith("px") && float.TryParse(va.Replace("px", ""), out float pxVal))
                             {
-                                // Positive values move up, negative move down (relative to baseline)
                                 verticalOffset = -pxVal;
                             }
                             else if (va.EndsWith("em") && float.TryParse(va.Replace("em", ""), out float emVal))
@@ -220,54 +219,84 @@ namespace FenBrowser.FenEngine.Layout
                             }
                             else if (va.EndsWith("%") && float.TryParse(va.Replace("%", ""), out float pctVal))
                             {
-                                // Percentage of line-height
                                 verticalOffset = -(pctVal / 100f) * (maxAscent + maxDescent);
                             }
                         }
                     }
+                    finalY += verticalOffset;
+                    
+                    if (float.IsInfinity(finalY) || float.IsNaN(finalY)) finalY = currentY;
+                    if (float.IsNaN(finalX) || float.IsInfinity(finalX)) finalX = 0;
 
-                    float finalX = item.X + xOffset;
-                    float baseAlignY = currentY + (maxAscent - item.Ascent);
-                    float finalY = baseAlignY + verticalOffset;
 
                     if (item.IsText)
                     {
-                        var textLine = item.TextLine;
-                        // Update Origin
-                        textLine = new ComputedTextLine
+                        // Check if we can merge with pending
+                        if (pendingText.HasValue && pendingNode == item.Node) 
                         {
-                            Text = textLine.Text,
-                            Width = textLine.Width,
-                            Height = textLine.Height,
-                            Baseline = textLine.Baseline,
-                            Origin = new SKPoint(finalX, finalY)
-                        };
+                            // Merge
+                            var p = pendingText.Value;
+                            // Assume adjacency in source text corresponds to layout adjacency
+                            // But here they are adjacent in list.
+                             // Update width and text
+                             string combinedText = p.Text + item.TextLine.Text; // Note: Spaces were added as separate items
+                             float combinedWidth = (finalX + item.TextLine.Width) - p.Origin.X; // EndX - StartX
+                             
+                             pendingText = new ComputedTextLine 
+                             {
+                                 Text = combinedText,
+                                 Width = combinedWidth,
+                                 Height = Math.Max(p.Height, item.TextLine.Height),
+                                 Baseline = p.Baseline, // Assume same baseline
+                                 Origin = p.Origin
+                             };
+                        }
+                        else
+                        {
+                            // Flush pending if exists (different node)
+                            if (pendingText.HasValue && pendingNode != null)
+                            {
+                                if (!result.TextLines.ContainsKey(pendingNode))
+                                    result.TextLines[pendingNode] = new List<ComputedTextLine>();
+                                result.TextLines[pendingNode].Add(pendingText.Value);
+                            }
 
-                        if (!result.TextLines.ContainsKey(item.Node))
-                            result.TextLines[item.Node] = new List<ComputedTextLine>();
+                            // Start new pending
+                            var newLine = item.TextLine;
+                            // SKIA FIX: DrawText expects Baseline position, not Top.
+                            // baseAlignY is the Top of the aligned item.
+                            // Add Ascent to get Baseline. currentY + maxAscent is the consistent baseline for the line.
+                            // But individual items might be aligned differently. 
+                            // baseAlignY + item.Ascent gives the baseline for THIS item.
+                            newLine.Origin = new SKPoint(finalX, baseAlignY + item.Ascent);
                             
-                        result.TextLines[item.Node].Add(textLine);
+                            pendingText = newLine;
+                            pendingNode = item.Node;
+                        }
                     }
                     else
                     {
-                        // Atomic Element
                         var r = item.Rect;
-                        // Rect.Top includes margin-top. 
-                        // If item.Ascent included MarginTop, then alignY puts the 'Baseline' at the correct spot.
-                        // Atomic Baseline = Content Bottom.
-                        // Item.Rect = {0, MarginTop, W, TotalHeight}
-                        // Draw at finalX, finalY + Rect.Top?
-                        // No, element rect should be offset by alignY.
-                        
                         var finalRect = new SKRect(finalX, finalY + r.Top, finalX + r.Width, finalY + r.Bottom);
                         result.ElementRects[item.Node] = finalRect;
                     }
                 }
 
+                // Flush final pending
+                if (pendingText.HasValue && pendingNode != null)
+                {
+                    if (!result.TextLines.ContainsKey(pendingNode))
+                        result.TextLines[pendingNode] = new List<ComputedTextLine>();
+                    result.TextLines[pendingNode].Add(pendingText.Value);
+                }
+
                 // 3. Advance Line
                 maxLineContentWidth = Math.Max(maxLineContentWidth, currentX);
                 maxContentWidth = Math.Max(maxContentWidth, currentUnwrappedX);
-                currentY += alignedLineHeight; // Use the aligned height, which might be taller than raw max height
+                currentY += alignedLineHeight; // Use the aligned height
+                
+                // Ensure Y is finite
+                if (float.IsInfinity(currentY)) currentY = 0; // Emergency reset
 
                 // Reset Line State
                 currentLineHeight = 0;
@@ -276,12 +305,18 @@ namespace FenBrowser.FenEngine.Layout
 
                 // Re-calculate available width for next line
                 UpdateAvailableWidthForY();
+                
+                // CRITICAL FIX: Reset currentX to the start of the new line!
+                currentX = currentXStart;
             }
 
             void UpdateAvailableWidthForY()
             {
                 currentXStart = 0;
                 currentXMax = maxWidth;
+
+                // CRITICAL FIX: Ensure maxWidth is finite
+                if (float.IsInfinity(currentXMax)) currentXMax = 1920; 
 
                 if (exclusions != null)
                 {
@@ -292,11 +327,15 @@ namespace FenBrowser.FenEngine.Layout
                         {
                             if (exc.IsLeft)
                             {
-                                currentXStart = Math.Max(currentXStart, range.Value.Right);
+                                float r = range.Value.Right;
+                                if (float.IsInfinity(r) || float.IsNaN(r)) r = currentXMax; // Clamp infinite float
+                                currentXStart = Math.Max(currentXStart, r);
                             }
                             else
                             {
-                                currentXMax = Math.Min(currentXMax, range.Value.Left);
+                                float l = range.Value.Left;
+                                if (float.IsInfinity(l) || float.IsNaN(l)) l = 0; // Clamp infinite float
+                                currentXMax = Math.Min(currentXMax, l);
                             }
                         }
                     }
@@ -623,6 +662,24 @@ namespace FenBrowser.FenEngine.Layout
                     // FenEngine controls line-height through NormalizedFontMetrics
                     float lineHeight = metrics.LineHeight;
                     float baselineOffset = metrics.GetBaselineOffset();
+
+                    // FIX: Ensure Half-Leading is applied to center text vertically in the line
+                    float rawAscent = -skMetrics.Ascent; // Skia Ascent is negative
+                    float rawDescent = skMetrics.Descent;
+                    float rawContentHeight = rawAscent + rawDescent;
+                    
+                    if (lineHeight > rawContentHeight)
+                    {
+                        float leading = lineHeight - rawContentHeight;
+                        float halfLeading = leading / 2f;
+                        // Center the baseline: top spacing (half-leading) + ascent
+                        baselineOffset = halfLeading + rawAscent;
+                        FenBrowser.Core.FenLogger.Info($"[TEXT-ALIGN-DEBUG] '{(node is Text t ? t.Data.Trim() : node.NodeType.ToString())}' LH={lineHeight} ContentH={rawContentHeight} Ascent={rawAscent} Leading={leading} Half={halfLeading} Offset={baselineOffset}", FenBrowser.Core.Logging.LogCategory.Layout);
+                    }
+                    else
+                    {
+                        FenBrowser.Core.FenLogger.Info($"[TEXT-ALIGN-DEBUG] '{(node is Text t2 ? t2.Data.Trim() : node.NodeType.ToString())}' LH={lineHeight} <= ContentH={rawContentHeight} (No Leading) Offset={baselineOffset}", FenBrowser.Core.Logging.LogCategory.Layout);
+                    }
                     
                     // WRAP CHECK
                     bool nowrap = (style?.WhiteSpace?.ToLowerInvariant() == "nowrap");
@@ -654,11 +711,37 @@ namespace FenBrowser.FenEngine.Layout
                         return;
                     }
 
-                    foreach (var word in words)
+                    for (int i = 0; i < words.Length; i++)
                     {
-                        if (string.IsNullOrEmpty(word))
+                        var word = words[i];
+                        
+                        // 1. Add Word (if not empty)
+                        if (!string.IsNullOrEmpty(word))
                         {
-                            // It was a space that got split out
+                            // Measure word character-by-character for accurate advance (HarfBuzz prep)
+                            float wordW = 0f;
+                            for (int charIdx = 0; charIdx < word.Length; charIdx++)
+                            {
+                                string charStr = word[charIdx].ToString();
+                                float charW = paint.MeasureText(charStr);
+                                if (charIdx > 0)
+                                {
+                                    string pair = word.Substring(charIdx - 1, 2);
+                                    float pairW = paint.MeasureText(pair);
+                                    float prevCharW = paint.MeasureText(word[charIdx - 1].ToString());
+                                    wordW += (pairW - (prevCharW + charW));
+                                }
+                                wordW += charW;
+                            }
+                            if (wordW <= 0 && word.Length > 0) wordW = paint.TextSize * 0.5f * word.Length;
+
+                            // Check Wrap for Word
+                            if (!nowrap && currentX + wordW > currentXMax && currentX > currentXStart)
+                            {
+                                FenBrowser.Core.FenLogger.Info($"[INLINE-WRAP] Node={node.ParentNode?.GetHashCode()} Wrapping word '{word}' W={wordW} CurX={currentX} Max={currentXMax}", FenBrowser.Core.Logging.LogCategory.Layout);
+                                FlushLine();
+                            }
+
                             currentLineItems.Add(new LineItem
                             {
                                 Node = node,
@@ -666,8 +749,8 @@ namespace FenBrowser.FenEngine.Layout
                                 X = currentX,
                                 TextLine = new ComputedTextLine
                                 {
-                                    Text = " ",
-                                    Width = spaceW,
+                                    Text = word, // No forced space!
+                                    Width = wordW,
                                     Height = lineHeight,
                                     Baseline = baselineOffset,
                                     Origin = new SKPoint(0, 0)
@@ -676,43 +759,55 @@ namespace FenBrowser.FenEngine.Layout
                                 Height = lineHeight,
                                 VerticalAlign = style?.VerticalAlign
                             });
-                            currentX += spaceW;
-                            currentUnwrappedX += spaceW;
+                            
+                            FenBrowser.Core.FenLogger.Info($"[INLINE-WORD] word='{word}' W={wordW:F2} X={currentX:F2} LineH={lineHeight}", FenBrowser.Core.Logging.LogCategory.Layout);
+
+                            currentX += wordW;
+                            currentUnwrappedX += wordW;
+                            minContentWidth = Math.Max(minContentWidth, wordW);
                             currentLineHeight = Math.Max(currentLineHeight, lineHeight);
-                            continue;
                         }
 
-                        float wordW = paint.MeasureText(word);
-                        if (wordW <= 0 && word.Length > 0) wordW = paint.TextSize * 0.5f * word.Length; // Fail-safe fallback
-
-                        if (!nowrap && currentX + wordW > currentXMax && currentX > currentXStart)
+                        // 2. Add Space (if this was a split separator)
+                        if (i < words.Length - 1)
                         {
-                            FlushLine();
+                             // FIX: Collapse leading whitespace at the start of the line
+                             // If we are at the start (currentX == currentXStart), ignore this space.
+                             if (Math.Abs(currentX - currentXStart) < 0.1f)
+                             {
+                                 continue;
+                             }
+
+                             // Check Wrap for Space (usually allowed to hang, but let's be strict for now or it disappears at EOL)
+                             // If space doesn't fit, FlushLine. Next loop, it will be at Start of Line and skipped!
+                             if (!nowrap && currentX + spaceW > currentXMax && currentX > currentXStart)
+                             {
+                                 FlushLine();
+                                 continue; // Skip adding it because now we are at start of line
+                             }
+
+                             currentLineItems.Add(new LineItem
+                             {
+                                 Node = node,
+                                 IsText = true,
+                                 X = currentX,
+                                 TextLine = new ComputedTextLine
+                                 {
+                                     Text = " ",
+                                     Width = spaceW,
+                                     Height = lineHeight,
+                                     Baseline = baselineOffset,
+                                     Origin = new SKPoint(0, 0)
+                                 },
+                                 Ascent = baselineOffset,
+                                 Height = lineHeight,
+                                 VerticalAlign = style?.VerticalAlign
+                             });
+
+                             currentX += spaceW;
+                             currentUnwrappedX += spaceW;
+                             currentLineHeight = Math.Max(currentLineHeight, lineHeight);
                         }
-
-                        currentLineItems.Add(new LineItem
-                        {
-                            Node = node,
-                            IsText = true,
-                            X = currentX,
-                            TextLine = new ComputedTextLine
-                            {
-                                Text = word + " ",
-                                Width = wordW + spaceW,
-                                Height = lineHeight,
-                                Baseline = baselineOffset,
-                                Origin = new SKPoint(0, 0) // Placeholder
-                            },
-                            Ascent = baselineOffset,
-                            Height = lineHeight,
-                            VerticalAlign = style?.VerticalAlign
-                        });
-
-                        // FenLogger.Debug($"[INLINE-WORD] word='{word}' wordW={wordW} currentX={currentX} paint.TextSize={paint.TextSize}", LogCategory.Rendering);
-                        currentX += wordW + spaceW;
-                        currentUnwrappedX += wordW + spaceW;
-                        minContentWidth = Math.Max(minContentWidth, wordW);
-                        currentLineHeight = Math.Max(currentLineHeight, lineHeight);
                     }
                 }
                 else if (node is Element containerElem)
@@ -821,3 +916,5 @@ namespace FenBrowser.FenEngine.Layout
         }
     }
 }
+
+

@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Logging;
 using SkiaSharp;
@@ -46,7 +46,7 @@ namespace FenBrowser.FenEngine.Layout
             out TableGridState state)
         {
             state = new TableGridState();
-            if (table == null || table.Children == null) return new LayoutMetrics();
+            if (table == null || table.ChildNodes == null) return new LayoutMetrics();
 
             // 1. Build Grid Matrix (Handle colspan/rowspan)
             state = BuildGrid(table, styles);
@@ -225,7 +225,7 @@ namespace FenBrowser.FenEngine.Layout
                 if (!occupied.ContainsKey(r)) occupied[r] = new HashSet<int>();
                 
                 int cOffset = 0;
-                var cells = tr.Children.OfType<Element>().Where(e => e.TagName == "TD" || e.TagName == "TH").ToList();
+                var cells = tr.ChildNodes.OfType<Element>().Where(e => e.TagName == "TD" || e.TagName == "TH").ToList();
 
                 if (grid.Rows.Count <= r) grid.Rows.Add(new List<TableCellSlot>());
 
@@ -433,12 +433,12 @@ namespace FenBrowser.FenEngine.Layout
         private static List<Element> GetRows(Element table)
         {
             var trs = new List<Element>();
-            foreach (var child in table.Children.OfType<Element>())
+            foreach (var child in table.ChildNodes.OfType<Element>())
             {
                 if (child.TagName == "TR") trs.Add(child);
                 else if (child.TagName == "THEAD" || child.TagName == "TBODY" || child.TagName == "TFOOT")
                 {
-                    trs.AddRange(child.Children.OfType<Element>().Where(e => e.TagName == "TR"));
+                    trs.AddRange(child.ChildNodes.OfType<Element>().Where(e => e.TagName == "TR"));
                 }
             }
             return trs;
@@ -460,3 +460,4 @@ namespace FenBrowser.FenEngine.Layout
         }
     }
 }
+

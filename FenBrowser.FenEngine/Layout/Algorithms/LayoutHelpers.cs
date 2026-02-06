@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.FenEngine.Rendering;
 using FenBrowser.FenEngine.Layout.Coordinates;
@@ -21,7 +21,7 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
             // Assuming we expose it.
             foreach (var child in computer.GetChildrenWithPseudosInternal(element, fallbackNode))
             {
-                yield return child;
+                if (child != null) yield return child;
             }
         }
 
@@ -32,6 +32,20 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
 
         public static bool ShouldHide(Node node, CssComputed style)
         {
+            // Native HTML behavior: closed <details> hides all direct children except <summary>.
+            var parentElement = node?.ParentElement ?? node?.ParentNode as Element;
+            if (parentElement is Element detailsParent &&
+                string.Equals(detailsParent.TagName, "DETAILS", StringComparison.OrdinalIgnoreCase) &&
+                !detailsParent.HasAttribute("open"))
+            {
+                bool isSummaryElement = node is Element summaryElement &&
+                    string.Equals(summaryElement.TagName, "SUMMARY", StringComparison.OrdinalIgnoreCase);
+                if (!isSummaryElement)
+                {
+                    return true;
+                }
+            }
+
             if (node is Element e)
             {
                 if (e.HasAttribute("hidden")) return true;
@@ -45,7 +59,7 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
             else if (node is Text)
             {
                 // Hide text nodes that are children of hidden elements
-                var parent = node.Parent as Element;
+                var parent = node.ParentNode as Element;
                 if (parent != null)
                 {
                     string parentTag = parent.TagName?.ToLowerInvariant() ?? "";

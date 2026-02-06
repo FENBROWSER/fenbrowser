@@ -1,10 +1,11 @@
 using System;
 using System.Collections.Generic;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Interaction;
 using FenBrowser.FenEngine.Layout;
+using FenBrowser.FenEngine.Rendering.Core;
 using SkiaSharp;
 using FenBrowser.Core;
 
@@ -105,7 +106,7 @@ namespace FenBrowser.FenEngine.Rendering
             // [Verification] Capture content metrics for the verification report
             if (root is Document doc)
             {
-                doc.DumpTree();
+
             }
             
             // Capture state from root downwards using the centralized helper
@@ -331,7 +332,7 @@ namespace FenBrowser.FenEngine.Rendering
                             log += $"HTML Style Found. BG={rootStyle.BackgroundColor}\n";
                             if (rootStyle.Map.ContainsKey("background")) log += $"  Map[background] = '{rootStyle.Map["background"]}'\n";
                             if (rootStyle.Map.ContainsKey("background-color")) log += $"  Map[background-color] = '{rootStyle.Map["background-color"]}'\n";
-                            log += $"  Tag={rootEl.Tag}\n";
+                            log += $"  Tag={rootEl.TagName}\n";
 
                             if (rootStyle.BackgroundColor.HasValue && rootStyle.BackgroundColor.Value.Alpha > 0)
                             {
@@ -343,7 +344,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                         if (bgColor == SKColors.White)
                         {
-                            var body = rootEl.Children?.FirstOrDefault(c => c is Element e && e.TagName?.ToLowerInvariant() == "body") as Element;
+                            var body = rootEl.Children?.FirstOrDefault(c => c is Element e && string.Equals(e.TagName, "body", StringComparison.OrdinalIgnoreCase)) as Element;
                             log += $"Body Element={body!=null}\n";
                             if (body != null)
                             {
@@ -418,7 +419,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 if (ptNode.SourceNode is Element el)
                 {
-                    var tag = el.Tag?.ToLowerInvariant();
+                    var tag = el.TagName?.ToLowerInvariant();
                     if (tag == "input" || tag == "textarea")
                     {
                         if (processed.Contains(el)) continue;
@@ -491,6 +492,22 @@ namespace FenBrowser.FenEngine.Rendering
             
             return FenBrowser.FenEngine.Rendering.Interaction.HitTester.HitTestRecursive(_lastPaintTree.Roots, x, y, out result);
         }
+
+        public RenderContext CreateRenderContext()
+        {
+            var styles = _lastStyles as Dictionary<Node, CssComputed>;
+            var boxesSnapshot = new Dictionary<Node, BoxModel>(_boxes);
+            var ctx = new RenderContext
+            {
+                Boxes = boxesSnapshot,
+                Styles = styles,
+                PaintTreeRoots = _lastPaintTree?.Roots,
+                ViewportWidth = _viewportWidth,
+                ViewportHeight = _viewportHeight,
+                Viewport = new SKRect(0, 0, _viewportWidth, _viewportHeight)
+            };
+            return ctx;
+        }
         
         // Remove HitTestRecursive and FindInteractiveAncestor as they are now in HitTester (or accessible via it)
         // Wait, I didn't verify if I moved FindInteractiveAncestor to HitTester or made it public?
@@ -541,8 +558,8 @@ namespace FenBrowser.FenEngine.Rendering
                 var (node, depth) = stack.Pop();
                 if (node == null) continue;
                 
-                string tag = (node as Element)?.TagName ?? (node.IsText ? "#text" : node.NodeName);
-                int childCount = node.Children?.Count ?? 0;
+                string tag = (node as Element)?.NodeName ?? (node.IsText() ? "#text" : node.NodeName);
+                int childCount = node.ChildNodes?.Length ?? 0;
                 sb.Append(new string(' ', depth * 2))
                   .Append($"[DOM DUMP] Type: {node.NodeType}, Tag: {tag}, Inst: {node.GetHashCode()}, Children: {childCount}");
                 
@@ -559,14 +576,14 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 // Add Attributes info for Elements
-                if (node is Element el && el.Attributes != null && el.Attributes.Count > 0)
+                if (node is Element el && el.Attributes != null && el.Attributes.Any())
                 {
                     sb.Append(" {");
                     bool first = true;
                     foreach (var attr in el.Attributes)
                     {
                         if (!first) sb.Append(", ");
-                        sb.Append($"{attr.Key}='{attr.Value}'");
+                        sb.Append($"{attr.Name}='{attr.Value}'");
                         first = false;
                     }
                     sb.Append("}");
@@ -579,12 +596,12 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 sb.AppendLine();
                 
-                if (node.Children != null && node.Children.Count > 0)
+                if (node.ChildNodes != null && node.ChildNodes.Length > 0)
                 {
                     // Push in reverse order to maintain original iteration order
-                    for (int i = node.Children.Count - 1; i >= 0; i--)
+                    for (int i = node.ChildNodes.Length - 1; i >= 0; i--)
                     {
-                        stack.Push((node.Children[i], depth + 1));
+                        stack.Push((node.ChildNodes[i], depth + 1));
                     }
                 }
             }
@@ -593,12 +610,12 @@ namespace FenBrowser.FenEngine.Rendering
         private void RecursivelyClearDirty(Node node, InvalidationKind kind)
         {
             if (node == null) return;
-            node.ClearDirty(kind, subtree: false);
-            node.ClearDirty(InvalidationKind.Style, subtree: false); // Ensure Style is cleared too
+            node.ClearDirty(kind);
+            node.ClearDirty(InvalidationKind.Style); // Ensure Style is cleared too
             
-            if (node.Children != null)
+            if (node.ChildNodes != null)
             {
-                foreach (var child in node.Children)
+                foreach (var child in node.ChildNodes)
                 {
                     RecursivelyClearDirty(child, kind);
                 }
@@ -611,8 +628,11 @@ namespace FenBrowser.FenEngine.Rendering
             foreach (var node in nodes)
             {
                 result.Add(node);
-                CollectAllNodes(node.Children, result);
+                CollectAllNodes(node.Children.Cast<PaintNodeBase>().ToList(), result);
             }
         }
     }
 }
+
+
+

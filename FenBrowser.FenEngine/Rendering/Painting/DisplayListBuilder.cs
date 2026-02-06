@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using SkiaSharp;
-using FenBrowser.Core.Dom; // For node references if needed
+using FenBrowser.Core.Dom.V2; // For node references if needed
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -243,3 +243,4 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
+

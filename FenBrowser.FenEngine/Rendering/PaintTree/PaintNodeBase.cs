@@ -28,7 +28,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// The DOM node that created this paint node.
         /// Used for hit-testing.
         /// </summary>
-        public FenBrowser.Core.Dom.Node SourceNode { get; init; }
+        public FenBrowser.Core.Dom.V2.Node SourceNode { get; init; }
 
         /// <summary>
         /// Whether this node represents a focused element.
@@ -314,3 +314,4 @@ namespace FenBrowser.FenEngine.Rendering
         public override void Accept(IPaintNodeVisitor visitor) => visitor.Visit(this);
     }
 }
+
