@@ -12,7 +12,7 @@ using FenBrowser.FenEngine.Interaction;
 using FenBrowser.DevTools.Core;
 using Silk.NET.Input;
 using SkiaSharp;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.FenEngine.Rendering;
 using FenBrowser.WebDriver;
@@ -220,13 +220,13 @@ namespace FenBrowser.Host
                 (node, prop, val) => WindowManager.Instance.RunOnMainThread(() => {
                     if (node is Element el) {
                         // Simple style patching
-                         if (!el.Attributes.TryGetValue("style", out var existing)) existing = "";
+                         var existing = el.GetAttribute("style") ?? "";
                          var styles = existing.Split(';', StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim()).Where(s => !string.IsNullOrEmpty(s)).ToDictionary(s => s.Split(':')[0].Trim().ToLower(), s => s.Split(':')[1].Trim());
                          
                          if (string.IsNullOrWhiteSpace(val)) styles.Remove(prop.ToLower());
                          else styles[prop.ToLower()] = val;
                          
-                         el.Attributes["style"] = string.Join("; ", styles.Select(kv => $"{kv.Key}: {kv.Value}"));
+                         el.SetAttribute("style", string.Join("; ", styles.Select(kv => $"{kv.Key}: {kv.Value}")));
                          tab.Browser.InvalidateComputedStyle(el);
                     }
                 }).Wait(),

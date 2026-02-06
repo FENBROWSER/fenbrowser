@@ -6,6 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>disable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
     <NoWarn>$(NoWarn);NU1605</NoWarn>
     <ApplicationIcon>icon.ico</ApplicationIcon>
     <Version>0.1.0-alpha</Version>
@@ -41,7 +42,7 @@
 
   <!-- Clean up debug logs before each build for fresh logging -->
   <Target Name="CleanupLogs" BeforeTargets="Build">
-    <Exec Command="call &quot;$(SolutionDir)cleanup_logs.bat&quot;" IgnoreExitCode="true" />
+    <Exec Command="if exist &quot;$(MSBuildProjectDirectory)\..\cleanup_logs.bat&quot; call &quot;$(MSBuildProjectDirectory)\..\cleanup_logs.bat&quot;" IgnoreExitCode="true" />
   </Target>
 
 </Project>

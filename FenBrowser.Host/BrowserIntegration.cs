@@ -6,7 +6,7 @@ using SkiaSharp;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Rendering;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.FenEngine.Interaction;
 using FenBrowser.FenEngine.DevTools; // Added this using statement
@@ -22,7 +22,7 @@ public class BrowserIntegration
 {
     private readonly BrowserHost _browser;
     private readonly SkiaDomRenderer _renderer;
-    private Element _root;
+    private FenBrowser.Core.Dom.V2.Element _root;
     private Dictionary<Node, CssComputed> _styles;
     private bool _needsRepaint = true;
     private bool _hasFirstStyledRender = false; // Track first styled render to avoid unstyled initial layout
@@ -778,7 +778,7 @@ public class BrowserIntegration
     /// <summary>
     /// Hit test to find element at position.
     /// </summary>
-    private Element HitTestElement(Element element, float x, float y)
+    private FenBrowser.Core.Dom.V2.Element HitTestElement(FenBrowser.Core.Dom.V2.Element element, float x, float y)
     {
         if (element == null) return null;
         
@@ -790,10 +790,10 @@ public class BrowserIntegration
         }
         
         // Check children (in reverse order for z-index)
-        for (int i = element.Children.Count - 1; i >= 0; i--)
+        for (int i = element.ChildNodes.Length - 1; i >= 0; i--)
         {
-            var child = element.Children[i];
-                var hit = HitTestElement(child as Element, x, y);
+            var child = element.ChildNodes[i];
+                var hit = HitTestElement(child as FenBrowser.Core.Dom.V2.Element, x, y);
             if (hit != null) return hit;
         }
         
@@ -809,10 +809,10 @@ public class BrowserIntegration
         var current = element;
         while (current != null)
         {
-            if (current.Tag?.ToLowerInvariant() == "a")
+            if (current.TagName?.ToLowerInvariant() == "a")
             {
-                string href = null;
-                if (current.Attr != null && current.Attr.TryGetValue("href", out href) && !string.IsNullOrWhiteSpace(href))
+                var href = current.GetAttribute("href");
+                if (!string.IsNullOrWhiteSpace(href))
                 {
                     // Resolve relative URLs
                     if (_browser.CurrentUri != null && !href.StartsWith("http") && !href.StartsWith("data:"))
@@ -907,10 +907,11 @@ public class BrowserIntegration
                     _lastHitTest = result;
                     HitTestChanged?.Invoke(result);
                 }
+
                 return result;
             }
         }
-        
+
         // No hit - reset if changed
         if (_lastHitTest.HasHit)
         {
@@ -921,6 +922,13 @@ public class BrowserIntegration
         return HitTestResult.None;
     }
     
+    private (float X, float Y) TranslateWindowToDocument(float windowX, float windowY, float viewportOffsetX, float viewportOffsetY)
+    {
+        float uiX = (windowX - viewportOffsetX) / Math.Max(_dpiScale, 0.1f);
+        float uiY = (windowY - viewportOffsetY) / Math.Max(_dpiScale, 0.1f);
+        return (uiX, uiY + _scrollY);
+    }
+
     /// <summary>
     /// Handle mouse move for cursor updates and status bar.
     /// </summary>
@@ -933,9 +941,10 @@ public class BrowserIntegration
     /// </summary>
     public HitTestResult HandleMouseMove(float windowX, float windowY, float viewportOffsetX = 0, float viewportOffsetY = 0)
     {
-        // 1. Immediate Hit Test on Main Thread (safe due to lock) for snappy UI feedback
-        // This is required for cursor changes to feel instant
-        return PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
+        var result = PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
+        var (docX, docY) = TranslateWindowToDocument(windowX, windowY, viewportOffsetX, viewportOffsetY);
+        _browser.OnMouseMove(docX, docY);
+        return result;
     }
     
     // Internal method to queue costly hover logic if needed
@@ -961,6 +970,10 @@ public class BrowserIntegration
     /// </summary>
     public void HandleRightClick(float windowX, float windowY, float viewportOffsetX = 0, float viewportOffsetY = 0)
     {
+        var (docX, docY) = TranslateWindowToDocument(windowX, windowY, viewportOffsetX, viewportOffsetY);
+        _browser.OnMouseDown(docX, docY, 2);
+        _browser.OnMouseUp(docX, docY, 2);
+
         var result = PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
         ContextMenuRequested?.Invoke(new ContextMenuRequest(windowX, windowY, result));
     }
@@ -985,19 +998,20 @@ public class BrowserIntegration
     /// Handle mouse click at window coordinates.
     /// Returns true if a navigable link was clicked.
     /// </summary>
-    public async Task<bool> HandleClick(float windowX, float windowY, float viewportOffsetX = 0, float viewportOffsetY = 0)
+    public Task<bool> HandleClick(float windowX, float windowY, float viewportOffsetX = 0, float viewportOffsetY = 0)
     {
+        var (docX, docY) = TranslateWindowToDocument(windowX, windowY, viewportOffsetX, viewportOffsetY);
         var result = PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
-        
+
         FenLogger.Info($"[Debug] Click at {windowX},{windowY} hit: {result.TagName ?? "None"} (ID: {result.ElementId ?? "None"}) Link: {result.IsLink}", LogCategory.General);
-        
+
         if (result.IsLink && !string.IsNullOrEmpty(result.Href))
         {
             FenLogger.Info($"[BrowserIntegration] Link clicked: {result.Href}", LogCategory.General);
-            
-            // Resolve relative URL
+
+            // Resolve relative URL for UI feedback only
             string href = result.Href;
-            if (_browser.CurrentUri != null && !href.StartsWith("http") && !href.StartsWith("data:") && !href.StartsWith("javascript:"))
+            if (_browser.CurrentUri != null && !href.StartsWith("http", StringComparison.OrdinalIgnoreCase) && !href.StartsWith("data:", StringComparison.OrdinalIgnoreCase) && !href.StartsWith("javascript:", StringComparison.OrdinalIgnoreCase))
             {
                 try
                 {
@@ -1008,32 +1022,15 @@ public class BrowserIntegration
                 }
                 catch { }
             }
-            
+
             LinkClicked?.Invoke(href);
-            await NavigateAsync(href);
-            return true;
         }
 
-        // Handle generic element click (Focus, etc)
-        if (result.NativeElement is FenBrowser.Core.Dom.Element nativeEl)
-        {
-             await _browser.HandleElementClick(nativeEl);
-        }
-        else if (!string.IsNullOrEmpty(result.ElementId))
-        {
-            var element = FindElementById(_root, result.ElementId);
-            if (element != null)
-            {
-                await _browser.HandleElementClick(element);
-            }
-        }
-        else
-        {
-            // Clicked nothing/background -> Clear focus
-            await _browser.HandleElementClick(null);
-        }
-        
-        return false;
+        _browser.OnMouseDown(docX, docY, 0);
+        _browser.OnMouseUp(docX, docY, 0);
+        _browser.OnClick(docX, docY, 0);
+
+        return Task.FromResult(result.IsLink && !string.IsNullOrEmpty(result.Href));
     }
 
     public async Task HandleKeyPress(string key)
