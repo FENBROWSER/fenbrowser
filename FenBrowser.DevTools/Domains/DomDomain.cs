@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.DevTools.Core;
 using FenBrowser.DevTools.Core.Protocol;
 using FenBrowser.DevTools.Domains.DTOs;
@@ -115,7 +115,7 @@ public class DomDomain : IProtocolHandler
                 return Task.FromResult(ProtocolResponse.Failure(request.Id, "Node not found"));
             }
             
-            var children = node.Children
+            var children = node.ChildNodes
                 .Select(child => BuildNodeDto(child, depth: 1))
                 .ToArray();
             
@@ -234,7 +234,7 @@ public class DomDomain : IProtocolHandler
     private DomNodeDto BuildNodeDto(Node node, int depth)
     {
         var nodeId = _registry.GetId(node);
-        var parentId = node.Parent != null ? _registry.GetId(node.Parent) : (int?)null;
+        var parentId = node.ParentNode != null ? _registry.GetId(node.ParentNode) : (int?)null;
         
         // Determine node type (check Document FIRST since it inherits from Element)
         int nodeType = node switch
@@ -259,25 +259,30 @@ public class DomDomain : IProtocolHandler
         
         // Get attributes (for elements)
         Dictionary<string, string>? attributes = null;
-        if (node is Element el2 && el2.Attributes.Count > 0)
+        if (node is Element el2 && el2.Attributes.Length > 0)
         {
-            attributes = new Dictionary<string, string>(el2.Attributes);
+            attributes = new Dictionary<string, string>();
+            for(int i=0; i<el2.Attributes.Length; i++)
+            {
+                 var attr = el2.Attributes[i];
+                 attributes[attr.Name] = attr.Value;
+            }
         }
         
         // Get children
         DomNodeDto[]? children = null;
         int[]? childNodeIds = null;
         
-        if (depth > 0 && node.Children.Count > 0)
+        if (depth > 0 && node.ChildNodes.Length > 0)
         {
-            children = node.Children
+            children = node.ChildNodes
                 .Select(child => BuildNodeDto(child, depth - 1))
                 .ToArray();
         }
-        else if (node.Children.Count > 0)
+        else if (node.ChildNodes.Length > 0)
         {
             // Just return IDs for lazy loading
-            childNodeIds = node.Children
+            childNodeIds = node.ChildNodes
                 .Select(child => _registry.GetId(child))
                 .ToArray();
         }
@@ -292,7 +297,7 @@ public class DomDomain : IProtocolHandler
             Attributes = attributes,
             Children = children,
             ChildNodeIds = childNodeIds,
-            ChildNodeCount = (node is Element || node is Document) ? node.Children.Count : 0
+            ChildNodeCount = (node is Element || node is Document) ? node.ChildNodes.Length : 0
         };
     }
 }
