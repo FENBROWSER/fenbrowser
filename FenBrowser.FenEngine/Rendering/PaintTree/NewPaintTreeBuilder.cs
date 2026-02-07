@@ -528,6 +528,23 @@ namespace FenBrowser.FenEngine.Rendering
             Node anchor = element.ParentNode;
             while (anchor != null)
             {
+                // If an ancestor is hidden (HTML hidden attribute or display:none), the SVG
+                // should not be rendered — bail out instead of synthesizing a box.
+                if (anchor is Element anchorElem)
+                {
+                    if (anchorElem.HasAttribute("hidden"))
+                    {
+                        box = null;
+                        return false;
+                    }
+                    if (_styles.TryGetValue(anchor, out var ancStyle) &&
+                        string.Equals(ancStyle?.Display, "none", StringComparison.OrdinalIgnoreCase))
+                    {
+                        box = null;
+                        return false;
+                    }
+                }
+
                 if (_boxes.TryGetValue(anchor, out parentBox) &&
                     parentBox != null &&
                     parentBox.ContentBox.Width > 0f &&
@@ -1331,15 +1348,20 @@ namespace FenBrowser.FenEngine.Rendering
                     string tag = e.TagName?.ToUpperInvariant();
                     string type = e.GetAttribute("type")?.ToLowerInvariant();
                     
-                    if (tag == "INPUT" && type != "hidden")
+                    if ((tag == "INPUT" && type != "hidden") || tag == "TEXTAREA")
                     {
-                        // Default Inputs to White
+                        // Default Inputs and Textareas to White
                          bgColor = SKColors.White;
                     }
                     else if (tag == "BUTTON" || (tag == "INPUT" && (type == "button" || type == "submit" || type == "reset")))
                     {
                         // Default Buttons to Light Gray
                         bgColor = new SKColor(240, 240, 240);
+                    }
+                    else if (tag == "SELECT")
+                    {
+                        // Default Selects to White
+                        bgColor = SKColors.White;
                     }
                 }
             }
@@ -1703,6 +1725,24 @@ namespace FenBrowser.FenEngine.Rendering
             
             // Text color
              SKColor color = parentStyle?.ForegroundColor ?? SKColors.Black;
+            // If resolved color is fully transparent, walk up ancestors for a visible color.
+            // Transparent text is almost never intended; it typically means the color property
+            // wasn't properly inherited or was set to an initial/empty value.
+            if (color.Alpha == 0)
+            {
+                var ancestor = textNode.ParentElement?.ParentElement;
+                while (ancestor != null)
+                {
+                    if (_styles.TryGetValue(ancestor, out var ancStyle) &&
+                        ancStyle?.ForegroundColor != null && ancStyle.ForegroundColor.Value.Alpha > 0)
+                    {
+                        color = ancStyle.ForegroundColor.Value;
+                        break;
+                    }
+                    ancestor = ancestor.ParentElement;
+                }
+                if (color.Alpha == 0) color = SKColors.Black;
+            }
 
             // MULTI-LINE SUPPORT
             // If BoxModel has Lines populated (from TextLayoutComputer), use them.
@@ -1960,17 +2000,34 @@ namespace FenBrowser.FenEngine.Rendering
                 if (svgContent.IndexOf("currentColor", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     var fg = style?.ForegroundColor ?? SKColors.Empty;
-                    if (fg == SKColors.Empty && elem.ParentElement != null)
+                    // Walk up ancestor chain to find an inherited foreground color.
+                    // Google Material symbols set color via CSS vars on parent containers;
+                    // checking only one parent is insufficient.
+                    if (fg == SKColors.Empty || fg.Alpha == 0)
                     {
-                        try
+                        var ancestor = elem.ParentElement;
+                        while (ancestor != null)
                         {
-                            var parentStyle = elem.ParentElement.GetComputedStyle();
-                            if (parentStyle?.ForegroundColor != null)
-                                fg = parentStyle.ForegroundColor.Value;
+                            try
+                            {
+                                CssComputed ancStyle = null;
+                                if (_styles.TryGetValue(ancestor, out ancStyle) ||
+                                    (ancStyle = ancestor.GetComputedStyle()) != null)
+                                {
+                                    if (ancStyle?.ForegroundColor != null &&
+                                        ancStyle.ForegroundColor.Value != SKColors.Empty &&
+                                        ancStyle.ForegroundColor.Value.Alpha > 0)
+                                    {
+                                        fg = ancStyle.ForegroundColor.Value;
+                                        break;
+                                    }
+                                }
+                            }
+                            catch { }
+                            ancestor = ancestor.ParentElement;
                         }
-                        catch { }
                     }
-                    if (fg == SKColors.Empty)
+                    if (fg == SKColors.Empty || fg.Alpha == 0)
                         fg = SKColors.Black;
 
                     string hexColor = $"#{fg.Red:X2}{fg.Green:X2}{fg.Blue:X2}";
@@ -2897,11 +2954,14 @@ namespace FenBrowser.FenEngine.Rendering
         private static bool ShouldHide(Node node, CssComputed style)
         {
             if (node == null) return true;
-            
+
             // Use string comparison for Display and Visibility
             if (style != null && string.Equals(style.Display, "none", StringComparison.OrdinalIgnoreCase)) return true;
             // Visibility: hidden check removed (handled in BuildRecursive to allow children)
-            
+
+            // HTML hidden attribute means the element is not relevant and should not be rendered.
+            if (node is Element elem && elem.HasAttribute("hidden")) return true;
+
             string tag = node.NodeName?.ToUpperInvariant();
             return tag == "HEAD" || tag == "SCRIPT" || tag == "STYLE" || tag == "META" || tag == "LINK" || tag == "TITLE" || tag == "NOSCRIPT" || tag == "IFRAME";
         }

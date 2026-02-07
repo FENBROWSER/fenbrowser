@@ -334,19 +334,27 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
                     : SKColors.Gray;
             }
 
-            // Padding
-            if (style.Padding.Top == 0 && style.Padding.Left == 0)
+            // Padding - only apply if CSS hasn't explicitly specified padding
+            bool cssSpecifiedPadding = style.Map != null &&
+                (style.Map.ContainsKey("padding") || style.Map.ContainsKey("padding-top") ||
+                 style.Map.ContainsKey("padding-left") || style.Map.ContainsKey("padding-right") ||
+                 style.Map.ContainsKey("padding-bottom"));
+            if (!cssSpecifiedPadding && style.Padding.Top == 0 && style.Padding.Left == 0)
             {
-                style.Padding = isButtonType 
-                    ? new Thickness(12, 6, 12, 6) // Reduced from 16,8 for tighter buttons
+                style.Padding = isButtonType
+                    ? new Thickness(12, 6, 12, 6)
                     : new Thickness(5, 2, 5, 2);
             }
 
-            // Border radius
-            if (style.BorderRadius.TopLeft.Value == 0 && style.BorderRadius.TopLeft.IsPercent == false)
+            // Border radius - only apply if CSS hasn't explicitly specified it
+            bool cssSpecifiedRadius = style.Map != null &&
+                (style.Map.ContainsKey("border-radius") || style.Map.ContainsKey("border-top-left-radius") ||
+                 style.Map.ContainsKey("border-top-right-radius") || style.Map.ContainsKey("border-bottom-left-radius") ||
+                 style.Map.ContainsKey("border-bottom-right-radius"));
+            if (!cssSpecifiedRadius && style.BorderRadius.TopLeft.Value == 0 && style.BorderRadius.TopLeft.IsPercent == false)
             {
                 if (isButtonType)
-                    style.BorderRadius = new CssCornerRadius(4); // Reduced from 8 to match Google/Standard
+                    style.BorderRadius = new CssCornerRadius(4);
                 else if (tag == "INPUT" || tag == "TEXTAREA")
                     style.BorderRadius = new CssCornerRadius(4);
             }

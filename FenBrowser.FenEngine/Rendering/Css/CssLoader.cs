@@ -2301,7 +2301,32 @@ private static double? ExtractPx(string text, string prop)
                                 val = GetUserAgentValue(kv.Key) ?? CssComputed.GetInitialValue(kv.Key) ?? val;
                             }
                         }
-                        css.Map[kv.Key] = val;
+                        // Per CSS spec: when var() resolves to guaranteed-invalid (no variable
+                        // defined and no fallback), the property declaration is invalid at
+                        // computed-value time. For inherited properties this means the value
+                        // is inherited from the parent; for non-inherited it uses the initial value.
+                        bool originalHadVar = kv.Value.Value != null && kv.Value.Value.Contains("var(");
+                        bool valIsEffectivelyEmpty = val == null || (originalHadVar && val.Length == 0);
+
+                        if (!valIsEffectivelyEmpty)
+                        {
+                            css.Map[kv.Key] = val;
+                        }
+                        else if (originalHadVar)
+                        {
+                            // var() resolved to nothing (null or empty string with no fallback).
+                            // For inherited properties, inherit from parent.
+                            if (CssComputed.IsInheritedProperty(kv.Key) && parentCss != null &&
+                                parentCss.Map.TryGetValue(kv.Key, out var inheritedVal))
+                            {
+                                css.Map[kv.Key] = inheritedVal;
+                            }
+                            // For non-inherited properties, leave unset (use initial)
+                        }
+                        else
+                        {
+                            css.Map[kv.Key] = val;
+                        }
                     }
                 }
 
