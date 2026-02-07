@@ -434,6 +434,20 @@ namespace FenBrowser.FenEngine.Core
         }
     }
 
+    /// <summary>
+    /// Throw expression for use in expression contexts (arrow functions, etc.)
+    /// </summary>
+    public class ThrowExpression : Expression
+    {
+        public Expression Value { get; set; }
+
+        public override string String()
+        {
+            return $"throw {Value.String()}";
+        }
+    }
+
+
     public class WhileStatement : Statement
     {
         public Expression Condition { get; set; }

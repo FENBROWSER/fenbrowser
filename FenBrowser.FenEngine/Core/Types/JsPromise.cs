@@ -19,6 +19,15 @@ namespace FenBrowser.FenEngine.Core.Types
         private readonly List<Reaction> _reactions = new List<Reaction>();
         private readonly IExecutionContext _context;
 
+        /// <summary>True when the promise has been resolved or rejected.</summary>
+        public bool IsSettled => _state != PromiseState.Pending;
+        /// <summary>True when the promise was fulfilled.</summary>
+        public bool IsFulfilled => _state == PromiseState.Fulfilled;
+        /// <summary>True when the promise was rejected.</summary>
+        public bool IsRejected => _state == PromiseState.Rejected;
+        /// <summary>The resolved/rejected value. Only meaningful when IsSettled is true.</summary>
+        public FenValue Result => _result;
+
         private struct Reaction
         {
             public JsPromise Capability;

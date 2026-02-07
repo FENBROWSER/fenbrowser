@@ -1192,7 +1192,7 @@ namespace FenBrowser.Core.Parsing
                      FenBrowser.Core.FenLogger.Warn($"[HTML] Simple Foster Parent for {st.TagName}", LogCategory.HtmlParsing);
                      
                 var el = new Element(st.TagName);
-                foreach(var a in st.Attributes) el.SetAttribute(a.Name, a.Value);
+                foreach(var a in st.Attributes) el.SetAttributeUnsafe(a.Name, a.Value);
                 
                  if (nextSibling != null && parent != null)
                     ((ContainerNode)parent).InsertBefore(el, nextSibling);
@@ -1455,7 +1455,7 @@ namespace FenBrowser.Core.Parsing
 
             foreach (var attr in token.Attributes)
             {
-                el.SetAttribute(attr.Name, attr.Value);
+                el.SetAttributeUnsafe(attr.Name, attr.Value);
                 if (token.TagName.Equals("svg", StringComparison.OrdinalIgnoreCase))
                 {
                     /* [PERF-REMOVED] */

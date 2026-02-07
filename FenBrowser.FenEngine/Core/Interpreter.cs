@@ -1734,8 +1734,21 @@ namespace FenBrowser.FenEngine.Core
                     DevToolsCore.Instance.PopCallFrame();
                     context.PopCallFrame();
                 }
-                
-                return UnwrapReturnValue(ToFenValue(evaluated));
+
+                var result = UnwrapReturnValue(ToFenValue(evaluated));
+
+                // Async functions always return a Promise wrapping the result
+                if (function.IsAsync)
+                {
+                    // If already a promise, return as-is
+                    if (result.IsObject && result.AsObject() is Types.JsPromise)
+                        return result;
+                    // If it's an error, return a rejected promise
+                    if (result.Type == Core.Interfaces.ValueType.Error)
+                        return FenValue.FromObject(Types.JsPromise.Reject(result, context));
+                    return FenValue.FromObject(Types.JsPromise.Resolve(result, context));
+                }
+                return result;
             }
             
             return FenValue.FromError($"not a function: {fn.Type}");
@@ -2754,17 +2767,77 @@ namespace FenBrowser.FenEngine.Core
 
         private IValue EvalAwaitExpression(AwaitExpression node, FenEnvironment env, IExecutionContext context)
         {
-            // Evaluate the argument (the promise or value)
             var value = Eval(node.Argument, env, context);
             if (IsError(value)) return value;
 
-            // In a real engine, we would suspend execution here if value is a Promise
-            // For now, we assume synchronous execution or that the promise resolves immediately
-            // This is a placeholder for full async support
-            
-            // If value is a Promise object (which we don't have yet), we'd unwrap it
-            // For now, just return the value
-            return value;
+            var fv = ToFenValue(value);
+
+            // If not a promise, wrap in resolved promise semantics (just return value)
+            if (!fv.IsObject || !(fv.AsObject() is Types.JsPromise promise))
+            {
+                // Check if it's a thenable (object with a .then method)
+                if (fv.IsObject)
+                {
+                    var obj = fv.AsObject();
+                    var thenVal = obj?.Get("then");
+                    if (thenVal.HasValue && thenVal.Value.IsFunction)
+                    {
+                        promise = Types.JsPromise.Resolve(fv, context);
+                    }
+                    else
+                    {
+                        return fv;
+                    }
+                }
+                else
+                {
+                    return fv;
+                }
+            }
+
+            // If already settled, return immediately
+            if (promise.IsSettled)
+            {
+                if (promise.IsFulfilled) return promise.Result;
+                return FenValue.FromError(promise.Result.ToString());
+            }
+
+            // Pump the microtask queue to let promise reactions run.
+            // Single-threaded cooperative approach: microtasks settle promises.
+            // Use the microtask queue directly to avoid phase assertion issues
+            // (we may already be inside a JS execution or microtask phase).
+            const int maxPumps = 5000;
+            for (int i = 0; i < maxPumps; i++)
+            {
+                try
+                {
+                    EventLoop.EventLoopCoordinator.Instance.PerformMicrotaskCheckpoint();
+                }
+                catch (InvalidOperationException)
+                {
+                    // Already in microtask phase — just break and return what we have
+                    break;
+                }
+                if (promise.IsSettled) break;
+
+                // Also process one task in case the resolution depends on a queued task
+                if (EventLoop.EventLoopCoordinator.Instance.HasPendingTasks)
+                {
+                    try { EventLoop.EventLoopCoordinator.Instance.ProcessNextTask(); }
+                    catch (InvalidOperationException) { break; }
+                }
+
+                if (promise.IsSettled) break;
+            }
+
+            if (promise.IsSettled)
+            {
+                if (promise.IsFulfilled) return promise.Result;
+                return FenValue.FromError(promise.Result.ToString());
+            }
+
+            // Still pending after pumping — return undefined rather than blocking forever
+            return FenValue.Undefined;
         }
 
         private FenObject GetStringPrototype()
