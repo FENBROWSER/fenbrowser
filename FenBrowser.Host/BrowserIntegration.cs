@@ -85,6 +85,10 @@ public class BrowserIntegration
     {
         _browser = new BrowserHost();
         _renderer = new SkiaDomRenderer();
+
+        // Inject the actual renderer into BrowserHost so its InputManager
+        // hit tests use the populated paint tree instead of a stale copy.
+        _browser.SetActiveRenderer(_renderer);
         
         // Wire browser events
         _browser.Navigated += (s, e) => 
@@ -286,9 +290,9 @@ public class BrowserIntegration
                             var elapsed = DateTime.Now - _lastNavigationTime;
                             if (elapsed.TotalMilliseconds < 5000)
                             {
-                                FenLogger.Debug($"[EngineLoop] Styles not ready ({_styles?.Count ?? 0}). PROCEEDING ANYWAY to debug Whitescreen. ({elapsed.TotalMilliseconds:F0}ms)", LogCategory.Rendering);
-                                _needsRepaint = true; // Keep requesting repaint until CSS is ready
-                                // return; // FORCE PROCEED
+                                FenLogger.Debug($"[EngineLoop] Styles not ready ({_styles?.Count ?? 0}). Proceeding with unstyled layout. ({elapsed.TotalMilliseconds:F0}ms)", LogCategory.Rendering);
+                                // Schedule ONE more repaint after a delay, not a continuous spin.
+                                // The wake event will fire when styles arrive or JS enqueues work.
                             }
                             else
                             {
@@ -998,39 +1002,75 @@ public class BrowserIntegration
     /// Handle mouse click at window coordinates.
     /// Returns true if a navigable link was clicked.
     /// </summary>
-    public Task<bool> HandleClick(float windowX, float windowY, float viewportOffsetX = 0, float viewportOffsetY = 0)
+    public HitTestResult HandleMouseDown(float windowX, float windowY, int button = 0, float viewportOffsetX = 0, float viewportOffsetY = 0)
     {
         var (docX, docY) = TranslateWindowToDocument(windowX, windowY, viewportOffsetX, viewportOffsetY);
         var result = PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
+        _browser.OnMouseDown(docX, docY, button);
+        return result;
+    }
 
-        FenLogger.Info($"[Debug] Click at {windowX},{windowY} hit: {result.TagName ?? "None"} (ID: {result.ElementId ?? "None"}) Link: {result.IsLink}", LogCategory.General);
-
-        if (result.IsLink && !string.IsNullOrEmpty(result.Href))
+    public HitTestResult HandleMouseUp(float windowX, float windowY, int button = 0, bool emitClick = false, float viewportOffsetX = 0, float viewportOffsetY = 0)
+    {
+        var (docX, docY) = TranslateWindowToDocument(windowX, windowY, viewportOffsetX, viewportOffsetY);
+        var result = PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
+        _browser.OnMouseUp(docX, docY, button);
+        if (emitClick && button == 0)
         {
-            FenLogger.Info($"[BrowserIntegration] Link clicked: {result.Href}", LogCategory.General);
-
-            // Resolve relative URL for UI feedback only
-            string href = result.Href;
-            if (_browser.CurrentUri != null && !href.StartsWith("http", StringComparison.OrdinalIgnoreCase) && !href.StartsWith("data:", StringComparison.OrdinalIgnoreCase) && !href.StartsWith("javascript:", StringComparison.OrdinalIgnoreCase))
+            var activationTarget = result.NativeElement as Element ?? _lastHitTest.NativeElement as Element;
+            var effectiveHref = result.Href;
+            if (string.IsNullOrEmpty(effectiveHref) && _lastHitTest.IsLink)
             {
-                try
-                {
-                    if (Uri.TryCreate(_browser.CurrentUri, href, out var resolved))
-                    {
-                        href = resolved.AbsoluteUri;
-                    }
-                }
-                catch { }
+                effectiveHref = _lastHitTest.Href;
             }
 
-            LinkClicked?.Invoke(href);
+            if (!string.IsNullOrEmpty(effectiveHref))
+            {
+                LinkClicked?.Invoke(ResolveHrefForUi(effectiveHref));
+            }
+
+            _browser.OnClick(docX, docY, button);
+
+            // Fallback: when low-level event processing lags, execute direct activation/focus
+            // using already resolved hit-test element from this same pointer release.
+            if (activationTarget != null)
+            {
+                _ = _browser.HandleElementClick(activationTarget);
+            }
+        }
+        return result;
+    }
+
+    public Task<bool> HandleClick(float windowX, float windowY, float viewportOffsetX = 0, float viewportOffsetY = 0)
+    {
+        HandleMouseDown(windowX, windowY, 0, viewportOffsetX, viewportOffsetY);
+        var result = HandleMouseUp(windowX, windowY, 0, true, viewportOffsetX, viewportOffsetY);
+
+        FenLogger.Info($"[Debug] Click at {windowX},{windowY} hit: {result.TagName ?? "None"} (ID: {result.ElementId ?? "None"}) Link: {result.IsLink}", LogCategory.General);
+        return Task.FromResult(result.IsLink && !string.IsNullOrEmpty(result.Href));
+    }
+
+    private string ResolveHrefForUi(string href)
+    {
+        if (string.IsNullOrEmpty(href)) return href;
+        if (_browser.CurrentUri == null) return href;
+        if (href.StartsWith("http", StringComparison.OrdinalIgnoreCase) ||
+            href.StartsWith("data:", StringComparison.OrdinalIgnoreCase) ||
+            href.StartsWith("javascript:", StringComparison.OrdinalIgnoreCase))
+        {
+            return href;
         }
 
-        _browser.OnMouseDown(docX, docY, 0);
-        _browser.OnMouseUp(docX, docY, 0);
-        _browser.OnClick(docX, docY, 0);
+        try
+        {
+            if (Uri.TryCreate(_browser.CurrentUri, href, out var resolved))
+            {
+                return resolved.AbsoluteUri;
+            }
+        }
+        catch { }
 
-        return Task.FromResult(result.IsLink && !string.IsNullOrEmpty(result.Href));
+        return href;
     }
 
     public async Task HandleKeyPress(string key)
