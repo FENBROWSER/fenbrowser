@@ -21,7 +21,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         private static FlexFormattingContext _instance;
         public static FlexFormattingContext Instance => _instance ??= new FlexFormattingContext();
 
-        public override void Layout(LayoutBox box, LayoutState state)
+        protected override void LayoutCore(LayoutBox box, LayoutState state)
         {
             // FenLogger.Debug($"[FLEX-CTX] Layout called for {box.SourceNode?.NodeName} ({(box.SourceNode as Element)?.TagName})");
             var container = box;
@@ -257,7 +257,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             if (shrinkToContentMainAxis)
             {
-                containerMainSize = totalMainSize;
+                // Only expand to content size if the container has no usable resolved width.
+                // When ResolveContainerDimensions already resolved a finite width (e.g. from
+                // percentage or explicit CSS), we must respect it so flex-shrink can operate.
+                if (containerMainSize <= 0 || float.IsNaN(containerMainSize) || float.IsInfinity(containerMainSize))
+                {
+                    containerMainSize = totalMainSize;
+                }
             }
 
             float remainingSpace = containerMainSize - totalMainSize;
@@ -431,14 +437,18 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             if (shrinkToContentMainAxis)
             {
-                containerMainSize = totalMainSize;
-                if (isRow)
+                // Only shrink-wrap to content if no finite size was resolved.
+                if (containerMainSize <= 0 || float.IsNaN(containerMainSize) || float.IsInfinity(containerMainSize))
                 {
-                    LayoutBoxOps.ComputeBoxModelFromContent(container, containerMainSize, container.Geometry.ContentBox.Height);
-                }
-                else
-                {
-                    LayoutBoxOps.ComputeBoxModelFromContent(container, container.Geometry.ContentBox.Width, containerMainSize);
+                    containerMainSize = totalMainSize;
+                    if (isRow)
+                    {
+                        LayoutBoxOps.ComputeBoxModelFromContent(container, containerMainSize, container.Geometry.ContentBox.Height);
+                    }
+                    else
+                    {
+                        LayoutBoxOps.ComputeBoxModelFromContent(container, container.Geometry.ContentBox.Width, containerMainSize);
+                    }
                 }
             }
 
@@ -579,6 +589,20 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         }
                     }
                 }
+            }
+
+            // Ensure containerCrossSize reflects actual item dimensions after all adjustments.
+            // After grow/shrink/stretch, items may have changed size but containerCrossSize
+            // could still be 0 for auto-height containers, breaking cross-axis alignment.
+            if (containerCrossSize <= 0)
+            {
+                float recalcMax = 0;
+                foreach (var item in items)
+                {
+                    float itemCross = isRow ? item.Geometry.MarginBox.Height : item.Geometry.MarginBox.Width;
+                    recalcMax = Math.Max(recalcMax, itemCross);
+                }
+                containerCrossSize = recalcMax;
             }
 
             foreach (var item in items)

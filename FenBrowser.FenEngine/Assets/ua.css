@@ -45,7 +45,12 @@ pre, tt, code,
 kbd, samp       { font-family: monospace }
 pre             { white-space: pre }
 button, textarea,
-input, select   { display: inline-block }
+input, select   { display: inline-block; }
+
+/* Form element defaults — lowest specificity, site CSS overrides naturally */
+input, textarea { padding: 5px 2px; border: 1px solid gray; border-radius: 4px; background-color: white; }
+button, input[type="submit"], input[type="button"], input[type="reset"]
+                { padding: 6px 12px; border: 1px solid #f8f9fa; border-radius: 4px; background-color: #f8f9fa; }
 big             { font-size: 1.17em }
 small, sub, sup { font-size: 0.83em }
 sub             { vertical-align: sub }

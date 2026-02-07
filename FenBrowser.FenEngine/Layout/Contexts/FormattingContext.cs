@@ -9,7 +9,22 @@ namespace FenBrowser.FenEngine.Layout.Contexts
     /// </summary>
     public abstract class FormattingContext
     {
-        public abstract void Layout(LayoutBox box, LayoutState state);
+        [ThreadStatic] private static int _layoutDepth;
+        private const int MaxLayoutDepth = 40;
+
+        public void Layout(LayoutBox box, LayoutState state)
+        {
+            if (_layoutDepth >= MaxLayoutDepth)
+            {
+                FenBrowser.Core.FenLogger.Warn($"[Layout] Max depth {MaxLayoutDepth} exceeded for {box.SourceNode?.NodeName}. Skipping.", FenBrowser.Core.Logging.LogCategory.Layout);
+                return;
+            }
+            _layoutDepth++;
+            try { LayoutCore(box, state); }
+            finally { _layoutDepth--; }
+        }
+
+        protected abstract void LayoutCore(LayoutBox box, LayoutState state);
 
         /// <summary>
         /// Factory method to determine the correct formatting context for a box.

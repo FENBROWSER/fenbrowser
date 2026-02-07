@@ -54,7 +54,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
         }
 
-        public override void Layout(LayoutBox box, LayoutState state)
+        protected override void LayoutCore(LayoutBox box, LayoutState state)
         {
             if (TryLayoutReplacedInlineBox(box, state))
             {

@@ -52,7 +52,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
             if (style == null && node.ComputedStyle != null) style = node.ComputedStyle;
             
             if (style == null && node is Element) style = new CssComputed();
-            
+
             // For text nodes, inherit from parent
             if (style == null && node is Text) style = parentStyle ?? new CssComputed();
 
@@ -192,14 +192,39 @@ namespace FenBrowser.FenEngine.Layout.Tree
             }
 
             string display = style?.Display?.Trim().ToLowerInvariant();
-            if (!string.IsNullOrEmpty(display)) return display;
-
-            if (node is Element element)
+            if (string.IsNullOrEmpty(display))
             {
-                return GetDefaultDisplay(element.TagName?.ToUpperInvariant());
+                display = (node is Element element)
+                    ? GetDefaultDisplay(element.TagName?.ToUpperInvariant())
+                    : "block";
             }
 
-            return "block";
+            if (display == "none") return display;
+
+            // CSS 2.1 Section 9.7: Blockify display for floated or absolutely-positioned elements.
+            // float: left/right or position: absolute/fixed converts inline-level display to block-level.
+            string floatVal = style?.Float?.Trim().ToLowerInvariant();
+            string posVal = style?.Position?.Trim().ToLowerInvariant();
+            bool isFloated = floatVal == "left" || floatVal == "right";
+            bool isAbsFixed = posVal == "absolute" || posVal == "fixed";
+
+            if (isFloated || isAbsFixed)
+            {
+                switch (display)
+                {
+                    case "inline":
+                    case "inline-block":
+                        return "block";
+                    case "inline-flex":
+                        return "flex";
+                    case "inline-grid":
+                        return "grid";
+                    case "inline-table":
+                        return "table";
+                }
+            }
+
+            return display;
         }
 
         private static string GetDefaultDisplay(string tag)
@@ -227,7 +252,10 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
                 // Inline form controls/replaced.
                 "INPUT" or "SELECT" or "TEXTAREA" or "BUTTON" => "inline-block",
-                "IMG" or "SVG" or "CANVAS" or "IFRAME" or "OBJECT" => "inline",
+                // SVG is a replaced element and must establish its own formatting context
+                // (like inline-block) to contain its child elements (circle, path, rect, etc.)
+                "SVG" => "inline-block",
+                "IMG" or "CANVAS" or "IFRAME" or "OBJECT" => "inline",
 
                 // Common inline content.
                 "A" or "ABBR" or "ACRONYM" or "B" or "BDI" or "BDO" or "BIG" or

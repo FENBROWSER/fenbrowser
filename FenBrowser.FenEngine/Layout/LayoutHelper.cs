@@ -39,7 +39,8 @@ namespace FenBrowser.FenEngine.Layout
             string tag = (node as Element)?.TagName?.ToUpperInvariant() ?? "";
 
             if (style != null && style.Display == "none") return true;
-            if (style != null && style.Visibility == "hidden") return true;
+            // Note: visibility:hidden elements MUST still generate boxes and occupy space per CSS spec.
+            // They are simply not painted. The paint tree builder handles this correctly.
             if (tag == "HEAD" || 
                 tag == "SCRIPT" || 
                 tag == "STYLE" || 

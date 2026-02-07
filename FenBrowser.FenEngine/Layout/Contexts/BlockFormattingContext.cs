@@ -18,7 +18,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         private static BlockFormattingContext _instance;
         public static BlockFormattingContext Instance => _instance ??= new BlockFormattingContext();
 
-        public override void Layout(LayoutBox box, LayoutState state)
+        protected override void LayoutCore(LayoutBox box, LayoutState state)
         {
             var blockBox = box;
             
@@ -30,11 +30,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             ResolveWidth(blockBox, state);
 
             // 2. Prepare for Child Layout
+            // In the new pipeline (BoxTreeBuilder -> FormattingContext), ContentBox starts at (0,0)
+            // and SyncBoxes extends padding/border outward. Children are placed at (0, currentY)
+            // relative to the ContentBox origin. No padding+border offset is needed here because
+            // CollectBoxesAbsolute already accounts for the ContentBox position.
             float yOffset = 0;
-            // Add padding top + border top to start content cursor
-            yOffset += (float)blockBox.Geometry.Padding.Top + (float)blockBox.Geometry.Border.Top;
-            
-            float xOffset = (float)blockBox.Geometry.Padding.Left + (float)blockBox.Geometry.Border.Left;
+            float xOffset = 0;
             float contentWidth = blockBox.Geometry.ContentBox.Width;
             bool shrinkToFitPass =
                 (blockBox.ComputedStyle == null ||
@@ -229,8 +230,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             // 4. Resolve Height
-            // Auto height = content bottom + padding bottom + border bottom
-            float autoHeight = yOffset + (float)blockBox.Geometry.Padding.Bottom + (float)blockBox.Geometry.Border.Bottom;
+            // Auto height = padding_top + border_top + content_height + padding_bottom + border_bottom
+            // yOffset is now 0 + maxBottom (pure content height), so we add all padding+border
+            float autoHeight = (float)blockBox.Geometry.Padding.Top + (float)blockBox.Geometry.Border.Top
+                              + yOffset
+                              + (float)blockBox.Geometry.Padding.Bottom + (float)blockBox.Geometry.Border.Bottom;
             
             // ICB OVERRIDE: HTML and BODY must be at least viewport height
             // This is the Initial Containing Block invariant - required for CSS height chain
