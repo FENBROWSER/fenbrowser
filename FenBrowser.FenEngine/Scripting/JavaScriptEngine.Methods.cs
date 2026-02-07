@@ -73,7 +73,9 @@ namespace FenBrowser.FenEngine.Scripting
 
         private void PumpMicrotasks()
         {
-            while (true)
+            const int MaxDrainPerPump = 1000;
+            int drained = 0;
+            while (drained < MaxDrainPerPump)
             {
                 Action task = null;
                 lock (_microtaskLock)
@@ -85,13 +87,26 @@ namespace FenBrowser.FenEngine.Scripting
                         return;
                     }
                 }
-                try 
-                { 
-                    task?.Invoke(); 
-                } 
+                try
+                {
+                    task?.Invoke();
+                }
                 catch (Exception ex)
                 {
                     FenLogger.Error($"[JS] Microtask Error: {ex.Message}", LogCategory.JavaScript, ex);
+                }
+                drained++;
+            }
+            // Hit the limit — yield and reschedule to avoid starving the UI thread.
+            lock (_microtaskLock)
+            {
+                if (_microtasks.Count > 0)
+                {
+                    Task.Run(() => PumpMicrotasks());
+                }
+                else
+                {
+                    _microtaskPumpScheduled = false;
                 }
             }
         }
