@@ -26,6 +26,12 @@ namespace FenBrowser.Core.Dom.V2.Security
         /// </summary>
         public static bool LogBlocked { get; set; } = false;
 
+        /// <summary>
+        /// Set to true to clear inline event-handler values (e.g. onclick) while in strict mode.
+        /// Default is false for browser-compatibility with HTML content.
+        /// </summary>
+        public static bool BlockInlineEventHandlersInStrictMode { get; set; } = false;
+
         // --- Dangerous URL Schemes ---
 
         private static readonly HashSet<string> DangerousSchemes = new(StringComparer.OrdinalIgnoreCase)
@@ -142,8 +148,9 @@ namespace FenBrowser.Core.Dom.V2.Security
             if (string.IsNullOrEmpty(value))
                 return AttributeValidationResult.Valid();
 
-            // Check event handlers in strict mode
-            if (StrictMode && IsEventHandler(name))
+            // Inline event handlers are valid HTML and must be preserved for web compatibility.
+            // Hardened deployments can still opt into blocking via BlockInlineEventHandlersInStrictMode.
+            if (StrictMode && BlockInlineEventHandlersInStrictMode && IsEventHandler(name))
             {
                 if (LogBlocked)
                     System.Diagnostics.Debug.WriteLine($"[Security] Blocked event handler: {name}");

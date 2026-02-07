@@ -130,7 +130,15 @@ namespace FenBrowser.FenEngine.Core
             RegisterPrefix(TokenType.Dot, ParseEmptyExpression);       // Recovery for leading dots
             RegisterPrefix(TokenType.Lt, ParseEmptyExpression);        // Recovery for bare < (like in HTML)
             RegisterPrefix(TokenType.Plus, ParsePrefixExpression);     // +x (unary plus)
-            RegisterPrefix(TokenType.Asterisk, ParseEmptyExpression);  // Recovery for bare *\r\n            RegisterPrefix(TokenType.BitwiseNot, ParseBitwiseNotExpression);  // ~x
+            RegisterPrefix(TokenType.Asterisk, ParseEmptyExpression);  // Recovery for bare *
+            RegisterPrefix(TokenType.BitwiseNot, ParseBitwiseNotExpression);  // ~x
+            RegisterPrefix(TokenType.Ellipsis, ParseSpreadExpression); // ...expr (spread in arrays, objects, etc.)
+            RegisterPrefix(TokenType.Default, ParseDefaultExpression); // default (in export default or switch case recovery)
+            RegisterPrefix(TokenType.Catch, ParseEmptyExpression);     // Recovery for catch keyword in expression context
+            RegisterPrefix(TokenType.Case, ParseEmptyExpression);      // Recovery for case keyword in expression context
+            RegisterPrefix(TokenType.Assign, ParseEmptyExpression);    // Recovery for bare = in expression context
+            RegisterPrefix(TokenType.Throw, ParseThrowExpression);     // throw as expression (for throw new Error pattern)
+            RegisterPrefix(TokenType.Arrow, ParseEmptyExpression);     // Recovery for bare => in expression context
 
             // Register infix parsers
             RegisterInfix(TokenType.Plus, ParseInfixExpression);
@@ -749,50 +757,13 @@ namespace FenBrowser.FenEngine.Core
             }
 
             NextToken();
-
-            // TODO: Handle destructuring parameters
-            if (CurTokenIs(TokenType.Identifier))
-            {
-                var ident = new Identifier(_curToken, _curToken.Literal);
-                if (PeekTokenIs(TokenType.Assign))
-                {
-                    NextToken(); // =
-                    NextToken(); // value
-                    ident.DefaultValue = ParseExpression(Precedence.Lowest);
-                }
-                identifiers.Add(ident);
-            }
-            else if (CurTokenIs(TokenType.Ellipsis))
-            {
-                NextToken();
-                if (!CurTokenIs(TokenType.Identifier)) return null;
-                var ident = new Identifier(_curToken, _curToken.Literal) { IsRest = true };
-                identifiers.Add(ident);
-            }
+            ParseSingleParameter(identifiers);
 
             while (PeekTokenIs(TokenType.Comma))
             {
-                NextToken();
-                NextToken();
-                
-                if (CurTokenIs(TokenType.Identifier))
-                {
-                    var ident = new Identifier(_curToken, _curToken.Literal);
-                    if (PeekTokenIs(TokenType.Assign))
-                    {
-                        NextToken(); // =
-                        NextToken(); // value
-                        ident.DefaultValue = ParseExpression(Precedence.Lowest);
-                    }
-                    identifiers.Add(ident);
-                }
-                else if (CurTokenIs(TokenType.Ellipsis))
-                {
-                    NextToken();
-                    if (!CurTokenIs(TokenType.Identifier)) return null;
-                    var ident = new Identifier(_curToken, _curToken.Literal) { IsRest = true };
-                    identifiers.Add(ident);
-                }
+                NextToken(); // consume comma
+                NextToken(); // move to next parameter
+                ParseSingleParameter(identifiers);
             }
 
             if (!ExpectPeek(TokenType.RParen))
@@ -802,6 +773,109 @@ namespace FenBrowser.FenEngine.Core
 
             return identifiers;
         }
+
+        /// <summary>
+        /// Parse a single function parameter - handles identifiers, destructuring patterns, and rest params
+        /// </summary>
+        private void ParseSingleParameter(List<Identifier> identifiers)
+        {
+            // Handle rest parameter: ...args
+            if (CurTokenIs(TokenType.Ellipsis))
+            {
+                NextToken();
+                if (CurTokenIs(TokenType.Identifier))
+                {
+                    var ident = new Identifier(_curToken, _curToken.Literal) { IsRest = true };
+                    identifiers.Add(ident);
+                }
+                else if (CurTokenIs(TokenType.LBrace) || CurTokenIs(TokenType.LBracket))
+                {
+                    // Rest with destructuring: ...{a, b} or ...[x, y]
+                    var pattern = ParseDestructuringPattern();
+                    var ident = new Identifier(_curToken, $"__rest_{identifiers.Count}") { IsRest = true };
+                    identifiers.Add(ident);
+                }
+                return;
+            }
+
+            // Handle simple identifier: a, a = 1
+            if (CurTokenIs(TokenType.Identifier))
+            {
+                var ident = new Identifier(_curToken, _curToken.Literal);
+                if (PeekTokenIs(TokenType.Assign))
+                {
+                    NextToken(); // =
+                    NextToken(); // value
+                    ident.DefaultValue = ParseExpression(Precedence.Comma);
+                }
+                identifiers.Add(ident);
+                return;
+            }
+
+            // Handle object destructuring: {a, b, c = 1}
+            if (CurTokenIs(TokenType.LBrace))
+            {
+                var pattern = ParseDestructuringPattern();
+                var ident = new Identifier(_curToken, $"__destructure_{identifiers.Count}");
+                
+                // Check for default value: {a, b} = {}
+                if (PeekTokenIs(TokenType.Assign))
+                {
+                    NextToken(); // =
+                    NextToken(); // value
+                    ident.DefaultValue = ParseExpression(Precedence.Comma);
+                }
+                identifiers.Add(ident);
+                return;
+            }
+
+            // Handle array destructuring: [a, b, c = 1]
+            if (CurTokenIs(TokenType.LBracket))
+            {
+                var pattern = ParseDestructuringPattern();
+                var ident = new Identifier(_curToken, $"__array_destructure_{identifiers.Count}");
+                
+                // Check for default value: [a, b] = []
+                if (PeekTokenIs(TokenType.Assign))
+                {
+                    NextToken(); // =
+                    NextToken(); // value
+                    ident.DefaultValue = ParseExpression(Precedence.Comma);
+                }
+                identifiers.Add(ident);
+                return;
+            }
+
+            // Recovery: skip unexpected token
+            return;
+        }
+
+        /// <summary>
+        /// Parse a destructuring pattern (object or array)
+        /// This consumes tokens until the closing brace/bracket, handling nested patterns
+        /// </summary>
+        private Expression ParseDestructuringPattern()
+        {
+            int depth = 1;
+            var startToken = _curToken;
+            
+            // Track opening token type
+            TokenType openType = _curToken.Type;
+            TokenType closeType = openType == TokenType.LBrace ? TokenType.RBrace : TokenType.RBracket;
+            
+            // Consume until we close the pattern
+            while (depth > 0 && !CurTokenIs(TokenType.Eof))
+            {
+                NextToken();
+                
+                if (CurTokenIs(openType)) depth++;
+                else if (CurTokenIs(closeType)) depth--;
+            }
+            
+            // Return a placeholder - actual destructuring is handled at runtime
+            return new ObjectLiteral { Token = startToken };
+        }
+
 
         private Expression ParseCallExpression(Expression function)
         {
@@ -889,10 +963,41 @@ namespace FenBrowser.FenEngine.Core
             while (!PeekTokenIs(TokenType.RBrace))
             {
                 NextToken();
-                var key = "";
                 
+                // Handle spread in object: { ...obj }
+                if (CurTokenIs(TokenType.Ellipsis))
+                {
+                    NextToken(); // Move past '...'
+                    var spreadArg = ParseExpression(Precedence.Assignment);
+                    // Store spread as special key
+                    obj.Pairs[$"__spread_{obj.Pairs.Count}"] = new SpreadElement { Token = _curToken, Argument = spreadArg };
+                    
+                    if (PeekTokenIs(TokenType.Comma)) NextToken();
+                    continue;
+                }
+                
+                string key = "";
+                Expression computedKey = null;
+                bool isComputed = false;
+                
+                // Handle computed property name: { [expr]: value }
+                if (CurTokenIs(TokenType.LBracket))
+                {
+                    isComputed = true;
+                    NextToken(); // Move past '['
+                    computedKey = ParseExpression(Precedence.Lowest);
+                    if (!ExpectPeek(TokenType.RBracket)) return null;
+                    
+                    // Use a placeholder key for computed properties
+                    key = $"__computed_{obj.Pairs.Count}";
+                }
+                // Handle numeric key: { 0: value }
+                else if (CurTokenIs(TokenType.Number))
+                {
+                    key = _curToken.Literal;
+                }
                 // Key can be Identifier or String or Keyword
-                if (CurTokenIs(TokenType.Identifier) || CurTokenIs(TokenType.String) || 
+                else if (CurTokenIs(TokenType.Identifier) || CurTokenIs(TokenType.String) || 
                    (_curToken.Type >= TokenType.Function && _curToken.Type <= TokenType.As))
                 {
                     key = _curToken.Literal;
@@ -902,8 +1007,41 @@ namespace FenBrowser.FenEngine.Core
                     // Try to recover from unexpected tokens
                     if (CurTokenIs(TokenType.RBrace)) break;
                     // Skip unknown tokens and try again
-                     _errors.Add($"[Debug] ParseObjectLiteral skipped unexpected token as key: {_curToken.Type}");
+                    _errors.Add($"[Debug] ParseObjectLiteral skipped unexpected token as key: {_curToken.Type}");
                     continue;
+                }
+
+                // Check for getter/setter: { get foo() {}, set foo(v) {} }
+                if ((key == "get" || key == "set") && PeekTokenIs(TokenType.Identifier))
+                {
+                    var accessor = key;
+                    NextToken(); // Move to property name
+                    key = _curToken.Literal;
+                    
+                    if (PeekTokenIs(TokenType.LParen))
+                    {
+                        NextToken(); // Move to '('
+                        var methodParams = ParseFunctionParameters();
+                        
+                        if (PeekTokenIs(TokenType.LBrace))
+                        {
+                            NextToken(); // Move to '{'
+                            var methodBody = ParseBlockStatement();
+                            
+                            var methodFunc = new FunctionLiteral 
+                            { 
+                                Token = _curToken, 
+                                Parameters = methodParams, 
+                                Body = methodBody 
+                            };
+                            
+                            // Prefix key with getter/setter marker
+                            obj.Pairs[$"__{accessor}_{key}"] = methodFunc;
+                            
+                            if (PeekTokenIs(TokenType.Comma)) NextToken();
+                            continue;
+                        }
+                    }
                 }
 
                 // Check for method shorthand: { foo() { ... } }
@@ -935,8 +1073,9 @@ namespace FenBrowser.FenEngine.Core
                         if (PeekTokenIs(TokenType.Comma)) NextToken();
                         continue;
                     }
-                    // Not a method - might be a computed property or something else
-                    // For now, skip to recovery
+                    // Not a method - might be something else
+                    // Skip to recovery
+                    _errors.Add($"[Debug] ParseObjectLiteral: expected {{ after method params, got: {_peekToken.Type}");
                     return null;
                 }
 
@@ -980,18 +1119,80 @@ namespace FenBrowser.FenEngine.Core
             return obj;
         }
 
+
         private Expression ParseMemberExpression(Expression obj)
         {
             var exp = new MemberExpression { Token = _curToken, Object = obj };
 
-            if (!ExpectPeek(TokenType.Identifier))
+            NextToken(); // Move past '.'
+            
+            // In JavaScript, keywords can be used as property names after dot
+            // Examples: obj.default, obj.catch, obj.class, obj.function
+            if (CurTokenIs(TokenType.Identifier))
             {
+                exp.Property = _curToken.Literal;
+            }
+            else if (IsKeywordToken(_curToken.Type))
+            {
+                // Allow keywords as property names
+                exp.Property = _curToken.Literal;
+            }
+            else
+            {
+                _errors.Add($"expected property name, got {_curToken.Type} instead");
                 return null;
             }
 
-            exp.Property = _curToken.Literal;
             return exp;
         }
+
+        /// <summary>
+        /// Check if a token type is a JavaScript keyword that can be used as property name
+        /// </summary>
+        private bool IsKeywordToken(TokenType type)
+        {
+            return type == TokenType.Default ||
+                   type == TokenType.Catch ||
+                   type == TokenType.Class ||
+                   type == TokenType.Function ||
+                   type == TokenType.Async ||
+                   type == TokenType.Await ||
+                   type == TokenType.Return ||
+                   type == TokenType.Throw ||
+                   type == TokenType.New ||
+                   type == TokenType.Delete ||
+                   type == TokenType.Typeof ||
+                   type == TokenType.Void ||
+                   type == TokenType.In ||
+                   type == TokenType.Instanceof ||
+                   type == TokenType.This ||
+                   type == TokenType.If ||
+                   type == TokenType.Else ||
+                   type == TokenType.While ||
+                   type == TokenType.For ||
+                   type == TokenType.Do ||
+                   type == TokenType.Break ||
+                   type == TokenType.Continue ||
+                   type == TokenType.Switch ||
+                   type == TokenType.Case ||
+                   type == TokenType.Try ||
+                   type == TokenType.Finally ||
+                   type == TokenType.Import ||
+                   type == TokenType.Export ||
+                   type == TokenType.From ||
+                   type == TokenType.As ||
+                   type == TokenType.Const ||
+                   type == TokenType.Let ||
+                   type == TokenType.Var ||
+                   type == TokenType.Static ||
+                   type == TokenType.Extends ||
+
+                   type == TokenType.Yield ||
+                   type == TokenType.True ||
+                   type == TokenType.False ||
+                   type == TokenType.Null;
+        }
+
 
         private Expression ParseIndexExpression(Expression left)
         {
@@ -1083,14 +1284,28 @@ namespace FenBrowser.FenEngine.Core
             {
                 NextToken();
                 
-                // Optional catch parameter: catch(e)
+                // Optional catch parameter: catch(e) or catch({message}) or catch (no param - ES2019)
                 if (PeekTokenIs(TokenType.LParen))
                 {
-                    NextToken();
-                    if (!ExpectPeek(TokenType.Identifier)) return null;
-                    stmt.CatchParameter = new Identifier(_curToken, _curToken.Literal);
+                    NextToken(); // move to (
+                    NextToken(); // move past (
+                    
+                    // Handle destructuring: catch({message})
+                    if (CurTokenIs(TokenType.LBrace) || CurTokenIs(TokenType.LBracket))
+                    {
+                        // Skip destructuring pattern
+                        ParseDestructuringPattern();
+                        stmt.CatchParameter = new Identifier(_curToken, "__catch_destructure");
+                    }
+                    else if (CurTokenIs(TokenType.Identifier))
+                    {
+                        stmt.CatchParameter = new Identifier(_curToken, _curToken.Literal);
+                    }
+                    // else: empty catch parameter - unusual but allowed in some cases
+                    
                     if (!ExpectPeek(TokenType.RParen)) return null;
                 }
+                // else: catch without parameter (ES2019 optional catch binding)
 
                 if (!ExpectPeek(TokenType.LBrace)) return null;
                 stmt.CatchBlock = ParseBlockStatement();
@@ -1106,6 +1321,7 @@ namespace FenBrowser.FenEngine.Core
             return stmt;
         }
 
+
         private List<Expression> ParseExpressionList(TokenType end)
         {
             var list = new List<Expression>();
@@ -1113,11 +1329,25 @@ namespace FenBrowser.FenEngine.Core
             if (PeekTokenIs(end))
             {
                 NextToken();
-                /* [PERF-REMOVED] */
                 return list;
             }
 
             NextToken();
+            
+            // Handle leading elision: [,a] or [,,a]
+            while (CurTokenIs(TokenType.Comma))
+            {
+                list.Add(new UndefinedLiteral { Token = _curToken }); // Elided element
+                NextToken();
+            }
+            
+            // Check if we're now at the end after elisions
+            if (CurTokenIs(end))
+            {
+                return list;
+            }
+            
+            // Parse first actual element
             if (CurTokenIs(TokenType.Ellipsis))
             {
                 NextToken();
@@ -1125,17 +1355,29 @@ namespace FenBrowser.FenEngine.Core
             }
             else
             {
-                // Use Assignment precedence to avoid consuming commas as operators
                 var expr = ParseExpression(Precedence.Assignment);
                 list.Add(expr);
-                /* [PERF-REMOVED] */
             }
 
             while (PeekTokenIs(TokenType.Comma))
             {
-                NextToken();
-                NextToken();
-                /* [PERF-REMOVED] */
+                NextToken(); // consume comma
+                
+                // Handle elision: [a,,b] or trailing comma [a,]
+                if (PeekTokenIs(TokenType.Comma))
+                {
+                    // Elided element - insert undefined
+                    list.Add(new UndefinedLiteral { Token = _curToken });
+                    continue;
+                }
+                
+                if (PeekTokenIs(end))
+                {
+                    // Trailing comma - just break
+                    break;
+                }
+                
+                NextToken(); // move to next element
                 
                 if (CurTokenIs(TokenType.Ellipsis))
                 {
@@ -1144,22 +1386,19 @@ namespace FenBrowser.FenEngine.Core
                 }
                 else
                 {
-                    // Use Assignment precedence to avoid consuming commas as operators
                     var expr = ParseExpression(Precedence.Assignment);
                     list.Add(expr);
-                    /* [PERF-REMOVED] */
                 }
             }
 
-            /* [PERF-REMOVED] */
             if (!ExpectPeek(end))
             {
-                /* [PERF-REMOVED] */
                 return null;
             }
 
             return list;
         }
+
 
 
         private Statement ParseThrowStatement()
@@ -1801,6 +2040,45 @@ namespace FenBrowser.FenEngine.Core
             return new Identifier(token, "async");
         }
 
+        /// <summary>
+        /// Parse spread expression: ...expr
+        /// Used in arrays, function calls, and object literals
+        /// </summary>
+        private Expression ParseSpreadExpression()
+        {
+            var token = _curToken;
+            NextToken(); // Move past '...'
+            
+            var argument = ParseExpression(Precedence.Assignment);
+            return new SpreadElement { Token = token, Argument = argument };
+        }
+
+        /// <summary>
+        /// Parse default keyword in expression context
+        /// Primarily for 'export default' or recovery scenarios
+        /// </summary>
+        private Expression ParseDefaultExpression()
+        {
+            // In 'export default expr', default acts like a prefix
+            // Just treat as identifier for recovery
+            return new Identifier(_curToken, "default");
+        }
+
+        /// <summary>
+        /// Parse throw as an expression (for arrow function throw patterns)
+        /// e.g., const f = () => throw new Error()
+        /// </summary>
+        private Expression ParseThrowExpression()
+        {
+            var token = _curToken;
+            NextToken(); // Move past 'throw'
+            var argument = ParseExpression(Precedence.Lowest);
+            // Return as a special expression - the interpreter handles it
+            return new ThrowExpression { Token = token, Value = argument };
+        }
+
+
+
         // Parse for-in: for (x in obj) { ... }
         private Statement ParseForInStatement(Token forToken, Token varToken)
         {
@@ -1992,46 +2270,72 @@ namespace FenBrowser.FenEngine.Core
                 return parameters;
             }
 
-            // Single identifier: x => x * 2
-            if (left is Identifier id)
-            {
-                parameters.Add(id);
-            }
-            // Grouped expression parsed as comma-separated: (a, b)
-            else if (left is InfixExpression infix && infix.Operator == ",")
-            {
-                FlattenCommaExpression(infix, parameters);
-            }
-            // Just a grouped single param: (x)
-            // This comes as just the inner expression
-            else
-            {
-                // Try to extract if it's some other form
-                // For safety, we ignore malformed cases
-            }
-
+            ExtractSingleParam(left, parameters);
             return parameters;
         }
 
-        // Flatten comma-separated expressions into parameter list
-        private void FlattenCommaExpression(InfixExpression infix, List<Identifier> parameters)
+        /// <summary>
+        /// Extract a single parameter from an expression - handles identifiers, destructuring, defaults
+        /// </summary>
+        private void ExtractSingleParam(Expression expr, List<Identifier> parameters)
         {
-            // Left side
-            if (infix.Left is InfixExpression leftInfix && leftInfix.Operator == ",")
+            if (expr == null) return;
+
+            // Simple identifier: x => x * 2
+            if (expr is Identifier id)
             {
-                FlattenCommaExpression(leftInfix, parameters);
-            }
-            else if (infix.Left is Identifier leftId)
-            {
-                parameters.Add(leftId);
+                parameters.Add(id);
+                return;
             }
 
-            // Right side
-            if (infix.Right is Identifier rightId)
+            // Comma-separated: (a, b) 
+            if (expr is InfixExpression infix && infix.Operator == ",")
             {
-                parameters.Add(rightId);
+                ExtractSingleParam(infix.Left, parameters);
+                ExtractSingleParam(infix.Right, parameters);
+                return;
+            }
+
+            // Assignment expression for default value: (a = 1)
+            if (expr is AssignmentExpression assign && assign.Left is Identifier assignId)
+            {
+                assignId.DefaultValue = assign.Right;
+                parameters.Add(assignId);
+                return;
+            }
+
+            // Object destructuring: ({a, b}) - create placeholder parameter
+            if (expr is ObjectLiteral objLit)
+            {
+                var placeholder = new Identifier(objLit.Token, $"__destructure_{parameters.Count}");
+                parameters.Add(placeholder);
+                return;
+            }
+
+            // Array destructuring: ([a, b]) - create placeholder parameter
+            if (expr is ArrayLiteral arrLit)
+            {
+                var placeholder = new Identifier(arrLit.Token, $"__array_destructure_{parameters.Count}");
+                parameters.Add(placeholder);
+                return;
+            }
+
+            // Spread element: (...args)
+            if (expr is SpreadElement spread && spread.Argument is Identifier spreadId)
+            {
+                spreadId.IsRest = true;
+                parameters.Add(spreadId);
+                return;
+            }
+
+            // For unrecognized patterns, create a placeholder to allow parsing to continue
+            if (expr is Expression)
+            {
+                var placeholder = new Identifier(expr.Token, $"__unknown_{parameters.Count}");
+                parameters.Add(placeholder);
             }
         }
+
 
         // Parse compound assignment: x += 1
         private Expression ParseCompoundAssignment(Expression left)

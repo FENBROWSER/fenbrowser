@@ -897,6 +897,319 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(new FenBrowser.FenEngine.DOM.CustomEvent(type, bubbles, cancelable, detail));
             })));
 
+            // ─── performance object ───
+            var perfStartTime = System.Diagnostics.Stopwatch.GetTimestamp();
+            var perfFreq = (double)System.Diagnostics.Stopwatch.Frequency;
+            var performanceObj = new FenObject();
+            performanceObj.Set("now", FenValue.FromFunction(new FenFunction("now", (args, thisVal) => {
+                double elapsed = (System.Diagnostics.Stopwatch.GetTimestamp() - perfStartTime) / perfFreq * 1000.0;
+                return FenValue.FromNumber(Math.Round(elapsed, 2));
+            })));
+            performanceObj.Set("timeOrigin", FenValue.FromNumber(
+                (DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds));
+            performanceObj.Set("getEntries", FenValue.FromFunction(new FenFunction("getEntries", (args, thisVal) => {
+                var arr = new FenObject();
+                arr.Set("length", FenValue.FromNumber(0));
+                return FenValue.FromObject(arr);
+            })));
+            performanceObj.Set("getEntriesByType", FenValue.FromFunction(new FenFunction("getEntriesByType", (args, thisVal) => {
+                var arr = new FenObject();
+                arr.Set("length", FenValue.FromNumber(0));
+                return FenValue.FromObject(arr);
+            })));
+            performanceObj.Set("getEntriesByName", FenValue.FromFunction(new FenFunction("getEntriesByName", (args, thisVal) => {
+                var arr = new FenObject();
+                arr.Set("length", FenValue.FromNumber(0));
+                return FenValue.FromObject(arr);
+            })));
+            performanceObj.Set("mark", FenValue.FromFunction(new FenFunction("mark", (args, thisVal) => FenValue.Undefined)));
+            performanceObj.Set("measure", FenValue.FromFunction(new FenFunction("measure", (args, thisVal) => FenValue.Undefined)));
+            performanceObj.Set("clearMarks", FenValue.FromFunction(new FenFunction("clearMarks", (args, thisVal) => FenValue.Undefined)));
+            performanceObj.Set("clearMeasures", FenValue.FromFunction(new FenFunction("clearMeasures", (args, thisVal) => FenValue.Undefined)));
+            SetGlobal("performance", FenValue.FromObject(performanceObj));
+            window.Set("performance", FenValue.FromObject(performanceObj));
+
+            // ─── TextEncoder ───
+            SetGlobal("TextEncoder", FenValue.FromFunction(new FenFunction("TextEncoder", (args, thisVal) => {
+                var encoder = new FenObject();
+                encoder.Set("encoding", FenValue.FromString("utf-8"));
+                encoder.Set("encode", FenValue.FromFunction(new FenFunction("encode", (encArgs, encThis) => {
+                    var str = encArgs.Length > 0 ? encArgs[0].ToString() : "";
+                    var bytes = Encoding.UTF8.GetBytes(str);
+                    var arr = new FenObject();
+                    for (int bi = 0; bi < bytes.Length; bi++)
+                        arr.Set(bi.ToString(), FenValue.FromNumber(bytes[bi]));
+                    arr.Set("length", FenValue.FromNumber(bytes.Length));
+                    arr.Set("byteLength", FenValue.FromNumber(bytes.Length));
+                    arr.NativeObject = bytes; // Store raw bytes for interop
+                    return FenValue.FromObject(arr);
+                })));
+                encoder.Set("encodeInto", FenValue.FromFunction(new FenFunction("encodeInto", (encArgs, encThis) => {
+                    var result = new FenObject();
+                    result.Set("read", FenValue.FromNumber(0));
+                    result.Set("written", FenValue.FromNumber(0));
+                    return FenValue.FromObject(result);
+                })));
+                return FenValue.FromObject(encoder);
+            })));
+
+            // ─── TextDecoder ───
+            SetGlobal("TextDecoder", FenValue.FromFunction(new FenFunction("TextDecoder", (args, thisVal) => {
+                var label = args.Length > 0 ? args[0].ToString() : "utf-8";
+                var decoder = new FenObject();
+                decoder.Set("encoding", FenValue.FromString(label));
+                decoder.Set("fatal", FenValue.FromBoolean(false));
+                decoder.Set("ignoreBOM", FenValue.FromBoolean(false));
+                decoder.Set("decode", FenValue.FromFunction(new FenFunction("decode", (decArgs, decThis) => {
+                    if (decArgs.Length == 0) return FenValue.FromString("");
+                    var bufVal = decArgs[0];
+                    if (bufVal.IsObject)
+                    {
+                        var obj = bufVal.AsObject() as FenObject;
+                        if (obj?.NativeObject is byte[] rawBytes)
+                            return FenValue.FromString(Encoding.UTF8.GetString(rawBytes));
+                        // Array-like: read indexed properties
+                        var lenVal = obj?.Get("length") ?? obj?.Get("byteLength");
+                        if (lenVal.HasValue && lenVal.Value.IsNumber)
+                        {
+                            int len = (int)lenVal.Value.ToNumber();
+                            var bytes = new byte[len];
+                            for (int bi = 0; bi < len; bi++)
+                                bytes[bi] = (byte)obj.Get(bi.ToString()).ToNumber();
+                            return FenValue.FromString(Encoding.UTF8.GetString(bytes));
+                        }
+                    }
+                    return FenValue.FromString(bufVal.ToString());
+                })));
+                return FenValue.FromObject(decoder);
+            })));
+
+            // ─── AbortController / AbortSignal ───
+            SetGlobal("AbortController", FenValue.FromFunction(new FenFunction("AbortController", (args, thisVal) => {
+                var controller = new FenObject();
+                var signal = new FenObject();
+                signal.Set("aborted", FenValue.FromBoolean(false));
+                signal.Set("reason", FenValue.Undefined);
+                var signalListeners = new List<FenValue>();
+                signal.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (sigArgs, sigThis) => {
+                    if (sigArgs.Length >= 2) signalListeners.Add(sigArgs[1]);
+                    return FenValue.Undefined;
+                })));
+                signal.Set("removeEventListener", FenValue.FromFunction(new FenFunction("removeEventListener", (sigArgs, sigThis) => {
+                    return FenValue.Undefined;
+                })));
+                signal.Set("throwIfAborted", FenValue.FromFunction(new FenFunction("throwIfAborted", (sigArgs, sigThis) => {
+                    if (signal.Get("aborted").ToBoolean())
+                        return FenValue.FromError("AbortError: signal is aborted");
+                    return FenValue.Undefined;
+                })));
+
+                controller.Set("signal", FenValue.FromObject(signal));
+                controller.Set("abort", FenValue.FromFunction(new FenFunction("abort", (abortArgs, abortThis) => {
+                    signal.Set("aborted", FenValue.FromBoolean(true));
+                    var reason = abortArgs.Length > 0 ? abortArgs[0] : FenValue.FromString("AbortError");
+                    signal.Set("reason", reason);
+                    foreach (var listener in signalListeners)
+                    {
+                        if (listener.IsFunction)
+                            listener.AsFunction()?.Invoke(new FenValue[] { reason }, _context);
+                    }
+                    return FenValue.Undefined;
+                })));
+
+                return FenValue.FromObject(controller);
+            })));
+
+            // ─── WebSocket stub ───
+            SetGlobal("WebSocket", FenValue.FromFunction(new FenFunction("WebSocket", (args, thisVal) => {
+                var url = args.Length > 0 ? args[0].ToString() : "";
+                var ws = new FenObject();
+                ws.Set("url", FenValue.FromString(url));
+                ws.Set("readyState", FenValue.FromNumber(0)); // CONNECTING
+                ws.Set("CONNECTING", FenValue.FromNumber(0));
+                ws.Set("OPEN", FenValue.FromNumber(1));
+                ws.Set("CLOSING", FenValue.FromNumber(2));
+                ws.Set("CLOSED", FenValue.FromNumber(3));
+                ws.Set("bufferedAmount", FenValue.FromNumber(0));
+                ws.Set("extensions", FenValue.FromString(""));
+                ws.Set("protocol", FenValue.FromString(""));
+                ws.Set("binaryType", FenValue.FromString("blob"));
+                ws.Set("onopen", FenValue.Null);
+                ws.Set("onclose", FenValue.Null);
+                ws.Set("onerror", FenValue.Null);
+                ws.Set("onmessage", FenValue.Null);
+                ws.Set("send", FenValue.FromFunction(new FenFunction("send", (sendArgs, sendThis) => FenValue.Undefined)));
+                ws.Set("close", FenValue.FromFunction(new FenFunction("close", (closeArgs, closeThis) => {
+                    ws.Set("readyState", FenValue.FromNumber(3));
+                    return FenValue.Undefined;
+                })));
+                ws.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (eArgs, eThis) => FenValue.Undefined)));
+                ws.Set("removeEventListener", FenValue.FromFunction(new FenFunction("removeEventListener", (eArgs, eThis) => FenValue.Undefined)));
+                return FenValue.FromObject(ws);
+            })));
+
+            // ─── structuredClone ───
+            SetGlobal("structuredClone", FenValue.FromFunction(new FenFunction("structuredClone", (args, thisVal) => {
+                if (args.Length == 0) return FenValue.Undefined;
+                // Shallow clone for objects, pass-through for primitives
+                var val = args[0];
+                if (val.IsObject && val.AsObject() is FenObject srcObj)
+                {
+                    var clone = new FenObject();
+                    foreach (var key in srcObj.Keys())
+                        clone.Set(key, srcObj.Get(key));
+                    return FenValue.FromObject(clone);
+                }
+                return val;
+            })));
+
+            // crypto and Intl are registered later in InitializeBuiltins (fuller implementations)
+
+            // ─── getComputedStyle ───
+            var getComputedStyleFn = FenValue.FromFunction(new FenFunction("getComputedStyle", (args, thisVal) => {
+                if (args.Length == 0) return FenValue.FromObject(new FenObject());
+                if (args[0].IsObject)
+                {
+                    var obj = args[0].AsObject();
+                    // Get the native Element from either ElementWrapper or FenObject
+                    FenBrowser.Core.Dom.V2.Element nativeEl = null;
+                    if (obj is FenBrowser.FenEngine.DOM.ElementWrapper ew)
+                        nativeEl = ew.Element;
+                    else if (obj is FenObject fenObj)
+                        nativeEl = fenObj.NativeObject as FenBrowser.Core.Dom.V2.Element;
+
+                    if (nativeEl == null)
+                    {
+                        // Fallback: try .style property
+                        var styleVal = obj?.Get("style");
+                        if (styleVal.HasValue && styleVal.Value.IsObject)
+                            return styleVal.Value;
+                    }
+                    else
+                    {
+                        var computedStyle = FenBrowser.Core.Css.NodeStyleExtensions.GetComputedStyle(nativeEl);
+                        if (computedStyle != null)
+                        {
+                            var csObj = new FenObject();
+                            // Expose as a proxy-like object with getPropertyValue
+                            csObj.Set("getPropertyValue", FenValue.FromFunction(new FenFunction("getPropertyValue", (gpArgs, gpThis) => {
+                                if (gpArgs.Length == 0) return FenValue.FromString("");
+                                var prop = gpArgs[0].ToString();
+                                var val = computedStyle.Map?.ContainsKey(prop) == true ? computedStyle.Map[prop] : "";
+                                return FenValue.FromString(val ?? "");
+                            })));
+                            // Common properties
+                            if (computedStyle.Map != null)
+                            {
+                                foreach (var kvp in computedStyle.Map)
+                                    csObj.Set(kvp.Key, FenValue.FromString(kvp.Value ?? ""));
+                            }
+                            csObj.Set("display", FenValue.FromString(computedStyle.Display ?? "block"));
+                            csObj.Set("visibility", FenValue.FromString(computedStyle.Visibility ?? "visible"));
+                            csObj.Set("position", FenValue.FromString(computedStyle.Position ?? "static"));
+                            return FenValue.FromObject(csObj);
+                        }
+                    }
+                }
+                return FenValue.FromObject(new FenObject());
+            }));
+            SetGlobal("getComputedStyle", getComputedStyleFn);
+            window.Set("getComputedStyle", getComputedStyleFn);
+
+            // ─── matchMedia ───
+            var matchMediaFn = FenValue.FromFunction(new FenFunction("matchMedia", (args, thisVal) => {
+                var query = args.Length > 0 ? args[0].ToString() : "";
+                var mql = new FenObject();
+                // Evaluate common media queries
+                bool matches = false;
+                if (query.Contains("prefers-color-scheme: dark")) matches = false; // light mode
+                else if (query.Contains("prefers-color-scheme: light")) matches = true;
+                else if (query.Contains("prefers-reduced-motion")) matches = false;
+                else if (query.Contains("min-width"))
+                {
+                    // Parse min-width value and compare against 1920
+                    var match = System.Text.RegularExpressions.Regex.Match(query, @"min-width:\s*(\d+)");
+                    if (match.Success && int.TryParse(match.Groups[1].Value, out int minW))
+                        matches = 1920 >= minW;
+                }
+                else if (query.Contains("max-width"))
+                {
+                    var match = System.Text.RegularExpressions.Regex.Match(query, @"max-width:\s*(\d+)");
+                    if (match.Success && int.TryParse(match.Groups[1].Value, out int maxW))
+                        matches = 1920 <= maxW;
+                }
+                else if (query.Contains("(pointer: fine)")) matches = true;
+                else if (query.Contains("(hover: hover)")) matches = true;
+                else if (query.Contains("screen")) matches = true;
+
+                mql.Set("matches", FenValue.FromBoolean(matches));
+                mql.Set("media", FenValue.FromString(query));
+                var mqlListeners = new List<FenValue>();
+                mql.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (eArgs, eThis) => {
+                    if (eArgs.Length >= 2) mqlListeners.Add(eArgs[1]);
+                    return FenValue.Undefined;
+                })));
+                mql.Set("removeEventListener", FenValue.FromFunction(new FenFunction("removeEventListener", (eArgs, eThis) => FenValue.Undefined)));
+                mql.Set("addListener", FenValue.FromFunction(new FenFunction("addListener", (eArgs, eThis) => {
+                    if (eArgs.Length >= 1 && eArgs[0].IsFunction) mqlListeners.Add(eArgs[0]);
+                    return FenValue.Undefined;
+                })));
+                mql.Set("removeListener", FenValue.FromFunction(new FenFunction("removeListener", (eArgs, eThis) => FenValue.Undefined)));
+                return FenValue.FromObject(mql);
+            }));
+            SetGlobal("matchMedia", matchMediaFn);
+            window.Set("matchMedia", matchMediaFn);
+
+            // ─── requestIdleCallback / cancelIdleCallback ───
+            SetGlobal("requestIdleCallback", FenValue.FromFunction(new FenFunction("requestIdleCallback", (args, thisVal) => {
+                if (args.Length > 0 && args[0].IsFunction)
+                {
+                    var cb = args[0].AsFunction();
+                    // Execute via event loop task (idle = next available slot)
+                    EventLoop.EventLoopCoordinator.Instance.ScheduleTask(() => {
+                        var deadline = new FenObject();
+                        deadline.Set("didTimeout", FenValue.FromBoolean(false));
+                        deadline.Set("timeRemaining", FenValue.FromFunction(new FenFunction("timeRemaining", (a, t) => FenValue.FromNumber(50))));
+                        cb?.Invoke(new FenValue[] { FenValue.FromObject(deadline) }, _context);
+                    }, EventLoop.TaskSource.Other, "requestIdleCallback");
+                    return FenValue.FromNumber(1);
+                }
+                return FenValue.FromNumber(0);
+            })));
+            SetGlobal("cancelIdleCallback", FenValue.FromFunction(new FenFunction("cancelIdleCallback", (args, thisVal) => FenValue.Undefined)));
+            window.Set("requestIdleCallback", (FenValue)GetGlobal("requestIdleCallback"));
+            window.Set("cancelIdleCallback", (FenValue)GetGlobal("cancelIdleCallback"));
+
+            // ─── queueMicrotask at global scope ───
+            SetGlobal("queueMicrotask", FenValue.FromFunction(new FenFunction("queueMicrotask", (args, thisVal) => {
+                if (args.Length > 0 && args[0].IsFunction)
+                {
+                    var cb = args[0].AsFunction();
+                    EventLoop.EventLoopCoordinator.Instance.ScheduleMicrotask(() => {
+                        cb?.Invoke(Array.Empty<FenValue>(), _context);
+                    });
+                }
+                return FenValue.Undefined;
+            })));
+
+            // ─── btoa / atob ───
+            SetGlobal("btoa", FenValue.FromFunction(new FenFunction("btoa", (args, thisVal) => {
+                if (args.Length == 0) return FenValue.FromString("");
+                try {
+                    var bytes = Encoding.Latin1.GetBytes(args[0].ToString());
+                    return FenValue.FromString(Convert.ToBase64String(bytes));
+                } catch { return FenValue.FromString(""); }
+            })));
+            SetGlobal("atob", FenValue.FromFunction(new FenFunction("atob", (args, thisVal) => {
+                if (args.Length == 0) return FenValue.FromString("");
+                try {
+                    var bytes = Convert.FromBase64String(args[0].ToString());
+                    return FenValue.FromString(Encoding.Latin1.GetString(bytes));
+                } catch { return FenValue.FromString(""); }
+            })));
+            window.Set("btoa", (FenValue)GetGlobal("btoa"));
+            window.Set("atob", (FenValue)GetGlobal("atob"));
+
             // Custom Elements Registry (Web Components)
             var customElementsRegistry = new FenBrowser.FenEngine.DOM.CustomElementRegistry();
             SetGlobal("customElements", FenValue.FromObject(customElementsRegistry.ToFenObject()));
@@ -2257,31 +2570,59 @@ namespace FenBrowser.FenEngine.Core
                 else if (args.Length == 1)
                 {
                     var arg = args[0];
-                    if (arg.IsNumber) dt = new DateTime(1970, 1, 1).AddMilliseconds(arg.ToNumber());
-                    else if (DateTime.TryParse(arg.ToString(), out var parsed)) dt = parsed;
+                    if (arg.IsNumber) dt = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMilliseconds(arg.ToNumber());
+                    else if (DateTime.TryParse(arg.ToString(), System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var parsed)) dt = parsed;
                     else dt = DateTime.Now;
                 }
-                else dt = DateTime.Now; // Simplified for multiple args
+                else
+                {
+                    // Multi-arg: new Date(year, monthIndex, day?, hours?, minutes?, seconds?, ms?)
+                    int year = (int)args[0].ToNumber();
+                    int month = (int)args[1].ToNumber() + 1; // JS months are 0-indexed
+                    int day = args.Length > 2 ? (int)args[2].ToNumber() : 1;
+                    int hours = args.Length > 3 ? (int)args[3].ToNumber() : 0;
+                    int minutes = args.Length > 4 ? (int)args[4].ToNumber() : 0;
+                    int seconds = args.Length > 5 ? (int)args[5].ToNumber() : 0;
+                    int ms = args.Length > 6 ? (int)args[6].ToNumber() : 0;
+                    // JS spec: years 0-99 map to 1900-1999
+                    if (year >= 0 && year <= 99) year += 1900;
+                    try { dt = new DateTime(year, month, day, hours, minutes, seconds, ms, DateTimeKind.Local); }
+                    catch { dt = DateTime.Now; }
+                }
 
                 var obj = new FenObject();
                 obj.NativeObject = dt;
                 obj.SetPrototype(dateProto);
                 return FenValue.FromObject(obj);
             });
-            
-            // Create Date as a callable object with static methods
-            var dateObj = new FenObject();
-            dateObj.NativeObject = dateCtor; // Store the constructor as callable
-            dateObj.Set("now", FenValue.FromFunction(new FenFunction("now", (args, thisVal) => 
-                FenValue.FromNumber((DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalMilliseconds))));
-            dateObj.Set("parse", FenValue.FromFunction(new FenFunction("parse", (args, thisVal) => {
-                if (args.Length > 0 && DateTime.TryParse(args[0].ToString(), out var d))
-                    return FenValue.FromNumber((d.ToUniversalTime() - new DateTime(1970, 1, 1)).TotalMilliseconds);
+
+            // Register Date as a FUNCTION (not object) so `new Date()` works via EvalNewExpression.
+            // FenFunction extends FenObject, so static methods can be set directly on it.
+            dateCtor.Prototype = dateProto;
+            dateCtor.Set("now", FenValue.FromFunction(new FenFunction("now", (args, thisVal) =>
+                FenValue.FromNumber((DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds))));
+            dateCtor.Set("parse", FenValue.FromFunction(new FenFunction("parse", (args, thisVal) => {
+                if (args.Length > 0 && DateTime.TryParse(args[0].ToString(), System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var d))
+                    return FenValue.FromNumber((d.ToUniversalTime() - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds);
                 return FenValue.FromNumber(double.NaN);
             })));
+            dateCtor.Set("UTC", FenValue.FromFunction(new FenFunction("UTC", (args, thisVal) => {
+                if (args.Length < 2) return FenValue.FromNumber(double.NaN);
+                int year = (int)args[0].ToNumber();
+                int month = (int)args[1].ToNumber() + 1;
+                int day = args.Length > 2 ? (int)args[2].ToNumber() : 1;
+                int hours = args.Length > 3 ? (int)args[3].ToNumber() : 0;
+                int minutes = args.Length > 4 ? (int)args[4].ToNumber() : 0;
+                int seconds = args.Length > 5 ? (int)args[5].ToNumber() : 0;
+                int ms = args.Length > 6 ? (int)args[6].ToNumber() : 0;
+                if (year >= 0 && year <= 99) year += 1900;
+                try {
+                    var dt = new DateTime(year, month, day, hours, minutes, seconds, ms, DateTimeKind.Utc);
+                    return FenValue.FromNumber((dt - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds);
+                } catch { return FenValue.FromNumber(double.NaN); }
+            })));
 
-            /* [PERF-REMOVED] */
-            SetGlobal("Date", FenValue.FromObject(dateObj));
+            SetGlobal("Date", FenValue.FromFunction(dateCtor));
 
             // JSON object
             var json = new FenObject();
@@ -4286,6 +4627,10 @@ namespace FenBrowser.FenEngine.Core
         /// </summary>
         public IValue ExecuteSimple(string code, string url = "script")
         {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            string logPath = @"C:\Users\udayk\Videos\FENBROWSER\logs\script_execution.log";
+            int codeLen = code?.Length ?? 0;
+            
             try
             {
                 // Reset execution timer for each new script execution
@@ -4303,7 +4648,19 @@ namespace FenBrowser.FenEngine.Core
 
                 if (parser.Errors.Count > 0)
                 {
-                    return FenValue.FromError(string.Join("\n", parser.Errors));
+                    sw.Stop();
+                    var errMsg = string.Join("\n", parser.Errors);
+                    try 
+                    { 
+                        System.IO.File.AppendAllText(logPath, 
+                            $"[PARSE-ERROR] {url} (len={codeLen}, {sw.ElapsedMilliseconds}ms)\n" +
+                            $"  Errors ({parser.Errors.Count}):\n  " + 
+                            string.Join("\n  ", parser.Errors.Take(10)) + 
+                            (parser.Errors.Count > 10 ? $"\n  ... and {parser.Errors.Count - 10} more" : "") + 
+                            "\n\n"); 
+                    } 
+                    catch { }
+                    return FenValue.FromError(errMsg);
                 }
                 
                 var interpreter = new Interpreter();
@@ -4314,14 +4671,35 @@ namespace FenBrowser.FenEngine.Core
                 
                 var result = interpreter.Eval(program, _globalEnv, _context);
 
+                sw.Stop();
+                try 
+                { 
+                    System.IO.File.AppendAllText(logPath, 
+                        $"[SUCCESS] {url} (len={codeLen}, {sw.ElapsedMilliseconds}ms)\n"); 
+                } 
+                catch { }
+                
                 return result ;
             }
             catch (Exception ex)
             {
+                sw.Stop();
+                var fullError = $"{ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}";
+                try 
+                { 
+                    System.IO.File.AppendAllText(logPath, 
+                        $"[RUNTIME-ERROR] {url} (len={codeLen}, {sw.ElapsedMilliseconds}ms)\n" +
+                        $"  Exception: {ex.GetType().Name}\n" +
+                        $"  Message: {ex.Message}\n" +
+                        $"  Stack:\n  " + ex.StackTrace?.Replace("\n", "\n  ") + "\n\n"); 
+                } 
+                catch { }
+                
                 FenLogger.Error($"[FenRuntime] Runtime error: {ex.Message}", LogCategory.JavaScript, ex);
                 return FenValue.FromError($"Runtime error: {ex.Message}");
             }
         }
+
 
         #region Helper Methods for Browser APIs
 

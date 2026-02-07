@@ -214,7 +214,7 @@ namespace FenBrowser.Core.Dom.V2
         /// Sets the attribute without security sanitization.
         /// WARNING: Only use this for trusted content (e.g., parsed from HTML).
         /// </summary>
-        internal void SetAttributeUnsafe(string qualifiedName, string value)
+        public void SetAttributeUnsafe(string qualifiedName, string value)
         {
             if (string.IsNullOrEmpty(qualifiedName))
                 return;
