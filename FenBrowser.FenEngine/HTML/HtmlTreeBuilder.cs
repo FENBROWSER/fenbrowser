@@ -515,7 +515,7 @@ namespace FenBrowser.FenEngine.HTML
                     var newElement = new Element(node.TagName, _doc);
                     foreach (var attr in node.Attributes)
                     {
-                        newElement.SetAttribute(attr.Name, attr.Value);
+                        newElement.SetAttributeUnsafe(attr.Name, attr.Value);
                     }
                     
                     // Replace in formatting list
@@ -547,7 +547,7 @@ namespace FenBrowser.FenEngine.HTML
                 var newFormattingElement = new Element(formattingElement.TagName, _doc);
                 foreach (var attr in formattingElement.Attributes)
                 {
-                    newFormattingElement.SetAttribute(attr.Name, attr.Value);
+                    newFormattingElement.SetAttributeUnsafe(attr.Name, attr.Value);
                 }
                 
                 // Step 17: Move all children of furthest block to new element
@@ -659,7 +659,7 @@ namespace FenBrowser.FenEngine.HTML
             var newElement = new Element(entry.TagName, _doc);
             foreach (var attr in entry.Attributes)
             {
-                newElement.SetAttribute(attr.Name, attr.Value);
+                newElement.SetAttributeUnsafe(attr.Name, attr.Value);
             }
             
             // Step 7: Append new element to current node, push to stack
@@ -696,7 +696,7 @@ namespace FenBrowser.FenEngine.HTML
             var el = new Element(token.TagName, _doc);
             foreach (var kv in token.Attributes)
             {
-                el.SetAttribute(kv.Key, kv.Value);
+                el.SetAttributeUnsafe(kv.Key, kv.Value);
             }
             if (CurrentNode != null) CurrentNode.AppendChild(el);
             else _doc.AppendChild(el);

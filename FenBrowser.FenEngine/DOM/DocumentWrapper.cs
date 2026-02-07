@@ -139,6 +139,126 @@ namespace FenBrowser.FenEngine.DOM
                     })));
                     return FenValue.FromObject(impl);
 
+                case "createtreewalker":
+                    return FenValue.FromFunction(new FenFunction("createTreeWalker", (args, _) => {
+                        // TreeWalker: walk DOM nodes with an optional filter
+                        var rootNode = args.Length > 0 && args[0].IsObject
+                            ? (Node)(args[0].AsObject() as ElementWrapper)?.Element ?? _root
+                            : _root;
+                        int whatToShow = args.Length > 1 ? (int)args[1].ToNumber() : 0xFFFFFF; // NodeFilter.SHOW_ALL
+                        var tw = new FenObject();
+                        Node currentNode = rootNode;
+                        tw.Set("currentNode", FenValue.FromObject(new ElementWrapper(currentNode as Element ?? FindElementByTag(rootNode, "html"), _context)));
+                        tw.Set("root", args.Length > 0 ? args[0] : FenValue.FromObject(new ElementWrapper(rootNode as Element, _context)));
+                        tw.Set("whatToShow", FenValue.FromNumber(whatToShow));
+                        var allNodes = new List<Node>();
+                        CollectNodes(rootNode, allNodes);
+                        int idx = 0;
+                        tw.Set("nextNode", FenValue.FromFunction(new FenFunction("nextNode", (nArgs, nThis) => {
+                            idx++;
+                            if (idx < allNodes.Count)
+                            {
+                                currentNode = allNodes[idx];
+                                if (currentNode is Element el)
+                                    return FenValue.FromObject(new ElementWrapper(el, _context));
+                                // Text node
+                                var textObj = new FenObject();
+                                textObj.Set("nodeType", FenValue.FromNumber(3));
+                                textObj.Set("textContent", FenValue.FromString(currentNode.TextContent ?? ""));
+                                textObj.Set("data", FenValue.FromString(currentNode.TextContent ?? ""));
+                                return FenValue.FromObject(textObj);
+                            }
+                            return FenValue.Null;
+                        })));
+                        tw.Set("previousNode", FenValue.FromFunction(new FenFunction("previousNode", (nArgs, nThis) => {
+                            idx--;
+                            if (idx >= 0 && idx < allNodes.Count)
+                            {
+                                currentNode = allNodes[idx];
+                                if (currentNode is Element el)
+                                    return FenValue.FromObject(new ElementWrapper(el, _context));
+                                return FenValue.Null;
+                            }
+                            return FenValue.Null;
+                        })));
+                        tw.Set("firstChild", FenValue.FromFunction(new FenFunction("firstChild", (nArgs, nThis) => {
+                            if (currentNode != null && currentNode.ChildNodes.Length > 0)
+                            {
+                                var child = currentNode.ChildNodes[0];
+                                if (child is Element el)
+                                    return FenValue.FromObject(new ElementWrapper(el, _context));
+                            }
+                            return FenValue.Null;
+                        })));
+                        tw.Set("parentNode", FenValue.FromFunction(new FenFunction("parentNode", (nArgs, nThis) => {
+                            if (currentNode?.ParentElement != null)
+                                return FenValue.FromObject(new ElementWrapper(currentNode.ParentElement, _context));
+                            return FenValue.Null;
+                        })));
+                        return FenValue.FromObject(tw);
+                    }));
+
+                case "creatensresolver":
+                    return FenValue.FromFunction(new FenFunction("createNSResolver", (args, _) => FenValue.Null));
+
+                case "hidden":
+                    return FenValue.FromBoolean(false); // document is not hidden
+
+                case "visibilitystate":
+                    return FenValue.FromString("visible");
+
+                case "characterset":
+                case "charset":
+                    return FenValue.FromString("UTF-8");
+
+                case "contenttype":
+                    return FenValue.FromString("text/html");
+
+                case "compatmode":
+                    return FenValue.FromString("CSS1Compat");
+
+                case "location":
+                    // Return the window.location equivalent
+                    return FenValue.Undefined; // Will be set by runtime
+
+                case "url":
+                case "documenturi":
+                    return FenValue.FromString(_baseUri?.AbsoluteUri ?? "about:blank");
+
+                case "referrer":
+                    return FenValue.FromString("");
+
+                case "designmode":
+                    return FenValue.FromString("off");
+
+                case "dir":
+                    return FenValue.FromString("ltr");
+
+                case "nodetype":
+                    return FenValue.FromNumber(9); // DOCUMENT_NODE
+
+                case "nodevalue":
+                    return FenValue.Null;
+
+                case "childnodes":
+                case "children":
+                    var childArr = new FenObject();
+                    int ci = 0;
+                    if (_root is Element rootElement)
+                    {
+                        for (int cj = 0; cj < rootElement.ChildNodes.Length; cj++)
+                        {
+                            var child = rootElement.ChildNodes[cj];
+                            if (child is Element childEl)
+                            {
+                                childArr.Set(ci.ToString(), FenValue.FromObject(new ElementWrapper(childEl, _context)));
+                                ci++;
+                            }
+                        }
+                    }
+                    childArr.Set("length", FenValue.FromNumber(ci));
+                    return FenValue.FromObject(childArr);
+
                 default:
                     return FenValue.Undefined;
             }
@@ -378,6 +498,17 @@ namespace FenBrowser.FenEngine.DOM
             }
 
             return null;
+        }
+
+        private static void CollectNodes(Node node, List<Node> result)
+        {
+            if (node == null) return;
+            result.Add(node);
+            if (node.ChildNodes != null)
+            {
+                foreach (var child in node.ChildNodes)
+                    CollectNodes(child, result);
+            }
         }
 
         private Element FindElementByTag(Node node, string tagName)

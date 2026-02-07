@@ -88,7 +88,13 @@ namespace FenBrowser.FenEngine.Interaction
         public bool ProcessEvent(InputEvent evt, Rendering.Core.RenderContext renderContext = null, IExecutionContext context = null)
         {
             // 1. Determine Target via HitTest if coordinates provided
-            if (renderContext != null && (evt.Type == InputEventType.MouseDown || evt.Type == InputEventType.MouseMove || evt.Type == InputEventType.Click || evt.Type == InputEventType.TouchStart))
+            if (renderContext != null && (evt.Type == InputEventType.MouseDown ||
+                                          evt.Type == InputEventType.MouseUp ||
+                                          evt.Type == InputEventType.MouseMove ||
+                                          evt.Type == InputEventType.Click ||
+                                          evt.Type == InputEventType.TouchStart ||
+                                          evt.Type == InputEventType.TouchMove ||
+                                          evt.Type == InputEventType.TouchEnd))
             {
                 // TODO: Use Stacking-Context aware HitTest
                 var target = HitTester.HitTest(renderContext, evt.X, evt.Y);
