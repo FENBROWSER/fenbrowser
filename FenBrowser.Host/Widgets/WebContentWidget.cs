@@ -14,6 +14,7 @@ public class WebContentWidget : Widget
 {
     private SettingsPageWidget _settingsPage;
     private BrowserTab _subscribedTab;
+    private bool _leftPointerDownInWebContent;
 
     public WebContentWidget()
     {
@@ -153,8 +154,23 @@ public class WebContentWidget : Widget
             }
             else
             {
-               _ = activeTab.Browser.HandleClick(x, y, Bounds.Left, Bounds.Top);
+               _leftPointerDownInWebContent = true;
+               activeTab.Browser.HandleMouseDown(x, y, 0, Bounds.Left, Bounds.Top);
             }
+        }
+    }
+
+    public override void OnMouseUp(float x, float y, Silk.NET.Input.MouseButton button)
+    {
+        var activeTab = TabManager.Instance.ActiveTab;
+        if (activeTab == null || activeTab.Url.StartsWith("fen://settings", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        if (button == Silk.NET.Input.MouseButton.Left)
+        {
+            bool emitClick = _leftPointerDownInWebContent && Bounds.Contains(x, y);
+            _leftPointerDownInWebContent = false;
+            activeTab.Browser.HandleMouseUp(x, y, 0, emitClick, Bounds.Left, Bounds.Top);
         }
     }
 
@@ -251,11 +267,9 @@ public class WebContentWidget : Widget
     
     public override void OnMouseMove(float x, float y)
     {
-        var activeTab = TabManager.Instance.ActiveTab;
-        if (activeTab != null && !activeTab.Url.StartsWith("fen://settings", StringComparison.OrdinalIgnoreCase))
-        {
-            activeTab.Browser.HandleMouseMove(x, y, Bounds.Left, Bounds.Top);
-        }
+        // Intentionally no direct browser call here.
+        // ChromeManager is the single authoritative dispatcher for web mouse-move,
+        // including cursor/status updates based on hit-test results.
     }
     
     public override void OnMouseWheel(float x, float y, float deltaX, float deltaY)

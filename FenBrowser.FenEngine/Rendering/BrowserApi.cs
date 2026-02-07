@@ -202,6 +202,12 @@ namespace FenBrowser.FenEngine.Rendering
         private readonly Dictionary<string, Element> _elementMap = new Dictionary<string, Element>();
         private Action<string> _fontLoadedHandler;
 
+        // External renderer reference: BrowserIntegration injects the actual renderer used for
+        // painting so that hit tests in DispatchInputEvent use the correct (populated) paint tree
+        // instead of the stale _engine._cachedRenderer that never has Render() called on it.
+        private SkiaDomRenderer _activeRenderer;
+        public void SetActiveRenderer(SkiaDomRenderer renderer) { _activeRenderer = renderer; }
+
         public event EventHandler<Uri> Navigated;
         public event EventHandler<string> NavigationFailed;
         public event EventHandler<bool> LoadingChanged;
@@ -1251,16 +1257,17 @@ pre {{
 
         private void QueueInputTask(string type, float x, float y, int button)
         {
-             FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance.EnqueueTask(() =>
-             {
-                 DispatchInputEvent(type, x, y, button);
-             });
+             // Input must feel immediate; dispatch directly to avoid coordinator latency
+             // or dropped interaction when event-loop pumping is delayed.
+             DispatchInputEvent(type, x, y, button);
         }
 
         private void DispatchInputEvent(string type, float x, float y, int button)
         {
             var eventType = MapToInputEventType(type);
-            var renderContext = _engine.BuildRenderContext();
+            // Prefer the active renderer (injected by BrowserIntegration) which has the actual
+            // paint tree. Fall back to engine's cached renderer only if no active renderer set.
+            var renderContext = _activeRenderer?.CreateRenderContext() ?? _engine.BuildRenderContext();
             var context = _engine.Context;
             var inputEvent = new InputEvent
             {
@@ -1281,10 +1288,27 @@ pre {{
 
             bool handled = _inputManager.ProcessEvent(inputEvent, renderContext, context);
 
-            if (handled && string.Equals(type, "click", StringComparison.OrdinalIgnoreCase) && inputEvent.Target != null)
+            if (string.Equals(type, "mousemove", StringComparison.OrdinalIgnoreCase))
             {
-                HandleClickDefaultAction(inputEvent.Target);
+                var hovered = inputEvent.Target;
+                if (!ReferenceEquals(ElementStateManager.Instance.HoveredElement, hovered))
+                {
+                    ElementStateManager.Instance.SetHoveredElement(hovered);
+                    try { RepaintReady?.Invoke(this, _engine.GetActiveDom()); } catch { }
+                }
             }
+
+            // Keep BrowserApi typing focus aligned with pointer targeting.
+            // Without this, clicks may dispatch DOM events but keyboard text input has no target.
+            if (string.Equals(type, "mousedown", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(type, "click", StringComparison.OrdinalIgnoreCase))
+            {
+                SyncFocusFromPointerTarget(inputEvent.Target);
+            }
+
+            // NOTE: HandleElementClick is NOT called here because BrowserIntegration's
+            // HandleMouseUp already calls it with the paint-tree hit-test result. Calling it
+            // here too would cause double-navigation for links and double-focus for inputs.
         }
 
         private static int BuildButtonMask(int button, string type)
@@ -1310,23 +1334,6 @@ pre {{
                 default: return InputEventType.MouseMove;
             }
         }
-
-        private void HandleClickDefaultAction(Element target)
-        {
-            // Traverse up to find 'a' tag
-            var current = target;
-            while (current != null)
-            {
-                if (current.TagName == "a" && current.Attr != null && current.Attr.TryGetValue("href", out var href))
-                {
-                    Task.Run(async () => await NavigateAsync(href));
-                    return;
-                }
-                current = current.ParentElement;
-            }
-        }
-
-
 
         public async Task<string[]> FindElementsAsync(string strategy, string value, string parentId = null)
         {
@@ -2057,6 +2064,67 @@ pre {{
         private int _cursorIndex = 0;
         private int _selectionAnchor = -1;
 
+        private void SyncFocusFromPointerTarget(Element target)
+        {
+            if (target == null)
+            {
+                // Don't clear focus when target is null — this typically means the
+                // InputManager's hit test failed (stale/empty render context), NOT
+                // that the user clicked on empty space. The BrowserIntegration fallback
+                // HandleElementClick handles proper focus management with the correct
+                // paint tree hit test result.
+                return;
+            }
+
+            // Direct editable/focusable targets first.
+            string tag = target.NodeName?.ToLowerInvariant();
+            bool isContentEditable = string.Equals(target.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
+            bool directEditable = tag == "input" || tag == "textarea" || isContentEditable;
+            bool directFocusable = directEditable ||
+                                   tag == "button" || tag == "select" ||
+                                   (tag == "a" && !string.IsNullOrEmpty(target.GetAttribute("href"))) ||
+                                   !string.IsNullOrEmpty(target.GetAttribute("tabindex"));
+
+            if (directFocusable)
+            {
+                _focusedElement = target;
+                ElementStateManager.Instance.SetFocusedElement(target);
+                if (directEditable)
+                {
+                    var val = isContentEditable ? (target.TextContent ?? string.Empty) : (target.GetAttribute("value") ?? string.Empty);
+                    _cursorIndex = val.Length;
+                    _selectionAnchor = -1;
+                }
+                return;
+            }
+
+            // Many modern UIs (including Google Search) use wrapper containers around real editable controls.
+            // If wrapper is hit, promote focus to the first descendant editable control.
+            Element descendantEditable = target
+                .Descendants()
+                .OfType<Element>()
+                .FirstOrDefault(el =>
+                {
+                    string t = el.NodeName?.ToLowerInvariant();
+                    return t == "input" || t == "textarea" || string.Equals(el.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
+                });
+
+            if (descendantEditable != null)
+            {
+                _focusedElement = descendantEditable;
+                ElementStateManager.Instance.SetFocusedElement(descendantEditable);
+                bool descendantIsContentEditable = string.Equals(descendantEditable.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
+                var val = descendantIsContentEditable ? (descendantEditable.TextContent ?? string.Empty) : (descendantEditable.GetAttribute("value") ?? string.Empty);
+                _cursorIndex = val.Length;
+                _selectionAnchor = -1;
+            }
+            else
+            {
+                _focusedElement = null;
+                ElementStateManager.Instance.SetFocusedElement(null);
+            }
+        }
+
         public async Task HandleClipboardCommand(string command, string data = null)
         {
              if (_focusedElement == null) return;
@@ -2132,6 +2200,30 @@ pre {{
             }
             
             var tag = element.NodeName?.ToLowerInvariant();
+
+            // Wrapper-first DOMs (e.g. Google search box) often receive click on a container.
+            // Promote to a descendant editable so focus/typing remains stable.
+            if (tag != "input" &&
+                tag != "textarea" &&
+                !string.Equals(element.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase))
+            {
+                var descendantEditable = element
+                    .Descendants()
+                    .OfType<Element>()
+                    .FirstOrDefault(el =>
+                    {
+                        var t = el.NodeName?.ToLowerInvariant();
+                        return t == "input" ||
+                               t == "textarea" ||
+                               string.Equals(el.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
+                    });
+
+                if (descendantEditable != null)
+                {
+                    element = descendantEditable;
+                    tag = element.NodeName?.ToLowerInvariant();
+                }
+            }
             
             // Handle anchor clicks
             if (tag == "a")
@@ -2183,10 +2275,28 @@ pre {{
                 }
                 else
                 {
-                    // Clicking non-focusable element clears focus (unless we want to keep previous focus? Standard behavior is blur usually)
-                    // Actually, clicking a div usually blurs the active input.
-                    _focusedElement = null;
-                    ElementStateManager.Instance.SetFocusedElement(null);
+                    // Keep existing focus if click is inside the currently focused editable subtree.
+                    // This avoids focus churn on wrapper clicks around active text fields.
+                    bool keepFocus = false;
+                    if (_focusedElement != null)
+                    {
+                        var cursor = _focusedElement;
+                        while (cursor != null)
+                        {
+                            if (ReferenceEquals(cursor, element))
+                            {
+                                keepFocus = true;
+                                break;
+                            }
+                            cursor = cursor.ParentElement;
+                        }
+                    }
+
+                    if (!keepFocus)
+                    {
+                        _focusedElement = null;
+                        ElementStateManager.Instance.SetFocusedElement(null);
+                    }
                 }
                 
                 // Trigger repaint 
@@ -2200,7 +2310,29 @@ pre {{
             
             try
             {
+                // If focus sits on a wrapper, redirect typing into an editable descendant.
                 var tag = _focusedElement.NodeName?.ToLowerInvariant();
+                if (tag != "input" && tag != "textarea")
+                {
+                    var nestedEditable = _focusedElement
+                        .Descendants()
+                        .OfType<Element>()
+                        .FirstOrDefault(el =>
+                        {
+                            string t = el.NodeName?.ToLowerInvariant();
+                            return t == "input" || t == "textarea" ||
+                                   string.Equals(el.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
+                        });
+                    if (nestedEditable != null)
+                    {
+                        _focusedElement = nestedEditable;
+                        tag = _focusedElement.NodeName?.ToLowerInvariant();
+                        ElementStateManager.Instance.SetFocusedElement(_focusedElement);
+                    }
+                }
+
+                bool isContentEditable = string.Equals(_focusedElement.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
+
                 if (tag == "input" || tag == "textarea") // Added textarea support
                 {
                     var val = _focusedElement.GetAttribute("value") ?? "";
@@ -2277,6 +2409,90 @@ pre {{
                     
                     // Trigger Repaint
                      try { RepaintReady?.Invoke(this, _engine.GetActiveDom()); } catch {}
+                }
+                else if (isContentEditable)
+                {
+                    var val = _focusedElement.TextContent ?? "";
+
+                    int start = _selectionAnchor != -1 ? Math.Min(_selectionAnchor, _cursorIndex) : _cursorIndex;
+                    int end = _selectionAnchor != -1 ? Math.Max(_selectionAnchor, _cursorIndex) : _cursorIndex;
+                    bool hasSelection = end > start;
+
+                    if (_cursorIndex > val.Length) _cursorIndex = val.Length;
+                    if (_cursorIndex < 0) _cursorIndex = 0;
+
+                    if (key == "Backspace")
+                    {
+                        if (hasSelection)
+                        {
+                            val = val.Remove(start, end - start);
+                            _cursorIndex = start;
+                            _selectionAnchor = -1;
+                        }
+                        else if (_cursorIndex > 0 && val.Length > 0)
+                        {
+                            val = val.Remove(_cursorIndex - 1, 1);
+                            _cursorIndex--;
+                        }
+                    }
+                    else if (key == "Delete")
+                    {
+                        if (hasSelection)
+                        {
+                            val = val.Remove(start, end - start);
+                            _cursorIndex = start;
+                            _selectionAnchor = -1;
+                        }
+                        else if (_cursorIndex < val.Length)
+                        {
+                            val = val.Remove(_cursorIndex, 1);
+                        }
+                    }
+                    else if (key == "ArrowLeft")
+                    {
+                        if (_cursorIndex > 0) _cursorIndex--;
+                        _selectionAnchor = -1;
+                    }
+                    else if (key == "ArrowRight")
+                    {
+                        if (_cursorIndex < val.Length) _cursorIndex++;
+                        _selectionAnchor = -1;
+                    }
+                    else if (key == "Home")
+                    {
+                        _cursorIndex = 0;
+                        _selectionAnchor = -1;
+                    }
+                    else if (key == "End")
+                    {
+                        _cursorIndex = val.Length;
+                        _selectionAnchor = -1;
+                    }
+                    else if (key == "Enter")
+                    {
+                        if (hasSelection)
+                        {
+                            val = val.Remove(start, end - start);
+                            _cursorIndex = start;
+                            _selectionAnchor = -1;
+                        }
+                        val = val.Insert(_cursorIndex, "\n");
+                        _cursorIndex++;
+                    }
+                    else if (key.Length == 1)
+                    {
+                        if (hasSelection)
+                        {
+                            val = val.Remove(start, end - start);
+                            _cursorIndex = start;
+                            _selectionAnchor = -1;
+                        }
+                        val = val.Insert(_cursorIndex, key);
+                        _cursorIndex++;
+                    }
+
+                    _focusedElement.TextContent = val;
+                    try { RepaintReady?.Invoke(this, _engine.GetActiveDom()); } catch {}
                 }
             }
             catch (Exception ex)
