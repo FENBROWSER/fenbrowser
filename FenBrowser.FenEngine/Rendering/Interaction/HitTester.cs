@@ -1,4 +1,5 @@
 using FenBrowser.Core.Dom.V2;
+using FenBrowser.Core.Css;
 using SkiaSharp;
 using System;
 using System.Collections.Generic;
@@ -146,6 +147,11 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
 
                     if (element != null)
                     {
+                        if (!IsElementHitTestVisible(element))
+                        {
+                            continue;
+                        }
+
                         // Found a hit! Resolve interactive ancestor.
                         var interactive = FindInteractiveAncestor(element);
                         string tagName = element.TagName;
@@ -206,6 +212,12 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             var current = element;
             while (current != null)
             {
+                if (!IsElementHitTestVisible(current))
+                {
+                    current = current.ParentElement;
+                    continue;
+                }
+
                 if (string.Equals(current.TagName, "a", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(current.TagName, "button", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(current.TagName, "input", StringComparison.OrdinalIgnoreCase) ||
@@ -222,15 +234,8 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
 
         public static List<Element> HitTestAll(RenderContext ctx, float x, float y)
         {
-             // Naive impl for now, or could be upgraded
-             // Let's keep the naive one for "All" unless we want to recurse and collect all.
-             // Usually HitTestAll is used for specific debug or tooling.
-             // We can defer upgrading this.
+             // Naive impl for now; used mainly by tooling.
              if (ctx?.Boxes == null) return new List<Element>();
-             // ... [Naive logic from before] ...
-             return new List<Element>(); // Stub for brevity, or revert to previous content? 
-             // Ideally we overwrite the file, so I need to provide full content.
-             // I will include the naive implementation mostly.
              return HitTestAllNaive(ctx, x, y);
         }
 
@@ -257,6 +262,44 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
                 el = el.ParentElement;
             }
             return null;
+        }
+
+        private static bool IsElementHitTestVisible(Element element)
+        {
+            if (element == null) return false;
+
+            if (element.HasAttribute("hidden"))
+            {
+                return false;
+            }
+
+            var style = element.GetComputedStyle();
+            if (style == null) return true;
+
+            if (string.Equals(style.PointerEvents, "none", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (string.Equals(style.Visibility, "hidden", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(style.Visibility, "collapse", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (string.Equals(style.Display, "none", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            // Invisible overlays (opacity: 0) should not intercept hover/click.
+            // Without this guard, hidden UI layers can block text inputs/buttons.
+            if (style.Opacity.HasValue && style.Opacity.Value <= 0.001d)
+            {
+                return false;
+            }
+
+            return true;
         }
     }
 }
