@@ -47,6 +47,11 @@ This class acts as the "Glue" between the Host and the Engine.
 - **Render Loop**:
   - `RecordFrame()`: Engine produces a paint tree (Background thread).
   - `Render()`: Host draws the paint tree to the canvas (UI thread).
+- **Input Resilience (2026-02-07)**:
+  - Click activation/link handling fallback is executed in the authoritative `HandleMouseUp(... emitClick)` path using the same hit-test result (`result.NativeElement`), so web-content pointer routing remains correct even when `HandleClick(...)` is bypassed by widget-level down/up flow.
+  - `HandleMouseUp(... emitClick)` now falls back to the last stable hover hit when release-time hit test is transiently null, so links/controls still activate during pointer-target flicker.
+  - Host pointer routing now uses explicit `HandleMouseDown(...)` + `HandleMouseUp(... emitClick)` for web content, with click emitted on mouse-up.
+  - Mouse-move routing for web content is centralized in `ChromeManager` to avoid duplicate move dispatch paths.
 
 ## 4. UI System (`Widgets/`, `ChromeManager.cs`)
 
