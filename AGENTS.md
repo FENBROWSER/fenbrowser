@@ -102,7 +102,7 @@ Always follow this clean-state execution process after every build:
 
 1.  **Process Management**: Kill any existing `fenbrowser` / `Fenbrowser.host` executable processes.
 2.  **Log Cleanup**: Clear all files in the `fenbrowser/logs` folder.
-3.  **The 45-Second Rule**: Run the solution build (`Fenbrowser.host`) and **wait at least 45 seconds** before analyzing logs. This allows for proper data loading and engine stabilization. **Do NOT kill within 10 seconds.**
+3.  **The 25-Second Rule**: Run the solution build (`Fenbrowser.host`) and **wait at least 25 seconds** before analyzing logs. This allows for proper data loading and engine stabilization. **Do NOT kill within 10 seconds.**
 4.  **Log Locations**: Logs are located in:
     - `C:\Users\udayk\Videos\FENBROWSER\logs`
     - `C:\Users\udayk\Videos\FENBROWSER\`
