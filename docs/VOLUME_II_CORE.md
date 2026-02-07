@@ -136,6 +136,7 @@ Base for nodes capable of having children (Document, Element).
 Represents HTML tags.
 
 - **Lines 156-327**: **Attribute Management**: `GetAttribute`, `SetAttribute` (with sanitization).
+- **Parser Trust Path**: `SetAttributeUnsafe` is exposed for HTML tree-construction paths so parsed attributes preserve source semantics while script/runtime `SetAttribute` keeps sanitizer enforcement.
 - **Lines 413-503**: **Mutation Hooks**: `OnAttributeValueChanged` notifies the engine of style changes.
 - **Lines 509-527**: **Style Invalidation**: Manages `UpdateAncestorFilter` for CSS optimization.
 - **InnerHTML Setter**: `InnerHTML` now parses HTML fragments and replaces child nodes with parsed DOM content (instead of text-only assignment), improving DOM/script interoperability.
@@ -246,6 +247,7 @@ Represents text content.
 - **`TreeScope.cs`**: Manages ID lookup boundaries (Document vs ShadowRoot).
 - **`Security/Origin.cs`**: Value object for scheme/host/port tuples.
 - **`Security/SecurityGuard.cs`**: Checks Cross-Origin access rules.
+- **`Security/AttributeSanitizer.cs`**: Validates attribute names/values; inline `on*` handler values are preserved by default for browser compatibility, with opt-in strict blocking via `BlockInlineEventHandlersInStrictMode`.
 - **`Selectors/CssSelector.cs`**: AST for parsed CSS selectors.
 - **`Selectors/SelectorParser.cs`**: recursive descent parser for CSS selectors.
 - **`HtmlToken.cs`**: Data class for the Tokenizer output.
@@ -273,6 +275,7 @@ The syntactic analyzer (DOM Construction).
 - **Head Meta Handling**: `<meta charset>` and `<meta http-equiv="Content-Type"...charset=...>` now update `Document.CharacterSet` during parsing.
 - **Template Mode Handling**: `InTemplate` now maps start tags to appropriate insertion modes (`InTable`, `InColumnGroup`, `InTableBody`, `InRow`, `InBody`) and reprocesses tokens using the template insertion-mode stack.
 - **Template Close/Reset**: Closing `</template>` now uses a shared close path that pops template scope, clears active-formatting markers, updates template mode stack, and resets insertion mode from stack state.
+- **Attribute Consistency**: Parsed HTML attributes are now assigned through `SetAttributeUnsafe` in tree-construction code so Core and Engine parser paths preserve equivalent raw attribute values (including inline handler/source text).
 
 #### `StreamingHtmlParser.cs` (Lines 1-493)
 
