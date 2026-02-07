@@ -17,7 +17,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         private static GridFormattingContext _instance;
         public static GridFormattingContext Instance => _instance ??= new GridFormattingContext();
 
-        public override void Layout(LayoutBox box, LayoutState state)
+        protected override void LayoutCore(LayoutBox box, LayoutState state)
         {
             if (!(box is BlockBox container)) return;
 

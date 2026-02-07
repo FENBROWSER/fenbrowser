@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using SkiaSharp;
 using Svg.Skia;
 
@@ -244,30 +245,29 @@ namespace FenBrowser.FenEngine.Adapters
         /// </summary>
         private static string InjectDefaultFill(string svgContent)
         {
-            // Only process if no fill attribute exists in the SVG at all
-            if (svgContent.Contains("fill="))
-            {
-                return svgContent; // Has explicit fill, don't modify
-            }
-            
-            // Check for fill in a <style> block (e.g., fill: #000)
-            if (svgContent.Contains("fill:") || svgContent.Contains("fill ;"))
-            {
-                return svgContent; // Has CSS fill, don't modify
-            }
-            
-            // Inject fill on path, circle, rect, ellipse, polygon, polyline elements
-            // Use regex to add fill attribute to these elements if they don't have it
+            // Per-element fill injection: only add fill="currentColor" to shape elements
+            // that don't already have a fill= attribute on that specific element.
+            // Previous approach had two bugs:
+            //  1) Early-returned if ANY element had fill=, skipping elements that didn't
+            //  2) Only matched "<shape " with trailing space, missing newlines/self-closing
             var shapes = new[] { "path", "circle", "rect", "ellipse", "polygon", "polyline", "line" };
-            
+
             foreach (var shape in shapes)
             {
-                // Pattern: <shape ... > where there's no fill= attribute
-                // Add fill="currentColor" which will inherit from CSS color property
-                string pattern = $"<{shape} ";
-                if (svgContent.Contains(pattern, StringComparison.OrdinalIgnoreCase))
+                try
                 {
-                    svgContent = svgContent.Replace(pattern, $"<{shape} fill=\"currentColor\" ", StringComparison.OrdinalIgnoreCase);
+                    // Regex matches: <shape followed by whitespace/>/> then attributes WITHOUT fill=, then closing
+                    svgContent = Regex.Replace(
+                        svgContent,
+                        $@"<{shape}(?=[\s/>])((?:(?!fill\s*=)[^>])*?)(/?>)",
+                        $@"<{shape} fill=""currentColor""$1$2",
+                        RegexOptions.IgnoreCase | RegexOptions.Singleline,
+                        TimeSpan.FromMilliseconds(500));
+                }
+                catch (RegexMatchTimeoutException)
+                {
+                    // SVG too complex for regex — skip fill injection for this shape type
+                    break;
                 }
             }
             return svgContent;
