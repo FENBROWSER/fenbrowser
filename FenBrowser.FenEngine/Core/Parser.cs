@@ -105,6 +105,7 @@ namespace FenBrowser.FenEngine.Core
             RegisterPrefix(TokenType.LParen, ParseGroupedExpression);
             RegisterPrefix(TokenType.If, ParseIfExpression);
             RegisterPrefix(TokenType.Function, ParseFunctionLiteral);
+            RegisterPrefix(TokenType.Class, ParseClassExpression); // NEW: Class expression
             RegisterPrefix(TokenType.New, ParseNewExpression);
             RegisterPrefix(TokenType.Null, ParseNull);
             RegisterPrefix(TokenType.Undefined, ParseUndefined);
@@ -211,6 +212,30 @@ namespace FenBrowser.FenEngine.Core
             _infixParseFns[type] = fn;
         }
 
+        // ASI: Check if Automatic Semicolon Insertion should apply
+        // Per ECMAScript spec, semicolon can be inserted when:
+        // 1. The offending token is separated by line terminator from previous
+        // 2. The offending token is }
+        // 3. We've reached end of input
+        private bool CanInsertSemicolon()
+        {
+            return _peekToken.HadLineTerminatorBefore || 
+                   PeekTokenIs(TokenType.RBrace) ||
+                   PeekTokenIs(TokenType.Eof);
+        }
+
+        // ASI: Expect semicolon with automatic insertion fallback
+        private bool ExpectSemicolonWithASI()
+        {
+            if (PeekTokenIs(TokenType.Semicolon))
+            {
+                NextToken();
+                return true;
+            }
+            // Apply ASI if conditions met
+            return CanInsertSemicolon();
+        }
+
         public Program ParseProgram()
         {
             var program = new Program();
@@ -279,8 +304,27 @@ namespace FenBrowser.FenEngine.Core
                 case TokenType.Semicolon:
                     return null; // Ignore empty statements
                 default:
+                    // Check for labeled statement: identifier ':'
+                    if (_curToken.Type == TokenType.Identifier && PeekTokenIs(TokenType.Colon))
+                    {
+                        return ParseLabeledStatement();
+                    }
                     return ParseExpressionStatement();
             }
+        }
+
+        private LabeledStatement ParseLabeledStatement()
+        {
+            var label = new Identifier(_curToken, _curToken.Literal);
+            NextToken(); // consume the ':'
+            NextToken(); // move to the body statement
+            var body = ParseStatement();
+            return new LabeledStatement
+            {
+                Token = label.Token,
+                Label = label,
+                Body = body
+            };
         }
 
         private LetStatement ParseLetStatement()
@@ -362,12 +406,18 @@ namespace FenBrowser.FenEngine.Core
 
             NextToken();
 
+            // ASI: Restricted production - if line terminator before expression,
+            // semicolon, rbrace, or eof, insert semicolon and return undefined
+            if (_curToken.HadLineTerminatorBefore || CurTokenIs(TokenType.Semicolon) || 
+                CurTokenIs(TokenType.RBrace) || CurTokenIs(TokenType.Eof))
+            {
+                if (CurTokenIs(TokenType.Semicolon)) NextToken();
+                return stmt; // Return undefined
+            }
+
             stmt.ReturnValue = ParseExpression(Precedence.Lowest);
 
-            if (PeekTokenIs(TokenType.Semicolon))
-            {
-                NextToken();
-            }
+            ExpectSemicolonWithASI();
 
             return stmt;
         }
@@ -378,10 +428,8 @@ namespace FenBrowser.FenEngine.Core
 
             stmt.Expression = ParseExpression(Precedence.Lowest);
 
-            if (PeekTokenIs(TokenType.Semicolon))
-            {
-                NextToken();
-            }
+            // Use ASI-aware semicolon handling
+            ExpectSemicolonWithASI();
 
             return stmt;
         }
@@ -427,17 +475,51 @@ namespace FenBrowser.FenEngine.Core
 
         private Expression ParseNumberLiteral()
         {
-            if (long.TryParse(_curToken.Literal, out var longValue))
+            var literal = _curToken.Literal;
+
+            // Handle hex (0x), octal (0o), binary (0b) prefixes
+            if (literal.Length > 2 && literal[0] == '0')
+            {
+                char prefix = literal[1];
+                if (prefix == 'x' || prefix == 'X')
+                {
+                    if (long.TryParse(literal.Substring(2), System.Globalization.NumberStyles.HexNumber,
+                        System.Globalization.CultureInfo.InvariantCulture, out var hexVal))
+                    {
+                        return new IntegerLiteral { Token = _curToken, Value = hexVal };
+                    }
+                }
+                else if (prefix == 'o' || prefix == 'O')
+                {
+                    try
+                    {
+                        long octalVal = Convert.ToInt64(literal.Substring(2), 8);
+                        return new IntegerLiteral { Token = _curToken, Value = octalVal };
+                    }
+                    catch { /* fall through to error */ }
+                }
+                else if (prefix == 'b' || prefix == 'B')
+                {
+                    try
+                    {
+                        long binaryVal = Convert.ToInt64(literal.Substring(2), 2);
+                        return new IntegerLiteral { Token = _curToken, Value = binaryVal };
+                    }
+                    catch { /* fall through to error */ }
+                }
+            }
+
+            if (long.TryParse(literal, out var longValue))
             {
                 return new IntegerLiteral { Token = _curToken, Value = longValue };
             }
-            
-            if (double.TryParse(_curToken.Literal, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var doubleValue))
+
+            if (double.TryParse(literal, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var doubleValue))
             {
                 return new DoubleLiteral { Token = _curToken, Value = doubleValue };
             }
 
-            _errors.Add($"could not parse {_curToken.Literal} as number");
+            _errors.Add($"could not parse {literal} as number");
             return null;
         }
         
@@ -449,9 +531,66 @@ namespace FenBrowser.FenEngine.Core
         // Parse a regular template literal: `Hello ${name}!`
         private Expression ParseTemplateLiteral()
         {
-            // The lexer already combined the template literal content into a single token
-            // Just return it as a StringLiteral for now (the interpreter will handle ${} interpolation)
-            return new StringLiteral { Token = _curToken, Value = _curToken.Literal };
+            var tmpl = new TemplateLiteral { Token = _curToken };
+            string content = _curToken.Literal;
+
+            int pos = 0;
+            while (pos < content.Length)
+            {
+                int dollarPos = content.IndexOf("${", pos);
+                if (dollarPos == -1)
+                {
+                    // No more expressions, add the remaining text
+                    tmpl.Quasis.Add(new TemplateElement { Token = _curToken, Value = content.Substring(pos), Tail = true });
+                    break;
+                }
+
+                // Add the string part before ${}
+                tmpl.Quasis.Add(new TemplateElement { Token = _curToken, Value = content.Substring(pos, dollarPos - pos), Tail = false });
+
+                // Find the matching closing brace
+                int bracePos = dollarPos + 2;
+                int depth = 1;
+                while (bracePos < content.Length && depth > 0)
+                {
+                    if (content[bracePos] == '{') depth++;
+                    else if (content[bracePos] == '}') depth--;
+                    bracePos++;
+                }
+
+                // Extract and parse the expression
+                string exprStr = content.Substring(dollarPos + 2, bracePos - dollarPos - 3);
+                if (!string.IsNullOrWhiteSpace(exprStr))
+                {
+                    var exprLexer = new Lexer(exprStr);
+                    var exprParser = new Parser(exprLexer);
+                    var parsed = exprParser.ParseExpression(Precedence.Lowest);
+                    if (parsed != null)
+                        tmpl.Expressions.Add(parsed);
+                    else
+                        tmpl.Expressions.Add(new UndefinedLiteral { Token = _curToken });
+                }
+                else
+                {
+                    tmpl.Expressions.Add(new UndefinedLiteral { Token = _curToken });
+                }
+
+                pos = bracePos;
+            }
+
+            // If no expressions were found, just return a plain string
+            if (tmpl.Expressions.Count == 0 && tmpl.Quasis.Count <= 1)
+            {
+                return new StringLiteral { Token = _curToken, Value = content };
+            }
+
+            // Ensure there's a trailing quasi if the template ends with an expression
+            if (tmpl.Quasis.Count == tmpl.Expressions.Count)
+            {
+                tmpl.Quasis.Add(new TemplateElement { Token = _curToken, Value = "", Tail = true });
+            }
+
+            return tmpl;
         }
 
         // Parse a tagged template literal: tag`Hello ${name}!`
@@ -594,7 +733,14 @@ namespace FenBrowser.FenEngine.Core
 
             if (!ExpectPeek(TokenType.RParen))
             {
-                return null;
+                // Recovery: skip to RParen or statement boundary
+                while (!CurTokenIs(TokenType.RParen) && !CurTokenIs(TokenType.Semicolon) && 
+                       !CurTokenIs(TokenType.RBrace) && !CurTokenIs(TokenType.Eof))
+                {
+                    NextToken();
+                }
+                // Return the expression we parsed so far
+                return exp ?? new UndefinedLiteral { Token = _curToken };
             }
 
             return exp;
@@ -614,7 +760,11 @@ namespace FenBrowser.FenEngine.Core
 
             if (!ExpectPeek(TokenType.RParen))
             {
-                return null;
+                // Recovery: skip to RParen or LBrace
+                while (!CurTokenIs(TokenType.RParen) && !CurTokenIs(TokenType.LBrace) && !CurTokenIs(TokenType.Eof))
+                {
+                    NextToken();
+                }
             }
 
             // Handle body - with or without braces
@@ -907,8 +1057,22 @@ namespace FenBrowser.FenEngine.Core
 
             while (PeekTokenIs(TokenType.Comma))
             {
-                NextToken();
-                NextToken();
+                NextToken(); // consume comma
+                
+                // Handle trailing comma: func(a,b,)
+                if (PeekTokenIs(TokenType.RParen))
+                {
+                    NextToken(); // move to RParen
+                    return args;
+                }
+                
+                NextToken(); // move to next argument
+                
+                // Safety check - if we hit RParen after advancing, bail out
+                if (CurTokenIs(TokenType.RParen))
+                {
+                    return args;
+                }
                 
                 if (CurTokenIs(TokenType.Ellipsis))
                 {
@@ -923,7 +1087,13 @@ namespace FenBrowser.FenEngine.Core
 
             if (!ExpectPeek(TokenType.RParen))
             {
-                return null;
+                // Recovery: skip to RParen or statement boundary
+                while (!CurTokenIs(TokenType.RParen) && !CurTokenIs(TokenType.Semicolon) && 
+                       !CurTokenIs(TokenType.RBrace) && !CurTokenIs(TokenType.Eof))
+                {
+                    NextToken();
+                }
+                return args; // Return partial args
             }
 
             return args;
@@ -1011,6 +1181,50 @@ namespace FenBrowser.FenEngine.Core
                     continue;
                 }
 
+                // Check for async method: { async foo() {} }
+                if (key == "async" && PeekTokenIs(TokenType.Identifier))
+                {
+                    // It's likely an async method
+                    // Store current token in case we need to "backtrack" (conceptually)
+                    // But actually if we consume 'async' and 'foo', we are committed to parsing a method or it's a syntax error
+                    // because { async foo } is invalid.
+                    
+                    NextToken(); // Consume 'async', move to method name
+                    key = _curToken.Literal;
+                    
+                    if (PeekTokenIs(TokenType.LParen))
+                    {
+                        NextToken(); // Move to '('
+                        var methodParams = ParseFunctionParameters();
+                        
+                        if (PeekTokenIs(TokenType.LBrace))
+                        {
+                            NextToken(); // Move to '{'
+                            var methodBody = ParseBlockStatement();
+                            
+                            var methodFunc = new FunctionLiteral 
+                            { 
+                                Token = _curToken, 
+                                Parameters = methodParams, 
+                                Body = methodBody,
+                                IsAsync = true
+                            };
+                            
+                            obj.Pairs[key] = methodFunc;
+                            
+                            if (PeekTokenIs(TokenType.Comma)) NextToken();
+                            continue;
+                        }
+                    }
+                    // If we get here, it looked like async method but wasn't fully valid?
+                    // e.g. { async foo : 1 } - Invalid syntax
+                    // { async foo } - Invalid
+                    // So we can probably let it error out or return null?
+                    // But we consumed tokens. Code structure suggests we return null or add error.
+                    _errors.Add($"[Debug] ParseObjectLiteral: expected async method body");
+                    return null;
+                }
+
                 // Check for getter/setter: { get foo() {}, set foo(v) {} }
                 if ((key == "get" || key == "set") && PeekTokenIs(TokenType.Identifier))
                 {
@@ -1073,10 +1287,18 @@ namespace FenBrowser.FenEngine.Core
                         if (PeekTokenIs(TokenType.Comma)) NextToken();
                         continue;
                     }
-                    // Not a method - might be something else
-                    // Skip to recovery
-                    _errors.Add($"[Debug] ParseObjectLiteral: expected {{ after method params, got: {_peekToken.Type}");
-                    return null;
+                    // Arrow function method: { foo: (x) => x + 1 } parsed as method call by mistake
+                    // Try to recover by treating "key" + "(args...)" as a call expression value
+                    // This happens when: obj.method(args) inside an object literal
+                    // Skip to next comma or rbrace to recover
+                    _errors.Add($"[Debug] ParseObjectLiteral: expected {{ after method params, got: {_peekToken.Type}, recovering...");
+                    // Try to continue parsing by skipping to comma or rbrace
+                    while (!PeekTokenIs(TokenType.Comma) && !PeekTokenIs(TokenType.RBrace) && !PeekTokenIs(TokenType.Eof))
+                    {
+                        NextToken();
+                    }
+                    if (PeekTokenIs(TokenType.Comma)) NextToken();
+                    continue;
                 }
 
                 // Check for regular key: value, destructuring key = value, or shorthand key
@@ -1086,6 +1308,8 @@ namespace FenBrowser.FenEngine.Core
                     NextToken(); // Move to value
                     var value = ParseExpression(Precedence.Comma);
                     obj.Pairs[key] = value;
+                    if (isComputed && computedKey != null)
+                        obj.ComputedKeys[key] = computedKey;
                 }
                 else if (PeekTokenIs(TokenType.Assign))
                 {
@@ -1215,8 +1439,8 @@ namespace FenBrowser.FenEngine.Core
             
             NextToken(); // Move past '='
             
-            // Parse the right side with lowest precedence to capture the full expression
-            exp.Right = ParseExpression(Precedence.Lowest);
+            // Parse the right side with Precedence.Comma to allow assignments but stop at comma
+            exp.Right = ParseExpression(Precedence.Comma);
             
             return exp;
         }
@@ -1238,13 +1462,35 @@ namespace FenBrowser.FenEngine.Core
                 NextToken();
                 return true;
             }
+
+            // Automatic Semicolon Insertion (ASI)
+            // If we expect a semicolon, but don't see one, we can insert one if:
+            // 1. The next token is preceded by a line terminator
+            // 2. The next token is } (closing brace)
+            // 3. The next token is EOF
+            if (type == TokenType.Semicolon)
+            {
+                if (_peekToken.HadLineTerminatorBefore || 
+                    _peekToken.Type == TokenType.RBrace || 
+                    _peekToken.Type == TokenType.Eof)
+                {
+                    // Virtual semicolon inserted - do not consume next token
+                    return true;
+                }
+            }
+
             PeekError(type);
             return false;
         }
 
         private void PeekError(TokenType type)
         {
-            _errors.Add($"expected next token to be {type}, got {_peekToken.Type} instead");
+            var msg = $"expected next token to be {type}, got {_peekToken.Type} instead";
+            if (_lexer != null)
+            {
+                 msg += $"\nContext:\n{_lexer.GetCodeContext(_peekToken.Line, _peekToken.Column)}";
+            }
+            _errors.Add(msg);
         }
 
         private void NoPrefixParseFnError(TokenType type)
@@ -1393,7 +1639,14 @@ namespace FenBrowser.FenEngine.Core
 
             if (!ExpectPeek(end))
             {
-                return null;
+                // Recovery: try to skip to end token instead of returning null
+                while (!CurTokenIs(end) && !CurTokenIs(TokenType.Eof) && 
+                       !CurTokenIs(TokenType.Semicolon) && !CurTokenIs(TokenType.RBrace))
+                {
+                    NextToken();
+                }
+                // Return partial list instead of null to allow parsing to continue
+                return list;
             }
 
             return list;
@@ -1407,12 +1660,17 @@ namespace FenBrowser.FenEngine.Core
 
             NextToken();
 
+            // ASI: Restricted production - line terminator before expression is illegal
+            // but we handle it gracefully by continuing
+            if (_curToken.HadLineTerminatorBefore)
+            {
+                // This is a syntax error per spec, but we recover
+                return stmt;
+            }
+
             stmt.Value = ParseExpression(Precedence.Lowest);
 
-            if (PeekTokenIs(TokenType.Semicolon))
-            {
-                NextToken();
-            }
+            ExpectSemicolonWithASI();
 
             return stmt;
         }
@@ -1428,7 +1686,14 @@ namespace FenBrowser.FenEngine.Core
             NextToken();
             stmt.Condition = ParseExpression(Precedence.Lowest);
 
-            if (!ExpectPeek(TokenType.RParen)) return null;
+            if (!ExpectPeek(TokenType.RParen))
+            {
+                // Recovery: skip to RParen or LBrace
+                while (!CurTokenIs(TokenType.RParen) && !CurTokenIs(TokenType.LBrace) && !CurTokenIs(TokenType.Eof))
+                {
+                    NextToken();
+                }
+            }
 
             // Handle body with or without braces
             stmt.Body = ParseBodyAsBlock();
@@ -1450,6 +1715,28 @@ namespace FenBrowser.FenEngine.Core
             {
                 varKeyword = _curToken;
                 NextToken();
+            }
+
+            // Check for destructuring pattern: for (const [a,b] of ...) or for (const {a,b} of ...)
+            if (CurTokenIs(TokenType.LBracket) || CurTokenIs(TokenType.LBrace))
+            {
+                var pattern = CurTokenIs(TokenType.LBracket) ? ParseArrayLiteral() : ParseObjectLiteral();
+                if (PeekTokenIs(TokenType.Of))
+                {
+                    NextToken(); // move to 'of'
+                    NextToken(); // move to iterable
+                    var iterExpr = ParseExpression(Precedence.Lowest);
+                    if (!ExpectPeek(TokenType.RParen)) return null;
+                    return new ForOfStatement { Token = forToken, DestructuringPattern = pattern, Iterable = iterExpr, Body = ParseBodyAsBlock() };
+                }
+                if (PeekTokenIs(TokenType.In))
+                {
+                    NextToken(); // move to 'in'
+                    NextToken(); // move to object
+                    var objExpr = ParseExpression(Precedence.Lowest);
+                    if (!ExpectPeek(TokenType.RParen)) return null;
+                    return new ForInStatement { Token = forToken, DestructuringPattern = pattern, Object = objExpr, Body = ParseBodyAsBlock() };
+                }
             }
 
             // If current is identifier and peek is 'in' or 'of', this is for-in/for-of
@@ -1492,7 +1779,11 @@ namespace FenBrowser.FenEngine.Core
             
             if (!ExpectPeek(TokenType.Semicolon)) 
             {
-                return null;
+                // Recovery: skip to semicolon or RParen
+                while (!CurTokenIs(TokenType.Semicolon) && !CurTokenIs(TokenType.RParen) && !CurTokenIs(TokenType.Eof))
+                {
+                    NextToken();
+                }
             }
 
             // Condition
@@ -1501,7 +1792,14 @@ namespace FenBrowser.FenEngine.Core
                 NextToken();
                 stmt.Condition = ParseExpression(Precedence.Lowest);
             }
-            if (!ExpectPeek(TokenType.Semicolon)) return null;
+            if (!ExpectPeek(TokenType.Semicolon))
+            {
+                // Recovery: skip to next semicolon or RParen
+                while (!CurTokenIs(TokenType.Semicolon) && !CurTokenIs(TokenType.RParen) && !CurTokenIs(TokenType.Eof))
+                {
+                    NextToken();
+                }
+            }
 
             // Update
             if (!PeekTokenIs(TokenType.RParen))
@@ -1511,7 +1809,14 @@ namespace FenBrowser.FenEngine.Core
                 stmt.Update = new ExpressionStatement { Expression = exp };
             }
 
-            if (!ExpectPeek(TokenType.RParen)) return null;
+            if (!ExpectPeek(TokenType.RParen))
+            {
+                // Recovery: skip to RParen or LBrace
+                while (!CurTokenIs(TokenType.RParen) && !CurTokenIs(TokenType.LBrace) && !CurTokenIs(TokenType.Eof))
+                {
+                    NextToken();
+                }
+            }
 
             // Handle body with or without braces
             stmt.Body = ParseBodyAsBlock();
@@ -1534,6 +1839,56 @@ namespace FenBrowser.FenEngine.Core
 
             stmt.Body = ParseBodyAsBlock();
             return stmt;
+        }
+
+        private Expression ParseClassExpression()
+        {
+            var exp = new ClassExpression { Token = _curToken };
+
+            // Optional name
+            if (PeekTokenIs(TokenType.Identifier))
+            {
+                NextToken();
+                exp.Name = new Identifier(_curToken, _curToken.Literal);
+            }
+
+            if (PeekTokenIs(TokenType.Extends))
+            {
+                NextToken(); // extends
+                NextToken(); // superClassExpression - usually identifier but can be expression
+                // For simplicity, assume identifier for now as per ClassStatement, or execute ParseExpression(Precedence.Lowest) if needed?
+                // ClassStatement uses Identifier. Let's stick to Identifier for consistency with ClassStatement for now.
+                // But Class expressions allow expressions: class extends (mixin(Base)) {}
+                // Keep it simple first.
+                exp.SuperClass = new Identifier(_curToken, _curToken.Literal);
+            }
+
+            if (!ExpectPeek(TokenType.LBrace))
+            {
+                return null;
+            }
+
+            // Parse class body
+            while (!PeekTokenIs(TokenType.RBrace) && !PeekTokenIs(TokenType.Eof))
+            {
+                var member = ParseClassMember();
+                if (member is MethodDefinition method)
+                {
+                    exp.Methods.Add(method);
+                }
+                else if (member is ClassProperty prop)
+                {
+                    exp.Properties.Add(prop);
+                }
+                NextToken();
+            }
+
+            if (!ExpectPeek(TokenType.RBrace))
+            {
+                return null;
+            }
+
+            return exp;
         }
 
         private Statement ParseClassStatement()
@@ -2035,6 +2390,45 @@ namespace FenBrowser.FenEngine.Core
                 }
             }
             
+            // Check for Async Arrow Function: async x => ...
+            // Must be on the same line to be an arrow function arg
+            if (PeekTokenIs(TokenType.Identifier) && !_peekToken.HadLineTerminatorBefore)
+            {
+                // This is likely 'async arg => ...'
+                // Consume 'async' (already current) and move to arg
+                NextToken(); 
+                var arg = new Identifier(_curToken, _curToken.Literal);
+                
+                if (PeekTokenIs(TokenType.Arrow))
+                {
+                    var arrow = new ArrowFunctionExpression 
+                    { 
+                        Token = token,
+                        IsAsync = true,
+                        Parameters = new List<Identifier> { arg }
+                    };
+                    
+                    NextToken(); // Move to '=>'
+                    NextToken(); // Move past '=>'
+                    
+                    // Parse body
+                    if (CurTokenIs(TokenType.LBrace))
+                    {
+                        arrow.Body = ParseBlockStatement();
+                    }
+                    else
+                    {
+                        arrow.Body = ParseExpression(Precedence.Lowest);
+                    }
+                    return arrow;
+                }
+                
+                 // If '=>' is NOT next, we might have consumed an identifier we shouldn't have?
+                 // But 'async x' is invalid expression syntax anyway.
+                 _errors.Add($"expected '=>' after async argument, got {_peekToken.Type}");
+                 return null;
+            }
+
             // If not followed by function, treat 'async' as an identifier
             // This allows 'async' to be used as a variable name in expressions
             return new Identifier(token, "async");
@@ -2129,7 +2523,15 @@ namespace FenBrowser.FenEngine.Core
                     continue; // Skip unexpected tokens
                 }
 
-                if (!ExpectPeek(TokenType.Colon)) return null;
+                if (!ExpectPeek(TokenType.Colon))
+        {
+            // Recovery: skip to next case/default/rbrace
+            while (!CurTokenIs(TokenType.Colon) && !CurTokenIs(TokenType.Case) && 
+                   !CurTokenIs(TokenType.Default) && !CurTokenIs(TokenType.RBrace) && !CurTokenIs(TokenType.Eof))
+            {
+                NextToken();
+            }
+        }
 
                 // Parse statements until next case/default/}
                 while (!PeekTokenIs(TokenType.Case) && !PeekTokenIs(TokenType.Default) && 
@@ -2195,7 +2597,14 @@ namespace FenBrowser.FenEngine.Core
             NextToken();
             stmt.Condition = ParseExpression(Precedence.Lowest);
 
-            if (!ExpectPeek(TokenType.RParen)) return null;
+            if (!ExpectPeek(TokenType.RParen))
+    {
+        // Recovery: skip to RParen or semicolon
+        while (!CurTokenIs(TokenType.RParen) && !CurTokenIs(TokenType.Semicolon) && !CurTokenIs(TokenType.Eof))
+        {
+            NextToken();
+        }
+    }
             if (PeekTokenIs(TokenType.Semicolon)) NextToken();
 
             return stmt;
@@ -2223,16 +2632,16 @@ namespace FenBrowser.FenEngine.Core
             var exp = new ConditionalExpression { Token = _curToken, Condition = condition };
 
             NextToken(); // Move past '?'
-            exp.Consequent = ParseExpression(Precedence.Ternary);
+            exp.Consequent = ParseExpression(Precedence.Comma);
 
             if (!ExpectPeek(TokenType.Colon))
             {
-                _errors.Add("Expected ':' in ternary expression");
+                _errors.Add($"Expected ':' in ternary expression, got {_peekToken.Type}");
                 return null;
             }
 
             NextToken(); // Move past ':'
-            exp.Alternate = ParseExpression(Precedence.Ternary);
+            exp.Alternate = ParseExpression(Precedence.Comma);
 
             return exp;
         }
@@ -2242,8 +2651,40 @@ namespace FenBrowser.FenEngine.Core
         {
             var arrow = new ArrowFunctionExpression { Token = _curToken };
 
-            // Extract parameters from left side (should be grouped expression or identifier)
-            arrow.Parameters = ExtractArrowParameters(left);
+            // Handle async (args) => ...
+            // The parser sees 'async' (identifier) + '(' (call) -> CallExpression
+            if (left is CallExpression callExp && 
+                callExp.Function is Identifier funcId && 
+                funcId.Value == "async")
+            {
+                arrow.IsAsync = true;
+                arrow.Parameters = new List<Identifier>();
+                
+                // Convert call arguments to parameters
+                foreach (var arg in callExp.Arguments)
+                {
+                    if (arg is Identifier id)
+                    {
+                        arrow.Parameters.Add(id);
+                    }
+                    else if (arg is AssignmentExpression assign && assign.Left is Identifier assignId)
+                    {
+                        // Default value: async (x = 1) => ...
+                        assignId.DefaultValue = assign.Right;
+                        arrow.Parameters.Add(assignId);
+                    }
+                    else
+                    {
+                         // Recover from complex patterns by creating placeholder
+                         arrow.Parameters.Add(new Identifier(arg.Token, $"__async_arg_{arrow.Parameters.Count}"));
+                    }
+                }
+            }
+            else
+            {
+                // Extract parameters from left side (grouped expression or identifier)
+                arrow.Parameters = ExtractArrowParameters(left);
+            }
 
             NextToken(); // Move past '=>'
 
@@ -2254,7 +2695,7 @@ namespace FenBrowser.FenEngine.Core
             }
             else
             {
-                arrow.Body = ParseExpression(Precedence.Lowest);
+                arrow.Body = ParseExpression(Precedence.Comma);
             }
 
             return arrow;
@@ -2401,6 +2842,8 @@ namespace FenBrowser.FenEngine.Core
         // This is called when we see a Slash token in prefix position
         private Expression ParseRegexLiteral()
         {
+            // Verify if we actully enter here
+            Console.WriteLine("[Parser] ENTERING ParseRegexLiteral (Slash prefix)");
             // At this point _curToken is Slash
             // We need to read ahead to find the closing /
             // This is a simplified implementation - real regex parsing is complex
@@ -2425,6 +2868,7 @@ namespace FenBrowser.FenEngine.Core
         // Parse already-lexed regex token
         private Expression ParseRegexToken()
         {
+            Console.WriteLine($"[Parser] ENTERING ParseRegexToken. Literal: {_curToken.Literal}");
             // If lexer provides a regex token, parse it
             var literal = _curToken.Literal;
             var pattern = "";
