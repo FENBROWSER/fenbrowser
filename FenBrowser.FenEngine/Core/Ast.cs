@@ -408,6 +408,10 @@ namespace FenBrowser.FenEngine.Core
     public class ObjectLiteral : Expression
     {
         public Dictionary<string, Expression> Pairs { get; set; } = new Dictionary<string, Expression>();
+        /// <summary>
+        /// Maps placeholder keys (e.g. "__computed_0") to their computed key expressions.
+        /// </summary>
+        public Dictionary<string, Expression> ComputedKeys { get; set; } = new Dictionary<string, Expression>();
 
         public override string String()
         {
@@ -499,6 +503,7 @@ namespace FenBrowser.FenEngine.Core
     {
         public List<Identifier> Parameters { get; set; } = new List<Identifier>();
         public AstNode Body { get; set; } // BlockStatement or Expression
+        public bool IsAsync { get; set; } = false;
 
         public override string String()
         {
@@ -529,12 +534,13 @@ namespace FenBrowser.FenEngine.Core
     public class ForInStatement : Statement
     {
         public Identifier Variable { get; set; }  // Loop variable (x in "for x in obj")
+        public Expression DestructuringPattern { get; set; } // For destructuring: for (const {a,b} in obj)
         public Expression Object { get; set; }     // Object to iterate
         public BlockStatement Body { get; set; }
 
         public override string String()
         {
-            return $"for ({Variable.String()} in {Object.String()}) {Body.String()}";
+            return $"for ({Variable?.String() ?? DestructuringPattern?.String()} in {Object.String()}) {Body.String()}";
         }
     }
 
@@ -542,12 +548,13 @@ namespace FenBrowser.FenEngine.Core
     public class ForOfStatement : Statement
     {
         public Identifier Variable { get; set; }  // Loop variable
+        public Expression DestructuringPattern { get; set; } // For destructuring: for (const [a,b] of iterable)
         public Expression Iterable { get; set; }  // Iterable object
         public BlockStatement Body { get; set; }
 
         public override string String()
         {
-            return $"for ({Variable.String()} of {Iterable.String()}) {Body.String()}";
+            return $"for ({Variable?.String() ?? DestructuringPattern?.String()} of {Iterable.String()}) {Body.String()}";
         }
     }
 
@@ -617,6 +624,41 @@ namespace FenBrowser.FenEngine.Core
             var sb = new StringBuilder();
             sb.Append("class ");
             sb.Append(Name.String());
+            if (SuperClass != null)
+            {
+                sb.Append(" extends ");
+                sb.Append(SuperClass.String());
+            }
+            sb.Append(" { ");
+            foreach (var prop in Properties)
+            {
+                sb.Append(prop.String());
+                sb.Append("; ");
+            }
+            foreach (var method in Methods)
+            {
+                sb.Append(method.String());
+            }
+            sb.Append(" }");
+            return sb.ToString();
+        }
+    }
+
+    public class ClassExpression : Expression
+    {
+        public Identifier Name { get; set; }
+        public Identifier SuperClass { get; set; }
+        public List<MethodDefinition> Methods { get; set; } = new List<MethodDefinition>();
+        public List<ClassProperty> Properties { get; set; } = new List<ClassProperty>();
+
+        public override string String()
+        {
+            var sb = new StringBuilder();
+            sb.Append("class");
+            if (Name != null)
+            {
+                sb.Append(" " + Name.String());
+            }
             if (SuperClass != null)
             {
                 sb.Append(" extends ");
@@ -755,6 +797,15 @@ namespace FenBrowser.FenEngine.Core
             var label = Test != null ? $"case {Test.String()}" : "default";
             return $"{label}: ...";
         }
+    }
+
+    // Labeled statement: label: statement
+    public class LabeledStatement : Statement
+    {
+        public Identifier Label { get; set; }
+        public Statement Body { get; set; }
+
+        public override string String() => $"{Label.Value}: {Body.String()}";
     }
 
     // Break statement

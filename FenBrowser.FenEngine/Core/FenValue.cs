@@ -22,6 +22,26 @@ namespace FenBrowser.FenEngine.Core
         public static readonly FenValue Break = new FenValue { Type = Interfaces.ValueType.Break };
         public static readonly FenValue Continue = new FenValue { Type = Interfaces.ValueType.Continue };
 
+        public static FenValue BreakWithLabel(string label)
+        {
+            return new FenValue { Type = Interfaces.ValueType.Break, _refValue = label };
+        }
+
+        public static FenValue ContinueWithLabel(string label)
+        {
+            return new FenValue { Type = Interfaces.ValueType.Continue, _refValue = label };
+        }
+
+        /// <summary>
+        /// Gets the label for a labeled break/continue, or null if unlabeled.
+        /// </summary>
+        public string BreakContinueLabel => (Type == Interfaces.ValueType.Break || Type == Interfaces.ValueType.Continue) ? _refValue as string : null;
+
+        /// <summary>
+        /// Gets the inner value for ReturnValue or Yield wrapper types.
+        /// </summary>
+        public FenValue InnerValue => (_refValue is FenValue fv) ? fv : Undefined;
+
         public static FenValue FromBoolean(bool value)
         {
             return new FenValue { Type = Interfaces.ValueType.Boolean, _numberValue = value ? 1.0 : 0.0 };
