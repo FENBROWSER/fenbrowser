@@ -145,13 +145,15 @@ namespace FenBrowser.FenEngine.Core
         public string Literal { get; }
         public int Line { get; }
         public int Column { get; }
+        public bool HadLineTerminatorBefore { get; set; }
 
-        public Token(TokenType type, string literal, int line, int column)
+        public Token(TokenType type, string literal, int line, int column, bool hadLineTerminatorBefore = false)
         {
             Type = type;
             Literal = literal;
             Line = line;
             Column = column;
+            HadLineTerminatorBefore = hadLineTerminatorBefore;
         }
 
         public override string ToString()
@@ -262,7 +264,7 @@ namespace FenBrowser.FenEngine.Core
 
         public Token NextToken()
         {
-            SkipWhitespace();
+            bool hadLineTerminator = SkipWhitespace();
 
             Token token;
             int startColumn = _column;
@@ -276,21 +278,21 @@ namespace FenBrowser.FenEngine.Core
                         if (PeekChar() == '=')
                         {
                             ReadChar();
-                            token = new Token(TokenType.StrictEq, "===", _line, startColumn);
+                            token = new Token(TokenType.StrictEq, "===", _line, startColumn, hadLineTerminator);
                         }
                         else
                         {
-                            token = new Token(TokenType.Eq, "==", _line, startColumn);
+                            token = new Token(TokenType.Eq, "==", _line, startColumn, hadLineTerminator);
                         }
                     }
                     else if (PeekChar() == '>')
                     {
                         ReadChar();
-                        token = new Token(TokenType.Arrow, "=>", _line, startColumn);
+                        token = new Token(TokenType.Arrow, "=>", _line, startColumn, hadLineTerminator);
                     }
                     else
                     {
-                        token = new Token(TokenType.Assign, "=", _line, startColumn);
+                        token = new Token(TokenType.Assign, "=", _line, startColumn, hadLineTerminator);
                     }
                     break;
                 case '?':
@@ -299,12 +301,12 @@ namespace FenBrowser.FenEngine.Core
                         // Check if next char after . is a digit (ternary + decimal, not optional chain)
                         if (_readPosition + 1 < _input.Length && IsDigit(_input[_readPosition + 1]))
                         {
-                            token = new Token(TokenType.Question, "?", _line, startColumn);
+                            token = new Token(TokenType.Question, "?", _line, startColumn, hadLineTerminator);
                         }
                         else
                         {
                             ReadChar();
-                            token = new Token(TokenType.OptionalChain, "?.", _line, startColumn);
+                            token = new Token(TokenType.OptionalChain, "?.", _line, startColumn, hadLineTerminator);
                         }
                     }
                     else if (PeekChar() == '?')
@@ -313,16 +315,16 @@ namespace FenBrowser.FenEngine.Core
                         if (PeekChar() == '=')
                         {
                             ReadChar();
-                            token = new Token(TokenType.NullishAssign, "??=", _line, startColumn);
+                            token = new Token(TokenType.NullishAssign, "??=", _line, startColumn, hadLineTerminator);
                         }
                         else
                         {
-                            token = new Token(TokenType.NullishCoalescing, "??", _line, startColumn);
+                            token = new Token(TokenType.NullishCoalescing, "??", _line, startColumn, hadLineTerminator);
                         }
                     }
                     else
                     {
-                        token = new Token(TokenType.Question, "?", _line, startColumn);
+                        token = new Token(TokenType.Question, "?", _line, startColumn, hadLineTerminator);
                     }
                     break;
                 case '+':
@@ -400,6 +402,9 @@ namespace FenBrowser.FenEngine.Core
                         {
                             string regex = ReadRegexLiteral();
                             token = new Token(TokenType.Regex, regex, _line, startColumn);
+                            token.HadLineTerminatorBefore = hadLineTerminator;
+                            _prevToken = token;
+                            return token;
                         }
                         else
                         {
@@ -602,21 +607,26 @@ namespace FenBrowser.FenEngine.Core
             }
 
             ReadChar();
+            
+            token.HadLineTerminatorBefore = hadLineTerminator;
             _prevToken = token;
             return token;
         }
 
-        private void SkipWhitespace()
+        private bool SkipWhitespace()
         {
+            bool hadLineTerminator = false;
             while (_ch == ' ' || _ch == '\t' || _ch == '\n' || _ch == '\r')
             {
                 if (_ch == '\n')
                 {
                     _line++;
                     _column = 0;
+                    hadLineTerminator = true;
                 }
                 ReadChar();
             }
+            return hadLineTerminator;
         }
 
         private void SkipLineComment()
@@ -671,8 +681,38 @@ namespace FenBrowser.FenEngine.Core
         private string ReadNumber()
         {
             int position = _position;
-            
-            // Handle numeric separators (1_000_000) and BigInt (123n)
+
+            // Handle hex (0x), octal (0o), binary (0b) prefixes
+            if (_ch == '0')
+            {
+                char next = PeekChar();
+                if (next == 'x' || next == 'X')
+                {
+                    ReadChar(); // consume '0'
+                    ReadChar(); // consume 'x'/'X'
+                    while (IsHexDigit(_ch) || _ch == '_') ReadChar();
+                    string raw = _input.Substring(position, _position - position);
+                    return raw.Replace("_", "");
+                }
+                if (next == 'o' || next == 'O')
+                {
+                    ReadChar(); // consume '0'
+                    ReadChar(); // consume 'o'/'O'
+                    while ((_ch >= '0' && _ch <= '7') || _ch == '_') ReadChar();
+                    string raw = _input.Substring(position, _position - position);
+                    return raw.Replace("_", "");
+                }
+                if (next == 'b' || next == 'B')
+                {
+                    ReadChar(); // consume '0'
+                    ReadChar(); // consume 'b'/'B'
+                    while (_ch == '0' || _ch == '1' || _ch == '_') ReadChar();
+                    string raw = _input.Substring(position, _position - position);
+                    return raw.Replace("_", "");
+                }
+            }
+
+            // Handle decimal numeric separators (1_000_000) and BigInt (123n)
             while (IsDigit(_ch) || _ch == '_')
             {
                 if (_ch == '_')
@@ -683,7 +723,7 @@ namespace FenBrowser.FenEngine.Core
                 }
                 ReadChar();
             }
-            
+
             if (_ch == '.' && IsDigit(PeekChar()))
             {
                 ReadChar();
@@ -692,7 +732,7 @@ namespace FenBrowser.FenEngine.Core
                     ReadChar();
                 }
             }
-            
+
             // Handle exponent notation (1e10, 1E-5)
             if (_ch == 'e' || _ch == 'E')
             {
@@ -700,10 +740,15 @@ namespace FenBrowser.FenEngine.Core
                 if (_ch == '+' || _ch == '-') ReadChar();
                 while (IsDigit(_ch) || _ch == '_') ReadChar();
             }
-            
+
             // Note: BigInt (123n) is handled by the caller checking for 'n' suffix
-            string raw = _input.Substring(position, _position - position);
-            return raw.Replace("_", ""); // Remove separators for parsing
+            string rawNum = _input.Substring(position, _position - position);
+            return rawNum.Replace("_", ""); // Remove separators for parsing
+        }
+
+        private bool IsHexDigit(char ch)
+        {
+            return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
         }
 
         private string ReadString(char quote)
@@ -893,6 +938,65 @@ namespace FenBrowser.FenEngine.Core
             }
             
             return _input.Substring(start, _position - start);
+        }
+        public string GetCodeContext(int line, int column = -1, int contextLines = 2)
+        {
+            try
+            {
+                var lines = _input.Split(new[] { "\n", "\r\n" }, StringSplitOptions.None);
+                
+                var startLine = Math.Max(0, line - contextLines - 1);
+                var endLine = Math.Min(lines.Length - 1, line + contextLines - 1);
+                
+                var sb = new StringBuilder();
+                for (int i = startLine; i <= endLine; i++)
+                {
+                    string prefix = (i + 1) == line ? ">> " : "   ";
+                    string lineStr = lines[i];
+                    
+                    // Truncate non-error lines or extremely long lines
+                    if (lineStr.Length > 200)
+                    {
+                        lineStr = lineStr.Substring(0, 197) + "...";
+                    }
+                    
+                    sb.AppendLine($"{prefix}{i + 1}: {lineStr}");
+                }
+                
+                // If column is provided, show precise location snippet
+                if (column >= 0 && line > 0 && line <= lines.Length)
+                {
+                     sb.AppendLine($"   Column: {column}");
+                     
+                     string errorLine = lines[line - 1];
+                     // Get 50 chars before and after
+                     if (errorLine.Length > 0)
+                     {
+                         int start = Math.Max(0, column - 50);
+                         int length = Math.Min(errorLine.Length - start, 100);
+                         if (start < errorLine.Length)
+                         {
+                             string snippet = errorLine.Substring(start, length);
+                             
+                             sb.AppendLine("   Snippet:");
+                             sb.AppendLine("   " + snippet);
+                             
+                             // Pointer
+                             int pointerPos = column - start;
+                             if (pointerPos >= 0 && pointerPos <= snippet.Length)
+                             {
+                                 sb.AppendLine("   " + new string('-', pointerPos) + "^");
+                             }
+                         }
+                     }
+                }
+                
+                return sb.ToString();
+            }
+            catch (Exception ex)
+            {
+                return $"Error retrieving context: {ex.Message}";
+            }
         }
     }
 }
