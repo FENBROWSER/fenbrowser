@@ -41,6 +41,76 @@ namespace FenBrowser.FenEngine
                 }
                 Console.WriteLine($"Duration: {result.Duration.TotalMilliseconds}ms");
             }
+            else if (args.Length >= 1 && args[0] == "test262-suite")
+            {
+                string category = args.Length > 1 ? args[1] : "";
+                string rootPath = args.Length > 2 ? args[2] : @"C:\Users\udayk\Videos\FENBROWSER\test262";
+                
+                if (!Directory.Exists(rootPath))
+                {
+                    Console.WriteLine($"Error: Test262 root not found: {rootPath}");
+                    return;
+                }
+                
+                Console.WriteLine($"Running Test262 Suite: {category} (Root: {rootPath})");
+                var runner = new Test262Runner(rootPath);
+                
+                int passed = 0;
+                int failed = 0;
+                var results = await runner.RunCategoryAsync(category, (test, count) => 
+                {
+                    if (count % 100 == 0) Console.Write(".");
+                });
+                
+                Console.WriteLine();
+                Console.WriteLine("=== Test262 Suite Results ===");
+                foreach (var r in results)
+                {
+                    if (r.Passed) passed++; else failed++;
+                    // Only print failures to avoid spam
+                    if (!r.Passed)
+                    {
+                         Console.WriteLine($"[FAIL] {Path.GetFileName(r.TestFile)}: {r.Actual} (Expected: {r.Expected})");
+                    }
+                }
+                
+                Console.WriteLine($"Total: {results.Count}, Passed: {passed}, Failed: {failed}");
+                Console.WriteLine($"Pass Rate: {(double)passed / results.Count * 100:F2}%");
+            }
+            else if (args.Length >= 3 && args[0] == "test262-range")
+            {
+                int skip = int.Parse(args[1]);
+                int take = int.Parse(args[2]);
+                string category = args.Length > 3 ? args[3] : "";
+                string rootPath = @"C:\Users\udayk\Videos\FENBROWSER\test262";
+                
+                if (!Directory.Exists(rootPath)) return;
+                
+                Console.WriteLine($"Running Test262 Range: Skip {skip}, Take {take} (Category: '{category}')");
+                var runner = new Test262Runner(rootPath);
+                
+                int passed = 0;
+                int failed = 0;
+                var results = await runner.RunSliceAsync(category, skip, take, (test, count) => 
+                {
+                    if (count % 10 == 0) Console.Write(".");
+                });
+                
+                Console.WriteLine();
+                Console.WriteLine("=== Test262 Range Results ===");
+                foreach (var r in results)
+                {
+                    if (r.Passed) passed++; else failed++;
+                    if (!r.Passed)
+                    {
+                         Console.WriteLine($"[FAIL] {r.TestFile}: {r.Actual} (Expected: {r.Expected})");
+                         if (!string.IsNullOrEmpty(r.Error))
+                             Console.WriteLine($"       Error: {r.Error}");
+                    }
+                }
+
+                Console.WriteLine($"Total: {results.Count}, Passed: {passed}, Failed: {failed}");
+            }
             else if (args.Length >= 1 && args[0] == "test")
             {
                 FenBrowser.FenEngine.Tests.LogicTestRunner.MainTest(args);

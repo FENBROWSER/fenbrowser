@@ -172,6 +172,9 @@ namespace FenBrowser.FenEngine.DOM
             public Action<MutationRecord> OnMutation { get => _inner.OnMutation; set => _inner.OnMutation = value; }
             public string CurrentUrl { get => _inner.CurrentUrl; set => _inner.CurrentUrl = value; }
             public FenEnvironment Environment { get => _inner.Environment; set => _inner.Environment = value; }
+            public FenValue NewTarget { get => _inner.NewTarget; set => _inner.NewTarget = value; }
+            public string CurrentModulePath { get => _inner.CurrentModulePath; set => _inner.CurrentModulePath = value; }
+            public bool StrictMode { get => _inner.StrictMode; set => _inner.StrictMode = value; }
             public void PushCallFrame(string name) => _inner.PushCallFrame(name);
             public void PopCallFrame() => _inner.PopCallFrame();
             public void CheckCallStackLimit() => _inner.CheckCallStackLimit();
