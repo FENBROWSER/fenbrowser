@@ -272,6 +272,10 @@ The custom logic runtime and bridge.
 - `Interaction.InputManager.ProcessEvent(...)` now resolves hit-test targets for `mouseup` (and touch move/end) in addition to down/move/click, so DOM `mouseup` reliably dispatches to controls and JS click state machines no longer miss release-phase events.
 - `NewPaintTreeBuilder` single-line fallback text now early-returns for whitespace-only runs and uses resolved draw bounds without mutating `box.ContentBox`, removing ghost fallback text nodes and stabilizing paint geometry.
 - `FenEngine.HTML.HtmlTreeBuilder` now uses `SetAttributeUnsafe` during tree construction (active-formatting reconstruction and element insertion paths), aligning parsed-HTML attribute preservation with Core parser semantics.
+- `Core.Parser.ParseImportExpression` now parses `import(...)` using argument-list semantics instead of grouped-expression semantics, fixing false `expected ... RParen` parse errors in dynamic-import tests.
+- `Core.Parser` module syntax handling now correctly accepts and advances `export * from ...`, `export * as <IdentifierName> from ...`, and `import { default as x } from ...` forms by treating `IdentifierName` tokens (including keywords like `default`) as valid export/import names where grammar allows them.
+- `Testing.Test262Runner` now parses `flags` metadata (`onlyStrict`, `noStrict`, `async`) and applies `onlyStrict` by injecting a strict directive in the test prelude, improving conformance setup parity for strict-mode Test262 cases.
+- `Core.Lexer.ReadIdentifier` now advances after successful `\uHHHH` escape decoding, preventing accidental re-consumption of the final hex digit in escaped identifiers.
 
 #### `JavaScriptEngine.Dom.cs` (Lines 1-1203)
 
@@ -324,6 +328,17 @@ Implementation of JS Proxy/Reflect built-ins.
 
 _End of Volume III_
 
+### 6.7 Test262 Hardening Notes (2026-02-10)
+
+- `Core/Lexer.cs`: Expanded identifier start/part classification for broader Unicode coverage (including `Other_ID_Start`/`Other_ID_Continue` and surrogate tolerance for astral identifiers).
+- `Core/Parser.cs`: Added script-goal early-error checks (`import`/`export`), top-level `return` rejection, `new.target` context validation, and stricter `super`/private-identifier context checks.
+- `Core/Parser.cs`: Added async/generator nesting context tracking and stricter `yield`/`await` parsing constraints.
+- `Core/Parser.cs`: Enforced rest-element placement/initializer rules in binding-pattern validation.
+- `Core/ModuleLoader.cs`: Parser created with module goal (`isModule: true`) for module source parsing.
+- `Core/Parser.cs`: Added class-element early-error validation sweep (duplicate constructors/private names, `#constructor` bans, static `prototype` bans, `super()` placement checks, `super.#name` and `delete` private-reference checks, class-field `Contains(super())`/`Contains(arguments)` checks, and stricter method/accessor parameter early-errors).
+- `Core/Parser.cs`: Added nested private-name scope tracking for class parsing and broadened `extends` parsing to accept general superclass expressions.
+- `Testing/Test262Runner.cs`: Parse-phase `SyntaxError` negatives now treat any parser-produced parse error as pass, avoiding false negatives from diagnostic text mismatch.
+
 ### 6.4 Contributor Cookbook: Implementing a New CSS Property
 
 So you want to add `border-radius`? Follow these steps:
@@ -351,3 +366,57 @@ So you want to add `border-radius`? Follow these steps:
 | `RecordFrame()`      | Generates a new display list.              | Engine |
 | `InputKey(evt)`      | Dispatches keyboard event to focused node. | Engine |
 | `Dispose()`          | Cleans up GL context and threads.          | UI     |
+
+### 6.8 Test262 Wave 3 Notes (2026-02-10)
+
+- `Core/Parser.cs`
+  - Added nested statement-list tracking to enforce module-only top-level placement for `import`/`export`.
+  - Added module early-error sweep for top-level `var`/lexical declaration name collisions.
+  - Added module-top-level `yield` early error.
+  - Hardened `export default` parsing:
+    - proper default `function`/`class`/`async function` handling,
+    - rejection of immediate invocation after anonymous default declaration,
+    - corrected `class extends` optional-name lookahead.
+  - Added support for string `ModuleExportName` forms in import/export specifiers.
+  - Added import-attributes parsing (`with { ... }`) for `import ... from` and `export ... from`.
+  - Added duplicate key detection in import-attributes object literals.
+
+- `Core/Lexer.cs`
+  - Added strict validation for escaped identifier code points; invalid escaped punctuator forms are now tokenized as `Illegal`.
+
+- `Core/Interpreter.cs`
+  - Added missing-export checks for module named imports and named re-exports.
+
+- `Core/ModuleLoader.cs`
+  - Added `ThrowOnEvaluationError` mode (used by Test262 negative-module paths only) to surface module-evaluation error values as exceptions when needed.
+
+- `Testing/Test262Runner.cs`
+  - Module-goal detection for Test262 now follows metadata module flags directly.
+  - Negative module tests enable strict module-evaluation error surfacing without affecting positive test execution mode.
+
+### 6.9 Test262 Rebaseline Notes (2026-02-11)
+
+- `Core/Lexer.cs`
+  - Hardened JS whitespace and line-terminator handling (`CR/LF/LS/PS`, Unicode space separators, BOM) in token skipping and comment scanning.
+  - Added unterminated block-comment detection (`/* ... EOF`) to emit `Illegal` token instead of silently accepting EOF.
+  - Reworked numeric literal scanner:
+    - strict separator placement validation,
+    - proper `.DecimalDigits` and dot-leading exponent forms,
+    - BigInt shape validation (`0e0n`, leading-zero decimal BigInt forms),
+    - identifier-tail rejection after numeric literals.
+  - Tightened regex tokenization safety checks for:
+    - line terminators inside regex literal bodies,
+    - invalid/duplicate regex flags,
+    - quantified lookbehind assertion early-error patterns.
+
+- `Core/Parser.cs`
+  - Added targeted unary/statement early-error diagnostics for malformed recovery paths:
+    - missing unary operand (`typeof = 1`, `void = 1`, etc.),
+    - missing throw expression / illegal newline after `throw`,
+    - invalid trailing tokens after `break` / `continue`,
+    - missing constructor target in `new` expressions,
+    - invalid declaration identifier diagnostics in `var`/`let`/`const` declarations.
+
+- `test262_results.md`
+  - Added full 52,871-test rebaseline and refreshed 53-chunk table.
+  - Current full-suite result: `50,388 / 52,871` passed (`95.30%`).
