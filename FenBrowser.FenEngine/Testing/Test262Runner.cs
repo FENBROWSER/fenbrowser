@@ -11,6 +11,8 @@ using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using System.Linq;
+using System.Collections.Concurrent;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
@@ -47,6 +49,9 @@ namespace FenBrowser.FenEngine.Testing
             public List<string> Features { get; set; } = new List<string>();
             public List<string> Includes { get; set; } = new List<string>();
             public bool IsAsync { get; set; }
+            public bool IsOnlyStrict { get; set; }
+            public bool IsNoStrict { get; set; }
+            public bool IsModule { get; set; }
         }
         
         public Test262Runner(string test262RootPath, int timeoutMs = 10000)
@@ -71,28 +76,77 @@ namespace FenBrowser.FenEngine.Testing
             
             var testFiles = Directory.GetFiles(categoryPath, "*.js", SearchOption.AllDirectories);
             int count = 0;
+            var resultsBag = new System.Collections.Concurrent.ConcurrentBag<TestResult>();
             
-            foreach (var testFile in testFiles)
+            // Limit concurrency to avoid overwhelming the system
+            var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = 1 }; // Sequential to avoid static state races (DefaultPrototype, etc.)
+
+            await Parallel.ForEachAsync(testFiles, parallelOptions, async (testFile, token) =>
             {
-                if (count++ >= maxTests) break;
+                if (Interlocked.Increment(ref count) > maxTests) return;
                 
                 // Skip helper/harness files
                 var fileName = Path.GetFileName(testFile);
                 if (fileName.StartsWith("_") || fileName.Contains("_FIXTURE"))
-                    continue;
+                    return;
                 
                 var result = await RunSingleTestAsync(testFile);
-                _results.Add(result);
+                resultsBag.Add(result);
                 onProgress?.Invoke(Path.GetFileName(testFile), count);
-            }
+            });
             
+            _results.AddRange(resultsBag.OrderBy(r => r.TestFile)); // Sort for consistency
             return _results.AsReadOnly();
         }
-        
+
         /// <summary>
-        /// Run a single Test262 test file.
+        /// Run a specific slice of tests (skip/take) from all available tests.
         /// </summary>
+        public async Task<IReadOnlyList<TestResult>> RunSliceAsync(string category, int skip, int take, Action<string, int> onProgress = null)
+        {
+            _results.Clear();
+            
+            var categoryPath = Path.Combine(_test262RootPath, "test", category);
+            if (!Directory.Exists(categoryPath))
+            {
+                FenLogger.Warn($"[Test262] Category path not found: {categoryPath}", LogCategory.General);
+                return _results.AsReadOnly();
+            }
+            
+            // Get all files and sort deterministically
+            var allTestFiles = Directory.GetFiles(categoryPath, "*.js", SearchOption.AllDirectories)
+                                      .Where(f => !Path.GetFileName(f).StartsWith("_") && !Path.GetFileName(f).Contains("_FIXTURE"))
+                                      .OrderBy(f => f) // Deterministic order is CRITICAL for slicing
+                                      .Skip(skip)
+                                      .Take(take)
+                                      .ToList();
+                                      
+            Console.WriteLine($"[Test262] Found {allTestFiles.Count} tests in slice (Skip {skip}, Take {take})");
+
+            var resultsBag = new ConcurrentBag<TestResult>();
+            int count = 0;
+            
+            var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = 1 }; // Sequential to avoid static state races (DefaultPrototype, etc.)
+
+            await Parallel.ForEachAsync(allTestFiles, parallelOptions, async (testFile, token) =>
+            {
+                var result = await RunSingleTestAsync(testFile);
+                resultsBag.Add(result);
+                int current = Interlocked.Increment(ref count);
+                onProgress?.Invoke(Path.GetFileName(testFile), current);
+            });
+            
+            _results.AddRange(resultsBag.OrderBy(r => r.TestFile));
+            return _results.AsReadOnly();
+        }
+
         /// <summary>
+        /// Run a specific slice of tests (skip/take) from all available tests.
+        /// </summary>
+
+
+
+
         /// Run a single Test262 test file.
         /// </summary>
         public async Task<TestResult> RunSingleTestAsync(string testFile)
@@ -105,11 +159,67 @@ namespace FenBrowser.FenEngine.Testing
                 var content = await File.ReadAllTextAsync(testFile);
                 var metadata = ParseMetadata(content);
                 result.Metadata = metadata;
+                bool isModuleGoal = metadata.IsModule;
+
+                // Parse-phase negatives should be validated against the test source itself.
+                // Running them only as part of a large harness prelude can hide goal-sensitive early errors.
+                if (metadata.Negative && string.Equals(metadata.NegativePhase, "parse", StringComparison.OrdinalIgnoreCase))
+                {
+                    var parseSource = metadata.IsOnlyStrict ? "\"use strict\";\n" + content : content;
+                    var parseLexer = new Lexer(parseSource);
+                    var parseParser = new Parser(parseLexer, isModule: isModuleGoal);
+                    parseParser.ParseProgram();
+
+                    if (parseParser.Errors.Count > 0)
+                    {
+                        string parseErr = string.Join("\n", parseParser.Errors);
+                        bool expectsSyntaxError = string.Equals(metadata.NegativeType, "SyntaxError", StringComparison.OrdinalIgnoreCase);
+                        result.Passed = string.IsNullOrEmpty(metadata.NegativeType) ||
+                                        parseErr.Contains(metadata.NegativeType, StringComparison.OrdinalIgnoreCase) ||
+                                        expectsSyntaxError;
+                        result.Expected = $"Error ({metadata.NegativeType})";
+                        result.Actual = parseErr;
+                        if (!result.Passed)
+                        {
+                            result.Error = $"Expected {metadata.NegativeType} but got different parse error: {parseErr}";
+                        }
+                    }
+                    else
+                    {
+                        result.Passed = false;
+                        result.Expected = $"Error ({metadata.NegativeType})";
+                        result.Actual = "Success (No Error)";
+                        result.Error = "Parse-negative test parsed successfully";
+                    }
+
+                    sw.Stop();
+                    result.Duration = sw.Elapsed;
+                    return result;
+                }
 
                 // 1. Prepare Runtime
                 // We recreate the runtime for each test to ensure isolation
                 // In the future for perf we might reuse it but clean the global scope
                 var runtime = new FenBrowser.FenEngine.Core.FenRuntime();
+                runtime.OnConsoleMessage = (msg) => Console.WriteLine($"[JS-CONSOLE] {msg}");
+
+                if (isModuleGoal &&
+                    metadata.Negative &&
+                    !string.Equals(metadata.NegativePhase, "parse", StringComparison.OrdinalIgnoreCase) &&
+                    runtime.Context?.ModuleLoader is FenBrowser.FenEngine.Core.ModuleLoader strictModuleLoader)
+                {
+                    strictModuleLoader.ThrowOnEvaluationError = true;
+                }
+
+                // Inject console object since it's missing in default runtime
+                var consoleObj = new FenBrowser.FenEngine.Core.FenObject();
+                consoleObj.Set("log", FenBrowser.FenEngine.Core.FenValue.FromFunction(new FenBrowser.FenEngine.Core.FenFunction("log", (args, thisVal) =>
+                {
+                    var msg = args.Length > 0 ? args[0].ToString() : "";
+                    runtime.OnConsoleMessage?.Invoke(msg);
+                    return FenBrowser.FenEngine.Core.FenValue.Undefined;
+                })));
+                runtime.GlobalEnv.Set("console", FenBrowser.FenEngine.Core.FenValue.FromObject(consoleObj));
                 
                 // 2. Load Harness Files
                 // Default harness files required by most tests
@@ -118,6 +228,10 @@ namespace FenBrowser.FenEngine.Testing
                 var staJs = await File.ReadAllTextAsync(Path.Combine(harnessPath, "sta.js"));
                 
                 var preludeBuilder = new StringBuilder();
+                if (metadata.IsOnlyStrict)
+                {
+                    preludeBuilder.Append("\"use strict\";\n");
+                }
                 preludeBuilder.Append(assertJs);
                 preludeBuilder.Append("\n;\n");
                 preludeBuilder.Append(staJs);
@@ -140,35 +254,140 @@ namespace FenBrowser.FenEngine.Testing
                 }
 
                 // 4. Combine and Execute
-                var fullScript = preludeBuilder.ToString() + content;
+                var preludeScript = preludeBuilder.ToString();
+                var fullScript = preludeScript + content;
+                // var fullScript = content; // SKIP HARNESS FOR DEBUGGING
+
+                if (testFile.EndsWith("assign-to-global-undefined.js", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine($"[DBG] metadata.IsOnlyStrict={metadata.IsOnlyStrict}");
+                    Console.WriteLine($"[DBG] pre-run HasBinding('undeclared')={runtime.GlobalEnv.HasBinding("undeclared")}");
+                }
                 
                 // Some tests depend on specific global properties or potentially async
                 // For now, allow generic execution
                 
                 try
                 {
-                    // Execute with timeout
-                    var executionTask = Task.Run(() => runtime.ExecuteSimple(fullScript));
+                    // Enforce strict runtime semantics for Test262 `onlyStrict` tests.
+                    // Parser directive handling is not yet fully spec-complete in all paths.
+                    if (metadata.IsOnlyStrict && runtime.Context != null)
+                    {
+                        runtime.Context.StrictMode = true;
+                    }
+
+                    // Execute with timeout and error checking
+                    Task<FenBrowser.FenEngine.Core.Interfaces.IValue> executionTask;
+                    if (isModuleGoal)
+                    {
+                        executionTask = Task.Run<FenBrowser.FenEngine.Core.Interfaces.IValue>(() =>
+                        {
+                            if (runtime.Context?.ModuleLoader == null)
+                            {
+                                throw new InvalidOperationException("Module loader is not available");
+                            }
+
+                            // Run harness files in script goal, then parse only the test source as module goal.
+                            if (!string.IsNullOrWhiteSpace(preludeScript))
+                            {
+                                runtime.ExecuteSimple(preludeScript);
+                            }
+
+                            runtime.Context.ModuleLoader.LoadModuleSrc(content, testFile);
+                            return FenValue.Undefined;
+                        });
+                    }
+                    else
+                    {
+                        executionTask = Task.Run(() => runtime.ExecuteSimple(fullScript));
+                    }
                     
                     if (await Task.WhenAny(executionTask, Task.Delay(_timeoutMs)) == executionTask)
                     {
                         // Task completed within timeout
-                        // If executionTask threw an exception, await it to rethrow
-                        await executionTask;
+                        // Re-throw if the task itself faulted (unlikely due to try/catch inside ExecuteSimple but possible)
+                        var resultValue = await executionTask; 
                         
+                        // IMPORTANT: FenRuntime.ExecuteSimple returns FenValue.FromError on failure, NOT an exception.
+                        // We must check if resultValue.Type is Error.
+                        // We access the raw interface or rely on FenValue struct if possible.
+                        // Since runtime returns IValue, we cast to FenBrowser.FenEngine.Core.FenValue if needed or use IValue.Type property
+                        
+                        bool isError = false;
+                        string errorMsg = "";
+
+                        // DEBUG: Print the raw result value to see what we getting
+                        // Console.WriteLine($"[DEBUG] ExecuteSimple Result Type: {resultValue?.Type}");
+                        // Console.WriteLine($"[DEBUG] ExecuteSimple Result: {resultValue}");
+
+                        // Check for Error type (value type 8 based on typical enum) or string containing "Error"
+                        // Safer to check the Type property from IValue
+                        if (resultValue != null && (resultValue.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Error || resultValue.ToString().Contains("=== VERIFICATION RESULTS ===")))
+                        {
+                            isError = true;
+                            errorMsg = resultValue.ToString();
+                        }
+                        
+
+                        // Check for global result variable as side-channel default
+                        try 
+                        {
+                            var globalResult = runtime.GlobalEnv.Get("__VERIFICATION_RESULT__");
+                            if (!globalResult.IsUndefined)
+                            {
+                                // Console.WriteLine($"[DEBUG] Found __VERIFICATION_RESULT__: {globalResult}");
+                                if (globalResult.ToString().Contains("=== VERIFICATION RESULTS ==="))
+                                {
+                                    isError = true;
+                                    errorMsg = globalResult.ToString();
+                                }
+                            }
+                        }
+                        catch {}
+
                         // If we reached here without exception
                         if (metadata.Negative)
                         {
-                             result.Passed = false;
-                             result.Expected = $"Error ({metadata.NegativeType})";
-                             result.Actual = "Success (No Error)";
-                             result.Error = "Test was expected to fail but succeeded";
+                             if (isError)
+                             {
+                                 // Check if the error message matches the expected type
+                                 if (!string.IsNullOrEmpty(metadata.NegativeType) && !errorMsg.Contains(metadata.NegativeType))
+                                 {
+                                     result.Passed = false;
+                                     result.Expected = $"Error ({metadata.NegativeType})";
+                                     result.Actual = $"Error ({errorMsg})"; // Wrong error type
+                                     result.Error = $"Expected {metadata.NegativeType} but got different error: {errorMsg}";
+                                 }
+                                 else
+                                 {
+                                     result.Passed = true;
+                                     result.Expected = $"Error ({metadata.NegativeType})";
+                                     result.Actual = errorMsg;
+                                 }
+                             }
+                             else
+                             {
+                                 result.Passed = false;
+                                 result.Expected = $"Error ({metadata.NegativeType})";
+                                 result.Actual = "Success (No Error)";
+                                 result.Error = "Test was expected to fail but succeeded";
+                             }
                         }
                         else
                         {
-                            result.Passed = true;
-                            result.Expected = "Success";
-                            result.Actual = "Success";
+                            if (isError)
+                            {
+                                result.Passed = false;
+                                result.Expected = "Success";
+                                result.Actual = "Error";
+                                result.Error = errorMsg;
+                            }
+                            else
+                            {
+                                result.Passed = true;
+                                result.Expected = "Success";
+                                result.Actual = "Success";
+                            }
                         }
                     }
                     else
@@ -215,7 +434,7 @@ namespace FenBrowser.FenEngine.Testing
         /// <summary>
         /// Parse Test262 YAML frontmatter metadata.
         /// </summary>
-        private TestMetadata ParseMetadata(string content)
+        public static TestMetadata ParseMetadata(string content)
         {
             var meta = new TestMetadata();
             
@@ -270,9 +489,39 @@ namespace FenBrowser.FenEngine.Testing
                         meta.Includes.Add(trimmed);
                 }
             }
+
+            // Parse flags
+            var flagsMatch = Regex.Match(yaml, @"flags:\s*\[(.*?)\]", RegexOptions.Singleline);
+            if (flagsMatch.Success)
+            {
+                var flags = flagsMatch.Groups[1].Value.Split(',');
+                foreach (var f in flags)
+                {
+                    var flag = f.Trim().Trim('"', '\'');
+                    if (string.Equals(flag, "onlyStrict", StringComparison.Ordinal))
+                    {
+                        meta.IsOnlyStrict = true;
+                    }
+                    else if (string.Equals(flag, "noStrict", StringComparison.Ordinal))
+                    {
+                        meta.IsNoStrict = true;
+                    }
+                    else if (string.Equals(flag, "async", StringComparison.Ordinal))
+                    {
+                        meta.IsAsync = true;
+                    }
+                    else if (string.Equals(flag, "module", StringComparison.Ordinal))
+                    {
+                        meta.IsModule = true;
+                    }
+                }
+            }
             
             // Check for async
-            meta.IsAsync = yaml.Contains("async") || content.Contains("$DONE");
+            if (!meta.IsAsync)
+            {
+                meta.IsAsync = content.Contains("$DONE");
+            }
             
             return meta;
         }

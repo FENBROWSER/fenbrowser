@@ -67,6 +67,9 @@ namespace FenBrowser.Tests.Engine
             public void CheckCallStackLimit() { }
             public void CheckExecutionTimeLimit() { }
             public FenValue ThisBinding { get; set; }
+            public FenValue NewTarget { get; set; }
+            public string CurrentModulePath { get; set; }
+            public bool StrictMode { get; set; }
         }
 
         private readonly TestContext _context = new TestContext();
