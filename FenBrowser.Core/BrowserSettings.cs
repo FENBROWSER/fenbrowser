@@ -142,8 +142,8 @@ namespace FenBrowser.Core
             {
                 case UserAgentType.Chrome:
                     return useMobile
-                        ? "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.85 Mobile Safari/537.36"
-                        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.85 Safari/537.36";
+                        ? "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7800.12 Mobile Safari/537.36"
+                        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7800.12 Safari/537.36";
 
                 case UserAgentType.Firefox:
                     return useMobile
@@ -153,12 +153,26 @@ namespace FenBrowser.Core
                 case UserAgentType.FenBrowser:
                     // Mimic Chrome to avoid blocking, but keep identifier
                     return useMobile
-                        ? "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.7600.0 Mobile Safari/537.36 FenBrowser/1.0"
-                        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.7600.0 Safari/537.36 FenBrowser/1.0";
+                        ? "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7800.12 Mobile Safari/537.36 FenBrowser/1.0"
+                        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7800.12 Safari/537.36 FenBrowser/1.0";
 
                 default:
                     return GetUserAgentString(UserAgentType.Chrome, useMobile);
             }
+        }
+
+        public static string GetClientHints(UserAgentType type, bool useMobile = false)
+        {
+            if (type == UserAgentType.Chrome || type == UserAgentType.FenBrowser)
+            {
+                return "\"Not A(Brand\";v=\"99\", \"Chromium\";v=\"146\", \"Google Chrome\";v=\"146\"";
+            }
+            return string.Empty;
+        }
+
+        public static string GetSecChUaPlatform()
+        {
+            return "\"Windows\"";
         }
 
         public void Save()
