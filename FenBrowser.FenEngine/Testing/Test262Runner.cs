@@ -156,6 +156,14 @@ namespace FenBrowser.FenEngine.Testing
             
             try
             {
+                if (Path.IsPathRooted(testFile))
+            {
+               // It's absolute, use it directly
+            }
+            else
+            {
+               testFile = Path.Combine(_test262RootPath, testFile);
+            }
                 var content = await File.ReadAllTextAsync(testFile);
                 var metadata = ParseMetadata(content);
                 result.Metadata = metadata;
@@ -299,6 +307,8 @@ namespace FenBrowser.FenEngine.Testing
                     }
                     else
                     {
+                        Console.WriteLine($"[DEBUG] Executing script. Length: {fullScript.Length}");
+                        Console.WriteLine($"[DEBUG] Script Tail: {fullScript.Substring(Math.Max(0, fullScript.Length - 100))}");
                         executionTask = Task.Run(() => runtime.ExecuteSimple(fullScript));
                     }
                     
@@ -317,12 +327,12 @@ namespace FenBrowser.FenEngine.Testing
                         string errorMsg = "";
 
                         // DEBUG: Print the raw result value to see what we getting
-                        // Console.WriteLine($"[DEBUG] ExecuteSimple Result Type: {resultValue?.Type}");
-                        // Console.WriteLine($"[DEBUG] ExecuteSimple Result: {resultValue}");
+                        Console.WriteLine($"[DEBUG] ExecuteSimple Result Type: {resultValue?.Type}");
+                        Console.WriteLine($"[DEBUG] ExecuteSimple Result: {resultValue}");
 
                         // Check for Error type (value type 8 based on typical enum) or string containing "Error"
                         // Safer to check the Type property from IValue
-                        if (resultValue != null && (resultValue.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Error || resultValue.ToString().Contains("=== VERIFICATION RESULTS ===")))
+                        if (resultValue != null && (resultValue.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Error || resultValue.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Throw || resultValue.ToString().Contains("=== VERIFICATION RESULTS ===") || resultValue.ToString().StartsWith("Error") || resultValue.ToString().StartsWith("FAIL")))
                         {
                             isError = true;
                             errorMsg = resultValue.ToString();
@@ -568,6 +578,53 @@ namespace FenBrowser.FenEngine.Testing
             }
             
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// Discover all test files in a category (or whole suite if category is empty/null).
+        /// </summary>
+        public List<string> DiscoverTests(string category = "")
+        {
+            var path = string.IsNullOrEmpty(category) ? 
+                Path.Combine(_test262RootPath, "test") : 
+                Path.Combine(_test262RootPath, "test", category);
+
+            if (!Directory.Exists(path))
+            {
+                FenLogger.Warn($"[Test262] Path not found: {path}", LogCategory.General);
+                return new List<string>();
+            }
+
+            return Directory.GetFiles(path, "*.js", SearchOption.AllDirectories)
+                .Where(f => !Path.GetFileName(f).StartsWith("_") && !Path.GetFileName(f).Contains("_FIXTURE"))
+                .OrderBy(f => f)
+                .ToList();
+        }
+
+        /// <summary>
+        /// Run a specific list of test files.
+        /// </summary>
+        public async Task<IReadOnlyList<TestResult>> RunSpecificTestsAsync(IEnumerable<string> testFiles, Action<string, int> onProgress = null)
+        {
+            var resultsBag = new ConcurrentBag<TestResult>();
+            int count = 0;
+            
+            var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = 1 }; // Sequential to avoid static state races
+
+            await Parallel.ForEachAsync(testFiles, parallelOptions, async (testFile, token) =>
+            {
+                var result = await RunSingleTestAsync(testFile);
+                resultsBag.Add(result);
+                int current = Interlocked.Increment(ref count);
+                onProgress?.Invoke(Path.GetFileName(testFile), current);
+            });
+            
+            var list = resultsBag.OrderBy(r => r.TestFile).ToList();
+            lock (_results)
+            {
+                _results.AddRange(list);
+            }
+            return list.AsReadOnly();
         }
     }
 }
