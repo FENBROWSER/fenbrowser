@@ -1,0 +1,8 @@
+{
+  "SuiteDirectory": "C:\\Users\\udayk\\Videos\\FENBROWSER\\test262",
+  "TargetPath": "C:\\Users\\udayk\\Videos\\FENBROWSER\\FenBrowser.Test262\\Generated",
+  "Namespace": "FenBrowser.Test262.Generated",
+  "ExcludedDirectories": [ "intl402", "annexB" ],
+  "ExcludedFlags": [ "module", "async" ],
+  "ExcludedFeatures": [ "Atomics", "Temporal", "ShadowRealm", "FinalizationRegistry", "WeakRef" ]
+}
