@@ -1251,7 +1251,8 @@ namespace FenBrowser.FenEngine.Core
 
             // navigator object - Privacy-focused (generic values to prevent fingerprinting)
             var navigator = new FenObject();
-            navigator.Set("userAgent", FenValue.FromString("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.7499.109 Safari/537.36"));
+            var navigatorUa = BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent);
+            navigator.Set("userAgent", FenValue.FromString(navigatorUa));
             navigator.Set("platform", FenValue.FromString("Win32"));
             navigator.Set("language", FenValue.FromString("en-US"));
             navigator.Set("languages", FenValue.FromObject(CreateArray(new[] { "en-US", "en" })));
