@@ -314,11 +314,12 @@ namespace FenBrowser.Core
                     AddHeaderSafe(req, "User-Agent", ua);
                     
                     // Add Client Hints for modern detection
-                    if (selectedUserAgent == UserAgentType.Chrome || selectedUserAgent == UserAgentType.FenBrowser)
+                    var hints = BrowserSettings.GetClientHints(selectedUserAgent, useMobile);
+                    if (!string.IsNullOrEmpty(hints))
                     {
-                        AddHeaderSafe(req, "Sec-CH-UA", "\"Not A(Brand\";v=\"99\", \"Chromium\";v=\"121\", \"Google Chrome\";v=\"121\"");
+                        AddHeaderSafe(req, "Sec-CH-UA", hints);
                         AddHeaderSafe(req, "Sec-CH-UA-Mobile", useMobile ? "?1" : "?0");
-                        AddHeaderSafe(req, "Sec-CH-UA-Platform", "\"Windows\"");
+                        AddHeaderSafe(req, "Sec-CH-UA-Platform", BrowserSettings.GetSecChUaPlatform());
                     }
                     
                     AddHeaderSafe(req, "Accept-Language", "en-US,en;q=0.9");
@@ -552,11 +553,12 @@ namespace FenBrowser.Core
                     AddHeaderSafe(req, "User-Agent", ua);
 
                     // Add Client Hints
-                    if (selectedUserAgent == UserAgentType.Chrome || selectedUserAgent == UserAgentType.FenBrowser)
+                    var hints = BrowserSettings.GetClientHints(selectedUserAgent, useMobile);
+                    if (!string.IsNullOrEmpty(hints))
                     {
-                        AddHeaderSafe(req, "Sec-CH-UA", "\"Not A(Brand\";v=\"99\", \"Chromium\";v=\"121\", \"Google Chrome\";v=\"121\"");
+                        AddHeaderSafe(req, "Sec-CH-UA", hints);
                         AddHeaderSafe(req, "Sec-CH-UA-Mobile", useMobile ? "?1" : "?0");
-                        AddHeaderSafe(req, "Sec-CH-UA-Platform", "\"Windows\"");
+                        AddHeaderSafe(req, "Sec-CH-UA-Platform", BrowserSettings.GetSecChUaPlatform());
                     }
 
                     AddHeaderSafe(req, "Accept-Language", "en-US,en;q=0.9");
