@@ -2701,7 +2701,7 @@ namespace FenBrowser.FenEngine.Core
                     return result.GetReturnValue();
                 }
 
-                if (result.Type == JsValueType.Error)
+                if (IsError(result))
                 {
                     context.StrictMode = previousStrictMode; // Restore
                     return result;
@@ -2828,7 +2828,7 @@ namespace FenBrowser.FenEngine.Core
 
                 if (result != null && (
                     result.Type == JsValueType.ReturnValue || 
-                    result.Type == JsValueType.Error ||
+                    IsError(result) ||
                     result.Type == JsValueType.Break ||
                     result.Type == JsValueType.Continue))
                 {
@@ -3642,7 +3642,7 @@ namespace FenBrowser.FenEngine.Core
 
         private bool IsError(FenValue obj)
         {
-            return obj.Type == JsValueType.Error;
+            return obj.Type == JsValueType.Error || obj.Type == JsValueType.Throw;
         }
 
         // Evaluate template literals: `Hello ${name}!`
@@ -3881,7 +3881,7 @@ namespace FenBrowser.FenEngine.Core
             var val = Eval(ts.Value, env, context);
             if (IsError(val)) return val;
 
-            return FenValue.FromError(val.ToString());
+            return FenValue.FromThrow(val);
         }
 
         private IValue EvalTryStatement(TryStatement ts, FenEnvironment env, IExecutionContext context)
@@ -3907,20 +3907,27 @@ namespace FenBrowser.FenEngine.Core
             }
 
             // Catch block handling - ES5.1: throw can throw any value
-            if (result.Type == JsValueType.Error && ts.CatchBlock != null)
+            if ((result.Type == JsValueType.Error || result.Type == JsValueType.Throw) && ts.CatchBlock != null)
             {
                 var catchEnv = new FenEnvironment(env);
                 if (ts.CatchParameter != null)
                 {
-                    // ES5.1 1E: Support catching non-Error values
-                    // If it's an Error type from FenValue, create error object
-                    // Otherwise, the thrown value should be passed as-is
-                    var errorObj = new FenObject();
-                    errorObj.InternalClass = "Error";
-                    errorObj.Set("message", FenValue.FromString(result.AsError()), null);
-                    errorObj.Set("name", FenValue.FromString("Error"), null);
-                    errorObj.Set("stack", FenValue.FromString($"Error: {result.AsError()}\n    at <anonymous>"), null);
-                    catchEnv.Set(ts.CatchParameter.Value, FenValue.FromObject(errorObj));
+                    FenValue thrownValue;
+                    if (result.Type == JsValueType.Throw)
+                    {
+                        thrownValue = result.GetThrownValue();
+                    }
+                    else
+                    {
+                        // Legacy/Internal error (string based) - convert to Error object
+                        var errorObj = new FenObject();
+                        errorObj.InternalClass = "Error";
+                        errorObj.Set("message", FenValue.FromString(result.AsError()), null);
+                        errorObj.Set("name", FenValue.FromString("Error"), null);
+                        errorObj.Set("stack", FenValue.FromString($"Error: {result.AsError()}\n    at <anonymous>"), null);
+                        thrownValue = FenValue.FromObject(errorObj);
+                    }
+                    catchEnv.Set(ts.CatchParameter.Value, thrownValue);
                 }
                 result = Eval(ts.CatchBlock, catchEnv, context);
                 
@@ -3937,8 +3944,8 @@ namespace FenBrowser.FenEngine.Core
             {
                 var finallyResult = Eval(ts.FinallyBlock, env, context);
                 
-                // If finally has its own control flow, it takes precedence
-                if (finallyResult.Type == JsValueType.ReturnValue || finallyResult.Type == JsValueType.Break || finallyResult.Type == JsValueType.Continue)
+                // If finally has its own control flow (including Error/Throw), it takes precedence
+                if (finallyResult.Type == JsValueType.ReturnValue || finallyResult.Type == JsValueType.Break || finallyResult.Type == JsValueType.Continue || IsError(finallyResult))
                 {
                     return finallyResult;
                 }
@@ -4010,7 +4017,7 @@ namespace FenBrowser.FenEngine.Core
 
                 if (result != null)
                 {
-                    if (result.Type == JsValueType.ReturnValue || result.Type == JsValueType.Error) return result;
+                    if (result.Type == JsValueType.ReturnValue || IsError(result)) return result;
                     if (result.Type == JsValueType.Break)
                     {
                         if (result.BreakContinueLabel != null)
@@ -4060,7 +4067,7 @@ namespace FenBrowser.FenEngine.Core
 
                 if (!result.IsUndefined && !result.IsNull)
                 {
-                    if (result.Type == JsValueType.ReturnValue || result.Type == JsValueType.Error) return result;
+                    if (result.Type == JsValueType.ReturnValue || IsError(result)) return result;
                     if (result.Type == JsValueType.Break)
                     {
                         if (result.BreakContinueLabel != null)
@@ -4125,7 +4132,7 @@ namespace FenBrowser.FenEngine.Core
 
                             if (!result.IsUndefined && !result.IsNull)
                             {
-                                if (result.Type == JsValueType.ReturnValue || result.Type == JsValueType.Error) return result;
+                                if (result.Type == JsValueType.ReturnValue || IsError(result)) return result;
                                 if (result.Type == JsValueType.Break)
                                 {
                                     if (result.BreakContinueLabel != null)
@@ -4178,7 +4185,7 @@ namespace FenBrowser.FenEngine.Core
             int CheckControl(FenValue r)
             {
                 if (r.IsUndefined || r.IsNull) return 0;
-                if (r.Type == JsValueType.ReturnValue || r.Type == JsValueType.Error) return 2;
+                if (r.Type == JsValueType.ReturnValue || IsError(r)) return 2;
                 if (r.Type == JsValueType.Break)
                 {
                     if (r.BreakContinueLabel != null)
@@ -4388,7 +4395,7 @@ namespace FenBrowser.FenEngine.Core
                     {
                         result = Eval(stmt, env, context);
                         
-                        if (result.Type == JsValueType.ReturnValue || result.Type == JsValueType.Error) return result;
+                        if (result.Type == JsValueType.ReturnValue || IsError(result)) return result;
                         if (result.Type == JsValueType.Break) return FenValue.Null; // Break exits switch
                         if (result.Type == JsValueType.Continue) return FenValue.FromError("Illegal continue statement: no surrounding loop");
                     }

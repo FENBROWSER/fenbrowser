@@ -237,6 +237,28 @@ namespace FenBrowser.FenEngine.Core
         }
     }
 
+    public class IfStatement : Statement
+    {
+        public Expression Condition { get; set; }
+        public BlockStatement Consequence { get; set; }
+        public BlockStatement Alternative { get; set; }
+
+        public override string String()
+        {
+            var sb = new StringBuilder();
+            sb.Append("if");
+            sb.Append(Condition.String());
+            sb.Append(" ");
+            sb.Append(Consequence.String());
+            if (Alternative != null)
+            {
+                sb.Append("else ");
+                sb.Append(Alternative.String());
+            }
+            return sb.ToString();
+        }
+    }
+
     public class FunctionLiteral : Expression
     {
         public string Name { get; set; }

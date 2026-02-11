@@ -249,6 +249,7 @@ namespace FenBrowser.FenEngine.Core
         {
             _curToken = _peekToken;
             _peekToken = _lexer.NextToken();
+            Console.WriteLine($"[DEBUG] Parser.NextToken: Cur={_curToken?.Type}, Peek={_peekToken?.Type}");
         }
 
         private void RegisterPrefix(TokenType type, Func<Expression> fn)
@@ -290,7 +291,7 @@ namespace FenBrowser.FenEngine.Core
             var program = new Program();
 
             // Detect "use strict" directive at the beginning of the program
-            if (_curToken.Type == TokenType.String && _curToken.Literal == "use strict")
+            if (_curToken.Type == TokenType.String && (_curToken.Literal == "use strict" || _curToken.Literal == "\"use strict\"" || _curToken.Literal == "'use strict'"))
             {
                 _isStrictMode = true;
             }
@@ -303,7 +304,7 @@ namespace FenBrowser.FenEngine.Core
                     program.Statements.Add(stmt);
                     // Check first statement for "use strict" directive
                     if (program.Statements.Count == 1 && stmt is ExpressionStatement es && 
-                        es.Expression is StringLiteral sl && sl.Value == "use strict")
+                        es.Expression is StringLiteral sl && (sl.Value == "use strict" || sl.Value == "\"use strict\"" || sl.Value == "'use strict'"))
                     {
                         _isStrictMode = true;
                     }
@@ -322,6 +323,8 @@ namespace FenBrowser.FenEngine.Core
             {
                 case TokenType.LBrace:
                     return ParseBlockStatement();
+                case TokenType.If:
+                    return ParseIfStatement();
                 case TokenType.Let:
                 case TokenType.Var:
                 case TokenType.Const:
@@ -440,6 +443,8 @@ namespace FenBrowser.FenEngine.Core
                     }
                     return ParseExpressionStatement();
             }
+            // Console.WriteLine($"[DEBUG] ParseStatement exit: {_curToken.Type}");
+            return null;
         }
 
         private LabeledStatement ParseLabeledStatement()
@@ -614,6 +619,7 @@ namespace FenBrowser.FenEngine.Core
 
             var leftExp = prefix();
 
+            Console.WriteLine($"[DEBUG] ParseExpression StartLoop: prec={precedence}, Peek={_peekToken}, PeekPrec={PeekPrecedence()}");
             while (!PeekTokenIs(TokenType.Semicolon) && precedence < PeekPrecedence())
             {
                 // Skip 'in' as infix when _noIn flag is set (for-loop init expressions)
@@ -630,7 +636,7 @@ namespace FenBrowser.FenEngine.Core
                 leftExp = infix(leftExp);
             }
             
-            // _errors.Add($"[Debug] ParseExpression finished. Cur: {_curToken.Type}, Peek: {_peekToken.Type}");
+            Console.WriteLine($"[DEBUG] ParseExpression End: prec={precedence}, Peek={_peekToken}, PeekPrec={PeekPrecedence()}");
 
             return leftExp;
         }
@@ -1048,7 +1054,59 @@ namespace FenBrowser.FenEngine.Core
                 }
             }
 
+            Console.WriteLine($"[DEBUG] ParseIfExpression exit: Cur={_curToken.Type}");
             return expression;
+        }
+
+
+        private Statement ParseIfStatement()
+        {
+            var statement = new IfStatement { Token = _curToken };
+
+            if (!ExpectPeek(TokenType.LParen))
+            {
+                return null;
+            }
+
+            NextToken();
+            statement.Condition = ParseExpression(Precedence.Lowest);
+
+            if (!ExpectPeek(TokenType.RParen))
+            {
+                // Recovery matching ParseIfExpression logic
+                while (!CurTokenIs(TokenType.RParen) && !CurTokenIs(TokenType.LBrace) && !CurTokenIs(TokenType.Eof))
+                {
+                    NextToken();
+                }
+            }
+
+            statement.Consequence = ParseBodyAsBlock();
+            if (statement.Consequence == null) return null;
+
+            if (PeekTokenIs(TokenType.Else))
+            {
+                NextToken();
+
+                if (PeekTokenIs(TokenType.If))
+                {
+                    NextToken();
+                    var elseIfStmt = ParseIfStatement();
+                    if (elseIfStmt != null)
+                    {
+                        statement.Alternative = new BlockStatement 
+                        { 
+                            Token = _curToken,
+                            Statements = new System.Collections.Generic.List<Statement> { elseIfStmt }
+                        };
+                    }
+                }
+                else
+                {
+                    statement.Alternative = ParseBodyAsBlock();
+                }
+            }
+
+            return statement;
         }
 
         // Helper: Parse a body that may or may not have braces
@@ -1091,13 +1149,23 @@ namespace FenBrowser.FenEngine.Core
 
                 while (!CurTokenIs(TokenType.RBrace) && !CurTokenIs(TokenType.Eof))
                 {
+                    Console.WriteLine($"[DEBUG] LoopCheck: Cur={_curToken.Type}({(int)_curToken.Type}) vs RBrace({(int)TokenType.RBrace}). Match={CurTokenIs(TokenType.RBrace)}");
+                    if (CurTokenIs(TokenType.RBrace))
+                    {
+                         break;
+                    }
+                    Console.WriteLine($"[DEBUG] ParseBlock loop start: Cur={_curToken.Type}, Peek={_peekToken.Type}");
                     var stmt = ParseStatement();
                     if (stmt != null)
                     {
                         block.Statements.Add(stmt);
                     }
-                    NextToken();
+                    Console.WriteLine($"[DEBUG] ParseBlock loop post-stmt: Cur={_curToken.Type}, Peek={_peekToken.Type}");
+                    NextToken(); // Advance to the next token
+                    Console.WriteLine($"[DEBUG] ParseBlock loop post-next: Cur={_curToken.Type}, Peek={_peekToken.Type}");
                 }
+                Console.WriteLine($"[DEBUG] ParseBlock loop end: Cur={_curToken.Type}, Peek={_peekToken.Type}");
+
             }
             finally
             {
@@ -1168,11 +1236,6 @@ namespace FenBrowser.FenEngine.Core
                     _errors.Add("SyntaxError: Rest parameter must be last formal parameter");
                 }
 
-                if (fnParamsDuplicate)
-                {
-                    _errors.Add("SyntaxError: Duplicate parameter name not allowed in this context");
-                }
-
                 if (ContainsUseStrictDirective(lit.Body) && !fnParamsSimple)
                 {
                     _errors.Add("SyntaxError: 'use strict' directive is invalid with non-simple parameter list");
@@ -1188,7 +1251,18 @@ namespace FenBrowser.FenEngine.Core
                     _errors.Add("SyntaxError: Formal parameter name conflicts with a lexical declaration in function body");
                 }
             }
-             
+
+            if (fnParamsDuplicate)
+            {
+                bool isStrict = _isModule || _isStrictMode || ContainsUseStrictDirective(lit.Body);
+                bool isRestricted = lit.IsAsync || lit.IsGenerator || !fnParamsSimple;
+
+                if (isStrict || isRestricted)
+                {
+                    _errors.Add("SyntaxError: Duplicate parameter name not allowed in this context");
+                }
+            }
+
             // ES2019: Capture source code
             // _curToken is now RBrace of the body
             int endPos = _curToken.Position + 1; // +1 to include closing brace
@@ -1539,6 +1613,8 @@ namespace FenBrowser.FenEngine.Core
                 }
             }
 
+            
+            Console.WriteLine($"[DEBUG] ParseCallArguments Loop End. Cur={_curToken.Type}, Peek={_peekToken.Type}");
             if (!ExpectPeek(TokenType.RParen))
             {
                 // Recovery: skip to RParen or statement boundary
@@ -2152,6 +2228,7 @@ namespace FenBrowser.FenEngine.Core
         private void PeekError(TokenType type)
         {
             var msg = $"expected next token to be {type}, got {_peekToken.Type} instead";
+            Console.WriteLine($"[DEBUG] PeekError: {msg} at line {_peekToken.Line} col {_peekToken.Column}. CurToken={_curToken.Type}");
             if (_lexer != null)
             {
                  msg += $"\nContext:\n{_lexer.GetCodeContext(_peekToken.Line, _peekToken.Column)}";
