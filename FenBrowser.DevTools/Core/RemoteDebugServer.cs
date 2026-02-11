@@ -193,7 +193,7 @@ public class RemoteDebugServer : IDisposable
             {
                 Browser = "FenBrowser/1.0",
                 Protocol_Version = "1.3",
-                User_Agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) FenBrowser/1.0 Chrome/120.0.0.0 Safari/537.36",
+                User_Agent = BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent),
                 V8_Version = "1.0",
                 WebKit_Version = "537.36",
                 webSocketDebuggerUrl = "ws://localhost:9222/devtools/browser"
