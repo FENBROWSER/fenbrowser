@@ -51,6 +51,7 @@ namespace FenBrowser.FenEngine.Core
         public string Value { get; set; }
         public Expression DefaultValue { get; set; } // For default parameters: function(a = 1)
         public bool IsRest { get; set; } // For rest parameters: function(...args)
+        public Expression DestructuringPattern { get; set; } // For destructuring parameters: function({a, b}) or function([x, y])
 
         public Identifier(Token token, string value)
         {
@@ -243,6 +244,7 @@ namespace FenBrowser.FenEngine.Core
         public BlockStatement Body { get; set; }
         public bool IsGenerator { get; set; } = false; // function* syntax
         public bool IsAsync { get; set; } = false;
+        public string Source { get; set; } // ES2019: Original source code
 
         public override string String()
         {
@@ -263,6 +265,17 @@ namespace FenBrowser.FenEngine.Core
         }
     }
     
+
+    public class FunctionDeclarationStatement : Statement
+    {
+        public FunctionLiteral Function { get; set; }
+
+        public override string String()
+        {
+            return Function.String();
+        }
+    }
+
     /// <summary>
     /// yield expression for generator functions
     /// </summary>
@@ -277,6 +290,22 @@ namespace FenBrowser.FenEngine.Core
                 return $"yield* {Value?.String() ?? ""}";
             return $"yield {Value?.String() ?? ""}";
         }
+    }
+    
+    /// <summary>
+    /// ES2015 new.target meta property - returns constructor function in new call
+    /// </summary>
+    public class NewTargetExpression : Expression
+    {
+        public override string String() => "new.target";
+    }
+
+    /// <summary>
+    /// ES2020 import.meta meta property - returns metadata object for the module
+    /// </summary>
+    public class ImportMetaExpression : Expression
+    {
+        public override string String() => "import.meta";
     }
 
     public class CallExpression : Expression
@@ -352,6 +381,19 @@ namespace FenBrowser.FenEngine.Core
         public override string String()
         {
             return $"{Left.String()} = {Right.String()}";
+        }
+    }
+
+    // ES2021: Logical Assignment (||=, &&=, ??=)
+    public class LogicalAssignmentExpression : Expression
+    {
+        public string Operator { get; set; } // ||=, &&=, ??=
+        public Expression Left { get; set; }
+        public Expression Right { get; set; }
+
+        public override string String()
+        {
+            return $"{Left.String()} {Operator} {Right.String()}";
         }
     }
 
@@ -544,17 +586,19 @@ namespace FenBrowser.FenEngine.Core
         }
     }
 
-    // for (variable of iterable) { body }
+    // for (variable of iterable) { body } or for await (variable of asyncIterable) { body }
     public class ForOfStatement : Statement
     {
         public Identifier Variable { get; set; }  // Loop variable
         public Expression DestructuringPattern { get; set; } // For destructuring: for (const [a,b] of iterable)
         public Expression Iterable { get; set; }  // Iterable object
         public BlockStatement Body { get; set; }
+        public bool IsAwait { get; set; } // ES2018: for await...of async iteration
 
         public override string String()
         {
-            return $"for ({Variable?.String() ?? DestructuringPattern?.String()} of {Iterable.String()}) {Body.String()}";
+            var awaitStr = IsAwait ? "await " : "";
+            return $"for {awaitStr}({Variable?.String() ?? DestructuringPattern?.String()} of {Iterable.String()}) {Body.String()}";
         }
     }
 
@@ -569,6 +613,20 @@ namespace FenBrowser.FenEngine.Core
         }
     }
 
+    // Decorator for classes, methods, and properties (Stage 3)
+    public class Decorator : AstNode
+    {
+        public Expression Expression { get; set; } // Decorator expression (e.g., @decorator or @decorator(args))
+        public Token Token { get; set; }
+
+        public override string TokenLiteral() => Token?.Literal ?? "";
+
+        public override string String()
+        {
+            return "@" + Expression?.String();
+        }
+    }
+
     public class MethodDefinition : Statement
     {
         public Identifier Key { get; set; }
@@ -576,6 +634,8 @@ namespace FenBrowser.FenEngine.Core
         public string Kind { get; set; } // "constructor", "method", "get", "set"
         public bool Static { get; set; }
         public bool IsPrivate { get; set; } // true if #methodName
+        public bool Computed { get; set; } // true if [expr]() {}
+        public List<Decorator> Decorators { get; set; } = new List<Decorator>(); // Stage 3 decorators
 
         public override string String()
         {
@@ -595,6 +655,7 @@ namespace FenBrowser.FenEngine.Core
         public Expression Value { get; set; }
         public bool Static { get; set; }
         public bool IsPrivate { get; set; } // true if #field
+        public List<Decorator> Decorators { get; set; } = new List<Decorator>(); // Stage 3 decorators
 
         public override string String()
         {
@@ -618,6 +679,8 @@ namespace FenBrowser.FenEngine.Core
         public BlockStatement Body { get; set; } // Contains MethodDefinitions
         public List<MethodDefinition> Methods { get; set; } = new List<MethodDefinition>();
         public List<ClassProperty> Properties { get; set; } = new List<ClassProperty>(); // Class fields (including private)
+        public List<StaticBlock> StaticBlocks { get; set; } = new List<StaticBlock>(); // ES2022 static blocks
+        public List<Decorator> Decorators { get; set; } = new List<Decorator>(); // Stage 3 decorators
 
         public override string String()
         {
@@ -635,6 +698,10 @@ namespace FenBrowser.FenEngine.Core
                 sb.Append(prop.String());
                 sb.Append("; ");
             }
+            foreach (var block in StaticBlocks)
+            {
+                sb.Append(block.String());
+            }
             foreach (var method in Methods)
             {
                 sb.Append(method.String());
@@ -650,6 +717,8 @@ namespace FenBrowser.FenEngine.Core
         public Identifier SuperClass { get; set; }
         public List<MethodDefinition> Methods { get; set; } = new List<MethodDefinition>();
         public List<ClassProperty> Properties { get; set; } = new List<ClassProperty>();
+        public List<StaticBlock> StaticBlocks { get; set; } = new List<StaticBlock>();
+        public List<Decorator> Decorators { get; set; } = new List<Decorator>(); // Stage 3 decorators
 
         public override string String()
         {
@@ -705,16 +774,65 @@ namespace FenBrowser.FenEngine.Core
         }
     }
 
+    public class ExportSpecifier
+    {
+        public Identifier Local { get; set; }    // The local binding name (or "*" for export * from ...)
+        public Identifier Exported { get; set; } // The exported name (alias)
+        
+        public string String()
+        {
+            if (Local != null && Exported != null && Local.Value != Exported.Value)
+                return $"{Local.String()} as {Exported.String()}";
+            return Local?.String() ?? "";
+        }
+    }
+
     public class ExportDeclaration : Statement
     {
         public Statement Declaration { get; set; } // export var x = 1;
         public Expression DefaultExpression { get; set; } // export default ...
-        public List<ImportSpecifier> Specifiers { get; set; } // export { x, y }
+        public List<ExportSpecifier> Specifiers { get; set; } = new List<ExportSpecifier>(); // export { x, y }
         public string Source { get; set; } // export ... from 'module'
 
         public override string String()
         {
-            return "export ...";
+            var sb = new StringBuilder();
+            sb.Append("export ");
+            if (DefaultExpression != null)
+            {
+                sb.Append("default ");
+                sb.Append(DefaultExpression.String());
+            }
+            else if (Declaration != null)
+            {
+                sb.Append(Declaration.String());
+            }
+            else
+            {
+                if (Specifiers.Count > 0)
+                {
+                    // Check for export * 
+                    if (Specifiers.Count == 1 && Specifiers[0].Local.Value == "*")
+                    {
+                         sb.Append(Specifiers[0].String());
+                    }
+                    else
+                    {
+                        sb.Append("{ ");
+                        var specs = new List<string>();
+                        foreach (var s in Specifiers) specs.Add(s.String());
+                        sb.Append(string.Join(", ", specs));
+                        sb.Append(" }");
+                    }
+                }
+                if (Source != null)
+                {
+                    sb.Append(" from \"");
+                    sb.Append(Source);
+                    sb.Append("\"");
+                }
+            }
+            return sb.ToString();
         }
     }
 
@@ -931,19 +1049,6 @@ namespace FenBrowser.FenEngine.Core
         }
     }
 
-    // ES6+ Logical assignment: a ||= b, a &&= b, a ??= b
-    public class LogicalAssignmentExpression : Expression
-    {
-        public Expression Left { get; set; }
-        public string Operator { get; set; }  // "||=", "&&=", "??="
-        public Expression Right { get; set; }
-
-        public override string String()
-        {
-            return $"({Left.String()} {Operator} {Right.String()})";
-        }
-    }
-
     // ES6+ BigInt literal: 123n
     public class BigIntLiteral : Expression
     {
@@ -1009,6 +1114,18 @@ namespace FenBrowser.FenEngine.Core
         public override string String()
         {
             return $"(~{Operand.String()})";
+        }
+    }
+
+    // ES5.1 with statement: with (object) { body }
+    public class WithStatement : Statement
+    {
+        public Expression Object { get; set; }
+        public Statement Body { get; set; }
+
+        public override string String()
+        {
+            return $"with ({Object.String()}) {Body.String()}";
         }
     }
 }

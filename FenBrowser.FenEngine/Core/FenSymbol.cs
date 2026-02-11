@@ -175,8 +175,14 @@ namespace FenBrowser.FenEngine.Core
             Set("toString", FenValue.FromFunction(new FenFunction("toString", (args, ctx) =>
                 FenValue.FromString(Symbol.ToString()))));
             
-            // Add description property
-            Set("description", FenValue.FromString(Symbol.Description ?? ""));
+            // Symbol.prototype.description getter (ES2019)
+            DefineOwnProperty("description", new PropertyDescriptor
+            {
+                Getter = new FenFunction("get description", (a, t) =>
+                    Symbol.Description != null ? FenValue.FromString(Symbol.Description) : FenValue.Undefined),
+                Enumerable = false,
+                Configurable = true
+            });
         }
 
         public override string ToString() => Symbol.ToString();

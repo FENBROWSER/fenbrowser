@@ -9,6 +9,14 @@ namespace FenBrowser.FenEngine.Core.Types
     {
         private readonly ConditionalWeakTable<object, IValue> _storage = new ConditionalWeakTable<object, IValue>();
 
+        // ES2023: Symbols are valid WeakMap keys. Extract the underlying reference type for both objects and symbols.
+        private static object ExtractKey(FenValue key)
+        {
+            if (key.IsObject) return key.AsObject();
+            if (key.IsSymbol) return key.AsSymbol();
+            return null;
+        }
+
         public JsWeakMap()
         {
             Set("set", FenValue.FromFunction(new FenFunction("set", (args, thisVal) =>
@@ -16,49 +24,37 @@ namespace FenBrowser.FenEngine.Core.Types
                 var key = args.Length > 0 ? args[0] : FenValue.Undefined;
                 var val = args.Length > 1 ? args[1] : FenValue.Undefined;
 
-                if (!key.IsObject) throw new Exception("TypeError: WeakMap key must be an object");
-                
-                var keyObj = key.AsObject();
-                if (keyObj  == null) throw new Exception("TypeError: WeakMap key cannot be null");
+                var keyRef = ExtractKey(key);
+                if (keyRef == null) throw new Exception("TypeError: WeakMap key must be an object or symbol");
 
-                try 
+                try
                 {
-                    _storage.Remove(keyObj); 
-                    _storage.Add(keyObj, val);
+                    _storage.Remove(keyRef);
+                    _storage.Add(keyRef, val);
                 }
                 catch { }
-                
+
                 return FenValue.FromObject(this);
             })));
 
             Set("get", FenValue.FromFunction(new FenFunction("get", (args, thisVal) =>
             {
-                var key = args.Length > 0 ? args[0] : FenValue.Undefined;
-                if (!key.IsObject) return FenValue.Undefined;
-                
-                var keyObj = key.AsObject();
-                if (keyObj != null && _storage.TryGetValue(keyObj, out var val))
+                var keyRef = ExtractKey(args.Length > 0 ? args[0] : FenValue.Undefined);
+                if (keyRef != null && _storage.TryGetValue(keyRef, out var val))
                     return (FenValue)val;
-                
                 return FenValue.Undefined;
             })));
 
             Set("has", FenValue.FromFunction(new FenFunction("has", (args, thisVal) =>
             {
-                var key = args.Length > 0 ? args[0] : FenValue.Undefined;
-                if (!key.IsObject) return FenValue.FromBoolean(false);
-                
-                var keyObj = key.AsObject();
-                return FenValue.FromBoolean(keyObj != null && _storage.TryGetValue(keyObj, out _));
+                var keyRef = ExtractKey(args.Length > 0 ? args[0] : FenValue.Undefined);
+                return FenValue.FromBoolean(keyRef != null && _storage.TryGetValue(keyRef, out _));
             })));
 
             Set("delete", FenValue.FromFunction(new FenFunction("delete", (args, thisVal) =>
             {
-                var key = args.Length > 0 ? args[0] : FenValue.Undefined;
-                if (!key.IsObject) return FenValue.FromBoolean(false);
-                
-                var keyObj = key.AsObject();
-                return FenValue.FromBoolean(keyObj != null && _storage.Remove(keyObj));
+                var keyRef = ExtractKey(args.Length > 0 ? args[0] : FenValue.Undefined);
+                return FenValue.FromBoolean(keyRef != null && _storage.Remove(keyRef));
             })));
         }
     }

@@ -64,7 +64,7 @@ namespace FenBrowser.FenEngine.Core.Types
             {
                  return FenValue.FromObject(CreateIteratorResult(_storage));
             })));
-            
+
             Set("keys", FenValue.FromFunction(new FenFunction("keys", (args, thisVal) =>
             {
                  return FenValue.FromObject(CreateIteratorResult(_storage));
@@ -72,7 +72,6 @@ namespace FenBrowser.FenEngine.Core.Types
 
             Set("entries", FenValue.FromFunction(new FenFunction("entries", (args, thisVal) =>
             {
-                 // Entries in Set are [value, value]
                  var entries = _storage.Select(v => FenValue.FromObject(CreateArray(new FenValue[] { v, v })));
                  return FenValue.FromObject(CreateIteratorResult(entries));
             })));
@@ -81,20 +80,100 @@ namespace FenBrowser.FenEngine.Core.Types
             {
                 if (args.Length < 1 || !args[0].IsFunction) return FenValue.Undefined;
                 var callback = args[0].AsFunction();
-                
-                foreach(var val in _storage)
+                foreach (var val in _storage)
                 {
-                    callback.Invoke(new FenValue[] { (FenValue)val, (FenValue)val, FenValue.FromObject(this) }, _context);
+                    callback.Invoke(new FenValue[] { val, val, FenValue.FromObject(this) }, _context);
                 }
                 return FenValue.Undefined;
             })));
+
+            // ES2025: Set methods
+            Set("union", FenValue.FromFunction(new FenFunction("union", Union)));
+            Set("intersection", FenValue.FromFunction(new FenFunction("intersection", Intersection)));
+            Set("difference", FenValue.FromFunction(new FenFunction("difference", Difference)));
+            Set("symmetricDifference", FenValue.FromFunction(new FenFunction("symmetricDifference", SymmetricDifference)));
+            Set("isSubsetOf", FenValue.FromFunction(new FenFunction("isSubsetOf", IsSubsetOf)));
+            Set("isSupersetOf", FenValue.FromFunction(new FenFunction("isSupersetOf", IsSupersetOf)));
+            Set("isDisjointFrom", FenValue.FromFunction(new FenFunction("isDisjointFrom", IsDisjointFrom)));
+        }
+
+        // Extracts iterable values from a FenValue (JsSet or array-like)
+        private IEnumerable<FenValue> ExtractValues(FenValue other)
+        {
+            if (!other.IsObject) yield break;
+            var obj = other.AsObject();
+            if (obj == null) yield break;
+            if (obj is JsSet otherSet)
+            {
+                foreach (var v in otherSet._storage) yield return v;
+                yield break;
+            }
+            var lenVal = obj.Get("length", null);
+            if (lenVal.IsNumber)
+            {
+                int len = (int)lenVal.ToNumber();
+                for (int i = 0; i < len; i++) yield return obj.Get(i.ToString(), null);
+            }
+        }
+
+        private FenValue Union(FenValue[] args, FenValue thisVal)
+        {
+            var result = new JsSet(_context);
+            foreach (var v in _storage) result._storage.Add(v);
+            foreach (var v in ExtractValues(args.Length > 0 ? args[0] : FenValue.Undefined)) result._storage.Add(v);
+            result.Set("size", FenValue.FromNumber(result._storage.Count));
+            return FenValue.FromObject(result);
+        }
+
+        private FenValue Intersection(FenValue[] args, FenValue thisVal)
+        {
+            var result = new JsSet(_context);
+            var otherVals = new HashSet<FenValue>(ExtractValues(args.Length > 0 ? args[0] : FenValue.Undefined), new JsValueEqualityComparer());
+            foreach (var v in _storage) if (otherVals.Contains(v)) result._storage.Add(v);
+            result.Set("size", FenValue.FromNumber(result._storage.Count));
+            return FenValue.FromObject(result);
+        }
+
+        private FenValue Difference(FenValue[] args, FenValue thisVal)
+        {
+            var result = new JsSet(_context);
+            var otherVals = new HashSet<FenValue>(ExtractValues(args.Length > 0 ? args[0] : FenValue.Undefined), new JsValueEqualityComparer());
+            foreach (var v in _storage) if (!otherVals.Contains(v)) result._storage.Add(v);
+            result.Set("size", FenValue.FromNumber(result._storage.Count));
+            return FenValue.FromObject(result);
+        }
+
+        private FenValue SymmetricDifference(FenValue[] args, FenValue thisVal)
+        {
+            var result = new JsSet(_context);
+            var otherVals = new HashSet<FenValue>(ExtractValues(args.Length > 0 ? args[0] : FenValue.Undefined), new JsValueEqualityComparer());
+            foreach (var v in _storage) if (!otherVals.Contains(v)) result._storage.Add(v);
+            foreach (var v in otherVals) if (!_storage.Contains(v)) result._storage.Add(v);
+            result.Set("size", FenValue.FromNumber(result._storage.Count));
+            return FenValue.FromObject(result);
+        }
+
+        private FenValue IsSubsetOf(FenValue[] args, FenValue thisVal)
+        {
+            var otherVals = new HashSet<FenValue>(ExtractValues(args.Length > 0 ? args[0] : FenValue.Undefined), new JsValueEqualityComparer());
+            return FenValue.FromBoolean(_storage.All(v => otherVals.Contains(v)));
+        }
+
+        private FenValue IsSupersetOf(FenValue[] args, FenValue thisVal)
+        {
+            return FenValue.FromBoolean(ExtractValues(args.Length > 0 ? args[0] : FenValue.Undefined).All(v => _storage.Contains(v)));
+        }
+
+        private FenValue IsDisjointFrom(FenValue[] args, FenValue thisVal)
+        {
+            return FenValue.FromBoolean(!ExtractValues(args.Length > 0 ? args[0] : FenValue.Undefined).Any(v => _storage.Contains(v)));
         }
 
         private FenObject CreateIteratorResult(IEnumerable<FenValue> items)
         {
             var iterator = new FenObject();
             var enumerator = items.GetEnumerator();
-            
+
             iterator.Set("next", FenValue.FromFunction(new FenFunction("next", (a, t) => {
                 bool hasNext = enumerator.MoveNext();
                 var res = new FenObject();
@@ -102,9 +181,9 @@ namespace FenBrowser.FenEngine.Core.Types
                 res.Set("done", FenValue.FromBoolean(!hasNext));
                 return FenValue.FromObject(res);
             })));
-            
-             if (JsSymbol.Iterator != null)
-                iterator.Set(JsSymbol.Iterator.ToPropertyKey(), FenValue.FromFunction(new FenFunction("[Symbol.iterator]", (a,t) => FenValue.FromObject(iterator))));
+
+            if (JsSymbol.Iterator != null)
+                iterator.Set(JsSymbol.Iterator.ToPropertyKey(), FenValue.FromFunction(new FenFunction("[Symbol.iterator]", (a, t) => FenValue.FromObject(iterator))));
 
             return iterator;
         }
@@ -112,7 +191,7 @@ namespace FenBrowser.FenEngine.Core.Types
         private FenObject CreateArray(FenValue[] items)
         {
             var obj = new FenObject();
-            for(int i=0; i<items.Length; i++) obj.Set(i.ToString(), items[i]);
+            for (int i = 0; i < items.Length; i++) obj.Set(i.ToString(), items[i]);
             obj.Set("length", FenValue.FromNumber(items.Length));
             return obj;
         }

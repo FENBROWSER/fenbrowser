@@ -142,6 +142,9 @@ namespace FenBrowser.FenEngine.Scripting
             public Action<MutationRecord> OnMutation { get; set; }
             public string CurrentUrl { get; set; } = "reflect";
             public FenEnvironment Environment { get; set; }
+            public FenValue NewTarget { get; set; }
+            public string CurrentModulePath { get; set; }
+            public bool StrictMode { get; set; }
 
             public void PushCallFrame(string functionName) { }
             public void PopCallFrame() { }

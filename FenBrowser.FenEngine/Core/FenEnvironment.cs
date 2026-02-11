@@ -125,6 +125,16 @@ namespace FenBrowser.FenEngine.Core
             return value;
         }
 
+        public bool HasBinding(string name)
+        {
+            if (_store.ContainsKey(name) || _tdz.Contains(name))
+            {
+                return true;
+            }
+
+            return Outer != null && Outer.HasBinding(name);
+        }
+
         public IDictionary<string, FenValue> InspectVariables()
         {
             return new Dictionary<string, FenValue>(_store);

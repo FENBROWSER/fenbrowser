@@ -270,31 +270,268 @@ namespace FenBrowser.FenEngine.Core.Types
 
         public static JsPromise All(IValue iterable, IExecutionContext context)
         {
-            // Simplified array support
-            if (iterable.AsObject() is FenObject arr && arr.Keys().Any())
+            // ES2015 Promise.all - resolves when all promises are fulfilled, rejects on first rejection
+            var resultPromise = new JsPromise(context);
+            
+            if (!(iterable.AsObject() is FenObject arr))
             {
-                // TODO: Full iterable support
-                return Resolve(FenValue.FromObject(new FenObject()), context); 
+                resultPromise.ResolvePromise(FenValue.FromObject(new FenObject()));
+                return resultPromise;
             }
-            return Resolve(FenValue.FromObject(new FenObject()), context);
+            
+            var keys = arr.Keys().OrderBy(k => int.TryParse(k, out var n) ? n : int.MaxValue).ToList();
+            if (keys.Count == 0)
+            {
+                resultPromise.ResolvePromise(FenValue.FromObject(new FenObject()));
+                return resultPromise;
+            }
+            
+            var results = new FenValue[keys.Count];
+            int remaining = keys.Count;
+            bool rejected = false;
+            
+            for (int i = 0; i < keys.Count; i++)
+            {
+                int index = i;
+                var item = arr.Get(keys[i], context);
+                
+                // Wrap in Promise.resolve to handle non-promise values
+                JsPromise promise = item.AsObject() as JsPromise;
+                if (promise == null)
+                {
+                    promise = Resolve(item, context);
+                }
+                
+                promise.Then(
+                    FenValue.FromFunction(new FenFunction("onFulfilled", (args, t) =>
+                    {
+                        if (rejected) return FenValue.Undefined;
+                        results[index] = args.Length > 0 ? args[0] : FenValue.Undefined;
+                        remaining--;
+                        if (remaining == 0)
+                        {
+                            var resultArray = new FenObject { InternalClass = "Array" };
+                            for (int j = 0; j < results.Length; j++)
+                            {
+                                resultArray.Set(j.ToString(), results[j], context);
+                            }
+                            resultArray.Set("length", FenValue.FromNumber(results.Length), context);
+                            resultPromise.ResolvePromise(FenValue.FromObject(resultArray));
+                        }
+                        return FenValue.Undefined;
+                    })),
+                    FenValue.FromFunction(new FenFunction("onRejected", (args, t) =>
+                    {
+                        if (!rejected)
+                        {
+                            rejected = true;
+                            resultPromise.RejectPromise(args.Length > 0 ? args[0] : FenValue.Undefined);
+                        }
+                        return FenValue.Undefined;
+                    }))
+                );
+            }
+            
+            return resultPromise;
         }
 
         public static JsPromise Race(IValue iterable, IExecutionContext context)
         {
-            // Stub implementation
-            return Resolve(FenValue.Undefined, context);
+            // ES2015 Promise.race - first promise to settle wins
+            var resultPromise = new JsPromise(context);
+            
+            if (!(iterable.AsObject() is FenObject arr))
+            {
+                return resultPromise; // Never settles for empty
+            }
+            
+            bool settled = false;
+            foreach (var key in arr.Keys())
+            {
+                var item = arr.Get(key, context);
+                JsPromise promise = item.AsObject() as JsPromise;
+                if (promise == null)
+                {
+                    promise = Resolve(item, context);
+                }
+                
+                promise.Then(
+                    FenValue.FromFunction(new FenFunction("onFulfilled", (args, t) =>
+                    {
+                        if (!settled)
+                        {
+                            settled = true;
+                            resultPromise.ResolvePromise(args.Length > 0 ? args[0] : FenValue.Undefined);
+                        }
+                        return FenValue.Undefined;
+                    })),
+                    FenValue.FromFunction(new FenFunction("onRejected", (args, t) =>
+                    {
+                        if (!settled)
+                        {
+                            settled = true;
+                            resultPromise.RejectPromise(args.Length > 0 ? args[0] : FenValue.Undefined);
+                        }
+                        return FenValue.Undefined;
+                    }))
+                );
+            }
+            
+            return resultPromise;
         }
 
         public static JsPromise Any(IValue iterable, IExecutionContext context)
         {
-             // Stub implementation
-            return Resolve(FenValue.Undefined, context);
+            // ES2021 Promise.any - first fulfilled wins, rejects with AggregateError if all reject
+            var resultPromise = new JsPromise(context);
+            
+            if (!(iterable.AsObject() is FenObject arr))
+            {
+                // Reject with AggregateError for empty iterable
+                var aggError = new FenObject { InternalClass = "AggregateError" };
+                aggError.Set("message", FenValue.FromString("All promises were rejected"), context);
+                aggError.Set("errors", FenValue.FromObject(new FenObject { InternalClass = "Array" }), context);
+                resultPromise.RejectPromise(FenValue.FromObject(aggError));
+                return resultPromise;
+            }
+            
+            var keys = arr.Keys().ToList();
+            if (keys.Count == 0)
+            {
+                var aggError = new FenObject { InternalClass = "AggregateError" };
+                aggError.Set("message", FenValue.FromString("All promises were rejected"), context);
+                aggError.Set("errors", FenValue.FromObject(new FenObject { InternalClass = "Array" }), context);
+                resultPromise.RejectPromise(FenValue.FromObject(aggError));
+                return resultPromise;
+            }
+            
+            var errors = new List<FenValue>();
+            int remaining = keys.Count;
+            bool fulfilled = false;
+            
+            foreach (var key in keys)
+            {
+                var item = arr.Get(key, context);
+                JsPromise promise = item.AsObject() as JsPromise;
+                if (promise == null)
+                {
+                    promise = Resolve(item, context);
+                }
+                
+                promise.Then(
+                    FenValue.FromFunction(new FenFunction("onFulfilled", (args, t) =>
+                    {
+                        if (!fulfilled)
+                        {
+                            fulfilled = true;
+                            resultPromise.ResolvePromise(args.Length > 0 ? args[0] : FenValue.Undefined);
+                        }
+                        return FenValue.Undefined;
+                    })),
+                    FenValue.FromFunction(new FenFunction("onRejected", (args, t) =>
+                    {
+                        if (fulfilled) return FenValue.Undefined;
+                        errors.Add(args.Length > 0 ? args[0] : FenValue.Undefined);
+                        remaining--;
+                        if (remaining == 0)
+                        {
+                            var aggError = new FenObject { InternalClass = "AggregateError" };
+                            aggError.Set("message", FenValue.FromString("All promises were rejected"), context);
+                            var errArray = new FenObject { InternalClass = "Array" };
+                            for (int i = 0; i < errors.Count; i++)
+                            {
+                                errArray.Set(i.ToString(), errors[i], context);
+                            }
+                            errArray.Set("length", FenValue.FromNumber(errors.Count), context);
+                            aggError.Set("errors", FenValue.FromObject(errArray), context);
+                            resultPromise.RejectPromise(FenValue.FromObject(aggError));
+                        }
+                        return FenValue.Undefined;
+                    }))
+                );
+            }
+            
+            return resultPromise;
         }
 
         public static JsPromise AllSettled(IValue iterable, IExecutionContext context)
         {
-             // Stub implementation
-            return Resolve(FenValue.FromObject(new FenObject()), context);
+            // ES2020 Promise.allSettled - waits for all promises, returns array of {status, value/reason}
+            var resultPromise = new JsPromise(context);
+            
+            if (!(iterable.AsObject() is FenObject arr))
+            {
+                var emptyArray = new FenObject { InternalClass = "Array" };
+                emptyArray.Set("length", FenValue.FromNumber(0), context);
+                resultPromise.ResolvePromise(FenValue.FromObject(emptyArray));
+                return resultPromise;
+            }
+            
+            var keys = arr.Keys().OrderBy(k => int.TryParse(k, out var n) ? n : int.MaxValue).ToList();
+            if (keys.Count == 0)
+            {
+                var emptyArray = new FenObject { InternalClass = "Array" };
+                emptyArray.Set("length", FenValue.FromNumber(0), context);
+                resultPromise.ResolvePromise(FenValue.FromObject(emptyArray));
+                return resultPromise;
+            }
+            
+            var results = new FenObject[keys.Count];
+            int remaining = keys.Count;
+            
+            for (int i = 0; i < keys.Count; i++)
+            {
+                int index = i;
+                var item = arr.Get(keys[i], context);
+                JsPromise promise = item.AsObject() as JsPromise;
+                if (promise == null)
+                {
+                    promise = Resolve(item, context);
+                }
+                
+                promise.Then(
+                    FenValue.FromFunction(new FenFunction("onFulfilled", (args, t) =>
+                    {
+                        var result = new FenObject();
+                        result.Set("status", FenValue.FromString("fulfilled"), context);
+                        result.Set("value", args.Length > 0 ? args[0] : FenValue.Undefined, context);
+                        results[index] = result;
+                        remaining--;
+                        if (remaining == 0)
+                        {
+                            var resultArray = new FenObject { InternalClass = "Array" };
+                            for (int j = 0; j < results.Length; j++)
+                            {
+                                resultArray.Set(j.ToString(), FenValue.FromObject(results[j]), context);
+                            }
+                            resultArray.Set("length", FenValue.FromNumber(results.Length), context);
+                            resultPromise.ResolvePromise(FenValue.FromObject(resultArray));
+                        }
+                        return FenValue.Undefined;
+                    })),
+                    FenValue.FromFunction(new FenFunction("onRejected", (args, t) =>
+                    {
+                        var result = new FenObject();
+                        result.Set("status", FenValue.FromString("rejected"), context);
+                        result.Set("reason", args.Length > 0 ? args[0] : FenValue.Undefined, context);
+                        results[index] = result;
+                        remaining--;
+                        if (remaining == 0)
+                        {
+                            var resultArray = new FenObject { InternalClass = "Array" };
+                            for (int j = 0; j < results.Length; j++)
+                            {
+                                resultArray.Set(j.ToString(), FenValue.FromObject(results[j]), context);
+                            }
+                            resultArray.Set("length", FenValue.FromNumber(results.Length), context);
+                            resultPromise.ResolvePromise(FenValue.FromObject(resultArray));
+                        }
+                        return FenValue.Undefined;
+                    }))
+                );
+            }
+            
+            return resultPromise;
         }
     }
 

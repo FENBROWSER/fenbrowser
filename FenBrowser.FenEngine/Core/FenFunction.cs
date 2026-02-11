@@ -12,6 +12,7 @@ namespace FenBrowser.FenEngine.Core
     public class FenFunction : FenObject
     {
         public string Name { get; }
+        public string Source { get; set; } // ES2019: Store original source code
         public Func<FenValue[], FenValue, FenValue> NativeImplementation { get; }
         public bool IsNative { get; }
         public bool IsAsync { get; set; }
