@@ -108,6 +108,21 @@ namespace FenBrowser.FenEngine.Core.Interfaces
         /// As they are in same project, referencing FenBrowser.FenEngine.Core is fine.
         /// </summary>
         FenEnvironment Environment { get; set; }
+
+        /// <summary>
+        /// ES2015 new.target meta property
+        /// </summary>
+        FenValue NewTarget { get; set; }
+
+        /// <summary>
+        /// Current module path (for module resolution)
+        /// </summary>
+        string CurrentModulePath { get; set; }
+
+        /// <summary>
+        /// Whether strict mode is enabled
+        /// </summary>
+        bool StrictMode { get; set; }
     }
 }
 

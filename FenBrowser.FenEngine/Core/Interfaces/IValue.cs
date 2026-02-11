@@ -81,6 +81,7 @@ namespace FenBrowser.FenEngine.Core.Interfaces
         Error,       // Internal
         Break,       // Internal
         Continue,    // Internal
-        Yield        // Internal
+        Yield,        // Internal
+        YieldDelegate // Internal (yield* delegation)
     }
 }
