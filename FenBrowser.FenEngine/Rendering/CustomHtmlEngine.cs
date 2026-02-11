@@ -30,9 +30,9 @@ namespace FenBrowser.FenEngine.Rendering
     /// <summary>
     /// Clean, dependency-free wrapper suitable for WP8.1 without WebView.
     /// </summary>
+#nullable enable
     public sealed class CustomHtmlEngine : IDisposable
     {
-
         public Func<Uri, Task<string>> ScriptFetcher { get; set; }
         public Func<System.Net.Http.HttpRequestMessage, Task<System.Net.Http.HttpResponseMessage>> FetchHandler { get; set; }
 
@@ -1071,7 +1071,7 @@ namespace FenBrowser.FenEngine.Rendering
             Func<Uri, Task<Stream>> imageLoader,
             Action<Uri> onNavigate,
             double? viewportWidth = null,
-            Action<object> onFixedBackground = null,
+            Action<object>? onFixedBackground = null,
             bool? forceJavascript = null,
             bool disableAutoFallback = false)
         {
@@ -1292,7 +1292,7 @@ namespace FenBrowser.FenEngine.Rendering
             Func<Uri, Task<Stream>> imageLoader,
             Action<Uri> onNavigate,
             double? viewportWidth = null,
-            Action<object> onFixedBackground = null)
+            Action<object>? onFixedBackground = null)
         {
             try { var _ = RenderAsync(html, baseUri, fetchExternalCssAsync, imageLoader, onNavigate, viewportWidth, onFixedBackground); }
             catch { }
