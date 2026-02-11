@@ -53,6 +53,9 @@ namespace FenBrowser.FenEngine.Core
         public Action<MutationRecord> OnMutation { get; set; }
         public string CurrentUrl { get; set; }
         public FenEnvironment Environment { get; set; }
+        public FenValue NewTarget { get; set; }
+        public string CurrentModulePath { get; set; }
+        public bool StrictMode { get; set; }
 
         public ExecutionContext(
             IPermissionManager permissions = null, 

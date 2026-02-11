@@ -35,6 +35,20 @@ namespace FenBrowser.FenEngine.Core
         MinusAssign,  // -=
         MulAssign,    // *=
         DivAssign,    // /=
+        ModuloAssign, // %= (ES2015)
+        BitwiseAndAssign,  // &= (ES2015)
+        BitwiseOrAssign,   // |= (ES2015)
+        BitwiseXorAssign,  // ^= (ES2015)
+        LeftShiftAssign,   // <<= (ES2015)
+        RightShiftAssign,  // >>= (ES2015)
+        UnsignedRightShiftAssign, // >>>= (ES2015)
+        
+        // ES2021 Logical Assignment
+        OrAssign,      // ||=
+        AndAssign,     // &&=
+        // NullCoalescingAssign, // ??= (Redundant)
+        // NullCoalescing,       // ?? (Redundant)
+        Question,             // ?
         
         // Comparison
         Lt,
@@ -98,6 +112,7 @@ namespace FenBrowser.FenEngine.Core
         Case,         // case
         Default,      // default
         Do,           // do
+        With,         // with (ES5.1)
 
         Extends,      // extends
         Super,        // super
@@ -109,7 +124,7 @@ namespace FenBrowser.FenEngine.Core
         Yield,        // yield (for generators)
 
         // JavaScript special operators
-        Question,   // ?
+        // Question,   // ? (Duplicate)
         Arrow,      // =>
         Regex,      // /pattern/flags
         Backtick,   // ` (template literal start)
@@ -118,13 +133,14 @@ namespace FenBrowser.FenEngine.Core
         TemplateExprEnd,   // }
         Ellipsis,          // ...
         PrivateIdentifier, // #field (for private class fields)
+        At,                // @ (for decorators)
         
         // ES6+ operators
         OptionalChain,     // ?.
         NullishCoalescing, // ??
         NullishAssign,     // ??=
-        OrAssign,          // ||=
-        AndAssign,         // &&=
+        // OrAssign,          // ||= (Duplicate)
+        // AndAssign,         // &&= (Duplicate)
         Exponent,          // **
         ExponentAssign,    // **=
         BigInt,            // 123n
@@ -145,6 +161,7 @@ namespace FenBrowser.FenEngine.Core
         public string Literal { get; }
         public int Line { get; }
         public int Column { get; }
+        public int Position { get; set; } // Added for source slicing
         public bool HadLineTerminatorBefore { get; set; }
 
         public Token(TokenType type, string literal, int line, int column, bool hadLineTerminatorBefore = false)
@@ -165,13 +182,15 @@ namespace FenBrowser.FenEngine.Core
     public class Lexer
     {
         private readonly string _input;
+        public string Source => _input; // Expose source for Parser
         private int _position;      // current position in input (points to current char)
         private int _readPosition;  // current reading position in input (after current char)
         private char _ch;           // current char under examination
         private int _line = 1;
         private int _column = 0;
+        private bool _hasEscapeInLastIdent = false;
+        private bool _hasInvalidEscapeInLastIdent = false;
         private Token _prevToken; // Track previous token for regex vs division context
-
         private static readonly Dictionary<string, TokenType> Keywords;
 
         static Lexer()
@@ -221,12 +240,12 @@ namespace FenBrowser.FenEngine.Core
                     { "case", TokenType.Case },
                     { "default", TokenType.Default },
                     { "do", TokenType.Do },
+                    { "with", TokenType.With },
                     { "yield", TokenType.Yield },
                 };
             }
             catch (Exception ex)
             {
-                 // Ensure we don't crash, but parsing will be broken for keywords
                 System.Diagnostics.Debug.WriteLine($"Error initializing Lexer keywords: {ex}");
                 Keywords = new Dictionary<string, TokenType>();
             }
@@ -234,7 +253,16 @@ namespace FenBrowser.FenEngine.Core
 
         public Lexer(string input)
         {
-            _input = input;
+            // ES2023: Hashbang grammar — strip leading #! line before tokenizing
+            if (input.Length >= 2 && input[0] == '#' && input[1] == '!')
+            {
+                int eol = input.IndexOf('\n');
+                _input = eol >= 0 ? input.Substring(eol + 1) : "";
+            }
+            else
+            {
+                _input = input;
+            }
             ReadChar();
         }
 
@@ -266,11 +294,14 @@ namespace FenBrowser.FenEngine.Core
         {
             bool hadLineTerminator = SkipWhitespace();
 
+            int startPos = _position; // Capture start position
             Token token;
             int startColumn = _column;
 
             switch (_ch)
             {
+                // ... (rest of switch is unchanged)
+
                 case '=':
                     if (PeekChar() == '=')
                     {
@@ -387,7 +418,12 @@ namespace FenBrowser.FenEngine.Core
                     }
                     else if (PeekChar() == '*')
                     {
-                        SkipBlockComment();
+                        bool terminated = SkipBlockComment();
+                        if (!terminated)
+                        {
+                            token = new Token(TokenType.Illegal, "/*", _line, startColumn, hadLineTerminator);
+                            break;
+                        }
                         return NextToken();
                     }
                     else if (PeekChar() == '=')
@@ -400,8 +436,9 @@ namespace FenBrowser.FenEngine.Core
                         // Check for regex literal
                         if (IsRegexStart(_prevToken))
                         {
-                            string regex = ReadRegexLiteral();
-                            token = new Token(TokenType.Regex, regex, _line, startColumn);
+                            bool regexValid;
+                            string regex = ReadRegexLiteral(out regexValid);
+                            token = new Token(regexValid ? TokenType.Regex : TokenType.Illegal, regex, _line, startColumn);
                             token.HadLineTerminatorBefore = hadLineTerminator;
                             _prevToken = token;
                             return token;
@@ -437,7 +474,15 @@ namespace FenBrowser.FenEngine.Core
                     }
                     break;
                 case '%':
-                    token = new Token(TokenType.Percent, "%", _line, startColumn);
+                    if (PeekChar() == '=')
+                    {
+                        ReadChar();
+                        token = new Token(TokenType.ModuloAssign, "%=", _line, startColumn);
+                    }
+                    else
+                    {
+                        token = new Token(TokenType.Percent, "%", _line, startColumn);
+                    }
                     break;
                 case '<':
                     if (PeekChar() == '=')
@@ -448,7 +493,15 @@ namespace FenBrowser.FenEngine.Core
                     else if (PeekChar() == '<')
                     {
                         ReadChar();
-                        token = new Token(TokenType.LeftShift, "<<", _line, startColumn);
+                        if (PeekChar() == '=')
+                        {
+                            ReadChar();
+                            token = new Token(TokenType.LeftShiftAssign, "<<=", _line, startColumn);
+                        }
+                        else
+                        {
+                            token = new Token(TokenType.LeftShift, "<<", _line, startColumn);
+                        }
                     }
                     else
                     {
@@ -467,7 +520,20 @@ namespace FenBrowser.FenEngine.Core
                         if (PeekChar() == '>')
                         {
                             ReadChar();
-                            token = new Token(TokenType.UnsignedRightShift, ">>>", _line, startColumn);
+                            if (PeekChar() == '=')
+                            {
+                                ReadChar();
+                                token = new Token(TokenType.UnsignedRightShiftAssign, ">>>=", _line, startColumn);
+                            }
+                            else
+                            {
+                                token = new Token(TokenType.UnsignedRightShift, ">>>", _line, startColumn);
+                            }
+                        }
+                        else if (PeekChar() == '=')
+                        {
+                            ReadChar();
+                            token = new Token(TokenType.RightShiftAssign, ">>=", _line, startColumn);
                         }
                         else
                         {
@@ -493,6 +559,11 @@ namespace FenBrowser.FenEngine.Core
                             token = new Token(TokenType.And, "&&", _line, startColumn);
                         }
                     }
+                    else if (PeekChar() == '=')
+                    {
+                        ReadChar();
+                        token = new Token(TokenType.BitwiseAndAssign, "&=", _line, startColumn);
+                    }
                     else
                     {
                         token = new Token(TokenType.BitwiseAnd, "&", _line, startColumn);
@@ -512,13 +583,26 @@ namespace FenBrowser.FenEngine.Core
                             token = new Token(TokenType.Or, "||", _line, startColumn);
                         }
                     }
+                    else if (PeekChar() == '=')
+                    {
+                        ReadChar();
+                        token = new Token(TokenType.BitwiseOrAssign, "|=", _line, startColumn);
+                    }
                     else
                     {
                         token = new Token(TokenType.BitwiseOr, "|", _line, startColumn);
                     }
                     break;
                 case '^':
-                    token = new Token(TokenType.BitwiseXor, "^", _line, startColumn);
+                    if (PeekChar() == '=')
+                    {
+                        ReadChar();
+                        token = new Token(TokenType.BitwiseXorAssign, "^=", _line, startColumn);
+                    }
+                    else
+                    {
+                        token = new Token(TokenType.BitwiseXor, "^", _line, startColumn);
+                    }
                     break;
                 case '~':
                     token = new Token(TokenType.BitwiseNot, "~", _line, startColumn);
@@ -533,6 +617,15 @@ namespace FenBrowser.FenEngine.Core
                     token = new Token(TokenType.Colon, ":", _line, startColumn);
                     break;
                 case '.':
+                    if (IsDigit(PeekChar()))
+                    {
+                        bool isBigInt;
+                        bool isValid;
+                        string numStr = ReadNumber(startsWithDot: true, out isBigInt, out isValid);
+                        var numberToken = new Token(isValid ? TokenType.Number : TokenType.Illegal, numStr, _line, startColumn, hadLineTerminator);
+                        _prevToken = numberToken;
+                        return numberToken;
+                    }
                     if (PeekChar() == '.' && _readPosition + 1 < _input.Length && _input[_readPosition + 1] == '.')
                     {
                         ReadChar();
@@ -564,7 +657,9 @@ namespace FenBrowser.FenEngine.Core
                     break;
                 case '"':
                 case '\'':
-                    token = new Token(TokenType.String, ReadString(_ch), _line, startColumn);
+                    bool stringValid;
+                    string str = ReadString(_ch, out stringValid);
+                    token = new Token(stringValid ? TokenType.String : TokenType.Illegal, str, _line, startColumn);
                     break;
                 case '`':
                     token = new Token(TokenType.TemplateString, ReadTemplateLiteral(), _line, startColumn);
@@ -572,7 +667,7 @@ namespace FenBrowser.FenEngine.Core
                 case '#':
                     // Private identifier (e.g., #field for private class fields)
                     ReadChar(); // consume #
-                    if (IsLetter(_ch))
+                    if (IsIdentifierStart(_ch) || _ch == '\\')
                     {
                         string privateName = ReadIdentifier();
                         var t = new Token(TokenType.PrivateIdentifier, "#" + privateName, _line, startColumn);
@@ -581,32 +676,75 @@ namespace FenBrowser.FenEngine.Core
                     }
                     token = new Token(TokenType.Illegal, "#", _line, startColumn);
                     break;
+                case '@':
+                    token = new Token(TokenType.At, "@", _line, startColumn);
+                    ReadChar();
+                    break;
+                    break;
                 case '\0':
                     token = new Token(TokenType.Eof, "", _line, startColumn);
                     break;
-                default:
-                    if (IsLetter(_ch))
+                case '\\':
+                    if (PeekChar() == 'u')
                     {
+                        // Start of unicode escape in identifier
                         string literal = ReadIdentifier();
-                        TokenType type = LookupIdent(literal);
-                        var t = new Token(type, literal, _line, startColumn);
-                        _prevToken = t;
-                        return t;
-                    }
-                    else if (IsDigit(_ch))
-                    {
-                        var t = new Token(TokenType.Number, ReadNumber(), _line, startColumn);
+                        if (_hasInvalidEscapeInLastIdent)
+                        {
+                            token = new Token(TokenType.Illegal, literal, _line, startColumn, hadLineTerminator);
+                            break;
+                        }
+                        if (string.IsNullOrEmpty(literal) || !IsIdentifierStart(literal[0]))
+                        {
+                            token = new Token(TokenType.Illegal, literal, _line, startColumn, hadLineTerminator);
+                            break;
+                        }
+                        // If identifier contains escapes, it cannot be a keyword
+                        TokenType type = _hasEscapeInLastIdent ? TokenType.Identifier : LookupIdent(literal);
+                        var t = new Token(type, literal, _line, startColumn, hadLineTerminator);
                         _prevToken = t;
                         return t;
                     }
                     else
                     {
-                        token = new Token(TokenType.Illegal, _ch.ToString(), _line, startColumn);
+                         token = new Token(TokenType.Illegal, "\\", _line, startColumn, hadLineTerminator);
+                    }
+                    break;
+                default:
+                    if (IsIdentifierStart(_ch))
+                    {
+                        string literal = ReadIdentifier();
+                        if (_hasInvalidEscapeInLastIdent)
+                        {
+                            token = new Token(TokenType.Illegal, literal, _line, startColumn, hadLineTerminator);
+                            break;
+                        }
+                        // If identifier contains escapes, it cannot be a keyword
+                        TokenType type = _hasEscapeInLastIdent ? TokenType.Identifier : LookupIdent(literal);
+                        var t = new Token(type, literal, _line, startColumn, hadLineTerminator);
+                        _prevToken = t;
+                        return t;
+                    }
+                    else if (IsDigit(_ch))
+                    {
+                        bool isBigInt;
+                        bool isValid;
+                        string numStr = ReadNumber(startsWithDot: false, out isBigInt, out isValid);
+                        var tokenType = isValid ? (isBigInt ? TokenType.BigInt : TokenType.Number) : TokenType.Illegal;
+                        var t = new Token(tokenType, numStr, _line, startColumn, hadLineTerminator);
+                        _prevToken = t;
+                        return t;
+                    }
+                    else
+                    {
+                        token = new Token(TokenType.Illegal, _ch.ToString(), _line, startColumn, hadLineTerminator);
                     }
                     break;
             }
 
             ReadChar();
+            
+            token.Position = startPos;
             
             token.HadLineTerminatorBefore = hadLineTerminator;
             _prevToken = token;
@@ -616,15 +754,37 @@ namespace FenBrowser.FenEngine.Core
         private bool SkipWhitespace()
         {
             bool hadLineTerminator = false;
-            while (_ch == ' ' || _ch == '\t' || _ch == '\n' || _ch == '\r')
+            while (true)
             {
-                if (_ch == '\n')
+                if (IsJsWhiteSpace(_ch))
                 {
+                    ReadChar();
+                    continue;
+                }
+
+                if (_ch == '\r')
+                {
+                    hadLineTerminator = true;
                     _line++;
                     _column = 0;
-                    hadLineTerminator = true;
+                    ReadChar();
+                    if (_ch == '\n')
+                    {
+                        ReadChar();
+                    }
+                    continue;
                 }
-                ReadChar();
+
+                if (_ch == '\n' || _ch == '\u2028' || _ch == '\u2029')
+                {
+                    hadLineTerminator = true;
+                    _line++;
+                    _column = 0;
+                    ReadChar();
+                    continue;
+                }
+
+                break;
             }
             return hadLineTerminator;
         }
@@ -636,14 +796,14 @@ namespace FenBrowser.FenEngine.Core
             // Consume second slash
             ReadChar();
             
-            while (_ch != '\n' && _ch != '\0')
+            while (_ch != '\0' && !IsLineTerminator(_ch))
             {
                 ReadChar();
             }
             // Whitespace skipping in NextToken will handle the newline
         }
 
-        private void SkipBlockComment()
+        private bool SkipBlockComment()
         {
              // Consume /
             ReadChar();
@@ -652,14 +812,26 @@ namespace FenBrowser.FenEngine.Core
 
             while (true)
             {
-                if (_ch == '\0') break;
+                if (_ch == '\0') return false;
                 if (_ch == '*' && PeekChar() == '/')
                 {
                     ReadChar(); // *
                     ReadChar(); // /
-                    break;
+                    return true;
                 }
-                if (_ch == '\n')
+                if (_ch == '\r')
+                {
+                    _line++;
+                    _column = 0;
+                    ReadChar();
+                    if (_ch == '\n')
+                    {
+                        ReadChar();
+                    }
+                    continue;
+                }
+
+                if (_ch == '\n' || _ch == '\u2028' || _ch == '\u2029')
                 {
                     _line++;
                     _column = 0;
@@ -670,80 +842,331 @@ namespace FenBrowser.FenEngine.Core
 
         private string ReadIdentifier()
         {
-            int position = _position;
-            while (IsLetter(_ch) || IsDigit(_ch))
+            int startPos = _position;
+            StringBuilder sb = null;
+            _hasEscapeInLastIdent = false;
+            _hasInvalidEscapeInLastIdent = false;
+
+            while (IsIdentifierPart(_ch) || _ch == '\\')
             {
-                ReadChar();
+                if (_ch == '\\')
+                {
+                    // Check for unicode escape sequence \uXXXX
+                    if (PeekChar() == 'u')
+                    {
+                        _hasEscapeInLastIdent = true;
+                        if (sb == null)
+                        {
+                            sb = new StringBuilder();
+                            if (_position > startPos)
+                            {
+                                sb.Append(_input.Substring(startPos, _position - startPos));
+                            }
+                        }
+                        
+                        ReadChar(); // consume \
+                        ReadChar(); // consume u
+                        
+                        // Parse Unicode escape (similar to ReadString)
+                        if (_ch == '{')
+                        {
+                            // \u{XXXX} - variable length code point
+                            var hexBuf = new StringBuilder();
+                            ReadChar();
+                            while (_ch != '}' && _ch != '\0' && IsHexDigit(_ch))
+                            {
+                                hexBuf.Append(_ch);
+                                ReadChar();
+                            }
+                            if (_ch == '}' && hexBuf.Length > 0)
+                            {
+                                try 
+                                {
+                                    int cp = Convert.ToInt32(hexBuf.ToString(), 16);
+                                    string decoded = char.ConvertFromUtf32(cp);
+                                    if (decoded.Length != 1 || !IsIdentifierPart(decoded[0]))
+                                    {
+                                        _hasInvalidEscapeInLastIdent = true;
+                                    }
+                                    sb.Append(decoded);
+                                }
+                                catch 
+                                {
+                                    // Invalid code point
+                                    sb.Append('\uFFFD'); // Replacement char
+                                    _hasInvalidEscapeInLastIdent = true;
+                                }
+                            }
+                            ReadChar(); // consume closing '}'
+                        }
+                        else if (IsHexDigit(_ch))
+                        {
+                            // \uHHHH — 4 fixed hex digits
+                            char h1 = _ch;
+                            ReadChar(); char h2 = _ch;
+                            ReadChar(); char h3 = _ch;
+                            ReadChar(); char h4 = _ch;
+                           
+                            if (IsHexDigit(h1) && IsHexDigit(h2) && IsHexDigit(h3) && IsHexDigit(h4))
+                            {
+                                int code = Convert.ToInt32(new string(new[] { h1, h2, h3, h4 }), 16);
+                                char decoded = (char)code;
+                                if (!IsIdentifierPart(decoded))
+                                {
+                                    _hasInvalidEscapeInLastIdent = true;
+                                }
+                                sb.Append(decoded);
+                                ReadChar();
+                            }
+                            else
+                            {
+                                // Malformed escape
+                                // We essentially consumed characters we shouldn't have if it's invalid.
+                                // But JS syntax error usually.
+                                // Recover by appending what we have?
+                                sb.Append("\\u");
+                                sb.Append(h1);
+                                if (IsHexDigit(h2)) sb.Append(h2);
+                                if (IsHexDigit(h3)) sb.Append(h3);
+                                if (IsHexDigit(h4)) sb.Append(h4);
+                                _hasInvalidEscapeInLastIdent = true;
+                                continue; 
+                            }
+                        }
+                        else
+                        {
+                            // \u followed by non-hex?
+                            sb.Append("\\u");
+                            // Backtrack or just append current? 
+                            // Current is the char after u.
+                            // We already consumed \ and u.
+                            // Current _ch is NOT part of escape.
+                            // So append \u and process _ch in next loop?
+                            // But we are in while loop.
+                            // Let's just append \u and let the loop continue with _ch
+                            // But wait, IsLetter/Digit check at start of loop.
+                            // If _ch is not letter/digit, we break.
+                            // So we append \u and if _ch is invalid ident part, we break.
+                            _hasInvalidEscapeInLastIdent = true;
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        // Backslash not followed by u is not allowed in identifier start/part
+                        // It IS allowed in string, but here we are in identifier.
+                        break; 
+                    }
+                }
+                else
+                {
+                    if (sb != null) sb.Append(_ch);
+                    ReadChar();
+                }
             }
-            return _input.Substring(position, _position - position);
+            
+            if (sb != null) return sb.ToString();
+            return _input.Substring(startPos, _position - startPos);
         }
 
-        private string ReadNumber()
+        private string ReadNumber(bool startsWithDot, out bool isBigInt, out bool isValid)
         {
-            int position = _position;
+            int startPos = _position;
+            isBigInt = false;
+            isValid = true;
+            var literal = new StringBuilder();
+            bool hasDot = false;
+            bool hasExponent = false;
+            bool isNonDecimalPrefixed = false;
 
-            // Handle hex (0x), octal (0o), binary (0b) prefixes
-            if (_ch == '0')
+            if (startsWithDot)
             {
-                char next = PeekChar();
-                if (next == 'x' || next == 'X')
+                hasDot = true;
+                literal.Append('0');
+                literal.Append('.');
+                ReadChar(); // consume '.'
+
+                bool fracSeparatorsValid;
+                bool hasFractionDigits = ReadDigitsWithSeparators(IsDigit, literal, out fracSeparatorsValid);
+                if (!hasFractionDigits || !fracSeparatorsValid)
                 {
-                    ReadChar(); // consume '0'
-                    ReadChar(); // consume 'x'/'X'
-                    while (IsHexDigit(_ch) || _ch == '_') ReadChar();
-                    string raw = _input.Substring(position, _position - position);
-                    return raw.Replace("_", "");
+                    isValid = false;
                 }
-                if (next == 'o' || next == 'O')
+
+                if (_ch == 'e' || _ch == 'E')
                 {
-                    ReadChar(); // consume '0'
-                    ReadChar(); // consume 'o'/'O'
-                    while ((_ch >= '0' && _ch <= '7') || _ch == '_') ReadChar();
-                    string raw = _input.Substring(position, _position - position);
-                    return raw.Replace("_", "");
+                    hasExponent = true;
+                    literal.Append(_ch);
+                    ReadChar(); // consume e/E
+
+                    if (_ch == '+' || _ch == '-')
+                    {
+                        literal.Append(_ch);
+                        ReadChar();
+                    }
+
+                    bool expSeparatorsValid;
+                    bool hasExpDigits = ReadDigitsWithSeparators(IsDigit, literal, out expSeparatorsValid);
+                    if (!hasExpDigits || !expSeparatorsValid)
+                    {
+                        isValid = false;
+                    }
                 }
-                if (next == 'b' || next == 'B')
+            }
+            else if (_ch == '0' && (PeekChar() == 'x' || PeekChar() == 'X' || PeekChar() == 'o' || PeekChar() == 'O' || PeekChar() == 'b' || PeekChar() == 'B'))
+            {
+                isNonDecimalPrefixed = true;
+                char prefix = PeekChar();
+                ReadChar(); // consume 0
+                ReadChar(); // consume prefix
+
+                literal.Append('0');
+                literal.Append(prefix);
+
+                Func<char, bool> isBaseDigit = prefix == 'x' || prefix == 'X'
+                    ? new Func<char, bool>(IsHexDigit)
+                    : (prefix == 'o' || prefix == 'O'
+                        ? new Func<char, bool>(c => c >= '0' && c <= '7')
+                        : new Func<char, bool>(c => c == '0' || c == '1'));
+
+                bool separatorsValid;
+                bool hasDigits = ReadDigitsWithSeparators(isBaseDigit, literal, out separatorsValid);
+                if (!hasDigits || !separatorsValid)
                 {
-                    ReadChar(); // consume '0'
-                    ReadChar(); // consume 'b'/'B'
-                    while (_ch == '0' || _ch == '1' || _ch == '_') ReadChar();
-                    string raw = _input.Substring(position, _position - position);
-                    return raw.Replace("_", "");
+                    isValid = false;
+                }
+
+                if (_ch == 'n')
+                {
+                    isBigInt = true;
+                    ReadChar();
+                }
+            }
+            else
+            {
+                bool intSeparatorsValid;
+                bool hasIntDigits = ReadDigitsWithSeparators(IsDigit, literal, out intSeparatorsValid);
+                if (!hasIntDigits || !intSeparatorsValid)
+                {
+                    isValid = false;
+                }
+
+                if (_ch == '.')
+                {
+                    hasDot = true;
+                    literal.Append('.');
+                    ReadChar(); // consume '.'
+
+                    bool fracSeparatorsValid;
+                    ReadDigitsWithSeparators(IsDigit, literal, out fracSeparatorsValid);
+                    if (!fracSeparatorsValid)
+                    {
+                        isValid = false;
+                    }
+                }
+
+                if (_ch == 'e' || _ch == 'E')
+                {
+                    hasExponent = true;
+                    literal.Append(_ch);
+                    ReadChar(); // consume e/E
+
+                    if (_ch == '+' || _ch == '-')
+                    {
+                        literal.Append(_ch);
+                        ReadChar();
+                    }
+
+                    bool expSeparatorsValid;
+                    bool hasExpDigits = ReadDigitsWithSeparators(IsDigit, literal, out expSeparatorsValid);
+                    if (!hasExpDigits || !expSeparatorsValid)
+                    {
+                        isValid = false;
+                    }
+                }
+
+                if (_ch == 'n')
+                {
+                    if (hasDot || hasExponent)
+                    {
+                        isValid = false;
+                    }
+                    isBigInt = true;
+                    ReadChar();
                 }
             }
 
-            // Handle decimal numeric separators (1_000_000) and BigInt (123n)
-            while (IsDigit(_ch) || _ch == '_')
+            if (isBigInt && !isNonDecimalPrefixed && literal.Length > 1 && literal[0] == '0')
             {
-                if (_ch == '_')
+                isValid = false;
+            }
+
+            string rawLiteral = _input.Substring(startPos, Math.Max(0, _position - startPos));
+            if (!isBigInt &&
+                !isNonDecimalPrefixed &&
+                !hasDot &&
+                !hasExponent &&
+                rawLiteral.Contains('_') &&
+                literal.Length > 1 &&
+                literal[0] == '0')
+            {
+                isValid = false;
+            }
+
+            if (IsDigit(_ch) || IsIdentifierStart(_ch) || _ch == '\\')
+            {
+                isValid = false;
+                ConsumeInvalidNumericTail();
+            }
+
+            return literal.ToString();
+        }
+
+        private bool ReadDigitsWithSeparators(Func<char, bool> isDigitFn, StringBuilder output, out bool separatorsValid)
+        {
+            separatorsValid = true;
+            bool hadDigit = false;
+            bool previousUnderscore = false;
+
+            while (true)
+            {
+                if (isDigitFn(_ch))
                 {
-                    // Numeric separator - skip but keep in string for parsing
+                    hadDigit = true;
+                    previousUnderscore = false;
+                    output.Append(_ch);
                     ReadChar();
                     continue;
                 }
-                ReadChar();
-            }
 
-            if (_ch == '.' && IsDigit(PeekChar()))
-            {
-                ReadChar();
-                while (IsDigit(_ch) || _ch == '_')
+                if (_ch == '_')
                 {
+                    if (!hadDigit || previousUnderscore)
+                    {
+                        separatorsValid = false;
+                    }
+                    previousUnderscore = true;
                     ReadChar();
+                    continue;
                 }
+
+                break;
             }
 
-            // Handle exponent notation (1e10, 1E-5)
-            if (_ch == 'e' || _ch == 'E')
+            if (previousUnderscore)
+            {
+                separatorsValid = false;
+            }
+
+            return hadDigit;
+        }
+
+        private void ConsumeInvalidNumericTail()
+        {
+            while (IsIdentifierPart(_ch) || _ch == '\\' || _ch == '_')
             {
                 ReadChar();
-                if (_ch == '+' || _ch == '-') ReadChar();
-                while (IsDigit(_ch) || _ch == '_') ReadChar();
             }
-
-            // Note: BigInt (123n) is handled by the caller checking for 'n' suffix
-            string rawNum = _input.Substring(position, _position - position);
-            return rawNum.Replace("_", ""); // Remove separators for parsing
         }
 
         private bool IsHexDigit(char ch)
@@ -751,27 +1174,139 @@ namespace FenBrowser.FenEngine.Core
             return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
         }
 
-        private string ReadString(char quote)
+        private string ReadString(char quote, out bool isValid)
         {
-            int position = _position + 1;
-            while (true)
+            isValid = true;
+            var sb = new StringBuilder();
+            ReadChar(); // Move past opening quote
+            
+            while (_ch != quote && _ch != '\0')
             {
-                ReadChar();
-                if (_ch == quote || _ch == '\0')
+                if (IsLineTerminator(_ch))
                 {
+                    // Unescaped line terminators are not allowed in string literals.
+                    isValid = false;
                     break;
                 }
+
                 if (_ch == '\\')
                 {
-                    ReadChar(); // Skip escape
+                    ReadChar(); // Consume backslash
+                    switch (_ch)
+                    {
+                        case 'n': sb.Append('\n'); break;
+                        case 'r': sb.Append('\r'); break;
+                        case 't': sb.Append('\t'); break;
+                        case 'b': sb.Append('\b'); break;
+                        case 'f': sb.Append('\f'); break;
+                        case 'v': sb.Append('\v'); break;
+                        case '0': sb.Append('\0'); break;
+                        case '\\': sb.Append('\\'); break;
+                        case '\'': sb.Append('\''); break;
+                        case '"': sb.Append('"'); break;
+                        case '/': sb.Append('/'); break;
+                        case 'x': // \xHH - 2 hex digits
+                            {
+                                ReadChar();
+                                if (IsHexDigit(_ch))
+                                {
+                                    char h1 = _ch;
+                                    ReadChar();
+                                    if (IsHexDigit(_ch))
+                                    {
+                                        char h2 = _ch;
+                                        int code = Convert.ToInt32(new string(new[] { h1, h2 }), 16);
+                                        sb.Append((char)code);
+                                    }
+                                    else
+                                    {
+                                        sb.Append('x');
+                                        sb.Append(h1);
+                                        continue; // Don't ReadChar at end
+                                    }
+                                }
+                                else
+                                {
+                                    sb.Append('x');
+                                    continue; // Don't ReadChar at end
+                                }
+                            }
+                            break;
+                        case 'u': // \uHHHH or \u{HHHH} - ES2015 Unicode code point escape
+                            {
+                                ReadChar();
+                                if (_ch == '{')
+                                {
+                                    // \u{XXXX} - variable length code point
+                                    var hexBuf = new StringBuilder();
+                                    ReadChar();
+                                    while (_ch != '}' && _ch != '\0' && IsHexDigit(_ch))
+                                    {
+                                        hexBuf.Append(_ch);
+                                        ReadChar();
+                                    }
+                                    if (_ch == '}' && hexBuf.Length > 0)
+                                    {
+                                        int cp = Convert.ToInt32(hexBuf.ToString(), 16);
+                                        sb.Append(char.ConvertFromUtf32(cp));
+                                    }
+                                }
+                                else if (IsHexDigit(_ch))
+                                {
+                                    // \uHHHH — 4 fixed hex digits, we already consumed the first
+                                    char h1 = _ch;
+                                    ReadChar(); char h2 = _ch;
+                                    ReadChar(); char h3 = _ch;
+                                    ReadChar(); char h4 = _ch;
+                                    if (IsHexDigit(h1) && IsHexDigit(h2) && IsHexDigit(h3) && IsHexDigit(h4))
+                                    {
+                                        int code = Convert.ToInt32(new string(new[] { h1, h2, h3, h4 }), 16);
+                                        sb.Append((char)code);
+                                    }
+                                    else
+                                    {
+                                        sb.Append('u');
+                                        sb.Append(h1);
+                                        continue;
+                                    }
+                                }
+                                else
+                                {
+                                    sb.Append('u');
+                                    continue;
+                                }
+                            }
+                            break;
+                        case '\r': // Line continuation
+                            if (PeekChar() == '\n') ReadChar();
+                            break;
+                        case '\n': // Line continuation
+                        case '\u2028':
+                        case '\u2029':
+                            break;
+                        default:
+                            // Unknown escape: produce literal character (ES5.1 non-strict)
+                            sb.Append(_ch);
+                            break;
+                    }
                 }
+                else
+                {
+                    sb.Append(_ch);
+                }
+                ReadChar();
             }
-            return _input.Substring(position, _position - position); // Exclude quotes
+            if (_ch != quote)
+            {
+                isValid = false;
+            }
+
+            return sb.ToString();
         }
 
         private bool IsLetter(char ch)
         {
-            return 'a' <= ch && ch <= 'z' || 'A' <= ch && ch <= 'Z' || ch == '_' || ch == '$';
+            return IsIdentifierStart(ch);
         }
 
         private bool IsDigit(char ch)
@@ -779,7 +1314,80 @@ namespace FenBrowser.FenEngine.Core
             return '0' <= ch && ch <= '9';
         }
 
-        private TokenType LookupIdent(string ident)
+        private bool IsLineTerminator(char ch)
+        {
+            return ch == '\n' || ch == '\r' || ch == '\u2028' || ch == '\u2029';
+        }
+
+        private bool IsJsWhiteSpace(char ch)
+        {
+            return ch == ' ' ||
+                   ch == '\t' ||
+                   ch == '\v' ||
+                   ch == '\f' ||
+                   ch == '\u00A0' ||
+                   ch == '\uFEFF' ||
+                   ch == '\u1680' ||
+                   (ch >= '\u2000' && ch <= '\u200A') ||
+                   ch == '\u202F' ||
+                   ch == '\u205F' ||
+                   ch == '\u3000';
+        }
+
+        /// <summary>
+        /// Check if character is valid as identifier continuation (UnicodeIDContinue)
+        /// Includes Unicode combining marks, connector punctuation, ZWNJ, ZWJ
+        /// </summary>
+        private bool IsUnicodeIdentPart(char ch)
+        {
+            if (ch <= 127) return false; // ASCII already handled by IsLetter/IsDigit
+            var cat = char.GetUnicodeCategory(ch);
+            return cat == System.Globalization.UnicodeCategory.NonSpacingMark ||
+                   cat == System.Globalization.UnicodeCategory.SpacingCombiningMark ||
+                   cat == System.Globalization.UnicodeCategory.DecimalDigitNumber ||
+                   cat == System.Globalization.UnicodeCategory.ConnectorPunctuation ||
+                   ch == '\u200C' || ch == '\u200D'; // ZWNJ, ZWJ
+        }
+
+        private bool IsIdentifierStart(char ch)
+        {
+            if (ch == '_' || ch == '$') return true;
+            if (ch >= 'a' && ch <= 'z') return true;
+            if (ch >= 'A' && ch <= 'Z') return true;
+            if (ch <= 127) return false;
+
+            // Approximate ECMAScript ID_Start + Other_ID_Start + astral surrogate handling.
+            // Surrogates are accepted so astral identifier code points can flow through tokenizer.
+            if (char.IsHighSurrogate(ch) || char.IsLowSurrogate(ch)) return true;
+            if (ch == '\u2118' || ch == '\u212E' || ch == '\u309B' || ch == '\u309C') return true; // Other_ID_Start
+
+            var cat = char.GetUnicodeCategory(ch);
+            return cat == System.Globalization.UnicodeCategory.UppercaseLetter ||
+                   cat == System.Globalization.UnicodeCategory.LowercaseLetter ||
+                   cat == System.Globalization.UnicodeCategory.TitlecaseLetter ||
+                   cat == System.Globalization.UnicodeCategory.ModifierLetter ||
+                   cat == System.Globalization.UnicodeCategory.OtherLetter ||
+                   cat == System.Globalization.UnicodeCategory.LetterNumber;
+        }
+
+        private bool IsIdentifierPart(char ch)
+        {
+            if (IsIdentifierStart(ch)) return true;
+            if (ch >= '0' && ch <= '9') return true;
+            if (ch == '\u200C' || ch == '\u200D') return true;
+            if (ch == '\u00B7' || ch == '\u0387' || ch == '\u19DA' || ch == '\u30FB' || ch == '\uFF65') return true; // Other_ID_Continue
+            if (ch >= '\u1369' && ch <= '\u1371') return true; // Other_ID_Continue
+
+            if (ch <= 127) return false;
+            var cat = char.GetUnicodeCategory(ch);
+            return cat == System.Globalization.UnicodeCategory.NonSpacingMark ||
+                   cat == System.Globalization.UnicodeCategory.SpacingCombiningMark ||
+                   cat == System.Globalization.UnicodeCategory.DecimalDigitNumber ||
+                   cat == System.Globalization.UnicodeCategory.ConnectorPunctuation ||
+                   cat == System.Globalization.UnicodeCategory.OtherNotAssigned;
+        }
+
+        public static TokenType LookupIdent(string ident)
         {
             if (Keywords.TryGetValue(ident, out TokenType type))
             {
@@ -885,23 +1493,32 @@ namespace FenBrowser.FenEngine.Core
                 case TokenType.Do:
                 case TokenType.While:
                 case TokenType.If:
+                case TokenType.Await:
                     return true;
                 default:
                     return false;
             }
         }
 
-        private string ReadRegexLiteral()
+        private string ReadRegexLiteral(out bool isValid)
         {
+            isValid = true;
             int start = _position;
             // We are at the first '/'
             ReadChar(); // Consume '/'
             
             bool escape = false;
             bool inClass = false;
+            int patternStart = _position;
             
             while (_ch != '\0')
             {
+                if (IsLineTerminator(_ch))
+                {
+                    isValid = false;
+                    break;
+                }
+
                 if (escape)
                 {
                     escape = false;
@@ -926,19 +1543,59 @@ namespace FenBrowser.FenEngine.Core
                 ReadChar();
             }
             
-            if (_ch == '/')
+            if (_ch != '/')
             {
-                ReadChar(); // Consume closing '/'
+                isValid = false;
+                return _input.Substring(start, Math.Max(0, _position - start));
             }
-            
-            // Parse flags (g, i, m, u, y)
-            while (IsLetter(_ch))
+
+            string pattern = _input.Substring(patternStart, _position - patternStart);
+            ReadChar(); // Consume closing '/'
+
+            var flags = new HashSet<char>();
+            // Parse flags (g, i, m, s, u, y, d, v)
+            while (IsIdentifierPart(_ch))
             {
+                char flag = _ch;
+                if (!(flag == 'g' || flag == 'i' || flag == 'm' || flag == 's' || flag == 'u' || flag == 'y' || flag == 'd' || flag == 'v'))
+                {
+                    isValid = false;
+                }
+                if (!flags.Add(flag))
+                {
+                    isValid = false;
+                }
                 ReadChar();
             }
-            
+
+            if (_ch == '\\' && PeekChar() == 'u')
+            {
+                isValid = false;
+            }
+
+            if (HasQuantifiedLookbehindAssertion(pattern))
+            {
+                isValid = false;
+            }
+
             return _input.Substring(start, _position - start);
         }
+
+        private bool HasQuantifiedLookbehindAssertion(string pattern)
+        {
+            if (System.Text.RegularExpressions.Regex.IsMatch(pattern, @"\(\?<=[^)]*\)[?*+{]"))
+            {
+                return true;
+            }
+
+            if (System.Text.RegularExpressions.Regex.IsMatch(pattern, @"\(\?<![^)]*\)[?*+{]"))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
         public string GetCodeContext(int line, int column = -1, int contextLines = 2)
         {
             try
