@@ -83,6 +83,11 @@ namespace FenBrowser.FenEngine.Core
             return new FenValue { Type = Interfaces.ValueType.Error, _refValue = message };
         }
 
+        public static FenValue FromThrow(FenValue value)
+        {
+            return new FenValue { Type = Interfaces.ValueType.Throw, _refValue = value };
+        }
+
         public static FenValue FromReturnValue(FenValue value)
         {
             return new FenValue { Type = Interfaces.ValueType.ReturnValue, _refValue = value };
@@ -117,6 +122,11 @@ namespace FenBrowser.FenEngine.Core
         public FenValue GetReturnValue()
         {
             return Type == Interfaces.ValueType.ReturnValue ? (FenValue)_refValue : FenValue.Undefined;
+        }
+
+        public FenValue GetThrownValue()
+        {
+            return Type == Interfaces.ValueType.Throw ? (FenValue)_refValue : FenValue.Undefined;
         }
 
         // Type checking
@@ -241,6 +251,7 @@ namespace FenBrowser.FenEngine.Core
                 }
                 case Interfaces.ValueType.Function: return "[function]";
                 case Interfaces.ValueType.Error: return (string)_refValue ?? "Error";
+                case Interfaces.ValueType.Throw: return $"Throw: {((FenValue)_refValue).AsString()}";
                 case Interfaces.ValueType.BigInt:
                     var bigInt = _refValue as Types.JsBigInt;
                     return bigInt?.ToStringWithoutSuffix() ?? "0";
@@ -389,6 +400,8 @@ namespace FenBrowser.FenEngine.Core
                     return "[object Object]";
                 case Interfaces.ValueType.ReturnValue:
                     return _refValue;
+                case Interfaces.ValueType.Throw:
+                    return ((FenValue)_refValue).ToNativeObject();
                 default:
                     return null;
             }

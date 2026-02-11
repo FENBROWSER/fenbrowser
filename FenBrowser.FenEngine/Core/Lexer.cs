@@ -748,6 +748,7 @@ namespace FenBrowser.FenEngine.Core
             
             token.HadLineTerminatorBefore = hadLineTerminator;
             _prevToken = token;
+            Console.WriteLine($"[DEBUG] Lexer.NextToken returning: {token.Type} ({token.Literal})");
             return token;
         }
 
@@ -884,9 +885,13 @@ namespace FenBrowser.FenEngine.Core
                                 {
                                     int cp = Convert.ToInt32(hexBuf.ToString(), 16);
                                     string decoded = char.ConvertFromUtf32(cp);
-                                    if (decoded.Length != 1 || !IsIdentifierPart(decoded[0]))
+                                    foreach (char c in decoded)
                                     {
-                                        _hasInvalidEscapeInLastIdent = true;
+                                        if (!IsIdentifierPart(c))
+                                        {
+                                            _hasInvalidEscapeInLastIdent = true;
+                                            break;
+                                        }
                                     }
                                     sb.Append(decoded);
                                 }
@@ -1359,7 +1364,7 @@ namespace FenBrowser.FenEngine.Core
             // Approximate ECMAScript ID_Start + Other_ID_Start + astral surrogate handling.
             // Surrogates are accepted so astral identifier code points can flow through tokenizer.
             if (char.IsHighSurrogate(ch) || char.IsLowSurrogate(ch)) return true;
-            if (ch == '\u2118' || ch == '\u212E' || ch == '\u309B' || ch == '\u309C') return true; // Other_ID_Start
+            if (ch == '\u2118' || ch == '\u212E' || ch == '\u309B' || ch == '\u309C' || ch == '\u1885' || ch == '\u1886') return true; // Other_ID_Start
 
             var cat = char.GetUnicodeCategory(ch);
             return cat == System.Globalization.UnicodeCategory.UppercaseLetter ||
