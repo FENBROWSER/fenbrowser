@@ -174,9 +174,9 @@ namespace FenBrowser.FenEngine.Core
             
             // Step 8-9: Object == String|Number -> ToPrimitive, recurse
             if ((a.IsObject || a.IsFunction) && (b.IsString || b.IsNumber || b.IsSymbol))
-                return a.ToPrimitive().LooseEquals(b);
+                return a.ToPrimitive(null).LooseEquals(b);
             if ((b.IsObject || b.IsFunction) && (a.IsString || a.IsNumber || a.IsSymbol))
-                return a.LooseEquals(b.ToPrimitive());
+                return a.LooseEquals(b.ToPrimitive(null));
             
             // Step 10: Otherwise false
             return false;
@@ -197,7 +197,7 @@ namespace FenBrowser.FenEngine.Core
             }
         }
 
-        public double AsNumber()
+        public double AsNumber(IExecutionContext context = null)
         {
             switch (Type)
             {
@@ -220,11 +220,15 @@ namespace FenBrowser.FenEngine.Core
                         return result;
                     return double.NaN;
                 case Interfaces.ValueType.Null: return 0.0;
+                case Interfaces.ValueType.Object:
+                    // ES5.1 9.3: ToNumber for Objects via ToPrimitive(Number)
+                    var prim = ToPrimitive(context, "number");
+                    return prim.AsNumber(context);
                 default: return double.NaN;
             }
         }
 
-        public string AsString()
+        public string AsString(IExecutionContext context = null)
         {
             switch (Type)
             {
@@ -240,9 +244,9 @@ namespace FenBrowser.FenEngine.Core
                 case Interfaces.ValueType.Object:
                 {
                     // ES5.1 9.8: ToString for Objects via ToPrimitive(String) — calls toString()/valueOf()
-                    var prim = ToPrimitive("string");
+                    var prim = ToPrimitive(context, "string");
                     if (prim.Type != Interfaces.ValueType.Object && prim.Type != Interfaces.ValueType.Function)
-                        return prim.AsString();
+                        return prim.AsString(context);
                     // Fallback if no method returned a primitive
                     var objFallback = AsObject();
                     if (objFallback is FenObject fenObjFallback)
@@ -251,7 +255,7 @@ namespace FenBrowser.FenEngine.Core
                 }
                 case Interfaces.ValueType.Function: return "[function]";
                 case Interfaces.ValueType.Error: return (string)_refValue ?? "Error";
-                case Interfaces.ValueType.Throw: return $"Throw: {((FenValue)_refValue).AsString()}";
+                case Interfaces.ValueType.Throw: return ((FenValue)_refValue).AsString();
                 case Interfaces.ValueType.BigInt:
                     var bigInt = _refValue as Types.JsBigInt;
                     return bigInt?.ToStringWithoutSuffix() ?? "0";
@@ -284,7 +288,7 @@ namespace FenBrowser.FenEngine.Core
         /// ES2015+ Section 7.1.1: OrdinaryToPrimitive / @@toPrimitive
         /// Converts an object to a primitive value, respecting Symbol.toPrimitive.
         /// </summary>
-        public FenValue ToPrimitive(string preferredType = "number")
+        public FenValue ToPrimitive(IExecutionContext context, string preferredType = "number")
         {
             // Primitives return themselves
             if (Type != Interfaces.ValueType.Object && Type != Interfaces.ValueType.Function)
@@ -294,11 +298,15 @@ namespace FenBrowser.FenEngine.Core
             if (obj == null) return this;
 
             // ES2015: Check for [Symbol.toPrimitive] method first
-            var toPrimMethod = obj.Get("@@toPrimitive", null);
+            var toPrimMethod = obj.Get("@@toPrimitive", context);
             if (!toPrimMethod.IsUndefined && toPrimMethod.IsFunction)
             {
                 var hint = FromString(preferredType == "string" ? "string" : preferredType == "number" ? "number" : "default");
-                var result = toPrimMethod.AsFunction().Invoke(new FenValue[] { hint }, null);
+                // Set this binding to the object being converted
+                FenValue oldThis1 = Undefined;
+                if (context != null) { oldThis1 = context.ThisBinding; context.ThisBinding = FromObject(obj); }
+                var result = toPrimMethod.AsFunction().Invoke(new FenValue[] { hint }, context);
+                if (context != null) context.ThisBinding = oldThis1;
                 if (result.Type != Interfaces.ValueType.Object && result.Type != Interfaces.ValueType.Function)
                     return result;
                 // If result is still an object, TypeError — but we fallthrough for safety
@@ -314,10 +322,14 @@ namespace FenBrowser.FenEngine.Core
 
             foreach (var methodName in tryOrder)
             {
-                var method = obj.Get(methodName, null);
+                var method = obj.Get(methodName, context);
                 if (method.IsFunction)
                 {
-                    var result = method.AsFunction().Invoke(new FenValue[0], null);
+                    // Set this binding to the object being converted
+                    FenValue oldThis = Undefined;
+                    if (context != null) { oldThis = context.ThisBinding; context.ThisBinding = FromObject(obj); }
+                    var result = method.AsFunction().Invoke(new FenValue[0], context);
+                    if (context != null) context.ThisBinding = oldThis;
                     // Check if result is primitive
                     if (result.Type != Interfaces.ValueType.Object && result.Type != Interfaces.ValueType.Function)
                         return result;
@@ -332,19 +344,19 @@ namespace FenBrowser.FenEngine.Core
         /// ES5.1 Section 11.8.5: Abstract Relational Comparison
         /// Returns: true if x < y, false if x >= y, undefined if comparison is undefined
         /// </summary>
-        public static FenValue AbstractRelationalComparison(FenValue x, FenValue y, bool leftFirst = true)
+        public static FenValue AbstractRelationalComparison(FenValue x, FenValue y, IExecutionContext context, bool leftFirst = true)
         {
             // Step 1-2: Get primitives
             FenValue px, py;
             if (leftFirst)
             {
-                px = x.ToPrimitive("number");
-                py = y.ToPrimitive("number");
+                px = x.ToPrimitive(context, "number");
+                py = y.ToPrimitive(context, "number");
             }
             else
             {
-                py = y.ToPrimitive("number");
-                px = x.ToPrimitive("number");
+                py = y.ToPrimitive(context, "number");
+                px = x.ToPrimitive(context, "number");
             }
             
             // Step 3: If both strings, compare as strings

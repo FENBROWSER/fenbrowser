@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Text;
 using System.Collections.Generic;
+using System.Threading;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
@@ -19,6 +20,26 @@ namespace FenBrowser.FenEngine.Core
         private FenObject _stringPrototype;
         private static bool _jitInitialized = false;
 
+        // Stack overflow protection
+        [ThreadStatic]
+        private static int _executionDepth;
+        private const int MAX_EXECUTION_DEPTH = 256;
+
+        /// <summary>
+        /// CancellationToken checked during Eval to abort runaway tests.
+        /// </summary>
+        public CancellationToken CancellationToken { get; set; } = CancellationToken.None;
+
+        // Counter to avoid checking cancellation on every single Eval call (perf)
+        [ThreadStatic]
+        private static int _evalCounter;
+        private const int CANCELLATION_CHECK_INTERVAL = 500;
+
+        public Interpreter()
+        {
+            // Console.WriteLine("[DEBUG] Interpreter Constructor (FenBrowser.FenEngine.Core)");
+        }
+
         public FenValue Eval(AstNode node, FenEnvironment env, IExecutionContext context)
         {
             // Debugger Hook
@@ -35,540 +56,600 @@ namespace FenBrowser.FenEngine.Core
                  }
             }
 
+            // Periodically check cancellation to abort runaway tests
+            if (++_evalCounter % CANCELLATION_CHECK_INTERVAL == 0 && CancellationToken.IsCancellationRequested)
+            {
+                throw new OperationCanceledException("Execution cancelled (memory limit or timeout)");
+            }
+
             if (node == null) return FenValue.Null;
 
-            switch (node)
+            // Manual stack overflow protection
+            if (++_executionDepth > MAX_EXECUTION_DEPTH)
             {
-                case Program program:
-                    return (FenValue)EvalProgram(program, env, context);
-                
-                case ExpressionStatement exprStmt:
-                    return Eval(exprStmt.Expression, env, context);
-                
-                case IntegerLiteral intLit:
-                    return FenValue.FromNumber(intLit.Value);
-                
-                case DoubleLiteral doubleLit:
-                    return FenValue.FromNumber(doubleLit.Value);
-                
-                case BooleanLiteral boolLit:
-                    return FenValue.FromBoolean(boolLit.Value);
-                
-                case StringLiteral strLit:
-                    return FenValue.FromString(strLit.Value);
+                _executionDepth--;
+                return FenValue.FromError("RangeError: Maximum call stack size exceeded");
+            }
 
-                case TemplateLiteral tmplLit:
-                    return (FenValue)EvalTemplateLiteral(tmplLit, env, context);
+            try
+            {
+                System.Runtime.CompilerServices.RuntimeHelpers.EnsureSufficientExecutionStack();
+            }
+            catch (InsufficientExecutionStackException)
+            {
+                _executionDepth--;
+                return FenValue.FromError("RangeError: Maximum call stack size exceeded");
+            }
 
-                case NullLiteral _:
-                    return FenValue.Null;
-
-                case UndefinedLiteral _:
-                    return FenValue.Undefined;
-
-                case PrefixExpression prefixExpr:
-                    if (prefixExpr.Operator == "++" || prefixExpr.Operator == "--")
-                    {
-                        return EvalPrefixUpdate(prefixExpr, env, context);
-                    }
-                    // ES5.1 3A: delete operator must handle property references specially
-                    if (prefixExpr.Operator == "delete")
-                    {
-                        return EvalDeleteExpression(prefixExpr.Right, env, context);
-                    }
-                    // ES5.1: typeof on undeclared variable should return "undefined", not throw
-                    if (prefixExpr.Operator == "typeof" && prefixExpr.Right is Identifier typeofIdent)
-                    {
-                        try { var resolved = env.Get(typeofIdent.Value); }
-                        catch { return FenValue.FromString("undefined"); }
-                    }
-                    var right = Eval(prefixExpr.Right, env, context);
-                    if (IsError(right)) return right;
-                    return EvalPrefixExpression(prefixExpr.Operator, right);
-
-                case InfixExpression infixExpr:
-                    if (infixExpr.Operator == "++" && infixExpr.Right  == null)
-                    {
-                        return EvalPostfixUpdate(infixExpr.Left, "++", env, context);
-                    }
-                    if (infixExpr.Operator == "--" && infixExpr.Right  == null)
-                    {
-                        return EvalPostfixUpdate(infixExpr.Left, "--", env, context);
-                    }
-                    var left = Eval(infixExpr.Left, env, context);
-                    if (IsError(left)) return left;
-                    var rightInfix = Eval(infixExpr.Right, env, context);
-                    if (IsError(rightInfix)) return rightInfix;
-                    return EvalInfixExpression(infixExpr.Operator, left, rightInfix);
-
-                case BlockStatement blockStmt:
-                    return (FenValue)EvalBlockStatement(blockStmt, env, context);
-
-                case IfExpression ifExpr:
-                    return (FenValue)EvalIfExpression(ifExpr, env, context);
-
-                case ReturnStatement returnStmt:
-                    var val = Eval(returnStmt.ReturnValue, env, context);
-                    if (IsError(val)) return val;
-                    return FenValue.FromReturnValue(val);
-
-                case FunctionDeclarationStatement funcDeclStmt:
-                    // Create function
-                    var funcObj = new FenFunction(funcDeclStmt.Function.Parameters, funcDeclStmt.Function.Body, env);
-                    funcObj.IsGenerator = funcDeclStmt.Function.IsGenerator;
-                    funcObj.IsAsync = funcDeclStmt.Function.IsAsync;
-                    if (!string.IsNullOrEmpty(funcDeclStmt.Function.Source))
-                        funcObj.Source = funcDeclStmt.Function.Source;
+            try
+            {
+                switch (node)
+                {
+                    case Program program:
+                        return (FenValue)EvalProgram(program, env, context);
                     
-                    var fnVal = FenValue.FromFunction(funcObj);
+                    case ExpressionStatement exprStmt:
+                        return Eval(exprStmt.Expression, env, context);
                     
-                    // In strict mode, function declarations in blocks are block-scoped (like let)
-                    // In non-strict mode (Annex B), they are function-scoped (var-like) but locally initialized
-                    // For now, we update the binding if it exists or set it
+                    case IntegerLiteral intLit:
+                        return FenValue.FromNumber(intLit.Value);
                     
-                    if (context.StrictMode)
-                    {
-                        // Strict: Block scoped. Should have been hoisted to block env in EvalBlockStatement
-                        env.Set(funcDeclStmt.Function.Name, fnVal);
-                    }
-                    else
-                    {
-                        // Sloppy: Update binding. 
-                        // If it's a block-level function in sloppy mode, it might hoist to function scope too (Annex B).
-                        // For simplicity/robustness, we just Set it in current env (block) and checking Outer if needed?
-                        // Actually, just Set in current env is a safe default for now, allowing overwrites.
-                        env.Set(funcDeclStmt.Function.Name, fnVal);
-                    }
-                    return FenValue.Undefined;
-
-                case LetStatement letStmt:
-                    var valLet = Eval(letStmt.Value, env, context);
-                    if (IsError(valLet)) return valLet;
-
-                    if (letStmt.DestructuringPattern != null)
-                    {
-                        bool isConstDecl = letStmt.Kind == DeclarationKind.Const;
-                        return (FenValue)EvalDestructuringAssignment(letStmt.DestructuringPattern, valLet, env, context, isDeclaration: true, isConst: isConstDecl);
-                    }
-
-                    // Use SetConst for const declarations to prevent reassignment
-                    if (letStmt.Kind == DeclarationKind.Const)
-                        env.SetConst(letStmt.Name.Value, valLet);
-                    else
-                        env.Set(letStmt.Name.Value, valLet);
-                    return valLet;
-
-                case Identifier ident:
-                    return (FenValue)EvalIdentifier(ident, env);
-
-                case PrivateIdentifier privateIdent:
-                    return (FenValue)EvalPrivateIdentifier(privateIdent, env);
-
-                case FunctionLiteral funcLit:
-                    var fenFunc = new FenFunction(funcLit.Parameters, funcLit.Body, env);
-                    fenFunc.IsGenerator = funcLit.IsGenerator;
-                    // ES2019: Propagate source code
-                    if (!string.IsNullOrEmpty(funcLit.Source))
-                    {
-                        fenFunc.Source = funcLit.Source;
-                    }
-                    if (funcLit.IsGenerator)
-                    {
-                        // Return a generator function that creates generator objects when called
-                        return FenValue.FromFunction(fenFunc);
-                    }
-                    return FenValue.FromFunction(fenFunc);
-
-                case MemberExpression memberExpr:
-                    return (FenValue)EvalMemberExpression(memberExpr, env, context);
-
-                case TaggedTemplateExpression taggedExpr:
-                    return (FenValue)EvalTaggedTemplate(taggedExpr, env, context);
-
-                case IndexExpression indexExpr:
-                    return (FenValue)EvalIndexExpression(indexExpr, env, context);
-
-                case NewExpression newExpr:
-                    return (FenValue)EvalNewExpression(newExpr, env, context);
-
-                case AssignmentExpression assignExpr:
-                    // CallExpression as LHS: evaluate the call, then throw ReferenceError (don't evaluate RHS)
-                    if (assignExpr.Left is CallExpression lhsCall)
-                    {
-                        Eval(lhsCall, env, context); // Evaluate LHS call (side effects)
-                        return FenValue.FromError("ReferenceError: Invalid left-hand side in assignment");
-                    }
-
-                    // Capture strict unresolved-reference status before evaluating RHS.
-                    // In strict mode, an unresolvable identifier reference must still throw even
-                    // if RHS side-effects later create a same-named global property.
-                    bool strictUnresolvableIdentifierAssignment = false;
-                    string strictUnresolvableIdentifierName = null;
-                    if (assignExpr.Left is Identifier preLeftIdent &&
-                        context.StrictMode &&
-                        !env.HasBinding(preLeftIdent.Value))
-                    {
-                        strictUnresolvableIdentifierAssignment = true;
-                        strictUnresolvableIdentifierName = preLeftIdent.Value;
-                    }
-                    if (assignExpr.Left is Identifier dbgIdent && dbgIdent.Value == "undeclared")
-                    {
-                        Console.WriteLine($"[DBG-INTERP] strict={context.StrictMode} hasBinding(beforeRhs)={env.HasBinding(dbgIdent.Value)}");
-                    }
-
-                    // Evaluate the right side first
-                    var value = Eval(assignExpr.Right, env, context);
-                    if (IsError(value)) return value;
-
-                    // Handle destructuring assignment
-                    if (assignExpr.Left is ArrayLiteral || assignExpr.Left is ObjectLiteral)
-                    {
-                        return (FenValue)EvalDestructuringAssignment(assignExpr.Left, value, env, context);
-                    }
+                    case DoubleLiteral doubleLit:
+                        return FenValue.FromNumber(doubleLit.Value);
                     
-                    // Handle assignment to identifier (var x = ...)
-                    if (assignExpr.Left is Identifier leftIdent)
-                    {
-                        // Strict mode: cannot assign to eval or arguments
-                        if (context.StrictMode && (leftIdent.Value == "eval" || leftIdent.Value == "arguments"))
+                    case BooleanLiteral boolLit:
+                        return FenValue.FromBoolean(boolLit.Value);
+                    
+                    case StringLiteral strLit:
+                        return FenValue.FromString(strLit.Value);
+
+                    case TemplateLiteral tmplLit:
+                        return (FenValue)EvalTemplateLiteral(tmplLit, env, context);
+
+                    case NullLiteral _:
+                        return FenValue.Null;
+
+                    case UndefinedLiteral _:
+                        return FenValue.Undefined;
+
+                    case PrefixExpression prefixExpr:
+                        if (prefixExpr.Operator == "++" || prefixExpr.Operator == "--")
                         {
-                            return FenValue.FromError($"SyntaxError: Assignment to '{leftIdent.Value}' in strict mode");
+                            return EvalPrefixUpdate(prefixExpr, env, context);
                         }
-                        // Strict mode: assignment to unresolvable reference must throw ReferenceError.
-                        // Use the pre-RHS captured state so RHS side-effects can't mask the error.
-                        if (strictUnresolvableIdentifierAssignment)
+                        // ES5.1 3A: delete operator must handle property references specially
+                        if (prefixExpr.Operator == "delete")
                         {
-                            return FenValue.FromError($"ReferenceError: {strictUnresolvableIdentifierName} is not defined");
+                            return EvalDeleteExpression(prefixExpr.Right, env, context);
+                        }
+                        // ES5.1: typeof on undeclared variable should return "undefined", not throw
+                        if (prefixExpr.Operator == "typeof" && prefixExpr.Right is Identifier typeofIdent)
+                        {
+                            try { var resolved = env.Get(typeofIdent.Value); }
+                            catch { return FenValue.FromString("undefined"); }
+                        }
+                        var right = Eval(prefixExpr.Right, env, context);
+                        if (IsError(right)) return right;
+                        return EvalPrefixExpression(prefixExpr.Operator, right, context);
+
+                    case InfixExpression infixExpr:
+                        if (infixExpr.Operator == "++" && infixExpr.Right  == null)
+                        {
+                            return EvalPostfixUpdate(infixExpr.Left, "++", env, context);
+                        }
+                        if (infixExpr.Operator == "--" && infixExpr.Right  == null)
+                        {
+                            return EvalPostfixUpdate(infixExpr.Left, "--", env, context);
+                        }
+                        var left = Eval(infixExpr.Left, env, context);
+                        if (IsError(left)) return left;
+
+                        // Short-circuit logic for && and ||
+                        if (infixExpr.Operator == "&&")
+                        {
+                            if (!left.ToBoolean()) return left;
+                        }
+                        else if (infixExpr.Operator == "||")
+                        {
+                            if (left.ToBoolean()) return left;
                         }
 
-                        var updateResult = env.Update(leftIdent.Value, value);
-                        if (updateResult.Type == JsValueType.Error) return updateResult;
-                        return value;
-                    }
-                    
-                    // Handle assignment to private identifier (this.#field = ...)
-                    if (assignExpr.Left is PrivateIdentifier leftPrivate)
-                    {
-                        var thisVal = env.Get("this");
-                        if (thisVal  == null || !thisVal.IsObject)
-                        {
-                            return FenValue.FromError($"Cannot assign to private field '#${leftPrivate.Name}' outside of a class");
-                        }
-                        var thisObj = thisVal.AsObject();
-                        string privateKey = "#" + leftPrivate.Name;
-                        thisObj.Set(privateKey, value);
-                        return value;
-                    }
-                    
-                    // Handle assignment to member expression (obj.prop = ...)
-                    if (assignExpr.Left is MemberExpression leftMember)
-                    {
-                        var targetObj = Eval(leftMember.Object, env, context);
-                        if (IsError(targetObj)) return targetObj;
+                        var rightInfix = Eval(infixExpr.Right, env, context);
+                        if (IsError(rightInfix)) return rightInfix;
+                        return EvalInfixExpression(infixExpr.Operator, left, rightInfix, context);
+
+                    case BlockStatement blockStmt:
+                        return (FenValue)EvalBlockStatement(blockStmt, env, context);
+
+                    case IfExpression ifExpr:
+                        return (FenValue)EvalIfExpression(ifExpr, env, context);
+
+                    case IfStatement ifStmt:
+                        return (FenValue)EvalIfStatement(ifStmt, env, context);
+
+                    case ReturnStatement returnStmt:
+                        var val = Eval(returnStmt.ReturnValue, env, context);
+                        if (IsError(val)) return val;
+                        return FenValue.FromReturnValue(val);
+
+                    case FunctionDeclarationStatement funcDeclStmt:
+                        // Create function
+                        var funcObj = new FenFunction(funcDeclStmt.Function.Parameters, funcDeclStmt.Function.Body, env);
+                        funcObj.IsGenerator = funcDeclStmt.Function.IsGenerator;
+                        funcObj.IsAsync = funcDeclStmt.Function.IsAsync;
+                        if (!string.IsNullOrEmpty(funcDeclStmt.Function.Source))
+                            funcObj.Source = funcDeclStmt.Function.Source;
+                        // ES2015: Auto-create .prototype for non-arrow functions
+                        InitFunctionPrototype(funcObj);
+
+                        var fnVal = FenValue.FromFunction(funcObj);
                         
-                        /* [PERF-REMOVED] */
-
-                        if (targetObj.IsObject)
+                        // In strict mode, function declarations in blocks are block-scoped (like let)
+                        // In non-strict mode (Annex B), they are function-scoped (var-like) but locally initialized
+                        // For now, we update the binding if it exists or set it
+                        
+                        if (context.StrictMode)
                         {
-                            var targetObjVal = targetObj.AsObject();
-                            if (targetObjVal != null)
+                            // Strict: Block scoped. Should have been hoisted to block env in EvalBlockStatement
+                            env.Set(funcDeclStmt.Function.Name, fnVal);
+                        }
+                        else
+                        {
+                            // Sloppy: Update binding. 
+                            // If it's a block-level function in sloppy mode, it might hoist to function scope too (Annex B).
+                            // For simplicity/robustness, we just Set it in current env (block) and checking Outer if needed?
+                            // Actually, just Set in current env is a safe default for now, allowing overwrites.
+                            env.Set(funcDeclStmt.Function.Name, fnVal);
+                        }
+                        return FenValue.Undefined;
+
+                    case LetStatement letStmt:
+                        var valLet = Eval(letStmt.Value, env, context);
+                        if (IsError(valLet)) return valLet;
+
+                        if (letStmt.DestructuringPattern != null)
+                        {
+                            bool isConstDecl = letStmt.Kind == DeclarationKind.Const;
+                            return (FenValue)EvalDestructuringAssignment(letStmt.DestructuringPattern, valLet, env, context, isDeclaration: true, isConst: isConstDecl);
+                        }
+
+                        // Use SetConst for const declarations to prevent reassignment
+                        if (letStmt.Kind == DeclarationKind.Const)
+                            env.SetConst(letStmt.Name.Value, valLet);
+                        else
+                            env.Set(letStmt.Name.Value, valLet);
+                        return valLet;
+
+                    case Identifier ident:
+                        return (FenValue)EvalIdentifier(ident, env);
+
+                    case PrivateIdentifier privateIdent:
+                        return (FenValue)EvalPrivateIdentifier(privateIdent, env);
+
+                    case FunctionLiteral funcLit:
+                        var fenFunc = new FenFunction(funcLit.Parameters, funcLit.Body, env);
+                        fenFunc.IsGenerator = funcLit.IsGenerator;
+                        // ES2019: Propagate source code
+                        if (!string.IsNullOrEmpty(funcLit.Source))
+                        {
+                            fenFunc.Source = funcLit.Source;
+                        }
+                        // ES2015: Auto-create .prototype for non-arrow functions
+                        InitFunctionPrototype(fenFunc);
+                        if (funcLit.IsGenerator)
+                        {
+                            // Return a generator function that creates generator objects when called
+                            return FenValue.FromFunction(fenFunc);
+                        }
+                        return FenValue.FromFunction(fenFunc);
+
+                    case MemberExpression memberExpr:
+                        return (FenValue)EvalMemberExpression(memberExpr, env, context);
+
+                    case TaggedTemplateExpression taggedExpr:
+                        return (FenValue)EvalTaggedTemplate(taggedExpr, env, context);
+
+                    case IndexExpression indexExpr:
+                        return (FenValue)EvalIndexExpression(indexExpr, env, context);
+
+                    case NewExpression newExpr:
+                        return (FenValue)EvalNewExpression(newExpr, env, context);
+
+                    case AssignmentExpression assignExpr:
+                        // CallExpression as LHS: evaluate the call, then throw ReferenceError (don't evaluate RHS)
+                        if (assignExpr.Left is CallExpression lhsCall)
+                        {
+                            Eval(lhsCall, env, context); // Evaluate LHS call (side effects)
+                            return FenValue.FromError("ReferenceError: Invalid left-hand side in assignment");
+                        }
+
+                        // Capture strict unresolved-reference status before evaluating RHS.
+                        // In strict mode, an unresolvable identifier reference must still throw even
+                        // if RHS side-effects later create a same-named global property.
+                        bool strictUnresolvableIdentifierAssignment = false;
+                        string strictUnresolvableIdentifierName = null;
+                        if (assignExpr.Left is Identifier preLeftIdent &&
+                            context.StrictMode &&
+                            !env.HasBinding(preLeftIdent.Value))
+                        {
+                            strictUnresolvableIdentifierAssignment = true;
+                            strictUnresolvableIdentifierName = preLeftIdent.Value;
+                        }
+                        if (assignExpr.Left is Identifier dbgIdent && dbgIdent.Value == "undeclared")
+                        {
+                            // Console.WriteLine($"[DBG-INTERP] strict={context.StrictMode} hasBinding(beforeRhs)={env.HasBinding(dbgIdent.Value)}");
+                        }
+
+                        // Evaluate the right side first
+                        var value = Eval(assignExpr.Right, env, context);
+                        if (IsError(value)) return value;
+
+                        // Handle destructuring assignment
+                        if (assignExpr.Left is ArrayLiteral || assignExpr.Left is ObjectLiteral)
+                        {
+                            return (FenValue)EvalDestructuringAssignment(assignExpr.Left, value, env, context);
+                        }
+                        
+                        // Handle assignment to identifier (var x = ...)
+                        if (assignExpr.Left is Identifier leftIdent)
+                        {
+                            // Strict mode: cannot assign to eval or arguments
+                            if (context.StrictMode && (leftIdent.Value == "eval" || leftIdent.Value == "arguments"))
                             {
-                            targetObjVal.Set(leftMember.Property, value, context);
+                                return FenValue.FromError($"SyntaxError: Assignment to '{leftIdent.Value}' in strict mode");
+                            }
+                            // Strict mode: assignment to unresolvable reference must throw ReferenceError.
+                            // Use the pre-RHS captured state so RHS side-effects can't mask the error.
+                            if (strictUnresolvableIdentifierAssignment)
+                            {
+                                return FenValue.FromError($"ReferenceError: {strictUnresolvableIdentifierName} is not defined");
+                            }
+
+                            var updateResult = env.Update(leftIdent.Value, value);
+                            if (updateResult.Type == JsValueType.Error) return updateResult;
+                            return value;
+                        }
+                        
+                        // Handle assignment to private identifier (this.#field = ...)
+                        if (assignExpr.Left is PrivateIdentifier leftPrivate)
+                        {
+                            var thisVal = env.Get("this");
+                            if (thisVal  == null || !thisVal.IsObject)
+                            {
+                                return FenValue.FromError($"Cannot assign to private field '#${leftPrivate.Name}' outside of a class");
+                            }
+                            var thisObj = thisVal.AsObject();
+                            string privateKey = "#" + leftPrivate.Name;
+                            thisObj.Set(privateKey, value);
+                            return value;
+                        }
+                        
+                        // Handle assignment to member expression (obj.prop = ...)
+                        if (assignExpr.Left is MemberExpression leftMember)
+                        {
+                            var targetObj = Eval(leftMember.Object, env, context);
+                            if (IsError(targetObj)) return targetObj;
+                            
+                            /* [PERF-REMOVED] */
+
+                            if (targetObj.IsObject || targetObj.IsFunction)
+                            {
+                                var targetObjVal = targetObj.AsObject();
+                                if (targetObjVal != null)
+                                {
+                                    targetObjVal.Set(leftMember.Property, value, context);
+                                    return value;
+                                }
+                            }
+                            else
+                            {
+                                // Primitive assignment (strict mode throws, sloppy mode ignores unless we implement ToObject wrapper assignment)
+                                if (context.StrictMode)
+                                {
+                                    return FenValue.FromError($"TypeError: Cannot assign to read only property '{leftMember.Property}' of primitive '{targetObj}'");
+                                }
+                            }
+                        }
+                        
+                        // Handle assignment to index expression (obj[key] = ...)
+                        if (assignExpr.Left is IndexExpression leftIndex)
+                        {
+                            var targetObj = Eval(leftIndex.Left, env, context);
+                            if (IsError(targetObj)) return targetObj;
+                            
+                            var indexVal = Eval(leftIndex.Index, env, context);
+                            if (IsError(indexVal)) return indexVal;
+                            
+                            var key = indexVal.ToString();
+                            
+                            if (targetObj.IsObject)
+                            {
+                                var targetObjVal = targetObj.AsObject();
+                                if (targetObjVal != null)
+                                {
+                                    targetObjVal.Set(key, value, context);
+                                    return value;
+                                }
+                            }
+                            else if (targetObj.IsString)
+                            {
+                                // Strings are immutable, assignment to index is a no-op
                                 return value;
+                            }
+                        }
+                        
+                        return FenValue.Undefined;
+
+                    case CallExpression callExpr:
+                        FenValue function = FenValue.Undefined;
+                        FenValue thisContext = FenValue.Undefined;
+
+                        if (callExpr.Function is MemberExpression me)
+                        {
+                            var obj = ToFenValue(Eval(me.Object, env, context));
+                            if (IsError(obj)) return obj;
+                            
+                            try { FenLogger.Debug($"[Interpreter] Resolving call to {me.Property} on object type {obj.Type}", LogCategory.JavaScript); } catch { }
+
+                            
+                            // Handle Function.prototype.bind/call/apply
+                            if (obj.IsFunction && (me.Property == "bind" || me.Property == "call" || me.Property == "apply"))
+                            {
+                                var targetFn = obj.AsFunction();
+                                var fnArgs = EvalExpressionsWithSpread(callExpr.Arguments, env, context);
+                                
+                                if (me.Property == "bind")
+                                {
+                                    // bind(thisArg, ...args) - Returns a bound function
+                                    var boundThis = fnArgs.Count > 0 ? fnArgs[0] : FenValue.Undefined;
+                                    var boundArgs = fnArgs.Count > 1 ? fnArgs.Skip(1).ToList() : new List<FenValue>();
+                                    
+                                    var boundFn = new FenFunction("bound " + targetFn.Name, (invokeArgs, _) =>
+                                    {
+                                        var allArgs = new List<FenValue>(boundArgs);
+                                        allArgs.AddRange(invokeArgs);
+                                        return targetFn.Invoke(allArgs.ToArray(), context);
+                                    });
+                                    
+                                    return FenValue.FromFunction(boundFn);
+                                }
+                                else if (me.Property == "call")
+                                {
+                                    // call(thisArg, ...args) - Invokes with thisArg
+                                    var callThis = fnArgs.Count > 0 ? fnArgs[0] : FenValue.Undefined;
+                                    var callArgs = fnArgs.Count > 1 ? fnArgs.Skip(1).ToArray() : new FenValue[0];
+                                    
+                                    return ApplyFunction(obj, callArgs.ToList(), context, callThis);
+                                }
+                                else if (me.Property == "apply")
+                                {
+                                    // apply(thisArg, argsArray) - Invokes with thisArg and args from array
+                                    var applyThis = fnArgs.Count > 0 ? fnArgs[0] : FenValue.Undefined;
+                                    var applyArgs = new List<FenValue>();
+                                    
+                                    if (fnArgs.Count > 1 && fnArgs[1].IsObject)
+                                    {
+                                        var argsArray = fnArgs[1].AsObject();
+                                        var lenVal = argsArray?.Get("length", context);
+                                        int len = (lenVal != null && lenVal.Value.IsNumber) ? (int)lenVal.Value.ToNumber() : 0;
+                                        for (int i = 0; i < len; i++)
+                                        {
+                                            var argVal = argsArray.Get(i.ToString(), context);
+                                            applyArgs.Add(argVal );
+                                        }
+                                    }
+                                    
+                                    return ApplyFunction(obj, applyArgs, context, applyThis);
+                                }
+                            }
+                            
+                            {
+                                thisContext = obj;
+                                
+                                // Resolve property on the object
+                                if (obj.IsObject || obj.IsFunction)
+                                {
+                                    var o = obj.AsObject();
+                                    if (o != null) 
+                                    {
+                                        function = o.Get(me.Property, context);
+                                        if (me.Property == "throws" || me.Property == "assert")
+                                        {
+                                            // Console.WriteLine($"[DEBUG] CallExpressionMemberGet: prop={me.Property}, valType={function.Type}");
+                                        }
+                                    }
+                                }
+                                else if (obj.IsString)
+                                {
+                                    // String methods lookup (not length, as it is a property, but methods like substring if we had them)
+                                    var proto = GetStringPrototype();
+                                    function = proto?.Get(me.Property, context) ?? FenValue.Undefined;
+                                }
+                                else if (obj.IsNumber)
+                                {
+                                    // Number methods lookup (toFixed, toPrecision, toExponential, toString)
+                                    var proto = GetNumberPrototype();
+                                    function = proto?.Get(me.Property, context) ?? FenValue.Undefined;
+                                }
+                                else if (obj.IsBigInt)
+                                {
+                                    // BigInt methods lookup (toString, valueOf)
+                                    if (me.Property == "toString")
+                                    {
+                                        function = FenValue.FromFunction(new FenFunction("toString", (args, thisVal) =>
+                                        {
+                                            var bigInt = obj.AsBigInt();
+                                            if (bigInt == null) return FenValue.FromString("0");
+                                            return FenValue.FromString(bigInt.ToStringWithoutSuffix());
+                                        }));
+                                    }
+                                    else if (me.Property == "valueOf")
+                                    {
+                                        function = FenValue.FromFunction(new FenFunction("valueOf", (args, thisVal) =>
+                                        {
+                                            return obj;
+                                        }));
+                                    }
+                                    else
+                                    {
+                                        function = FenValue.Undefined;
+                                    }
+                                }
+
+                                if (function.IsUndefined && function.IsNull) function = FenValue.Undefined;
                             }
                         }
                         else
                         {
-                            /* [PERF-REMOVED] */
+                            function = ToFenValue(Eval(callExpr.Function, env, context));
                         }
-                    }
+
+                        if (function.Type == JsValueType.Error) return (FenValue)function;
+                        
+                        var args = EvalExpressionsWithSpread(callExpr.Arguments, env, context);
+                        if (args.Count == 1 && IsError(args[0])) return args[0];
+
+                        // Console.WriteLine($"[DEBUG] BEFORE APPLY: fnType={function.Type}, prop={(callExpr.Function is MemberExpression m ? m.Property : "N/A")}");
+                        return ApplyFunction((FenValue)function, args, context, thisContext);
+
+                    case TryStatement tryStmt:
+                        return ToFenValue(EvalTryStatement(tryStmt, env, context));
+
+                    case ThrowStatement throwStmt:
+                        return ToFenValue(EvalThrowStatement(throwStmt, env, context));
+
+                    case WhileStatement whileStmt:
+                        return ToFenValue(EvalWhileStatement(whileStmt, env, context));
+
+                    case ForStatement forStmt:
+                        return ToFenValue(EvalForStatement(forStmt, env, context));
+
+                    case ArrayLiteral arrayLit:
+                        return ToFenValue(EvalArrayLiteral(arrayLit, env, context));
+
+                    case ObjectLiteral objectLit:
+                        return ToFenValue(EvalObjectLiteral(objectLit, env, context));
+
+                    // Ternary conditional: condition ? consequent : alternate
+                    case ConditionalExpression condExpr:
+                        return ToFenValue(EvalConditionalExpression(condExpr, env, context));
+
+                    case ClassStatement classStmt:
+                        return (FenValue)EvalClassStatement(classStmt, env, context);
+
+                    case ImportDeclaration importDecl:
+                        return (FenValue)EvalImportDeclaration(importDecl, env, context);
+
+                    case ExportDeclaration exportDecl:
+                        return (FenValue)EvalExportDeclaration(exportDecl, env, context);
+
+                    // Arrow function: (params) => body
+                    case ArrowFunctionExpression arrowExpr:
+                        return (FenValue)EvalArrowFunctionExpression(arrowExpr, env);
+
+                    case AsyncFunctionExpression asyncExpr:
+                        return (FenValue)EvalAsyncFunctionExpression(asyncExpr, env);
+
+                    case AwaitExpression awaitExpr:
+                        return (FenValue)EvalAwaitExpression(awaitExpr, env, context);
+
+                    case RegexLiteral regexLit:
+                        return (FenValue)EvalRegexLiteral(regexLit, env);
+
+                    // ES2020: import.meta
+                    case ImportMetaExpression importMeta:
+                        // Return a meta object with url property
+                        // In a real environment, this would depend on the current module's URL
+                        var metaObj = new FenObject();
+                        metaObj.Set("url", FenValue.FromString("file:///local/script.js"), null); // Placeholder URL
+                        return FenValue.FromObject(metaObj);
+
+                    // for-in loop: for (x in obj) { ... }
+                    case ForInStatement forInStmt:
+                        return (FenValue)EvalForInStatement(forInStmt, env, context);
+
+                    // for-of loop: for (x of iterable) { ... }
+                    case ForOfStatement forOfStmt:
+                        return (FenValue)EvalForOfStatement(forOfStmt, env, context);
+
+
+
+                    // Empty expression (for recovery)
+                    case EmptyExpression:
+                        return FenValue.Undefined;
+
+                    // Switch statement
+                    case SwitchStatement switchStmt:
+                        return (FenValue)EvalSwitchStatement(switchStmt, env, context);
+
+                    // Break statement
+                    case BreakStatement breakStmt:
+                        return breakStmt.Label != null
+                            ? FenValue.BreakWithLabel(breakStmt.Label.Value)
+                            : FenValue.Break;
+
+                    // Continue statement
+                    case ContinueStatement continueStmt:
+                        return continueStmt.Label != null
+                            ? FenValue.ContinueWithLabel(continueStmt.Label.Value)
+                            : FenValue.Continue;
+
+                    // Labeled statement
+                    case LabeledStatement labeledStmt:
+                        return (FenValue)EvalLabeledStatement(labeledStmt, env, context);
+
+                    // Do-while loop
+                    case DoWhileStatement doWhileStmt:
+                        return (FenValue)EvalDoWhileStatement(doWhileStmt, env, context);
                     
-                    // Handle assignment to index expression (obj[key] = ...)
-                    if (assignExpr.Left is IndexExpression leftIndex)
-                    {
-                        var targetObj = Eval(leftIndex.Left, env, context);
-                        if (IsError(targetObj)) return targetObj;
-                        
-                        var indexVal = Eval(leftIndex.Index, env, context);
-                        if (IsError(indexVal)) return indexVal;
-                        
-                        var key = indexVal.ToString();
-                        
-                        if (targetObj.IsObject)
-                        {
-                            var targetObjVal = targetObj.AsObject();
-                            if (targetObjVal != null)
-                            {
-                                targetObjVal.Set(key, value, context);
-                                return value;
-                            }
-                        }
-                        else if (targetObj.IsString)
-                        {
-                            // Strings are immutable, assignment to index is a no-op
-                            return value;
-                        }
-                    }
-                    
-                    return FenValue.Undefined;
+                    // Yield expression (for generator functions)
+                    case YieldExpression yieldExpr:
+                        return (FenValue)EvalYieldExpression(yieldExpr, env, context);
 
-                case CallExpression callExpr:
-                    FenValue function = FenValue.Undefined;
-                    FenValue thisContext = FenValue.Undefined;
+                    // ES6+ Optional chaining: obj?.prop
+                    case OptionalChainExpression optChainExpr:
+                        return (FenValue)EvalOptionalChainExpression(optChainExpr, env, context);
 
-                    if (callExpr.Function is MemberExpression me)
-                    {
-                        var obj = ToFenValue(Eval(me.Object, env, context));
-                        if (IsError(obj)) return obj;
-                        
-                        try { FenLogger.Debug($"[Interpreter] Resolving call to {me.Property} on object type {obj.Type}", LogCategory.JavaScript); } catch { }
+                    // ES6+ Nullish coalescing: a ?? b
+                    case NullishCoalescingExpression nullishExpr:
+                        return (FenValue)EvalNullishCoalescingExpression(nullishExpr, env, context);
 
-                        
-                        // Handle Function.prototype.bind/call/apply
-                        if (obj.IsFunction && (me.Property == "bind" || me.Property == "call" || me.Property == "apply"))
-                        {
-                            var targetFn = obj.AsFunction();
-                            var fnArgs = EvalExpressionsWithSpread(callExpr.Arguments, env, context);
-                            
-                            if (me.Property == "bind")
-                            {
-                                // bind(thisArg, ...args) - Returns a bound function
-                                var boundThis = fnArgs.Count > 0 ? fnArgs[0] : FenValue.Undefined;
-                                var boundArgs = fnArgs.Count > 1 ? fnArgs.Skip(1).ToList() : new List<FenValue>();
-                                
-                                var boundFn = new FenFunction("bound " + targetFn.Name, (invokeArgs, _) =>
-                                {
-                                    var allArgs = new List<FenValue>(boundArgs);
-                                    allArgs.AddRange(invokeArgs);
-                                    return targetFn.Invoke(allArgs.ToArray(), context);
-                                });
-                                
-                                return FenValue.FromFunction(boundFn);
-                            }
-                            else if (me.Property == "call")
-                            {
-                                // call(thisArg, ...args) - Invokes with thisArg
-                                var callThis = fnArgs.Count > 0 ? fnArgs[0] : FenValue.Undefined;
-                                var callArgs = fnArgs.Count > 1 ? fnArgs.Skip(1).ToArray() : new FenValue[0];
-                                
-                                return ApplyFunction(obj, callArgs.ToList(), context, callThis);
-                            }
-                            else if (me.Property == "apply")
-                            {
-                                // apply(thisArg, argsArray) - Invokes with thisArg and args from array
-                                var applyThis = fnArgs.Count > 0 ? fnArgs[0] : FenValue.Undefined;
-                                var applyArgs = new List<FenValue>();
-                                
-                                if (fnArgs.Count > 1 && fnArgs[1].IsObject)
-                                {
-                                    var argsArray = fnArgs[1].AsObject();
-                                    var lenVal = argsArray?.Get("length", context);
-                                    int len = (lenVal != null && lenVal.Value.IsNumber) ? (int)lenVal.Value.ToNumber() : 0;
-                                    for (int i = 0; i < len; i++)
-                                    {
-                                        var argVal = argsArray.Get(i.ToString(), context);
-                                        applyArgs.Add(argVal );
-                                    }
-                                }
-                                
-                                return ApplyFunction(obj, applyArgs, context, applyThis);
-                            }
-                        }
-                        
-                        {
-                            thisContext = obj;
-                            
-                            // Resolve property on the object
-                            if (obj.IsObject)
-                            {
-                                var o = obj.AsObject();
-                                if (o != null) function = o.Get(me.Property, context);
-                            }
-                            else if (obj.IsString)
-                            {
-                                // String methods lookup (not length, as it is a property, but methods like substring if we had them)
-                                var proto = GetStringPrototype();
-                                function = proto?.Get(me.Property, context) ?? FenValue.Undefined;
-                            }
-                            else if (obj.IsNumber)
-                            {
-                                // Number methods lookup (toFixed, toPrecision, toExponential, toString)
-                                var proto = GetNumberPrototype();
-                                function = proto?.Get(me.Property, context) ?? FenValue.Undefined;
-                            }
-                            else if (obj.IsBigInt)
-                            {
-                                // BigInt methods lookup (toString, valueOf)
-                                if (me.Property == "toString")
-                                {
-                                    function = FenValue.FromFunction(new FenFunction("toString", (args, thisVal) =>
-                                    {
-                                        var bigInt = obj.AsBigInt();
-                                        if (bigInt == null) return FenValue.FromString("0");
-                                        return FenValue.FromString(bigInt.ToStringWithoutSuffix());
-                                    }));
-                                }
-                                else if (me.Property == "valueOf")
-                                {
-                                    function = FenValue.FromFunction(new FenFunction("valueOf", (args, thisVal) =>
-                                    {
-                                        return obj;
-                                    }));
-                                }
-                                else
-                                {
-                                    function = FenValue.Undefined;
-                                }
-                            }
+                    // ES6+ Logical assignment: a ||= b, a &&= b, a ??= b
+                    case LogicalAssignmentExpression logicalAssignExpr:
+                        return (FenValue)EvalLogicalAssignment(logicalAssignExpr, env, context);
 
-                            if (function.IsUndefined && function.IsNull) function = FenValue.Undefined;
-                        }
-                    }
-                    else
-                    {
-                        function = ToFenValue(Eval(callExpr.Function, env, context));
-                    }
+                    // ES6+ Exponentiation: a ** b
+                    case ExponentiationExpression expExpr:
+                        return (FenValue)EvalExponentiationExpression(expExpr, env, context);
 
-                    if (function.Type == JsValueType.Error) return (FenValue)function;
-                    
-                    var args = EvalExpressionsWithSpread(callExpr.Arguments, env, context);
-                    if (args.Count == 1 && IsError(args[0])) return args[0];
+                    // ES6+ Bitwise NOT: ~x
+                    case BitwiseNotExpression bitwiseNotExpr:
+                        return (FenValue)EvalBitwiseNotExpression(bitwiseNotExpr, env, context);
 
-                    return ApplyFunction((FenValue)function, args, context, thisContext);
+                    // ES6+ BigInt literal: 123n
+                    case BigIntLiteral bigIntLit:
+                        return (FenValue)EvalBigIntLiteral(bigIntLit);
 
-                case TryStatement tryStmt:
-                    return ToFenValue(EvalTryStatement(tryStmt, env, context));
+                    // ES6+ Compound assignment: a += b, a **= b, etc.
+                    case CompoundAssignmentExpression compoundExpr:
+                        return (FenValue)EvalCompoundAssignmentExpression(compoundExpr, env, context);
 
-                case ThrowStatement throwStmt:
-                    return ToFenValue(EvalThrowStatement(throwStmt, env, context));
+                    // ES2015: new.target meta property
+                    case NewTargetExpression newTarget:
+                        return context.NewTarget;
 
-                case WhileStatement whileStmt:
-                    return ToFenValue(EvalWhileStatement(whileStmt, env, context));
+                    // ES5.1 with statement: with (obj) { ... }
+                    case WithStatement withStmt:
+                        return (FenValue)EvalWithStatement(withStmt, env, context);
 
-                case ForStatement forStmt:
-                    return ToFenValue(EvalForStatement(forStmt, env, context));
+                }
 
-                case ArrayLiteral arrayLit:
-                    return ToFenValue(EvalArrayLiteral(arrayLit, env, context));
-
-                case ObjectLiteral objectLit:
-                    return ToFenValue(EvalObjectLiteral(objectLit, env, context));
-
-                // Ternary conditional: condition ? consequent : alternate
-                case ConditionalExpression condExpr:
-                    return ToFenValue(EvalConditionalExpression(condExpr, env, context));
-
-                case ClassStatement classStmt:
-                    return (FenValue)EvalClassStatement(classStmt, env, context);
-
-                case ImportDeclaration importDecl:
-                    return (FenValue)EvalImportDeclaration(importDecl, env, context);
-
-                case ExportDeclaration exportDecl:
-                    return (FenValue)EvalExportDeclaration(exportDecl, env, context);
-
-                // Arrow function: (params) => body
-                case ArrowFunctionExpression arrowExpr:
-                    return (FenValue)EvalArrowFunctionExpression(arrowExpr, env);
-
-                case AsyncFunctionExpression asyncExpr:
-                    return (FenValue)EvalAsyncFunctionExpression(asyncExpr, env);
-
-                case AwaitExpression awaitExpr:
-                    return (FenValue)EvalAwaitExpression(awaitExpr, env, context);
-
-                case RegexLiteral regexLit:
-                    return (FenValue)EvalRegexLiteral(regexLit, env);
-
-                // ES2020: import.meta
-                case ImportMetaExpression importMeta:
-                    // Return a meta object with url property
-                    // In a real environment, this would depend on the current module's URL
-                    var metaObj = new FenObject();
-                    metaObj.Set("url", FenValue.FromString("file:///local/script.js"), null); // Placeholder URL
-                    return FenValue.FromObject(metaObj);
-
-                // for-in loop: for (x in obj) { ... }
-                case ForInStatement forInStmt:
-                    return (FenValue)EvalForInStatement(forInStmt, env, context);
-
-                // for-of loop: for (x of iterable) { ... }
-                case ForOfStatement forOfStmt:
-                    return (FenValue)EvalForOfStatement(forOfStmt, env, context);
-
-
-
-                // Empty expression (for recovery)
-                case EmptyExpression:
-                    return FenValue.Undefined;
-
-                // Switch statement
-                case SwitchStatement switchStmt:
-                    return (FenValue)EvalSwitchStatement(switchStmt, env, context);
-
-                // Break statement
-                case BreakStatement breakStmt:
-                    return breakStmt.Label != null
-                        ? FenValue.BreakWithLabel(breakStmt.Label.Value)
-                        : FenValue.Break;
-
-                // Continue statement
-                case ContinueStatement continueStmt:
-                    return continueStmt.Label != null
-                        ? FenValue.ContinueWithLabel(continueStmt.Label.Value)
-                        : FenValue.Continue;
-
-                // Labeled statement
-                case LabeledStatement labeledStmt:
-                    return (FenValue)EvalLabeledStatement(labeledStmt, env, context);
-
-                // Do-while loop
-                case DoWhileStatement doWhileStmt:
-                    return (FenValue)EvalDoWhileStatement(doWhileStmt, env, context);
-                
-                // Yield expression (for generator functions)
-                case YieldExpression yieldExpr:
-                    return (FenValue)EvalYieldExpression(yieldExpr, env, context);
-
-                // ES6+ Optional chaining: obj?.prop
-                case OptionalChainExpression optChainExpr:
-                    return (FenValue)EvalOptionalChainExpression(optChainExpr, env, context);
-
-                // ES6+ Nullish coalescing: a ?? b
-                case NullishCoalescingExpression nullishExpr:
-                    return (FenValue)EvalNullishCoalescingExpression(nullishExpr, env, context);
-
-                // ES6+ Logical assignment: a ||= b, a &&= b, a ??= b
-                case LogicalAssignmentExpression logicalAssignExpr:
-                    return (FenValue)EvalLogicalAssignment(logicalAssignExpr, env, context);
-
-                // ES6+ Exponentiation: a ** b
-                case ExponentiationExpression expExpr:
-                    return (FenValue)EvalExponentiationExpression(expExpr, env, context);
-
-                // ES6+ Bitwise NOT: ~x
-                case BitwiseNotExpression bitwiseNotExpr:
-                    return (FenValue)EvalBitwiseNotExpression(bitwiseNotExpr, env, context);
-
-                // ES6+ BigInt literal: 123n
-                case BigIntLiteral bigIntLit:
-                    return (FenValue)EvalBigIntLiteral(bigIntLit);
-
-                // ES6+ Compound assignment: a += b, a **= b, etc.
-                case CompoundAssignmentExpression compoundExpr:
-                    return (FenValue)EvalCompoundAssignmentExpression(compoundExpr, env, context);
-
-                // ES2015: new.target meta property
-                case NewTargetExpression newTarget:
-                    return context.NewTarget;
-
-                // ES5.1 with statement: with (obj) { ... }
-                case WithStatement withStmt:
-                    return (FenValue)EvalWithStatement(withStmt, env, context);
-
+                return FenValue.Undefined;
             }
-
-            return FenValue.Undefined;
+            finally
+            {
+                _executionDepth--;
+            }
         }
         
         /// <summary>
@@ -2630,6 +2711,11 @@ namespace FenBrowser.FenEngine.Core
         private IValue EvalObjectLiteral(ObjectLiteral node, FenEnvironment env, IExecutionContext context)
         {
             var obj = new FenObject();
+
+            // Collect accessor pairs: realKey → (getter, setter)
+            // We need two passes because get and set for the same key may appear in any order.
+            var accessors = new Dictionary<string, (FenFunction getter, FenFunction setter)>();
+
             foreach (var pair in node.Pairs)
             {
                 // Handle spread: { ...source }
@@ -2665,21 +2751,54 @@ namespace FenBrowser.FenEngine.Core
                 // Handle getter/setter: { get foo() {}, set foo(v) {} }
                 if (pair.Key.StartsWith("__get_") || pair.Key.StartsWith("__set_"))
                 {
-                    // For now, store as regular properties — full getter/setter support would
-                    // need property descriptors on FenObject. Store the function value.
-                    string realKey = pair.Key.Substring(6); // remove __get_ or __set_
-                    obj.Set(pair.Key, val, null); // keep prefixed for accessor dispatch
+                    bool isGetter = pair.Key.StartsWith("__get_");
+                    string rawKey = pair.Key.Substring(6); // remove __get_ or __set_
+
+                    // Resolve computed accessor key
+                    string realKey;
+                    if (node.ComputedKeys.TryGetValue(pair.Key, out var accessorComputedExpr))
+                    {
+                        var keyVal = Eval(accessorComputedExpr, env, context);
+                        if (IsError(keyVal)) return keyVal;
+                        realKey = keyVal.AsString();
+                    }
+                    else
+                    {
+                        realKey = rawKey;
+                    }
+
+                    var fn = val.AsFunction();
+                    if (!accessors.TryGetValue(realKey, out var existing))
+                        existing = (null, null);
+
+                    if (isGetter)
+                        existing.getter = fn;
+                    else
+                        existing.setter = fn;
+
+                    accessors[realKey] = existing;
                     continue;
                 }
 
                 obj.Set(pair.Key, val, null);
             }
+
+            // Define accessor properties with proper PropertyDescriptor
+            foreach (var kvp in accessors)
+            {
+                obj.DefineOwnProperty(kvp.Key, PropertyDescriptor.Accessor(
+                    kvp.Value.getter, kvp.Value.setter,
+                    enumerable: true, configurable: true));
+            }
+
             return FenValue.FromObject(obj);
         }
 
         private IValue EvalProgram(Program program, FenEnvironment env, IExecutionContext context)
         {
             FenValue result = FenValue.Null;
+            // DEBUG
+            // Console.WriteLine($"[DEBUG] EvalProgram: Url={context?.CurrentUrl ?? "null"}, Statements={program?.Statements?.Count ?? 0}");
 
             // Detect "use strict" directive at the start of the program
             bool previousStrictMode = context.StrictMode;
@@ -2693,6 +2812,12 @@ namespace FenBrowser.FenEngine.Core
 
             foreach (var stmt in program.Statements)
             {
+                // DEBUG: Trace execution of statements
+                // if (context.CurrentUrl != null && context.CurrentUrl.Contains("assert"))
+                {
+                   // Console.WriteLine($"[DEBUG] Executing {stmt.GetType().Name} in {context.CurrentUrl} (Line {stmt.Token.Line})");
+                }
+
                 result = Eval(stmt, env, context);
 
                 if (result.Type == JsValueType.ReturnValue)
@@ -2703,6 +2828,10 @@ namespace FenBrowser.FenEngine.Core
 
                 if (IsError(result))
                 {
+                    if (context.CurrentUrl != null && context.CurrentUrl.EndsWith("assert.js"))
+                    {
+                        // Console.WriteLine($"[DEBUG] Error in assert.js at line {stmt.Token.Line}: {result}");
+                    }
                     context.StrictMode = previousStrictMode; // Restore
                     return result;
                 }
@@ -2727,6 +2856,8 @@ namespace FenBrowser.FenEngine.Core
                     funcObj.IsAsync = funcDecl.Function.IsAsync;
                     if (!string.IsNullOrEmpty(funcDecl.Function.Source))
                         funcObj.Source = funcDecl.Function.Source;
+                    // ES2015: Auto-create .prototype for non-arrow functions
+                    InitFunctionPrototype(funcObj);
 
                     var fnVal = FenValue.FromFunction(funcObj);
                     env.Set(funcDecl.Function.Name, fnVal);
@@ -2797,25 +2928,21 @@ namespace FenBrowser.FenEngine.Core
                     
                     if (context.StrictMode)
                     {
-                         // Hoist to block scope (init with undefined or early create?)
-                         // Usually functions are initialized at top of block.
                          var funcObj = new FenFunction(funcDecl.Function.Parameters, funcDecl.Function.Body, env);
                          funcObj.IsGenerator = funcDecl.Function.IsGenerator;
                          funcObj.IsAsync = funcDecl.Function.IsAsync;
                          if (!string.IsNullOrEmpty(funcDecl.Function.Source)) funcObj.Source = funcDecl.Function.Source;
-                         
+                         InitFunctionPrototype(funcObj);
+
                          env.Set(funcDecl.Function.Name, FenValue.FromFunction(funcObj));
                     }
                     else
                     {
-                         // Annex B: Hoist to FUNCTION scope (Outer).
-                         // For now, let's keep it simple: hoist to current block to ensure visibility anywhere in block.
-                         // Truly implementing Annex B require finding the nearest Function env.
-                         
                          var funcObj = new FenFunction(funcDecl.Function.Parameters, funcDecl.Function.Body, env);
                          funcObj.IsGenerator = funcDecl.Function.IsGenerator;
                          funcObj.IsAsync = funcDecl.Function.IsAsync;
                          if (!string.IsNullOrEmpty(funcDecl.Function.Source)) funcObj.Source = funcDecl.Function.Source;
+                         InitFunctionPrototype(funcObj);
                          env.Set(funcDecl.Function.Name, FenValue.FromFunction(funcObj));
                     }
                 }
@@ -2839,20 +2966,20 @@ namespace FenBrowser.FenEngine.Core
             return result;
         }
 
-        private FenValue EvalPrefixExpression(string op, FenValue right)
+        private FenValue EvalPrefixExpression(string op, FenValue right, IExecutionContext context)
         {
             switch (op)
             {
                 case "!":
                     return EvalBangOperatorExpression(right);
                 case "-":
-                    return EvalMinusPrefixOperatorExpression(right);
+                    return EvalMinusPrefixOperatorExpression(right, context);
                 case "+":
                     // ES5.1: Unary + converts to number
-                    return FenValue.FromNumber(right.ToNumber());
+                    return FenValue.FromNumber(right.AsNumber(context));
                 case "~":
                     // ES5.1: Bitwise NOT - convert to 32-bit int, then NOT
-                    var num = (int)right.ToNumber();
+                    var num = (int)right.AsNumber(context);
                     return FenValue.FromNumber(~num);
                 case "typeof":
                     return EvalTypeofExpression(right);
@@ -2954,16 +3081,19 @@ namespace FenBrowser.FenEngine.Core
             return FenValue.FromBoolean(!right.ToBoolean());
         }
 
-        private FenValue EvalMinusPrefixOperatorExpression(FenValue right)
+        private FenValue EvalMinusPrefixOperatorExpression(FenValue right, IExecutionContext context)
         {
             if (right.Type != JsValueType.Number)
             {
-                return FenValue.FromError($"unknown operator: -{right.Type}");
+                // Note: BigInt negation should be handled separately if supported
+                var n = right.AsNumber(context);
+                if (double.IsNaN(n)) return FenValue.FromNumber(double.NaN);
+                return FenValue.FromNumber(-n);
             }
-            return FenValue.FromNumber(-right.AsNumber());
+            return FenValue.FromNumber(-right.AsNumber(context));
         }
 
-        private FenValue EvalInfixExpression(string op, FenValue left, FenValue right)
+        private FenValue EvalInfixExpression(string op, FenValue left, FenValue right, IExecutionContext context)
         {
             // Increment/decrement are handled by Eval in the main switch
 
@@ -3026,7 +3156,7 @@ namespace FenBrowser.FenEngine.Core
                     if (obj != null)
                     {
                         // Use Has() which properly checks prototype chain
-                        return FenValue.FromBoolean(obj.Has(left.ToString(), null));
+                        return FenValue.FromBoolean(obj.Has(left.AsString(context), context));
                     }
                 }
                 return FenValue.FromBoolean(false);
@@ -3036,16 +3166,16 @@ namespace FenBrowser.FenEngine.Core
             if (op == "+")
             {
                 // Apply ToPrimitive to objects (ES5.1 §11.6.1)
-                var lprim = left.IsObject ? left.ToPrimitive() : left;
-                var rprim = right.IsObject ? right.ToPrimitive() : right;
+                var lprim = left.IsObject ? left.ToPrimitive(context) : left;
+                var rprim = right.IsObject ? right.ToPrimitive(context) : right;
                 
                 // If either is a string, concatenate
                 if (lprim.Type == JsValueType.String || rprim.Type == JsValueType.String)
                 {
-                    return FenValue.FromString(lprim.ToString() + rprim.ToString());
+                    return FenValue.FromString(lprim.AsString(context) + rprim.AsString(context));
                 }
                 // Otherwise, add as numbers
-                return FenValue.FromNumber(lprim.ToNumber() + rprim.ToNumber());
+                return FenValue.FromNumber(lprim.AsNumber(context) + rprim.AsNumber(context));
             }
 
             if (left.Type == JsValueType.Number && right.Type == JsValueType.Number)
@@ -3058,21 +3188,21 @@ namespace FenBrowser.FenEngine.Core
                 switch (op)
                 {
                     case "+":
-                        return FenValue.FromString(left.ToString() + right.ToString());
+                        return FenValue.FromString(left.AsString(context) + right.AsString(context));
                     case "==":
                     case "===":
-                        return FenValue.FromBoolean(left.ToString() == right.ToString());
+                        return FenValue.FromBoolean(left.AsString(context) == right.AsString(context));
                     case "!=":
                     case "!==":
-                        return FenValue.FromBoolean(left.ToString() != right.ToString());
+                        return FenValue.FromBoolean(left.AsString(context) != right.AsString(context));
                     case "<":
-                        return FenValue.FromBoolean(string.Compare(left.ToString(), right.ToString(), StringComparison.Ordinal) < 0);
+                        return FenValue.FromBoolean(string.Compare(left.AsString(context), right.AsString(context), StringComparison.Ordinal) < 0);
                     case ">":
-                        return FenValue.FromBoolean(string.Compare(left.ToString(), right.ToString(), StringComparison.Ordinal) > 0);
+                        return FenValue.FromBoolean(string.Compare(left.AsString(context), right.AsString(context), StringComparison.Ordinal) > 0);
                     case "<=":
-                        return FenValue.FromBoolean(string.Compare(left.ToString(), right.ToString(), StringComparison.Ordinal) <= 0);
+                        return FenValue.FromBoolean(string.Compare(left.AsString(context), right.AsString(context), StringComparison.Ordinal) <= 0);
                     case ">=":
-                        return FenValue.FromBoolean(string.Compare(left.ToString(), right.ToString(), StringComparison.Ordinal) >= 0);
+                        return FenValue.FromBoolean(string.Compare(left.AsString(context), right.AsString(context), StringComparison.Ordinal) >= 0);
                     default:
                         return FenValue.FromError($"unknown operator: {left.Type} {op} {right.Type}");
                 }
@@ -3085,23 +3215,33 @@ namespace FenBrowser.FenEngine.Core
             // ES5.1 §11.8: Abstract Relational Comparison for mixed types
             if (op == "<")
             {
-                var r = FenValue.AbstractRelationalComparison(left, right);
+                var r = FenValue.AbstractRelationalComparison(left, right, context);
                 return r.IsUndefined ? FenValue.FromBoolean(false) : FenValue.FromBoolean(r.ToBoolean());
             }
             if (op == ">")
             {
-                var r = FenValue.AbstractRelationalComparison(right, left, false);
+                var r = FenValue.AbstractRelationalComparison(right, left, context, false);
                 return r.IsUndefined ? FenValue.FromBoolean(false) : FenValue.FromBoolean(r.ToBoolean());
             }
             if (op == "<=")
             {
-                var r = FenValue.AbstractRelationalComparison(right, left, false);
+                var r = FenValue.AbstractRelationalComparison(right, left, context, false);
                 return r.IsUndefined ? FenValue.FromBoolean(false) : FenValue.FromBoolean(!r.ToBoolean());
             }
             if (op == ">=")
             {
-                var r = FenValue.AbstractRelationalComparison(left, right);
+                var r = FenValue.AbstractRelationalComparison(left, right, context);
                 return r.IsUndefined ? FenValue.FromBoolean(false) : FenValue.FromBoolean(!r.ToBoolean());
+            }
+
+            // Arithmetic and Bitwise operators with implicit coercion (ES5.1 $11.5, $11.7)
+            if (op == "-" || op == "*" || op == "/" || op == "%" || 
+                op == ">>" || op == "<<" || op == ">>>" || 
+                op == "&" || op == "|" || op == "^")
+            {
+                var ln = left.ToNumber();
+                var rn = right.ToNumber();
+                return EvalIntegerInfixExpression(op, FenValue.FromNumber(ln), FenValue.FromNumber(rn));
             }
 
             if (left.Type != right.Type)
@@ -3142,6 +3282,21 @@ namespace FenBrowser.FenEngine.Core
                     return FenValue.FromBoolean(leftVal == rightVal);
                 case "!==":
                     return FenValue.FromBoolean(leftVal != rightVal);
+                
+                // Bitwise operators (convert to 32-bit integers)
+                case ">>":  // Right shift
+                    return FenValue.FromNumber((int)leftVal >> (int)(rightVal % 32));
+                case "<<":  // Left shift
+                    return FenValue.FromNumber((int)leftVal << (int)(rightVal % 32));
+                case ">>>": // Unsigned right shift
+                    return FenValue.FromNumber((uint)leftVal >> (int)(rightVal % 32));
+                case "&":   // Bitwise AND
+                    return FenValue.FromNumber((int)leftVal & (int)rightVal);
+                case "|":   // Bitwise OR
+                    return FenValue.FromNumber((int)leftVal | (int)rightVal);
+                case "^":   // Bitwise XOR
+                    return FenValue.FromNumber((int)leftVal ^ (int)rightVal);
+                
                 default:
                     return FenValue.FromError($"unknown operator: {left.Type} {op} {right.Type}");
             }
@@ -3175,9 +3330,32 @@ namespace FenBrowser.FenEngine.Core
             }
         }
 
+        private IValue EvalIfStatement(IfStatement ie, FenEnvironment env, IExecutionContext context)
+        {
+            var condition = Eval(ie.Condition, env, context);
+            if (IsError(condition)) return condition;
+
+            if (IsTruthy(condition))
+            {
+                return Eval(ie.Consequence, env, context);
+            }
+            else if (ie.Alternative != null)
+            {
+                return Eval(ie.Alternative, env, context);
+            }
+            else
+            {
+                return FenValue.Undefined;
+            }
+        }
+
         private IValue EvalIdentifier(Identifier node, FenEnvironment env)
         {
             var val = env.Get(node.Value);
+            if (node.Value == "TypeError" || node.Value == "JSON" || node.Value == "assert" || node.Value == "String" || node.Value == "Test262Error" || node.Value == "compareArray")
+            {
+                // Console.WriteLine($"[DEBUG] EvalIdentifier: name={node.Value}, type={val.Type}");
+            }
             if (val  == null)
             {
                 return FenValue.FromError($"identifier not found: {node.Value}");
@@ -3373,7 +3551,11 @@ namespace FenBrowser.FenEngine.Core
                 return result;
             }
             
-            return FenValue.FromError($"not a function: {fn.Type}");
+            if (fn.IsUndefined)
+            {
+                // Console.WriteLine($"[DEBUG] ApplyFunction: Called on UNDEFINED. context: {context.CurrentUrl}");
+            }
+            return FenValue.FromError($"not a function: {fn.ToString()} (Type: {fn.Type})");
         }
 
         /// <summary>
@@ -3645,6 +3827,19 @@ namespace FenBrowser.FenEngine.Core
             return obj.Type == JsValueType.Error || obj.Type == JsValueType.Throw;
         }
 
+        /// <summary>
+        /// ES2015: Auto-create the .prototype object for a user-defined function.
+        /// Every non-arrow function gets a .prototype = { constructor: fn }.
+        /// The Prototype field on FenFunction is used by `new` to set instance.__proto__.
+        /// </summary>
+        private static void InitFunctionPrototype(FenFunction fn)
+        {
+            var proto = new FenObject();
+            proto.Set("constructor", FenValue.FromFunction(fn));
+            fn.Prototype = proto;
+            fn.Set("prototype", FenValue.FromObject(proto));
+        }
+
         // Evaluate template literals: `Hello ${name}!`
         private IValue EvalTemplateLiteral(TemplateLiteral tmpl, FenEnvironment env, IExecutionContext context)
         {
@@ -3745,12 +3940,16 @@ namespace FenBrowser.FenEngine.Core
                     }));
                 }
             }
-            else if (left.IsObject)
+            else if (left.IsObject || left.IsFunction)
             {
                 var obj = left.AsObject();
                 if (obj != null)
                 {
                     var val = obj.Get(me.Property, context);
+                    if (me.Property == "throws" || me.Property == "assert")
+                    {
+                        // Console.WriteLine($"[DEBUG] MemberGet: prop={me.Property}, val={val.Type}");
+                    }
                     if (val != null) return val;
                 }
             }
@@ -3766,7 +3965,7 @@ namespace FenBrowser.FenEngine.Core
             var index = Eval(ie.Index, env, context);
             if (IsError(index)) return index;
 
-            if (left.IsObject)
+            if (left.IsObject || left.IsFunction)
             {
                 var obj = left.AsObject();
                 if (obj != null)
@@ -3919,13 +4118,9 @@ namespace FenBrowser.FenEngine.Core
                     }
                     else
                     {
-                        // Legacy/Internal error (string based) - convert to Error object
-                        var errorObj = new FenObject();
-                        errorObj.InternalClass = "Error";
-                        errorObj.Set("message", FenValue.FromString(result.AsError()), null);
-                        errorObj.Set("name", FenValue.FromString("Error"), null);
-                        errorObj.Set("stack", FenValue.FromString($"Error: {result.AsError()}\n    at <anonymous>"), null);
-                        thrownValue = FenValue.FromObject(errorObj);
+                        // Legacy/internal Error values are represented as strings. Reify them as
+                        // proper JS Error objects so assert.throws can compare constructors.
+                        thrownValue = CreateInternalErrorObject(result.AsError(), catchEnv, context);
                     }
                     catchEnv.Set(ts.CatchParameter.Value, thrownValue);
                 }
@@ -3958,6 +4153,86 @@ namespace FenBrowser.FenEngine.Core
             }
 
             return result;
+        }
+
+        private FenValue CreateInternalErrorObject(string rawError, FenEnvironment env, IExecutionContext context)
+        {
+            string name = "Error";
+            string message = rawError ?? "Error";
+
+            if (!string.IsNullOrEmpty(rawError))
+            {
+                int separator = rawError.IndexOf(':');
+                if (separator > 0)
+                {
+                    var candidate = rawError.Substring(0, separator).Trim();
+                    if (candidate == "TypeError" ||
+                        candidate == "ReferenceError" ||
+                        candidate == "RangeError" ||
+                        candidate == "SyntaxError" ||
+                        candidate == "URIError" ||
+                        candidate == "EvalError" ||
+                        candidate == "AggregateError" ||
+                        candidate == "Error")
+                    {
+                        name = candidate;
+                        message = rawError.Substring(separator + 1).TrimStart();
+                    }
+                }
+            }
+
+            var errorObj = new FenObject { InternalClass = "Error" };
+            errorObj.Set("message", FenValue.FromString(message), context);
+            errorObj.Set("name", FenValue.FromString(name), context);
+            errorObj.Set("stack", FenValue.FromString($"{name}: {message}\n    at <anonymous>"), context);
+
+            FenValue ctorValue = FenValue.Undefined;
+            try
+            {
+                if (env != null && env.HasBinding(name))
+                {
+                    ctorValue = env.Get(name);
+                }
+            }
+            catch
+            {
+            }
+
+            if (ctorValue.IsUndefined && name != "Error")
+            {
+                try
+                {
+                    if (env != null && env.HasBinding("Error"))
+                    {
+                        ctorValue = env.Get("Error");
+                    }
+                }
+                catch
+                {
+                }
+            }
+
+            if (ctorValue.IsFunction)
+            {
+                errorObj.Set("constructor", ctorValue, context);
+
+                var ctorObj = ctorValue.AsObject();
+                var protoFromProperty = ctorObj?.Get("prototype", context) ?? FenValue.Undefined;
+                if (protoFromProperty.IsObject)
+                {
+                    errorObj.SetPrototype(protoFromProperty.AsObject());
+                }
+                else
+                {
+                    var ctorFn = ctorValue.AsFunction();
+                    if (ctorFn?.Prototype != null)
+                    {
+                        errorObj.SetPrototype(ctorFn.Prototype);
+                    }
+                }
+            }
+
+            return FenValue.FromObject(errorObj);
         }
 
         // ES5.1 with statement: with (obj) { ... }
@@ -4662,8 +4937,9 @@ namespace FenBrowser.FenEngine.Core
                 if (method.Static)
                 {
                     // Static methods go on the constructor function object itself
-                    // But FenFunction isn't fully a FenObject yet in this implementation
-                    // We might need to attach them differently or upgrade FenFunction
+                    var staticMethodFunc = new FenFunction(method.Value.Parameters, method.Value.Body, env);
+                    string staticMethodName = method.IsPrivate ? "#" + method.Key.Value : method.Key.Value;
+                    constructor.Set(staticMethodName, FenValue.FromFunction(staticMethodFunc));
                 }
                 else
                 {
@@ -4956,6 +5232,7 @@ namespace FenBrowser.FenEngine.Core
         {
             var function = new FenFunction(node.Parameters, node.Body, env);
             function.IsAsync = true;
+            InitFunctionPrototype(function);
             return FenValue.FromFunction(function);
         }
 

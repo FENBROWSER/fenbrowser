@@ -9,16 +9,18 @@ namespace FenBrowser.FenEngine.Core
     public struct PropertyDescriptor
     {
         // Data descriptor fields
-        public FenValue Value;
-        public bool Writable;
+        public FenValue? Value;
+        
+        // Common descriptor fields
+        public bool? Enumerable;
+        public bool? Configurable;
+        
+        // Data descriptor specific
+        public bool? Writable;
         
         // Accessor descriptor fields
         public FenFunction Getter;
         public FenFunction Setter;
-        
-        // Common descriptor fields
-        public bool Enumerable;
-        public bool Configurable;
         
         /// <summary>
         /// True if this is an accessor descriptor (has getter or setter).
@@ -26,9 +28,14 @@ namespace FenBrowser.FenEngine.Core
         public bool IsAccessor => Getter != null || Setter != null;
         
         /// <summary>
-        /// True if this is a data descriptor (has value, not accessor).
+        /// True if this is a data descriptor (has value or writable).
         /// </summary>
-        public bool IsData => !IsAccessor;
+        public bool IsData => Value.HasValue || Writable.HasValue;
+
+        /// <summary>
+        /// True if this is a generic descriptor (neither data nor accessor).
+        /// </summary>
+        public bool IsGenericDescriptor() => !IsData && !IsAccessor;
         
         /// <summary>
         /// Creates a default data descriptor with writable, enumerable, configurable = true.
@@ -70,8 +77,8 @@ namespace FenBrowser.FenEngine.Core
         {
             return new PropertyDescriptor
             {
-                Value = FenValue.Undefined,
-                Writable = false, // Not used for accessors
+                Value = null,      // Must be null so IsData returns false
+                Writable = null,   // Must be null so IsData returns false
                 Enumerable = enumerable,
                 Configurable = configurable,
                 Getter = getter,

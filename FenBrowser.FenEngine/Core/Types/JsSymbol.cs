@@ -117,6 +117,12 @@ namespace FenBrowser.FenEngine.Core.Types
         public FenFunction AsFunction() => null;
         public IObject AsObject() => null;
 
+        FenValue IValue.ToPrimitive(IExecutionContext context, string preferredType)
+        {
+            // Symbol is already a primitive
+            return FenValue.FromSymbol(this);
+        }
+
         /// <summary>
         /// Get or create a symbol in the global symbol registry.
         /// Symbol.for(key)

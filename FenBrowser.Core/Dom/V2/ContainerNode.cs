@@ -144,7 +144,7 @@ namespace FenBrowser.Core.Dom.V2
         /// Returns a live HTMLCollection of child elements.
         /// https://dom.spec.whatwg.org/#dom-parentnode-children
         /// </summary>
-        public NodeList Children => new LiveElementChildList(this);
+        public new NodeList Children => new LiveElementChildList(this);
 
         // --- Child Mutation Methods ---
 
@@ -663,6 +663,22 @@ namespace FenBrowser.Core.Dom.V2
                 // Ancestor - notify with subtree option
                 _registeredObservers.NotifySubtree(record);
             }
+        }
+
+        /// <summary>
+        /// Called by Element to notify observers of attribute changes.
+        /// </summary>
+        internal void NotifyAttributeChange(MutationRecord record)
+        {
+            if (_registeredObservers == null)
+            {
+                 // Even if no observers on this node, we must propagate to ancestors for subtree observers
+                 PropagateToAncestors(record);
+                 return;
+            }
+
+            _registeredObservers.NotifyAttributes(record);
+            PropagateToAncestors(record);
         }
     }
 

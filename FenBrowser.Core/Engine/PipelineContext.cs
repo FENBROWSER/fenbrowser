@@ -13,6 +13,7 @@
 // =============================================================================
 
 using System;
+using FenBrowser.Core.Dom.V2;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Threading;

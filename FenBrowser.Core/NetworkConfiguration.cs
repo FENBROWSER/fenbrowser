@@ -65,6 +65,17 @@ namespace FenBrowser.Core
         public bool EnableDeflate { get; set; } = true;
 
         /// <summary>
+        /// Respect system proxy settings. Default: false to avoid dev environments that inject a dead 127.0.0.1:9 proxy.
+        /// </summary>
+        public bool UseSystemProxy { get; set; } = true;
+
+        /// <summary>
+        /// If true, SSL/TLS certificate errors are ignored (for development/offline lab environments).
+        /// WARNING: keep false in production; only enable when you understand the risks.
+        /// </summary>
+        public bool IgnoreCertificateErrors { get; set; } = false;
+
+        /// <summary>
         /// Gets the Accept-Encoding header value based on current settings.
         /// </summary>
         public string GetAcceptEncodingHeader()

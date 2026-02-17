@@ -29,7 +29,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         /// <summary>
         /// Current engine phase for assertions
         /// </summary>
-        public EnginePhase CurrentPhase => EnginePhaseManager.CurrentPhase;
+        public EnginePhase CurrentPhase => EngineContext.Current.CurrentPhase;
 
         /// <summary>
         /// Fired when new work is added to any queue (Task, Microtask, Animation, Layout).
@@ -151,7 +151,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             }
 
             // STEP 1-2: Execute task
-            EnginePhaseManager.EnterPhase(EnginePhase.JSExecution);
+            EngineContext.Current.BeginPhase(EnginePhase.JSExecution);
             try
             {
                 FenLogger.Debug($"[EventLoop] Executing task: {task.Description}", LogCategory.JavaScript);
@@ -168,7 +168,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             // STEP 4-6: Rendering update
             ProcessRenderingUpdate();
             
-            EnginePhaseManager.TryEnterIdle();
+            EngineContext.Current.EndPhase();
             return true;
         }
 
@@ -178,9 +178,9 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         public void PerformMicrotaskCheckpoint()
         {
             // CRITICAL: Ensure we are not re-entering Microtask phase recursively
-            EnginePhaseManager.AssertNotInPhase(EnginePhase.Microtasks);
+            EngineContext.Current.AssertNotInPhase(EnginePhase.Microtasks);
             
-            EnginePhaseManager.EnterPhase(EnginePhase.Microtasks);
+            EngineContext.Current.BeginPhase(EnginePhase.Microtasks);
             try
             {
                 // DRAIN LOOP: Keep draining until empty.
@@ -194,26 +194,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             }
             finally
             {
-                // Return to whatever phase we were in? 
-                // Actually EnginePhaseManager/EngineContext tracks stack or single phase?
-                // Context usually pushes/pops. If simple set, we might need to restore.
-                // EngineContext.Current.EndPhase()? The API provided was BeginPhase.
-                // Assuming EnterPhase pushes or sets. 
-                // Since there is no "ExitPhase" exposed in the snippet I saw, 
-                // and TryEnterIdle exists...
-                // Ideally we should revert to previous phase if it was a nested call (like from ProcessNextTask).
-                // But typically Microtasks run at end of Task (which was JSExecution).
-                // So after this, we might go to Idle or Rendering.
-                
-                // For now, let's assuming we just leave it in Microtasks 
-                // and the caller of PerformMicrotaskCheckpoint (ProcessNextTask) 
-                // will transition to the next phase (Rendering or Idle).
-                // BUT: If the caller expects us to return to previous phase (e.g. nested checkpoint?),
-                // we should be careful. 
-                // Spec says Checkpoints only happen at specific times.
-                
-                // To be safe and compliant with "ExitPhase" concept:
-                // We'll trust the caller to set the next phase.
+                EngineContext.Current.EndPhase();
             }
         }
 
@@ -233,7 +214,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 if (_layoutRunThisTick) return;
                 _layoutRunThisTick = true;
 
-                EnginePhaseManager.EnterPhase(EnginePhase.Layout);
+                EngineContext.Current.BeginPhase(EnginePhase.Layout);
                 try
                 {
                     FenLogger.Debug("[EventLoop] Rendering update (layout dirty)", LogCategory.Rendering);
@@ -249,7 +230,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             // Observer evaluation
             if (_observerCallback != null)
             {
-                EnginePhaseManager.EnterPhase(EnginePhase.Observers);
+                EngineContext.Current.BeginPhase(EnginePhase.Observers);
                 try
                 {
                     _observerCallback.Invoke();
@@ -283,11 +264,11 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 _animationFrameCallbacks.Clear();
             }
 
-            EnginePhaseManager.EnterPhase(EnginePhase.Animation);
+            EngineContext.Current.BeginPhase(EnginePhase.Animation);
             while (callbacks.Count > 0)
             {
                 var callback = callbacks.Dequeue();
-                EnginePhaseManager.EnterPhase(EnginePhase.JSExecution);
+                EngineContext.Current.BeginPhase(EnginePhase.JSExecution);
                 try
                 {
                     callback.Invoke();
