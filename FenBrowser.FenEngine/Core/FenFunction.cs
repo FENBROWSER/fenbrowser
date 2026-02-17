@@ -64,6 +64,14 @@ namespace FenBrowser.FenEngine.Core
         public FenValue Invoke(FenValue[] args, IExecutionContext context)
         {
             // PROXY TRAP: Apply
+            if (context == null)
+            {
+                context = new ExecutionContext();
+                if (Env != null) context.Environment = Env;
+                else context.Environment = new FenEnvironment(null); // Global fallback?    
+                context.ThisBinding = FenValue.Undefined;
+            }
+
             if (!ProxyHandler.IsUndefined && ProxyHandler.IsObject)
             {
                 EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
@@ -95,12 +103,26 @@ namespace FenBrowser.FenEngine.Core
                 }
                 catch (Exception ex)
                 {
-                    return FenValue.FromString($"Error: {ex.Message}");
+                    return FenValue.FromString($"Error: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
                 }
             }
 
-            // User-defined functions are handled by the Interpreter.ApplyFunction
-            return FenValue.Undefined;
+            // User-defined functions: execute via a fresh Interpreter.
+            // This path is used by ToPrimitive (toString/valueOf), Proxy traps,
+            // and other C# code that needs to call JS functions without an existing Interpreter.
+            try
+            {
+                var interpreter = new Interpreter();
+                return interpreter.ApplyFunction(
+                    FenValue.FromFunction(this),
+                    new List<FenValue>(args),
+                    context,
+                    context?.ThisBinding ?? FenValue.Undefined);
+            }
+            catch (Exception ex)
+            {
+                return FenValue.FromError($"Error: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
+            }
         }
     }
 }

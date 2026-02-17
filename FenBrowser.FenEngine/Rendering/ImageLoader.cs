@@ -34,6 +34,32 @@ namespace FenBrowser.FenEngine.Rendering
         public bool LoadStarted { get; set; }
     }
 
+    /// <summary>
+    /// Stores decoded frames for animated GIFs
+    /// </summary>
+    internal class AnimatedImage
+    {
+        public SKBitmap[] Frames;
+        public int[] Durations; // ms per frame
+        public int TotalDuration;
+        public long StartTick;
+
+        public SKBitmap GetCurrentFrame()
+        {
+            if (Frames == null || Frames.Length == 0) return null;
+            if (Frames.Length == 1) return Frames[0];
+            long elapsed = Environment.TickCount64 - StartTick;
+            int pos = (int)(elapsed % TotalDuration);
+            int accum = 0;
+            for (int i = 0; i < Frames.Length; i++)
+            {
+                accum += Durations[i];
+                if (pos < accum) return Frames[i];
+            }
+            return Frames[Frames.Length - 1];
+        }
+    }
+
     public static class ImageLoader
     {
         // Main cache with metadata for memory tracking
@@ -63,6 +89,17 @@ namespace FenBrowser.FenEngine.Rendering
         private static readonly object _timerLock = new object();
         private static bool _repaintPending = false;
         private const int DEBOUNCE_DELAY_MS = 100;
+
+        // ========== Animated GIF Support ==========
+        private static readonly ConcurrentDictionary<string, AnimatedImage> _animatedGifs =
+            new ConcurrentDictionary<string, AnimatedImage>();
+        private static Timer _gifAnimationTimer;
+        private static readonly object _gifTimerLock = new object();
+
+        /// <summary>
+        /// True when there are active animated GIFs that need periodic repainting
+        /// </summary>
+        public static bool HasActiveAnimatedImages => !_animatedGifs.IsEmpty;
         
         // RULE 3 & 5: SVG rendering through adapter with safety limits
         private static readonly ISvgRenderer _svgRenderer = new SvgSkiaRenderer();
@@ -201,8 +238,20 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 _currentCacheBytes = 0;
             }
-            
+
             ClearLazyRegistry();
+
+            // Animated GIF cleanup
+            foreach (var anim in _animatedGifs.Values)
+            {
+                if (anim?.Frames == null) continue;
+                foreach (var frame in anim.Frames)
+                {
+                    frame?.Dispose();
+                }
+            }
+            _animatedGifs.Clear();
+            StopGifAnimationTimer();
             
             FenLogger.Info("[ImageLoader] Cache cleared", LogCategory.Rendering);
         }
@@ -444,6 +493,12 @@ namespace FenBrowser.FenEngine.Rendering
             FenLogger.Debug($"[ImageLoader] GetImage called for {url}", LogCategory.Rendering);
             if (string.IsNullOrEmpty(url)) return null;
 
+            // Animated GIF: return the current frame based on elapsed time
+            if (_animatedGifs.TryGetValue(url, out var anim))
+            {
+                return anim.GetCurrentFrame();
+            }
+
             // Check new cache first
             if (_memoryCache.TryGetValue(url, out var entry))
             {
@@ -590,6 +645,7 @@ namespace FenBrowser.FenEngine.Rendering
             try
             {
                 // Check caches before loading
+                if (_animatedGifs.ContainsKey(url)) return;
                 if (_memoryCache.ContainsKey(url) || _legacyCache.ContainsKey(url)) return;
 
                 // Handle HTTP
@@ -635,10 +691,42 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }
                 
-                // Fallback / Standard Image
+                // Animated GIF detection + standard image fallback
                 if (bitmap == null)
                 {
-                    bitmap = SKBitmap.Decode(data);
+                    // Try animated GIF detection first
+                    bool isAnimatedGif = false;
+                    try
+                    {
+                        using var codec = SKCodec.Create(new MemoryStream(data));
+                        if (codec != null && codec.FrameCount > 1)
+                        {
+                            isAnimatedGif = true;
+                            var animated = DecodeAnimatedGif(codec, data);
+                            if (animated != null && animated.Frames?.Length > 0)
+                            {
+                                _animatedGifs[url] = animated;
+                                bitmap = animated.Frames[0]; // first frame for normal cache
+                                EnsureGifAnimationTimer();
+                                FenLogger.Info($"[ImageLoader] Animated GIF: {url} ({animated.Frames.Length} frames, {animated.TotalDuration}ms total)", LogCategory.Rendering);
+                            }
+                            else
+                            {
+                                // Fallback to standard decode if animated path failed
+                                isAnimatedGif = false;
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        FenLogger.Debug($"[ImageLoader] SKCodec check failed: {ex.Message}", LogCategory.Rendering);
+                    }
+
+                    // Standard single-frame decode
+                    if (!isAnimatedGif && bitmap == null)
+                    {
+                        bitmap = SKBitmap.Decode(data);
+                    }
                 }
                 
                 if (bitmap != null)
@@ -683,6 +771,87 @@ namespace FenBrowser.FenEngine.Rendering
             catch (Exception ex)
             {
                 FenLogger.Error($"[ImageLoader] Error loading {url}: {ex.Message}", LogCategory.Rendering);
+            }
+        }
+
+        private static AnimatedImage DecodeAnimatedGif(SKCodec codec, byte[] data)
+        {
+            int frameCount = codec.FrameCount;
+            var frames = new SKBitmap[frameCount];
+            var durations = new int[frameCount];
+            var info = codec.Info;
+
+            for (int i = 0; i < frameCount; i++)
+            {
+                var frameInfo = codec.FrameInfo[i];
+                var bitmap = new SKBitmap(info);
+                bitmap.Erase(SKColors.Transparent);
+
+                // If this frame depends on a previous one, copy it first
+                if (frameInfo.RequiredFrame >= 0 && frameInfo.RequiredFrame < frames.Length && frames[frameInfo.RequiredFrame] != null)
+                {
+                    frames[frameInfo.RequiredFrame].CopyTo(bitmap);
+                }
+
+                using var pixmap = bitmap.PeekPixels();
+                var options = new SKCodecOptions(i, frameInfo.RequiredFrame);
+                var result = codec.GetPixels(info, pixmap.GetPixels(), options);
+
+                if (result != SKCodecResult.Success && result != SKCodecResult.IncompleteInput)
+                {
+                    FenLogger.Warn($"[ImageLoader] GIF frame {i} decode failed: {result}", LogCategory.Rendering);
+                    bitmap.Dispose();
+                    continue;
+                }
+
+                frames[i] = bitmap;
+                durations[i] = Math.Max(frameInfo.Duration, 50); // Fallback to 50ms if missing/0
+            }
+
+            // Drop null frames if decode failed
+            frames = frames.Where(f => f != null).ToArray();
+            durations = durations.Take(frames.Length).ToArray();
+
+            if (frames.Length == 0) return null;
+
+            int totalDuration = durations.Sum();
+            if (totalDuration <= 0) totalDuration = frames.Length * 100; // fallback 100ms each
+
+            return new AnimatedImage
+            {
+                Frames = frames,
+                Durations = durations,
+                TotalDuration = totalDuration,
+                StartTick = Environment.TickCount64
+            };
+        }
+
+        private static void EnsureGifAnimationTimer()
+        {
+            lock (_gifTimerLock)
+            {
+                if (_gifAnimationTimer != null) return;
+
+                _gifAnimationTimer = new Timer(_ =>
+                {
+                    if (_animatedGifs.IsEmpty)
+                    {
+                        StopGifAnimationTimer();
+                        return;
+                    }
+                    // Immediate repaint for animation frames (skip debounce)
+                    RequestRepaint?.Invoke();
+                }, null, 50, 50); // ~20fps tick
+            }
+        }
+
+        private static void StopGifAnimationTimer()
+        {
+            lock (_gifTimerLock)
+            {
+                _gifAnimationTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+                _gifAnimationTimer?.Dispose();
+                _gifAnimationTimer = null;
             }
         }
     }

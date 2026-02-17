@@ -88,6 +88,12 @@ namespace FenBrowser.FenEngine.Core
         public FenFunction AsFunction() => null;
         public IObject AsObject() => null;
 
+        FenValue IValue.ToPrimitive(IExecutionContext context, string preferredType)
+        {
+            // Symbol is already a primitive
+            return FenValue.FromString(ToString());
+        }
+
         public bool StrictEquals(IValue other)
         {
             // Symbols are strictly equal only to themselves

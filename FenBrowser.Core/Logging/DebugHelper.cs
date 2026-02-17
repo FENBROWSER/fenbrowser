@@ -1,5 +1,5 @@
 using System;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 
 namespace FenBrowser.Core.Logging
 {
@@ -17,8 +17,8 @@ namespace FenBrowser.Core.Logging
             var indent = new string(' ', depth * 2);
             var cls = node.GetAttribute("class") ?? "";
             
-            if (DebugConfig.ShouldLog(cls) || node.Tag == "body")
-                 Console.WriteLine($"[DOM-MANUAL] {indent}{node.Tag}.{cls}");
+            if (DebugConfig.ShouldLog(cls) || node.LocalName == "body")
+                 Console.WriteLine($"[DOM-MANUAL] {indent}{node.TagName}.{cls}");
             
             foreach (var child in node.Children)
                 if (child is Element e) DumpNode(e, depth + 1);

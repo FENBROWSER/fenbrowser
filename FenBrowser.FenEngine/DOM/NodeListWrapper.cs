@@ -83,6 +83,7 @@ namespace FenBrowser.FenEngine.DOM
         public IObject _prototype;
         public IObject GetPrototype() => _prototype;
         public void SetPrototype(IObject prototype) => _prototype = prototype;
+        public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
         public bool Delete(string key, IExecutionContext context = null) => false;
         public System.Collections.Generic.IEnumerable<string> Keys(IExecutionContext context = null) => new string[0];
         public bool Has(string key, IExecutionContext context = null) => Get(key, context) != FenValue.Undefined;

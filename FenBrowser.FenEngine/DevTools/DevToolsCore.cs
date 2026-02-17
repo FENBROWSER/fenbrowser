@@ -309,19 +309,35 @@ namespace FenBrowser.FenEngine.DevTools
         /// <summary>
         /// Update call stack during execution
         /// </summary>
+        [ThreadStatic]
+        private static bool _inPushCallFrame;
+
         public void PushCallFrame(string functionName, string url, int lineNumber, FenEnvironment env)
         {
-            var scopeVars = env != null ? env.InspectVariables().ToDictionary(k => k.Key, v => (object)v.Value.ToString()) : new Dictionary<string, object>();
-
-            _callStack.Add(new CallFrame
+            if (_inPushCallFrame) return; // Prevent re-entrant recursion (ToString can trigger getters → Invoke → PushCallFrame)
+            _inPushCallFrame = true;
+            try
             {
-                FunctionName = functionName,
-                Url = url,
-                LineNumber = lineNumber,
-                ScopeVariables = scopeVars,
-                Scope = env
-            });
-            OnCallStackUpdated?.Invoke(_callStack.ToArray());
+                var scopeVars = env != null ? env.InspectVariables().ToDictionary(k => k.Key, v =>
+                {
+                    try { return (object)v.Value.ToString(); }
+                    catch { return (object)"<error>"; }
+                }) : new Dictionary<string, object>();
+
+                _callStack.Add(new CallFrame
+                {
+                    FunctionName = functionName,
+                    Url = url,
+                    LineNumber = lineNumber,
+                    ScopeVariables = scopeVars,
+                    Scope = env
+                });
+                OnCallStackUpdated?.Invoke(_callStack.ToArray());
+            }
+            finally
+            {
+                _inPushCallFrame = false;
+            }
         }
 
         /// <summary>

@@ -134,6 +134,12 @@ namespace FenBrowser.FenEngine.Core
         Ellipsis,          // ...
         PrivateIdentifier, // #field (for private class fields)
         At,                // @ (for decorators)
+
+        // Template Literal Tokens
+        TemplateHead,      // `head${
+        TemplateMiddle,    // }middle${
+        TemplateTail,      // }tail`
+        TemplateNoSubst,   // `nosubst`
         
         // ES6+ operators
         OptionalChain,     // ?.
@@ -192,6 +198,8 @@ namespace FenBrowser.FenEngine.Core
         private bool _hasInvalidEscapeInLastIdent = false;
         private Token _prevToken; // Track previous token for regex vs division context
         private static readonly Dictionary<string, TokenType> Keywords;
+
+        public static bool DebugMode = false;
 
         static Lexer()
         {
@@ -292,6 +300,17 @@ namespace FenBrowser.FenEngine.Core
 
         public Token NextToken()
         {
+            var token = NextTokenInternal();
+            if (DebugMode && token.Type != TokenType.Eof)
+            {
+                 Console.WriteLine($"[LEXER-DEBUG] Token: {token.Type} '{token.Literal}' Line: {token.Line} Col: {token.Column}");
+            }
+            return token;
+        }
+
+        private Token NextTokenInternal()
+        {
+            if (DebugMode) Console.WriteLine($"[LEXER-TRACE] Start NextTokenInternal. _ch: '{_ch}' ({(int)_ch})");
             bool hadLineTerminator = SkipWhitespace();
 
             int startPos = _position; // Capture start position
@@ -414,7 +433,7 @@ namespace FenBrowser.FenEngine.Core
                     if (PeekChar() == '/')
                     {
                         SkipLineComment();
-                        return NextToken();
+                        return NextTokenInternal();
                     }
                     else if (PeekChar() == '*')
                     {
@@ -424,7 +443,7 @@ namespace FenBrowser.FenEngine.Core
                             token = new Token(TokenType.Illegal, "/*", _line, startColumn, hadLineTerminator);
                             break;
                         }
-                        return NextToken();
+                        return NextTokenInternal();
                     }
                     else if (PeekChar() == '=')
                     {
@@ -660,10 +679,16 @@ namespace FenBrowser.FenEngine.Core
                     bool stringValid;
                     string str = ReadString(_ch, out stringValid);
                     token = new Token(stringValid ? TokenType.String : TokenType.Illegal, str, _line, startColumn);
-                    break;
+                    token.HadLineTerminatorBefore = hadLineTerminator;
+                    token.Position = startPos;
+                    _prevToken = token;
+                    return token;
                 case '`':
-                    token = new Token(TokenType.TemplateString, ReadTemplateLiteral(), _line, startColumn);
-                    break;
+                    token = ReadTemplateStart();
+                    token.HadLineTerminatorBefore = hadLineTerminator;
+                    token.Position = startPos;
+                    _prevToken = token;
+                    return token;
                 case '#':
                     // Private identifier (e.g., #field for private class fields)
                     ReadChar(); // consume #
@@ -703,6 +728,7 @@ namespace FenBrowser.FenEngine.Core
                         TokenType type = _hasEscapeInLastIdent ? TokenType.Identifier : LookupIdent(literal);
                         var t = new Token(type, literal, _line, startColumn, hadLineTerminator);
                         _prevToken = t;
+                        if (DebugMode) Console.WriteLine($"[LEXER-INTERNAL-UNICODE] Identifier/Keyword: {t.Type} '{t.Literal}'");
                         return t;
                     }
                     else
@@ -723,6 +749,7 @@ namespace FenBrowser.FenEngine.Core
                         TokenType type = _hasEscapeInLastIdent ? TokenType.Identifier : LookupIdent(literal);
                         var t = new Token(type, literal, _line, startColumn, hadLineTerminator);
                         _prevToken = t;
+                        if (DebugMode) Console.WriteLine($"[LEXER-INTERNAL-DEFAULT] Identifier/Keyword: {t.Type} '{t.Literal}'");
                         return t;
                     }
                     else if (IsDigit(_ch))
@@ -746,9 +773,10 @@ namespace FenBrowser.FenEngine.Core
             
             token.Position = startPos;
             
+            
             token.HadLineTerminatorBefore = hadLineTerminator;
             _prevToken = token;
-            Console.WriteLine($"[DEBUG] Lexer.NextToken returning: {token.Type} ({token.Literal})");
+            // Console.WriteLine($"[DEBUG] Lexer.NextToken returning: {token.Type} ({token.Literal})");
             return token;
         }
 
@@ -1301,7 +1329,11 @@ namespace FenBrowser.FenEngine.Core
                 }
                 ReadChar();
             }
-            if (_ch != quote)
+            if (_ch == quote)
+            {
+                ReadChar(); // consume closing quote
+            }
+            else
             {
                 isValid = false;
             }
@@ -1403,65 +1435,102 @@ namespace FenBrowser.FenEngine.Core
 
         // Read template literal: `Hello ${name}!`
         // For simplicity, we'll evaluate ${} expressions and return the concatenated string
-        private string ReadTemplateLiteral()
+        private Token ReadTemplateStart()
         {
-            var result = new StringBuilder();
-            ReadChar(); // consume opening `
+            int startLine = _line;
+            int startColumn = _column;
             
-            while (_ch != '`' && _ch != '\0')
+            ReadChar(); // consume `
+            
+            var sb = new StringBuilder();
+            while (_ch != '\0')
             {
+                if (_ch == '`')
+                {
+                    ReadChar(); // consume `
+                    return new Token(TokenType.TemplateNoSubst, sb.ToString(), startLine, startColumn);
+                }
+                
                 if (_ch == '$' && PeekChar() == '{')
                 {
-                    // Found ${...} - need to read the expression
                     ReadChar(); // consume $
                     ReadChar(); // consume {
-                    
-                    // Read until matching }
-                    int depth = 1;
-                    var expr = new StringBuilder();
-                    while (depth > 0 && _ch != '\0')
-                    {
-                        if (_ch == '{') depth++;
-                        if (_ch == '}') depth--;
-                        if (depth > 0)
-                        {
-                            expr.Append(_ch);
-                            ReadChar();
-                        }
-                    }
-                    
-                    // For now, just include a placeholder - the interpreter will handle this
-                    result.Append("${");
-                    result.Append(expr.ToString());
-                    result.Append("}");
-                    
-                    if (_ch == '}') ReadChar(); // consume closing }
+                    return new Token(TokenType.TemplateHead, sb.ToString(), startLine, startColumn);
                 }
-                else if (_ch == '\\')
+                
+                if (_ch == '\\') 
                 {
-                    // Handle escape sequences
                     ReadChar();
+                    // Basic escape handling for templates
                     switch (_ch)
                     {
-                        case 'n': result.Append('\n'); break;
-                        case 't': result.Append('\t'); break;
-                        case 'r': result.Append('\r'); break;
-                        case '\\': result.Append('\\'); break;
-                        case '`': result.Append('`'); break;
-                        case '$': result.Append('$'); break;
-                        default: result.Append(_ch); break;
+                        case 'n': sb.Append('\n'); break;
+                        case 't': sb.Append('\t'); break;
+                        case 'r': sb.Append('\r'); break;
+                        case '\\': sb.Append('\\'); break;
+                        case '`': sb.Append('`'); break;
+                        case '$': sb.Append('$'); break;
+                        default: sb.Append(_ch); break;
                     }
                     ReadChar();
                 }
                 else
                 {
-                    result.Append(_ch);
-                    ReadChar();
+                     sb.Append(_ch);
+                     ReadChar();
                 }
             }
             
-            // Don't consume closing backtick - let it be consumed by ReadChar after
-            return result.ToString();
+            return new Token(TokenType.Illegal, "Unterminated template literal", startLine, startColumn);
+        }
+
+        public Token ReadTemplateContinuation()
+        {
+             // Parser calls this when it expects a template continuation (after '}' of an expression)
+             // The Parser has already seen the '}' token (RBrace), so the Lexer position 
+             // is already past the '}'. We simply continue reading the string context.
+             
+             int startLine = _line;
+             int startColumn = _column;
+             var sb = new StringBuilder();
+             
+             while (_ch != '\0')
+             {
+                if (_ch == '`')
+                {
+                    ReadChar(); // consume `
+                    return new Token(TokenType.TemplateTail, sb.ToString(), startLine, startColumn);
+                }
+                
+                if (_ch == '$' && PeekChar() == '{')
+                {
+                    ReadChar(); // consume $
+                    ReadChar(); // consume {
+                    return new Token(TokenType.TemplateMiddle, sb.ToString(), startLine, startColumn);
+                }
+                
+                if (_ch == '\\') 
+                {
+                    ReadChar();
+                    switch (_ch)
+                    {
+                        case 'n': sb.Append('\n'); break;
+                        case 't': sb.Append('\t'); break;
+                        case 'r': sb.Append('\r'); break;
+                        case '\\': sb.Append('\\'); break;
+                        case '`': sb.Append('`'); break;
+                        case '$': sb.Append('$'); break;
+                        default: sb.Append(_ch); break;
+                    }
+                    ReadChar();
+                }
+                else
+                {
+                     sb.Append(_ch);
+                     ReadChar();
+                }
+             }
+             return new Token(TokenType.Illegal, "Unterminated template continuation", startLine, startColumn);
         }
         private bool IsRegexStart(Token prev)
         {

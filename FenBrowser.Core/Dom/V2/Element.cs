@@ -498,6 +498,17 @@ namespace FenBrowser.Core.Dom.V2
 
         private void NotifyAttributeMutation(Attr attr, string oldValue)
         {
+            var record = new MutationRecord
+            {
+                Type = MutationRecordType.Attributes,
+                Target = this,
+                AttributeName = attr.Name,
+                AttributeNamespace = attr.NamespaceUri,
+                OldValue = oldValue
+            };
+
+            NotifyAttributeChange(record);
+
             // Notify static event for DevTools
             Node.NotifyMutation(this, "attributes", attr.Name, attr.NamespaceUri, null, null);
         }

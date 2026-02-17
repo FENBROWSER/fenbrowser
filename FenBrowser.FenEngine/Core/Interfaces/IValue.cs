@@ -61,6 +61,11 @@ namespace FenBrowser.FenEngine.Core.Interfaces
         /// Get the object value if this is an object, otherwise null
         /// </summary>
         IObject AsObject();
+
+        /// <summary>
+        /// ES5.1/ES2015+ ToPrimitive conversion.
+        /// </summary>
+        FenValue ToPrimitive(IExecutionContext context, string preferredType = "number");
     }
 
     /// <summary>

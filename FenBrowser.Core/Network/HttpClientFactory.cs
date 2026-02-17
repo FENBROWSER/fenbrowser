@@ -46,6 +46,9 @@ namespace FenBrowser.Core.Network
                 // Enable all compression methods including Brotli
                 AutomaticDecompression = config.GetDecompressionMethods(),
                 
+                // Explicit proxy toggle (avoid inheriting dead localhost proxies in lab setups)
+                UseProxy = config.UseSystemProxy,
+                
                 // We handle redirects manually for better control
                 AllowAutoRedirect = false,
                 

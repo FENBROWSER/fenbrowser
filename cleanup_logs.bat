@@ -9,6 +9,7 @@ del /q "%TARGET_DIR%\*.csv"
 del /q "%TARGET_DIR%\*.js"
 del /q "%TARGET_DIR%\*.py"
 del /q "%TARGET_DIR%\*.html"
+del /q "%TARGET_DIR%\*.txt"
 echo Deleting .txt files...
 
 echo Done.

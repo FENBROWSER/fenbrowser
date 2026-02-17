@@ -269,5 +269,7 @@ namespace FenBrowser.FenEngine.DOM
         protected IObject _prototype;
         public IObject GetPrototype() => _prototype;
         public void SetPrototype(IObject prototype) => _prototype = prototype;
+
+        public virtual bool DefineOwnProperty(string key, PropertyDescriptor desc) => false; // Nodes are generally read-only for props
     }
 }

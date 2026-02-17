@@ -95,6 +95,12 @@ namespace FenBrowser.FenEngine.Core.Types
         public FenFunction AsFunction() => null;
         public IObject AsObject() => null;
 
+        public FenValue ToPrimitive(IExecutionContext context, string preferredType = "number")
+        {
+            // BigInt is already a primitive
+            return FenValue.FromBigInt(this);
+        }
+
         // BigInt arithmetic operations
         public static JsBigInt Add(JsBigInt left, JsBigInt right)
             => new JsBigInt(left._value + right._value);

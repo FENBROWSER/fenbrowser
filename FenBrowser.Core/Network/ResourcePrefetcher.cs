@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;

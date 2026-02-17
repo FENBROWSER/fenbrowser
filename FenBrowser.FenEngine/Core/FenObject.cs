@@ -27,6 +27,11 @@ namespace FenBrowser.FenEngine.Core
         private IObject _prototype;
         private bool _extensible = true;
 
+        // Recursion guard for accessor getter/setter invocations (prevents stack overflow)
+        [ThreadStatic]
+        private static int _accessorDepth;
+        private const int MAX_ACCESSOR_DEPTH = 64;
+
         public FenObject()
         {
             // Inherit from Object.prototype by default.
@@ -55,15 +60,15 @@ namespace FenBrowser.FenEngine.Core
         public virtual FenValue Get(string key, IExecutionContext context = null)
         {
             // PROXY TRAP: Get
-            if (_properties.TryGetValue("__isProxy__", out var isProxy) && isProxy.Value.ToBoolean())
+            if (_properties.TryGetValue("__isProxy__", out var isProxy) && (isProxy.Value.HasValue && isProxy.Value.Value.ToBoolean()))
             {
                 EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
                 
-                if (_properties.TryGetValue("__proxyGet__", out var proxyGet) && proxyGet.Value.IsFunction)
+                if (_properties.TryGetValue("__proxyGet__", out var proxyGet) && (proxyGet.Value.HasValue && proxyGet.Value.Value.IsFunction))
                 {
                     _properties.TryGetValue("__proxyTarget__", out var target);
-                    var fn = proxyGet.Value.AsFunction();
-                    return fn.Invoke(new FenValue[] { target.Value, FenValue.FromString(key), FenValue.FromObject(this) }, context);
+                    var fn = proxyGet.Value.Value.AsFunction();
+                    return fn.Invoke(new FenValue[] { target.Value ?? FenValue.Undefined, FenValue.FromString(key), FenValue.FromObject(this) }, context);
                 }
             }
 
@@ -72,9 +77,21 @@ namespace FenBrowser.FenEngine.Core
                 // Accessor descriptor: invoke getter
                 if (desc.IsAccessor && desc.Getter != null)
                 {
-                    return desc.Getter.Invoke(new FenValue[] { FenValue.FromObject(this) }, context);
+                    if (++_accessorDepth > MAX_ACCESSOR_DEPTH)
+                    {
+                        _accessorDepth--;
+                        return FenValue.Undefined;
+                    }
+                    try
+                    {
+                        return desc.Getter.Invoke(new FenValue[] { FenValue.FromObject(this) }, context);
+                    }
+                    finally
+                    {
+                        _accessorDepth--;
+                    }
                 }
-                return desc.Value;
+                return desc.Value ?? FenValue.Undefined;
             }
             
             // Prototype chain lookup
@@ -87,15 +104,15 @@ namespace FenBrowser.FenEngine.Core
         public virtual void Set(string key, FenValue value, IExecutionContext context = null)
         {
             // PROXY TRAP: Set
-            if (_properties.TryGetValue("__isProxy__", out var isProxy) && isProxy.Value.ToBoolean())
+            if (_properties.TryGetValue("__isProxy__", out var isProxy) && (isProxy.Value.HasValue && isProxy.Value.Value.ToBoolean()))
             {
                 EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
                 
-                if (_properties.TryGetValue("__proxySet__", out var proxySet) && proxySet.Value.IsFunction)
+                if (_properties.TryGetValue("__proxySet__", out var proxySet) && (proxySet.Value.HasValue && proxySet.Value.Value.IsFunction))
                 {
                     _properties.TryGetValue("__proxyTarget__", out var target);
-                    var fn = proxySet.Value.AsFunction();
-                    fn.Invoke(new FenValue[] { target.Value, FenValue.FromString(key), value, FenValue.FromObject(this) }, context);
+                    var fn = proxySet.Value.Value.AsFunction();
+                    fn.Invoke(new FenValue[] { target.Value ?? FenValue.Undefined, FenValue.FromString(key), value, FenValue.FromObject(this) }, context);
                     return;
                 }
             }
@@ -108,14 +125,26 @@ namespace FenBrowser.FenEngine.Core
                 {
                     if (existing.Setter != null)
                     {
-                        existing.Setter.Invoke(new FenValue[] { FenValue.FromObject(this), value }, context);
+                        if (++_accessorDepth > MAX_ACCESSOR_DEPTH)
+                        {
+                            _accessorDepth--;
+                            return;
+                        }
+                        try
+                        {
+                            existing.Setter.Invoke(new FenValue[] { FenValue.FromObject(this), value }, context);
+                        }
+                        finally
+                        {
+                            _accessorDepth--;
+                        }
                     }
                     // No setter: silently fail in non-strict mode
                     return;
                 }
                 
                 // Data descriptor: check writable
-                if (!existing.Writable)
+                if (existing.Writable == false)
                     return; // Silently fail in non-strict mode
                     
                 existing.Value = value;
@@ -135,26 +164,42 @@ namespace FenBrowser.FenEngine.Core
                 {
                     if (inherited.IsAccessor && inherited.Setter != null)
                     {
-                        inherited.Setter.Invoke(new FenValue[] { FenValue.FromObject(this), value }, context);
+                        if (++_accessorDepth > MAX_ACCESSOR_DEPTH)
+                        {
+                            _accessorDepth--;
+                            return;
+                        }
+                        try
+                        {
+                            inherited.Setter.Invoke(new FenValue[] { FenValue.FromObject(this), value }, context);
+                        }
+                        finally
+                        {
+                            _accessorDepth--;
+                        }
                         return;
                     }
                 }
                 proto = proto.GetPrototype();
             }
 
+            // if (key == "throws" || key == "assert")
+            // {
+            //     Console.WriteLine($"[DEBUG] FenObject.Set: {key} = {value.Type} on {this.InternalClass}");
+            // }
             _properties[key] = PropertyDescriptor.DataDefault(value);
         }
 
         public virtual bool Has(string key, IExecutionContext context = null)
         {
             // PROXY TRAP: Has
-            if (_properties.TryGetValue("__isProxy__", out var isProxy) && isProxy.Value.ToBoolean())
+            if (_properties.TryGetValue("__isProxy__", out var isProxy) && (isProxy.Value.HasValue && isProxy.Value.Value.ToBoolean()))
             {
-                if (_properties.TryGetValue("__proxyHas__", out var proxyHas) && proxyHas.Value.IsFunction)
+                if (_properties.TryGetValue("__proxyHas__", out var proxyHas) && (proxyHas.Value.HasValue && proxyHas.Value.Value.IsFunction))
                 {
                     _properties.TryGetValue("__proxyTarget__", out var target);
-                    var fn = proxyHas.Value.AsFunction();
-                    var res = fn.Invoke(new FenValue[] { target.Value, FenValue.FromString(key) }, context);
+                    var fn = proxyHas.Value.Value.AsFunction();
+                    var res = fn.Invoke(new FenValue[] { target.Value ?? FenValue.Undefined, FenValue.FromString(key) }, context);
                     return res.ToBoolean();
                 }
             }
@@ -168,7 +213,7 @@ namespace FenBrowser.FenEngine.Core
         {
             if (_properties.TryGetValue(key, out var desc))
             {
-                if (!desc.Configurable)
+                if (desc.Configurable == false)
                     return false; // Cannot delete non-configurable property
                 return _properties.Remove(key);
             }
@@ -178,11 +223,11 @@ namespace FenBrowser.FenEngine.Core
         public virtual IEnumerable<string> Keys(IExecutionContext context = null)
         {
             // PROXY TRAP: OwnKeys
-            if (_properties.TryGetValue("__isProxy__", out var isProxy) && isProxy.Value.ToBoolean())
+            if (_properties.TryGetValue("__isProxy__", out var isProxy) && (isProxy.Value.HasValue && isProxy.Value.Value.ToBoolean()))
             {
-                if (_properties.TryGetValue("__proxyOwnKeys__", out var proxyKeys) && proxyKeys.Value.IsFunction)
+                if (_properties.TryGetValue("__proxyOwnKeys__", out var proxyKeys) && (proxyKeys.Value.HasValue && proxyKeys.Value.Value.IsFunction))
                 {
-                    var fn = proxyKeys.Value.AsFunction();
+                    var fn = proxyKeys.Value.Value.AsFunction();
                     fn.Invoke(new FenValue[0], context);
                 }
             }
@@ -190,7 +235,7 @@ namespace FenBrowser.FenEngine.Core
             foreach (var kvp in _properties)
             {
                 // Only yield enumerable properties, skip internal ones
-                if (kvp.Value.Enumerable && !kvp.Key.StartsWith("__") && !kvp.Key.StartsWith("@@"))
+                if ((kvp.Value.Enumerable ?? false) && !kvp.Key.StartsWith("__") && !kvp.Key.StartsWith("@@"))
                     yield return kvp.Key;
             }
         }
@@ -212,22 +257,80 @@ namespace FenBrowser.FenEngine.Core
         /// </summary>
         public virtual bool DefineOwnProperty(string key, PropertyDescriptor desc)
         {
-            if (_properties.TryGetValue(key, out var existing))
+            PropertyDescriptor current;
+            bool exists = _properties.TryGetValue(key, out current);
+
+            if (!exists)
             {
-                if (!existing.Configurable)
+                if (!_extensible) return false;
+                
+                // create new property with defaults if missing
+                var newDesc = desc;
+                if (newDesc.IsData)
                 {
-                    // Cannot change non-configurable to configurable
-                    if (desc.Configurable) return false;
-                    // Cannot change enumerable of non-configurable
-                    if (desc.Enumerable != existing.Enumerable) return false;
+                    if (!newDesc.Writable.HasValue) newDesc.Writable = false;
+                    if (!newDesc.Value.HasValue) newDesc.Value = FenValue.Undefined; // Actually Value is struct FenValue, verify default
+                }
+                if (!newDesc.Enumerable.HasValue) newDesc.Enumerable = false;
+                if (!newDesc.Configurable.HasValue) newDesc.Configurable = false;
+                
+                _properties[key] = newDesc;
+                return true;
+            }
+
+            // Existing property
+            
+            // If descriptor is empty, return true
+            if (!desc.Value.HasValue && !desc.Writable.HasValue && desc.Getter == null && desc.Setter == null && !desc.Enumerable.HasValue && !desc.Configurable.HasValue)
+                return true;
+
+            // If current is not configurable
+            if (current.Configurable == false)
+            {
+                if (desc.Configurable == true) return false;
+                if (desc.Enumerable.HasValue && desc.Enumerable != current.Enumerable) return false;
+            }
+
+            if (desc.IsGenericDescriptor())
+            {
+                // updates to enumerable/configurable handled above
+            }
+            else if (current.IsData != desc.IsData)
+            {
+                // Functionally different (Accessor <-> Data)
+                if (current.Configurable == false) return false;
+                
+                // Preservation of attributes logic handled by caller or just overwrite?
+                // Test262 usually requires "preserve what is not specified". 
+                // Since `desc` has nullables, we can merge.
+            }
+            else if (current.IsData && desc.IsData)
+            {
+                if (current.Configurable == false && current.Writable == false)
+                {
+                    if (desc.Writable == true) return false;
+                    if (desc.Value.HasValue && !desc.Value.Value.StrictEquals(current.Value)) return false;
                 }
             }
-            else if (!_extensible)
+            else if (current.IsAccessor && desc.IsAccessor)
             {
-                return false; // Cannot add to non-extensible object
+                if (current.Configurable == false)
+                {
+                    if (desc.Getter != null && desc.Getter != current.Getter) return false;
+                    if (desc.Setter != null && desc.Setter != current.Setter) return false;
+                }
             }
+
+            // Merge
+            var merged = current;
+            if (desc.Value.HasValue) merged.Value = desc.Value;
+            if (desc.Writable.HasValue) merged.Writable = desc.Writable;
+            if (desc.Getter != null) merged.Getter = desc.Getter;
+            if (desc.Setter != null) merged.Setter = desc.Setter;
+            if (desc.Enumerable.HasValue) merged.Enumerable = desc.Enumerable;
+            if (desc.Configurable.HasValue) merged.Configurable = desc.Configurable;
             
-            _properties[key] = desc;
+            _properties[key] = merged;
             return true;
         }
         
@@ -252,12 +355,12 @@ namespace FenBrowser.FenEngine.Core
         /// <summary>
         /// Prevent future property additions.
         /// </summary>
-        public void PreventExtensions() => _extensible = false;
+        public bool PreventExtensions() { _extensible = false; return true; }
         
         /// <summary>
         /// Seal the object: prevent extensions and make all properties non-configurable.
         /// </summary>
-        public void Seal()
+        public bool Seal()
         {
             _extensible = false;
             var keys = new List<string>(_properties.Keys);
@@ -267,12 +370,13 @@ namespace FenBrowser.FenEngine.Core
                 desc.Configurable = false;
                 _properties[key] = desc;
             }
+            return true;
         }
         
         /// <summary>
         /// Freeze the object: seal + make all data properties non-writable.
         /// </summary>
-        public void Freeze()
+        public bool Freeze()
         {
             _extensible = false;
             var keys = new List<string>(_properties.Keys);
@@ -283,6 +387,7 @@ namespace FenBrowser.FenEngine.Core
                 if (desc.IsData) desc.Writable = false;
                 _properties[key] = desc;
             }
+            return true;
         }
         
         /// <summary>
@@ -292,7 +397,7 @@ namespace FenBrowser.FenEngine.Core
         {
             if (_extensible) return false;
             foreach (var desc in _properties.Values)
-                if (desc.Configurable) return false;
+                if (desc.Configurable == true) return false;
             return true;
         }
         
@@ -304,8 +409,8 @@ namespace FenBrowser.FenEngine.Core
             if (_extensible) return false;
             foreach (var desc in _properties.Values)
             {
-                if (desc.Configurable) return false;
-                if (desc.IsData && desc.Writable) return false;
+                if (desc.Configurable == true) return false;
+                if (desc.IsData && desc.Writable == true) return false;
             }
             return true;
         }
