@@ -342,6 +342,7 @@ namespace FenBrowser.FenEngine.Scripting
             public IEnumerable<string> Keys(IExecutionContext context = null) => new[] { "body", "getElementById", "getElementsByTagName", "querySelector", "querySelectorAll", "createElement", "createTextNode", "addEventListener" };
             public IObject GetPrototype() => _prototype;
             public void SetPrototype(IObject prototype) { _prototype = prototype; }
+            public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false; // Document is mostly read-only structure
         }
 
         internal abstract class JsDomNodeBase
@@ -394,6 +395,7 @@ namespace FenBrowser.FenEngine.Scripting
 
             public IObject GetPrototype() => _prototype;
             public void SetPrototype(IObject prototype) { _prototype = prototype; }
+            public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
         }
 
         internal sealed class JsDomElement : JsDomNodeBase, IObject
@@ -795,6 +797,19 @@ namespace FenBrowser.FenEngine.Scripting
 
                 self.RequestRepaint();
             }
+
+
+            public bool DefineOwnProperty(string key, PropertyDescriptor desc)
+            {
+                // Fallback: treat as assignment if data descriptor
+                if (desc.IsData && desc.Value.HasValue)
+                {
+                    Set(key, desc.Value.Value);
+                    return true;
+                }
+                return false;
+            }
+
             public string className
             {
                 get { return getAttribute("class") ?? ""; }
@@ -911,6 +926,7 @@ namespace FenBrowser.FenEngine.Scripting
             private readonly ShadowRoot _node;
             private IObject _prototype = null;
             public object NativeObject { get; set; }
+            public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
 
             public JsDomShadowRoot(JavaScriptEngine e, ShadowRoot node)
             {
@@ -1154,11 +1170,15 @@ namespace FenBrowser.FenEngine.Scripting
                 }
                 return sb.ToString().Trim();
             }
+            public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
         }
 
-        internal sealed class JsDomTokenList
+        internal sealed class JsDomTokenList : IObject
         {
             private readonly JsDomElement _el;
+            private IObject _prototype;
+            public object NativeObject { get; set; }
+
             public JsDomTokenList(JsDomElement el) { _el = el; }
 
             public int length => _parts.Length;
@@ -1192,6 +1212,44 @@ namespace FenBrowser.FenEngine.Scripting
             public override string ToString() { return _el.className; }
 
             private string[] _parts => (_el.className ?? "").Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+
+            // IObject Implementation
+            public FenValue Get(string key, IExecutionContext context = null)
+            {
+                if (int.TryParse(key, out int index))
+                    return FenValue.FromString(item(index) ?? ""); // Returns undefined or null? DOM says item() returns null but indexed property returns undefined? Actually undefined usually.
+                
+                switch (key)
+                {
+                    case "length": return FenValue.FromNumber(length);
+                    case "item": return FenValue.FromFunction(new FenFunction("item", (args, _) => FenValue.FromString(item(args.Length > 0 ? (int)args[0].ToNumber() : 0))));
+                    case "contains": return FenValue.FromFunction(new FenFunction("contains", (args, _) => FenValue.FromBoolean(contains(args.Length > 0 ? args[0].ToString() : ""))));
+                    case "add": return FenValue.FromFunction(new FenFunction("add", (args, _) => { if(args.Length>0) add(args[0].ToString()); return FenValue.Undefined; }));
+                    case "remove": return FenValue.FromFunction(new FenFunction("remove", (args, _) => { if(args.Length>0) remove(args[0].ToString()); return FenValue.Undefined; }));
+                    case "toggle": return FenValue.FromFunction(new FenFunction("toggle", (args, _) => FenValue.FromBoolean(toggle(args.Length > 0 ? args[0].ToString() : ""))));
+                    case "toString": return FenValue.FromFunction(new FenFunction("toString", (args, _) => FenValue.FromString(ToString())));
+                    case "value": return FenValue.FromString(ToString()); // DOMTokenList.value
+                }
+                return FenValue.Undefined;
+            }
+
+            public void Set(string key, FenValue value, IExecutionContext context = null) 
+            {
+                if (key == "value") _el.className = value.ToString();
+            }
+
+            public bool Has(string key, IExecutionContext context = null) 
+            {
+                if (int.TryParse(key, out int index)) return index >= 0 && index < length;
+                return !Get(key, context).IsUndefined;
+            }
+
+            public bool Delete(string key, IExecutionContext context = null) => false;
+            public IEnumerable<string> Keys(IExecutionContext context = null) => new[] { "length", "item", "contains", "add", "remove", "toggle", "toString", "value" };
+            
+            public IObject GetPrototype() => _prototype;
+            public void SetPrototype(IObject prototype) => _prototype = prototype;
+            public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
         }
     }
 }
