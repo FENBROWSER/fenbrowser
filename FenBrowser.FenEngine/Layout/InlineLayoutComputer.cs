@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Text;
 using SkiaSharp;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
@@ -114,6 +116,125 @@ namespace FenBrowser.FenEngine.Layout
                         contentWidth = currentLineItems.Sum(i => i.Rect.Width); // Fallback approximation
                 }
 
+                bool ellipsisRequested = string.Equals(containerStyle?.TextOverflow, "ellipsis", StringComparison.OrdinalIgnoreCase);
+                float availableWidthInBand = currentXMax - currentXStart;
+                if (float.IsInfinity(availableWidthInBand)) availableWidthInBand = maxWidth;
+
+                // Apply text-overflow: ellipsis when content exceeds available band
+                if (ellipsisRequested && contentWidth > availableWidthInBand)
+                {
+                    // Build paint using container font to measure ellipsis glyph
+                    using var ellPaint = new SKPaint();
+                    float ellFontSize = (float)(containerStyle?.FontSize ?? 16);
+                    ellPaint.TextSize = Math.Max(10f, ellFontSize);
+                    var ellTypeface = TextLayoutHelper.ResolveTypeface(containerStyle?.FontFamilyName, "…", containerStyle?.FontWeight ?? 400,
+                        containerStyle?.FontStyle == SKFontStyleSlant.Italic ? SKFontStyleSlant.Italic : SKFontStyleSlant.Upright);
+                    ellPaint.Typeface = ellTypeface;
+                    ellPaint.IsAntialias = true;
+
+                    float ellipsisWidth = ellPaint.MeasureText("…");
+                    float allowedWidth = Math.Max(0, availableWidthInBand - ellipsisWidth);
+
+                    // Trim items from the end until they fit into allowedWidth
+                    for (int idx = currentLineItems.Count - 1; idx >= 0; idx--)
+                    {
+                        var item = currentLineItems[idx];
+                        float itemStart = item.X - currentXStart;
+                        float itemWidth = item.IsText ? item.TextLine.Width : item.Rect.Width;
+                        float itemEnd = itemStart + itemWidth;
+
+                        if (itemStart >= allowedWidth)
+                        {
+                            currentLineItems.RemoveAt(idx);
+                            continue;
+                        }
+
+                        if (itemEnd > allowedWidth)
+                        {
+                            if (!item.IsText)
+                            {
+                                currentLineItems.RemoveAt(idx);
+                                continue;
+                            }
+
+                            // Trim text to widthLimit
+                            float widthLimit = allowedWidth - itemStart;
+                            if (widthLimit <= 0)
+                            {
+                                currentLineItems.RemoveAt(idx);
+                                continue;
+                            }
+
+                            // Recreate paint for this text node
+                            var itemStyle = styleProvider(item.Node.ParentElement ?? container);
+                            using var trimPaint = new SKPaint
+                            {
+                                TextSize = Math.Max(10f, (float)(itemStyle?.FontSize ?? containerStyle?.FontSize ?? 16)),
+                                Typeface = TextLayoutHelper.ResolveTypeface(itemStyle?.FontFamilyName, item.TextLine.Text, itemStyle?.FontWeight ?? 400,
+                                    itemStyle?.FontStyle == SKFontStyleSlant.Italic ? SKFontStyleSlant.Italic : SKFontStyleSlant.Upright),
+                                IsAntialias = true
+                            };
+
+                            var sb = new System.Text.StringBuilder(item.TextLine.Text.Length);
+                            float acc = 0;
+                            foreach (var ch in item.TextLine.Text)
+                            {
+                                float cw = trimPaint.MeasureText(ch.ToString());
+                                if (acc + cw > widthLimit) break;
+                                acc += cw;
+                                sb.Append(ch);
+                            }
+
+                            if (sb.Length == 0)
+                            {
+                                currentLineItems.RemoveAt(idx);
+                                continue;
+                            }
+
+                            item.TextLine.Text = sb.ToString();
+                            item.TextLine.Width = acc;
+                            currentLineItems[idx] = item;
+                        }
+                    }
+
+                    // Recompute content width after trimming
+                    float trimmedWidth = currentLineItems.Count == 0
+                        ? 0
+                        : currentLineItems.Max(i => (i.X - currentXStart) + (i.IsText ? i.TextLine.Width : i.Rect.Width));
+                    contentWidth = Math.Min(trimmedWidth + ellipsisWidth, availableWidthInBand);
+
+                    // Append ellipsis as a text item on the container (or last text node)
+                    var targetNode = currentLineItems.LastOrDefault(i => i.IsText)?.Node ?? container;
+                    float ellX = currentXStart + Math.Max(allowedWidth, 0);
+
+                    // Baseline/height taken from container font metrics
+                    using var ellFont = new SKFont(ellPaint.Typeface, ellPaint.TextSize);
+                    var ellMetrics = Typography.NormalizedFontMetrics.FromSkia(ellFont.Metrics, ellPaint.TextSize, (float?)containerStyle?.LineHeight);
+                    float ellLineHeight = ellMetrics.LineHeight;
+                    float ellAscent = ellMetrics.GetBaselineOffset();
+
+                    currentLineItems.Add(new LineItem
+                    {
+                        Node = targetNode,
+                        IsText = true,
+                        X = ellX,
+                        TextLine = new ComputedTextLine
+                        {
+                            Text = "…",
+                            Width = ellipsisWidth,
+                            Height = ellLineHeight,
+                            Baseline = ellAscent,
+                            Origin = new SKPoint(0, 0)
+                        },
+                        Ascent = ellAscent,
+                        Height = ellLineHeight,
+                        VerticalAlign = containerStyle?.VerticalAlign
+                    });
+
+                    // Prevent centering: treat the line as fully occupied
+                    availableWidthInBand = Math.Max(ellipsisWidth, availableWidthInBand);
+                }
+
                 if (currentLineItems.Count > 0 && currentLineItems.Last().IsText && currentLineItems.Last().TextLine.Text.EndsWith(" "))
                 {
                     // Look up space width from the font used in the last item?
@@ -126,13 +247,9 @@ namespace FenBrowser.FenEngine.Layout
                     // Let's just subtract it if it's there.
                 }
 
-                float availableWidthInBand = currentXMax - currentXStart;
-                
-                // Fix for Infinite Band
-                if (float.IsInfinity(availableWidthInBand)) availableWidthInBand = maxWidth;
-
+                // availableWidthInBand is computed above; ensure non-negative
                 float remainingSpace = availableWidthInBand - contentWidth;
-
+                
                 // Clamp remaining space (can be negative if we overflowed)
                 if (remainingSpace < 0) remainingSpace = 0;
                 if (float.IsNaN(remainingSpace)) remainingSpace = 0;
@@ -419,6 +536,7 @@ namespace FenBrowser.FenEngine.Layout
                 float rtHeight = rtFontSize * 1.2f;
                 float baseHeight = baseFontSize * 1.2f;
                 float totalHeight = rtHeight + baseHeight;
+                bool verticalRuby = string.Equals(containerStyle?.WritingMode, "vertical-rl", StringComparison.OrdinalIgnoreCase);
                 
                 // Process each base-RT pair and add as inline content
                 foreach (var (baseText, rtText) in segments)
@@ -428,49 +546,87 @@ namespace FenBrowser.FenEngine.Layout
                     float baseWidth = string.IsNullOrEmpty(baseText) ? 0 : basePaint.MeasureText(baseText);
                     float rtWidth = string.IsNullOrEmpty(rtText) ? 0 : rtPaint.MeasureText(rtText);
                     float containerWidth = Math.Max(baseWidth, rtWidth);
-                    
-                    // Check for line wrap
-                    if (currentX + containerWidth > maxWidth && currentX > 0)
+
+                    if (verticalRuby)
                     {
-                        FlushLine();
+                        // Swap axes: ruby stack flows along inline axis vertically
+                        float containerHeight = containerWidth;
+                        float containerWidthV = totalHeight;
+
+                        if (currentX + containerWidthV > maxWidth && currentX > 0)
+                        {
+                            FlushLine();
+                        }
+
+                        var rubyRect = new SKRect(currentX, 0, currentX + containerWidthV, containerHeight);
+                        result.ElementRects[rubyElem] = rubyRect;
+
+                        currentLineItems.Add(new LineItem
+                        {
+                            Node = rubyElem,
+                            IsText = false,
+                            X = currentX,
+                            Rect = new SKRect(0, 0, containerWidthV, containerHeight),
+                            Ascent = containerHeight * 0.75f,
+                            Height = containerHeight,
+                            VerticalAlign = rubyStyle?.VerticalAlign
+                        });
+
+                        var combinedTextV = $"RT:{rtText}|BASE:{baseText}|RT_SIZE:{rtFontSize}|BASE_SIZE:{baseFontSize}|RT_HEIGHT:{rtHeight}|VERTICAL:1";
+                        if (!result.TextLines.ContainsKey(rubyElem))
+                            result.TextLines[rubyElem] = new List<ComputedTextLine>();
+
+                        result.TextLines[rubyElem].Add(new ComputedTextLine
+                        {
+                            Text = combinedTextV,
+                            Width = containerWidthV,
+                            Height = containerHeight,
+                            Baseline = containerHeight * 0.75f,
+                            Origin = new SKPoint(0, 0)
+                        });
+
+                        currentX += containerWidthV;
+                        currentLineHeight = Math.Max(currentLineHeight, containerHeight);
                     }
-                    
-                    // Store the ruby element in ElementRects with its dimensions
-                    // The paint tree builder will handle rendering RT above and base below
-                    var rubyRect = new SKRect(currentX, 0, currentX + containerWidth, totalHeight);
-                    result.ElementRects[rubyElem] = rubyRect;
-                    
-                    // Add as atomic line item so FlushLine handles vertical positioning
-                    currentLineItems.Add(new LineItem
+                    else
                     {
-                        Node = rubyElem,
-                        IsText = false,
-                        X = currentX,
-                        Rect = new SKRect(0, 0, containerWidth, totalHeight),
-                        Ascent = totalHeight * 0.75f, // Baseline alignment - base text baseline
-                        Height = totalHeight,
-                        VerticalAlign = rubyStyle?.VerticalAlign
-                    });
-                    
-                    // Store combined text for rendering (RT\nBase format for paint tree builder)
-                    // Using a special format: "RT:rtText|BASE:baseText|RT_SIZE:size|BASE_SIZE:size"
-                    var combinedText = $"RT:{rtText}|BASE:{baseText}|RT_SIZE:{rtFontSize}|BASE_SIZE:{baseFontSize}|RT_HEIGHT:{rtHeight}";
-                    
-                    if (!result.TextLines.ContainsKey(rubyElem))
-                        result.TextLines[rubyElem] = new List<ComputedTextLine>();
-                    
-                    // Store metadata in a ComputedTextLine for the paint tree builder
-                    result.TextLines[rubyElem].Add(new ComputedTextLine
-                    {
-                        Text = combinedText,
-                        Width = containerWidth,
-                        Height = totalHeight,
-                        Baseline = baseFontSize,
-                        Origin = new SKPoint(0, 0) // Relative to element box
-                    });
-                    
-                    currentX += containerWidth;
-                    currentLineHeight = Math.Max(currentLineHeight, totalHeight);
+                        // Check for line wrap
+                        if (currentX + containerWidth > maxWidth && currentX > 0)
+                        {
+                            FlushLine();
+                        }
+                        
+                        var rubyRect = new SKRect(currentX, 0, currentX + containerWidth, totalHeight);
+                        result.ElementRects[rubyElem] = rubyRect;
+                        
+                        currentLineItems.Add(new LineItem
+                        {
+                            Node = rubyElem,
+                            IsText = false,
+                            X = currentX,
+                            Rect = new SKRect(0, 0, containerWidth, totalHeight),
+                            Ascent = totalHeight * 0.75f, // Baseline alignment - base text baseline
+                            Height = totalHeight,
+                            VerticalAlign = rubyStyle?.VerticalAlign
+                        });
+                        
+                        var combinedText = $"RT:{rtText}|BASE:{baseText}|RT_SIZE:{rtFontSize}|BASE_SIZE:{baseFontSize}|RT_HEIGHT:{rtHeight}";
+                        
+                        if (!result.TextLines.ContainsKey(rubyElem))
+                            result.TextLines[rubyElem] = new List<ComputedTextLine>();
+                        
+                        result.TextLines[rubyElem].Add(new ComputedTextLine
+                        {
+                            Text = combinedText,
+                            Width = containerWidth,
+                            Height = totalHeight,
+                            Baseline = baseFontSize,
+                            Origin = new SKPoint(0, 0) // Relative to element box
+                        });
+                        
+                        currentX += containerWidth;
+                        currentLineHeight = Math.Max(currentLineHeight, totalHeight);
+                    }
                 }
             }
             

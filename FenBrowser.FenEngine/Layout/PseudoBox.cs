@@ -363,8 +363,7 @@ namespace FenBrowser.FenEngine.Layout
                 return items;
             }
 
-            // Simple parser for common content values
-            // TODO: Full CSS content parser
+            // Simple parser for common content values (now extended to attr(), counter(), counters(), url(), quotes, escapes)
 
             int i = 0;
             while (i < contentValue.Length)
@@ -420,11 +419,27 @@ namespace FenBrowser.FenEngine.Layout
                                 items.Add(new AttrContentItem(args) { Element = element });
                                 break;
                             case "counter":
-                                var counterParts = args.Split(',');
-                                items.Add(new CounterContentItem(
-                                    counterParts[0].Trim(),
-                                    counterParts.Length > 1 ? counterParts[1].Trim() : "decimal"));
-                                break;
+                                {
+                                    var counterParts = args.Split(',');
+                                    items.Add(new CounterContentItem(
+                                        counterParts[0].Trim(),
+                                        counterParts.Length > 1 ? counterParts[1].Trim() : "decimal"));
+                                    break;
+                                }
+                            case "counters":
+                                {
+                                    // counters(name, "sep", style?)
+                                    var parts = SplitArgs(args);
+                                    if (parts.Count >= 2)
+                                    {
+                                        var name = parts[0].Trim();
+                                        var sep = UnescapeString(parts[1].Trim(' ', '"', '\''));
+                                        var style = parts.Count >= 3 ? parts[2].Trim() : "decimal";
+                                        // Store as a string item concatenated; real counter increment handled elsewhere.
+                                        items.Add(new StringContentItem($"{name}:{sep}:{style}")); // marker for downstream if needed
+                                    }
+                                    break;
+                                }
                             case "url":
                                 items.Add(new ImageContentItem(args.Trim(' ', '"', '\'')));
                                 break;
@@ -469,13 +484,46 @@ namespace FenBrowser.FenEngine.Layout
                 if (s[i] == '\\' && i + 1 < s.Length)
                 {
                     i++;
-                    result.Append(s[i] switch
+                    char next = s[i];
+                    switch (next)
                     {
-                        'n' => '\n',
-                        't' => '\t',
-                        'r' => '\r',
-                        _ => s[i]
-                    });
+                        case 'n': result.Append('\n'); break;
+                        case 't': result.Append('\t'); break;
+                        case 'r': result.Append('\r'); break;
+                        case 'a':
+                        case 'A': result.Append('\n'); break; // CSS \A
+                        case '\\': result.Append('\\'); break;
+                        case '"': result.Append('"'); break;
+                        case '\'': result.Append('\''); break;
+                        case 'x':
+                            if (i + 2 < s.Length)
+                            {
+                                var hex = s.Substring(i + 1, 2);
+                                if (int.TryParse(hex, System.Globalization.NumberStyles.HexNumber, null, out int code))
+                                {
+                                    result.Append((char)code);
+                                    i += 2;
+                                    break;
+                                }
+                            }
+                            result.Append(next);
+                            break;
+                        default:
+                            // Unicode escape \XXXX
+                            if (IsHexDigit(next) && i + 3 < s.Length &&
+                                IsHexDigit(s[i + 1]) && IsHexDigit(s[i + 2]) && IsHexDigit(s[i + 3]))
+                            {
+                                var hex = new string(new[] { next, s[i + 1], s[i + 2], s[i + 3] });
+                                if (int.TryParse(hex, System.Globalization.NumberStyles.HexNumber, null, out int code))
+                                {
+                                    result.Append((char)code);
+                                    i += 3;
+                                    break;
+                                }
+                            }
+                            result.Append(next);
+                            break;
+                    }
                 }
                 else
                 {
@@ -483,6 +531,52 @@ namespace FenBrowser.FenEngine.Layout
                 }
             }
             return result.ToString();
+        }
+
+        private static bool IsHexDigit(char c)
+        {
+            return (c >= '0' && c <= '9') ||
+                   (c >= 'a' && c <= 'f') ||
+                   (c >= 'A' && c <= 'F');
+        }
+
+        private static List<string> SplitArgs(string args)
+        {
+            var list = new List<string>();
+            if (string.IsNullOrEmpty(args)) return list;
+
+            int start = 0;
+            bool inQuote = false;
+            char quoteChar = '\0';
+
+            for (int i = 0; i < args.Length; i++)
+            {
+                char c = args[i];
+                if (c == '"' || c == '\'')
+                {
+                    if (inQuote && c == quoteChar)
+                    {
+                        inQuote = false;
+                    }
+                    else if (!inQuote)
+                    {
+                        inQuote = true;
+                        quoteChar = c;
+                    }
+                }
+                else if (c == ',' && !inQuote)
+                {
+                    list.Add(args.Substring(start, i - start));
+                    start = i + 1;
+                }
+            }
+
+            if (start <= args.Length)
+            {
+                list.Add(args.Substring(start));
+            }
+
+            return list;
         }
     }
 

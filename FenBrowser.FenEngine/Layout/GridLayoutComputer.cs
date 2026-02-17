@@ -246,21 +246,10 @@ namespace FenBrowser.FenEngine.Layout
 
                             // Check collision
                             bool fits = !map.IsOccupied(pos.ColumnStart, pos.ColumnEnd, pos.RowStart, pos.RowEnd);
-                            bool withinExplicit = explicitColCount == 0 || pos.ColumnEnd <= explicitColCount + 1;
-                            
-                            // If explicit cols exist, we wrap if we exceed them.
-                            // If NO explicit cols, we just keep placing in row 1? 
-                            // Standard behavior: 1 auto col. If occupied -> next row?
-                            // Or add column? 
-                            // If grid-template-columns is NOT defined, we add columns indefinitely on row 1?
-                            // No, usually we wrap.
-                            // If explicitColCount > 0, wrap when Col > explicitColCount.
-                            // If explicColCount == 0, we treat as 1 col?
-                            
-                            int limit = explicitColCount > 0 ? explicitColCount : 1;
+                            int limit = explicitColCount > 0 ? explicitColCount : int.MaxValue;
                             bool overflow = pos.ColumnStart > limit;
 
-                            if (fits && !overflow)
+                            if (fits && (!overflow || explicitColCount == 0))
                             {
                                 positions[item] = pos;
                                 map.Mark(pos.ColumnStart, pos.ColumnEnd, pos.RowStart, pos.RowEnd);
@@ -270,7 +259,7 @@ namespace FenBrowser.FenEngine.Layout
                             }
                             
                             cursorCol++;
-                            if (cursorCol > limit)
+                            if (overflow && explicitColCount > 0)
                             {
                                 cursorCol = 1;
                                 cursorRow++;
@@ -338,10 +327,10 @@ namespace FenBrowser.FenEngine.Layout
                             pos.RowEnd = cursorRow + rawPos.RowSpan;
 
                             bool fits = !map.IsOccupied(pos.ColumnStart, pos.ColumnEnd, pos.RowStart, pos.RowEnd);
-                            int limit = explicitRowCount > 0 ? explicitRowCount : 1;
+                            int limit = explicitRowCount > 0 ? explicitRowCount : int.MaxValue;
                             bool overflow = pos.RowStart > limit;
 
-                            if (fits && !overflow)
+                            if (fits && (!overflow || explicitRowCount == 0))
                             {
                                 positions[item] = pos;
                                 map.Mark(pos.ColumnStart, pos.ColumnEnd, pos.RowStart, pos.RowEnd);
@@ -351,7 +340,7 @@ namespace FenBrowser.FenEngine.Layout
                             }
 
                             cursorRow++;
-                            if (cursorRow > limit)
+                            if (overflow && explicitRowCount > 0)
                             {
                                 cursorRow = 1;
                                 cursorCol++;
@@ -657,56 +646,78 @@ namespace FenBrowser.FenEngine.Layout
             ResolveFlexibleTracks(columnTracks, bounds.Width, columnGap);
             ResolveFlexibleTracks(rowTracks, bounds.Height, rowGap);
 
-            // Compute Start Positions
-            float[] colStarts = new float[columnTracks.Count + 1];
-            float cx = 0;
-            for (int i = 0; i < columnTracks.Count; i++)
-            {
-                colStarts[i] = cx;
-                cx += columnTracks[i].BaseSize + columnGap;
-            }
-            colStarts[columnTracks.Count] = cx;
-
-            float[] rowStarts = new float[rowTracks.Count + 1];
-            float cy = 0;
-            for (int i = 0; i < rowTracks.Count; i++)
-            {
-                rowStarts[i] = cy;
-                cy += rowTracks[i].BaseSize + rowGap;
-            }
-            rowStarts[rowTracks.Count] = cy;
-
-            // --- Phase 3: Track Alignment (JustifyContent / AlignContent) ---
-            float totalGridWidth = cx - columnGap; // remove last gap
-            float totalGridHeight = cy - rowGap;   // remove last gap
-            if (columnTracks.Count == 0) totalGridWidth = 0;
-            if (rowTracks.Count == 0) totalGridHeight = 0;
-
+            // Compute effective gaps for justify/align content
+            float effectiveColumnGap = columnGap;
+            float effectiveRowGap = rowGap;
             float contentXOffset = 0;
             float contentYOffset = 0;
 
+            // Base totals with original gaps
+            float baseGridWidth = columnTracks.Sum(t => t.BaseSize) + Math.Max(0, columnTracks.Count - 1) * columnGap;
+            float baseGridHeight = rowTracks.Sum(t => t.BaseSize) + Math.Max(0, rowTracks.Count - 1) * rowGap;
+
             // JustifyContent (Horizontal Track Alignment)
-            if (!string.IsNullOrEmpty(style.JustifyContent) && style.JustifyContent != "start" && style.JustifyContent != "stretch")
+            if (!string.IsNullOrEmpty(style.JustifyContent) && columnTracks.Count > 0)
             {
-                float freeW = bounds.Width - totalGridWidth;
+                string jc = style.JustifyContent.ToLowerInvariant();
+                float freeW = bounds.Width - baseGridWidth;
                 if (freeW > 0)
                 {
-                    if (style.JustifyContent == "center") contentXOffset = freeW / 2;
-                    else if (style.JustifyContent == "end" || style.JustifyContent == "flex-end") contentXOffset = freeW;
-                    // TODO: space-between, space-around logic could be added here by adjusting gaps
+                    if (jc == "center") contentXOffset = freeW / 2;
+                    else if (jc == "end" || jc == "flex-end") contentXOffset = freeW;
+                    else if (jc == "space-between" && columnTracks.Count > 1)
+                    {
+                        effectiveColumnGap = columnGap + freeW / (columnTracks.Count - 1);
+                    }
+                    else if (jc == "space-around" && columnTracks.Count > 0)
+                    {
+                        float extraPer = freeW / columnTracks.Count;
+                        effectiveColumnGap = columnGap + extraPer;
+                        contentXOffset = extraPer / 2;
+                    }
                 }
             }
 
             // AlignContent (Vertical Track Alignment)
-            if (!string.IsNullOrEmpty(style.AlignContent) && style.AlignContent != "start" && style.AlignContent != "stretch")
+            if (!string.IsNullOrEmpty(style.AlignContent) && rowTracks.Count > 0)
             {
-                float freeH = bounds.Height - totalGridHeight;
+                string ac = style.AlignContent.ToLowerInvariant();
+                float freeH = bounds.Height - baseGridHeight;
                 if (freeH > 0)
                 {
-                    if (style.AlignContent == "center") contentYOffset = freeH / 2;
-                    else if (style.AlignContent == "end" || style.AlignContent == "flex-end") contentYOffset = freeH;
+                    if (ac == "center") contentYOffset = freeH / 2;
+                    else if (ac == "end" || ac == "flex-end") contentYOffset = freeH;
+                    else if (ac == "space-between" && rowTracks.Count > 1)
+                    {
+                        effectiveRowGap = rowGap + freeH / (rowTracks.Count - 1);
+                    }
+                    else if (ac == "space-around" && rowTracks.Count > 0)
+                    {
+                        float extraPer = freeH / rowTracks.Count;
+                        effectiveRowGap = rowGap + extraPer;
+                        contentYOffset = extraPer / 2;
+                    }
                 }
             }
+
+            // Compute Start Positions using effective gaps
+            float[] colStarts = new float[columnTracks.Count + 1];
+            float cx = contentXOffset;
+            for (int i = 0; i < columnTracks.Count; i++)
+            {
+                colStarts[i] = cx;
+                cx += columnTracks[i].BaseSize + effectiveColumnGap;
+            }
+            colStarts[columnTracks.Count] = cx;
+
+            float[] rowStarts = new float[rowTracks.Count + 1];
+            float cy = contentYOffset;
+            for (int i = 0; i < rowTracks.Count; i++)
+            {
+                rowStarts[i] = cy;
+                cy += rowTracks[i].BaseSize + effectiveRowGap;
+            }
+            rowStarts[rowTracks.Count] = cy;
 
             // Arrange Item
             foreach (var kv in positions)

@@ -112,8 +112,20 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     var childState = CreateChildState(childFlowWidth, state);
                     FormattingContext.Resolve(child).Layout(child, childState);
                     
-                    float floatWidth = child.Geometry.MarginBox.Width;
-                    float fx = (floatStyle == "left") ? xOffset : (xOffset + contentWidth - floatWidth);
+                    float floatWidth = Math.Max(0f, child.Geometry.MarginBox.Width);
+                    float availableFloatSpace = contentWidth;
+                    if (!float.IsFinite(availableFloatSpace) || availableFloatSpace <= 0f)
+                    {
+                        // During shrink-to-fit probes the container width can still be unresolved.
+                        // Prevent right floats from being placed at negative X in this pass.
+                        availableFloatSpace = floatWidth;
+                    }
+
+                    float fx = xOffset;
+                    if (floatStyle == "right")
+                    {
+                        fx = xOffset + Math.Max(0f, availableFloatSpace - floatWidth);
+                    }
                     
                     LayoutBoxOps.SetPosition(child, fx, yOffset + currentY);
                     floatManager.AddFloat(child, floatStyle == "left");
@@ -215,7 +227,18 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 float maxWidth = 0;
                 foreach (var child in blockBox.Children)
                 {
-                    maxWidth = Math.Max(maxWidth, child.Geometry.MarginBox.Width);
+                    if (child == null || child.IsOutOfFlow)
+                    {
+                        continue;
+                    }
+
+                    float childWidth = child.Geometry.MarginBox.Width;
+                    if (!float.IsFinite(childWidth) || childWidth <= 0f)
+                    {
+                        continue;
+                    }
+
+                    maxWidth = Math.Max(maxWidth, childWidth);
                 }
                 
                 // Update ContentBox width

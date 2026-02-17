@@ -90,7 +90,7 @@ namespace FenBrowser.FenEngine.Layout
                 else if (tag == "SELECT") width = 120f;
                 else if (tag == "BUTTON")
                 {
-                    string label = element.TextContent?.Trim();
+                    string label = LayoutHelper.GetRenderableTextContentTrimmed(element);
                     if (string.IsNullOrWhiteSpace(label)) label = "Button";
                     width = Math.Max(54f, 16f + (label.Length * 7f));
                 }

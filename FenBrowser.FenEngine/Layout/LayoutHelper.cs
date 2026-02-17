@@ -23,6 +23,48 @@ namespace FenBrowser.FenEngine.Layout
              return sb.ToString();
         }
 
+        public static string GetRenderableTextContent(Node node)
+        {
+            if (node == null) return string.Empty;
+
+            if (node is Element element)
+            {
+                string tag = element.TagName?.ToUpperInvariant() ?? string.Empty;
+                if (IsNonRenderableTextTag(tag))
+                {
+                    return string.Empty;
+                }
+
+                if (element.HasAttribute("hidden"))
+                {
+                    return string.Empty;
+                }
+            }
+
+            if (node is Text textNode)
+            {
+                return textNode.NodeValue ?? string.Empty;
+            }
+
+            if (node.Children == null)
+            {
+                return string.Empty;
+            }
+
+            var sb = new StringBuilder();
+            foreach (var child in node.Children)
+            {
+                sb.Append(GetRenderableTextContent(child));
+            }
+
+            return sb.ToString();
+        }
+
+        public static string GetRenderableTextContentTrimmed(Node node)
+        {
+            return GetRenderableTextContent(node).Trim();
+        }
+
         public static SKRect CleanRect(SKRect r)
         {
             float l = r.Left, t = r.Top, ri = r.Right, b = r.Bottom;
@@ -70,7 +112,7 @@ namespace FenBrowser.FenEngine.Layout
              string val = node.GetAttribute("value");
              if (string.IsNullOrEmpty(val) && node.TagName == "BUTTON")
              {
-                 val = GetTextContent(node);
+                 val = GetRenderableTextContent(node);
              }
              
              if (string.IsNullOrEmpty(val))
@@ -96,6 +138,18 @@ namespace FenBrowser.FenEngine.Layout
                       if (h > height) height = h;
                  }
              }
+        }
+
+        private static bool IsNonRenderableTextTag(string tag)
+        {
+            return tag == "HEAD" ||
+                   tag == "SCRIPT" ||
+                   tag == "STYLE" ||
+                   tag == "META" ||
+                   tag == "TITLE" ||
+                   tag == "LINK" ||
+                   tag == "NOSCRIPT" ||
+                   tag == "TEMPLATE";
         }
 
         public static float EvaluateCssExpression(string expression, float parentSize, float viewportWidth = 0, float viewportHeight = 0)

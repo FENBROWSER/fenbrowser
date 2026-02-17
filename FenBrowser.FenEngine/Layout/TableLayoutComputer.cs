@@ -86,6 +86,22 @@ namespace FenBrowser.FenEngine.Layout
             float tableWidth = state.ColumnWidths.Sum() + (state.ColumnCount + 1) * spacingX;
             float tableHeight = state.RowHeights.Sum() + (state.Rows.Count + 1) * spacingY;
 
+            // Clamp to available width if provided (separate border model)
+            if (availableSize.Width > 0 && tableWidth > availableSize.Width)
+            {
+                float shrinkable = tableWidth - (state.ColumnCount + 1) * spacingX;
+                float target = Math.Max(0, availableSize.Width - (state.ColumnCount + 1) * spacingX);
+                if (shrinkable > 0 && target > 0)
+                {
+                    float scale = target / shrinkable;
+                    for (int i = 0; i < state.ColumnWidths.Count; i++)
+                    {
+                        state.ColumnWidths[i] = Math.Max(10f, state.ColumnWidths[i] * scale);
+                    }
+                    tableWidth = state.ColumnWidths.Sum() + (state.ColumnCount + 1) * spacingX;
+                }
+            }
+
             return new LayoutMetrics
             {
                 ContentHeight = tableHeight,
@@ -136,6 +152,22 @@ namespace FenBrowser.FenEngine.Layout
             // Track section bounds (TBODY, THEAD, TFOOT)
             var sectionBounds = new Dictionary<Element, SKRect>();
             var trs = GetRows(table);
+
+            // Normalize column widths to fit bounds when separate borders
+            float totalCols = state.ColumnWidths.Sum() + (state.ColumnCount + 1) * spacingX;
+            if (!string.Equals(tableStyle?.BorderCollapse, "collapse", StringComparison.OrdinalIgnoreCase) && bounds.Width > 0 && totalCols > bounds.Width)
+            {
+                float contentTarget = Math.Max(0, bounds.Width - (state.ColumnCount + 1) * spacingX);
+                float contentCurrent = totalCols - (state.ColumnCount + 1) * spacingX;
+                if (contentCurrent > 0 && contentTarget > 0)
+                {
+                    float scale = contentTarget / contentCurrent;
+                    for (int i = 0; i < state.ColumnWidths.Count; i++)
+                    {
+                        state.ColumnWidths[i] = Math.Max(10f, state.ColumnWidths[i] * scale);
+                    }
+                }
+            }
 
             for (int r = 0; r < state.Rows.Count; r++)
             {

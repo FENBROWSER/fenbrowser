@@ -1898,7 +1898,7 @@ namespace FenBrowser.FenEngine.Layout
             if (m.MaxChildWidth < 10)
             {
                 // Try to get text content width
-                string textContent = element.TextContent?.Trim() ?? "";
+                string textContent = LayoutHelper.GetRenderableTextContentTrimmed(element);
                 if (!string.IsNullOrEmpty(textContent))
                 {
                     m.MaxChildWidth = Math.Max(m.MaxChildWidth, textContent.Length * 8f + 20); // Rough estimate
