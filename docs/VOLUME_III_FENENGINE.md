@@ -1,6 +1,6 @@
 # FenBrowser Codex - Volume III: The Engine Room
 
-**State as of:** 2026-02-06
+**State as of:** 2026-02-17
 **Codex Version:** 1.0
 
 ## 1. Overview
@@ -84,6 +84,14 @@ Unlike the Layout Tree (which is about geometry), the Paint Tree is about **Z-Or
 
 - **NewPaintTreeBuilder**: Converts layout boxes into a flat list of draw commands, sorted by CSS `z-index` and painting order rules (background -> border -> content -> outline).
 
+#### 3.2.1 Rendering Updates (2026-02-16)
+- Gradient backgrounds are parsed into `SKShader` instances during paint-node creation (`FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs:1440-1570`), enabling linear/radial gradients in the new pipeline.
+- Stacking contexts now carry `filter`/`backdrop-filter`; `SkiaRenderer` parses them via `CssFilterParser` and applies Skia save-layers (`SkiaRenderer.cs:198-245`, `SkiaRenderer.cs:275-286`).
+- Input placeholders honor `::placeholder` computed color/opacity when rendering (`NewPaintTreeBuilder.cs:2290-2335`).
+- Animated GIFs are decoded frame-by-frame with `SKCodec` (including `RequiredFrame` compositing) and cached in `ImageLoader` (`FenBrowser.FenEngine/Rendering/ImageLoader.cs:650-870`). A 50 ms timer calls `RequestRepaint` directly, and `SkiaDomRenderer.Render` forces paint-dirty whenever `HasActiveAnimatedImages` is true (`SkiaDomRenderer.cs:280-302`), enabling in-paint GIF animation without re-layout.
+- Engine targets `net8.0` (solution unified via global.json).
+- UA safety net: anchors with `aria-label="Sign in"` get a fallback inline-block button style (blue background, white text, padding, radius) to guarantee visibility when author CSS is skipped (`Rendering/UserAgent/UAStyleProvider.cs`).
+
 ### 3.3 Backend (`SkiaRenderer`)
 
 A stateless drawer that takes the Paint Tree and executes SkiaSharp API calls (`canvas.DrawRect`, `canvas.DrawText`).
@@ -109,6 +117,7 @@ The high-level controller used by the UI.
 - Implements `IBrowser` interface.
 - Manages **Navigation History** (Back/Forward).
 - Handles **Resource Loading** coordination.
+- TLS handling: `BrowserHost` records certificate details and respects `NetworkConfiguration.IgnoreCertificateErrors` (default: strict/false) so production builds remain secure-by-default; explicit opt-in is required to bypass.
 - Provides **WebDriver** hooks for automation.
 
 ---
@@ -122,11 +131,15 @@ The engine supports a "Reverse Pipeline" to detect which element is under the mo
 - **Process**: `HitTest(x, y)` traverses the Paint Tree (top-down visual order) to find the topmost element.
 - **Events**: The `BrowserHost` captures OS mouse events and dispatches them to the DOM via `JavaScriptEngine.DispatchEvent`.
 
-### 5.2 Input Overlays
+### 5.2 Scroll Management
+
+- `Rendering/Interaction/ScrollManager` honors CSS `scroll-snap-type` on both axes and `scroll-snap-align` on children, choosing the nearest snap target and animating via smooth scrolling.
+
+### 5.3 Input Overlays
 
 Because drawing text inputs via Skia is complex (cursor, selection, IME), the engine renders `<input>` elements as **Native Overlays** floating above the browser canvas. The `SkiaDomRenderer` calculates their position during layout and reports it to the Host UI.
 
-### 5.3 Recent Interaction Hardening (2026-02-07)
+### 5.4 Recent Interaction Hardening (2026-02-07)
 
 - `BrowserApi.DispatchInputEvent(...)` now runs click activation through `HandleElementClick(...)` for all click targets (not only anchor default-action fallback), ensuring focus/default behavior is applied consistently for controls.
 - Focus synchronization now occurs on both `mousedown` and `click` paths, preventing host/input-sequencing differences from dropping focus.
@@ -158,11 +171,37 @@ CSS Grid implementation.
 - **Lines 113-366**: **`ComputePlacements`**: The auto-placement algorithm (sparse/dense).
 - **Lines 485-585**: **`Measure`**: Track sizing (fr/auto/px).
 
-#### `InlineLayoutComputer.cs` (Lines 1-921)
+#### `InlineLayoutComputer.cs` (Lines 1-980)
 
 Inline Formatting Context (Text & Inline-Block).
 
-- **Lines 31-904**: **`Compute`**: Handles line breaking, bidi reordering, and float exclusions.
+- **Lines 31-940**: **`Compute`**: Handles line breaking, bidi reordering, and float exclusions.
+- **Lines 100-220, 240-360**: `FlushLine` now applies `text-overflow: ellipsis` by trimming overflowing runs and appending an ellipsis glyph within the available band, honoring container fonts.
+
+#### `FlexFormattingContext.cs` (Lines 1-1605)
+
+Flex formatting context (row/column).
+
+- **Lines 40-476**: Measurement, intrinsic probing, and main-axis grow/shrink resolution for flex items.
+- **Lines 436-463, 1254-1420**: Collapsed flex-item recovery now handles near-zero widths and uses deep descendant extents to restore control/icon clusters that would otherwise collapse in intrinsic probe passes.
+- **Lines 493-852**: Wrap logic splits items into flex lines, supports `flex-wrap: wrap` and `flex-wrap: wrap-reverse`, and positions lines in cross-axis order. Per-line `justify-content` and auto margins are applied; align-items `stretch` reflows children to the line's cross size.
+- **Lines 881-1157**: `ResolveContainerDimensions` covers explicit/percent/expression sizing, min/max constraints, and intrinsic fallbacks for controls/replaced elements under flex sizing.
+
+#### `Contexts/InlineFormattingContext.cs` (Lines 1-960)
+
+Inline formatting context for text runs and atomic inline boxes.
+
+- **Lines 322-385**: Final atomic placement now re-layouts controls/replaced inline candidates with final size inputs and enforces monotonic line-item ordering to prevent post-measure overlap.
+- **Lines 427-463**: `TryLayoutReplacedInlineBox` applies intrinsic replaced-element sizing with proper box-model sync.
+- **Lines 598-626**: `ShouldRelayoutAtomicInline` identifies intrinsic/replaced inline candidates (`input`, `button`, `img`, `svg`, etc.) for final stabilization.
+- **Lines 897-929**: `ResolveContextWidth` now prefers containing-block width for unconstrained probes and subtracts non-content spacing before final content width assignment.
+
+#### `Contexts/BlockFormattingContext.cs` (Lines 1-592)
+
+Block formatting context implementation for vertical flow and floats.
+
+- **Lines 109-131**: Right-float placement now clamps unresolved/probe widths to avoid negative-X placement during shrink-to-fit passes.
+- **Lines 224-253**: Shrink-to-fit auto-width pass computes widest in-flow child width while ignoring out-of-flow descendants.
 
 #### `LayoutEngine.cs` (Lines 1-383)
 
@@ -276,6 +315,11 @@ The custom logic runtime and bridge.
 - `Core.Parser` module syntax handling now correctly accepts and advances `export * from ...`, `export * as <IdentifierName> from ...`, and `import { default as x } from ...` forms by treating `IdentifierName` tokens (including keywords like `default`) as valid export/import names where grammar allows them.
 - `Testing.Test262Runner` now parses `flags` metadata (`onlyStrict`, `noStrict`, `async`) and applies `onlyStrict` by injecting a strict directive in the test prelude, improving conformance setup parity for strict-mode Test262 cases.
 - `Core.Lexer.ReadIdentifier` now advances after successful `\uHHHH` escape decoding, preventing accidental re-consumption of the final hex digit in escaped identifiers.
+- `Layout.LayoutHelper.GetRenderableTextContent*` now excludes non-renderable text containers (`style`, `script`, `template`, `noscript`) from intrinsic control-label measurement, preventing style/script text from inflating `<button>` intrinsic widths.
+- `Layout.LayoutPositioningLogic` and `Layout.MinimalLayoutComputer` now use `GetRenderableTextContentTrimmed(...)` for button intrinsic-label fallbacks, keeping control width heuristics aligned across legacy and formatting-context paths.
+- `Contexts.InlineFormattingContext` now re-layouts atomic inline/replaced controls before final line placement and applies a monotonic post-pass to prevent overlap when intrinsic widths expand after probe measurement.
+- `Contexts.FlexFormattingContext` now recovers near-zero row-item widths using deep descendant extents (not only direct children), fixing collapsed control clusters and footer link groups under intrinsic probe passes.
+- `Contexts.BlockFormattingContext` now clamps right-float placement when probe-time container width is unresolved, preventing transient negative-X anchor placement in header action rows.
 
 #### `JavaScriptEngine.Dom.cs` (Lines 1-1203)
 
@@ -420,3 +464,10 @@ So you want to add `border-radius`? Follow these steps:
 - `test262_results.md`
   - Added full 52,871-test rebaseline and refreshed 53-chunk table.
   - Current full-suite result: `50,388 / 52,871` passed (`95.30%`).
+
+### 6.10 Parser Control-Flow Hardening (2026-02-14)
+
+- `Core/Parser.cs`
+  - Removed double-advance in `ParseProgram` and tightened `ParseBlockStatement` token progression so inner `}` is consumed once, preventing the first token after block-based statements from being skipped (fixes `+=` being misparsed as a prefix in Test262 harness code).
+  - `ParseStatement` now routes `var`/`let`/`const` through `ParseLetStatement` and ensures function declarations bind a parsed `FunctionLiteral`, restoring buildable, deterministic statement parsing in Annex B paths.
+  - `ParseStatement` now dispatches statement keywords (`try`, `throw`, `for`, `while`, `do`, `break`, `continue`) to their dedicated parsers, eliminating prefix-parse fallthrough errors in Test262 harness control-flow.

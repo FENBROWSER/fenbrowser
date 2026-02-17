@@ -1,6 +1,6 @@
 # FenBrowser Codex - Volume VI: Extensions & Verification
 
-**State as of:** 2026-02-06
+**State as of:** 2026-02-12
 **Codex Version:** 1.0
 
 ## 1. Overview
@@ -38,13 +38,17 @@ Standard xUnit tests covering internal components:
 - **Engine**: CSS Parser correctness, Layout arithmetic.
 - **Html5lib**: Tests the Tokenizer against the tricky edge cases of the HTML5 spec.
 
-### 3.2 Compliance Runners (`FenBrowser.FenEngine.Testing`)
+### 3.2 Compliance Runners (`FenBrowser.FenEngine.Testing`, `FenBrowser.Test262`)
 
 Specialized runners built to execute standard web test suites against the engine.
 
 - **Test262Runner**: Runs the official ECMA-262 (JavaScript) conformance suite.
 - **WPTTestRunner**: Runs the Web Platform Tests (WPT) for DOM/CSS.
 - **AcidTestRunner**: Specific runner for the Acid2 layout test, verifying standard rendering compliance.
+- **Harness-Generated Test262 NUnit Suite** (`FenBrowser.Test262`):
+  - Uses `Test262Harness` code generation to produce NUnit fixtures directly from the Test262 corpus.
+  - Uses FenRuntime adapter hooks (`BuildTestExecutor`, `ExecuteTest`, `ShouldThrow`) to run generated cases against FenEngine.
+  - Keeps regeneration workflow scripted via `FenBrowser.Test262/generate_test262.ps1`.
 
 ### 3.3 The Verification Loop
 
@@ -76,13 +80,43 @@ Routes URL patterns to `ICommand` implementations.
 
 Manages active browsing sessions (creation, deletion, timeouts).
 
-### 4.2 Compliance Verification (`FenBrowser.FenEngine.Testing`)
+### 4.2 Compliance Verification (`FenBrowser.FenEngine.Testing`, `FenBrowser.Test262`)
 
 #### `Test262Runner.cs`
 
 The ECMA-262 (JavaScript) conformance test runner.
 
 - **Lines 92-213**: **`RunSingleTestAsync`**: Orchestrates a single test case: Parsing YAML metadata, executing JS, and validating results against expected outcomes.
+
+#### `FenBrowser.Test262/Generated/Tests262Harness.Test262Test.generated.cs`
+
+Generated NUnit base fixture from `Test262Harness`.
+
+- **`RunTestCode`** now enforces correct negative-test semantics:
+  - Expected-throw cases fail when no throw occurs.
+  - Unexpected throws fail non-negative tests immediately.
+
+#### `FenBrowser.Test262/Test262RuntimeAdapter.cs`
+
+FenRuntime bridge for generated Test262 fixtures.
+
+- **`State` partial**:
+  - Resolves local Test262 suite path (env override + repo-root discovery).
+  - Configures `Test262StreamLoader` for generated fixture initialization.
+- **`TestHarness.InitializeCustomState`**:
+  - Caches harness include sources (`assert.js`, `sta.js`, and optional includes) for deterministic execution.
+- **`Test262Test` partial**:
+  - **`BuildTestExecutor`**: creates isolated FenRuntime realms and wires host-defined globals.
+  - **`ExecuteTest`**: runs script/module tests and normalizes runtime throw/error completion into NUnit failures.
+  - **`ShouldThrow`**: maps Test262 negative metadata to generated fixture throw expectations.
+
+#### `FenBrowser.Test262/generate_test262.ps1`
+
+Deterministic generation script for Test262 NUnit fixtures.
+
+- Restores local tool (`test262`).
+- Normalizes Windows path to Test262Harness-compatible `/mnt/<drive>/...` format.
+- Regenerates `FenBrowser.Test262/Generated` using `Test262Harness.settings.json`.
 
 #### `WptRunner.cs`
 

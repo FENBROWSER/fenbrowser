@@ -1,6 +1,6 @@
 # FenBrowser Codex - Volume I: System Manifest & Architecture
 
-**State as of:** 2026-02-06
+**State as of:** 2026-02-17
 **Codex Version:** 1.0
 
 ## 1. Introduction
@@ -85,6 +85,7 @@ The executable wrapper.
 ## 5. Build & Debug
 
 - **Solution**: `FenBrowser.sln`
+- **Target Framework (all projects)**: `net8.0` (global.json pinned to SDK 8.0.416, rollForward=latestPatch)
 - **Output**: `bin/Debug/net8.0-windows`
 - **Logs**: Checked in `Videos/FENBROWSER/logs`. `debug_screenshot.png` is the visual truth.
 
