@@ -282,24 +282,22 @@ namespace FenBrowser.FenEngine.Rendering
         // Helper: Image Logic (Consolidated for Performance/DRY)
         // ---------------------------------------------------------
 
+        // Preserve WebP assets (Skia supports them); only rewrite AVIF when absolutely necessary.
         private static string RewriteWebPToJpg(string u)
         {
             try
             {
                 if (string.IsNullOrWhiteSpace(u)) return u;
-                
-                // Quick check before regex to save CPU on WP8.1
-                if (u.IndexOf("webp", StringComparison.OrdinalIgnoreCase) < 0 && 
-                    u.IndexOf("avif", StringComparison.OrdinalIgnoreCase) < 0) 
+
+                // Fast exit when no AVIF tokens present.
+                if (u.IndexOf("avif", StringComparison.OrdinalIgnoreCase) < 0)
                     return u;
 
-                if (u.IndexOf("format=webp", StringComparison.OrdinalIgnoreCase) >= 0)
-                    u = System.Text.RegularExpressions.Regex.Replace(u, @"format=webp", "format=jpg", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                
-                u = System.Text.RegularExpressions.Regex.Replace(u, @"(\?|&)(f|fmt)=webp", "$1$2=jpg", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                
-                if (System.Text.RegularExpressions.Regex.IsMatch(u, @"\.(webp|avif)(\?.*)?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
-                    u = System.Text.RegularExpressions.Regex.Replace(u, @"\.(webp|avif)(\?.*)?$", ".jpg$2", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                // Some CDNs gate AVIF behind query params; fall back to JPEG for compatibility.
+                u = System.Text.RegularExpressions.Regex.Replace(u, @"(\?|&)(f|fmt)=avif", "$1$2=jpg", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                if (System.Text.RegularExpressions.Regex.IsMatch(u, @"\.avif(\?.*)?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                    u = System.Text.RegularExpressions.Regex.Replace(u, @"\.avif(\?.*)?$", ".jpg$1", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             }
             catch (Exception ex)
             {
