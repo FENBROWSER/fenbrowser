@@ -24,8 +24,8 @@ jobs:
         with:
           global-json-file: global.json
 
-      - name: Restore FenBrowser.Host
-        run: dotnet restore FenBrowser.Host/FenBrowser.Host.csproj
+      - name: Restore FenBrowser.Host (win-x64)
+        run: dotnet restore FenBrowser.Host/FenBrowser.Host.csproj -r win-x64
 
       - name: Publish FenBrowser.Host (Release win-x64)
         run: >
