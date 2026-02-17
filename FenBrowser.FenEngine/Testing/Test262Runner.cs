@@ -16,6 +16,7 @@ using System.Collections.Concurrent;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
+using FenBrowser.FenEngine.Core.EventLoop;
 
 namespace FenBrowser.FenEngine.Testing
 {
@@ -149,13 +150,37 @@ namespace FenBrowser.FenEngine.Testing
 
         /// Run a single Test262 test file.
         /// </summary>
+        /// <summary>
+        /// Memory threshold in bytes. If GC reports more than this, skip the test.
+        /// Default: 1.5 GB
+        /// </summary>
+        public long MemoryThresholdBytes { get; set; } = 1_500_000_000L;
+
         public async Task<TestResult> RunSingleTestAsync(string testFile)
         {
             var result = new TestResult { TestFile = testFile };
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            
+
             try
             {
+                // Memory safety: skip test if managed heap is already too large
+                long currentMemory = GC.GetTotalMemory(false);
+                if (currentMemory > MemoryThresholdBytes)
+                {
+                    // Force GC and re-check
+                    GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+                    GC.WaitForPendingFinalizers();
+                    currentMemory = GC.GetTotalMemory(true);
+                    if (currentMemory > MemoryThresholdBytes)
+                    {
+                        result.Passed = false;
+                        result.Error = $"SKIPPED: Memory pressure ({currentMemory / 1_000_000}MB > {MemoryThresholdBytes / 1_000_000}MB threshold)";
+                        result.Actual = "Skipped (memory)";
+                        sw.Stop();
+                        result.Duration = sw.Elapsed;
+                        return result;
+                    }
+                }
                 if (Path.IsPathRooted(testFile))
             {
                // It's absolute, use it directly
@@ -175,7 +200,7 @@ namespace FenBrowser.FenEngine.Testing
                 {
                     var parseSource = metadata.IsOnlyStrict ? "\"use strict\";\n" + content : content;
                     var parseLexer = new Lexer(parseSource);
-                    var parseParser = new Parser(parseLexer, isModule: isModuleGoal);
+                    var parseParser = new Parser(parseLexer, isModule: isModuleGoal, allowReturnOutsideFunction: true);
                     parseParser.ParseProgram();
 
                     if (parseParser.Errors.Count > 0)
@@ -209,7 +234,9 @@ namespace FenBrowser.FenEngine.Testing
                 // We recreate the runtime for each test to ensure isolation
                 // In the future for perf we might reuse it but clean the global scope
                 var runtime = new FenBrowser.FenEngine.Core.FenRuntime();
-                runtime.OnConsoleMessage = (msg) => Console.WriteLine($"[JS-CONSOLE] {msg}");
+                // Suppress JS console output during benchmark runs
+                // Suppress JS console output during benchmark runs
+                // runtime.OnConsoleMessage = (msg) => Console.WriteLine($"[JS-CONSOLE] {msg}");
 
                 if (isModuleGoal &&
                     metadata.Negative &&
@@ -266,11 +293,11 @@ namespace FenBrowser.FenEngine.Testing
                 var fullScript = preludeScript + content;
                 // var fullScript = content; // SKIP HARNESS FOR DEBUGGING
 
-                if (testFile.EndsWith("assign-to-global-undefined.js", StringComparison.OrdinalIgnoreCase))
-                {
-                    Console.WriteLine($"[DBG] metadata.IsOnlyStrict={metadata.IsOnlyStrict}");
-                    Console.WriteLine($"[DBG] pre-run HasBinding('undeclared')={runtime.GlobalEnv.HasBinding("undeclared")}");
-                }
+                // if (testFile.EndsWith("assign-to-global-undefined.js", StringComparison.OrdinalIgnoreCase))
+                // {
+                //     Console.WriteLine($"[DBG] metadata.IsOnlyStrict={metadata.IsOnlyStrict}");
+                //     Console.WriteLine($"[DBG] pre-run HasBinding('undeclared')={runtime.GlobalEnv.HasBinding("undeclared")}");
+                // }
                 
                 // Some tests depend on specific global properties or potentially async
                 // For now, allow generic execution
@@ -284,36 +311,54 @@ namespace FenBrowser.FenEngine.Testing
                         runtime.Context.StrictMode = true;
                     }
 
-                    // Execute with timeout and error checking
+                    // Execute with timeout + memory watchdog
+                    using var cts = new System.Threading.CancellationTokenSource();
+                    long memBefore = GC.GetTotalMemory(false);
+
+                    var token = cts.Token;
                     Task<FenBrowser.FenEngine.Core.Interfaces.IValue> executionTask;
                     if (isModuleGoal)
                     {
                         executionTask = Task.Run<FenBrowser.FenEngine.Core.Interfaces.IValue>(() =>
                         {
                             if (runtime.Context?.ModuleLoader == null)
-                            {
                                 throw new InvalidOperationException("Module loader is not available");
-                            }
-
-                            // Run harness files in script goal, then parse only the test source as module goal.
                             if (!string.IsNullOrWhiteSpace(preludeScript))
                             {
-                                runtime.ExecuteSimple(preludeScript);
+                                var preludeResult = runtime.ExecuteSimple(preludeScript, allowReturn: true, cancellationToken: token);
+                                if (preludeResult.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Error)
+                                    return preludeResult;
                             }
-
                             runtime.Context.ModuleLoader.LoadModuleSrc(content, testFile);
                             return FenValue.Undefined;
                         });
                     }
                     else
                     {
-                        Console.WriteLine($"[DEBUG] Executing script. Length: {fullScript.Length}");
-                        Console.WriteLine($"[DEBUG] Script Tail: {fullScript.Substring(Math.Max(0, fullScript.Length - 100))}");
-                        executionTask = Task.Run(() => runtime.ExecuteSimple(fullScript));
+                        executionTask = Task.Run(() => runtime.ExecuteSimple(fullScript, allowReturn: true, cancellationToken: token));
                     }
-                    
-                    if (await Task.WhenAny(executionTask, Task.Delay(_timeoutMs)) == executionTask)
+
+                    // Memory watchdog: check every 500ms, cancel if memory grows > 500MB for this test
+                    var memoryWatchdog = Task.Run(async () =>
                     {
+                        while (!cts.Token.IsCancellationRequested)
+                        {
+                            await Task.Delay(500, cts.Token).ConfigureAwait(false);
+                            long memNow = GC.GetTotalMemory(false);
+                            if (memNow - memBefore > 500_000_000) // 500MB growth from this single test
+                            {
+                                cts.Cancel();
+                                return;
+                            }
+                        }
+                    }, cts.Token);
+
+                    var timeoutTask = Task.Delay(_timeoutMs, cts.Token);
+                    var completedTask = await Task.WhenAny(executionTask, timeoutTask, memoryWatchdog);
+
+                    if (completedTask == executionTask && !cts.IsCancellationRequested)
+                    {
+                        cts.Cancel(); // stop watchdog
                         // Task completed within timeout
                         // Re-throw if the task itself faulted (unlikely due to try/catch inside ExecuteSimple but possible)
                         var resultValue = await executionTask; 
@@ -326,13 +371,8 @@ namespace FenBrowser.FenEngine.Testing
                         bool isError = false;
                         string errorMsg = "";
 
-                        // DEBUG: Print the raw result value to see what we getting
-                        Console.WriteLine($"[DEBUG] ExecuteSimple Result Type: {resultValue?.Type}");
-                        Console.WriteLine($"[DEBUG] ExecuteSimple Result: {resultValue}");
-
-                        // Check for Error type (value type 8 based on typical enum) or string containing "Error"
-                        // Safer to check the Type property from IValue
-                        if (resultValue != null && (resultValue.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Error || resultValue.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Throw || resultValue.ToString().Contains("=== VERIFICATION RESULTS ===") || resultValue.ToString().StartsWith("Error") || resultValue.ToString().StartsWith("FAIL")))
+                        // Check for Error/Throw value types only — no string-based heuristics
+                        if (resultValue != null && (resultValue.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Error || resultValue.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Throw))
                         {
                             isError = true;
                             errorMsg = resultValue.ToString();
@@ -402,12 +442,20 @@ namespace FenBrowser.FenEngine.Testing
                     }
                     else
                     {
-                        // Timeout
+                        // Timeout or memory watchdog triggered
+                        cts.Cancel(); // stop watchdog if timeout, or stop timeout if memory
                         result.Passed = false;
-                        result.Actual = "Timeout";
-                        result.Error = $"Test timed out after {_timeoutMs}ms";
-                        // Note: We cannot easily abort the stuck thread in .NET Core without risky Thread.Abort
-                        // We leave it to finish (or hang forever in background) and move on.
+                        bool memoryKill = completedTask == memoryWatchdog;
+                        result.Actual = memoryKill ? "MemoryLimit" : "Timeout";
+                        long memAfter = GC.GetTotalMemory(false);
+                        result.Error = memoryKill
+                            ? $"Test killed: memory grew {(memAfter - memBefore) / 1_000_000}MB (limit 500MB)"
+                            : $"Test timed out after {_timeoutMs}ms";
+                        // Reset EventLoop to break any spinning microtask/promise chains
+                        try { EventLoopCoordinator.ResetInstance(); } catch { }
+                        // Force aggressive GC to reclaim memory from abandoned closures
+                        GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+                        GC.WaitForPendingFinalizers();
                     }
                 }
                 catch (Exception ex)
@@ -437,10 +485,21 @@ namespace FenBrowser.FenEngine.Testing
             
             sw.Stop();
             result.Duration = sw.Elapsed;
-            
+
+            // CRITICAL: Reset singleton EventLoop between tests to prevent memory accumulation
+            try { EventLoopCoordinator.ResetInstance(); } catch { }
+
+            // Force GC every 50 tests or if memory is above 500MB
+            long mem = GC.GetTotalMemory(false);
+            if (mem > 500_000_000)
+            {
+                GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+                GC.WaitForPendingFinalizers();
+            }
+
             return result;
         }
-        
+
         /// <summary>
         /// Parse Test262 YAML frontmatter metadata.
         /// </summary>

@@ -398,6 +398,7 @@ namespace FenBrowser.FenEngine.Scripting
         };
         public IObject GetPrototype() => _prototype;
         public void SetPrototype(IObject prototype) => _prototype = prototype;
+        public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
         
         #endregion
 
@@ -972,6 +973,7 @@ namespace FenBrowser.FenEngine.Scripting
         public IEnumerable<string> Keys(IExecutionContext context = null) => new[] { "addColorStop" };
         public IObject GetPrototype() => _prototype;
         public void SetPrototype(IObject prototype) => _prototype = prototype;
+        public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
     }
 
     /// <summary>
@@ -991,6 +993,8 @@ namespace FenBrowser.FenEngine.Scripting
             Height = height;
             Data = new byte[width * height * 4]; // RGBA
         }
+        
+        public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
         
         public FenValue Get(string key, IExecutionContext context = null)
         {
