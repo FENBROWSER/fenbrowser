@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Generic;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.Core; // For Thickness
 using FenBrowser.FenEngine.Layout;
