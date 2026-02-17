@@ -8,6 +8,7 @@ using FenBrowser.Core.Logging;
 using SkiaSharp;
 using FenBrowser.FenEngine.Typography;
 using System.Text.RegularExpressions;
+using FenBrowser.FenEngine.Rendering.Css;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -348,8 +349,43 @@ namespace FenBrowser.FenEngine.Rendering
                     MaskImage = style?.MaskImage,
                     // Use BorderBox for masking area by default (standard box-mask)
                     MaskBounds = box.BorderBox,
-                    Opacity = (float)(style.Opacity ?? 1.0)
+                    Opacity = (float)(style.Opacity ?? 1.0),
+                    Filter = style?.Filter,
+                    BackdropFilter = style?.BackdropFilter
                 };
+
+                // Parse CSS transform and set on stacking context
+                if (!string.IsNullOrEmpty(style?.Transform) && style.Transform != "none")
+                {
+                    var cssTransform = CssTransform3D.Parse(style.Transform);
+                    if (cssTransform.HasTransform)
+                    {
+                        var matrix = cssTransform.ToSKMatrix();
+                        if (matrix != SKMatrix.Identity)
+                        {
+                            // Determine transform-origin (default is center of border box per CSS spec)
+                            float ox = box.BorderBox.MidX;
+                            float oy = box.BorderBox.MidY;
+
+                            if (!string.IsNullOrEmpty(style.TransformOrigin))
+                            {
+                                ParseTransformOrigin(style.TransformOrigin, box.BorderBox, out ox, out oy);
+                            }
+
+                            // Build full matrix with transform-origin:
+                            // Effect: translate(ox,oy) * transform * translate(-ox,-oy) * point
+                            // PreConcat is right-multiply, so we build: origin * matrix * inverseOrigin
+                            var origin = SKMatrix.CreateTranslation(ox, oy);
+                            var inverseOrigin = SKMatrix.CreateTranslation(-ox, -oy);
+                            var full = SKMatrix.CreateIdentity();
+                            full = full.PreConcat(origin);
+                            full = full.PreConcat(matrix);
+                            full = full.PreConcat(inverseOrigin);
+
+                            childContext.TransformMatrix = full;
+                        }
+                    }
+                }
 
                 // Check for overflow/scroll
                 bool isScrollable = (style?.OverflowX == "scroll" || style?.OverflowX == "auto" || 
@@ -790,8 +826,8 @@ namespace FenBrowser.FenEngine.Rendering
             }
             
             // 0. Shadow (below background)
-            var shadowNode = BuildBoxShadowNode(node, bounds, style, box);
-            if (shadowNode != null) nodes.Add(shadowNode);
+            var shadowNodes = BuildBoxShadowNodes(node, bounds, style, box);
+            if (shadowNodes != null) nodes.AddRange(shadowNodes);
 
             // SPECIAL: Inline Elements (Span, A, etc.) need constructed backgrounds from children
             bool isInlineGroup = elemNode != null && string.Equals(style?.Display, "inline", StringComparison.OrdinalIgnoreCase) && !(node is Text);
@@ -1133,6 +1169,24 @@ namespace FenBrowser.FenEngine.Rendering
                     return "○";
                 case "square":
                     return "■";
+                case "lower-greek":
+                    return value > 0 ? char.ConvertFromUtf32(0x03B1 + ((value - 1) % 24)) : value.ToString();
+                case "armenian":
+                    // Simplified Armenian numerals (1-38). Fallback to decimal beyond range.
+                    string[] armenian = { "Ա", "Բ", "Գ", "Դ", "Ե", "Զ", "Է", "Ը", "Թ", "Ժ",
+                                          "Ի", "Լ", "Խ", "Ծ", "Կ", "Հ", "Ձ", "Ղ", "Ճ", "Մ",
+                                          "Յ", "Ն", "Շ", "Ո", "Չ", "Պ", "Ջ", "Ռ", "Ս", "Վ",
+                                          "Տ", "Ր", "Ց", "Ու", "Փ", "Ք", "Օ", "Ֆ" };
+                    if (value >= 1 && value <= armenian.Length) return armenian[value - 1];
+                    return value.ToString();
+                case "georgian":
+                    // Georgian numeral (an) simplified 1-38
+                    string[] georgian = { "ა", "ბ", "გ", "დ", "ე", "ვ", "ზ", "ჱ", "თ", "ი",
+                                          "კ", "ლ", "მ", "ნ", "ჲ", "ო", "პ", "ჟ", "რ", "ს",
+                                          "ტ", "უ", "ფ", "ქ", "ღ", "ყ", "შ", "ჩ", "ც", "ძ",
+                                          "წ", "ჭ", "ხ", "ჴ", "ჯ", "ჰ", "ჵ", "ჶ" };
+                    if (value >= 1 && value <= georgian.Length) return georgian[value - 1];
+                    return value.ToString();
                 default:
                     return value.ToString();
             }
@@ -1413,16 +1467,212 @@ namespace FenBrowser.FenEngine.Rendering
                     radius[3] = new SKPoint(Math.Max(0, radius[3].X - leftW), Math.Max(0, radius[3].Y - botW));
                 }
             }
-            
+
+            // Gradient support: translate CSS gradient string into SKShader
+            SKShader gradient = null;
+            if (!string.IsNullOrEmpty(style?.BackgroundImage) && style.BackgroundImage.Contains("gradient", StringComparison.OrdinalIgnoreCase))
+            {
+                gradient = TryCreateGradient(style.BackgroundImage, renderBounds);
+            }
+
             return new BackgroundPaintNode
             {
                 Bounds = renderBounds,
                 SourceNode = node,
-                Color = bgColor,
+                Color = gradient == null ? bgColor : null,
+                Gradient = gradient,
                 BorderRadius = radius,
                 IsFocused = isFocused,
                 IsHovered = isHovered
             };
+        }
+
+        private SKShader TryCreateGradient(string cssValue, SKRect bounds)
+        {
+            if (string.IsNullOrEmpty(cssValue)) return null;
+            var trimmed = cssValue.Trim();
+
+            if (trimmed.StartsWith("linear-gradient", StringComparison.OrdinalIgnoreCase) ||
+                trimmed.StartsWith("repeating-linear-gradient", StringComparison.OrdinalIgnoreCase))
+            {
+                return CreateLinearGradientShader(trimmed, bounds);
+            }
+
+            if (trimmed.StartsWith("radial-gradient", StringComparison.OrdinalIgnoreCase) ||
+                trimmed.StartsWith("repeating-radial-gradient", StringComparison.OrdinalIgnoreCase))
+            {
+                return CreateRadialGradientShader(trimmed, bounds);
+            }
+
+            return null;
+        }
+
+        private SKShader CreateLinearGradientShader(string css, SKRect bounds)
+        {
+            int start = css.IndexOf('(');
+            int end = css.LastIndexOf(')');
+            if (start < 0 || end <= start) return null;
+
+            var inner = css.Substring(start + 1, end - start - 1);
+            var parts = SplitTopLevelComma(inner);
+            if (parts.Count < 2) return null;
+
+            string first = parts[0].Trim();
+            double angleDeg = 180; // default "to bottom"
+            int colorStartIndex = 0;
+
+            if (first.Contains("deg", StringComparison.OrdinalIgnoreCase))
+            {
+                if (double.TryParse(first.Replace("deg", "").Trim(), out var deg))
+                {
+                    angleDeg = deg;
+                    colorStartIndex = 1;
+                }
+            }
+            else if (first.StartsWith("to ", StringComparison.OrdinalIgnoreCase))
+            {
+                colorStartIndex = 1;
+                angleDeg = DirectionToAngle(first);
+            }
+
+            var colors = new List<SKColor>();
+            var positions = new List<float>();
+
+            for (int i = colorStartIndex; i < parts.Count; i++)
+            {
+                var stop = parts[i].Trim();
+                if (string.IsNullOrEmpty(stop)) continue;
+
+                string colorPart = stop;
+                float? pos = null;
+
+                int split = FindLastTopLevelSpace(stop);
+                if (split > 0 && split < stop.Length - 1)
+                {
+                    var posStr = stop.Substring(split + 1).Trim();
+                    colorPart = stop.Substring(0, split).Trim();
+                    if (posStr.EndsWith("%") && float.TryParse(posStr.TrimEnd('%'), out var pct))
+                    {
+                        pos = Math.Clamp(pct / 100f, 0f, 1f);
+                    }
+                }
+
+                if (SKColor.TryParse(colorPart, out var color))
+                {
+                    colors.Add(color);
+                    if (pos.HasValue) positions.Add(pos.Value);
+                }
+            }
+
+            if (colors.Count == 0) return null;
+            float[] posArr = positions.Count == colors.Count ? positions.ToArray() : null;
+
+            double rad = angleDeg * Math.PI / 180.0;
+            var dir = new SKPoint((float)Math.Sin(rad), -(float)Math.Cos(rad)); // CSS 0deg = to top
+            float half = (float)Math.Max(bounds.Width, bounds.Height);
+            var center = new SKPoint(bounds.MidX, bounds.MidY);
+            var startPt = new SKPoint(center.X - dir.X * half, center.Y - dir.Y * half);
+            var endPt = new SKPoint(center.X + dir.X * half, center.Y + dir.Y * half);
+
+            return SKShader.CreateLinearGradient(startPt, endPt, colors.ToArray(), posArr, SKShaderTileMode.Clamp);
+        }
+
+        private SKShader CreateRadialGradientShader(string css, SKRect bounds)
+        {
+            int start = css.IndexOf('(');
+            int end = css.LastIndexOf(')');
+            if (start < 0 || end <= start) return null;
+
+            var inner = css.Substring(start + 1, end - start - 1);
+            var parts = SplitTopLevelComma(inner);
+            if (parts.Count < 2) return null;
+
+            var center = new SKPoint(bounds.MidX, bounds.MidY);
+            float radius = Math.Max(bounds.Width, bounds.Height) / 2f;
+
+            var colors = new List<SKColor>();
+            var positions = new List<float>();
+
+            for (int i = 0; i < parts.Count; i++)
+            {
+                var stop = parts[i].Trim();
+                if (string.IsNullOrEmpty(stop)) continue;
+
+                string colorPart = stop;
+                float? pos = null;
+                int split = FindLastTopLevelSpace(stop);
+                if (split > 0 && split < stop.Length - 1)
+                {
+                    var posStr = stop.Substring(split + 1).Trim();
+                    colorPart = stop.Substring(0, split).Trim();
+                    if (posStr.EndsWith("%") && float.TryParse(posStr.TrimEnd('%'), out var pct))
+                    {
+                        pos = Math.Clamp(pct / 100f, 0f, 1f);
+                    }
+                }
+
+                if (SKColor.TryParse(colorPart, out var color))
+                {
+                    colors.Add(color);
+                    if (pos.HasValue) positions.Add(pos.Value);
+                }
+            }
+
+            if (colors.Count == 0) return null;
+            float[] posArr = positions.Count == colors.Count ? positions.ToArray() : null;
+
+            return SKShader.CreateRadialGradient(center, radius, colors.ToArray(), posArr, SKShaderTileMode.Clamp);
+        }
+
+        private static double DirectionToAngle(string dir)
+        {
+            dir = dir.ToLowerInvariant().Replace("to", "").Trim();
+            bool up = dir.Contains("top");
+            bool down = dir.Contains("bottom");
+            bool left = dir.Contains("left");
+            bool right = dir.Contains("right");
+
+            if (up && right) return 45;
+            if (down && right) return 135;
+            if (down && left) return 225;
+            if (up && left) return 315;
+            if (right) return 90;
+            if (down) return 180;
+            if (left) return 270;
+            return 0;
+        }
+
+        private static int FindLastTopLevelSpace(string input)
+        {
+            int depth = 0;
+            for (int i = input.Length - 1; i >= 0; i--)
+            {
+                char c = input[i];
+                if (c == ')') depth++;
+                else if (c == '(') depth--;
+                else if (c == ' ' && depth == 0) return i;
+            }
+            return -1;
+        }
+
+        private static List<string> SplitTopLevelComma(string value)
+        {
+            var results = new List<string>();
+            int depth = 0;
+            int start = 0;
+            for (int i = 0; i < value.Length; i++)
+            {
+                char c = value[i];
+                if (c == '(') depth++;
+                else if (c == ')') depth--;
+                else if (c == ',' && depth == 0)
+                {
+                    results.Add(value.Substring(start, i - start));
+                    start = i + 1;
+                }
+            }
+            if (start < value.Length) results.Add(value.Substring(start));
+            return results;
         }
 
         private ImagePaintNode BuildBackgroundImageNode(Node node, Layout.BoxModel box, CssComputed style)
@@ -1583,25 +1833,63 @@ namespace FenBrowser.FenEngine.Rendering
             };
         }
 
-        private BoxShadowPaintNode BuildBoxShadowNode(Node node, SKRect bounds, CssComputed style, Layout.BoxModel box)
+        private List<BoxShadowPaintNode> BuildBoxShadowNodes(Node node, SKRect bounds, CssComputed style, Layout.BoxModel box)
         {
             if (string.IsNullOrEmpty(style?.BoxShadow) || style.BoxShadow == "none") return null;
-            return ParseBoxShadow(node, style.BoxShadow, bounds, ExtractBorderRadius(box, style));
+            return ParseBoxShadows(node, style.BoxShadow, bounds, ExtractBorderRadius(box, style));
         }
 
-        private BoxShadowPaintNode ParseBoxShadow(Node node, string shadowStr, SKRect bounds, SKPoint[] borderRadius)
+        private List<BoxShadowPaintNode> ParseBoxShadows(Node node, string shadowStr, SKRect bounds, SKPoint[] borderRadius)
+        {
+            var results = new List<BoxShadowPaintNode>();
+
+            // Split by commas, but respect parentheses (rgba contains commas)
+            var shadows = SplitShadowValues(shadowStr);
+
+            foreach (var single in shadows)
+            {
+                var parsed = ParseSingleBoxShadow(node, single.Trim(), bounds, borderRadius);
+                if (parsed != null) results.Add(parsed);
+            }
+
+            return results.Count > 0 ? results : null;
+        }
+
+        private static List<string> SplitShadowValues(string value)
+        {
+            var results = new List<string>();
+            int depth = 0;
+            int start = 0;
+
+            for (int i = 0; i < value.Length; i++)
+            {
+                char c = value[i];
+                if (c == '(') depth++;
+                else if (c == ')') depth--;
+                else if (c == ',' && depth == 0)
+                {
+                    results.Add(value.Substring(start, i - start));
+                    start = i + 1;
+                }
+            }
+
+            if (start < value.Length)
+                results.Add(value.Substring(start));
+
+            return results;
+        }
+
+        private BoxShadowPaintNode ParseSingleBoxShadow(Node node, string shadowStr, SKRect bounds, SKPoint[] borderRadius)
         {
             try
             {
-                // Basic parser for "0 2px 4px rgba(0,0,0,0.2)"
-                // TODO: Support multiple shadows (comma separated)
                 var parts = shadowStr.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
                 if (parts.Length < 3) return null;
 
                 float offsetX = 0, offsetY = 0, blur = 0, spread = 0;
                 SKColor color = SKColors.Black;
                 bool inset = shadowStr.Contains("inset");
-                
+
                 int valIndex = 0;
                 if (parts[0] == "inset") valIndex++;
 
@@ -1612,7 +1900,6 @@ namespace FenBrowser.FenEngine.Rendering
                 if (valIndex < parts.Length && float.TryParse(parts[valIndex].Replace("px", ""), out float v4)) { spread = v4; valIndex++; }
 
                 // Attempt to parse color from remaining parts
-                // This is tricky because color can be "rgba(0, 0, 0, 0.2)" which has spaces
                 string colorStr = "";
                 for (int i = valIndex; i < parts.Length; i++)
                 {
@@ -1622,16 +1909,15 @@ namespace FenBrowser.FenEngine.Rendering
 
                 if (!string.IsNullOrEmpty(colorStr))
                 {
-                   if (colorStr.StartsWith("rgba")) 
+                   if (colorStr.StartsWith("rgba"))
                    {
-                       // Re-assemble rgba string if split
                        int start = shadowStr.IndexOf("rgba");
                        if (start >= 0) {
                            int end = shadowStr.IndexOf(")", start);
                            if (end > start) colorStr = shadowStr.Substring(start, end - start + 1);
                        }
                    }
-                   
+
                    SKColor.TryParse(colorStr, out color);
                 }
 
@@ -1647,7 +1933,7 @@ namespace FenBrowser.FenEngine.Rendering
                     Inset = inset
                 };
             }
-            catch 
+            catch
             {
                 return null;
             }
@@ -1795,6 +2081,25 @@ namespace FenBrowser.FenEngine.Rendering
                 // Show full text to debug whitespace
                 FenBrowser.Core.FenLogger.Info($"[ML-TEXT-POS] '{sampleText}' (Len={sampleText.Length}) TextTop={box.ContentBox.Top:F1} ParentTop={parentContentBox.Top:F1} ContainerH={mlContainerHeight:F1} TotalLH={totalLineHeight:F1} Lines={box.Lines.Count} Offset={verticalCenterOffset:F1}", FenBrowser.Core.Logging.LogCategory.Layout);
                 
+                // Check if parent element requires text-overflow ellipsis
+                bool applyEllipsis = false;
+                float containerWidth = 0;
+                if (textNode.ParentNode != null)
+                {
+                    CssComputed pStyle = null;
+                    _styles.TryGetValue(textNode.ParentNode, out pStyle);
+                    if (pStyle != null &&
+                        string.Equals(pStyle.TextOverflow, "ellipsis", StringComparison.OrdinalIgnoreCase) &&
+                        (pStyle.Overflow == "hidden" || pStyle.OverflowX == "hidden"))
+                    {
+                        applyEllipsis = true;
+                        if (_boxes.TryGetValue(textNode.ParentNode, out var parentBox))
+                        {
+                            containerWidth = parentBox.ContentBox.Width;
+                        }
+                    }
+                }
+
                 foreach (var line in box.Lines)
                 {
                     if (string.IsNullOrEmpty(line.Text))
@@ -1819,8 +2124,38 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         continue;
                     }
+
+                    // Apply text-overflow: ellipsis if needed
+                    string lineDisplayText = line.Text;
+                    if (applyEllipsis && containerWidth > 0 && resolvedLineWidth > containerWidth)
+                    {
+                        using var measurePaint = new SKPaint { Typeface = typeface, TextSize = fontSize, IsAntialias = true };
+                        float ellipsisWidth = measurePaint.MeasureText("...");
+                        float availableForText = containerWidth - ellipsisWidth;
+
+                        if (availableForText > 0)
+                        {
+                            string text = line.Text;
+                            int lo = 0, hi = text.Length;
+                            while (lo < hi)
+                            {
+                                int mid = (lo + hi + 1) / 2;
+                                float w = measurePaint.MeasureText(text.Substring(0, mid));
+                                if (w <= availableForText) lo = mid;
+                                else hi = mid - 1;
+                            }
+
+                            lineDisplayText = lo > 0 ? text.Substring(0, lo) + "..." : "...";
+                        }
+                        else
+                        {
+                            lineDisplayText = "...";
+                        }
+                        resolvedLineWidth = containerWidth;
+                    }
+
                     var lineBounds = new SKRect(absX, absY, absX + resolvedLineWidth, absY + line.Height);
-                    
+
                     // Origin for text drawing (Baseline)
                     var textOrigin = new SKPoint(absX, absY + line.Baseline);
 
@@ -1832,7 +2167,7 @@ namespace FenBrowser.FenEngine.Rendering
                         FontSize = fontSize,
                         Typeface = typeface,
                         TextOrigin = textOrigin,
-                        FallbackText = line.Text, // Each line node holds its own text segment
+                        FallbackText = lineDisplayText,
                         TextDecorations = textDecorations,
                         IsFocused = isFocused,
                         IsHovered = isHovered
@@ -1872,7 +2207,50 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 return null;
             }
-            
+
+            // Apply text-overflow: ellipsis for fallback single-line path
+            if (textNode.ParentNode != null)
+            {
+                CssComputed fbParentStyle = null;
+                _styles.TryGetValue(textNode.ParentNode, out fbParentStyle);
+                if (fbParentStyle != null &&
+                    string.Equals(fbParentStyle.TextOverflow, "ellipsis", StringComparison.OrdinalIgnoreCase) &&
+                    (fbParentStyle.Overflow == "hidden" || fbParentStyle.OverflowX == "hidden"))
+                {
+                    float fbContainerWidth = 0;
+                    if (_boxes.TryGetValue(textNode.ParentNode, out var fbParentBox))
+                    {
+                        fbContainerWidth = fbParentBox.ContentBox.Width;
+                    }
+
+                    if (fbContainerWidth > 0 && fallbackTextWidth > fbContainerWidth)
+                    {
+                        using var fbMeasurePaint = new SKPaint { Typeface = typeface, TextSize = fontSize, IsAntialias = true };
+                        float fbEllipsisWidth = fbMeasurePaint.MeasureText("...");
+                        float fbAvailable = fbContainerWidth - fbEllipsisWidth;
+
+                        if (fbAvailable > 0)
+                        {
+                            int lo = 0, hi = displayText.Length;
+                            while (lo < hi)
+                            {
+                                int mid = (lo + hi + 1) / 2;
+                                float w = fbMeasurePaint.MeasureText(displayText.Substring(0, mid));
+                                if (w <= fbAvailable) lo = mid;
+                                else hi = mid - 1;
+                            }
+
+                            displayText = lo > 0 ? displayText.Substring(0, lo) + "..." : "...";
+                        }
+                        else
+                        {
+                            displayText = "...";
+                        }
+                        fallbackTextWidth = fbContainerWidth;
+                    }
+                }
+            }
+
             float fbLineHeight = fontSize * 1.2f;
             float resolvedBoxHeight = Math.Max(box.ContentBox.Height, fbLineHeight);
             float resolvedBoxWidth = Math.Max(box.ContentBox.Width, fallbackTextWidth);
@@ -2156,12 +2534,26 @@ namespace FenBrowser.FenEngine.Rendering
              // else Left: x is already ContentBox.Left
 
              // Color
-             SKColor textColor = style?.ForegroundColor ?? SKColors.Black;
-             if (isPlaceholder)
-             {
-                 // Dim placeholder text
-                 textColor = new SKColor(textColor.Red, textColor.Green, textColor.Blue, (byte)(textColor.Alpha * 0.6));
-             }
+            SKColor textColor = style?.ForegroundColor ?? SKColors.Black;
+            if (isPlaceholder)
+            {
+                // Prefer ::placeholder computed color; otherwise dim base color
+                var phStyle = style?.Placeholder;
+                if (phStyle?.ForegroundColor != null)
+                {
+                    textColor = phStyle.ForegroundColor.Value;
+                }
+                else
+                {
+                    textColor = new SKColor(textColor.Red, textColor.Green, textColor.Blue, (byte)(textColor.Alpha * 0.6));
+                }
+
+                if (phStyle?.Opacity is double phOpacity)
+                {
+                    byte alpha = (byte)Math.Clamp(phOpacity * 255.0, 0, 255);
+                    textColor = textColor.WithAlpha(alpha);
+                }
+            }
 
              return new TextPaintNode
              {
@@ -2803,7 +3195,65 @@ namespace FenBrowser.FenEngine.Rendering
             string listStylePosition = style?.ListStylePosition ?? "outside";
             
             // Check for explicit list-style-image (URL)
-            // TODO: Implement list-style-image support
+            string listStyleImage = style?.ListStyleImage;
+            if (!string.IsNullOrEmpty(listStyleImage) && listStyleImage != "none")
+            {
+                string url = listStyleImage.Trim();
+                if (url.StartsWith("url(", StringComparison.OrdinalIgnoreCase))
+                {
+                    url = url.Substring(4, url.Length - 5).Trim('\'', '\"', ' ');
+                }
+
+                // Resolve relative URL against baseUri if present
+                if (!string.IsNullOrEmpty(url) &&
+                    !url.StartsWith("http", StringComparison.OrdinalIgnoreCase) &&
+                    !url.StartsWith("data:", StringComparison.OrdinalIgnoreCase) &&
+                    !string.IsNullOrEmpty(_baseUri))
+                {
+                    url = new Uri(new Uri(_baseUri), url).ToString();
+                }
+
+                var bitmap = ImageLoader.GetImage(url);
+                float markerSize = (float)(style?.FontSize ?? 16.0);
+                float markerX, markerY;
+
+                float markerBaselineOffset = markerSize * 0.85f;
+                if (box.Lines != null && box.Lines.Count > 0)
+                    markerBaselineOffset = box.Lines[0].Baseline;
+
+                markerY = box.ContentBox.Top + markerBaselineOffset;
+
+                if (listStylePosition == "inside")
+                    markerX = box.ContentBox.Left + 4;
+                else
+                    markerX = Math.Max(4, box.ContentBox.Left - markerSize - 14);
+
+                if (bitmap != null)
+                {
+                    return new ImagePaintNode
+                    {
+                        SourceNode = node,
+                        Bounds = new SKRect(markerX, markerY - markerSize, markerX + markerSize, markerY),
+                        Bitmap = bitmap,
+                        ObjectFit = "contain",
+                        IsFocused = isFocused,
+                        IsHovered = isHovered
+                    };
+                }
+
+                return new CustomPaintNode
+                {
+                    SourceNode = node,
+                    Bounds = new SKRect(markerX, markerY - markerSize, markerX + markerSize, markerY),
+                    IsFocused = isFocused,
+                    IsHovered = isHovered,
+                    PaintAction = (canvas, bounds) =>
+                    {
+                        using var paint = new SKPaint { Color = style?.ForegroundColor ?? SKColors.Black, IsAntialias = true, TextSize = markerSize * 0.6f };
+                        canvas.DrawText("•", bounds.Left + 2, bounds.Bottom - 2, paint);
+                    }
+                };
+            }
             
             // Determine marker text/shape
             string markerText = "•"; // Default disc
@@ -3015,10 +3465,51 @@ namespace FenBrowser.FenEngine.Rendering
             
             // Note: overflow: hidden does NOT create a stacking context by itself.
             // It will be handled via ClipPaintNode in the normal flow.
-            
+
             return false;
         }
-        
+
+        /// <summary>
+        /// Parses CSS transform-origin into x,y coordinates relative to the element's border box.
+        /// Default is "50% 50%" (center of border box).
+        /// </summary>
+        private static void ParseTransformOrigin(string value, SKRect bounds, out float ox, out float oy)
+        {
+            ox = bounds.MidX;
+            oy = bounds.MidY;
+
+            if (string.IsNullOrWhiteSpace(value)) return;
+
+            var parts = value.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+
+            if (parts.Length >= 1)
+            {
+                ox = ParseOriginValue(parts[0], bounds.Left, bounds.Width);
+            }
+            if (parts.Length >= 2)
+            {
+                oy = ParseOriginValue(parts[1], bounds.Top, bounds.Height);
+            }
+        }
+
+        /// <summary>
+        /// Parses a single transform-origin axis value (keyword, percentage, or length).
+        /// </summary>
+        private static float ParseOriginValue(string val, float start, float size)
+        {
+            val = val.Trim().ToLowerInvariant();
+            if (val == "left" || val == "top") return start;
+            if (val == "right" || val == "bottom") return start + size;
+            if (val == "center") return start + size / 2;
+            if (val.EndsWith("%") && float.TryParse(val.TrimEnd('%'), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float pct))
+                return start + size * pct / 100f;
+            if (val.EndsWith("px") && float.TryParse(val.Replace("px", ""), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float px))
+                return start + px;
+            if (float.TryParse(val, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float raw))
+                return start + raw;
+            return start + size / 2; // fallback to center
+        }
+
         /// <summary>
         /// Internal stacking context for building.
         /// Gathers nodes and child contexts, then flattens to paint order.
@@ -3037,6 +3528,13 @@ namespace FenBrowser.FenEngine.Rendering
             public SKRect? ClipBounds { get; set; }
             public SKPoint? ScrollOffset { get; set; }
             public float Opacity { get; set; } = 1.0f;
+
+            // CSS Transform support
+            public SKMatrix? TransformMatrix { get; set; }
+
+            // CSS filter / backdrop-filter (stored as raw strings; parsed by renderer)
+            public string Filter { get; set; }
+            public string BackdropFilter { get; set; }
             
             // Categorized by paint order (CSS spec)
             private readonly List<BuilderStackingContext> _negativeZContexts = new List<BuilderStackingContext>();
@@ -3189,7 +3687,23 @@ namespace FenBrowser.FenEngine.Rendering
                         Children = result,
                         SourceNode = SourceNode
                     };
-                    return new List<PaintNodeBase> { opacityNode };
+                    result = new List<PaintNodeBase> { opacityNode };
+                }
+
+                // Apply CSS Transform (outermost wrapper — transform affects entire stacking context)
+                if (TransformMatrix.HasValue || !string.IsNullOrEmpty(Filter) || !string.IsNullOrEmpty(BackdropFilter))
+                {
+                    var scNode = new StackingContextPaintNode
+                    {
+                        Bounds = MaskBounds,
+                        ZIndex = ZIndex,
+                        Transform = TransformMatrix ?? SKMatrix.Identity,
+                        Children = result,
+                        SourceNode = SourceNode,
+                        Filter = Filter,
+                        BackdropFilter = BackdropFilter
+                    };
+                    return new List<PaintNodeBase> { scNode };
                 }
 
                 return result;

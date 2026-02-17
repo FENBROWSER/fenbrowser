@@ -7,6 +7,7 @@ using System.Net.Http;
 using System.Threading.Tasks;
 using System.Text.Json;
 using FenBrowser.Core;
+using FenBrowser.Core.Network;
 using FenBrowser.Core.Security;
 using FenBrowser.FenEngine.Security; // Added
 using FenBrowser.Core.Logging;
@@ -262,29 +263,25 @@ namespace FenBrowser.FenEngine.Rendering
             var config = NetworkConfiguration.Instance;
             var handler = FenBrowser.Core.Network.HttpClientFactory.CreateHandler();
             
-            // Add certificate callback for security display
+            // Add certificate callback for security display + optional soft-fail
             handler.ServerCertificateCustomValidationCallback = (msg, cert, chain, errors) =>
             {
-                // Capture certificate info
                 var info = new CertificateInfo
                 {
-                    Subject = cert.Subject,
-                    Issuer = cert.Issuer,
-                    NotBefore = cert.GetEffectiveDateString() != null ? DateTime.Parse(cert.GetEffectiveDateString()) : DateTime.MinValue,
-                    IsValid = errors == System.Net.Security.SslPolicyErrors.None,
+                    Subject   = cert.Subject,
+                    Issuer    = cert.Issuer,
+                    NotBefore = cert is System.Security.Cryptography.X509Certificates.X509Certificate2 cert2 ? cert2.NotBefore : DateTime.MinValue,
+                    NotAfter  = cert is System.Security.Cryptography.X509Certificates.X509Certificate2 cert2b ? cert2b.NotAfter : DateTime.MaxValue,
+                    IsValid   = errors == System.Net.Security.SslPolicyErrors.None,
                     Thumbprint = cert.GetCertHashString()
                 };
 
-                if (cert is System.Security.Cryptography.X509Certificates.X509Certificate2 cert2)
-                {
-                    info.NotBefore = cert2.NotBefore;
-                    info.NotAfter = cert2.NotAfter;
-                    info.Thumbprint = cert2.Thumbprint;
-                }
-
                 _lastCertificate = info;
-                _lastSslErrors = errors;
+                _lastSslErrors   = errors;
 
+                // Enforce strict validation by default; only allow override via settings.
+                if (FenBrowser.Core.NetworkConfiguration.Instance.IgnoreCertificateErrors)
+                    return true;
                 return errors == System.Net.Security.SslPolicyErrors.None;
             };
             
@@ -607,6 +604,9 @@ namespace FenBrowser.FenEngine.Rendering
             if (_disposed) return false;
                 if (string.IsNullOrWhiteSpace(url)) return false;
 
+                // Log raw navigation input for diagnostics
+                try { FenLogger.Info($"[BrowserHost] Nav raw='{url}'", LogCategory.Navigation); } catch {}
+
                 // SPECIAL HANDLING: fen://history
                 if (url.Equals("fen://history", StringComparison.OrdinalIgnoreCase))
                 {
@@ -654,6 +654,22 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         isViewSource = true;
                         url = url.Substring("view-source:".Length);
+                    }
+
+                    // Normalize if missing scheme
+                    if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed))
+                    {
+                        var candidate = "https://" + url.TrimStart('/');
+                        if (Uri.TryCreate(candidate, UriKind.Absolute, out var normalized))
+                        {
+                            try { FenLogger.Info($"[BrowserHost] Normalized missing-scheme -> '{normalized}'", LogCategory.Navigation); } catch {}
+                            url = normalized.AbsoluteUri;
+                        }
+                    }
+                    else
+                    {
+                        try { FenLogger.Info($"[BrowserHost] Parsed absolute Uri='{parsed}'", LogCategory.Navigation); } catch {}
+                        url = parsed.AbsoluteUri; // canonicalize
                     }
 
                 Console.WriteLine($"[NavigateAsync] Start: {url}");
