@@ -1,0 +1,46 @@
+name: Build FenBrowser EXE
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK from global.json
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore FenBrowser.Host
+        run: dotnet restore FenBrowser.Host/FenBrowser.Host.csproj
+
+      - name: Publish FenBrowser.Host (Release win-x64)
+        run: >
+          dotnet publish FenBrowser.Host/FenBrowser.Host.csproj
+          --no-restore
+          -c Release
+          -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -o artifacts/fenbrowser-win-x64
+
+      - name: Upload EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fenbrowser-win-x64
+          path: artifacts/fenbrowser-win-x64
+          if-no-files-found: error

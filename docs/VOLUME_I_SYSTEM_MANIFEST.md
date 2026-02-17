@@ -87,6 +87,7 @@ The executable wrapper.
 - **Solution**: `FenBrowser.sln`
 - **Target Framework (all projects)**: `net8.0` (global.json pinned to SDK 8.0.416, rollForward=latestPatch)
 - **Output**: `bin/Debug/net8.0-windows`
+- **CI Build Artifact**: `.github/workflows/build-fenbrowser-exe.yml` publishes `FenBrowser.Host` in `Release` for `win-x64` as a self-contained single-file executable and uploads artifact `fenbrowser-win-x64`.
 - **Logs**: Checked in `Videos/FENBROWSER/logs`. `debug_screenshot.png` is the visual truth.
 
 ---
