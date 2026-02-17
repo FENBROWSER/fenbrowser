@@ -673,6 +673,7 @@ namespace FenBrowser.FenEngine.DOM
                 FenLogger.Debug($"[DocumentWrapper] Cookie set: {parts[0]}", FenBrowser.Core.Logging.LogCategory.JavaScript);
             }
         }
+        public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
     }
 }
 

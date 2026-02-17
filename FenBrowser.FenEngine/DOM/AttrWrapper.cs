@@ -99,5 +99,6 @@ namespace FenBrowser.FenEngine.DOM
             
         public IObject GetPrototype() => _prototype;
         public void SetPrototype(IObject prototype) => _prototype = prototype;
+        public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
     }
 }

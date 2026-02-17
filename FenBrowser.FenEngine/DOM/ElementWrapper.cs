@@ -428,6 +428,7 @@ namespace FenBrowser.FenEngine.DOM
             public IEnumerable<string> Keys(IExecutionContext context = null) => _methods.Keys;
             public IObject GetPrototype() => _prototype;
             public void SetPrototype(IObject prototype) => _prototype = prototype;
+            public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
         }
 
         private FenValue GetInnerHTML()
@@ -1187,6 +1188,7 @@ namespace FenBrowser.FenEngine.DOM
         public IEnumerable<string> Keys(IExecutionContext context = null) => new string[0];
         public IObject GetPrototype() => _prototype;
         public void SetPrototype(IObject prototype) => _prototype = prototype;
+        public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
     }
 
     public class DOMStringMap : IObject
@@ -1223,6 +1225,7 @@ namespace FenBrowser.FenEngine.DOM
         public IEnumerable<string> Keys(IExecutionContext context = null) => new string[0];
         public IObject GetPrototype() => _prototype;
         public void SetPrototype(IObject prototype) => _prototype = prototype;
+        public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
 
         private string CamelToKebab(string s)
         {
@@ -1344,6 +1347,7 @@ namespace FenBrowser.FenEngine.DOM
         }
         public IObject GetPrototype() => _prototype;
         public void SetPrototype(IObject prototype) => _prototype = prototype;
+        public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
 
         private Dictionary<string, string> ParseStyle(string style)
         {
