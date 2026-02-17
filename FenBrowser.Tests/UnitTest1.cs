@@ -1,4 +1,4 @@
-﻿namespace FenBrowser.Tests;
+namespace FenBrowser.Tests;
 
 public class UnitTest1
 {

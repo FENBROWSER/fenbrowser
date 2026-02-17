@@ -1,7 +1,7 @@
 using System;
 using System.Linq;
 using Xunit;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Scripting;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
@@ -101,7 +101,7 @@ namespace FenBrowser.Tests.DOM
              method.Invoke(new FenValue[] { FenValue.FromObject(attrWrapper) }, _context);
              
              Assert.Equal("hover-text", _root.GetAttribute("title"));
-             Assert.Equal(3, _root.NamedAttributes.Length);
+             Assert.Equal(3, _root.Attributes.Length);
         }
     }
 }

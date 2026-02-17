@@ -1,7 +1,7 @@
 using System;
 using System.Threading.Tasks;
 using Xunit;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
 
@@ -35,7 +35,7 @@ namespace FenBrowser.Tests.Integration
             layer3.SetAttribute("style", "position: absolute; z-index: 3;");
             container.AppendChild(layer3);
 
-            Assert.Equal(3, container.Children.Count);
+            Assert.Equal(3, container.Children.Length);
             Assert.Contains("z-index: 3", layer3.GetAttribute("style"));
         }
 
@@ -57,7 +57,7 @@ namespace FenBrowser.Tests.Integration
             box2.SetAttribute("style", "margin-top: 20px;");
             container.AppendChild(box2);
 
-            Assert.Equal(2, container.Children.Count);
+            Assert.Equal(2, container.Children.Length);
         }
 
         // =====================================================
@@ -125,7 +125,7 @@ namespace FenBrowser.Tests.Integration
             ul.AppendChild(li2);
 
             Assert.Equal("UL", ul.TagName);
-            Assert.Equal(2, ul.Children.Count);
+            Assert.Equal(2, ul.Children.Length);
             Assert.Equal("LI", (ul.Children[0] as Element)?.TagName);
         }
 
@@ -156,7 +156,7 @@ namespace FenBrowser.Tests.Integration
             doc.AppendChild(button);
 
             bool clicked = false;
-            void handler(object sender, EventArgs e) => clicked = true;
+            void handler(Event e) => clicked = true;
 
             button.AddEventListener("click", handler, false);
             
@@ -201,7 +201,7 @@ namespace FenBrowser.Tests.Integration
                 container.AppendChild(item);
             }
 
-            Assert.Equal(3, container.Children.Count);
+            Assert.Equal(3, container.Children.Length);
             Assert.Contains("display: flex", container.GetAttribute("style"));
         }
 
@@ -219,7 +219,7 @@ namespace FenBrowser.Tests.Integration
                 container.AppendChild(item);
             }
 
-            Assert.Equal(5, container.Children.Count);
+            Assert.Equal(5, container.Children.Length);
             Assert.Contains("flex-wrap: wrap", container.GetAttribute("style"));
         }
 
@@ -344,8 +344,8 @@ namespace FenBrowser.Tests.Integration
             body.AppendChild(p);
 
             Assert.Equal("HTML", html.TagName);
-            Assert.Equal(2, html.Children.Count);
-            Assert.Equal(2, body.Children.Count);
+            Assert.Equal(2, html.Children.Length);
+            Assert.Equal(2, body.Children.Length);
         }
     }
 }

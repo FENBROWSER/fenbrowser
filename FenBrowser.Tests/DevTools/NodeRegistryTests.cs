@@ -1,5 +1,5 @@
 using Xunit;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.DevTools.Core;
 using System;
 
