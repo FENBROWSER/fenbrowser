@@ -43,5 +43,19 @@ namespace FenBrowser.FenEngine.Core.Interfaces
         /// Set the prototype object
         /// </summary>
         void SetPrototype(IObject prototype);
+
+        /// <summary>
+        /// Define a property with descriptor.
+        /// </summary>
+        bool DefineOwnProperty(string key, PropertyDescriptor desc);
+
+        // Default Interface Methods for ES5/ES6 Reflection
+        public PropertyDescriptor? GetOwnPropertyDescriptor(string key) => null;
+        public bool PreventExtensions() => false; 
+        public bool IsExtensible => true; 
+        public bool Seal() => false; 
+        public bool IsSealed() => false; 
+        public bool Freeze() => false; 
+        public bool IsFrozen() => false;
     }
 }
