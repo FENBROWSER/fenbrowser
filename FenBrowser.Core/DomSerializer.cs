@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -69,9 +69,10 @@ namespace FenBrowser.Core
             // Skip document root tag itself, just process children
             if (node.NodeName == "#document" || node.NodeName == "#document-fragment")
             {
-                foreach (var child in node.Children ?? new List<Node>())
+                var docChildren = node.ChildNodes;
+                for (int i = 0; i < docChildren.Length; i++)
                 {
-                    SerializeNode(child, sb, depth, prettyPrint);
+                    SerializeNode(docChildren[i], sb, depth, prettyPrint);
                 }
                 return;
             }
@@ -82,14 +83,14 @@ namespace FenBrowser.Core
             sb.Append(node.NodeName ?? "unknown");
 
             // Serialize attributes
-            if ((node as Element)?.AttributesRaw != null && (node as Element)?.AttributesRaw.Count > 0)
+            if ((node as Element)?.Attributes != null && (node as Element)?.Attributes.Length > 0)
             {
-                foreach (var kvp in (node as Element)?.AttributesRaw)
+                foreach (var attr in (node as Element)?.Attributes)
                 {
                     sb.Append(" ");
-                    sb.Append(kvp.Key);
+                    sb.Append(attr.Name);
                     sb.Append("=\"");
-                    sb.Append(EscapeHtml(kvp.Value ?? ""));
+                    sb.Append(EscapeHtml(attr.Value ?? ""));
                     sb.Append("\"");
                 }
             }
@@ -106,11 +107,13 @@ namespace FenBrowser.Core
             
             // Check if we have only text children (inline content)
             bool hasElementChildren = false;
-            if (node.Children != null)
+            // Use ChildNodes property in V2 or extension helper
+            var children = node.ChildNodes;
+            if (children.Length > 0)
             {
-                foreach (var child in node.Children)
+                for (int i=0; i < children.Length; i++)
                 {
-                    if (child.NodeType != NodeType.Text)
+                    if (children[i].NodeType != NodeType.Text)
                     {
                         hasElementChildren = true;
                         break;
@@ -121,17 +124,19 @@ namespace FenBrowser.Core
             if (hasElementChildren)
             {
                 sb.Append(newline);
-                foreach (var child in node.Children ?? new List<Node>())
+                // V2 uses ChildNodes iterator/indexer
+                for (int i = 0; i < children.Length; i++)
                 {
-                    SerializeNode(child, sb, depth + 1, prettyPrint);
+                    SerializeNode(children[i], sb, depth + 1, prettyPrint);
                 }
                 sb.Append(indent);
             }
-            else if (node.Children != null && node.Children.Count > 0)
+            else if (children.Length > 0)
             {
                 // Inline text content
-                foreach (var child in node.Children)
+                for (int i = 0; i < children.Length; i++)
                 {
+                    var child = children[i];
                     if (child.NodeType == NodeType.Text && !string.IsNullOrEmpty(child.NodeValue))
                     {
                         sb.Append(EscapeHtml(child.NodeValue.Trim()));
@@ -173,8 +178,8 @@ namespace FenBrowser.Core
             {
                 case NodeType.Element:
                     stats.ElementCount++;
-                    if ((node as Element)?.AttributesRaw != null)
-                        stats.AttributeCount += ((Element)node).AttributesRaw.Count;
+                    if ((node as Element)?.Attributes != null)
+                        stats.AttributeCount += ((Element)node).Attributes.Length;
                     break;
                 case NodeType.Text:
                     if (!string.IsNullOrWhiteSpace(node.NodeValue))
@@ -182,11 +187,12 @@ namespace FenBrowser.Core
                     break;
             }
 
-            if (node.Children != null)
+            if (node.HasChildNodes)
             {
-                foreach (var child in node.Children)
+                var children = node.ChildNodes;
+                for (int i = 0; i < children.Length; i++)
                 {
-                    CountNodes(child, stats);
+                    CountNodes(children[i], stats);
                 }
             }
         }
