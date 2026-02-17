@@ -70,6 +70,8 @@ The browser employs a **Sharded 2-Level Cache**:
     - `TrackingPreventionHandler`
     - `AdBlockHandler`
     - `HstsHandler`
+    - **TLS policy**: `NetworkConfiguration.IgnoreCertificateErrors` (default: `false`) — production-safe; only set to `true` for deliberate lab diagnostics.
+    - **Proxy policy**: `NetworkConfiguration.UseSystemProxy` (default: `true`) — respects OS-managed proxies for compliant corporate networks.
 4.  **Processing**:
     - MIME Sniffing (`MimeSniffer.cs`) if the server sends generic types.
     - Encoding Detection using BOM or headers.

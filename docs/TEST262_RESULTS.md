@@ -13,6 +13,15 @@
 | **Passed** | 12,779 | 54.12%     |
 | **Failed** | 10,835 | 45.88%     |
 
+## Harness Infrastructure Update (2026-02-12)
+
+FenBrowser now maintains a **generated NUnit Test262 suite** in `FenBrowser.Test262` using `Test262Harness` (same style used by engines like Jint integration examples), in addition to the existing in-engine runner.
+
+- Generation command is scripted via `FenBrowser.Test262/generate_test262.ps1`.
+- Generated fixtures live under `FenBrowser.Test262/Generated`.
+- FenRuntime execution is provided by `FenBrowser.Test262/Test262RuntimeAdapter.cs`.
+- Negative-test handling in generated base fixture was hardened so expected throws are enforced correctly.
+
 ## Failure Analysis
 
 Based on the verification run, frequent failure modes include:
