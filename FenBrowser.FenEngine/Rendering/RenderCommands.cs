@@ -296,8 +296,75 @@ namespace FenBrowser.FenEngine.Rendering
 
         public override void Execute(SKCanvas canvas)
         {
-            if (Inset) return; // TODO: Inset shadows
-            
+            if (Inset)
+            {
+                // Inset shadow: drawn inside the box, clipped to box bounds
+                canvas.Save();
+
+                // Clip to the box shape
+                if (BorderRadius != null && BorderRadius.Length >= 4 &&
+                    (BorderRadius[0] > 0 || BorderRadius[1] > 0 || BorderRadius[2] > 0 || BorderRadius[3] > 0))
+                {
+                    using var clipRR = new SKRoundRect();
+                    var clipRadii = new SKPoint[4];
+                    for (int i = 0; i < 4; i++)
+                        clipRadii[i] = new SKPoint(BorderRadius[i], BorderRadius[i]);
+                    clipRR.SetRectRadii(Box, clipRadii);
+                    canvas.ClipRoundRect(clipRR);
+                }
+                else
+                {
+                    canvas.ClipRect(Box);
+                }
+
+                // Draw a shadow ring around the OUTSIDE of a rect that is inset
+                // The trick: draw a large filled rect with blur, but punch out the center
+                // so only the edges (inside the clip) show the shadow
+                var insetRect = new SKRect(
+                    Box.Left + OffsetX + SpreadRadius,
+                    Box.Top + OffsetY + SpreadRadius,
+                    Box.Right + OffsetX - SpreadRadius,
+                    Box.Bottom + OffsetY - SpreadRadius
+                );
+
+                // Create a path that is a large outer rect minus the inset rect
+                using var shadowPath = new SKPath();
+                shadowPath.AddRect(new SKRect(Box.Left - 100, Box.Top - 100, Box.Right + 100, Box.Bottom + 100));
+
+                if (BorderRadius != null && BorderRadius.Length >= 4 &&
+                    (BorderRadius[0] > 0 || BorderRadius[1] > 0 || BorderRadius[2] > 0 || BorderRadius[3] > 0))
+                {
+                    using var innerRR = new SKRoundRect();
+                    var innerRadii = new SKPoint[4];
+                    for (int i = 0; i < 4; i++)
+                        innerRadii[i] = new SKPoint(Math.Max(0, BorderRadius[i] - SpreadRadius), Math.Max(0, BorderRadius[i] - SpreadRadius));
+                    innerRR.SetRectRadii(insetRect, innerRadii);
+                    using var innerPath = new SKPath();
+                    innerPath.AddRoundRect(innerRR);
+                    shadowPath.Op(innerPath, SKPathOp.Difference, shadowPath);
+                }
+                else
+                {
+                    using var innerPath = new SKPath();
+                    innerPath.AddRect(insetRect);
+                    shadowPath.Op(innerPath, SKPathOp.Difference, shadowPath);
+                }
+
+                using var paint = new SKPaint
+                {
+                    Color = Color.WithAlpha((byte)(Color.Alpha * Opacity)),
+                    IsAntialias = true,
+                    Style = SKPaintStyle.Fill
+                };
+
+                if (BlurRadius > 0)
+                    paint.MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, BlurRadius / 2);
+
+                canvas.DrawPath(shadowPath, paint);
+                canvas.Restore();
+                return;
+            }
+
             var shadowRect = new SKRect(
                 Box.Left + OffsetX - SpreadRadius,
                 Box.Top + OffsetY - SpreadRadius,
@@ -305,7 +372,7 @@ namespace FenBrowser.FenEngine.Rendering
                 Box.Bottom + OffsetY + SpreadRadius
             );
 
-            using var paint = new SKPaint
+            using var outPaint = new SKPaint
             {
                 Color = Color.WithAlpha((byte)(Color.Alpha * Opacity)),
                 IsAntialias = true,
@@ -313,7 +380,7 @@ namespace FenBrowser.FenEngine.Rendering
             };
 
             if (BlurRadius > 0)
-                paint.MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, BlurRadius / 2);
+                outPaint.MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, BlurRadius / 2);
 
             if (BorderRadius != null && BorderRadius.Length >= 4)
             {
@@ -322,11 +389,11 @@ namespace FenBrowser.FenEngine.Rendering
                 for (int i = 0; i < 4; i++)
                     radii[i] = new SKPoint(BorderRadius[i], BorderRadius[i]);
                 rr.SetRectRadii(shadowRect, radii);
-                canvas.DrawRoundRect(rr, paint);
+                canvas.DrawRoundRect(rr, outPaint);
             }
             else
             {
-                canvas.DrawRect(shadowRect, paint);
+                canvas.DrawRect(shadowRect, outPaint);
             }
         }
     }

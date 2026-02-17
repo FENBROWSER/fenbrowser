@@ -221,6 +221,18 @@ namespace FenBrowser.FenEngine.Rendering
         /// Z-index value for ordering.
         /// </summary>
         public int ZIndex { get; init; }
+
+        /// <summary>
+        /// CSS filter string applied to this stacking context (front-filter).
+        /// Stored as raw text; parsed by renderer to an SKImageFilter per frame.
+        /// </summary>
+        public string Filter { get; init; }
+
+        /// <summary>
+        /// CSS backdrop-filter string applied to the backdrop behind this context.
+        /// Stored as raw text; renderer applies via SaveLayer with ImageFilter.
+        /// </summary>
+        public string BackdropFilter { get; init; }
         
         public override void Accept(IPaintNodeVisitor visitor) => visitor.Visit(this);
     }
