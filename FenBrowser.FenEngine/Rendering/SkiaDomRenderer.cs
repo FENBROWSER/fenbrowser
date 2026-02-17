@@ -284,6 +284,10 @@ namespace FenBrowser.FenEngine.Rendering
                 // PHASE 2: Build Paint Tree
                 RenderPipeline.EnterPaint(); // Checks LayoutFrozen
                 bool isPaintDirty = isLayoutDirty || root.PaintDirty || root.ChildPaintDirty || _lastPaintTree == null;
+                if (ImageLoader.HasActiveAnimatedImages)
+                {
+                    isPaintDirty = true;
+                }
                 // If scroll changed, we usually repaint. But ScrollManager handles offsets in PaintTreeBuilder.
                 // If we skip build, we use old PaintTree with old scroll offsets? 
                 // Currently NewPaintTreeBuilder reads scroll offsets.
