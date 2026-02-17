@@ -10,6 +10,5 @@ del /q "%TARGET_DIR%\*.js"
 del /q "%TARGET_DIR%\*.py"
 del /q "%TARGET_DIR%\*.html"
 echo Deleting .txt files...
-del /q "%TARGET_DIR%\*.txt"
 
 echo Done.
