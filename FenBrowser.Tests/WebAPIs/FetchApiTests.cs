@@ -10,15 +10,26 @@ using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Security;
 using System.Collections.Generic;
 
+using FenBrowser.FenEngine.Core.EventLoop;
+using FenBrowser.FenEngine.Core.Types;
+using FenBrowser.Core.Engine;
+
 namespace FenBrowser.Tests.WebAPIs
 {
-    public class FetchApiTests
+    public class FetchApiTests : IDisposable
     {
         private readonly IExecutionContext _context;
         private Func<HttpRequestMessage, Task<HttpResponseMessage>> _mockHandler;
 
+        public void Dispose()
+        {
+            EventLoopCoordinator.Instance.Clear();
+            EngineContext.Reset();
+        }
+
         public FetchApiTests()
         {
+             EngineContext.Reset();
              // Setup minimal context
              var perm = new PermissionManager(JsPermissions.StandardWeb);
              _context = new FenBrowser.FenEngine.Core.ExecutionContext(perm);
@@ -79,9 +90,13 @@ namespace FenBrowser.Tests.WebAPIs
              );
 
              // Wait for tcs (with timeout)
-             if (await Task.WhenAny(tcs.Task, Task.Delay(5000)) != tcs.Task)
+             // We must pump microtasks because JsPromise uses EventLoopCoordinator
+             var timeout = Task.Delay(5000);
+             while (!tcs.Task.IsCompleted)
              {
-                 throw new TimeoutException("Fetch promise timed out");
+                 if (timeout.IsCompleted) throw new TimeoutException("Fetch promise timed out");
+                 EventLoopCoordinator.Instance.PerformMicrotaskCheckpoint();
+                 await Task.Delay(10); // Yield to let Task.Run in FetchApi proceed
              }
 
              var result = await tcs.Task;
@@ -137,11 +152,14 @@ namespace FenBrowser.Tests.WebAPIs
                  new FenValue[] { FenValue.FromFunction(onFetchFulfilled) }, _context
              );
              
-             if (await Task.WhenAny(tcs.Task, Task.Delay(5000)) != tcs.Task)
+             var timeout = Task.Delay(5000);
+             while (!tcs.Task.IsCompleted)
              {
-                 throw new TimeoutException("Text promise timed out");
+                 if (timeout.IsCompleted) throw new TimeoutException("Text promise timed out");
+                 EventLoopCoordinator.Instance.PerformMicrotaskCheckpoint();
+                 await Task.Delay(10);
              }
-             
+              
              Assert.Equal("API Data", await tcs.Task);
         }
     }

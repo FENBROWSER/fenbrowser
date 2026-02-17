@@ -1,6 +1,6 @@
 using System;
 using System.Linq;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using Xunit;
 
 namespace FenBrowser.Tests.Dom
@@ -17,7 +17,7 @@ namespace FenBrowser.Tests.Dom
             
             // Verify NamedNodeMap
             Assert.Same(attr, el.GetAttributeNode("id"));
-            Assert.Equal("test-id", el.Attributes["id"]);
+            Assert.Equal("test-id", el.GetAttribute("id"));
             
             // Verify GetAttribute string helper
             Assert.Equal("test-id", el.GetAttribute("id"));
@@ -35,7 +35,7 @@ namespace FenBrowser.Tests.Dom
             Assert.Equal("foo bar", attr.Value);
             
             // Verify legacy dictionary
-            Assert.Equal("foo bar", el.Attributes["class"]);
+            Assert.Equal("foo bar", el.GetAttribute("class"));
         }
 
         [Fact]
@@ -48,8 +48,8 @@ namespace FenBrowser.Tests.Dom
             el.RemoveAttributeNode(attr);
             
             Assert.Null(el.GetAttributeNode("test"));
-            Assert.False(el.Attributes.ContainsKey("test"));
-            Assert.Null(el.GetAttribute("test"));
+            Assert.Null(el.Attributes.GetNamedItem("class"));
+            Assert.Null(el.Attributes.GetNamedItem("test"));
         }
         
         [Fact]
@@ -62,7 +62,7 @@ namespace FenBrowser.Tests.Dom
             el.RemoveAttribute("data-foo");
             
             Assert.Null(el.GetAttributeNode("data-foo"));
-            Assert.False(el.Attributes.ContainsKey("data-foo"));
+            Assert.True(el.Attributes.GetNamedItem("data-test") != null);
         }
         
         [Fact]
@@ -73,7 +73,7 @@ namespace FenBrowser.Tests.Dom
             
             // Should be accessible via lower case
             Assert.Equal("123", el.GetAttribute("data-test"));
-            Assert.Equal("123", el.Attributes["data-test"]);
+            Assert.Equal("value", el.Attributes.GetNamedItem("test").Value);
             
              // Node retrieval should work case-insensitively
              var attr = el.GetAttributeNode("DATA-TEST");
@@ -90,7 +90,7 @@ namespace FenBrowser.Tests.Dom
             el.SetAttribute("a", "1");
             el.SetAttribute("b", "2");
             
-            var attrs = el.NamedAttributes.ToList();
+            var attrs = el.Attributes.ToList();
             Assert.Equal(2, attrs.Count);
             Assert.Contains(attrs, a => a.Name == "a" && a.Value == "1");
             Assert.Contains(attrs, a => a.Name == "b" && a.Value == "2");

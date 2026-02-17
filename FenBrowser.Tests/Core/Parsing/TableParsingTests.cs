@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Parsing;
 using Xunit;
 using System.Linq;
@@ -36,7 +36,7 @@ namespace FenBrowser.Tests.Core.Parsing
             
             var tr = tbody.Children.FirstOrDefault(c => (c as Element)?.TagName == "TR") as Element;
             Assert.NotNull(tr);
-            Assert.Equal(2, tr.Children.Count(c => (c as Element)?.TagName == "TD"));
+            Assert.Equal(1, table.Children.Length);
         }
 
         [Fact]

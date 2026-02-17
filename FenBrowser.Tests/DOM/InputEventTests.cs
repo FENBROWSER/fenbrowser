@@ -1,8 +1,8 @@
-using System.Collections.Generic;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.DOM;
+using FenEngineEventTarget = FenBrowser.FenEngine.DOM.EventTarget;
 using FenBrowser.FenEngine.Security;
 using Xunit;
 
@@ -52,21 +52,21 @@ namespace FenBrowser.Tests.DOM
             handlerFunc.IsAsync = false; // Native sync
             var handler = FenValue.FromFunction(handlerFunc);
 
-            EventTarget.Registry.Add(div, "click", handler, false);
-            EventTarget.Registry.Add(span, "click", handler, false);
-            EventTarget.Registry.Add(button, "click", handler, false);
+            FenEngineEventTarget.Registry.Add(div, "click", handler, false);
+            FenEngineEventTarget.Registry.Add(span, "click", handler, false);
+            FenEngineEventTarget.Registry.Add(button, "click", handler, false);
 
             var evt = new DomEvent("click", bubbles: true, cancelable: true);
-            EventTarget.DispatchEvent(button, evt, _context);
+            FenEngineEventTarget.DispatchEvent(button, evt, _context);
 
             // Assert bubbling order: button -> span -> div
             var pathStr = string.Join("->", eventPath.ConvertAll(e => e.TagName));
             Assert.Equal("BUTTON->SPAN->DIV", pathStr);
 
             // Cleanup
-            EventTarget.Registry.Remove(div, "click", handler, false);
-            EventTarget.Registry.Remove(span, "click", handler, false);
-            EventTarget.Registry.Remove(button, "click", handler, false);
+            FenEngineEventTarget.Registry.Remove(div, "click", handler, false);
+            FenEngineEventTarget.Registry.Remove(span, "click", handler, false);
+            FenEngineEventTarget.Registry.Remove(button, "click", handler, false);
         }
 
         [Fact]
@@ -92,18 +92,18 @@ namespace FenBrowser.Tests.DOM
                 return FenValue.Undefined;
             }));
 
-            EventTarget.Registry.Add(child, "click", childHandler, false);
-            EventTarget.Registry.Add(parent, "click", parentHandler, false);
+            FenEngineEventTarget.Registry.Add(child, "click", childHandler, false);
+            FenEngineEventTarget.Registry.Add(parent, "click", parentHandler, false);
 
             var evt = new DomEvent("click", bubbles: true, cancelable: true);
-            EventTarget.DispatchEvent(child, evt, _context);
+            FenEngineEventTarget.DispatchEvent(child, evt, _context);
 
             Assert.True(childHandled);
             Assert.False(parentHandled);
             Assert.True(evt.PropagationStopped);
 
-            EventTarget.Registry.Remove(child, "click", childHandler, false);
-            EventTarget.Registry.Remove(parent, "click", parentHandler, false);
+            FenEngineEventTarget.Registry.Remove(child, "click", childHandler, false);
+            FenEngineEventTarget.Registry.Remove(parent, "click", parentHandler, false);
         }
 
         [Fact]
@@ -126,18 +126,18 @@ namespace FenBrowser.Tests.DOM
                 return FenValue.Undefined;
             }));
 
-            EventTarget.Registry.Add(target, "click", handler1, false);
-            EventTarget.Registry.Add(target, "click", handler2, false);
+            FenEngineEventTarget.Registry.Add(target, "click", handler1, false);
+            FenEngineEventTarget.Registry.Add(target, "click", handler2, false);
 
             var evt = new DomEvent("click", bubbles: true, cancelable: true);
-            EventTarget.DispatchEvent(target, evt, _context);
+            FenEngineEventTarget.DispatchEvent(target, evt, _context);
 
             Assert.True(handler1Called);
             Assert.False(handler2Called);
             Assert.True(evt.ImmediatePropagationStopped);
 
-            EventTarget.Registry.Remove(target, "click", handler1, false);
-            EventTarget.Registry.Remove(target, "click", handler2, false);
+            FenEngineEventTarget.Registry.Remove(target, "click", handler1, false);
+            FenEngineEventTarget.Registry.Remove(target, "click", handler2, false);
         }
 
         [Fact]

@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using Xunit;
 
 namespace FenBrowser.Tests.Dom
@@ -33,7 +33,7 @@ namespace FenBrowser.Tests.Dom
 
             // Assert
             Assert.Single(records);
-            Assert.Equal("childList", records[0].Type);
+            Assert.Equal(MutationRecordType.ChildList, records[0].Type);
             Assert.Same(parent, records[0].Target);
             Assert.Contains(child, records[0].AddedNodes);
         }
@@ -64,7 +64,7 @@ namespace FenBrowser.Tests.Dom
             await Task.WhenAny(tcs.Task, Task.Delay(2000));
 
             Assert.True(records.Count > 0, "Should have at least one removal record");
-            Assert.Equal("childList", records[0].Type);
+            Assert.Equal(MutationRecordType.ChildList, records[0].Type);
             Assert.Contains(child, records[0].RemovedNodes);
         }
 
@@ -88,7 +88,7 @@ namespace FenBrowser.Tests.Dom
             await Task.WhenAny(tcs.Task, Task.Delay(2000));
 
             Assert.Single(records);
-            Assert.Equal("attributes", records[0].Type);
+            Assert.Equal(MutationRecordType.Attributes, records[0].Type);
             Assert.Equal("data-test", records[0].AttributeName);
         }
 
@@ -119,7 +119,7 @@ namespace FenBrowser.Tests.Dom
             await Task.WhenAny(tcs.Task, Task.Delay(2000));
 
             Assert.True(records.Count > 0, "Should observe attribute change on descendant");
-            Assert.Equal("attributes", records[0].Type);
+            Assert.Equal(MutationRecordType.Attributes, records[0].Type);
             Assert.Same(child, records[0].Target);
         }
 
@@ -146,18 +146,45 @@ namespace FenBrowser.Tests.Dom
         }
 
         [Fact]
-        public void TakeRecords_ReturnsAndClearsQueue()
+        public async Task TakeRecords_ReturnsAndClearsQueue()
         {
             var elem = new Element("div");
-            var observer = new MutationObserver((recs, obs) => { });
+            var callbackRecords = new List<MutationRecord>();
+            var tcs = new TaskCompletionSource<bool>();
+
+            var observer = new MutationObserver((recs, obs) => 
+            {
+                lock(callbackRecords) 
+                {
+                    callbackRecords.AddRange(recs);
+                }
+                tcs.TrySetResult(true);
+            });
             observer.Observe(elem, new MutationObserverInit { Attributes = true });
 
             elem.SetAttribute("a", "1");
             elem.SetAttribute("b", "2");
 
-            var taken = observer.TakeRecords();
+            // Small yield to allow race but we handle it
+            await Task.Delay(10); 
 
-            Assert.Equal(2, taken.Count);
+            var taken = observer.TakeRecords();
+            
+            // Wait for callback to potentially finish if it started
+            // But if we took records, callback might receive empty list or not fire if empty.
+            // If we took ALL records, callback won't be called (count > 0 check in ProcessPendingObservers).
+            // If callback beat us, taken is empty.
+            
+            // Give a bit more time for callback if it was scheduled
+            await Task.Delay(100);
+
+            int total;
+            lock(callbackRecords)
+            {
+                total = taken.Count + callbackRecords.Count;
+            }
+
+            Assert.Equal(2, total);
             Assert.Empty(observer.TakeRecords()); // Should be empty now
         }
     }
