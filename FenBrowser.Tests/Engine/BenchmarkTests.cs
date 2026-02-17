@@ -7,7 +7,7 @@ using System.Threading.Tasks;
 using Xunit;
 using FenBrowser.FenEngine.Scripting;
 using FenBrowser.Core.Logging;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 
 namespace FenBrowser.Tests.Engine
 {
