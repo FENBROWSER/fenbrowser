@@ -157,11 +157,20 @@ namespace FenBrowser.FenEngine.Layout
         private void CollectBoxesAbsolute(FenBrowser.FenEngine.Layout.Tree.LayoutBox box, Dictionary<Node, FenBrowser.FenEngine.Layout.BoxModel> dict, float parentContentAbsX, float parentContentAbsY)
         {
             if (box == null) return;
-            
-            // 1. Store the Absolute BoxModel for THIS box
-            // box.Geometry coordinates are relative to Parent's Content Box.
-            // So shifting them by 'parentContentAbsX/Y' places them in Absolute Space correctly.
-            
+
+            // Calculate relative position offset (applied to this element only, not children)
+            float relOffsetX = 0, relOffsetY = 0;
+            var style = box.ComputedStyle;
+            if (style != null && string.Equals(style.Position, "relative", StringComparison.OrdinalIgnoreCase))
+            {
+                // CSS spec: top/left take priority over bottom/right
+                if (style.Top.HasValue) relOffsetY = (float)style.Top.Value;
+                else if (style.Bottom.HasValue) relOffsetY = -(float)style.Bottom.Value;
+
+                if (style.Left.HasValue) relOffsetX = (float)style.Left.Value;
+                else if (style.Right.HasValue) relOffsetX = -(float)style.Right.Value;
+            }
+
             if (box.SourceNode != null)
             {
                 if (!dict.ContainsKey(box.SourceNode))
@@ -179,42 +188,51 @@ namespace FenBrowser.FenEngine.Layout
                         Descent = box.Geometry.Descent
                     };
 
-                    FenBrowser.FenEngine.Layout.Contexts.LayoutBoxOps.ShiftBoxModel(absModel, parentContentAbsX, parentContentAbsY);
+                    FenBrowser.FenEngine.Layout.Contexts.LayoutBoxOps.ShiftBoxModel(absModel, parentContentAbsX + relOffsetX, parentContentAbsY + relOffsetY);
 
                     dict[box.SourceNode] = absModel;
                 }
             }
-            
-            // 2. Prepare for Recursion
-            // Children are relative to THIS box's Content Box.
-            // We need to calculate THIS box's Content Box Absolute Position.
-            // Current Abs Content = Parent Abs Content + This Box's Content Box Relative Position
-            
+
+            // Children use UNSHIFTED coordinates (relative positioning doesn't affect children's flow)
             float currentContentAbsX = parentContentAbsX + (float)box.Geometry.ContentBox.Left;
             float currentContentAbsY = parentContentAbsY + (float)box.Geometry.ContentBox.Top;
-            
-            foreach(var c in box.Children) 
+
+            foreach(var c in box.Children)
                 CollectBoxesAbsolute(c, dict, currentContentAbsX, currentContentAbsY);
         }
 
         private void FlattenBoxTreeAbsolute(FenBrowser.FenEngine.Layout.Tree.LayoutBox box, Dictionary<Element, ElementGeometry> rects, LayoutContext context, float parentContentAbsX, float parentContentAbsY)
         {
              if (box == null) return;
-             
-             // Calculate Abs Position of THIS box's Border Box (for legacy rects)
-             float absBorderX = parentContentAbsX + (float)box.Geometry.BorderBox.Left;
-             float absBorderY = parentContentAbsY + (float)box.Geometry.BorderBox.Top;
-             
+
+             // Calculate relative position offset
+             float relOffsetX = 0, relOffsetY = 0;
+             var style = box.ComputedStyle;
+             if (style != null && string.Equals(style.Position, "relative", StringComparison.OrdinalIgnoreCase))
+             {
+                 // CSS spec: top/left take priority over bottom/right
+                 if (style.Top.HasValue) relOffsetY = (float)style.Top.Value;
+                 else if (style.Bottom.HasValue) relOffsetY = -(float)style.Bottom.Value;
+
+                 if (style.Left.HasValue) relOffsetX = (float)style.Left.Value;
+                 else if (style.Right.HasValue) relOffsetX = -(float)style.Right.Value;
+             }
+
+             // Apply relative offset to THIS element's visual position only
+             float absBorderX = parentContentAbsX + (float)box.Geometry.BorderBox.Left + relOffsetX;
+             float absBorderY = parentContentAbsY + (float)box.Geometry.BorderBox.Top + relOffsetY;
+
              if (box.SourceNode is Element el)
              {
                  var b = box.Geometry.BorderBox;
                  rects[el] = new ElementGeometry(absBorderX, absBorderY, b.Width, b.Height);
              }
-             
-             // Recurse using Content Box Absolute Position
+
+             // Children use UNSHIFTED coordinates (relative positioning doesn't affect children's flow)
              float currentContentAbsX = parentContentAbsX + (float)box.Geometry.ContentBox.Left;
              float currentContentAbsY = parentContentAbsY + (float)box.Geometry.ContentBox.Top;
-             
+
              foreach(var c in box.Children) FlattenBoxTreeAbsolute(c, rects, context, currentContentAbsX, currentContentAbsY);
         }
         

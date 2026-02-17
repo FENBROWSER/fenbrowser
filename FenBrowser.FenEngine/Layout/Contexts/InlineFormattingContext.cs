@@ -200,7 +200,18 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     }
 
                     if (child.Geometry == null) child.Geometry = new BoxModel();
-                    child.Geometry.ContentBox = new SKRect(curX, 0, curX + childSize.Width, childSize.Height);
+                    var pad = child.ComputedStyle?.Padding ?? new Thickness();
+                    var brd = child.ComputedStyle?.BorderThickness ?? new Thickness();
+                    var mar = child.ComputedStyle?.Margin ?? new Thickness();
+                    float nonContentW = (float)(pad.Left + pad.Right + brd.Left + brd.Right + mar.Left + mar.Right);
+                    float nonContentH = (float)(pad.Top + pad.Bottom + brd.Top + brd.Bottom + mar.Top + mar.Bottom);
+                    float contentW = Math.Max(0f, childSize.Width - nonContentW);
+                    float contentH = Math.Max(0f, childSize.Height - nonContentH);
+
+                    child.Geometry.ContentBox = new SKRect(curX, 0, curX + contentW, contentH);
+                    child.Geometry.Padding = pad;
+                    child.Geometry.Border = brd;
+                    child.Geometry.Margin = mar;
                     SyncBoxes(child.Geometry);
 
                     currentLine.Items.Add(child);
@@ -222,6 +233,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 float xOffset = 0;
                 if (textAlign == SKTextAlign.Center) xOffset = (contentLimit - line.Width) / 2f;
                 else if (textAlign == SKTextAlign.Right) xOffset = (contentLimit - line.Width);
+
+                if (xOffset < 0f)
+                {
+                    // Guard against overflow-induced negative offsets from probe widths.
+                    xOffset = 0f;
+                }
 
                 lineYPositions.Add(curY);
                 lineXOffsets.Add(xOffset);
@@ -317,12 +334,21 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     float itemX = xOffset + item.Geometry.ContentBox.Left;
                     float itemY = lineY;
 
-                    // If an atomic inline was probed under a different available width, re-layout it
-                    // with its final measured width so descendants (e.g., CENTER > INPUT) are consistent.
-                    if (item.Children.Count > 0)
+                    // Re-layout atomic inlines with final available size so descendants and
+                    // intrinsic controls resolve to stable final geometry before placement.
+                    if (ShouldRelayoutAtomicInline(item))
                     {
                         var itemState = state.Clone();
                         float itemW = Math.Max(0f, item.Geometry.ContentBox.Width);
+                        if (!float.IsFinite(itemW) || itemW <= 0f)
+                        {
+                            itemW = Math.Max(0f, item.Geometry.BorderBox.Width);
+                        }
+                        if (!float.IsFinite(itemW) || itemW <= 0f)
+                        {
+                            itemW = Math.Max(0f, contentLimit);
+                        }
+
                         float itemH = item.Geometry.ContentBox.Height;
                         if (!float.IsFinite(itemH) || itemH <= 0f)
                         {
@@ -338,6 +364,23 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     }
 
                     LayoutBoxOps.SetPosition(item, itemX, itemY);
+                }
+
+                // If atomic inline descendants changed width during final re-layout,
+                // keep line items monotonic to avoid visual overlaps.
+                float runningRight = float.NegativeInfinity;
+                foreach (var item in line.Items)
+                {
+                    float itemLeft = item.Geometry.MarginBox.Left;
+                    if (float.IsFinite(runningRight) && itemLeft < runningRight)
+                    {
+                        LayoutBoxOps.SetPosition(item, runningRight, item.Geometry.MarginBox.Top);
+                    }
+
+                    if (float.IsFinite(item.Geometry.MarginBox.Right))
+                    {
+                        runningRight = Math.Max(runningRight, item.Geometry.MarginBox.Right);
+                    }
                 }
             }
 
@@ -448,7 +491,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         probeState.AvailableSize = new SKSize(float.PositiveInfinity, probeHeight);
                         probeState.ContainingBlockWidth = float.IsFinite(state.AvailableSize.Width) && state.AvailableSize.Width > 0
                             ? state.AvailableSize.Width
-                            : state.ViewportWidth;
+                            : (state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth);
                         probeState.ContainingBlockHeight = probeHeight;
                         FormattingContext.Resolve(inlineBox).Layout(inlineBox, probeState);
 
@@ -494,7 +537,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                 return AddNonContentSpacing(new SKSize(Math.Max(0f, w), h), inlineBox.ComputedStyle);
             }
-            
+
             // Handle IMG, INPUT, SVG or other elements that result in generic LayoutBox
             if (child.Children.Count > 0)
             {
@@ -505,7 +548,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 probeState.AvailableSize = new SKSize(float.PositiveInfinity, probeHeight);
                 probeState.ContainingBlockWidth = float.IsFinite(state.AvailableSize.Width) && state.AvailableSize.Width > 0
                     ? state.AvailableSize.Width
-                    : state.ViewportWidth;
+                    : (state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth);
                 probeState.ContainingBlockHeight = probeHeight;
                 FormattingContext.Resolve(child).Layout(child, probeState);
 
@@ -550,6 +593,36 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             return new SKSize(10,10); // Minimal fallback for unknown items
+        }
+
+        private static bool ShouldRelayoutAtomicInline(LayoutBox item)
+        {
+            if (item == null)
+            {
+                return false;
+            }
+
+            if (item.Children.Count > 0)
+            {
+                return true;
+            }
+
+            if (item.SourceNode is Element element)
+            {
+                string tag = element.TagName?.ToUpperInvariant() ?? string.Empty;
+                return tag == "INPUT" ||
+                       tag == "BUTTON" ||
+                       tag == "SELECT" ||
+                       tag == "TEXTAREA" ||
+                       tag == "IMG" ||
+                       tag == "SVG" ||
+                       tag == "CANVAS" ||
+                       tag == "IFRAME" ||
+                       tag == "OBJECT" ||
+                       tag == "VIDEO";
+            }
+
+            return false;
         }
 
         private static string CollapseWhitespace(string text)
@@ -648,7 +721,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             {
                 if (w <= 0)
                 {
-                    string label = el.TextContent?.Trim();
+                    string label = LayoutHelper.GetRenderableTextContentTrimmed(el);
                     if (string.IsNullOrWhiteSpace(label)) label = "Button";
                     w = MeasureString(label, box.ComputedStyle).Width + defaultPaddingComp;
                 }
@@ -825,7 +898,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         {
             float rawAvailable = state.AvailableSize.Width;
             bool widthUnconstrained = float.IsInfinity(rawAvailable) || float.IsNaN(rawAvailable);
-            float available = widthUnconstrained ? state.ViewportWidth : rawAvailable;
+            float available = widthUnconstrained
+                ? (state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth)
+                : rawAvailable;
             if (float.IsInfinity(available) || float.IsNaN(available) || available <= 0)
                 available = 800f;
 
@@ -836,7 +911,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             var m = box.ComputedStyle?.Margin ?? new Thickness();
 
             float used = (float)(p.Left + p.Right + b.Left + b.Right + m.Left + m.Right);
-            finalW = widthUnconstrained ? available : Math.Max(0f, rawAvailable - used);
+            finalW = widthUnconstrained ? Math.Max(0f, available - used) : Math.Max(0f, rawAvailable - used);
 
             if (box.ComputedStyle != null && box.ComputedStyle.Width.HasValue)
             {
