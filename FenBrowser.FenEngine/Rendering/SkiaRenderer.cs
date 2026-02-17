@@ -3,6 +3,7 @@ using FenBrowser.Core.Logging;
 using FenBrowser.Core;
 using System.Linq;
 using FenBrowser.FenEngine.Rendering.Backends;
+using FenBrowser.FenEngine.Rendering.Css;
 using System;
 
 namespace FenBrowser.FenEngine.Rendering
@@ -213,6 +214,32 @@ namespace FenBrowser.FenEngine.Rendering
                  pushedMask = true;
             }
 
+            // Apply CSS filter (stacking-context level)
+            bool pushedFilter = false;
+            SKImageFilter filterLayer = null;
+            if (node is StackingContextPaintNode scFilter &&
+                !string.IsNullOrEmpty(scFilter.Filter) &&
+                backend is SkiaRenderBackend skiaFilterBackend &&
+                skiaFilterBackend.Canvas != null)
+            {
+                filterLayer = CssFilterParser.Parse(scFilter.Filter);
+                if (filterLayer != null)
+                {
+                    using var paint = new SKPaint { ImageFilter = filterLayer };
+                    skiaFilterBackend.Canvas.SaveLayer(paint);
+                    pushedFilter = true;
+                }
+            }
+
+            // Apply backdrop-filter (affects backdrop behind this context)
+            if (node is StackingContextPaintNode scBackdrop &&
+                !string.IsNullOrEmpty(scBackdrop.BackdropFilter) &&
+                backend is SkiaRenderBackend skiaBackdropBackend &&
+                skiaBackdropBackend.Canvas != null)
+            {
+                ApplyBackdropFilter(skiaBackdropBackend.Canvas, scBackdrop.Bounds, scBackdrop.BackdropFilter);
+            }
+
             // Apply scroll offset
             bool pushedScroll = false;
             if (node is ScrollPaintNode scrollNode && (scrollNode.ScrollX != 0 || scrollNode.ScrollY != 0))
@@ -246,6 +273,12 @@ namespace FenBrowser.FenEngine.Rendering
             }
             
             // Restore state in reverse order
+            if (pushedFilter && backend is SkiaRenderBackend skiaFilterBackend2 && skiaFilterBackend2.Canvas != null)
+            {
+                skiaFilterBackend2.Canvas.Restore();
+            }
+            filterLayer?.Dispose();
+
             if (pushedMask)
             {
                  var maskNodePop = (MaskPaintNode)node;
@@ -442,16 +475,69 @@ namespace FenBrowser.FenEngine.Rendering
         {
             if (node.Color.Alpha == 0) return;
 
-            // Box shadow logic involves drawing a blurred shape behind the element
-            // IRenderBackend abstracts this via DrawBoxShadow (rect) and DrawShadow (path/complex)
+            if (node.Inset)
+            {
+                // Inset shadow: use SkiaRenderBackend canvas directly for clip-based inset rendering
+                if (backend is SkiaRenderBackend skiaBackend && skiaBackend.Canvas != null)
+                {
+                    var canvas = skiaBackend.Canvas;
+                    canvas.Save();
 
-            // Prepare geometry
+                    // Clip to element bounds
+                    if (HasNonZeroRadius(node.BorderRadius))
+                    {
+                        using var clipPath = CreateRoundedRectPath(node.Bounds, node.BorderRadius);
+                        canvas.ClipPath(clipPath);
+                    }
+                    else
+                    {
+                        canvas.ClipRect(node.Bounds);
+                    }
+
+                    // The shadow is cast from an imaginary rect shifted by offset and shrunk/grown by spread
+                    var insetRect = new SKRect(
+                        node.Bounds.Left + node.Offset.X + node.Spread,
+                        node.Bounds.Top + node.Offset.Y + node.Spread,
+                        node.Bounds.Right + node.Offset.X - node.Spread,
+                        node.Bounds.Bottom + node.Offset.Y - node.Spread
+                    );
+
+                    // Draw outer fill minus inner hole
+                    using var shadowPath = new SKPath();
+                    shadowPath.AddRect(new SKRect(node.Bounds.Left - 200, node.Bounds.Top - 200, node.Bounds.Right + 200, node.Bounds.Bottom + 200));
+
+                    if (HasNonZeroRadius(node.BorderRadius))
+                    {
+                        using var innerPath = CreateRoundedRectPath(insetRect, node.BorderRadius);
+                        shadowPath.Op(innerPath, SKPathOp.Difference, shadowPath);
+                    }
+                    else
+                    {
+                        using var innerPath = new SKPath();
+                        innerPath.AddRect(insetRect);
+                        shadowPath.Op(innerPath, SKPathOp.Difference, shadowPath);
+                    }
+
+                    using var paint = new SKPaint
+                    {
+                        Color = node.Color,
+                        IsAntialias = true,
+                        Style = SKPaintStyle.Fill
+                    };
+
+                    if (node.Blur > 0)
+                        paint.MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, node.Blur / 2);
+
+                    canvas.DrawPath(shadowPath, paint);
+                    canvas.Restore();
+                }
+                return;
+            }
+
+            // Outset shadow (existing logic)
             var drawRect = node.Bounds;
-            
-            // Apply offset
             drawRect.Offset(node.Offset.X, node.Offset.Y);
-            
-            // Handling Spread: Negative spread shrinks, positive expands
+
             if (node.Spread != 0)
             {
                 drawRect.Inflate(node.Spread, node.Spread);
@@ -459,26 +545,27 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (HasNonZeroRadius(node.BorderRadius))
             {
-                // Rounded shadow - use generic DrawShadow with path
                 using var path = CreateRoundedRectPath(drawRect, node.BorderRadius);
-                
-                // If inset, standard backend doesn't support it yet (simplified to Outset)
-                if (!node.Inset)
-                {
-                    backend.DrawShadow(path, 0, 0, node.Blur, node.Color);
-                }
+                backend.DrawShadow(path, 0, 0, node.Blur, node.Color);
             }
             else
             {
-                if (!node.Inset)
-                {
-                    // Rectangular shadow - use optimized DrawBoxShadow
-                    // backend handles blur sigma calc
-                    backend.DrawBoxShadow(drawRect, 0, 0, node.Blur, 0, node.Color);
-                }
+                backend.DrawBoxShadow(drawRect, 0, 0, node.Blur, 0, node.Color);
             }
         }
-        
+
+        private void ApplyBackdropFilter(SKCanvas canvas, SKRect bounds, string filterString)
+        {
+            if (canvas == null || string.IsNullOrEmpty(filterString)) return;
+            using var imageFilter = CssFilterParser.Parse(filterString);
+            if (imageFilter == null) return;
+
+            using var paint = new SKPaint { ImageFilter = imageFilter };
+            canvas.SaveLayer(bounds, paint);
+            canvas.ClipRect(bounds);
+            canvas.Restore();
+        }
+
         private void DrawCustom(IRenderBackend backend, CustomPaintNode node)
         {
             if (node.PaintAction == null) return;
