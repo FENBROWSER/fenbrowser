@@ -105,5 +105,14 @@ namespace FenBrowser.Tests.Engine
            var program = parser.ParseProgram();
            AssertNoErrors(parser);
         }
+
+        [Fact]
+        public void Parse_CompoundAssignment_PlusAssign()
+        {
+            var input = "var x = 1; x += 2;";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+            AssertNoErrors(parser);
+        }
     }
 }

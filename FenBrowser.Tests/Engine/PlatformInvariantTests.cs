@@ -4,7 +4,7 @@ using FenBrowser.FenEngine.Layout;
 using FenBrowser.Core.Engine; // Phase enum
 using FenBrowser.FenEngine.Observers;
 using FenBrowser.FenEngine.DOM;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using Xunit;
 using System.Collections.Generic;
 

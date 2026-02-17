@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Generic;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Engine;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.DOM;
@@ -28,7 +28,7 @@ namespace FenBrowser.Tests.Engine
         {
             // Arrange
             var el = new Element("DIV");
-            el.Attributes["id"] = "initial"; // Setup bypassing queue (Idle phase allows internal?)
+            el.SetAttribute("id", "initial");
             
             // Actually Element.SetAttribute now has Guard!
             // So setting it directly in Idle is allowed if guard permits Idle?
@@ -47,7 +47,7 @@ namespace FenBrowser.Tests.Engine
             ));
 
             // Assert: State is NOT changed yet
-            Assert.Equal("initial", el.Attributes["id"]);
+            Assert.Equal("initial", el.GetAttribute("id"));
             Assert.True(DomMutationQueue.Instance.HasPendingMutations);
 
             // Act: Flush (Simulating Renderer)
@@ -62,7 +62,7 @@ namespace FenBrowser.Tests.Engine
             });
 
             // Assert: State IS changed now
-            Assert.Equal("new_id", el.Attributes["id"]);
+            Assert.Equal("new_id", el.GetAttribute("id"));
             Assert.False(DomMutationQueue.Instance.HasPendingMutations);
         }
 

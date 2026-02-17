@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Rendering;
 using Xunit;
@@ -37,7 +37,7 @@ namespace FenBrowser.Tests.Engine
             var doc = parser.Parse();
             var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
             var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
-            var box = doc.Descendants().OfType<Element>().First(e => e.HasClass("box"));
+            var box = doc.Descendants().OfType<Element>().First(e => e.ClassList.Contains("box"));
 
             Assert.True(computed.ContainsKey(box));
             var style = computed[box];
@@ -73,7 +73,7 @@ namespace FenBrowser.Tests.Engine
             var doc = parser.Parse();
             var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
             var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
-            var box = doc.Descendants().OfType<Element>().First(e => e.HasClass("box"));
+            var box = doc.Descendants().OfType<Element>().First(e => e.ClassList.Contains("box"));
 
             var style = computed[box];
             
@@ -111,7 +111,7 @@ namespace FenBrowser.Tests.Engine
             var doc = parser.Parse();
             var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
             var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
-            var target = doc.Descendants().OfType<Element>().First(e => e.HasClass("target"));
+            var target = doc.Descendants().OfType<Element>().First(e => e.ClassList.Contains("target"));
 
             var style = computed[target];
             

@@ -131,7 +131,7 @@ namespace FenBrowser.Tests.Engine
             child.DispatchEvent(evt);
 
             Assert.Empty(log); 
-            Assert.True(evt.PropagationStopped);
+            Assert.True(evt.StopPropagationFlag);
         }
 
         [Fact]
