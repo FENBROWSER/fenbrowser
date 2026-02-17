@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using Xunit;
 
@@ -18,7 +18,7 @@ namespace FenBrowser.Tests.Layout
             var element = new Element(tag);
             foreach (var child in children)
             {
-                element.Children.Add(child);
+                element.AppendChild(child);
             }
             return element;
         }
@@ -36,8 +36,8 @@ namespace FenBrowser.Tests.Layout
             var div = CreateElement("DIV", span);
 
             // Assert: SPAN should be inline, DIV should be block
-            Assert.Equal("DIV", div.Tag);
-            Assert.Equal("SPAN", span.Tag);
+            Assert.Equal("DIV", div.TagName);
+            Assert.Equal("SPAN", span.TagName);
             Assert.Single(div.Children);
         }
 
@@ -61,7 +61,7 @@ namespace FenBrowser.Tests.Layout
             var p = CreateElement("P", span1, span2, span3);
 
             // Assert: All three spans are children of P
-            Assert.Equal(3, p.Children.Count);
+            Assert.Equal(3, p.Children.Length);
         }
 
         [Fact]

@@ -1,7 +1,7 @@
 using Xunit;
 using FenBrowser.FenEngine.Layout;
 using FenBrowser.Core.Css;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using SkiaSharp;
 using FenBrowser.FenEngine.Rendering.Css; // For CssComputed
 

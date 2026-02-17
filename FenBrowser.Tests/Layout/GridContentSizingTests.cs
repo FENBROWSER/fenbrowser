@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 using FenBrowser.Core.Css;
-using FenBrowser.Core.Dom;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Layout;
 using SkiaSharp;
 using Xunit;
