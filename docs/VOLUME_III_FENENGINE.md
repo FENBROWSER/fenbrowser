@@ -251,6 +251,12 @@ Implements the primary CSS parser path with broad CSS Syntax support. Some Level
 - **Lines 200-300**: **`ParseRule`**: Handles selectors and declarations.
 - **Lines 350-450**: **`ConsumeBlock`**: Tokenizer consumption logic for `{ ... }`.
 
+#### `CssLoader.cs` (Lines 1-3900+)
+
+Builds computed style objects from cascaded declarations and applies compatibility overrides used by the layout pipeline.
+
+- Includes targeted Google surface compatibility guards, including search/homepage alignment normalization.
+
 ### 6.3 Rendering Subsystem (`FenBrowser.FenEngine.Rendering`)
 
 #### `BrowserApi.cs` (Lines 1-2446)
@@ -320,6 +326,7 @@ The custom logic runtime and bridge.
 - `Contexts.InlineFormattingContext` now re-layouts atomic inline/replaced controls before final line placement and applies a monotonic post-pass to prevent overlap when intrinsic widths expand after probe measurement.
 - `Contexts.FlexFormattingContext` now recovers near-zero row-item widths using deep descendant extents (not only direct children), fixing collapsed control clusters and footer link groups under intrinsic probe passes.
 - `Contexts.BlockFormattingContext` now clamps right-float placement when probe-time container width is unresolved, preventing transient negative-X anchor placement in header action rows.
+- `Rendering.Css.CssLoader` no longer forces `.FPdoLc`/`.lJ9FBc` to `display:inline-block`; those Google search-action wrappers are now kept block-level with `text-align:center`, restoring centered placement of the `Google Search` / `I'm Feeling Lucky` controls.
 
 #### `JavaScriptEngine.Dom.cs` (Lines 1-1203)
 
