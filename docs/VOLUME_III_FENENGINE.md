@@ -513,3 +513,38 @@ So you want to add `border-radius`? Follow these steps:
     - `SetLayoutSnapshot(...)`
     - `SetPaintSnapshot(...)`
   - Wired corresponding dirty-flag invalidation through `PipelineContext.DirtyFlags` during stage work.
+
+### 6.13 Phase-2 Path Hygiene and Diagnostics Wiring (2026-02-18)
+
+- `Rendering/SkiaDomRenderer.cs`
+  - Replaced hardcoded absolute debug artifact path with `DiagnosticPaths.AppendRootText(...)`.
+
+- `Rendering/PaintTree/NewPaintTreeBuilder.cs`
+  - Replaced hardcoded absolute debug artifact path with `DiagnosticPaths.AppendRootText(...)`.
+
+- `Layout/LayoutEngine.cs`
+  - Replaced hardcoded absolute layout-debug file writes with `DiagnosticPaths.AppendRootText(...)`.
+
+- `Rendering/SkiaRenderer.cs`
+  - Replaced hardcoded screenshot target with `DiagnosticPaths.GetRootArtifactPath("debug_screenshot.png")`.
+  - `ContentVerifier.RegisterScreenshot(...)` now receives centralized artifact path.
+
+- `Core/FenRuntime.cs`
+  - Replaced hardcoded script execution log path with `DiagnosticPaths.GetLogArtifactPath("script_execution.log")`.
+
+- `Rendering/Css/CssLoader.cs`
+  - Removed absolute `C:\Users\...` path literals from debug callsites and normalized debug filenames.
+  - Routed debug writes through centralized diagnostics helpers.
+  - File diagnostics are now compile-gated to debug builds only.
+
+- `Scripting/JavaScriptEngine.cs`
+  - Replaced hardcoded `js_debug.log` writes with `DiagnosticPaths.AppendRootText(...)`.
+
+- `WebAPIs/FetchApi.cs`
+  - Replaced hardcoded `js_debug.log` writes with `DiagnosticPaths.AppendRootText(...)`.
+
+- `Rendering/CustomHtmlEngine.cs`
+  - Replaced hardcoded `dom_dump.txt` write target with `DiagnosticPaths.GetRootArtifactPath("dom_dump.txt")`.
+
+- `Layout/MinimalLayoutComputer.cs`
+  - Replaced hardcoded `debug_layout_dims.txt` writes with `DiagnosticPaths.AppendRootText(...)`.

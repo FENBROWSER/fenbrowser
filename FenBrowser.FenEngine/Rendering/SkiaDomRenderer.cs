@@ -98,7 +98,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
             pipelineContext.BeginFrame();
             try {
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_render_start.txt", $"Render Start: Root={root?.GetType().Name}\n"); } catch {}
+            DiagnosticPaths.AppendRootText("debug_render_start.txt", $"Render Start: Root={root?.GetType().Name}\n");
             CurrentOverlays.Clear();
             
             // CRITICAL FIX: Detect if styles changed using instance comparison, count, or DOM dirty flags

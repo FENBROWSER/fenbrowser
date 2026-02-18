@@ -211,4 +211,11 @@ The Omnibox implementation.
   - Removed the duplicate `--wpt` command branch to keep a single authoritative WPT entrypoint.
   - Reduced command-routing ambiguity in CLI startup flow by consolidating WPT handling into one path.
 
+### 6.7 Phase-2 Default Path Hygiene (2026-02-18)
+
+- `Program.cs`
+  - Removed machine-specific absolute default paths for test suites.
+  - Default Test262 root now resolves to `Path.Combine(Directory.GetCurrentDirectory(), "test262")`.
+  - Default WPT root now resolves to `Path.Combine(Directory.GetCurrentDirectory(), "wpt")`.
+
 _End of Volume IV_

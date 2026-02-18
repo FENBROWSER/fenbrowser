@@ -24,8 +24,12 @@ namespace FenBrowser.FenEngine.Rendering
             public List<CssSource> Sources { get; set; } = new List<CssSource>();
         }
 
-        // Debug file logging - ENABLE temporarily to diagnose CSS loading
+        // Keep file diagnostics enabled only in debug builds.
+#if DEBUG
         private const bool DEBUG_FILE_LOGGING = true;
+#else
+        private const bool DEBUG_FILE_LOGGING = false;
+#endif
 
         public class MatchedRule
         {
@@ -250,22 +254,22 @@ namespace FenBrowser.FenEngine.Rendering
             // DEBUG: Dump DOM structure to understand why LINK elements are not found
             if (DEBUG_FILE_LOGGING)
             {
-                DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[DOM-CHECK] Root tag='{root.NodeName}' Children={root.ChildNodes.Length}\r\n");
+                DebugLog(@"css_debug.txt", $"[DOM-CHECK] Root tag='{root.NodeName}' Children={root.ChildNodes.Length}\r\n");
                 foreach (var child in root.ChildNodes)
                 {
-                    DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[DOM-CHECK]   Child tag='{child.NodeName}' (IsText={child.IsText()}) Children={child.ChildNodes.Length}\r\n");
+                    DebugLog(@"css_debug.txt", $"[DOM-CHECK]   Child tag='{child.NodeName}' (IsText={child.IsText()}) Children={child.ChildNodes.Length}\r\n");
                     foreach (var child2 in child.ChildNodes)
                     {
                         string tag2 = child2.NodeName?.ToUpperInvariant() ?? "";
                         if (!child2.IsText() && (tag2 == "HEAD" || tag2 == "LINK" || tag2 == "META"))
                         {
-                            DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[DOM-CHECK]     Child2 tag='{child2.NodeName}' Children={child2.ChildNodes.Length}\r\n");
+                            DebugLog(@"css_debug.txt", $"[DOM-CHECK]     Child2 tag='{child2.NodeName}' Children={child2.ChildNodes.Length}\r\n");
                             // Dump HEAD children
                             if (tag2 == "HEAD")
                             {
                                 foreach (var headChild in child2.ChildNodes)
                                 {
-                                    DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[DOM-CHECK]       HEAD-Child tag='{headChild.NodeName}'\r\n");
+                                    DebugLog(@"css_debug.txt", $"[DOM-CHECK]       HEAD-Child tag='{headChild.NodeName}'\r\n");
                                 }
                             }
                         }
@@ -276,67 +280,67 @@ namespace FenBrowser.FenEngine.Rendering
             // FIX: Cast to Element to access actual Attributes property (Node.Attr returns null)
             var linkNodes = root.Descendants().OfType<Element>()
                 .Where(n => string.Equals(n.TagName, "link", StringComparison.OrdinalIgnoreCase)).ToList();
-            if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug.txt", $"[LINK] Found {linkNodes.Count} link elements in DOM root\r\n");
+            if (DEBUG_FILE_LOGGING) DebugLog(@"css_debug.txt", $"[LINK] Found {linkNodes.Count} link elements in DOM root\r\n");
 
 
             var extTasks = new List<Task>();
             var gate = new System.Threading.SemaphoreSlim(8); // Shared gate for all CSS fetches (links + imports)
             foreach (var link in linkNodes)
             {
-                if (!link.HasAttributes()) { DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug_v2.txt", "[LINK] SKIP: Link has no attributes\r\n"); continue; }
+                if (!link.HasAttributes()) { DebugLog(@"css_debug_v2.txt", "[LINK] SKIP: Link has no attributes\r\n"); continue; }
                 
                 string rel = link.GetAttribute("rel");
                 if (string.IsNullOrEmpty(rel)) 
                 {
-                     DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug_v2.txt", "[LINK] SKIP: Link has no rel attribute\r\n");
+                     DebugLog(@"css_debug_v2.txt", "[LINK] SKIP: Link has no rel attribute\r\n");
                      continue; 
                 }
                 
-                DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug_v2.txt", $"[LINK] Checking rel='{rel}'\r\n");
+                DebugLog(@"css_debug_v2.txt", $"[LINK] Checking rel='{rel}'\r\n");
                 
                 if (!ContainsToken(rel, "stylesheet")) 
                 {
-                    DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug_v2.txt", $"[LINK] SKIP: rel '{rel}' is not stylesheet\r\n");
+                    DebugLog(@"css_debug_v2.txt", $"[LINK] SKIP: rel '{rel}' is not stylesheet\r\n");
                     continue;
                 }
                 
                 string href = link.GetAttribute("href"); 
                 if (string.IsNullOrWhiteSpace(href)) 
                 {
-                    DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug_v2.txt", "[LINK] SKIP: Link has no href\r\n");
+                    DebugLog(@"css_debug_v2.txt", "[LINK] SKIP: Link has no href\r\n");
                     continue;
                 }
                 
-                DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug_v2.txt", $"[LINK] Found stylesheet href='{href}'\r\n");
+                DebugLog(@"css_debug_v2.txt", $"[LINK] Found stylesheet href='{href}'\r\n");
 
                 // Respect media attribute (screen/all). Some sites lazy-load CSS via media=print and switch to all onload.
                 string media = link.GetAttribute("media");
                 if (!string.IsNullOrWhiteSpace(media))
                 {
                     var m = media.ToLowerInvariant();
-                    DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug_v2.txt", $"[LINK] Checking media='{m}'\r\n");
+                    DebugLog(@"css_debug_v2.txt", $"[LINK] Checking media='{m}'\r\n");
                     bool allowMedia = m.Contains("all") || m.Contains("screen");
                     if (!allowMedia && m.Contains("print"))
                     {
                         // Heuristic: load print-marked stylesheets to support "media=print" lazy-load pattern.
                         // This avoids missing critical layout on sites that flip media to "all" after load.
                         allowMedia = true;
-                        DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug_v2.txt", $"[LINK] Allowing media=print stylesheet for runtime media flip\r\n");
+                        DebugLog(@"css_debug_v2.txt", $"[LINK] Allowing media=print stylesheet for runtime media flip\r\n");
                     }
                     if (!allowMedia)
                     {
-                        DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug_v2.txt", $"[LINK] SKIP: Media mismatch\r\n");
+                        DebugLog(@"css_debug_v2.txt", $"[LINK] SKIP: Media mismatch\r\n");
                         continue;
                     }
                 }
                 var abs = ResolveUri(baseUri, href);
                 if (abs == null)
                 {
-                     DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug_v2.txt", $"[LINK] SKIP: URL failed to resolve: {href}\r\n");
+                     DebugLog(@"css_debug_v2.txt", $"[LINK] SKIP: URL failed to resolve: {href}\r\n");
                      continue;
                 }
                 
-                DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\css_debug_v2.txt", $"[LINK] QUEUE: {abs}\r\n");
+                DebugLog(@"css_debug_v2.txt", $"[LINK] QUEUE: {abs}\r\n");
 
                 var order = sourceIndex++;
                 var t = Task.Run(async () =>
@@ -570,14 +574,14 @@ namespace FenBrowser.FenEngine.Rendering
                             if (TryPx(decl.Value, out fs, percentBase: 16.0))
                             {
                                 _rootFontSize = fs;
-                                DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-VAR] Captured Root Font Size: {_rootFontSize}px from '{decl.Value}'\r\n");
+                                DebugLog(@"debug_log.txt", $"[CSS-VAR] Captured Root Font Size: {_rootFontSize}px from '{decl.Value}'\r\n");
                             }
                         }
                     }
                 }
                 
-                DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-VAR] Final Root Font Size: {_rootFontSize}px\r\n");
-                DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-VAR] Extracted {count} global variables.\r\n");
+                DebugLog(@"debug_log.txt", $"[CSS-VAR] Final Root Font Size: {_rootFontSize}px\r\n");
+                DebugLog(@"debug_log.txt", $"[CSS-VAR] Extracted {count} global variables.\r\n");
             }
         }
 
@@ -1430,11 +1434,11 @@ namespace FenBrowser.FenEngine.Rendering
 
             FenLogger.Debug($"[DEBUG-CSS] ParseRules input length: {css.Length}", LogCategory.Rendering);
 
-            try { if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_raw_css.txt", "\n--- RAW CSS BLOCK ---\n" + css + "\n-------------------\n"); } catch {}
+            try { if (DEBUG_FILE_LOGGING) DebugLog(@"debug_raw_css.txt", "\n--- RAW CSS BLOCK ---\n" + css + "\n-------------------\n"); } catch {}
             var text = StripComments(css);
             FenLogger.Debug($"[DEBUG-CSS] After StripComments length: {text.Length}", LogCategory.Rendering);
             
-             try { if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_full_css.txt", "\n--- NEW CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch {}
+             try { if (DEBUG_FILE_LOGGING) DebugLog(@"debug_full_css.txt", "\n--- NEW CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch {}
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
             // FlattenBasicMedia REMOVED: Now handled by proper parsing in CssSyntaxParser + Recursive processing below
@@ -1455,7 +1459,7 @@ namespace FenBrowser.FenEngine.Rendering
             text = FlattenContainerQueries(text, (float)(viewportWidth ?? 1024), log);
              FenLogger.Debug($"[PERF-CSS] FlattenContainerQueries: {sw.ElapsedMilliseconds}ms", LogCategory.Rendering); sw.Restart();
 
-             try { if (DEBUG_FILE_LOGGING) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_full_css.txt", "\n--- PROCESSED CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch {}
+             try { if (DEBUG_FILE_LOGGING) DebugLog(@"debug_full_css.txt", "\n--- PROCESSED CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch {}
 
             // New Pipeline: Tokenize -> Parse
             FenLogger.Debug($"[DEBUG-CSS] Creating tokenizer for text length {text.Length}", LogCategory.Rendering);
@@ -2191,7 +2195,7 @@ private static double? ExtractPx(string text, string prop)
                 var decls = ParseDeclarations(style);
                  if (n.TagName == "DIV" && n.GetAttribute("id") == "dynamic-box")
                  {
-                     DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[INLINE-TRACE] Tag={n.TagName} Id={n.GetAttribute("id")} Style='{style}' Decls={decls.Count}\r\n");
+                     DebugLog(@"debug_log.txt", $"[INLINE-TRACE] Tag={n.TagName} Id={n.GetAttribute("id")} Style='{style}' Decls={decls.Count}\r\n");
                  }
                  foreach (var d in decls)
                 {
@@ -2203,7 +2207,7 @@ private static double? ExtractPx(string text, string prop)
 
         private static CssComputed ResolveStyle(Element n, CssComputed parentCss, Dictionary<string, NewCss.CssDeclaration> cascadedProperties)
         {
-            // DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", "[D-BUG] ResolveStyle\r\n");
+            // DebugLog(@"debug_log.txt", "[D-BUG] ResolveStyle\r\n");
 
             var css = new CssComputed();
             string tag = n?.TagName?.ToUpperInvariant() ?? "";
@@ -2505,7 +2509,7 @@ private static double? ExtractPx(string text, string prop)
             {
                 css.FontSize = fsPx;
                 currentEmBase = fsPx;
-                // DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[FONT-TRACE] Element={n.TagName} fs={rawFontSize} -> {fsPx}px\r\n");
+                // DebugLog(@"debug_log.txt", $"[FONT-TRACE] Element={n.TagName} fs={rawFontSize} -> {fsPx}px\r\n");
             }
             else if (parentCss != null && parentCss.FontSize.HasValue)
             {
@@ -2519,7 +2523,7 @@ private static double? ExtractPx(string text, string prop)
 
             if (tag == "H1" || n.GetAttribute("id") == "dynamic-box")
             {
-                 DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-TRACE] Tag={tag} ID={n.GetAttribute("id")} RAW_FS='{rawFontSize}' RESOLVED_FS={css.FontSize} RAW_H='{DictGet(css.Map, "height")}' RESOLVED_H='{css.Height}'\r\n");
+                 DebugLog(@"debug_log.txt", $"[CSS-TRACE] Tag={tag} ID={n.GetAttribute("id")} RAW_FS='{rawFontSize}' RESOLVED_FS={css.FontSize} RAW_H='{DictGet(css.Map, "height")}' RESOLVED_H='{css.Height}'\r\n");
             }
             
             // Multi-column properties (moved here to have currentEmBase available)
@@ -2545,7 +2549,7 @@ private static double? ExtractPx(string text, string prop)
             if (TryPx(css.ColumnGapValue, out double colGapVal, currentEmBase)) css.ColumnGap = colGapVal;
             
             if (css.FontSize < 8) {
-                DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[FONT-WARN] Tiny Font! Element={n.TagName} fs={rawFontSize ?? "null"} resolved={css.FontSize}px\r\n");
+                DebugLog(@"debug_log.txt", $"[FONT-WARN] Tiny Font! Element={n.TagName} fs={rawFontSize ?? "null"} resolved={css.FontSize}px\r\n");
             }
 
             double posVal;
@@ -4485,7 +4489,7 @@ private static double? ExtractPx(string text, string prop)
 
         private static string ResolveCustomPropertyReferences(string value, CssComputed current, Dictionary<string, string> rawCurrent, HashSet<string> seen)
         {
-            if (value != null && value.Contains("var(")) DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[D-BUG] ResolveCustomPropertyReferences value='{value}'\r\n");
+            if (value != null && value.Contains("var(")) DebugLog(@"debug_log.txt", $"[D-BUG] ResolveCustomPropertyReferences value='{value}'\r\n");
             if (string.IsNullOrEmpty(value)) return value ?? string.Empty;
             if (value.IndexOf("var(", StringComparison.OrdinalIgnoreCase) < 0) return value;
 
@@ -4538,7 +4542,7 @@ private static double? ExtractPx(string text, string prop)
 
             int comma = FindTopLevelComma(trimmed);
             string name = comma >= 0 ? trimmed.Substring(0, comma).Trim() : trimmed;
-            DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[D-BUG] EvaluateVarExpression name='{name}'\r\n");
+            DebugLog(@"debug_log.txt", $"[D-BUG] EvaluateVarExpression name='{name}'\r\n");
             string fallback = comma >= 0 ? trimmed.Substring(comma + 1) : null;
 
             if (string.IsNullOrEmpty(name) || !name.StartsWith("--", StringComparison.Ordinal))
@@ -4551,7 +4555,7 @@ private static double? ExtractPx(string text, string prop)
                 if (seen == null) seen = new HashSet<string>(StringComparer.Ordinal);
                 if (seen.Contains(name))
                 {
-                    DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-VAR-LOOP] name='{name}' already in seen set\r\n");
+                    DebugLog(@"debug_log.txt", $"[CSS-VAR-LOOP] name='{name}' already in seen set\r\n");
                     return ResolveFallback(fallback, current, rawCurrent, seen);
                 }
 
@@ -4559,13 +4563,13 @@ private static double? ExtractPx(string text, string prop)
                 resolved = ResolveCustomPropertyReferences(rawValue, current, rawCurrent, seen);
                 seen.Remove(name);
                 current.CustomProperties[name] = resolved;
-                DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-VAR-LOCAL] name='{name}' resolved to='{resolved}'\r\n");
+                DebugLog(@"debug_log.txt", $"[CSS-VAR-LOCAL] name='{name}' resolved to='{resolved}'\r\n");
                 return resolved;
             }
 
             if (current != null && current.CustomProperties != null && current.CustomProperties.TryGetValue(name, out resolved))
             {
-                DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-VAR-INHERITED] name='{name}' found value='{resolved}'\r\n");
+                DebugLog(@"debug_log.txt", $"[CSS-VAR-INHERITED] name='{name}' found value='{resolved}'\r\n");
                 return resolved;
             }
 
@@ -4574,7 +4578,7 @@ private static double? ExtractPx(string text, string prop)
             {
                 if (_customProperties.TryGetValue(name, out resolved))
                 {
-                    DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-VAR-GLOBAL] name='{name}' resolved to='{resolved}'\r\n");
+                    DebugLog(@"debug_log.txt", $"[CSS-VAR-GLOBAL] name='{name}' resolved to='{resolved}'\r\n");
                     
                     // Recursive resolution for global properties (e.g., --brand-font: var(--main-font))
                     if (resolved != null && resolved.Contains("var("))
@@ -4583,10 +4587,10 @@ private static double? ExtractPx(string text, string prop)
                         if (!seen.Contains(name))
                         {
                              seen.Add(name);
-                             DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-VAR-RECURSE] Recursing for {name} value='{resolved}'\r\n");
+                             DebugLog(@"debug_log.txt", $"[CSS-VAR-RECURSE] Recursing for {name} value='{resolved}'\r\n");
                              var recursiveResolved = ResolveCustomPropertyReferences(resolved, current, rawCurrent, seen);
                              seen.Remove(name);
-                             DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-VAR-RECURSE] Result for {name} is '{recursiveResolved}'\r\n");
+                             DebugLog(@"debug_log.txt", $"[CSS-VAR-RECURSE] Result for {name} is '{recursiveResolved}'\r\n");
                              return recursiveResolved;
                         }
                     }
@@ -4594,7 +4598,7 @@ private static double? ExtractPx(string text, string prop)
                 }
                 else
                 {
-                    DebugLog(@"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt", $"[CSS-VAR-MISS] name='{name}' (Global Dict Count: {_customProperties.Count})\r\n");
+                    DebugLog(@"debug_log.txt", $"[CSS-VAR-MISS] name='{name}' (Global Dict Count: {_customProperties.Count})\r\n");
                 }
             }
 
@@ -5378,11 +5382,18 @@ private static double? ExtractPx(string text, string prop)
     private static readonly object _logLock = new object();
     private static void DebugLog(string filename, string message)
     {
-        try 
+#if !DEBUG
+        return;
+#else
+        try
         {
-            System.IO.File.AppendAllText(filename, message);
-        } 
+            var safeName = Path.GetFileName(filename);
+            if (string.IsNullOrWhiteSpace(safeName))
+                safeName = "css_debug.txt";
+            DiagnosticPaths.AppendRootText(safeName, message);
+        }
         catch { }
+#endif
     }
 
     /// <summary>

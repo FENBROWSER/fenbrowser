@@ -708,3 +708,48 @@ Implemented now:
 
 Validation note:
 - `dotnet build` remains blocked by pre-existing local SDK/workload resolver state in this machine (no project diagnostics emitted).
+
+## 14) Phase-2 Execution Log (Started 2026-02-18)
+
+Implemented now:
+
+1. **Centralized diagnostics path resolver**
+- Added reusable path abstraction for debug artifacts and logs:
+  - `FenBrowser.Core/Logging/DiagnosticPaths.cs`
+- Supports environment override:
+  - `FEN_DIAGNOSTICS_DIR`
+
+2. **Removed hardcoded absolute diagnostic file paths in core engine guards**
+- Replaced machine-specific path in:
+  - `FenBrowser.Core/Engine/PhaseGuard.cs`
+
+3. **Removed hardcoded absolute diagnostic file paths in rendering/layout hot paths**
+- Replaced direct absolute debug writes with centralized helpers in:
+  - `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`
+  - `FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs`
+  - `FenBrowser.FenEngine/Layout/LayoutEngine.cs`
+  - `FenBrowser.FenEngine/Rendering/SkiaRenderer.cs`
+
+4. **Removed hardcoded script execution log path**
+- Centralized script execution log target in:
+  - `FenBrowser.FenEngine/Core/FenRuntime.cs`
+
+5. **Removed hardcoded default harness roots**
+- Host and engine defaults now derive from current working directory instead of user-specific absolute paths:
+  - `FenBrowser.Host/Program.cs`
+  - `FenBrowser.FenEngine/Program.cs`
+
+6. **Completed residual diagnostics path migration (tranche B)**
+- Replaced remaining hardcoded diagnostics path callsites and routed them through centralized helpers in:
+  - `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+  - `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - `FenBrowser.FenEngine/WebAPIs/FetchApi.cs`
+  - `FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs`
+  - `FenBrowser.FenEngine/Layout/MinimalLayoutComputer.cs`
+- Removed remaining source-level absolute path literals (`C:\Users\...`) from production code in `FenBrowser.Core`, `FenBrowser.FenEngine`, and `FenBrowser.Host`.
+- Added compile-time debug-only gating for CSS file diagnostics in `CssLoader` to prevent release log pollution.
+
+Validation update:
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Debug` succeeded.
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` succeeded (warnings only, zero errors).
+- `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug` remains blocked on this machine with pre-existing resolver state (0 warnings / 0 errors emitted).

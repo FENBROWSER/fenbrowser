@@ -13,6 +13,7 @@
 using System;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core.Engine
 {
@@ -315,8 +316,8 @@ namespace FenBrowser.Core.Engine
             // Log to file
             try
             {
-                System.IO.File.AppendAllText(
-                    @"C:\Users\udayk\Videos\FENBROWSER\debug_log.txt",
+                DiagnosticPaths.AppendRootText(
+                    "debug_log.txt",
                     $"\r\n{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}\r\n{fullMessage}\r\n");
             }
             catch { /* Ignore logging failures */ }

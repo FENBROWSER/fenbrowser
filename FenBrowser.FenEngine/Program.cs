@@ -19,7 +19,7 @@ namespace FenBrowser.FenEngine
             else if (args.Length >= 2 && args[0] == "test262")
             {
                 string testFile = args[1];
-                string rootPath = args.Length > 2 ? args[2] : @"C:\Users\udayk\test262";
+                string rootPath = args.Length > 2 ? args[2] : Path.Combine(Directory.GetCurrentDirectory(), "test262");
                 
                 if (!File.Exists(testFile))
                 {
@@ -44,7 +44,7 @@ namespace FenBrowser.FenEngine
             else if (args.Length >= 1 && args[0] == "test262-suite")
             {
                 string category = args.Length > 1 ? args[1] : "";
-                string rootPath = args.Length > 2 ? args[2] : @"C:\Users\udayk\Videos\FENBROWSER\test262";
+                string rootPath = args.Length > 2 ? args[2] : Path.Combine(Directory.GetCurrentDirectory(), "test262");
                 
                 if (!Directory.Exists(rootPath))
                 {
@@ -82,7 +82,7 @@ namespace FenBrowser.FenEngine
                 int skip = int.Parse(args[1]);
                 int take = int.Parse(args[2]);
                 string category = args.Length > 3 ? args[3] : "";
-                string rootPath = @"C:\Users\udayk\Videos\FENBROWSER\test262";
+                string rootPath = args.Length > 4 ? args[4] : Path.Combine(Directory.GetCurrentDirectory(), "test262");
                 
                 if (!Directory.Exists(rootPath)) return;
                 

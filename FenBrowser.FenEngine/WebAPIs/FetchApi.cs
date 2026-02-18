@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Linq;
 using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 using FenBrowser.Core.Network;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
@@ -54,7 +55,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                  {
                      try
                      {
-                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[Fetch] Start: {request.Method} {request.Url}\n"); } catch {}
+                        DiagnosticPaths.AppendRootText("js_debug.log", $"[Fetch] Start: {request.Method} {request.Url}\n");
                         
                         // 1. Service Worker Interception
                         var sw = FenBrowser.FenEngine.Workers.ServiceWorkerManager.Instance.GetController(request.Url);
@@ -84,7 +85,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                         }
 
                         var resp = await fetchHandler(req);
-                        try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[Fetch] Response: {resp.StatusCode} for {request.Url}\n"); } catch {}
+                        DiagnosticPaths.AppendRootText("js_debug.log", $"[Fetch] Response: {resp.StatusCode} for {request.Url}\n");
                         
                         var jsResp = new JsResponse(resp, context);
                         
@@ -92,7 +93,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                      }
                      catch (Exception ex)
                      {
-                         try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[Fetch] Error: {ex.Message} for {request.Url}\n"); } catch {}
+                         DiagnosticPaths.AppendRootText("js_debug.log", $"[Fetch] Error: {ex.Message} for {request.Url}\n");
                          reject.Invoke(new FenValue[] { FenValue.FromString(ex.Message) }, context);
                      }
                  });
