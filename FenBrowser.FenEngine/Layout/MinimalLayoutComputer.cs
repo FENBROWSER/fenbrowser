@@ -169,6 +169,20 @@ namespace FenBrowser.FenEngine.Layout
                 }
             }
             
+            // Legacy <center> still appears in modern Google markup around submit controls.
+            // Ensure the semantic centering behavior exists even when UA selector application misses it.
+            if (node is Element centerElem &&
+                string.Equals(centerElem.TagName, "CENTER", StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrEmpty(style.Display))
+                {
+                    style.Display = "block";
+                }
+
+                // Legacy CENTER semantics: behave as `text-align:center`.
+                style.TextAlign = SKTextAlign.Center;
+            }
+
             // (UA Defaults are now handled by ua.css loaded in CssLoader)
             // Note: Special handling for DETAILS/SUMMARY visibility might be needed here if CSS selectors 
             // for :not([open]) are not fully supported yet.
@@ -1086,6 +1100,16 @@ namespace FenBrowser.FenEngine.Layout
                     {
                         FenLogger.Debug($"[ARRANGE-CORE] Tag={eDebug.TagName} Id={eDebug.GetAttribute("id")} ShouldHide={ShouldHide(node, style)} Rect={finalRect} StyleDisp={style?.Display}");
                     }
+                    if (string.Equals(eDebug.TagName, "SPAN", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var pEl = eDebug.ParentNode as Element;
+                        if (pEl != null &&
+                            string.Equals(pEl.TagName, "A", StringComparison.OrdinalIgnoreCase) &&
+                            ((pEl.GetAttribute("aria-label")?.IndexOf("Sign in", StringComparison.OrdinalIgnoreCase) ?? -1) >= 0))
+                        {
+                            FenLogger.Info($"[TRACE-GB_U] ArrangeNodeCore finalRect={finalRect} styleDisplay={style?.Display} parent={pEl.TagName}.{pEl.GetAttribute("class")}", LogCategory.Layout);
+                        }
+                    }
                 }
 
 
@@ -1590,6 +1614,11 @@ namespace FenBrowser.FenEngine.Layout
                 if (_inlineCache.ContainsKey(element))
                 {
                     // FenLogger.Debug($"[IFC-CACHE-HIT] Element={element.TagName} Hash={element.GetHashCode()}", LogCategory.Rendering);
+                    if (string.Equals(element.TagName, "A", StringComparison.OrdinalIgnoreCase) &&
+                        ((element.GetAttribute("class")?.IndexOf("gb_A", StringComparison.OrdinalIgnoreCase) ?? -1) >= 0))
+                    {
+                        FenLogger.Info($"[IFC-TRACE] HIT container=A.gb_A finalRect={finalRect}", LogCategory.Layout);
+                    }
                     ArrangeInlineContext(element, finalRect, depth);
                     return; 
                 }
@@ -1597,6 +1626,11 @@ namespace FenBrowser.FenEngine.Layout
                 {
                      // Trace miss
                      // FenLogger.Debug($"[IFC-CACHE-MISS] Element={element.TagName} Hash={element.GetHashCode()} CacheCount={_inlineCache.Count}", LogCategory.Rendering);
+                     if (string.Equals(element.TagName, "A", StringComparison.OrdinalIgnoreCase) &&
+                         ((element.GetAttribute("class")?.IndexOf("gb_A", StringComparison.OrdinalIgnoreCase) ?? -1) >= 0))
+                     {
+                         FenLogger.Info($"[IFC-TRACE] MISS container=A.gb_A finalRect={finalRect} cacheCount={_inlineCache.Count}", LogCategory.Layout);
+                     }
                 }    
             }    else
                 {
@@ -1864,6 +1898,29 @@ namespace FenBrowser.FenEngine.Layout
 
         private LayoutMetrics MeasureButton(Element element, SKSize availableSize, int depth)
         {
+            static bool ContainsInlineIcon(Element root)
+            {
+                if (root?.Children == null) return false;
+                var queue = new Queue<Node>(root.Children);
+                while (queue.Count > 0)
+                {
+                    var node = queue.Dequeue();
+                    if (node is not Element childElement) continue;
+
+                    string tag = childElement.TagName?.ToUpperInvariant() ?? string.Empty;
+                    if (tag == "SVG" || tag.EndsWith(":SVG", StringComparison.Ordinal) || tag == "IMG" || tag == "CANVAS")
+                        return true;
+
+                    if (childElement.Children == null) continue;
+                    foreach (var grandChild in childElement.Children)
+                    {
+                        queue.Enqueue(grandChild);
+                    }
+                }
+
+                return false;
+            }
+
             // Buttons should use shrink-to-fit sizing (like inline-blocks)
             // Measure with unconstrained width to get intrinsic content size
             var shrinkConstraint = new SKSize(float.PositiveInfinity, availableSize.Height);
@@ -1893,12 +1950,39 @@ namespace FenBrowser.FenEngine.Layout
                     m.ActualHeight = Math.Max(m.ActualHeight, targetH);
                 }
             }
-            
+
+            string textContent = LayoutHelper.GetRenderableTextContentTrimmed(element);
+            bool hasText = !string.IsNullOrWhiteSpace(textContent);
+            bool hasInlineIcon = ContainsInlineIcon(element);
+            if (hasText)
+            {
+                float fontSize = (float)(style?.FontSize ?? 14);
+                int fontWeight = style?.FontWeight ?? 400;
+                var typeface = TextLayoutHelper.ResolveTypeface(
+                    style?.FontFamilyName,
+                    textContent,
+                    fontWeight,
+                    style?.FontStyle == SKFontStyleSlant.Italic ? SKFontStyleSlant.Italic : SKFontStyleSlant.Upright);
+                using var textPaint = new SKPaint { Typeface = typeface, TextSize = fontSize, IsAntialias = true };
+                float textWidth = textPaint.MeasureText(textContent);
+                if (textWidth <= 0) textWidth = textContent.Length * 8f;
+
+                float iconAllowance = hasInlineIcon ? Math.Max(16f, fontSize) + 8f : 0f;
+                float horizontalChrome = 0f;
+                if (style != null)
+                {
+                    horizontalChrome = (float)(style.Padding.Left + style.Padding.Right +
+                                                style.BorderThickness.Left + style.BorderThickness.Right);
+                }
+
+                float intrinsicFloor = textWidth + iconAllowance + horizontalChrome;
+                m.MaxChildWidth = Math.Max(m.MaxChildWidth, intrinsicFloor);
+            }
+             
             // Ensure buttons have reasonable minimum dimensions
             if (m.MaxChildWidth < 10)
             {
                 // Try to get text content width
-                string textContent = LayoutHelper.GetRenderableTextContentTrimmed(element);
                 if (!string.IsNullOrEmpty(textContent))
                 {
                     m.MaxChildWidth = Math.Max(m.MaxChildWidth, textContent.Length * 8f + 20); // Rough estimate
@@ -2221,6 +2305,11 @@ namespace FenBrowser.FenEngine.Layout
             _inlineCache[container] = result;
              // /* [PERF-REMOVED] */
             FenLogger.Debug($"[IFC-CACHE-SET] Container={container.TagName} Id={container.GetAttribute("id")} Class={container.GetAttribute("class")} Lines={result.TextLines.Count} Rects={result.ElementRects.Count}", LogCategory.Rendering);
+            if (string.Equals(container.TagName, "A", StringComparison.OrdinalIgnoreCase) &&
+                ((container.GetAttribute("class")?.IndexOf("gb_A", StringComparison.OrdinalIgnoreCase) ?? -1) >= 0))
+            {
+                FenLogger.Info($"[IFC-TRACE] SET container=A.gb_A inlineWidth={result.AvailableInlineWidth} maxW={result.Metrics.MaxChildWidth} lines={result.TextLines.Count} rects={result.ElementRects.Count}", LogCategory.Layout);
+            }
             
             // Merge text lines into global text cache locally so we don't need to pass InlineLayoutResult around
             foreach (var kvp in result.TextLines)
@@ -2235,19 +2324,116 @@ namespace FenBrowser.FenEngine.Layout
         {
             if (!_inlineCache.TryGetValue(container, out var result)) return;
 
+            static bool HasOutOfBandGeometry(InlineLayoutResult inlineResult, float width)
+            {
+                if (!(width > 0) || float.IsInfinity(width) || float.IsNaN(width)) return false;
+                const float epsilon = 0.5f;
+
+                foreach (var rect in inlineResult.ElementRects.Values)
+                {
+                    if (float.IsNaN(rect.Left) || float.IsNaN(rect.Right) ||
+                        float.IsInfinity(rect.Left) || float.IsInfinity(rect.Right))
+                    {
+                        return true;
+                    }
+
+                    if (rect.Left < -epsilon || rect.Right > width + epsilon) return true;
+                }
+
+                foreach (var lines in inlineResult.TextLines.Values)
+                {
+                    foreach (var line in lines)
+                    {
+                        float left = line.Origin.X;
+                        float right = line.Origin.X + line.Width;
+                        if (float.IsNaN(left) || float.IsNaN(right) ||
+                            float.IsInfinity(left) || float.IsInfinity(right))
+                        {
+                            return true;
+                        }
+
+                        if (left < -epsilon || right > width + epsilon) return true;
+                    }
+                }
+
+                return false;
+            }
+
+            static (bool HasBounds, float MinLeft, float MaxRight) GetInlineBounds(InlineLayoutResult inlineResult)
+            {
+                bool hasBounds = false;
+                float minLeft = float.MaxValue;
+                float maxRight = float.MinValue;
+
+                foreach (var rect in inlineResult.ElementRects.Values)
+                {
+                    minLeft = Math.Min(minLeft, rect.Left);
+                    maxRight = Math.Max(maxRight, rect.Right);
+                    hasBounds = true;
+                }
+
+                foreach (var lines in inlineResult.TextLines.Values)
+                {
+                    foreach (var line in lines)
+                    {
+                        float left = line.Origin.X;
+                        float right = line.Origin.X + line.Width;
+                        minLeft = Math.Min(minLeft, left);
+                        maxRight = Math.Max(maxRight, right);
+                        hasBounds = true;
+                    }
+                }
+
+                if (!hasBounds) return (false, 0, 0);
+                return (true, minLeft, maxRight);
+            }
+
+            static void ShiftInlineGeometry(InlineLayoutResult inlineResult, float shiftX)
+            {
+                if (Math.Abs(shiftX) < 0.01f) return;
+
+                var shiftedElementRects = new Dictionary<Node, SKRect>(inlineResult.ElementRects.Count);
+                foreach (var kvp in inlineResult.ElementRects)
+                {
+                    var r = kvp.Value;
+                    shiftedElementRects[kvp.Key] = new SKRect(
+                        r.Left - shiftX,
+                        r.Top,
+                        r.Right - shiftX,
+                        r.Bottom);
+                }
+                inlineResult.ElementRects = shiftedElementRects;
+
+                var shiftedTextLines = new Dictionary<Node, List<ComputedTextLine>>(inlineResult.TextLines.Count);
+                foreach (var kvp in inlineResult.TextLines)
+                {
+                    var shiftedLines = new List<ComputedTextLine>(kvp.Value.Count);
+                    foreach (var line in kvp.Value)
+                    {
+                        var shifted = line;
+                        shifted.Origin = new SKPoint(line.Origin.X - shiftX, line.Origin.Y);
+                        shiftedLines.Add(shifted);
+                    }
+                    shiftedTextLines[kvp.Key] = shiftedLines;
+                }
+                inlineResult.TextLines = shiftedTextLines;
+            }
 
             // CRITICAL FIX: If finalRect.Width differs from what was used during Measure,
             // re-run inline layout with the actual width to get correct text-align positioning.
             // This is especially important for table cells measured with infinity width.
-            float measureWidth = result.Metrics.MaxChildWidth; // The width used during measure
+            float measureWidth = result.AvailableInlineWidth > 0 ? result.AvailableInlineWidth : result.Metrics.MaxChildWidth;
             float arrangeWidth = finalRect.Width;
-            
-            if (arrangeWidth > 0 && !float.IsInfinity(arrangeWidth) && Math.Abs(arrangeWidth - measureWidth) > 1)
+
+            bool hasFiniteArrangeWidth = arrangeWidth > 0 && !float.IsInfinity(arrangeWidth) && !float.IsNaN(arrangeWidth);
+            bool needsRelayout = false;
+            if (hasFiniteArrangeWidth)
             {
-                // Re-run inline layout with actual width for proper text-align
-                // Also pass current Height constraint (or positive infinity if unconstrained)
-                // If vertical-rl, arrangeWidth is the Physical Width (Logical Height).
-                // We need to preserve the Logical Width (Physical Height) constraint too.
+                needsRelayout = Math.Abs(arrangeWidth - measureWidth) > 1 || HasOutOfBandGeometry(result, arrangeWidth);
+            }
+
+            if (needsRelayout)
+            {
                 var newResult = InlineLayoutComputer.Compute(
                     container,
                     new SKSize(arrangeWidth, finalRect.Height),
@@ -2257,8 +2443,7 @@ namespace FenBrowser.FenEngine.Layout
                 );
                 _inlineCache[container] = newResult;
                 result = newResult;
-                
-                // DEBUG: Log text line positions
+
                 if (container.GetAttribute("class")?.Contains("center-text") == true)
                 {
                     FenLogger.Info($"[TEXT-ALIGN-DEBUG] Container={container.TagName} Class={container.GetAttribute("class")} ArrangeWidth={arrangeWidth}", FenBrowser.Core.Logging.LogCategory.Layout);
@@ -2275,6 +2460,31 @@ namespace FenBrowser.FenEngine.Layout
                 foreach (var kvp in result.TextLines)
                 {
                     _textLines[kvp.Key] = kvp.Value;
+                }
+            }
+
+            if (hasFiniteArrangeWidth && HasOutOfBandGeometry(result, arrangeWidth))
+            {
+                var bounds = GetInlineBounds(result);
+                if (bounds.HasBounds)
+                {
+                    float shiftX = 0;
+                    if (bounds.MinLeft < -0.5f)
+                    {
+                        // Shift right to keep the first glyph/atomic box within container.
+                        shiftX = bounds.MinLeft;
+                    }
+                    else if (bounds.MinLeft > 0.5f && bounds.MaxRight > arrangeWidth + 0.5f)
+                    {
+                        // Shift left when all content is offset past the container's inline end.
+                        shiftX = bounds.MinLeft;
+                    }
+
+                    ShiftInlineGeometry(result, shiftX);
+                    foreach (var kvp in result.TextLines)
+                    {
+                        _textLines[kvp.Key] = kvp.Value;
+                    }
                 }
             }
 
@@ -2416,7 +2626,17 @@ namespace FenBrowser.FenEngine.Layout
         public void ArrangeText(Node node, SKRect finalRect) 
         { 
             if (node == null) return;
-            
+
+            if (node.ParentNode != null && _boxes.TryGetValue(node.ParentNode, out var parentBox))
+            {
+                var parentContent = parentBox.ContentBox;
+                if (parentContent.Width > 0 && parentContent.Height > 0 && !finalRect.IntersectsWith(parentContent))
+                {
+                    // Guard against runaway inline placement. Text should stay within the parent content box.
+                    finalRect = parentContent;
+                }
+            }
+             
             var box = new BoxModel { BorderBox = finalRect, ContentBox = finalRect };
             
             // Text nodes also need their pre-computed lines from the measure pass
