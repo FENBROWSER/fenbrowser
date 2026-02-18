@@ -29,6 +29,9 @@ namespace FenBrowser.FenEngine.Testing
         {
             public string TestFile { get; set; }
             public bool Success { get; set; }
+            public bool HarnessCompleted { get; set; }
+            public bool TimedOut { get; set; }
+            public string CompletionSignal { get; set; }
             public int PassCount { get; set; }
             public int FailCount { get; set; }
             public int TotalCount { get; set; }
@@ -46,6 +49,12 @@ namespace FenBrowser.FenEngine.Testing
         }
 
         private readonly Func<string, Task> _navigator;
+        private sealed class TestExecutionState
+        {
+            public bool HarnessCompleted { get; set; }
+            public bool TimedOut { get; set; }
+            public string CompletionSignal { get; set; } = "none";
+        }
         
         public WPTTestRunner(string wptRootPath, Func<string, Task> navigator = null, int timeoutMs = 10000)
         {
@@ -133,15 +142,35 @@ namespace FenBrowser.FenEngine.Testing
                 WebAPIs.TestConsoleCapture.StartCapture();
                 
                 // TODO: Load and execute the test file in headless mode
-                // For now, this is a placeholder
-                await ExecuteTestAsync(testFile, verbose);
+                var execution = await ExecuteTestAsync(testFile, verbose);
+                result.HarnessCompleted = execution.HarnessCompleted;
+                result.TimedOut = execution.TimedOut;
+                result.CompletionSignal = execution.CompletionSignal;
                 
                 // Collect results
                 var (passed, failed, total) = WebAPIs.TestHarnessAPI.GetResultSummary();
                 result.PassCount = passed;
                 result.FailCount = failed;
                 result.TotalCount = total;
-                result.Success = failed == 0;
+                if (total == 0)
+                {
+                    result.Success = false;
+                    result.Error = "No assertions executed by testharness.";
+                }
+                else if (execution.TimedOut)
+                {
+                    result.Success = false;
+                    result.Error = $"Test timed out waiting for completion signal ({_timeoutMs}ms).";
+                }
+                else if (!execution.HarnessCompleted)
+                {
+                    result.Success = false;
+                    result.Error = "Harness did not report completion.";
+                }
+                else
+                {
+                    result.Success = failed == 0;
+                }
                 result.Output = WebAPIs.TestConsoleCapture.GetFullOutput();
             }
             catch (Exception ex)
@@ -190,13 +219,12 @@ namespace FenBrowser.FenEngine.Testing
         }
         
         /// <summary>
-        /// Execute a test file. Placeholder for actual implementation.
-        /// </summary>
-        /// <summary>
         /// Execute a test file using the live engine.
         /// </summary>
-        private async Task ExecuteTestAsync(string testFile, bool verbose)
+        private async Task<TestExecutionState> ExecuteTestAsync(string testFile, bool verbose)
         {
+            var state = new TestExecutionState();
+
             // Convert file path to URI
             var uri = new Uri(testFile).AbsoluteUri;
             
@@ -212,34 +240,51 @@ namespace FenBrowser.FenEngine.Testing
                if (verbose) Console.WriteLine("[WPT] Warning: No Navigator delegate provided.");
             }
 
-            // 2. Wait for completion
-            // WPT tests usually set window.testharness_results or we can poll specific JS state
-            // For now, we'll wait for a specific signal or timeout
-            
-            var timeout = DateTime.Now.AddMilliseconds(_timeoutMs);
-            bool isDone = false;
-
-            while (!isDone && DateTime.Now < timeout)
+            // 2. Wait for completion signals from testharness / testRunner bridge.
+            var timeoutAt = DateTime.UtcNow.AddMilliseconds(_timeoutMs);
+            var settleAt = DateTime.UtcNow.AddMilliseconds(500);
+            while (DateTime.UtcNow < timeoutAt)
             {
                 await Task.Delay(100);
-                
-                // Check if we can interact with the engine?
-                // Ideally we inject a JS snippet to check 'done' state
-                // This is a simplified version where we assume 'test_results' global exists when done
-                
-                // TODO: Implement robust JS bridge polling
-                // For this phase, we are establishing the loop. 
-                // We will assume if 2 seconds pass, it's "done" for non-async tests, or hook into console.
-                
-                // NOTE: Without a deep JS bridge, we can't easily read complex objects back YET.
-                // But we CAN read the console output which we capture.
-                
-                // Let's rely on Console Capture for now until JS Bridge is deeper.
-                // Testharness.js dumps results to console.
+
+                if (WebAPIs.TestHarnessAPI.IsTestDone)
+                {
+                    state.HarnessCompleted = true;
+                    state.CompletionSignal = "testRunner.notifyDone";
+                    break;
+                }
+
+                var output = WebAPIs.TestConsoleCapture.GetFullOutput();
+                if (!string.IsNullOrWhiteSpace(output))
+                {
+                    WebAPIs.TestConsoleCapture.ParseTestHarnessOutput(output);
+                    if (output.IndexOf("ran to completion", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        output.IndexOf("harness_status", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        state.HarnessCompleted = true;
+                        state.CompletionSignal = "console.harness_status";
+                        break;
+                    }
+                }
+
+                var (_, _, total) = WebAPIs.TestHarnessAPI.GetResultSummary();
+                if (total > 0 && DateTime.UtcNow >= settleAt && !WebAPIs.TestHarnessAPI.IsWaitingForDone)
+                {
+                    state.HarnessCompleted = true;
+                    state.CompletionSignal = "testRunner.reportResult";
+                    break;
+                }
             }
-            
-            // Wait a fixed buffer for rendering/script execution
-            await Task.Delay(500);
+
+            if (!state.HarnessCompleted)
+            {
+                state.TimedOut = WebAPIs.TestHarnessAPI.IsWaitingForDone;
+                state.CompletionSignal = state.TimedOut ? "timeout" : "none";
+            }
+
+            // Small settle delay for pending console flushes/results.
+            await Task.Delay(200);
+            return state;
         }
         
         /// <summary>
@@ -280,7 +325,7 @@ namespace FenBrowser.FenEngine.Testing
             }
             else if (totalTests == 0)
             {
-                sb.AppendLine("No assertions executed. (Runner Stub active)");
+                sb.AppendLine("No assertions executed. Treated as failure.");
             }
             else
             {

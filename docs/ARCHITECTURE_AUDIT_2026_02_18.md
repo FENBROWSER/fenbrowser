@@ -761,3 +761,39 @@ Validation update:
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` succeeded (warnings only, zero errors).
 - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug` remains blocked on this machine with pre-existing resolver state (0 warnings / 0 errors emitted).
 - Source scan validation: no remaining `C:\Users\...` literals in production `*.cs` files under `FenBrowser.Core`, `FenBrowser.FenEngine`, and `FenBrowser.Host`.
+
+## 15) Phase-3 Execution Log (Started 2026-02-18, tranche A)
+
+Implemented now:
+
+1. **WPT runner truthfulness hardening**
+- `FenBrowser.FenEngine/Testing/WPTTestRunner.cs`
+  - Test runs now fail when no assertions are reported.
+  - Test runs now fail when async completion times out.
+  - Test runs now fail when completion signal is missing.
+  - Completion-signal provenance is recorded (`notifyDone`, console harness status, or settled result stream).
+
+2. **Placeholder test assertion removal**
+- Replaced `Assert.True(true)` placeholders with observable assertions in:
+  - `FenBrowser.Tests/Workers/WorkerTests.cs`
+  - `FenBrowser.Tests/Engine/IntersectionObserverTests.cs`
+  - `FenBrowser.Tests/Engine/PrivacyTests.cs`
+  - `FenBrowser.Tests/Engine/PlatformInvariantTests.cs`
+
+3. **CI policy checks for verification drift**
+- Added guard script:
+  - `scripts/ci/verify-verification-guards.ps1`
+- Wired into CI:
+  - `.github/workflows/build-fenbrowser-exe.yml`
+- Guards now fail CI on:
+  - placeholder assertions in `FenBrowser.Tests`
+  - stale WPT runner filename references (`WptRunner.cs`)
+  - baseline metric drift between `docs/VERIFICATION_BASELINES.md` and `test262_results.md`.
+
+4. **Benchmark baseline canonicalization**
+- Added canonical baseline:
+  - `docs/VERIFICATION_BASELINES.md`
+
+Residual Phase-3 scope remains:
+- Full WPT harness completion should eventually use stronger engine-side structured result extraction rather than console/status heuristics.
+- Host build resolver issue still blocks full-repo validation on this machine.

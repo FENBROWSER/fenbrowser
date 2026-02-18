@@ -24,6 +24,10 @@ jobs:
         with:
           global-json-file: global.json
 
+      - name: Verification Guards
+        shell: pwsh
+        run: ./scripts/ci/verify-verification-guards.ps1
+
       - name: Restore FenBrowser.Host (win-x64)
         run: dotnet restore FenBrowser.Host/FenBrowser.Host.csproj -r win-x64
 

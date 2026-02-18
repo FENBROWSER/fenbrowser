@@ -118,7 +118,7 @@ Deterministic generation script for Test262 NUnit fixtures.
 - Normalizes Windows path to Test262Harness-compatible `/mnt/<drive>/...` format.
 - Regenerates `FenBrowser.Test262/Generated` using `Test262Harness.settings.json`.
 
-#### `WptRunner.cs`
+#### `WPTTestRunner.cs`
 
 The Web Platform Tests (WPT) runner for DOM/CSS compliance.
 
@@ -179,5 +179,25 @@ To implement a new command (e.g., `GET /session/{id}/print`):
     - `FEN_WEBDRIVER=1`
     - `FEN_WEBDRIVER_PORT` (optional, default `4444`)
   - Replaced reflection-based driver injection with direct `WebDriverServer.SetDriver(...)`.
+
+### 4.5 Phase-3 Verification Truthfulness (2026-02-18)
+
+- `FenBrowser.FenEngine/Testing/WPTTestRunner.cs`
+  - Runner no longer treats zero-assertion runs as implicit success.
+  - Test result success now requires both:
+    - at least one assertion reported
+    - harness completion signal (notifyDone / parsed harness status / settled results).
+  - Timeout waiting for async completion is now surfaced as explicit test failure.
+
+- `FenBrowser.Tests/*`
+  - Removed `Assert.True(true)` placeholders and replaced them with observable behavior assertions.
+
+- `.github/workflows/build-fenbrowser-exe.yml`
+  - Added CI verification guard step.
+
+- `scripts/ci/verify-verification-guards.ps1`
+  - Fails CI on placeholder assertions.
+  - Fails CI on stale `WptRunner.cs` doc references.
+  - Fails CI when `docs/VERIFICATION_BASELINES.md` drifts from `test262_results.md` metrics.
 
 _End of Volume VI_

@@ -263,19 +263,42 @@ namespace FenBrowser.Tests.Engine
         {
             // Arrange
             EnginePhaseManager.EnterPhase(EnginePhase.JSExecution);
-            
-            var callback = FenValue.FromFunction(new FenFunction("cb", (_, __) => FenValue.Undefined));
-            var intersectionObserver = new IntersectionObserverInstance(callback, 0);
-            var resizeObserver = new ResizeObserverInstance(callback);
+            var callbackCalls = 0;
+            var element = new Element("div");
+            var target = new FenObject { NativeObject = element };
+            var layout = new LayoutResult(
+                new Dictionary<Element, ElementGeometry>
+                {
+                    { element, new ElementGeometry(0, 0, 100, 100) }
+                },
+                800,
+                600,
+                0,
+                1000);
 
+            var countCallback = FenValue.FromFunction(new FenFunction("cbCount", (_, __) =>
+            {
+                callbackCalls++;
+                return FenValue.Undefined;
+            }));
+            var intersectionObserver = new IntersectionObserverInstance(countCallback, 0);
+            var resizeObserver = new ResizeObserverInstance(countCallback);
             ObserverCoordinator.Instance.RegisterIntersectionObserver(intersectionObserver);
             ObserverCoordinator.Instance.RegisterResizeObserver(resizeObserver);
+            intersectionObserver.Observe(target);
+            resizeObserver.Observe(target);
+            ObserverCoordinator.Instance.OnLayoutComplete(layout, jsObj =>
+            {
+                if (jsObj is FenObject fenObj && fenObj.NativeObject is Element e) return e;
+                return null;
+            });
 
             // Act
             ObserverCoordinator.Instance.Clear();
+            ObserverCoordinator.Instance.ExecutePendingCallbacks(null);
 
-            // Assert - clearing should not throw, all state removed
-            Assert.True(true); // If we reach here, clear worked
+            // Assert - pending callbacks and registrations were cleared.
+            Assert.Equal(0, callbackCalls);
         }
 
         #endregion
@@ -308,50 +331,47 @@ namespace FenBrowser.Tests.Engine
         [Fact]
         public void ObserverCoordinator_EvaluatesIntersection_Before_Resize()
         {
-            // Test that EvaluateIntersectionObservers is called before EvaluateResizeObservers
-            // We can infer this by registering mock observers and checking call order
-            
             ObserverCoordinator.Instance.Clear();
             var callOrder = new List<string>();
-
-            // Mock intersection observer callback (simulated via subclass or just relying on internal logic triggering events)
-            // Since we can't easily mock the internal "Evaluate" calls directly without making them virtual/public or using a spy,
-            // we will simulate the behavior by observing how they fire relative to each other if they both trigger on the same frame.
-            
-            // NOTE: This test relies on the implementation detail that ObserverCoordinator calls them sequentially.
-            // A true unit test might need cleaner seams, but for an invariant test, we verify the effect.
-
-            // Since we can't inject a "Logger" into the static Coordinator easily without changing prod code, 
-            // we will verify this by code inspection tripwire:
-            // The architecture demands that the list of IntersectionObservers is processed before ResizeObservers.
-            // We can test this by creating a scenario where both would fire, and ensuring the queueing happens in order.
-            
-            var ioCallback = FenValue.FromFunction(new FenFunction("io", (args, thisVal) => 
+            var ioCallback = FenValue.FromFunction(new FenFunction("io", (args, thisVal) =>
             {
-               // This runs in JSExecution phase, later. 
-               // This test checks the EVALUATION order, which happens inside OnLayoutComplete.
-               return FenValue.Undefined;
+                callOrder.Add("intersection");
+                return FenValue.Undefined;
             }));
-            
-            // Realistically, to test the *evaluation* order strictly without mocks, we'd need to instrument ObserverCoordinator.
-            // However, we CAN test the *Callback Execution* consequence if we assume they are enqueued in order.
-            
-            // Actually, the spec says:
-            // 1. IntersectionObserver steps update positions
-            // 2. ResizeObserver steps update sizes
-            // 3. Both enqueue callbacks
-            // 4. Callbacks are executed.
-            
-            // If both enqueue callbacks, they should appear in the pending callback list in order of evaluation 
-            // (assuming single threaded list add).
-            
-            // Let's rely on the fact that existing tests cover logic correctness. 
-            // For an invariant, let's ensure we can't accidentally swap them.
-            // We'll inspect the public behavior: The order in which callbacks are enqueued.
-            
-            // This is hard to test perfectly black-box without side-effects during evaluation.
-            // Skipping complex mock injection to keep tests clean, but keeping the placeholder imply intent.
-            Assert.True(true, "Architecture invariant: IntersectionObserver MUST execute before ResizeObserver. Verified by code review and spec compliance in ObserverCoordinator.cs");
+            var roCallback = FenValue.FromFunction(new FenFunction("ro", (args, thisVal) =>
+            {
+                callOrder.Add("resize");
+                return FenValue.Undefined;
+            }));
+
+            var intersectionObserver = new IntersectionObserverInstance(ioCallback, 0);
+            var resizeObserver = new ResizeObserverInstance(roCallback);
+            var element = new Element("div");
+            var target = new FenObject { NativeObject = element };
+            intersectionObserver.Observe(target);
+            resizeObserver.Observe(target);
+            ObserverCoordinator.Instance.RegisterIntersectionObserver(intersectionObserver);
+            ObserverCoordinator.Instance.RegisterResizeObserver(resizeObserver);
+
+            var layout = new LayoutResult(
+                new Dictionary<Element, ElementGeometry>
+                {
+                    { element, new ElementGeometry(10, 10, 120, 90) }
+                },
+                800,
+                600,
+                0,
+                1000);
+            ObserverCoordinator.Instance.OnLayoutComplete(layout, jsObj =>
+            {
+                if (jsObj is FenObject fenObj && fenObj.NativeObject is Element e) return e;
+                return null;
+            });
+            ObserverCoordinator.Instance.ExecutePendingCallbacks(null);
+
+            Assert.Equal(2, callOrder.Count);
+            Assert.Equal("intersection", callOrder[0]);
+            Assert.Equal("resize", callOrder[1]);
         }
 
         #endregion

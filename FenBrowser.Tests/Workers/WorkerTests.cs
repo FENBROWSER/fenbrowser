@@ -38,28 +38,20 @@ namespace FenBrowser.Tests.Workers
         }
 
         [Fact]
-        public async Task WorkerRuntime_PostMessage_EnqueuesTask()
+        public void WorkerRuntime_PostMessage_ThrowsForNonCloneablePayload()
         {
             // Arrange
             var worker = new WorkerRuntime("test.js", "https://example.com");
-            var messageReceived = false;
-
-            // Give worker time to start
-            await Task.Delay(50);
-
-            // Act - post a message
-            worker.PostMessage(new { test = "hello" });
-
-            // Wait for message to be processed
-            await Task.Delay(100);
-
-            // Cleanup
-            worker.Terminate();
-            worker.Dispose();
-
-            // Worker should have processed the message (in real impl)
-            // For now, just verify no crash
-            Assert.True(true);
+            try
+            {
+                // Act + Assert
+                Assert.Throws<StructuredCloneException>(() => worker.PostMessage((Action)(() => { })));
+            }
+            finally
+            {
+                worker.Terminate();
+                worker.Dispose();
+            }
         }
 
         [Fact]
@@ -95,7 +87,7 @@ namespace FenBrowser.Tests.Workers
         public void WorkerRuntime_OnError_EventFires()
         {
             // Arrange
-            var worker = new WorkerRuntime("test.js", "https://example.com");
+            var worker = new WorkerRuntime("http://::invalid-uri", "https://example.com");
             Exception receivedException = null;
             var errorEvent = new ManualResetEventSlim(false);
 
@@ -105,14 +97,12 @@ namespace FenBrowser.Tests.Workers
                 errorEvent.Set();
             };
 
-            // Note: In real implementation, errors would fire from worker thread
-            // This test just verifies the event mechanism works
+            // Invalid URI script loading should trigger OnError from worker startup task.
+            Assert.True(errorEvent.Wait(2000), "Expected worker startup error event.");
+            Assert.NotNull(receivedException);
 
             worker.Terminate();
             worker.Dispose();
-
-            // No crash = success
-            Assert.True(true);
         }
 
         [Fact]
