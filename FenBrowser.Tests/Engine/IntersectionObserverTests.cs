@@ -22,76 +22,134 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
-        public void IntersectionObserver_Constructor_RequiresCallback()
+        public void IntersectionObserver_Instance_ConstructsWithCallback()
         {
-            // Act
-            var script = @"
-                try {
-                    new IntersectionObserver();
-                    false; // Should not reach here
-                } catch (e) {
-                    true; // Error expected
-                }
-            ";
-            
-            // This test validates that IntersectionObserver requires a callback
-            // The actual implementation throws an error if no callback provided
-            Assert.True(true); // Placeholder - actual JS execution would test this
+            var callback = FenValue.FromFunction(new FenFunction("callback", (args, thisVal) => FenValue.Undefined));
+            var observer = new IntersectionObserverInstance(callback, 0);
+            Assert.NotNull(observer);
         }
 
         [Fact]
         public void IntersectionObserver_Observe_AddsTarget()
         {
             // Arrange
-            var callbackCalled = false;
+            var callbackCallCount = 0;
+            var receivedEntries = 0;
             var callback = FenValue.FromFunction(new FenFunction("callback", (args, thisVal) =>
             {
-                callbackCalled = true;
+                callbackCallCount++;
+                if (args.Length > 0 && args[0].IsObject)
+                {
+                    var entries = args[0].AsObject();
+                    var lenVal = entries.Get("length");
+                    receivedEntries = (int)lenVal.AsNumber();
+                }
                 return FenValue.Undefined;
             }));
 
             var observer = new IntersectionObserverInstance(callback, 0);
-            var target = new FenObject();
+            var element = new Element("div");
+            var target = new FenObject { NativeObject = element };
 
             // Act
             observer.Observe(target);
+            var layoutResult = new LayoutResult(
+                new Dictionary<Element, ElementGeometry>
+                {
+                    { element, new ElementGeometry(10, 10, 100, 100) }
+                },
+                800,
+                600,
+                0,
+                1000);
+            observer.EvaluateWithLayoutResult(layoutResult, layoutResult.GetVisibleViewport(), jsObj =>
+            {
+                if (jsObj is FenObject fenObj && fenObj.NativeObject is Element e) return e;
+                return null;
+            });
+            ObserverCoordinator.Instance.ExecutePendingCallbacks(null);
 
-            // Assert - target is added (no exception thrown)
-            Assert.True(true);
+            // Assert
+            Assert.Equal(1, callbackCallCount);
+            Assert.Equal(1, receivedEntries);
         }
 
         [Fact]
         public void IntersectionObserver_Unobserve_RemovesTarget()
         {
             // Arrange
-            var callback = FenValue.FromFunction(new FenFunction("callback", (args, thisVal) => FenValue.Undefined));
+            var callbackCalls = 0;
+            var callback = FenValue.FromFunction(new FenFunction("callback", (args, thisVal) =>
+            {
+                callbackCalls++;
+                return FenValue.Undefined;
+            }));
             var observer = new IntersectionObserverInstance(callback, 0);
-            var target = new FenObject();
+            var element = new Element("div");
+            var target = new FenObject { NativeObject = element };
 
             // Act
             observer.Observe(target);
             observer.Unobserve(target);
+            var layoutResult = new LayoutResult(
+                new Dictionary<Element, ElementGeometry>
+                {
+                    { element, new ElementGeometry(10, 10, 100, 100) }
+                },
+                800,
+                600,
+                0,
+                1000);
+            observer.EvaluateWithLayoutResult(layoutResult, layoutResult.GetVisibleViewport(), jsObj =>
+            {
+                if (jsObj is FenObject fenObj && fenObj.NativeObject is Element e) return e;
+                return null;
+            });
+            ObserverCoordinator.Instance.ExecutePendingCallbacks(null);
 
-            // Assert - no exception thrown
-            Assert.True(true);
+            // Assert
+            Assert.Equal(0, callbackCalls);
         }
 
         [Fact]
         public void IntersectionObserver_Disconnect_ClearsAllTargets()
         {
             // Arrange
-            var callback = FenValue.FromFunction(new FenFunction("callback", (args, thisVal) => FenValue.Undefined));
+            var callbackCalls = 0;
+            var callback = FenValue.FromFunction(new FenFunction("callback", (args, thisVal) =>
+            {
+                callbackCalls++;
+                return FenValue.Undefined;
+            }));
             var observer = new IntersectionObserverInstance(callback, 0);
-            var target1 = new FenObject();
-            var target2 = new FenObject();
+            var element1 = new Element("div");
+            var element2 = new Element("span");
+            var target1 = new FenObject { NativeObject = element1 };
+            var target2 = new FenObject { NativeObject = element2 };
 
             // Act
             observer.Observe(target1);
             observer.Observe(target2);
             observer.Disconnect();
+            var layoutResult = new LayoutResult(
+                new Dictionary<Element, ElementGeometry>
+                {
+                    { element1, new ElementGeometry(10, 10, 100, 100) },
+                    { element2, new ElementGeometry(20, 20, 100, 100) }
+                },
+                800,
+                600,
+                0,
+                1000);
+            observer.EvaluateWithLayoutResult(layoutResult, layoutResult.GetVisibleViewport(), jsObj =>
+            {
+                if (jsObj is FenObject fenObj && fenObj.NativeObject is Element e) return e;
+                return null;
+            });
+            ObserverCoordinator.Instance.ExecutePendingCallbacks(null);
 
-            // Assert - no exception thrown
-            Assert.True(true);
+            // Assert
+            Assert.Equal(0, callbackCalls);
         }
 
         [Fact]
@@ -201,23 +259,43 @@ namespace FenBrowser.Tests.Engine
         public void IntersectionObserver_DirtyFlag_SkipsUnchangedLayouts()
         {
             // Arrange
-            var coordinator = new ObserverCoordinator();
+            var coordinator = ObserverCoordinator.Instance;
+            coordinator.Clear();
+            var callbackCalls = 0;
+            var callback = FenValue.FromFunction(new FenFunction("callback", (args, thisVal) =>
+            {
+                callbackCalls++;
+                return FenValue.Undefined;
+            }));
+            var observer = new IntersectionObserverInstance(callback, 0);
+            coordinator.RegisterIntersectionObserver(observer);
             var element = new Element("div");
+            var wrapper = new FenObject { NativeObject = element };
+            observer.Observe(wrapper);
             var elementRects = new Dictionary<Element, ElementGeometry>
             {
                 { element, new ElementGeometry(100, 100, 200, 150) }
             };
 
-            // Create two LayoutResults with same geometry
+            // Create two LayoutResults with same geometry and same LayoutId usage.
             var layoutResult1 = new LayoutResult(elementRects, 800, 600, 0, 1000);
-            var layoutResult2 = new LayoutResult(elementRects, 800, 600, 0, 1000);
 
             // Act - call twice with same scroll position
-            coordinator.OnLayoutComplete(layoutResult1, (jsObj) => null);
-            coordinator.OnLayoutComplete(layoutResult1, (jsObj) => null); // Same result = skipped
+            coordinator.OnLayoutComplete(layoutResult1, (jsObj) =>
+            {
+                if (jsObj is FenObject fenObj && fenObj.NativeObject is Element elem) return elem;
+                return null;
+            });
+            coordinator.ExecutePendingCallbacks(null);
+            coordinator.OnLayoutComplete(layoutResult1, (jsObj) =>
+            {
+                if (jsObj is FenObject fenObj && fenObj.NativeObject is Element elem) return elem;
+                return null;
+            }); // Same result = skipped
+            coordinator.ExecutePendingCallbacks(null);
 
-            // Assert - no exception, dirty flag logic works
-            Assert.True(true);
+            // Assert
+            Assert.Equal(1, callbackCalls);
         }
     }
 }

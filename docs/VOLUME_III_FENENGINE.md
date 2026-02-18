@@ -555,3 +555,16 @@ So you want to add `border-radius`? Follow these steps:
 
 - `Rendering/Css/CssLoader.cs`
   - Removed machine-specific absolute UA stylesheet fallback path and replaced it with workspace-relative candidate paths.
+
+### 6.14 Phase-3 Verification Truthfulness (2026-02-18)
+
+- `Testing/WPTTestRunner.cs`
+  - Hardened single-test verdict logic: success now requires non-zero assertions plus a completion signal.
+  - Added explicit failure modes for:
+    - no testharness assertions
+    - timeout while waiting for async completion
+    - missing completion signals.
+  - Completion signal tracking now records whether completion came from:
+    - `testRunner.notifyDone`
+    - parsed harness-status console output
+    - settled `testRunner.reportResult` output.

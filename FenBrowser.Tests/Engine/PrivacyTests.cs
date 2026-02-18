@@ -118,18 +118,55 @@ namespace FenBrowser.Tests.Engine
         {
             // Arrange
             var coordinator = ObserverCoordinator.Instance;
-            var callback = FenValue.FromFunction(new FenFunction("callback", (args, thisVal) => FenValue.Undefined));
+            var callbackCalls = 0;
+            var callback = FenValue.FromFunction(new FenFunction("callback", (args, thisVal) =>
+            {
+                callbackCalls++;
+                return FenValue.Undefined;
+            }));
             var observer1 = new IntersectionObserverInstance(callback, 0);
-            var observer2 = new IntersectionObserverInstance(callback, 0.5);
+            var element = new Element("div");
+            var target = new FenObject { NativeObject = element };
 
             coordinator.RegisterIntersectionObserver(observer1);
-            coordinator.RegisterIntersectionObserver(observer2);
+            observer1.Observe(target);
+
+            var firstLayout = new LayoutResult(
+                new Dictionary<Element, ElementGeometry>
+                {
+                    { element, new ElementGeometry(10, 10, 120, 90) }
+                },
+                800,
+                600,
+                0,
+                1000);
+            coordinator.OnLayoutComplete(firstLayout, jsObj =>
+            {
+                if (jsObj is FenObject fenObj && fenObj.NativeObject is Element e) return e;
+                return null;
+            });
+            coordinator.ExecutePendingCallbacks(null);
 
             // Act
             coordinator.Clear();
+            var secondLayout = new LayoutResult(
+                new Dictionary<Element, ElementGeometry>
+                {
+                    { element, new ElementGeometry(20, 20, 120, 90) }
+                },
+                800,
+                600,
+                0,
+                1000);
+            coordinator.OnLayoutComplete(secondLayout, jsObj =>
+            {
+                if (jsObj is FenObject fenObj && fenObj.NativeObject is Element e) return e;
+                return null;
+            });
+            coordinator.ExecutePendingCallbacks(null);
 
-            // Assert - clearing should not throw, observers are removed
-            Assert.True(true);
+            // Assert - callback fired before clear but not after clear.
+            Assert.Equal(1, callbackCalls);
         }
 
         [Fact]
