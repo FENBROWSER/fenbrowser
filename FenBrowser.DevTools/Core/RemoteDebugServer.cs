@@ -22,6 +22,9 @@ public class RemoteDebugServer : IDisposable
 {
     private readonly TcpListener _listener;
     private readonly DevToolsServer _devToolsServer;
+    private readonly int _port;
+    private readonly string _advertisedHost;
+    private readonly string _authToken;
     private readonly CancellationTokenSource _cts = new();
     private readonly List<Socket> _clients = new();
     private readonly ConcurrentDictionary<Socket, ConcurrentQueue<string>> _messageQueues = new();
@@ -36,12 +39,22 @@ public class RemoteDebugServer : IDisposable
     public long MessagesSent { get; private set; }
     public long MessagesReceived { get; private set; }
 
-    public RemoteDebugServer(DevToolsServer devToolsServer, int port = 9222)
+    public RemoteDebugServer(
+        DevToolsServer devToolsServer,
+        int port = 9222,
+        string bindAddress = "127.0.0.1",
+        string authToken = null)
     {
         _devToolsServer = devToolsServer;
-        // Bind to IPv6Any and enable DualMode to support both IPv4 and IPv6
-        _listener = new TcpListener(IPAddress.IPv6Any, port); 
-        _listener.Server.DualMode = true;
+        _port = port;
+        _authToken = string.IsNullOrWhiteSpace(authToken) ? null : authToken.Trim();
+
+        if (!IPAddress.TryParse(bindAddress, out var bindIp))
+            bindIp = IPAddress.Loopback;
+        _advertisedHost = bindIp.AddressFamily == AddressFamily.InterNetworkV6 ? "[::1]" : bindIp.ToString();
+
+        // Security hardening: bind to explicit local interface unless caller opts otherwise.
+        _listener = new TcpListener(bindIp, port);
         
         // Broadcast events to all connected clients
         _devToolsServer.OnJsonOutput(BroadcastToClients);
@@ -53,7 +66,8 @@ public class RemoteDebugServer : IDisposable
         {
             _listener.Start();
             var endpoint = (IPEndPoint)_listener.LocalEndpoint;
-            FenLogger.Info($"[RemoteDebug] TCP Server started on port {endpoint.Port}", LogCategory.General);
+            var authState = string.IsNullOrEmpty(_authToken) ? "disabled" : "enabled";
+            FenLogger.Info($"[RemoteDebug] TCP Server started on {endpoint.Address}:{endpoint.Port} (auth: {authState})", LogCategory.General);
             
             // Start heartbeat timer (10/10)
             StartHeartbeat();
@@ -144,6 +158,13 @@ public class RemoteDebugServer : IDisposable
             if (bytesRead == 0) return;
             
             string request = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+
+            if (!IsAuthorizedRequest(request))
+            {
+                FenLogger.Warn("[RemoteDebug] Unauthorized request rejected", LogCategory.General);
+                await SendUnauthorizedAsync(stream);
+                return;
+            }
             
             if (Regex.IsMatch(request, "^GET", RegexOptions.IgnoreCase))
             {
@@ -186,8 +207,21 @@ public class RemoteDebugServer : IDisposable
         // Simple manual HTTP parsing
         string responseBody = "";
         string contentType = "application/json";
+        string requestTarget = GetRequestTarget(request);
+        string path = "/";
+        if (Uri.TryCreate(requestTarget, UriKind.Absolute, out var absUri))
+        {
+            path = absUri.AbsolutePath;
+        }
+        else if (Uri.TryCreate("http://localhost" + requestTarget, UriKind.Absolute, out var relUri))
+        {
+            path = relUri.AbsolutePath;
+        }
 
-        if (request.Contains("GET /json/version"))
+        string tokenQuery = string.IsNullOrEmpty(_authToken) ? "" : "?token=" + Uri.EscapeDataString(_authToken);
+        string webSocketUrl = $"ws://{_advertisedHost}:{_port}/devtools/page/1{tokenQuery}";
+
+        if (string.Equals(path, "/json/version", StringComparison.OrdinalIgnoreCase))
         {
             responseBody = System.Text.Json.JsonSerializer.Serialize(new 
             {
@@ -196,23 +230,24 @@ public class RemoteDebugServer : IDisposable
                 User_Agent = BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent),
                 V8_Version = "1.0",
                 WebKit_Version = "537.36",
-                webSocketDebuggerUrl = "ws://localhost:9222/devtools/browser"
+                webSocketDebuggerUrl = webSocketUrl
             });
         }
-        else if (request.Contains("GET /json") || request.Contains("GET /json/list"))
+        else if (string.Equals(path, "/json", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(path, "/json/list", StringComparison.OrdinalIgnoreCase))
         {
              var targets = new[]
              {
                  new 
                  {
-                     description = "FenBrowser Active Tab",
-                     devtoolsFrontendUrl = "/devtools/inspector.html?ws=localhost:9222/devtools/page/1",
-                     id = "1",
-                     title = "FenBrowser Tab",
-                     type = "page",
-                     url = "http://localhost",
-                     webSocketDebuggerUrl = "ws://localhost:9222/devtools/page/1"
-                 }
+                      description = "FenBrowser Active Tab",
+                      devtoolsFrontendUrl = $"/devtools/inspector.html?ws={_advertisedHost}:{_port}/devtools/page/1",
+                      id = "1",
+                      title = "FenBrowser Tab",
+                      type = "page",
+                      url = "http://localhost",
+                      webSocketDebuggerUrl = webSocketUrl
+                  }
              };
              responseBody = System.Text.Json.JsonSerializer.Serialize(targets);
         }
@@ -229,6 +264,104 @@ public class RemoteDebugServer : IDisposable
         string header = $"HTTP/1.1 200 OK\r\nContent-Type: {contentType}; charset=UTF-8\r\nContent-Length: {bodyBytes.Length}\r\nConnection: close\r\n\r\n";
         byte[] headerBytes = Encoding.UTF8.GetBytes(header);
         
+        await stream.WriteAsync(headerBytes, 0, headerBytes.Length);
+        await stream.WriteAsync(bodyBytes, 0, bodyBytes.Length);
+    }
+
+    private static string GetRequestTarget(string request)
+    {
+        if (string.IsNullOrEmpty(request)) return "/";
+        var lineEnd = request.IndexOf('\n');
+        var firstLine = lineEnd >= 0 ? request.Substring(0, lineEnd).Trim() : request.Trim();
+        var parts = firstLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length >= 2) return parts[1];
+        return "/";
+    }
+
+    private static Dictionary<string, string> ParseHeaders(string request)
+    {
+        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrEmpty(request)) return headers;
+
+        var lines = request.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+        for (int i = 1; i < lines.Length; i++)
+        {
+            var line = lines[i];
+            if (string.IsNullOrWhiteSpace(line)) break;
+            var colon = line.IndexOf(':');
+            if (colon <= 0) continue;
+            var key = line.Substring(0, colon).Trim();
+            var value = line.Substring(colon + 1).Trim();
+            headers[key] = value;
+        }
+
+        return headers;
+    }
+
+    private static string GetTokenFromTarget(string requestTarget)
+    {
+        if (string.IsNullOrEmpty(requestTarget)) return null;
+
+        var uriText = requestTarget.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                      requestTarget.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+            ? requestTarget
+            : "http://localhost" + requestTarget;
+
+        if (!Uri.TryCreate(uriText, UriKind.Absolute, out var uri)) return null;
+        if (string.IsNullOrEmpty(uri.Query)) return null;
+
+        var query = uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries);
+        foreach (var pair in query)
+        {
+            var kv = pair.Split('=', 2);
+            if (kv.Length >= 1 && string.Equals(kv[0], "token", StringComparison.OrdinalIgnoreCase))
+                return kv.Length == 2 ? Uri.UnescapeDataString(kv[1]) : "";
+        }
+
+        return null;
+    }
+
+    private static bool ConstantTimeEquals(string left, string right)
+    {
+        if (left == null || right == null || left.Length != right.Length) return false;
+        int diff = 0;
+        for (int i = 0; i < left.Length; i++)
+            diff |= left[i] ^ right[i];
+        return diff == 0;
+    }
+
+    private bool IsAuthorizedRequest(string request)
+    {
+        if (string.IsNullOrEmpty(_authToken)) return true;
+
+        var headers = ParseHeaders(request);
+        if (headers.TryGetValue("X-Fen-Debug-Token", out var headerToken) &&
+            ConstantTimeEquals(headerToken, _authToken))
+        {
+            return true;
+        }
+
+        if (headers.TryGetValue("Authorization", out var authHeader) &&
+            authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+        {
+            var bearer = authHeader.Substring("Bearer ".Length).Trim();
+            if (ConstantTimeEquals(bearer, _authToken)) return true;
+        }
+
+        var queryToken = GetTokenFromTarget(GetRequestTarget(request));
+        return ConstantTimeEquals(queryToken, _authToken);
+    }
+
+    private static async Task SendUnauthorizedAsync(NetworkStream stream)
+    {
+        const string body = "{\"error\":\"unauthorized\"}";
+        string header =
+            "HTTP/1.1 401 Unauthorized\r\n" +
+            "Content-Type: application/json; charset=UTF-8\r\n" +
+            $"Content-Length: {body.Length}\r\n" +
+            "Connection: close\r\n\r\n";
+        var headerBytes = Encoding.UTF8.GetBytes(header);
+        var bodyBytes = Encoding.UTF8.GetBytes(body);
         await stream.WriteAsync(headerBytes, 0, headerBytes.Length);
         await stream.WriteAsync(bodyBytes, 0, bodyBytes.Length);
     }

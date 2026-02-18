@@ -75,11 +75,26 @@ namespace FenBrowser.WebDriver.Security
             try
             {
                 var uri = new Uri(originHeader);
+                if (!string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+
                 var host = uri.Host;
-                
-                return _allowedOrigins.Contains(host) || 
-                       host == "localhost" ||
-                       host == "127.0.0.1";
+
+                if (_allowLocalhostOnly)
+                {
+                    if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
+                        return true;
+
+                    if (IPAddress.TryParse(host, out var ip))
+                        return IPAddress.IsLoopback(ip);
+
+                    return false;
+                }
+
+                return _allowedOrigins.Contains(host);
             }
             catch
             {

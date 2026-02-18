@@ -18,6 +18,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.WebDriver.Protocol;
 using FenBrowser.WebDriver.Commands;
+using FenBrowser.WebDriver.Security;
 
 namespace FenBrowser.WebDriver
 {
@@ -30,6 +31,7 @@ namespace FenBrowser.WebDriver
         private readonly SessionManager _sessionManager;
         private readonly CommandRouter _router;
         private readonly CommandHandler _handler;
+        private readonly OriginValidator _originValidator;
         private readonly CancellationTokenSource _cts;
         private readonly int _port;
         private Task _listenerTask;
@@ -46,6 +48,7 @@ namespace FenBrowser.WebDriver
             _sessionManager = new SessionManager();
             _router = new CommandRouter();
             _handler = new CommandHandler(_sessionManager);
+            _originValidator = new OriginValidator(allowLocalhostOnly: true);
             _cts = new CancellationTokenSource();
         }
         
@@ -112,25 +115,27 @@ namespace FenBrowser.WebDriver
             
             try
             {
-                // CORS headers for browser clients
-                response.Headers.Add("Access-Control-Allow-Origin", "*");
-                response.Headers.Add("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-                response.Headers.Add("Access-Control-Allow-Headers", "Content-Type");
-                
-                // SECURITY: Origin validation
-                // In production, we should only allow trustworthy origins.
                 var origin = request.Headers["Origin"];
-                if (!string.IsNullOrEmpty(origin) && !origin.StartsWith("http://localhost") && !origin.StartsWith("http://127.0.0.1"))
+                if (!_originValidator.ValidateOrigin(request.RemoteEndPoint) || !_originValidator.ValidateOriginHeader(origin))
                 {
-                    Log($"Security Alert: Blocked request from unauthorized origin: {origin}");
+                    Log($"Security Alert: Blocked request from unauthorized origin or endpoint. Origin={origin ?? "(none)"} Remote={request.RemoteEndPoint}");
                     await SendErrorAsync(response, ErrorCodes.UnknownCommand, "Unauthorized Origin", 403);
                     return;
+                }
+
+                // CORS headers only for validated browser origins.
+                if (!string.IsNullOrEmpty(origin))
+                {
+                    response.Headers["Access-Control-Allow-Origin"] = origin;
+                    response.Headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS";
+                    response.Headers["Access-Control-Allow-Headers"] = "Content-Type";
+                    response.Headers["Vary"] = "Origin";
                 }
                 
                 // Handle preflight
                 if (request.HttpMethod == "OPTIONS")
                 {
-                    response.StatusCode = 200;
+                    response.StatusCode = 204;
                     response.Close();
                     return;
                 }
