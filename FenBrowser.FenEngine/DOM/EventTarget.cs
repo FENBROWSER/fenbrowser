@@ -31,9 +31,9 @@ namespace FenBrowser.FenEngine.DOM
             if (target  == null || evt  == null) return true;
 
             // 1. Initialize Event
+            evt.ResetState(); // Reset path/phase if re-dispatching
             evt.Target = target;
             evt.IsTrusted = true; // Assumed trusted if dispatched by engine
-            evt.ResetState(); // Reset path/phase if re-dispatching
             evt.UpdateJsProperties(context); // Sync JS object
 
             // 2. Build Propagation Path

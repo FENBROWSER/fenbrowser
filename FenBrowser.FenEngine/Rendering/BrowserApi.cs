@@ -209,6 +209,12 @@ namespace FenBrowser.FenEngine.Rendering
         private SkiaDomRenderer _activeRenderer;
         public void SetActiveRenderer(SkiaDomRenderer renderer) { _activeRenderer = renderer; }
 
+        // Tracks whether the last dispatched click event allowed default action.
+        // BrowserIntegration triggers DOM click first, then calls HandleElementClick for fallback activation.
+        private bool _lastClickDefaultAllowed = true;
+        private bool _lastClickHadTarget;
+        private Element _lastClickTarget;
+
         public event EventHandler<Uri> Navigated;
         public event EventHandler<string> NavigationFailed;
         public event EventHandler<bool> LoadingChanged;
@@ -656,8 +662,14 @@ namespace FenBrowser.FenEngine.Rendering
                         url = url.Substring("view-source:".Length);
                     }
 
+                    // Normalize explicit relative URLs against current document first.
+                    if (_current != null && IsExplicitRelativeUrl(url) && Uri.TryCreate(_current, url, out var relative))
+                    {
+                        url = relative.AbsoluteUri;
+                        try { FenLogger.Info($"[BrowserHost] Resolved relative URL -> '{url}'", LogCategory.Navigation); } catch {}
+                    }
                     // Normalize if missing scheme
-                    if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed))
+                    else if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed))
                     {
                         var candidate = "https://" + url.TrimStart('/');
                         if (Uri.TryCreate(candidate, UriKind.Absolute, out var normalized))
@@ -1048,10 +1060,7 @@ pre {{
         {
             if (_elementMap.TryGetValue(elementId, out var element))
             {
-                if (element.TagName == "a" && element.Attr != null && element.Attr.TryGetValue("href", out var href))
-                {
-                     await NavigateAsync(href);
-                }
+                await HandleElementClick(element);
             }
         }
 
@@ -1303,6 +1312,14 @@ pre {{
             };
 
             bool handled = _inputManager.ProcessEvent(inputEvent, renderContext, context);
+
+            if (string.Equals(type, "click", StringComparison.OrdinalIgnoreCase))
+            {
+                _lastClickHadTarget = inputEvent.Target != null;
+                _lastClickTarget = inputEvent.Target;
+                // If click target is unknown (stale context), allow fallback activation.
+                _lastClickDefaultAllowed = inputEvent.Target == null || handled;
+            }
 
             if (string.Equals(type, "mousemove", StringComparison.OrdinalIgnoreCase))
             {
@@ -2094,9 +2111,11 @@ pre {{
 
             // Direct editable/focusable targets first.
             string tag = target.NodeName?.ToLowerInvariant();
-            bool isContentEditable = string.Equals(target.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
-            bool directEditable = tag == "input" || tag == "textarea" || isContentEditable;
+            bool directEditable = IsTextEntryElement(target);
+            var inputType = target.GetAttribute("type");
+            bool nonHiddenInput = tag == "input" && !string.Equals(inputType, "hidden", StringComparison.OrdinalIgnoreCase);
             bool directFocusable = directEditable ||
+                                   nonHiddenInput ||
                                    tag == "button" || tag == "select" ||
                                    (tag == "a" && !string.IsNullOrEmpty(target.GetAttribute("href"))) ||
                                    !string.IsNullOrEmpty(target.GetAttribute("tabindex"));
@@ -2107,6 +2126,7 @@ pre {{
                 ElementStateManager.Instance.SetFocusedElement(target);
                 if (directEditable)
                 {
+                    bool isContentEditable = string.Equals(target.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
                     var val = isContentEditable ? (target.TextContent ?? string.Empty) : (target.GetAttribute("value") ?? string.Empty);
                     _cursorIndex = val.Length;
                     _selectionAnchor = -1;
@@ -2121,8 +2141,7 @@ pre {{
                 .OfType<Element>()
                 .FirstOrDefault(el =>
                 {
-                    string t = el.NodeName?.ToLowerInvariant();
-                    return t == "input" || t == "textarea" || string.Equals(el.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
+                    return IsTextEntryElement(el);
                 });
 
             if (descendantEditable != null)
@@ -2207,6 +2226,7 @@ pre {{
         public async Task HandleElementClick(Element element)
         {
             _selectionAnchor = -1; // Reset selection
+            bool allowDefaultActivation = ConsumeClickDefaultActivationDecision(element);
             if (element == null) 
             {
                 _focusedElement = null;
@@ -2221,6 +2241,9 @@ pre {{
             // Promote to a descendant editable so focus/typing remains stable.
             if (tag != "input" &&
                 tag != "textarea" &&
+                tag != "button" &&
+                tag != "a" &&
+                tag != "select" &&
                 !string.Equals(element.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase))
             {
                 var descendantEditable = element
@@ -2228,10 +2251,7 @@ pre {{
                     .OfType<Element>()
                     .FirstOrDefault(el =>
                     {
-                        var t = el.NodeName?.ToLowerInvariant();
-                        return t == "input" ||
-                               t == "textarea" ||
-                               string.Equals(el.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
+                        return IsTextEntryElement(el);
                     });
 
                 if (descendantEditable != null)
@@ -2245,9 +2265,10 @@ pre {{
             if (tag == "a")
             {
                 var href = element.GetAttribute("href");
-                if (!string.IsNullOrEmpty(href))
+                if (!string.IsNullOrEmpty(href) && allowDefaultActivation)
                 {
-                    await NavigateAsync(href);
+                    var resolvedHref = ResolveUrlAgainstCurrent(href);
+                    await NavigateAsync(resolvedHref?.AbsoluteUri ?? href);
                 }
             }
             // Handle button clicks
@@ -2257,6 +2278,11 @@ pre {{
             {
                  // Verify if this is a search button (simplified check)
                  try { FenLogger.Debug($"[BrowserApi] Button clicked: {element.NodeName}", LogCategory.General); } catch {}
+
+                 if (allowDefaultActivation && IsSubmitActivationControl(element, tag))
+                 {
+                     await SubmitFormAsync(element);
+                 }
             }
             // Handle input focus
             else if (tag == "input" || tag == "textarea")
@@ -2320,6 +2346,360 @@ pre {{
             }
         }
 
+        private bool ConsumeClickDefaultActivationDecision(Element activationTarget)
+        {
+            bool suppressDefault = false;
+            if (_lastClickHadTarget && !_lastClickDefaultAllowed)
+            {
+                suppressDefault = AreElementsRelated(_lastClickTarget, activationTarget);
+            }
+
+            _lastClickHadTarget = false;
+            _lastClickDefaultAllowed = true;
+            _lastClickTarget = null;
+            return !suppressDefault;
+        }
+
+        private static bool AreElementsRelated(Element first, Element second)
+        {
+            if (first == null || second == null) return false;
+            if (ReferenceEquals(first, second)) return true;
+
+            var cursor = first;
+            while (cursor != null)
+            {
+                if (ReferenceEquals(cursor, second)) return true;
+                cursor = cursor.ParentElement;
+            }
+
+            cursor = second;
+            while (cursor != null)
+            {
+                if (ReferenceEquals(cursor, first)) return true;
+                cursor = cursor.ParentElement;
+            }
+
+            return false;
+        }
+
+        private static bool IsSubmitActivationControl(Element element, string loweredTag)
+        {
+            if (element == null) return false;
+
+            if (string.Equals(loweredTag, "input", StringComparison.OrdinalIgnoreCase))
+            {
+                var type = element.GetAttribute("type");
+                return string.Equals(type, "submit", StringComparison.OrdinalIgnoreCase);
+            }
+
+            if (string.Equals(loweredTag, "button", StringComparison.OrdinalIgnoreCase))
+            {
+                var type = element.GetAttribute("type");
+                return string.IsNullOrWhiteSpace(type) ||
+                       string.Equals(type, "submit", StringComparison.OrdinalIgnoreCase);
+            }
+
+            return false;
+        }
+
+        private async Task<bool> SubmitFormAsync(Element submitter)
+        {
+            var form = FindAncestorForm(submitter);
+            if (form == null) return false;
+
+            var context = _engine.Context ?? new FenBrowser.FenEngine.Core.ExecutionContext();
+            var submitEvent = new FenBrowser.FenEngine.DOM.DomEvent(
+                "submit",
+                bubbles: true,
+                cancelable: true,
+                composed: true,
+                context: context);
+
+            bool allowSubmit = FenBrowser.FenEngine.DOM.EventTarget.DispatchEvent(form, submitEvent, context);
+            if (!allowSubmit)
+            {
+                try { FenLogger.Debug("[BrowserApi] Form submit canceled by script.", LogCategory.Events); } catch {}
+                return true;
+            }
+
+            var actionUri = ResolveFormActionUri(form);
+            if (actionUri == null) return false;
+
+            var method = form.GetAttribute("method");
+            if (string.IsNullOrWhiteSpace(method)) method = "GET";
+
+            var controls = CollectFormSubmissionEntries(form, submitter);
+            if (string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase))
+            {
+                var targetUrl = AppendQueryToUri(actionUri, controls);
+                await NavigateAsync(targetUrl);
+                return true;
+            }
+
+            try { FenLogger.Warn($"[BrowserApi] Form method '{method}' not fully implemented; navigating to action URL.", LogCategory.Navigation); } catch {}
+            await NavigateAsync(actionUri.AbsoluteUri);
+            return true;
+        }
+
+        private static Element FindAncestorForm(Element element)
+        {
+            var cursor = element;
+            while (cursor != null)
+            {
+                if (string.Equals(cursor.NodeName, "FORM", StringComparison.OrdinalIgnoreCase))
+                {
+                    return cursor;
+                }
+                cursor = cursor.ParentElement;
+            }
+            return null;
+        }
+
+        private Uri ResolveFormActionUri(Element form)
+        {
+            if (form == null) return _current;
+
+            var action = form.GetAttribute("action");
+            if (string.IsNullOrWhiteSpace(action))
+            {
+                return _current ?? new Uri("about:blank");
+            }
+
+            return ResolveUrlAgainstCurrent(action) ?? (_current ?? new Uri("about:blank"));
+        }
+
+        private Uri ResolveUrlAgainstCurrent(string rawUrl)
+        {
+            if (string.IsNullOrWhiteSpace(rawUrl)) return _current;
+            var candidate = rawUrl.Trim();
+
+            if (Uri.TryCreate(candidate, UriKind.Absolute, out var absoluteUri))
+            {
+                return absoluteUri;
+            }
+
+            if (_current != null && Uri.TryCreate(_current, candidate, out var resolved))
+            {
+                return resolved;
+            }
+
+            if (Uri.TryCreate("https://" + candidate.TrimStart('/'), UriKind.Absolute, out var httpsUri))
+            {
+                return httpsUri;
+            }
+
+            return null;
+        }
+
+        private static bool IsExplicitRelativeUrl(string url)
+        {
+            if (string.IsNullOrWhiteSpace(url)) return false;
+            return url.StartsWith("/", StringComparison.Ordinal) ||
+                   url.StartsWith("./", StringComparison.Ordinal) ||
+                   url.StartsWith("../", StringComparison.Ordinal) ||
+                   url.StartsWith("?", StringComparison.Ordinal) ||
+                   url.StartsWith("#", StringComparison.Ordinal);
+        }
+
+        private static bool IsTextEntryElement(Element element)
+        {
+            if (element == null || IsDisabledControl(element)) return false;
+
+            var tag = element.NodeName?.ToLowerInvariant();
+            if (tag == "textarea")
+            {
+                return true;
+            }
+
+            if (tag == "input")
+            {
+                return IsTextInputType(element.GetAttribute("type"));
+            }
+
+            return string.Equals(element.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsTextInputType(string type)
+        {
+            if (string.IsNullOrWhiteSpace(type))
+            {
+                return true;
+            }
+
+            switch (type.Trim().ToLowerInvariant())
+            {
+                case "hidden":
+                case "button":
+                case "submit":
+                case "reset":
+                case "checkbox":
+                case "radio":
+                case "file":
+                case "image":
+                case "range":
+                case "color":
+                case "date":
+                case "datetime-local":
+                case "month":
+                case "time":
+                case "week":
+                    return false;
+                default:
+                    return true;
+            }
+        }
+
+        private static List<KeyValuePair<string, string>> CollectFormSubmissionEntries(Element form, Element submitter)
+        {
+            var entries = new List<KeyValuePair<string, string>>();
+            if (form == null) return entries;
+
+            foreach (var control in form.Descendants().OfType<Element>())
+            {
+                if (!TryGetSuccessfulFormControl(control, submitter, out var name, out var value))
+                {
+                    continue;
+                }
+
+                entries.Add(new KeyValuePair<string, string>(name, value ?? string.Empty));
+            }
+
+            return entries;
+        }
+
+        private static bool TryGetSuccessfulFormControl(Element control, Element submitter, out string name, out string value)
+        {
+            name = null;
+            value = string.Empty;
+            if (control == null || IsDisabledControl(control))
+            {
+                return false;
+            }
+
+            var tag = control.NodeName?.ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(tag))
+            {
+                return false;
+            }
+
+            name = control.GetAttribute("name");
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return false;
+            }
+
+            switch (tag)
+            {
+                case "input":
+                {
+                    var type = control.GetAttribute("type")?.ToLowerInvariant() ?? "text";
+                    switch (type)
+                    {
+                        case "submit":
+                            if (submitter == null || !ReferenceEquals(control, submitter)) return false;
+                            value = control.GetAttribute("value") ?? string.Empty;
+                            return true;
+                        case "button":
+                        case "reset":
+                        case "image":
+                        case "file":
+                            return false;
+                        case "checkbox":
+                        case "radio":
+                            if (!control.HasAttribute("checked")) return false;
+                            value = control.GetAttribute("value");
+                            if (string.IsNullOrEmpty(value)) value = "on";
+                            return true;
+                        default:
+                            value = control.GetAttribute("value") ?? string.Empty;
+                            return true;
+                    }
+                }
+                case "button":
+                {
+                    var type = control.GetAttribute("type");
+                    if (!string.IsNullOrWhiteSpace(type) &&
+                        !string.Equals(type, "submit", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return false;
+                    }
+
+                    if (submitter == null || !ReferenceEquals(control, submitter))
+                    {
+                        return false;
+                    }
+
+                    value = control.GetAttribute("value") ?? control.TextContent ?? string.Empty;
+                    return true;
+                }
+                case "textarea":
+                    value = control.GetAttribute("value") ?? control.TextContent ?? string.Empty;
+                    return true;
+                case "select":
+                    value = GetSelectSubmissionValue(control);
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private static bool IsDisabledControl(Element control)
+        {
+            if (control == null) return true;
+            if (control.HasAttribute("disabled")) return true;
+
+            for (var ancestor = control.ParentElement; ancestor != null; ancestor = ancestor.ParentElement)
+            {
+                if (string.Equals(ancestor.NodeName, "FIELDSET", StringComparison.OrdinalIgnoreCase) &&
+                    ancestor.HasAttribute("disabled"))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static string GetSelectSubmissionValue(Element select)
+        {
+            if (select == null) return string.Empty;
+
+            var options = select
+                .Descendants()
+                .OfType<Element>()
+                .Where(el => string.Equals(el.NodeName, "OPTION", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            if (options.Count == 0) return string.Empty;
+
+            var selected = options.FirstOrDefault(opt => opt.HasAttribute("selected")) ?? options[0];
+            return selected.GetAttribute("value") ?? selected.TextContent ?? string.Empty;
+        }
+
+        private static string AppendQueryToUri(Uri baseUri, IReadOnlyList<KeyValuePair<string, string>> fields)
+        {
+            if (baseUri == null) return string.Empty;
+            if (fields == null || fields.Count == 0) return baseUri.AbsoluteUri;
+
+            var builder = new UriBuilder(baseUri);
+            var existing = builder.Query;
+            if (!string.IsNullOrEmpty(existing) && existing[0] == '?')
+            {
+                existing = existing.Substring(1);
+            }
+
+            var encoded = string.Join("&", fields.Select(pair =>
+                $"{EncodeFormComponent(pair.Key)}={EncodeFormComponent(pair.Value)}"));
+
+            builder.Query = string.IsNullOrEmpty(existing) ? encoded : $"{existing}&{encoded}";
+            return builder.Uri.AbsoluteUri;
+        }
+
+        private static string EncodeFormComponent(string value)
+        {
+            return Uri.EscapeDataString(value ?? string.Empty).Replace("%20", "+");
+        }
+
         public Task HandleKeyPress(string key)
         {
             if (_focusedElement == null) return Task.CompletedTask;
@@ -2335,9 +2715,7 @@ pre {{
                         .OfType<Element>()
                         .FirstOrDefault(el =>
                         {
-                            string t = el.NodeName?.ToLowerInvariant();
-                            return t == "input" || t == "textarea" ||
-                                   string.Equals(el.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
+                            return IsTextEntryElement(el);
                         });
                     if (nestedEditable != null)
                     {
