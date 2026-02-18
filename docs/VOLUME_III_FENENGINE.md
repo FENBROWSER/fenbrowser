@@ -490,3 +490,26 @@ So you want to add `border-radius`? Follow these steps:
     - `MaxRecursionDepth = 32`
     - `MaxFilterCount = 10`
     - `MaxRenderTimeMs = 100`
+
+### 6.12 Phase-1 Correctness and Wiring (2026-02-18)
+
+- `Core/ExecutionContext.cs`
+  - Fixed default `ScheduleCallback` behavior to invoke callback exactly once after delay (removed duplicate invocation).
+
+- `Core/EventLoop/EventLoopCoordinator.cs`
+  - Added explicit `try/finally` phase closure for:
+    - task JS execution
+    - layout callback phase
+    - observer callback phase
+    - RAF callback JS execution phase
+  - Added idle-phase recovery guard (`EnsureIdlePhase`) to detect and recover from leaked phase state.
+
+- `Rendering/SkiaDomRenderer.cs`
+  - Wired `PipelineContext` frame lifecycle into render path:
+    - `BeginFrame` / `EndFrame`
+    - viewport propagation via `SetViewport`
+  - Wired stage snapshots into active style/layout/paint transitions:
+    - `SetStyleSnapshot(...)`
+    - `SetLayoutSnapshot(...)`
+    - `SetPaintSnapshot(...)`
+  - Wired corresponding dirty-flag invalidation through `PipelineContext.DirtyFlags` during stage work.

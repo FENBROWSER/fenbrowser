@@ -161,14 +161,18 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             {
                 FenLogger.Debug($"[EventLoop] Task Exception: {ex.Message}", LogCategory.Errors);
             }
+            finally
+            {
+                EngineContext.Current.EndPhase();
+            }
 
             // STEP 3: Microtask checkpoint
             PerformMicrotaskCheckpoint();
 
             // STEP 4-6: Rendering update
             ProcessRenderingUpdate();
-            
-            EngineContext.Current.EndPhase();
+
+            EnsureIdlePhase();
             return true;
         }
 
@@ -224,7 +228,11 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 {
                     FenLogger.Debug($"[EventLoop] Render Exception: {ex.Message}", LogCategory.Errors);
                 }
-                _layoutDirty = false;
+                finally
+                {
+                    _layoutDirty = false;
+                    EngineContext.Current.EndPhase();
+                }
             }
 
             // Observer evaluation
@@ -239,13 +247,19 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 {
                     FenLogger.Debug($"[EventLoop] Observer Exception: {ex.Message}", LogCategory.Errors);
                 }
+                finally
+                {
+                    EngineContext.Current.EndPhase();
+                }
 
-                // Microtask checkpoint after observers
+                // Microtask checkpoint after observers (outside observer phase)
                 PerformMicrotaskCheckpoint();
             }
 
             // Animation frame callbacks
             ProcessAnimationFrames();
+
+            EnsureIdlePhase();
         }
 
         /// <summary>
@@ -264,9 +278,19 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 _animationFrameCallbacks.Clear();
             }
 
-            EngineContext.Current.BeginPhase(EnginePhase.Animation);
             while (callbacks.Count > 0)
             {
+                // Mark animation processing phase for this RAF slot.
+                EngineContext.Current.BeginPhase(EnginePhase.Animation);
+                try
+                {
+                    // No-op body: this phase marks RAF slot advancement.
+                }
+                finally
+                {
+                    EngineContext.Current.EndPhase();
+                }
+
                 var callback = callbacks.Dequeue();
                 EngineContext.Current.BeginPhase(EnginePhase.JSExecution);
                 try
@@ -277,9 +301,24 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 {
                     FenLogger.Debug($"[EventLoop] RAF Exception: {ex.Message}", LogCategory.Errors);
                 }
+                finally
+                {
+                    EngineContext.Current.EndPhase();
+                }
 
-                // Microtask checkpoint after each RAF callback
+                // Microtask checkpoint after each RAF callback (outside JSExecution phase)
                 PerformMicrotaskCheckpoint();
+            }
+        }
+
+        private static void EnsureIdlePhase()
+        {
+            if (EngineContext.Current.CurrentPhase != EnginePhase.Idle)
+            {
+                FenLogger.Warn(
+                    $"[EventLoop] Phase leak detected: {EngineContext.Current.CurrentPhase}. Forcing Idle recovery.",
+                    LogCategory.Errors);
+                EngineContext.Current.EndPhase();
             }
         }
 
