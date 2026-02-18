@@ -3386,10 +3386,12 @@ private static double? ExtractPx(string text, string prop)
                  }
             }
 
-            // Item 3: Bounds Button Alignment
-            if (fCls.Contains("FPdoLc") || fCls.Contains("lJ9FBc")) 
+            // Item 3: Google search submit row alignment
+            // Keep these wrappers block-level so the row can center within the full search column.
+            if (fCls.Contains("FPdoLc") || fCls.Contains("lJ9FBc"))
             {
                 css.TextAlign = SKTextAlign.Center;
+                css.Display = "block";
             }
 
             // Item 5: Language Links and General Underline Fix
@@ -3419,8 +3421,8 @@ private static double? ExtractPx(string text, string prop)
             }
             
             // Also remove underlines from containers that might inherit
-            // Footer links should be inline-block for proper inline layout
-            if (fCls.Contains("pHiOh") || fCls.Contains("ayzqOc") || fCls.Contains("FPdoLc") || fCls.Contains("lJ9FBc"))
+            // Keep language link rows inline-block where needed, but do not alter FPdoLc/lJ9FBc display.
+            if (fCls.Contains("pHiOh") || fCls.Contains("ayzqOc"))
             {
                 css.TextDecoration = "none";
                 css.Display = "inline-block"; // Force inline-block for shrink-to-fit width
