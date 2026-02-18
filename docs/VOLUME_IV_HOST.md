@@ -205,4 +205,10 @@ The Omnibox implementation.
   - WebDriver startup is now opt-in (`FEN_WEBDRIVER=1`) with optional `FEN_WEBDRIVER_PORT`.
   - Host-to-WebDriver driver wiring now uses direct `WebDriverServer.SetDriver(...)` instead of reflection over private fields.
 
+### 6.6 Phase-1 CLI Normalization (2026-02-18)
+
+- `Program.cs`
+  - Removed the duplicate `--wpt` command branch to keep a single authoritative WPT entrypoint.
+  - Reduced command-routing ambiguity in CLI startup flow by consolidating WPT handling into one path.
+
 _End of Volume IV_

@@ -682,3 +682,29 @@ Implemented now:
   - Env flags:
     - `FEN_WEBDRIVER=1`
     - `FEN_WEBDRIVER_PORT` (optional, default `4444`)
+
+## 13) Phase-1 Execution Log (Started 2026-02-18)
+
+Implemented now:
+
+1. **`ExecutionContext.ScheduleCallback` exactly-once fix**
+- Removed duplicate callback invocation in default scheduler:
+  - `FenBrowser.FenEngine/Core/ExecutionContext.cs`
+
+2. **Event-loop phase closure hardening (`try/finally`)**
+- Added explicit phase closure in task/layout/observer/RAF callback paths:
+  - `FenBrowser.FenEngine/Core/EventLoop/EventLoopCoordinator.cs`
+- Added idle-phase leak recovery guard:
+  - `FenBrowser.FenEngine/Core/EventLoop/EventLoopCoordinator.cs`
+
+3. **`PipelineContext` snapshot wiring into style/layout/paint transitions**
+- Added frame lifecycle and stage snapshot updates in renderer:
+  - `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`
+- Wired stage dirty-flag propagation via `PipelineContext.DirtyFlags`.
+
+4. **CLI normalization for WPT execution**
+- Removed duplicate `--wpt` branch and retained a single authoritative path:
+  - `FenBrowser.Host/Program.cs`
+
+Validation note:
+- `dotnet build` remains blocked by pre-existing local SDK/workload resolver state in this machine (no project diagnostics emitted).

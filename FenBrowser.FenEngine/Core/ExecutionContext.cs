@@ -37,7 +37,6 @@ namespace FenBrowser.FenEngine.Core
             {
                 await Task.Delay(delay);
                 action();
-                action();
             });
         };
 

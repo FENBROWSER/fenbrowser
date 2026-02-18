@@ -8,6 +8,7 @@ using FenBrowser.FenEngine.Layout;
 using FenBrowser.FenEngine.Rendering.Core;
 using SkiaSharp;
 using FenBrowser.Core;
+using FenBrowser.Core.Engine;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -92,8 +93,11 @@ namespace FenBrowser.FenEngine.Rendering
             }
             
             _isRendering = true;
+            var pipelineContext = PipelineContext.Current;
             try
             {
+            pipelineContext.BeginFrame();
+            try {
             try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_render_start.txt", $"Render Start: Root={root?.GetType().Name}\n"); } catch {}
             CurrentOverlays.Clear();
             
@@ -123,6 +127,7 @@ namespace FenBrowser.FenEngine.Rendering
             // CRITICAL: Update global CSS parser context for viewport units (vh/vw) mechanism
             CssParser.MediaViewportWidth = _viewportWidth;
             CssParser.MediaViewportHeight = _viewportHeight;
+            pipelineContext.SetViewport(_viewportWidth, _viewportHeight);
 
             // Check if resize occurred or if root node changed (new page navigation)
             bool forceLayout = _lastLayout == null || 
@@ -185,12 +190,31 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }
 
+                pipelineContext.BeginStage(PipelineStage.Styling);
+                try
+                {
+                    if (stylesChanged || hasActiveAnimations)
+                    {
+                        pipelineContext.DirtyFlags.InvalidateStyle();
+                    }
+
+                    pipelineContext.SetStyleSnapshot(styles ?? new Dictionary<Node, CssComputed>());
+                }
+                finally
+                {
+                    pipelineContext.EndStage();
+                }
+
                 if (hasActiveAnimations) isLayoutDirty = true;
 
                 // PHASE 1: Layout using the new LayoutEngine
+                pipelineContext.BeginStage(PipelineStage.Layout);
+                try
+                {
                 RenderPipeline.EnterLayout();
                 if (isLayoutDirty)
                 {
+                    pipelineContext.DirtyFlags.InvalidateLayout();
                     // [ANCHORING] Before layout, select anchor
                     // Use ROOT element or Document as container? 
                     // SkiaDomRenderer handles viewport scroll on 'root' (usually Document or Body?).
@@ -273,6 +297,12 @@ namespace FenBrowser.FenEngine.Rendering
 
                 }
                 RenderPipeline.EndLayout(); // State -> LayoutFrozen
+                pipelineContext.SetLayoutSnapshot(_lastLayout);
+                }
+                finally
+                {
+                    pipelineContext.EndStage();
+                }
                 
                 // Update Scroll Animations
                 if (_scrollManager.OnFrame())
@@ -282,6 +312,9 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 // PHASE 2: Build Paint Tree
+                pipelineContext.BeginStage(PipelineStage.Painting);
+                try
+                {
                 RenderPipeline.EnterPaint(); // Checks LayoutFrozen
                 bool isPaintDirty = isLayoutDirty || root.PaintDirty || root.ChildPaintDirty || _lastPaintTree == null;
                 if (ImageLoader.HasActiveAnimatedImages)
@@ -300,6 +333,7 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 if (isPaintDirty)
                 {
+                    pipelineContext.DirtyFlags.InvalidatePaint();
                     FenLogger.Debug($"[SkiaDomRenderer] Invoke NewPaintTreeBuilder... Root={root.GetType().Name} BoxCount={_boxes.Count}");
                     var paintTree = NewPaintTreeBuilder.Build(
                         root,
@@ -319,6 +353,12 @@ namespace FenBrowser.FenEngine.Rendering
                 else
                 {
                      // FenLogger.Debug("[SkiaDomRenderer] Skipping Paint Tree Build (Clean)");
+                }
+                pipelineContext.SetPaintSnapshot(_lastPaintTree);
+                }
+                finally
+                {
+                    pipelineContext.EndStage();
                 }
 
 
@@ -403,6 +443,11 @@ namespace FenBrowser.FenEngine.Rendering
             
             // [Verification] Finalize and log report
             FenBrowser.Core.Verification.ContentVerifier.PerformVerification();
+            }
+            finally
+            {
+                pipelineContext.EndFrame();
+            }
             }
             finally
             {
