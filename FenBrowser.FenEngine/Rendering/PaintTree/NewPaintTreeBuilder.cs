@@ -76,7 +76,7 @@ namespace FenBrowser.FenEngine.Rendering
             string baseUri = null,
             int frameId = 0)
         {
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_paint_start.txt", $"Build Start: Root={root?.GetType().Name} BoxCount={boxes?.Count}\n"); } catch {}
+            DiagnosticPaths.AppendRootText("debug_paint_start.txt", $"Build Start: Root={root?.GetType().Name} BoxCount={boxes?.Count}\n");
             
             FenBrowser.Core.FenLogger.Debug($"[PAINT-TREE] Build called. Root={(root != null ? root.GetType().Name : "NULL")} Boxes={boxes?.Count} Styles={styles?.Count}");
             if (root == null || boxes == null || boxes.Count == 0)

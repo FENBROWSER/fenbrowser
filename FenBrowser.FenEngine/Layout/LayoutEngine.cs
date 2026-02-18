@@ -75,7 +75,7 @@ namespace FenBrowser.FenEngine.Layout
             FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
             // New Pipeline Entry Point (Active)
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\layout_engine_debug.txt", $"[LayoutEngine] ComputeLayout Called for {node?.GetType().Name}\n"); } catch {}
+            DiagnosticPaths.AppendRootText("layout_engine_debug.txt", $"[LayoutEngine] ComputeLayout Called for {node?.GetType().Name}\n");
 
             // 1. Build Box Tree
             var builder = new FenBrowser.FenEngine.Layout.Tree.BoxTreeBuilder(_context.Styles);
@@ -83,10 +83,10 @@ namespace FenBrowser.FenEngine.Layout
             
             if (rootBox == null)
             {
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\layout_engine_debug.txt", "[LayoutEngine] WARN: RootBox is null. Layout aborted.\n"); } catch {}
+                DiagnosticPaths.AppendRootText("layout_engine_debug.txt", "[LayoutEngine] WARN: RootBox is null. Layout aborted.\n");
                 return null; 
             }
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\layout_engine_debug.txt", $"[LayoutEngine] RootBox built: {rootBox}\n"); } catch {}
+            DiagnosticPaths.AppendRootText("layout_engine_debug.txt", $"[LayoutEngine] RootBox built: {rootBox}\n");
 
             // Check deadline before starting heavy layout pass
             deadline?.Check();
@@ -106,9 +106,9 @@ namespace FenBrowser.FenEngine.Layout
 
             // 3. Layout!
             var context = FenBrowser.FenEngine.Layout.Contexts.FormattingContext.Resolve(rootBox);
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\layout_engine_debug.txt", $"[LayoutEngine] Resolved Context: {context?.GetType().Name}\n"); } catch {}
+            DiagnosticPaths.AppendRootText("layout_engine_debug.txt", $"[LayoutEngine] Resolved Context: {context?.GetType().Name}\n");
             context.Layout(rootBox, initialState);
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\layout_engine_debug.txt", "[LayoutEngine] Layout Pass Complete\n"); } catch {}
+            DiagnosticPaths.AppendRootText("layout_engine_debug.txt", "[LayoutEngine] Layout Pass Complete\n");
 
             // 4. Transform Result back to Legacy Format (for Renderer compatibility)
             var elementRects = new Dictionary<Element, ElementGeometry>();
@@ -390,7 +390,7 @@ namespace FenBrowser.FenEngine.Layout
             string extra = "";
             if (box.ComputedStyle?.Display == "flex") extra += " (FLEX)";
             
-            try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\layout_engine_debug.txt", $"{indent}{tagName} {rectStr}{extra}\n"); } catch {}
+            DiagnosticPaths.AppendRootText("layout_engine_debug.txt", $"{indent}{tagName} {rectStr}{extra}\n");
             
             foreach(var c in box.Children)
             {

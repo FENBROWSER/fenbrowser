@@ -350,3 +350,13 @@ _End of Volume II_
 | `AppendChild(node)`       | Adds node to end of child list.            | O(1)              |
 | `QuerySelector(css)`      | Finds first matching descendant.           | O(Depth)          |
 | `GetBoundingClientRect()` | Returns visual bounds (via Layout engine). | O(1)\* (if clean) |
+
+### 6.7 Phase-2 Diagnostics Path Centralization (2026-02-18)
+
+- `Logging/DiagnosticPaths.cs`
+  - Added centralized diagnostics path resolver for runtime artifacts.
+  - Added root vs logs path helpers and append helpers.
+  - Supports environment override: `FEN_DIAGNOSTICS_DIR`.
+
+- `Engine/PhaseGuard.cs`
+  - Replaced machine-specific hardcoded debug log path with `DiagnosticPaths.AppendRootText(...)`.

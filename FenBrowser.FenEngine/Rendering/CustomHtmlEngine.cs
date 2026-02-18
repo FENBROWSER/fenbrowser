@@ -821,7 +821,7 @@ namespace FenBrowser.FenEngine.Rendering
                 try {
                      var sb = new StringBuilder();
                      DumpTree((doc as FenBrowser.Core.Dom.V2.Document)?.DocumentElement ?? doc, sb, 0);
-                     System.IO.File.WriteAllText(@"c:\Users\udayk\Videos\FENBROWSER\dom_dump.txt", sb.ToString());
+                     System.IO.File.WriteAllText(DiagnosticPaths.GetRootArtifactPath("dom_dump.txt"), sb.ToString());
                 } catch {}
 
                 // Return DocumentElement (the HTML element), not the Document wrapper

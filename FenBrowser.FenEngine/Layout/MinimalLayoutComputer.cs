@@ -315,7 +315,8 @@ namespace FenBrowser.FenEngine.Layout
             {
                 if (node is Element e && (e.TagName == "HTML" || e.TagName == "BODY"))
                 {
-                    System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\debug_layout_dims.txt", 
+                    DiagnosticPaths.AppendRootText(
+                        "debug_layout_dims.txt",
                         $"[LAYOUT] Node={e.TagName} W={metrics.MaxChildWidth} H={metrics.ContentHeight}\r\n");
                 }
             } catch {}

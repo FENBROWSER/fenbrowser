@@ -45,7 +45,7 @@ namespace FenBrowser.Host
                     AttachConsole(ATTACH_PARENT_PROCESS);
                     
                     string input = args[1]; // File path OR category
-                    string rootPath = args.Length > 2 ? args[2] : @"C:\Users\udayk\test262";
+                    string rootPath = args.Length > 2 ? args[2] : Path.Combine(Directory.GetCurrentDirectory(), "test262");
                     var runner = new Test262Runner(rootPath);
                     
                     if (File.Exists(input))
@@ -117,7 +117,7 @@ namespace FenBrowser.Host
                 {
                     AttachConsole(ATTACH_PARENT_PROCESS);
                     string input = args[1]; // File path OR category
-                    string rootPath = args.Length > 2 ? args[2] : @"C:\Users\udayk\wpt"; // Default WPT path
+                    string rootPath = args.Length > 2 ? args[2] : Path.Combine(Directory.GetCurrentDirectory(), "wpt"); // Default WPT path
                     
                     Console.WriteLine($"[WPT] Initializing Headless Engine for: {input}");
 

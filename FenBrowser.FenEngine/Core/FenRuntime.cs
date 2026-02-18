@@ -7980,7 +7980,7 @@ namespace FenBrowser.FenEngine.Core
         public IValue ExecuteSimple(string code, string url = "script", bool allowReturn = false, System.Threading.CancellationToken cancellationToken = default)
         {
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            string logPath = @"C:\Users\udayk\Videos\FENBROWSER\logs\script_execution.log";
+            string logPath = DiagnosticPaths.GetLogArtifactPath("script_execution.log");
             int codeLen = code?.Length ?? 0;
             // Console.WriteLine($"[DEBUG] ExecuteSimple: Url={url}, CodeLen={codeLen}");
             

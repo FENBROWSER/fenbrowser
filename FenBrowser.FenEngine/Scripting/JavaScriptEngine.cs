@@ -2450,7 +2450,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             
             private void LogToFile(string level, string msg)
             {
-                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[Console:{level}] {msg}\n"); } catch {}
+                DiagnosticPaths.AppendRootText("js_debug.log", $"[Console:{level}] {msg}\n");
                 try { _engine._host.Log($"[{level}] {msg}"); } catch {}
             }
         }
@@ -2653,7 +2653,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                         var consoleTest = "console.log('Console test verify'); console.warn('Console warn verify');";
                         _fenRuntime.ExecuteSimple(consoleTest, "debug-console-test");
                     }
-                    catch (Exception ex) { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[SetupError] {ex}\n"); }
+                    catch (Exception ex) { DiagnosticPaths.AppendRootText("js_debug.log", $"[SetupError] {ex}\n"); }
 
                     int scriptIndex = 0;
                     foreach (var s in _domRoot.SelfAndDescendants())
@@ -2663,7 +2663,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                             string tagName = el.TagName?.ToLowerInvariant() ?? "";
                             if (string.Equals(tagName, "script", StringComparison.OrdinalIgnoreCase))
                             {
-                                try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[ScriptFound] Found script tag.\n"); } catch {}
+                                DiagnosticPaths.AppendRootText("js_debug.log", "[ScriptFound] Found script tag.\n");
                                 scriptIndex++;
                                 string code = null;
                                 string srcInfo = "inline";
@@ -2773,13 +2773,13 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                 
                                 if (!string.IsNullOrWhiteSpace(code))
                                 {
-                                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[ScriptRun] Executing script: Length={code.Length}, Info={srcInfo}\n"); } catch {}
+                                    DiagnosticPaths.AppendRootText("js_debug.log", $"[ScriptRun] Executing script: Length={code.Length}, Info={srcInfo}\n");
                                     _fenRuntime.ExecuteSimple(code, srcInfo);
                                     /* [PERF-REMOVED] */
                                 }
                                 else
                                 {
-                                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[ScriptSkip] Code empty or skipped. Type={type}, Src={src}\n"); } catch {}
+                                    DiagnosticPaths.AppendRootText("js_debug.log", $"[ScriptSkip] Code empty or skipped. Type={type}, Src={src}\n");
                                 }
                             }
                         }
@@ -2789,7 +2789,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                 }
                 catch (Exception ex)
                 {
-                    try { System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\js_debug.log", $"[JSExecError] {ex}\n"); } catch {}
+                    DiagnosticPaths.AppendRootText("js_debug.log", $"[JSExecError] {ex}\n");
                     FenLogger.Error($"[JavaScriptEngine] Script execution error: {ex.Message}", LogCategory.JavaScript, ex);
                 }
             }

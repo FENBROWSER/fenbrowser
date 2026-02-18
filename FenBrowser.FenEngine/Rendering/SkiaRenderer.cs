@@ -5,6 +5,7 @@ using System.Linq;
 using FenBrowser.FenEngine.Rendering.Backends;
 using FenBrowser.FenEngine.Rendering.Css;
 using System;
+using System.IO;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -114,13 +115,13 @@ namespace FenBrowser.FenEngine.Rendering
                             var backend = new SkiaRenderBackend(offCanvas);
                             backend.Clear(backgroundColor);
                             foreach (var root in tree.Roots) DrawNodeSafe(backend, root, viewport);
-                            
+                            var screenshotPath = DiagnosticPaths.GetRootArtifactPath("debug_screenshot.png");
                             using (var image = surface.Snapshot())
                             using (var data = image.Encode(SKEncodedImageFormat.Png, 100))
-                            using (var stream = System.IO.File.OpenWrite(@"C:\Users\udayk\Videos\FENBROWSER\debug_screenshot.png"))
+                            using (var stream = File.Open(screenshotPath, FileMode.Create, FileAccess.Write, FileShare.Read))
                             {
                                 data.SaveTo(stream);
-                                FenBrowser.Core.Verification.ContentVerifier.RegisterScreenshot(@"C:\Users\udayk\Videos\FENBROWSER\debug_screenshot.png");
+                                FenBrowser.Core.Verification.ContentVerifier.RegisterScreenshot(screenshotPath);
                             }
                         }
                     }
