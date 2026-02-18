@@ -340,12 +340,17 @@ namespace FenBrowser.FenEngine.Rendering
                 // If target size matches bitmap size, use directly
                 if (w == result.Bitmap.Width && h == result.Bitmap.Height)
                 {
-                    // DEBUG: Save 272x92 logo bitmap to disk for visual inspection
+#if DEBUG
+                    // DEBUG: Save large SVG rasterizations to diagnostics root for visual inspection.
                     if (w > 200 && h > 80)
                     {
                         try
                         {
-                            using var stream = System.IO.File.OpenWrite("C:\\Users\\udayk\\Videos\\FENBROWSER\\svg_debug_bitmap.png");
+                            using var stream = File.Open(
+                                DiagnosticPaths.GetRootArtifactPath("svg_debug_bitmap.png"),
+                                FileMode.Create,
+                                FileAccess.Write,
+                                FileShare.Read);
                             result.Bitmap.Encode(stream, SKEncodedImageFormat.Png, 100);
                             FenLogger.Debug($"[ImageLoader] Saved SVG bitmap {w}x{h} to svg_debug_bitmap.png", LogCategory.Rendering);
                         }
@@ -354,6 +359,7 @@ namespace FenBrowser.FenEngine.Rendering
                             FenLogger.Debug($"[ImageLoader] Failed to save SVG bitmap: {ex.Message}", LogCategory.Rendering);
                         }
                     }
+#endif
                     return result.Bitmap;
                 }
                 
@@ -392,17 +398,23 @@ namespace FenBrowser.FenEngine.Rendering
                     canvas.DrawBitmap(result.Bitmap, srcRect, destRect);
                 }
                 
-                // DEBUG: Save 272x92 logo bitmap to disk for visual inspection
+#if DEBUG
+                // DEBUG: Save large scaled SVG rasterizations for visual inspection.
                 if (w > 200 && h > 80)
                 {
                     try
                     {
-                        using var stream = System.IO.File.OpenWrite("C:\\Users\\udayk\\Videos\\FENBROWSER\\svg_debug_bitmap.png");
+                        using var stream = File.Open(
+                            DiagnosticPaths.GetRootArtifactPath("svg_debug_bitmap.png"),
+                            FileMode.Create,
+                            FileAccess.Write,
+                            FileShare.Read);
                         scaledBitmap.Encode(stream, SKEncodedImageFormat.Png, 100);
                         FenLogger.Debug($"[ImageLoader] Saved SCALED SVG bitmap {w}x{h} to svg_debug_bitmap.png", LogCategory.Rendering);
                     }
                     catch {}
                 }
+#endif
                 
                 return scaledBitmap;
             }

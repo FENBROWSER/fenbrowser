@@ -181,12 +181,13 @@ namespace FenBrowser.FenEngine.Rendering
 
                     // PRIORITY 1: Check known locations relative to execution
                     var appDir = AppDomain.CurrentDomain.BaseDirectory;
-                    var candidatePaths = new List<string>
-                    {
-                         Path.Combine(appDir, "Assets", "ua.css"),
-                         Path.Combine(appDir, "FenBrowser.FenEngine", "Assets", "ua.css"),
-                         @"c:\Users\udayk\Videos\FENBROWSER\FenBrowser.FenEngine\Assets\ua.css" // Absolute fallback for dev environment
-                    };
+                     var candidatePaths = new List<string>
+                     {
+                          Path.Combine(appDir, "Assets", "ua.css"),
+                          Path.Combine(appDir, "FenBrowser.FenEngine", "Assets", "ua.css"),
+                         Path.Combine(DiagnosticPaths.GetWorkspaceRoot(), "FenBrowser.FenEngine", "Assets", "ua.css"),
+                         Path.Combine(DiagnosticPaths.GetWorkspaceRoot(), "Assets", "ua.css")
+                     };
 
                     bool loaded = false;
                     foreach (var path in candidatePaths)

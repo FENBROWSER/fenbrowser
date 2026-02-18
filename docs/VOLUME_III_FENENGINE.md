@@ -548,3 +548,10 @@ So you want to add `border-radius`? Follow these steps:
 
 - `Layout/MinimalLayoutComputer.cs`
   - Replaced hardcoded `debug_layout_dims.txt` writes with `DiagnosticPaths.AppendRootText(...)`.
+
+- `Rendering/ImageLoader.cs`
+  - Replaced hardcoded SVG debug bitmap write path with `DiagnosticPaths.GetRootArtifactPath("svg_debug_bitmap.png")`.
+  - Wrapped SVG debug bitmap file writes in `#if DEBUG` so release builds do not emit ad-hoc artifacts.
+
+- `Rendering/Css/CssLoader.cs`
+  - Removed machine-specific absolute UA stylesheet fallback path and replaced it with workspace-relative candidate paths.

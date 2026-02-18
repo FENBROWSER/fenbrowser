@@ -749,7 +749,15 @@ Implemented now:
 - Removed remaining source-level absolute path literals (`C:\Users\...`) from production code in `FenBrowser.Core`, `FenBrowser.FenEngine`, and `FenBrowser.Host`.
 - Added compile-time debug-only gating for CSS file diagnostics in `CssLoader` to prevent release log pollution.
 
+7. **Completed post-verification residual path cleanup**
+- Removed the last remaining machine-specific absolute path fallbacks in:
+  - `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs` (UA stylesheet fallback list)
+  - `FenBrowser.FenEngine/Rendering/ImageLoader.cs` (SVG debug bitmap dumps)
+- Moved SVG debug bitmap artifact writes to centralized diagnostics root via `DiagnosticPaths.GetRootArtifactPath(...)`.
+- Restricted SVG debug bitmap artifact writes to debug builds only (`#if DEBUG`).
+
 Validation update:
 - `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Debug` succeeded.
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` succeeded (warnings only, zero errors).
 - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug` remains blocked on this machine with pre-existing resolver state (0 warnings / 0 errors emitted).
+- Source scan validation: no remaining `C:\Users\...` literals in production `*.cs` files under `FenBrowser.Core`, `FenBrowser.FenEngine`, and `FenBrowser.Host`.
