@@ -165,5 +165,29 @@ namespace FenBrowser.Tests.DOM
             nonCancelable.PreventDefault();
             Assert.False(nonCancelable.DefaultPrevented);
         }
+
+        [Fact]
+        public void DispatchEvent_PreservesEventTarget()
+        {
+            var target = new Element("button");
+            Element observedTarget = null;
+
+            var handler = FenValue.FromFunction(new FenFunction("targetObserver", (args, thisVal) =>
+            {
+                var evt = args[0].AsObject() as DomEvent;
+                observedTarget = evt?.Target;
+                return FenValue.Undefined;
+            }));
+
+            FenEngineEventTarget.Registry.Add(target, "click", handler, false);
+
+            var evtDispatch = new DomEvent("click", bubbles: true, cancelable: true);
+            FenEngineEventTarget.DispatchEvent(target, evtDispatch, _context);
+
+            Assert.Same(target, evtDispatch.Target);
+            Assert.Same(target, observedTarget);
+
+            FenEngineEventTarget.Registry.Remove(target, "click", handler, false);
+        }
     }
 }
