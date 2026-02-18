@@ -111,7 +111,6 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 AllowAutoRedirect = true,
                 UseCookies = false, // We don't need cookies for images usually, and it saves overhead
-                ServerCertificateCustomValidationCallback = (sender, cert, chain, sslPolicyErrors) => true,
                 AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate
             };
             

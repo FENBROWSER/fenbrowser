@@ -1,3 +1,4 @@
+using System;
 using System.Linq;
 using System.Threading.Tasks;
 using FenBrowser.Core;
@@ -155,8 +156,38 @@ namespace FenBrowser.Host
         private void InitializeDevTools()
         {
             _devToolsServer = new DevToolsServer();
-            _remoteDebugServer = new RemoteDebugServer(_devToolsServer, 9222);
-            _remoteDebugServer.Start();
+
+            // Security hardening: remote debugging is disabled by default.
+            // Opt-in via environment:
+            //   FEN_REMOTE_DEBUG=1
+            //   FEN_REMOTE_DEBUG_PORT=9222 (optional)
+            //   FEN_REMOTE_DEBUG_BIND=127.0.0.1 (optional)
+            //   FEN_REMOTE_DEBUG_TOKEN=<secret> (optional, recommended)
+            bool enableRemoteDebug = string.Equals(
+                Environment.GetEnvironmentVariable("FEN_REMOTE_DEBUG"),
+                "1",
+                StringComparison.OrdinalIgnoreCase);
+            if (enableRemoteDebug)
+            {
+                int port = 9222;
+                var envPort = Environment.GetEnvironmentVariable("FEN_REMOTE_DEBUG_PORT");
+                if (!string.IsNullOrWhiteSpace(envPort) && int.TryParse(envPort, out var parsedPort) && parsedPort > 0 && parsedPort <= 65535)
+                    port = parsedPort;
+
+                var bindAddress = Environment.GetEnvironmentVariable("FEN_REMOTE_DEBUG_BIND");
+                if (string.IsNullOrWhiteSpace(bindAddress))
+                    bindAddress = "127.0.0.1";
+
+                var token = Environment.GetEnvironmentVariable("FEN_REMOTE_DEBUG_TOKEN");
+                _remoteDebugServer = new RemoteDebugServer(_devToolsServer, port, bindAddress, token);
+                _remoteDebugServer.Start();
+                FenLogger.Warn($"[ChromeManager] RemoteDebug ENABLED on {bindAddress}:{port}.", LogCategory.General);
+            }
+            else
+            {
+                FenLogger.Info("[ChromeManager] RemoteDebug disabled by default (set FEN_REMOTE_DEBUG=1 to enable).", LogCategory.General);
+            }
+
             _domInstrumenter = new FenBrowser.DevTools.Instrumentation.DomInstrumenter(_devToolsServer);
             
             _devToolsServer.OnJsonOutput(json => FenLogger.Debug($"[DevTools-JSON] {json}", LogCategory.General));
@@ -174,12 +205,35 @@ namespace FenBrowser.Host
 
         private void InitializeWebDriver()
         {
+            // Security hardening: WebDriver is disabled by default for regular browser runs.
+            // Opt-in via environment:
+            //   FEN_WEBDRIVER=1
+            //   FEN_WEBDRIVER_PORT=4444 (optional)
+            bool enableWebDriver = string.Equals(
+                Environment.GetEnvironmentVariable("FEN_WEBDRIVER"),
+                "1",
+                StringComparison.OrdinalIgnoreCase);
+            if (!enableWebDriver)
+            {
+                FenLogger.Info("[ChromeManager] WebDriver disabled by default (set FEN_WEBDRIVER=1 to enable).", LogCategory.General);
+                return;
+            }
+
+            int port = 4444;
+            var envPort = Environment.GetEnvironmentVariable("FEN_WEBDRIVER_PORT");
+            if (!string.IsNullOrWhiteSpace(envPort) &&
+                int.TryParse(envPort, out var parsedPort) &&
+                parsedPort > 0 && parsedPort <= 65535)
+            {
+                port = parsedPort;
+            }
+
             try
             {
-                _webDriverServer = new WebDriverServer(4444);
+                _webDriverServer = new WebDriverServer(port);
                 _webDriverServer.OnLog += msg => FenLogger.Info(msg, LogCategory.General);
                 _webDriverServer.Start();
-                FenLogger.Info("[ChromeManager] WebDriver Server started on port 4444", LogCategory.General);
+                FenLogger.Warn($"[ChromeManager] WebDriver ENABLED on 127.0.0.1:{port}.", LogCategory.General);
             }
             catch (Exception ex)
             {
@@ -237,10 +291,7 @@ namespace FenBrowser.Host
             if (_webDriverServer != null)
             {
                 _webDriverAdapter = new FenBrowserDriver(tab.Browser);
-                _webDriverServer.GetType().GetField("_handler", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
-                    ?.GetValue(_webDriverServer)?.GetType().GetProperty("Browser")?.SetValue(
-                        _webDriverServer.GetType().GetField("_handler", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)?.GetValue(_webDriverServer),
-                        _webDriverAdapter);
+                _webDriverServer.SetDriver(_webDriverAdapter);
             }
 
             _devToolsHost = new DevToolsHostAdapter(tab.Browser, _devToolsServer);

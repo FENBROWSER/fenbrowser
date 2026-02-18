@@ -43,6 +43,11 @@ namespace FenBrowser.WebDriver.Commands
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "URL cannot be empty");
             }
+
+            if (!_handler.IsNavigationAllowed(sessionId, url))
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, $"Navigation blocked by security policy: {url}");
+            }
             
             // Validate URL format
             if (!Uri.TryCreate(url, UriKind.Absolute, out _))

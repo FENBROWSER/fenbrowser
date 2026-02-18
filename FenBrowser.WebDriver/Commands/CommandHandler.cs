@@ -7,10 +7,12 @@
 // =============================================================================
 
 using System;
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Threading.Tasks;
 using FenBrowser.WebDriver.Protocol;
 using FenBrowser.WebDriver.Commands;
+using FenBrowser.WebDriver.Security;
 
 namespace FenBrowser.WebDriver.Commands
 {
@@ -25,6 +27,8 @@ namespace FenBrowser.WebDriver.Commands
         private readonly ElementCommands _elementCommands;
         private readonly ScriptCommands _scriptCommands;
         private readonly WindowCommands _windowCommands;
+        private readonly ConcurrentDictionary<string, CapabilityGuard> _capabilityGuards = new();
+        private readonly SandboxEnforcer _sandboxEnforcer;
         
         // Browser integration - set when browser is connected
         public IBrowserDriver Browser { get; set; }
@@ -37,6 +41,7 @@ namespace FenBrowser.WebDriver.Commands
             _elementCommands = new ElementCommands(this);
             _scriptCommands = new ScriptCommands(this);
             _windowCommands = new WindowCommands(this);
+            _sandboxEnforcer = new SandboxEnforcer();
         }
         
         /// <summary>
@@ -45,6 +50,15 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> ExecuteAsync(RouteMatch match, string body)
         {
             var command = match.Command;
+            var sessionId = match.GetSessionId();
+
+            // Ensure per-session security context exists for all session-scoped commands.
+            if (!string.Equals(command, "GetStatus", StringComparison.Ordinal) &&
+                !string.Equals(command, "NewSession", StringComparison.Ordinal) &&
+                !string.IsNullOrEmpty(sessionId))
+            {
+                EnsureSessionSecurityContext(sessionId);
+            }
             
             // Parse body as JSON if present
             JsonElement? json = null;
@@ -57,10 +71,10 @@ namespace FenBrowser.WebDriver.Commands
             {
                 // Status
                 "GetStatus" => GetStatus(),
-                
+                 
                 // Session
-                "NewSession" => _sessionCommands.NewSession(json),
-                "DeleteSession" => _sessionCommands.DeleteSession(match.GetSessionId()),
+                "NewSession" => RegisterSessionSecurityContext(_sessionCommands.NewSession(json)),
+                "DeleteSession" => DeleteSessionSecure(match.GetSessionId()),
                 "GetTimeouts" => _sessionCommands.GetTimeouts(match.GetSessionId()),
                 "SetTimeouts" => _sessionCommands.SetTimeouts(match.GetSessionId(), json),
                 
@@ -117,6 +131,54 @@ namespace FenBrowser.WebDriver.Commands
             
             var base64 = await Browser.TakeScreenshotAsync();
             return WebDriverResponse.Success(base64);
+        }
+
+        private WebDriverResponse RegisterSessionSecurityContext(WebDriverResponse response)
+        {
+            if (response?.Value is NewSessionResponse ns && !string.IsNullOrEmpty(ns.SessionId))
+            {
+                EnsureSessionSecurityContext(ns.SessionId);
+            }
+            return response;
+        }
+
+        private WebDriverResponse DeleteSessionSecure(string sessionId)
+        {
+            try
+            {
+                return _sessionCommands.DeleteSession(sessionId);
+            }
+            finally
+            {
+                if (!string.IsNullOrEmpty(sessionId))
+                {
+                    _capabilityGuards.TryRemove(sessionId, out _);
+                    _sandboxEnforcer.DestroySandbox(sessionId);
+                }
+            }
+        }
+
+        private void EnsureSessionSecurityContext(string sessionId)
+        {
+            if (string.IsNullOrEmpty(sessionId)) return;
+            var session = _sessionManager.GetSession(sessionId);
+            _capabilityGuards.GetOrAdd(sessionId, _ => new CapabilityGuard(session));
+            if (_sandboxEnforcer.GetSandbox(sessionId) == null)
+            {
+                _sandboxEnforcer.CreateSandbox(sessionId);
+            }
+        }
+
+        public bool IsNavigationAllowed(string sessionId, string url)
+        {
+            EnsureSessionSecurityContext(sessionId);
+            return _capabilityGuards.TryGetValue(sessionId, out var guard) && guard.IsUrlAllowed(url);
+        }
+
+        public bool IsScriptAllowed(string sessionId, string script)
+        {
+            EnsureSessionSecurityContext(sessionId);
+            return _capabilityGuards.TryGetValue(sessionId, out var guard) && guard.IsScriptAllowed(script);
         }
         
         public Session GetSession(string sessionId) => _sessionManager.GetSession(sessionId);

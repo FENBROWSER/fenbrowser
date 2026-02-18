@@ -34,6 +34,11 @@ namespace FenBrowser.WebDriver.Commands
         {
             var session = _handler.GetSession(sessionId);
             var (script, args) = ParseScriptRequest(body);
+
+            if (!_handler.IsScriptAllowed(sessionId, script))
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "Script blocked by security policy");
+            }
             
             if (_handler.Browser == null)
             {
@@ -59,6 +64,11 @@ namespace FenBrowser.WebDriver.Commands
         {
             var session = _handler.GetSession(sessionId);
             var (script, args) = ParseScriptRequest(body);
+
+            if (!_handler.IsScriptAllowed(sessionId, script))
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "Script blocked by security policy");
+            }
             
             if (_handler.Browser == null)
             {
