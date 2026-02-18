@@ -198,4 +198,11 @@ The Omnibox implementation.
 - **`FenBrowserDriver.cs`**: The external-facing WebDriver API implementation.
 - **`HostBrowserDriver.cs`**: Internal hooks for automated testing.
 
+### 6.5 Phase-0 Security Hardening (2026-02-18)
+
+- `ChromeManager.cs`
+  - Remote debug startup is now opt-in (`FEN_REMOTE_DEBUG=1`) with configurable port/bind/token values.
+  - WebDriver startup is now opt-in (`FEN_WEBDRIVER=1`) with optional `FEN_WEBDRIVER_PORT`.
+  - Host-to-WebDriver driver wiring now uses direct `WebDriverServer.SetDriver(...)` instead of reflection over private fields.
+
 _End of Volume IV_

@@ -124,4 +124,19 @@ Contains the generated CDP domain classes and DTOs.
 - **`JsonHelper.cs`**: Serialization logic for protocol messages.
 - **`WebSocketFrame.cs`**: Low-level WebSocket framing logic.
 
+### 5.4 Phase-0 Security Hardening (2026-02-18)
+
+- `Core/RemoteDebugServer.cs`
+  - Remote debug transport now supports explicit bind address and optional authentication token.
+  - Unauthorized requests are rejected with HTTP `401`.
+  - Discovery endpoints now emit host/port from runtime configuration.
+
+- `FenBrowser.Host/ChromeManager.cs`
+  - Remote debugging is now **disabled by default**.
+  - Enable explicitly via environment variables:
+    - `FEN_REMOTE_DEBUG=1`
+    - `FEN_REMOTE_DEBUG_PORT` (optional)
+    - `FEN_REMOTE_DEBUG_BIND` (optional, defaults `127.0.0.1`)
+    - `FEN_REMOTE_DEBUG_TOKEN` (optional, recommended)
+
 _End of Volume V_
