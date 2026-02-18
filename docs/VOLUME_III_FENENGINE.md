@@ -478,3 +478,15 @@ So you want to add `border-radius`? Follow these steps:
   - Removed double-advance in `ParseProgram` and tightened `ParseBlockStatement` token progression so inner `}` is consumed once, preventing the first token after block-based statements from being skipped (fixes `+=` being misparsed as a prefix in Test262 harness code).
   - `ParseStatement` now routes `var`/`let`/`const` through `ParseLetStatement` and ensures function declarations bind a parsed `FunctionLiteral`, restoring buildable, deterministic statement parsing in Annex B paths.
   - `ParseStatement` now dispatches statement keywords (`try`, `throw`, `for`, `while`, `do`, `break`, `continue`) to their dedicated parsers, eliminating prefix-parse fallthrough errors in Test262 harness control-flow.
+
+### 6.11 Phase-0 Security Hardening (2026-02-18)
+
+- `Rendering/ImageLoader.cs`
+  - Removed permissive TLS override in image fetch path (`ServerCertificateCustomValidationCallback => true`).
+  - Image network requests now use platform certificate validation by default.
+
+- `Adapters/ISvgRenderer.cs`
+  - Aligned default SVG safety limits to project hard constraints:
+    - `MaxRecursionDepth = 32`
+    - `MaxFilterCount = 10`
+    - `MaxRenderTimeMs = 100`

@@ -128,8 +128,6 @@ The Web Platform Tests (WPT) runner for DOM/CSS compliance.
 
 Specialized harness for the Acid2/Acid3 verification suites.
 
-_End of Volume VI_
-
 ### 4.3 Contributor Cookbook: Adding a WebDriver Command
 
 To implement a new command (e.g., `GET /session/{id}/print`):
@@ -147,3 +145,39 @@ To implement a new command (e.g., `GET /session/{id}/print`):
 3.  **Implement the Bridge**:
     - If the command requires Engine interaction, add a method to `IBrowser` interface.
     - Implement it in `BrowserApi.cs` (Engine side) and `BrowserHost` (Host side).
+
+### 4.4 Phase-0 Security Hardening (2026-02-18)
+
+- `FenBrowser.WebDriver/WebDriverServer.cs`
+  - Replaced wildcard CORS behavior with validated-origin echo behavior.
+  - Added strict request validation using `OriginValidator` for:
+    - remote endpoint loopback validation
+    - `Origin` header validation for browser-driven requests
+  - Preflight handling now returns `204` only after validation.
+
+- `FenBrowser.WebDriver/Security/OriginValidator.cs`
+  - Strengthened `Origin` parsing:
+    - only `http`/`https` schemes accepted
+    - localhost/loopback-only enforcement when `allowLocalhostOnly` is enabled
+    - explicit loopback IP handling
+
+- `FenBrowser.WebDriver/Commands/CommandHandler.cs`
+  - Added per-session security context bootstrap for all session-scoped commands.
+  - Wired `CapabilityGuard` and `SandboxEnforcer` lifecycle:
+    - create on session creation/use
+    - destroy on session deletion
+
+- `FenBrowser.WebDriver/Commands/NavigationCommands.cs`
+  - Added URL policy enforcement via `CommandHandler.IsNavigationAllowed(...)` before browser navigation.
+
+- `FenBrowser.WebDriver/Commands/ScriptCommands.cs`
+  - Added script policy enforcement via `CommandHandler.IsScriptAllowed(...)` before sync/async execution.
+
+- `FenBrowser.Host/ChromeManager.cs`
+  - WebDriver server startup is now disabled by default in normal host startup.
+  - Enable explicitly via environment variables:
+    - `FEN_WEBDRIVER=1`
+    - `FEN_WEBDRIVER_PORT` (optional, default `4444`)
+  - Replaced reflection-based driver injection with direct `WebDriverServer.SetDriver(...)`.
+
+_End of Volume VI_
