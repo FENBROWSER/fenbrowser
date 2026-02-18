@@ -17,6 +17,8 @@ namespace FenBrowser.FenEngine.Layout
         public Dictionary<Node, SKRect> ElementRects; 
         // Computed lines for any text nodes encountered
         public Dictionary<Node, List<ComputedTextLine>> TextLines;
+        // Physical inline width used when computing line alignment/wrapping.
+        public float AvailableInlineWidth;
 
         public InlineLayoutResult()
         {
@@ -63,6 +65,7 @@ namespace FenBrowser.FenEngine.Layout
 
             float maxWidth = isVerticalRL ? availableSize.Height : availableSize.Width;
             if (float.IsInfinity(maxWidth)) maxWidth = 1920; // Guard (using reasonable viewport fallback)
+            result.AvailableInlineWidth = maxWidth;
 
             FenBrowser.Core.FenLogger.Info($"[INLINE-DEBUG] Compute Start. Node={container.GetHashCode()} Avail={availableSize.Width} MaxW={maxWidth} Container={container.TagName} TextAlign={textAlign}", FenBrowser.Core.Logging.LogCategory.Layout);
 
@@ -734,14 +737,45 @@ namespace FenBrowser.FenEngine.Layout
                     return; // Done with this node, don't treat as atomic flow
                 }
 
-                bool isAtomic = style?.Display == "inline-block" || node.NodeName == "IMG" || node.NodeName == "INPUT" || node.NodeName == "BUTTON";
+                string atomicDisplay = style?.Display?.ToLowerInvariant() ?? string.Empty;
+                bool isSvg = string.Equals(node.NodeName, "SVG", StringComparison.OrdinalIgnoreCase) ||
+                             node.NodeName.EndsWith(":SVG", StringComparison.OrdinalIgnoreCase);
+                bool isAtomic = atomicDisplay == "inline-block" ||
+                                node.NodeName == "IMG" ||
+                                node.NodeName == "INPUT" ||
+                                node.NodeName == "BUTTON" ||
+                                isSvg;
 
                 if (isAtomic && node is Element elem)
                 {
-                    // Use infinite width for shrink-to-fit (intrinsic content width) instead of container width
-                    var metrics = atomicMeasurer(elem, new SKSize(float.PositiveInfinity, float.PositiveInfinity), currentDepth + 1);
+                    // Inline-block/replaced elements use intrinsic (shrink-to-fit) probing.
+                    // Block/flex/grid descendants in IFC must be constrained to the current line band.
+                    bool shrinkToFitAtomic =
+                        atomicDisplay == "inline-block" ||
+                        atomicDisplay == "inline" ||
+                        node.NodeName == "IMG" ||
+                        node.NodeName == "INPUT" ||
+                        node.NodeName == "BUTTON" ||
+                        isSvg;
+
+                    float lineBandWidth = currentXMax - currentXStart;
+                    if (float.IsNaN(lineBandWidth) || lineBandWidth <= 0)
+                        lineBandWidth = maxWidth;
+
+                    SKSize atomicConstraint = shrinkToFitAtomic || float.IsInfinity(lineBandWidth)
+                        ? new SKSize(float.PositiveInfinity, float.PositiveInfinity)
+                        : new SKSize(Math.Max(0, lineBandWidth), float.PositiveInfinity);
+
+                    var metrics = atomicMeasurer(elem, atomicConstraint, currentDepth + 1);
                     float w = metrics.MaxChildWidth;
                     float h = metrics.ContentHeight;
+
+                    if (!shrinkToFitAtomic && !float.IsInfinity(lineBandWidth) && lineBandWidth > 0)
+                    {
+                        w = Math.Min(w, lineBandWidth);
+                    }
+                    if (w < 0) w = 0;
+                    if (h < 0) h = 0;
                     
                     var margin = style?.Margin ?? new Thickness(0);
                     float totalW = w + (float)(margin.Left + margin.Right);
