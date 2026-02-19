@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using FenBrowser.FenEngine.Core.Interfaces;
 
 namespace FenBrowser.FenEngine.Core
@@ -12,6 +13,7 @@ namespace FenBrowser.FenEngine.Core
         private readonly IExecutionContext _context;
         private readonly Func<Uri, string> _contentFetcher; // Helper for sync fetching (blocking)
         private readonly Func<Uri, bool> _uriPolicy;
+        private readonly Dictionary<string, string> _importMap = new Dictionary<string, string>(StringComparer.Ordinal);
         public bool ThrowOnEvaluationError { get; set; }
 
         public ModuleLoader(
@@ -24,6 +26,40 @@ namespace FenBrowser.FenEngine.Core
             _context = context;
             _contentFetcher = contentFetcher ?? DefaultFileFetcher;
             _uriPolicy = uriPolicy;
+        }
+
+        public void SetImportMap(IDictionary<string, string> imports, Uri baseUri = null)
+        {
+            _importMap.Clear();
+            if (imports == null || imports.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var entry in imports)
+            {
+                if (string.IsNullOrWhiteSpace(entry.Key) || string.IsNullOrWhiteSpace(entry.Value))
+                {
+                    continue;
+                }
+
+                var key = entry.Key.Trim();
+                var mapped = entry.Value.Trim();
+
+                if (Uri.TryCreate(mapped, UriKind.Absolute, out var absolute))
+                {
+                    _importMap[key] = absolute.AbsoluteUri;
+                    continue;
+                }
+
+                if (baseUri != null && Uri.TryCreate(baseUri, mapped, out var resolved))
+                {
+                    _importMap[key] = resolved.AbsoluteUri;
+                    continue;
+                }
+
+                _importMap[key] = mapped;
+            }
         }
 
         private static string DefaultFileFetcher(Uri uri)
@@ -52,9 +88,14 @@ namespace FenBrowser.FenEngine.Core
                      baseUri = new Uri(Path.GetFullPath(Environment.CurrentDirectory) + Path.DirectorySeparatorChar);
                 }
 
+                if (TryResolveImportMap(baseUri, specifier, out var mapResolved))
+                {
+                    return mapResolved;
+                }
+
                 if (Uri.TryCreate(baseUri, specifier, out var resolved))
                 {
-                    return resolved.AbsoluteUri;
+                    return NormalizeResolvedModuleUri(specifier, resolved).AbsoluteUri;
                 }
 
                 // Handle bare module specifiers (e.g., "react", "lodash")
@@ -74,6 +115,82 @@ namespace FenBrowser.FenEngine.Core
             {
                 return specifier;
             }
+        }
+
+        private bool TryResolveImportMap(Uri baseUri, string specifier, out string resolved)
+        {
+            resolved = null;
+            if (_importMap.Count == 0 || string.IsNullOrWhiteSpace(specifier))
+            {
+                return false;
+            }
+
+            if (_importMap.TryGetValue(specifier, out var direct))
+            {
+                resolved = ResolveMappedValue(baseUri, direct);
+                return !string.IsNullOrWhiteSpace(resolved);
+            }
+
+            var prefixMatch = _importMap.Keys
+                .Where(k => k.EndsWith("/", StringComparison.Ordinal) && specifier.StartsWith(k, StringComparison.Ordinal))
+                .OrderByDescending(k => k.Length)
+                .FirstOrDefault();
+
+            if (prefixMatch == null)
+            {
+                return false;
+            }
+
+            var mappedPrefix = _importMap[prefixMatch];
+            var suffix = specifier.Substring(prefixMatch.Length);
+            var combined = mappedPrefix.EndsWith("/", StringComparison.Ordinal) ? mappedPrefix + suffix : mappedPrefix + "/" + suffix;
+            resolved = ResolveMappedValue(baseUri, combined);
+            return !string.IsNullOrWhiteSpace(resolved);
+        }
+
+        private static string ResolveMappedValue(Uri baseUri, string mappedValue)
+        {
+            if (Uri.TryCreate(mappedValue, UriKind.Absolute, out var absolute))
+            {
+                return absolute.AbsoluteUri;
+            }
+            if (baseUri != null && Uri.TryCreate(baseUri, mappedValue, out var relative))
+            {
+                return relative.AbsoluteUri;
+            }
+            return mappedValue;
+        }
+
+        private static Uri NormalizeResolvedModuleUri(string originalSpecifier, Uri resolved)
+        {
+            if (resolved == null || !resolved.IsAbsoluteUri)
+            {
+                return resolved;
+            }
+
+            var scheme = resolved.Scheme?.ToLowerInvariant();
+            if ((scheme != "http" && scheme != "https") ||
+                string.IsNullOrWhiteSpace(originalSpecifier))
+            {
+                return resolved;
+            }
+
+            if (originalSpecifier.EndsWith("/", StringComparison.Ordinal))
+            {
+                return resolved;
+            }
+
+            var path = resolved.AbsolutePath;
+            if (string.IsNullOrWhiteSpace(path) || Path.HasExtension(path))
+            {
+                return resolved;
+            }
+
+            var builder = new UriBuilder(resolved)
+            {
+                Path = path + ".js"
+            };
+            return builder.Uri;
         }
 
         /// <summary>

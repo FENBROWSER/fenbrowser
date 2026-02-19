@@ -240,45 +240,64 @@ namespace FenBrowser.FenEngine.Testing
                if (verbose) Console.WriteLine("[WPT] Warning: No Navigator delegate provided.");
             }
 
-            // 2. Wait for completion signals from testharness / testRunner bridge.
+            // 2. Wait for structured completion signals from testharness / testRunner bridge.
             var timeoutAt = DateTime.UtcNow.AddMilliseconds(_timeoutMs);
             var settleAt = DateTime.UtcNow.AddMilliseconds(500);
+            bool fallbackConsoleUsed = false;
             while (DateTime.UtcNow < timeoutAt)
             {
                 await Task.Delay(100);
 
-                if (WebAPIs.TestHarnessAPI.IsTestDone)
+                var snapshot = WebAPIs.TestHarnessAPI.GetExecutionSnapshot();
+                if (snapshot.TestDone)
                 {
                     state.HarnessCompleted = true;
-                    state.CompletionSignal = "testRunner.notifyDone";
+                    state.CompletionSignal = string.IsNullOrWhiteSpace(snapshot.CompletionSignal)
+                        ? "testRunner.notifyDone"
+                        : snapshot.CompletionSignal;
                     break;
                 }
 
-                var output = WebAPIs.TestConsoleCapture.GetFullOutput();
-                if (!string.IsNullOrWhiteSpace(output))
+                if (snapshot.HarnessStatusSeen &&
+                    string.Equals(snapshot.HarnessStatus, "complete", StringComparison.OrdinalIgnoreCase))
                 {
-                    WebAPIs.TestConsoleCapture.ParseTestHarnessOutput(output);
-                    if (output.IndexOf("ran to completion", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        output.IndexOf("harness_status", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        state.HarnessCompleted = true;
-                        state.CompletionSignal = "console.harness_status";
-                        break;
-                    }
+                    state.HarnessCompleted = true;
+                    state.CompletionSignal = "testRunner.reportHarnessStatus";
+                    break;
                 }
 
-                var (_, _, total) = WebAPIs.TestHarnessAPI.GetResultSummary();
-                if (total > 0 && DateTime.UtcNow >= settleAt && !WebAPIs.TestHarnessAPI.IsWaitingForDone)
+                if (snapshot.StructuredResultCount > 0 && DateTime.UtcNow >= settleAt && !snapshot.WaitingForDone)
                 {
                     state.HarnessCompleted = true;
                     state.CompletionSignal = "testRunner.reportResult";
                     break;
                 }
+
+                // Legacy compatibility path: only if structured signals never appeared.
+                if (snapshot.StructuredResultCount == 0 &&
+                    !snapshot.HarnessStatusSeen &&
+                    !snapshot.TestDone &&
+                    !fallbackConsoleUsed)
+                {
+                    var output = WebAPIs.TestConsoleCapture.GetFullOutput();
+                    if (!string.IsNullOrWhiteSpace(output))
+                    {
+                        WebAPIs.TestConsoleCapture.ParseTestHarnessOutput(output);
+                        if (output.IndexOf("ran to completion", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            output.IndexOf("harness_status", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            state.HarnessCompleted = true;
+                            state.CompletionSignal = "console.harness_status.fallback";
+                            fallbackConsoleUsed = true;
+                            break;
+                        }
+                    }
+                }
             }
 
             if (!state.HarnessCompleted)
             {
-                state.TimedOut = WebAPIs.TestHarnessAPI.IsWaitingForDone;
+                state.TimedOut = WebAPIs.TestHarnessAPI.GetExecutionSnapshot().WaitingForDone;
                 state.CompletionSignal = state.TimedOut ? "timeout" : "none";
             }
 

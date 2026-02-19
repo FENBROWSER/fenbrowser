@@ -609,6 +609,10 @@ public class SettingsPageWidget : Widget
                 _switchClearOnExit.Arrange(new SKRect(switchX, currentY + 8, switchX + 50, currentY + 32));
                 currentY += 60;
 
+                _switchSecureDNS.IsVisible = true;
+                _switchSecureDNS.Arrange(new SKRect(switchX, currentY + 8, switchX + 50, currentY + 32));
+                currentY += 60;
+
                 _switchSafeBrowsing.IsVisible = true;
                 _switchSafeBrowsing.Arrange(new SKRect(switchX, currentY + 8, switchX + 50, currentY + 32));
                 currentY += 60;
@@ -935,6 +939,9 @@ public class SettingsPageWidget : Widget
                 currentY += 60;
                 canvas.DrawText("Clear cookies on exit", contentLeft, currentY + 20, labelPaint);
                 canvas.DrawText("Delete all cookies when browser closes", contentLeft, currentY + 38, descPaint);
+                currentY += 60;
+                canvas.DrawText("Use Secure DNS", contentLeft, currentY + 20, labelPaint);
+                canvas.DrawText("Resolve hostnames via DNS-over-HTTPS when available", contentLeft, currentY + 38, descPaint);
                 currentY += 60;
                 canvas.DrawText("Safe Browsing", contentLeft, currentY + 20, labelPaint);
                 canvas.DrawText("Protects you and your device from dangerous sites", contentLeft, currentY + 38, descPaint);

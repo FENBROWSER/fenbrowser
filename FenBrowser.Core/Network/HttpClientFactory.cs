@@ -1,6 +1,11 @@
 using System;
 using System.Net;
 using System.Net.Http;
+using System.Net.Security;
+using System.Net.Sockets;
+using System.Security.Cryptography.X509Certificates;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace FenBrowser.Core.Network
 {
@@ -12,7 +17,7 @@ namespace FenBrowser.Core.Network
     {
         private static readonly object _lock = new object();
         private static HttpClient _sharedClient;
-        private static HttpClientHandler _sharedHandler;
+        private static SocketsHttpHandler _sharedHandler;
 
         /// <summary>
         /// Gets or creates a shared HttpClient with HTTP/2 and Brotli support.
@@ -37,11 +42,11 @@ namespace FenBrowser.Core.Network
         /// <summary>
         /// Creates a new HttpClientHandler with Brotli and other compression support.
         /// </summary>
-        public static HttpClientHandler CreateHandler()
+        public static SocketsHttpHandler CreateHandler()
         {
             var config = NetworkConfiguration.Instance;
             
-            var handler = new HttpClientHandler
+            var handler = new SocketsHttpHandler
             {
                 // Enable all compression methods including Brotli
                 AutomaticDecompression = config.GetDecompressionMethods(),
@@ -55,13 +60,17 @@ namespace FenBrowser.Core.Network
                 // Connection pooling for HTTP/2 multiplexing
                 MaxConnectionsPerServer = config.MaxConnectionsPerServer,
                 
-                // SSL/TLS settings
-                SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | 
-                               System.Security.Authentication.SslProtocols.Tls13,
-                
                 // Keep-alive for connection reuse
                 UseCookies = false, // We handle cookies manually for privacy
             };
+            handler.SslOptions.EnabledSslProtocols =
+                System.Security.Authentication.SslProtocols.Tls12 |
+                System.Security.Authentication.SslProtocols.Tls13;
+
+            if (BrowserSettings.Instance.UseSecureDNS)
+            {
+                handler.ConnectCallback = ConnectWithSecureDnsAsync;
+            }
 
             return handler;
         }
@@ -69,7 +78,7 @@ namespace FenBrowser.Core.Network
         /// <summary>
         /// Creates an HttpClient with HTTP/2 as default version.
         /// </summary>
-        public static HttpClient CreateClient(HttpClientHandler handler = null)
+        public static HttpClient CreateClient(SocketsHttpHandler handler = null)
         {
             var config = NetworkConfiguration.Instance;
             handler ??= CreateHandler();
@@ -115,7 +124,7 @@ namespace FenBrowser.Core.Network
             
             // Additional privacy settings
             handler.UseCookies = false;
-            handler.UseDefaultCredentials = false;
+            handler.Credentials = null;
             
             var client = CreateClient(handler);
             
@@ -148,6 +157,92 @@ namespace FenBrowser.Core.Network
             return $"HTTP Version: {config.GetPreferredHttpVersion()}, " +
                    $"Compression: {config.GetDecompressionMethods()}, " +
                    $"Max Connections: {config.MaxConnectionsPerServer}";
+        }
+
+        public static void ConfigureServerCertificateValidation(
+            SocketsHttpHandler handler,
+            Func<HttpRequestMessage, X509Certificate2, X509Chain, SslPolicyErrors, bool> callback)
+        {
+            if (handler == null || callback == null)
+            {
+                return;
+            }
+
+            handler.SslOptions.RemoteCertificateValidationCallback = (_, cert, chain, errors) =>
+            {
+                try
+                {
+                    var cert2 = cert as X509Certificate2;
+                    if (cert2 == null && cert != null)
+                    {
+                        cert2 = new X509Certificate2(cert);
+                    }
+                    return callback(null, cert2, chain, errors);
+                }
+                catch
+                {
+                    return false;
+                }
+            };
+        }
+
+        private static async ValueTask<System.IO.Stream> ConnectWithSecureDnsAsync(
+            SocketsHttpConnectionContext context,
+            CancellationToken ct)
+        {
+            var endPoint = context?.DnsEndPoint;
+            if (endPoint == null)
+            {
+                throw new InvalidOperationException("Missing DNS endpoint for HTTP connection.");
+            }
+
+            var resolvedIp = await SecureDnsResolver.ResolveAsync(endPoint.Host, ct).ConfigureAwait(false);
+            if (resolvedIp != null)
+            {
+                try
+                {
+                    return await ConnectSocketAsync(new IPEndPoint(resolvedIp, endPoint.Port), ct).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn(
+                        $"[SecureDNS] Direct connect via DoH-resolved IP failed for {endPoint.Host}:{endPoint.Port}: {ex.Message}. Falling back to system resolver.",
+                        Logging.LogCategory.Network);
+                }
+            }
+
+            return await ConnectSocketAsync(endPoint, ct).ConfigureAwait(false);
+        }
+
+        private static async Task<System.IO.Stream> ConnectSocketAsync(EndPoint endPoint, CancellationToken ct)
+        {
+            var socket = new Socket(AddressFamily.InterNetworkV6, SocketType.Stream, ProtocolType.Tcp)
+            {
+                DualMode = true,
+                NoDelay = true
+            };
+
+            try
+            {
+                switch (endPoint)
+                {
+                    case IPEndPoint ipEndPoint:
+                        await socket.ConnectAsync(ipEndPoint, ct).ConfigureAwait(false);
+                        break;
+                    case DnsEndPoint dnsEndPoint:
+                        await socket.ConnectAsync(dnsEndPoint, ct).ConfigureAwait(false);
+                        break;
+                    default:
+                        throw new NotSupportedException($"Unsupported endpoint type: {endPoint?.GetType().Name}");
+                }
+
+                return new NetworkStream(socket, ownsSocket: true);
+            }
+            catch
+            {
+                socket.Dispose();
+                throw;
+            }
         }
     }
 }

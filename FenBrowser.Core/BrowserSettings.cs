@@ -122,6 +122,7 @@ namespace FenBrowser.Core
         public bool ClearCookiesOnExit { get; set; } = false;
         public bool BlockThirdPartyCookies { get; set; } = false;
         public bool UseSecureDNS { get; set; } = false;
+        public string SecureDnsEndpoint { get; set; } = "https://cloudflare-dns.com/dns-query";
         public bool SafeBrowsing { get; set; } = true;
         public bool ImproveBrowser { get; set; } = false;
         public bool BlockPopups { get; set; } = true;

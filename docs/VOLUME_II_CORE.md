@@ -397,3 +397,19 @@ _End of Volume II_
   - Added runtime policy toggles for hardened file navigation behavior:
     - `AllowFileSchemeNavigation` (global gate)
     - `AllowAutomationFileNavigation` (automation override).
+
+### 6.11 Phase-Completion Tranche - Secure DNS Runtime Wiring (2026-02-19)
+
+- `Network/SecureDnsResolver.cs`
+  - Added DNS-over-HTTPS resolver path with response parsing and short TTL cache.
+  - Endpoint sources:
+    - `BrowserSettings.SecureDnsEndpoint`
+    - `FEN_SECURE_DNS_ENDPOINT` (env override).
+
+- `Network/HttpClientFactory.cs`
+  - Migrated transport handler to `SocketsHttpHandler`.
+  - Added secure DNS `ConnectCallback` path that resolves hostnames via DoH when `UseSecureDNS=true`.
+  - Added certificate validation callback configuration helper for host-side security state capture.
+
+- `ResourceManager.cs`
+  - Policy diagnostics now classify `UseSecureDNS` as runtime-enforced instead of pending.
