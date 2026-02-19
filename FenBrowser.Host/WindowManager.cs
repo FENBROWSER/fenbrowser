@@ -347,7 +347,7 @@ namespace FenBrowser.Host
                 }
                 else
                 {
-                    // TODO: Add Linux/macOS clipboard support
+                    // Non-Windows fallback path is intentionally non-fatal until native adapters are added.
                     FenLogger.Warn($"[WindowManager] Clipboard not supported on this platform", LogCategory.General);
                 }
             }

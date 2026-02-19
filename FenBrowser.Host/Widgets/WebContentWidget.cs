@@ -1,6 +1,7 @@
 using SkiaSharp;
 using FenBrowser.Host.Widgets;
 using FenBrowser.Host.Tabs;
+using FenBrowser.Host.ProcessIsolation;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core;
 
@@ -110,6 +111,8 @@ public class WebContentWidget : Widget
             canvas.Save();
             canvas.Translate(Bounds.Left, Bounds.Top);
             canvas.ClipRect(localViewport);
+
+            ProcessIsolationRuntime.Current?.OnFrameRequested(activeTab, Bounds.Width, Bounds.Height);
             
             // Draw the display list (buffered frame)
             activeTab.Browser.Render(canvas, localViewport);
@@ -150,11 +153,25 @@ public class WebContentWidget : Widget
             }
             else if (button == Silk.NET.Input.MouseButton.Right)
             {
+                ProcessIsolationRuntime.Current?.OnInputEvent(activeTab, new RendererInputEvent
+                {
+                    Type = RendererInputEventType.MouseDown,
+                    X = x,
+                    Y = y,
+                    Button = 2
+                });
                 activeTab.Browser.HandleRightClick(x, y, Bounds.Left, Bounds.Top);
             }
             else
             {
                _leftPointerDownInWebContent = true;
+               ProcessIsolationRuntime.Current?.OnInputEvent(activeTab, new RendererInputEvent
+               {
+                   Type = RendererInputEventType.MouseDown,
+                   X = x,
+                   Y = y,
+                   Button = 0
+               });
                activeTab.Browser.HandleMouseDown(x, y, 0, Bounds.Left, Bounds.Top);
             }
         }
@@ -170,6 +187,14 @@ public class WebContentWidget : Widget
         {
             bool emitClick = _leftPointerDownInWebContent && Bounds.Contains(x, y);
             _leftPointerDownInWebContent = false;
+            ProcessIsolationRuntime.Current?.OnInputEvent(activeTab, new RendererInputEvent
+            {
+                Type = RendererInputEventType.MouseUp,
+                X = x,
+                Y = y,
+                Button = 0,
+                EmitClick = emitClick
+            });
             activeTab.Browser.HandleMouseUp(x, y, 0, emitClick, Bounds.Left, Bounds.Top);
         }
     }
@@ -179,6 +204,15 @@ public class WebContentWidget : Widget
         var activeTab = TabManager.Instance.ActiveTab;
         if (activeTab != null && !activeTab.Url.StartsWith("fen://settings", StringComparison.OrdinalIgnoreCase))
         {
+            ProcessIsolationRuntime.Current?.OnInputEvent(activeTab, new RendererInputEvent
+            {
+                Type = RendererInputEventType.KeyDown,
+                Key = key.ToString(),
+                Ctrl = ctrl,
+                Shift = shift,
+                Alt = alt
+            });
+
             // Clipboard Shortcuts
             if (ctrl)
             {
@@ -260,6 +294,11 @@ public class WebContentWidget : Widget
         {
             if (!char.IsControl(c))
             {
+                ProcessIsolationRuntime.Current?.OnInputEvent(activeTab, new RendererInputEvent
+                {
+                    Type = RendererInputEventType.TextInput,
+                    Text = c.ToString()
+                });
                 _ = activeTab.Browser.HandleKeyPress(c.ToString());
             }
         }
@@ -277,6 +316,14 @@ public class WebContentWidget : Widget
         var activeTab = TabManager.Instance.ActiveTab;
         if (activeTab != null)
         {
+            ProcessIsolationRuntime.Current?.OnInputEvent(activeTab, new RendererInputEvent
+            {
+                Type = RendererInputEventType.MouseWheel,
+                X = x,
+                Y = y,
+                DeltaX = deltaX,
+                DeltaY = deltaY
+            });
             activeTab.Browser.Scroll(deltaY);
             Invalidate(); // Trigger repaint for scroll
         }

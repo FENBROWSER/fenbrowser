@@ -1,0 +1,342 @@
+using System;
+using System.IO;
+using System.IO.Pipes;
+using System.Text;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using FenBrowser.Core;
+using FenBrowser.Core.Logging;
+
+namespace FenBrowser.Host.ProcessIsolation
+{
+    internal enum RendererIpcMessageType
+    {
+        Hello,
+        Ready,
+        Navigate,
+        Input,
+        FrameRequest,
+        FrameReady,
+        TabActivated,
+        TabClosed,
+        Shutdown,
+        Ack,
+        Error,
+        Ping,
+        Pong
+    }
+
+    internal sealed class RendererIpcEnvelope
+    {
+        public string Type { get; set; }
+        public int TabId { get; set; }
+        public string CorrelationId { get; set; }
+        public string Token { get; set; }
+        public string Payload { get; set; }
+        public long TimestampUnixMs { get; set; } = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    }
+
+    internal sealed class RendererNavigatePayload
+    {
+        public string Url { get; set; }
+        public bool IsUserInput { get; set; }
+    }
+
+    internal sealed class RendererFrameRequestPayload
+    {
+        public float ViewportWidth { get; set; }
+        public float ViewportHeight { get; set; }
+    }
+
+    internal sealed class RendererFrameReadyPayload
+    {
+        public string Url { get; set; }
+        public long FrameTimestampUnixMs { get; set; }
+    }
+
+    internal static class RendererIpc
+    {
+        private static readonly JsonSerializerOptions JsonOptions = new()
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        };
+
+        public static string SerializeEnvelope(RendererIpcEnvelope envelope)
+        {
+            return JsonSerializer.Serialize(envelope, JsonOptions);
+        }
+
+        public static bool TryDeserializeEnvelope(string line, out RendererIpcEnvelope envelope)
+        {
+            envelope = null;
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                return false;
+            }
+
+            try
+            {
+                envelope = JsonSerializer.Deserialize<RendererIpcEnvelope>(line, JsonOptions);
+                return envelope != null;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public static string SerializePayload<T>(T payload)
+        {
+            return payload == null ? string.Empty : JsonSerializer.Serialize(payload, JsonOptions);
+        }
+
+        public static T DeserializePayload<T>(RendererIpcEnvelope envelope)
+            where T : class
+        {
+            if (envelope == null || string.IsNullOrWhiteSpace(envelope.Payload))
+            {
+                return null;
+            }
+
+            try
+            {
+                return JsonSerializer.Deserialize<T>(envelope.Payload, JsonOptions);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+    }
+
+    internal sealed class RendererChildSession : IDisposable
+    {
+        private readonly NamedPipeServerStream _pipe;
+        private readonly object _writeLock = new();
+        private readonly CancellationTokenSource _cts = new();
+        private StreamReader _reader;
+        private StreamWriter _writer;
+        private Task _readLoop;
+        private DateTime _lastFrameRequestUtc = DateTime.MinValue;
+
+        public int TabId { get; }
+        public string PipeName { get; }
+        public string AuthToken { get; }
+        public bool IsConnected => _pipe.IsConnected && _writer != null;
+        public System.Diagnostics.Process ChildProcess { get; private set; }
+
+        public RendererChildSession(int tabId, string pipeName, string authToken)
+        {
+            TabId = tabId;
+            PipeName = pipeName;
+            AuthToken = authToken;
+            _pipe = new NamedPipeServerStream(
+                PipeName,
+                PipeDirection.InOut,
+                1,
+                PipeTransmissionMode.Message,
+                PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+        }
+
+        public void AttachProcess(System.Diagnostics.Process childProcess)
+        {
+            ChildProcess = childProcess;
+            _ = Task.Run(WaitForConnectionAsync);
+        }
+
+        public void SendNavigate(string url, bool isUserInput)
+        {
+            var payload = new RendererNavigatePayload
+            {
+                Url = url ?? string.Empty,
+                IsUserInput = isUserInput
+            };
+
+            Send(new RendererIpcEnvelope
+            {
+                Type = RendererIpcMessageType.Navigate.ToString(),
+                TabId = TabId,
+                CorrelationId = Guid.NewGuid().ToString("N"),
+                Payload = RendererIpc.SerializePayload(payload)
+            });
+        }
+
+        public void SendInput(RendererInputEvent inputEvent)
+        {
+            if (inputEvent == null)
+            {
+                return;
+            }
+
+            Send(new RendererIpcEnvelope
+            {
+                Type = RendererIpcMessageType.Input.ToString(),
+                TabId = TabId,
+                CorrelationId = Guid.NewGuid().ToString("N"),
+                Payload = RendererIpc.SerializePayload(inputEvent)
+            });
+        }
+
+        public void SendFrameRequest(float viewportWidth, float viewportHeight)
+        {
+            var now = DateTime.UtcNow;
+            if ((now - _lastFrameRequestUtc).TotalMilliseconds < 66)
+            {
+                return;
+            }
+            _lastFrameRequestUtc = now;
+
+            var payload = new RendererFrameRequestPayload
+            {
+                ViewportWidth = viewportWidth,
+                ViewportHeight = viewportHeight
+            };
+
+            Send(new RendererIpcEnvelope
+            {
+                Type = RendererIpcMessageType.FrameRequest.ToString(),
+                TabId = TabId,
+                CorrelationId = Guid.NewGuid().ToString("N"),
+                Payload = RendererIpc.SerializePayload(payload)
+            });
+        }
+
+        public void SendTabActivated()
+        {
+            Send(new RendererIpcEnvelope
+            {
+                Type = RendererIpcMessageType.TabActivated.ToString(),
+                TabId = TabId,
+                CorrelationId = Guid.NewGuid().ToString("N")
+            });
+        }
+
+        public void SendTabClosed()
+        {
+            Send(new RendererIpcEnvelope
+            {
+                Type = RendererIpcMessageType.TabClosed.ToString(),
+                TabId = TabId,
+                CorrelationId = Guid.NewGuid().ToString("N")
+            });
+        }
+
+        public void SendShutdown()
+        {
+            Send(new RendererIpcEnvelope
+            {
+                Type = RendererIpcMessageType.Shutdown.ToString(),
+                TabId = TabId,
+                CorrelationId = Guid.NewGuid().ToString("N")
+            });
+        }
+
+        private async Task WaitForConnectionAsync()
+        {
+            try
+            {
+                await _pipe.WaitForConnectionAsync(_cts.Token).ConfigureAwait(false);
+                _reader = new StreamReader(_pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true);
+                _writer = new StreamWriter(_pipe, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true };
+
+                Send(new RendererIpcEnvelope
+                {
+                    Type = RendererIpcMessageType.Hello.ToString(),
+                    TabId = TabId,
+                    CorrelationId = Guid.NewGuid().ToString("N"),
+                    Token = AuthToken
+                });
+
+                _readLoop = Task.Run(ReadLoopAsync);
+                FenLogger.Info($"[ProcessIsolation] IPC connected for tab {TabId} via pipe '{PipeName}'.", LogCategory.General);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[ProcessIsolation] IPC connect failed for tab {TabId}: {ex.Message}", LogCategory.General);
+            }
+        }
+
+        private async Task ReadLoopAsync()
+        {
+            try
+            {
+                while (!_cts.IsCancellationRequested && _pipe.IsConnected)
+                {
+                    var line = await _reader.ReadLineAsync().ConfigureAwait(false);
+                    if (line == null)
+                    {
+                        break;
+                    }
+
+                    if (!RendererIpc.TryDeserializeEnvelope(line, out var envelope))
+                    {
+                        continue;
+                    }
+
+                    if (string.Equals(envelope.Type, RendererIpcMessageType.Ready.ToString(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        FenLogger.Info($"[ProcessIsolation] Renderer child ready for tab {TabId}.", LogCategory.General);
+                    }
+                    else if (string.Equals(envelope.Type, RendererIpcMessageType.FrameReady.ToString(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        var payload = RendererIpc.DeserializePayload<RendererFrameReadyPayload>(envelope);
+                        var url = payload?.Url ?? "<unknown>";
+                        FenLogger.Debug($"[ProcessIsolation] FrameReady tab={TabId} url={url}", LogCategory.Rendering);
+                    }
+                    else if (string.Equals(envelope.Type, RendererIpcMessageType.Error.ToString(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        FenLogger.Warn($"[ProcessIsolation] Renderer child error tab={TabId}: {envelope.Payload}", LogCategory.General);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                if (!_cts.IsCancellationRequested)
+                {
+                    FenLogger.Warn($"[ProcessIsolation] IPC read loop terminated for tab {TabId}: {ex.Message}", LogCategory.General);
+                }
+            }
+        }
+
+        private void Send(RendererIpcEnvelope envelope)
+        {
+            if (envelope == null)
+            {
+                return;
+            }
+
+            if (!IsConnected)
+            {
+                return;
+            }
+
+            try
+            {
+                var line = RendererIpc.SerializeEnvelope(envelope);
+                lock (_writeLock)
+                {
+                    _writer.WriteLine(line);
+                    _writer.Flush();
+                }
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[ProcessIsolation] Failed to send IPC message for tab {TabId}: {ex.Message}", LogCategory.General);
+            }
+        }
+
+        public void Dispose()
+        {
+            _cts.Cancel();
+
+            try { _writer?.Dispose(); } catch { }
+            try { _reader?.Dispose(); } catch { }
+            try { _pipe?.Dispose(); } catch { }
+            try { _cts.Dispose(); } catch { }
+        }
+    }
+}

@@ -7,6 +7,10 @@ using System.Linq;
 using System.Text;
 using FenBrowser.FenEngine.Testing;
 using System.IO;
+using System.Diagnostics;
+using System.Threading;
+using System.IO.Pipes;
+using FenBrowser.Host.ProcessIsolation;
 
 namespace FenBrowser.Host
 {
@@ -38,6 +42,14 @@ namespace FenBrowser.Host
                     FenLogger.Error($"[CRASH] Unobserved Task Exception: {e.Exception}", LogCategory.General);
                     e.SetObserved();
                 };
+
+                // Process-isolation renderer child mode.
+                if (args.Any(a => string.Equals(a, "--renderer-child", StringComparison.OrdinalIgnoreCase)) ||
+                    string.Equals(Environment.GetEnvironmentVariable("FEN_RENDERER_CHILD"), "1", StringComparison.Ordinal))
+                {
+                    RunRendererChildLoop(args);
+                    return;
+                }
 
                 // 0. CLI Tooling Interception
                 if (args.Length >= 2 && args[0] == "--test262")
@@ -433,6 +445,289 @@ namespace FenBrowser.Host
         public static void CopyToClipboard(string text)
         {
             WindowManager.Instance.CopyToClipboard(text);
+        }
+
+        private static void RunRendererChildLoop(string[] args)
+        {
+            LogManager.InitializeFromSettings();
+
+            int tabId = 0;
+            var tabArg = args.FirstOrDefault(a => a.StartsWith("--tab-id=", StringComparison.OrdinalIgnoreCase));
+            if (tabArg != null)
+            {
+                _ = int.TryParse(tabArg.Split('=')[1], out tabId);
+            }
+            else
+            {
+                _ = int.TryParse(Environment.GetEnvironmentVariable("FEN_RENDERER_TAB_ID"), out tabId);
+            }
+
+            int parentPid = 0;
+            _ = int.TryParse(Environment.GetEnvironmentVariable("FEN_RENDERER_PARENT_PID"), out parentPid);
+            var pipeName = Environment.GetEnvironmentVariable("FEN_RENDERER_PIPE_NAME");
+            var authToken = Environment.GetEnvironmentVariable("FEN_RENDERER_AUTH_TOKEN");
+
+            FenLogger.Info($"[RendererChild] Started for tab={tabId}, parentPid={parentPid}, pipe={pipeName}", LogCategory.General);
+
+            if (string.IsNullOrWhiteSpace(pipeName) || string.IsNullOrWhiteSpace(authToken))
+            {
+                // Compatibility fallback if IPC is not configured.
+                while (true)
+                {
+                    if (!IsParentAlive(parentPid))
+                    {
+                        break;
+                    }
+                    Thread.Sleep(500);
+                }
+                FenLogger.Info($"[RendererChild] Exiting for tab={tabId}", LogCategory.General);
+                return;
+            }
+
+            using var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+            try
+            {
+                pipe.Connect(5000);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[RendererChild] Failed to connect IPC pipe '{pipeName}': {ex.Message}", LogCategory.General);
+                return;
+            }
+
+            using var reader = new StreamReader(pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true);
+            using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true };
+            using var browser = new FenBrowser.FenEngine.Rendering.BrowserHost();
+
+            bool handshakeComplete = false;
+            bool running = true;
+
+            while (running)
+            {
+                if (!IsParentAlive(parentPid))
+                {
+                    break;
+                }
+
+                var readTask = reader.ReadLineAsync();
+                if (!readTask.Wait(500))
+                {
+                    continue;
+                }
+
+                var line = readTask.Result;
+                if (line == null)
+                {
+                    break;
+                }
+
+                if (!RendererIpc.TryDeserializeEnvelope(line, out var envelope))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    if (string.Equals(envelope.Type, RendererIpcMessageType.Hello.ToString(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!string.Equals(envelope.Token, authToken, StringComparison.Ordinal))
+                        {
+                            SendRendererEnvelope(writer, new RendererIpcEnvelope
+                            {
+                                Type = RendererIpcMessageType.Error.ToString(),
+                                TabId = tabId,
+                                CorrelationId = envelope.CorrelationId,
+                                Payload = "authentication_failed"
+                            });
+                            break;
+                        }
+
+                        handshakeComplete = true;
+                        SendRendererEnvelope(writer, new RendererIpcEnvelope
+                        {
+                            Type = RendererIpcMessageType.Ready.ToString(),
+                            TabId = tabId,
+                            CorrelationId = envelope.CorrelationId
+                        });
+                        continue;
+                    }
+
+                    if (!handshakeComplete)
+                    {
+                        continue;
+                    }
+
+                    if (string.Equals(envelope.Type, RendererIpcMessageType.Navigate.ToString(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        var payload = RendererIpc.DeserializePayload<RendererNavigatePayload>(envelope);
+                        var url = payload?.Url ?? string.Empty;
+                        if (!string.IsNullOrWhiteSpace(url))
+                        {
+                            if (payload.IsUserInput)
+                                browser.NavigateUserInputAsync(url).GetAwaiter().GetResult();
+                            else
+                                browser.NavigateAsync(url).GetAwaiter().GetResult();
+                        }
+
+                        SendRendererEnvelope(writer, new RendererIpcEnvelope
+                        {
+                            Type = RendererIpcMessageType.Ack.ToString(),
+                            TabId = tabId,
+                            CorrelationId = envelope.CorrelationId
+                        });
+                        continue;
+                    }
+
+                    if (string.Equals(envelope.Type, RendererIpcMessageType.Input.ToString(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        var input = RendererIpc.DeserializePayload<RendererInputEvent>(envelope);
+                        if (input != null)
+                        {
+                            switch (input.Type)
+                            {
+                                case RendererInputEventType.MouseDown:
+                                    browser.OnMouseDown(input.X, input.Y, input.Button);
+                                    break;
+                                case RendererInputEventType.MouseUp:
+                                    browser.OnMouseUp(input.X, input.Y, input.Button);
+                                    if (input.EmitClick && input.Button == 0)
+                                    {
+                                        browser.OnClick(input.X, input.Y, input.Button);
+                                    }
+                                    break;
+                                case RendererInputEventType.MouseMove:
+                                    browser.OnMouseMove(input.X, input.Y);
+                                    break;
+                                case RendererInputEventType.KeyDown:
+                                    if (!string.IsNullOrWhiteSpace(input.Key))
+                                    {
+                                        browser.HandleKeyPress(MapRendererKey(input.Key)).GetAwaiter().GetResult();
+                                    }
+                                    break;
+                                case RendererInputEventType.TextInput:
+                                    if (!string.IsNullOrWhiteSpace(input.Text))
+                                    {
+                                        browser.HandleKeyPress(input.Text).GetAwaiter().GetResult();
+                                    }
+                                    break;
+                                case RendererInputEventType.MouseWheel:
+                                    // BrowserHost currently has no direct wheel-input API; host applies scroll locally.
+                                    break;
+                            }
+                        }
+
+                        SendRendererEnvelope(writer, new RendererIpcEnvelope
+                        {
+                            Type = RendererIpcMessageType.Ack.ToString(),
+                            TabId = tabId,
+                            CorrelationId = envelope.CorrelationId
+                        });
+                        continue;
+                    }
+
+                    if (string.Equals(envelope.Type, RendererIpcMessageType.FrameRequest.ToString(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        var payload = new RendererFrameReadyPayload
+                        {
+                            Url = browser.CurrentUri?.AbsoluteUri ?? "about:blank",
+                            FrameTimestampUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                        };
+
+                        SendRendererEnvelope(writer, new RendererIpcEnvelope
+                        {
+                            Type = RendererIpcMessageType.FrameReady.ToString(),
+                            TabId = tabId,
+                            CorrelationId = envelope.CorrelationId,
+                            Payload = RendererIpc.SerializePayload(payload)
+                        });
+                        continue;
+                    }
+
+                    if (string.Equals(envelope.Type, RendererIpcMessageType.Shutdown.ToString(), StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(envelope.Type, RendererIpcMessageType.TabClosed.ToString(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        running = false;
+                        continue;
+                    }
+
+                    if (string.Equals(envelope.Type, RendererIpcMessageType.Ping.ToString(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        SendRendererEnvelope(writer, new RendererIpcEnvelope
+                        {
+                            Type = RendererIpcMessageType.Pong.ToString(),
+                            TabId = tabId,
+                            CorrelationId = envelope.CorrelationId
+                        });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    SendRendererEnvelope(writer, new RendererIpcEnvelope
+                    {
+                        Type = RendererIpcMessageType.Error.ToString(),
+                        TabId = tabId,
+                        CorrelationId = envelope.CorrelationId,
+                        Payload = ex.Message
+                    });
+                }
+            }
+
+            FenLogger.Info($"[RendererChild] Exiting for tab={tabId}", LogCategory.General);
+        }
+
+        private static bool IsParentAlive(int parentPid)
+        {
+            if (parentPid <= 0)
+            {
+                return true;
+            }
+
+            try
+            {
+                var parent = Process.GetProcessById(parentPid);
+                return !parent.HasExited;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void SendRendererEnvelope(StreamWriter writer, RendererIpcEnvelope envelope)
+        {
+            if (writer == null || envelope == null)
+            {
+                return;
+            }
+
+            try
+            {
+                writer.WriteLine(RendererIpc.SerializeEnvelope(envelope));
+                writer.Flush();
+            }
+            catch
+            {
+            }
+        }
+
+        private static string MapRendererKey(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                return key;
+            }
+
+            return key switch
+            {
+                "Backspace" => "Backspace",
+                "Enter" => "Enter",
+                "Delete" => "Delete",
+                "Left" => "ArrowLeft",
+                "Right" => "ArrowRight",
+                "Home" => "Home",
+                "End" => "End",
+                _ => key
+            };
         }
     }
 }

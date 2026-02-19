@@ -1,11 +1,12 @@
 using System;
+using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Host.ProcessIsolation
 {
     /// <summary>
     /// Selects the active process model.
-    /// FEN_PROCESS_ISOLATION=brokered reserves the broker/renderer split mode; currently falls back to in-process.
+    /// FEN_PROCESS_ISOLATION=brokered enables the per-tab renderer child process model.
     /// </summary>
     public static class ProcessIsolationCoordinatorFactory
     {
@@ -14,7 +15,8 @@ namespace FenBrowser.Host.ProcessIsolation
             var mode = Environment.GetEnvironmentVariable("FEN_PROCESS_ISOLATION");
             if (string.Equals(mode, "brokered", StringComparison.OrdinalIgnoreCase))
             {
-                FenLogger.Warn("[ProcessIsolation] 'brokered' requested but not fully available yet; falling back to in-process.", LogCategory.General);
+                FenLogger.Info("[ProcessIsolation] 'brokered' requested; enabling per-tab renderer child process model.", LogCategory.General);
+                return new BrokeredProcessIsolationCoordinator();
             }
 
             return new InProcessIsolationCoordinator();

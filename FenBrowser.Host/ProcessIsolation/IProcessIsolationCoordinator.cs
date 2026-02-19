@@ -13,5 +13,10 @@ namespace FenBrowser.Host.ProcessIsolation
         void Initialize();
         void OnTabCreated(BrowserTab tab);
         void OnTabActivated(BrowserTab tab);
+        void OnNavigationRequested(BrowserTab tab, string url, bool isUserInput);
+        void OnInputEvent(BrowserTab tab, RendererInputEvent inputEvent);
+        void OnFrameRequested(BrowserTab tab, float viewportWidth, float viewportHeight);
+        void OnTabClosed(BrowserTab tab);
+        void Shutdown();
     }
 }

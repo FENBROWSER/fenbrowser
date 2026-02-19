@@ -69,6 +69,7 @@ namespace FenBrowser.Host
             FenLogger.Info("[ChromeManager] Initializing Widgets...", LogCategory.General);
             _processIsolation = ProcessIsolationCoordinatorFactory.CreateFromEnvironment();
             _processIsolation.Initialize();
+            ProcessIsolationRuntime.SetCoordinator(_processIsolation);
 
             InitializeWidgets(initialUrl);
             InitializeDevTools();
@@ -87,6 +88,7 @@ namespace FenBrowser.Host
             // Wire TabManager
             TabManager.Instance.ActiveTabChanged += OnActiveTabChanged;
             TabManager.Instance.TabAdded += tab => _processIsolation?.OnTabCreated(tab);
+            TabManager.Instance.TabRemoved += tab => _processIsolation?.OnTabClosed(tab);
             
             // Create Initial Tab
             TabManager.Instance.CreateTab(initialUrl);
@@ -144,7 +146,12 @@ namespace FenBrowser.Host
             _toolbar.AddressBar.FocusRequested += w => InputManager.Instance.RequestFocus(w);
             _toolbar.AddressBar.BookmarkToggled += OnBookmarkToggled;
             _toolbar.SettingsClicked += () => ActivateOrOpen("fen://settings");
-            _toolbar.FavoritesClicked += () => ActivateOrOpen("fen://settings"); // TODO: specialized favorites
+            _toolbar.FavoritesClicked += () =>
+            {
+                BrowserSettings.Instance.ShowFavoritesBar = !BrowserSettings.Instance.ShowFavoritesBar;
+                _root?.BookmarksBar.RefreshBookmarks();
+                _root?.Invalidate();
+            };
 
             _statusBar = new StatusBarWidget();
         }
@@ -562,7 +569,14 @@ namespace FenBrowser.Host
                  hit.OnMouseMove(x,y);
                  
                  if (hit is WebContentWidget web && TabManager.Instance.ActiveTab != null) {
-                      var result = TabManager.Instance.ActiveTab.Browser.HandleMouseMove(x,y, web.Bounds.Left, web.Bounds.Top);
+                      var activeTab = TabManager.Instance.ActiveTab;
+                      ProcessIsolationRuntime.Current?.OnInputEvent(activeTab, new RendererInputEvent
+                      {
+                          Type = RendererInputEventType.MouseMove,
+                          X = x,
+                          Y = y
+                      });
+                      var result = activeTab.Browser.HandleMouseMove(x,y, web.Bounds.Left, web.Bounds.Top);
                       CursorManager.UpdateFromHitTest(m, result);
                       _statusBar?.UpdateFromHitTest(result);
                  } else {
@@ -618,6 +632,9 @@ namespace FenBrowser.Host
         private void Shutdown()
         {
              // DevToolsServer is not IDisposable
+             _processIsolation?.Shutdown();
+             ProcessIsolationRuntime.SetCoordinator(null);
+             _webDriverServer?.Dispose();
              _remoteDebugServer?.Dispose();
         }
     }

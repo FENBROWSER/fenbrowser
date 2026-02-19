@@ -663,6 +663,34 @@ public class BrowserIntegration
         _needsRepaint = true;
         NeedsRepaint?.Invoke();
     }
+
+    /// <summary>
+    /// Scroll the viewport to bring a target element near center and request repaint.
+    /// </summary>
+    public void ScrollToElement(Element element)
+    {
+        if (element == null)
+        {
+            return;
+        }
+
+        var rect = GetElementRect(element);
+        if (!rect.HasValue)
+        {
+            return;
+        }
+
+        var viewportHeight = Math.Max(1f, _lastViewportSize.Height);
+        var desiredScroll = rect.Value.MidY - (viewportHeight * 0.5f);
+        var maxScroll = Math.Max(0f, _contentHeight - viewportHeight);
+        _scrollY = Math.Max(0f, Math.Min(maxScroll, desiredScroll));
+        _scrollPhysics.SetPosition(_scrollY);
+
+        _highlightedElement = element;
+        _needsRepaint = true;
+        _wakeEvent.Set();
+        NeedsRepaint?.Invoke();
+    }
     
     private void DrawHighlight(SKCanvas canvas, Element element)
     {

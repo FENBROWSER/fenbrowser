@@ -3,6 +3,7 @@ using FenBrowser.Host.Widgets;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.Host.Theme;
+using System;
 using System.Collections.Generic;
 
 namespace FenBrowser.Host;
@@ -16,6 +17,9 @@ public class Compositor
 {
     private readonly Widget _root;
     private SKRect? _lastDirtyRect;
+    private SKSurface _frameSurface;
+    private SKImage _frameSnapshot;
+    private SKSizeI _framePixelSize;
     
     // --- Layer Management (10/10) ---
     private readonly List<CompositorLayer> _layers = new();
@@ -72,40 +76,81 @@ public class Compositor
     private void Render(SKCanvas canvas, SKSize logicalSize)
     {
         var dirtyRect = _root.DirtyRect;
-        
-        // Optimization: If nothing changed, don't waste GPU cycles
-        // FIXME: This causes blinking because OpenGL backbuffer is not preserved!
-        // We must draw every frame or use an offscreen buffer. Disabling for now.
-        // if (dirtyRect == null && _lastDirtyRect != null) return;
-        
-        canvas.Save();
-        
-        // Apply DPI scaling globally. 
-        // This ensures all widgets see logical coordinates but render sharp pixels.
-        canvas.Scale(DpiScale, DpiScale);
-        
-        if (dirtyRect.HasValue)
+
+        EnsureFrameBuffer(logicalSize);
+        var needsRepaint = dirtyRect.HasValue || _frameSnapshot == null;
+
+        if (needsRepaint && _frameSurface != null)
         {
-            // Clip to dirty region for optimization (in logical units)
-            canvas.ClipRect(dirtyRect.Value);
-            _lastDirtyRect = dirtyRect;
+            var offscreen = _frameSurface.Canvas;
+            offscreen.Save();
+            offscreen.Scale(DpiScale, DpiScale);
+
+            if (_frameSnapshot != null && dirtyRect.HasValue)
+            {
+                // Seed from last composed frame, then repaint only dirty region.
+                offscreen.DrawImage(_frameSnapshot, new SKRect(0, 0, logicalSize.Width, logicalSize.Height));
+                offscreen.ClipRect(dirtyRect.Value);
+                _lastDirtyRect = dirtyRect;
+            }
+            else
+            {
+                offscreen.Clear(ThemeManager.Current.Background);
+                if (dirtyRect.HasValue)
+                {
+                    offscreen.ClipRect(dirtyRect.Value);
+                    _lastDirtyRect = dirtyRect;
+                }
+                else
+                {
+                    _lastDirtyRect = new SKRect(0, 0, logicalSize.Width, logicalSize.Height);
+                }
+            }
+
+            _root.PaintAll(offscreen);
+            offscreen.Restore();
+
+            _frameSnapshot?.Dispose();
+            _frameSnapshot = _frameSurface.Snapshot();
+        }
+
+        if (_frameSnapshot != null)
+        {
+            canvas.DrawImage(_frameSnapshot, new SKRect(0, 0, logicalSize.Width, logicalSize.Height));
         }
         else
         {
-            // Full frame
-            _lastDirtyRect = new SKRect(0, 0, logicalSize.Width, logicalSize.Height);
+            // Emergency fallback path.
+            canvas.Clear(ThemeManager.Current.Background);
+            canvas.Save();
+            canvas.Scale(DpiScale, DpiScale);
+            _root.PaintAll(canvas);
+            canvas.Restore();
         }
-        
-        // Clear background (only the clipped part)
-        canvas.Clear(ThemeManager.Current.Background);
-        
-        // Paint the tree in logical space
-        _root.PaintAll(canvas);
-        
-        canvas.Restore();
-        
+         
         // Clear dirty flags for next frame
         _root.ClearDirtyRect();
+    }
+
+    private void EnsureFrameBuffer(SKSize logicalSize)
+    {
+        var pixelWidth = Math.Max(1, (int)Math.Ceiling(logicalSize.Width * DpiScale));
+        var pixelHeight = Math.Max(1, (int)Math.Ceiling(logicalSize.Height * DpiScale));
+        var targetSize = new SKSizeI(pixelWidth, pixelHeight);
+
+        if (_frameSurface != null && _framePixelSize == targetSize)
+        {
+            return;
+        }
+
+        _frameSnapshot?.Dispose();
+        _frameSnapshot = null;
+        _frameSurface?.Dispose();
+        _frameSurface = null;
+
+        var info = new SKImageInfo(targetSize.Width, targetSize.Height, SKColorType.Bgra8888, SKAlphaType.Premul);
+        _frameSurface = SKSurface.Create(info);
+        _framePixelSize = targetSize;
     }
     
     // --- Layer Management (10/10) ---
