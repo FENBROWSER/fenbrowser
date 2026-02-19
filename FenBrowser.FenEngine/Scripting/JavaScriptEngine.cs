@@ -66,6 +66,8 @@ namespace FenBrowser.FenEngine.Scripting
                 _storageBackend,
                 FetchThroughNetworkHandlerAsync,
                 IsWorkerScriptUriAllowed);
+            DocumentWrapper.CookieReadBridge = scope => GetCookieString(scope);
+            DocumentWrapper.CookieWriteBridge = (scope, cookieString) => SetCookieString(scope, cookieString);
             try { FenLogger.Debug("[JavaScriptEngine] Constructor: InitRuntime Done", LogCategory.JavaScript); } catch { }
             SetupMutationObserver();
             // _mini = new MiniJs.Engine();
@@ -731,6 +733,21 @@ namespace FenBrowser.FenEngine.Scripting
                   scriptUri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
             {
                 return false;
+            }
+
+            if (SubresourceAllowed != null)
+            {
+                try
+                {
+                    if (!SubresourceAllowed(scriptUri, "worker"))
+                    {
+                        return false;
+                    }
+                }
+                catch
+                {
+                    return false;
+                }
             }
 
             var baseUri = _ctx?.BaseUri;
