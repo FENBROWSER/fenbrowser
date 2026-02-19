@@ -212,10 +212,15 @@ public class BrowserIntegration
     {
         try
         {
-            // For now, run sync to satisfy legacy DevTools API
+            // Bridge legacy sync API onto async runtime without deadlock-prone Wait/Result usage.
             var task = _browser.ExecuteScriptAsync(script);
-            task.Wait(2000);
-            return task.IsCompletedSuccessfully ? task.Result : "Error: Script execution failed or timed out.";
+            var completed = Task.WhenAny(task, Task.Delay(2000)).GetAwaiter().GetResult();
+            if (completed == task)
+            {
+                return task.GetAwaiter().GetResult();
+            }
+
+            return "Error: Script execution failed or timed out.";
         }
         catch (Exception ex)
         {
