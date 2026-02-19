@@ -139,4 +139,17 @@ Contains the generated CDP domain classes and DTOs.
     - `FEN_REMOTE_DEBUG_BIND` (optional, defaults `127.0.0.1`)
     - `FEN_REMOTE_DEBUG_TOKEN` (optional, recommended)
 
+### 5.5 Eight-Gap Closure Tranche - Cookie Source-of-Truth Wiring (2026-02-19)
+
+- `FenBrowser.FenEngine/DevTools/DevToolsCore.cs`
+  - Added cookie bridge delegates:
+    - `CookieSnapshotProvider`
+    - `CookieSetter`
+    - `CookieDeleteHandler`
+    - `CookieClearHandler`
+  - DevTools cookie APIs now use injected browser cookie source when available, with local list fallback for standalone contexts.
+
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+  - Wired DevTools cookie delegates to `CustomHtmlEngine` cookie jar-backed operations.
+
 _End of Volume V_

@@ -413,3 +413,9 @@ _End of Volume II_
 
 - `ResourceManager.cs`
   - Policy diagnostics now classify `UseSecureDNS` as runtime-enforced instead of pending.
+
+### 6.12 Eight-Gap Closure Tranche - CSP Worker Directive Wiring (2026-02-19)
+
+- `ResourceManager.cs`
+  - Updated `worker` destination CSP mapping to prefer `worker-src` when present, with `child-src` fallback.
+  - This aligns worker script fetch checks with modern CSP directive precedence.

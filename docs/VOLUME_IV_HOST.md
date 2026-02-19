@@ -249,4 +249,19 @@ The Omnibox implementation.
 - `Widgets/SettingsPageWidget.cs`
   - Re-enabled `Use Secure DNS` toggle visibility in privacy settings after runtime DoH transport wiring landed in core network stack.
 
+### 6.11 Eight-Gap Closure Tranche - Process Model and Sync-Wait Cleanup (2026-02-19)
+
+- `ProcessIsolation/IProcessIsolationCoordinator.cs` (new)
+- `ProcessIsolation/InProcessIsolationCoordinator.cs` (new)
+- `ProcessIsolation/ProcessIsolationCoordinatorFactory.cs` (new)
+  - Added explicit process-model coordination seam for host runtime (`in-process` baseline, brokered mode reserved).
+  - New environment hook: `FEN_PROCESS_ISOLATION=brokered` currently warns and falls back to in-process.
+
+- `ChromeManager.cs`
+  - Host startup now initializes process isolation coordinator and tracks tab creation/activation through it.
+  - Replaced direct `.Result`/`.Wait()` UI dispatch callsites with centralized synchronous UI bridge helpers (`GetAwaiter().GetResult()` pattern).
+
+- `BrowserIntegration.cs`
+  - Replaced timeout path based on `Task.Wait(...)`/`.Result` with `Task.WhenAny(...)` + `GetAwaiter().GetResult()` bridge for legacy sync API compatibility.
+
 _End of Volume IV_

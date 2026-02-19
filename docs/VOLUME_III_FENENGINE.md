@@ -682,3 +682,44 @@ So you want to add `border-radius`? Follow these steps:
 
 - `Rendering/BrowserApi.cs`
   - Removed eager `ResourceManager` field initialization; now initialized once in constructor path.
+
+### 6.20 Eight-Gap Closure Tranche (2026-02-19)
+
+- `WebAPIs/FetchEvent.cs`
+  - Added explicit `respondWith()` lifecycle state:
+    - registration wait (`WaitForRespondWithRegistrationAsync`)
+    - settlement wait (`WaitForRespondWithSettlementAsync`)
+    - fulfilled/rejected/timeout result model (`RespondWithSettlement`).
+  - Supports both native `JsPromise` and legacy `__state` promise objects.
+
+- `WebAPIs/FetchApi.cs`
+  - Fetch pipeline now extracts fulfilled `respondWith()` values and returns service-worker responses directly.
+  - Added fallback behavior for timeout/unrecognized service-worker results.
+  - Added rejection propagation when `respondWith()` promise rejects.
+
+- `Workers/WorkerRuntime.cs`
+  - Replaced worker idle busy-sleep with event-signaled wait (`AutoResetEvent`) to reduce spin overhead.
+  - Service-worker fetch dispatch now waits for `respondWith()` registration window before returning handled state.
+
+- `Workers/WorkerGlobalScope.cs`
+- `Workers/ServiceWorkerGlobalScope.cs`
+  - Added `addEventListener/removeEventListener/dispatchEvent` handling for worker globals.
+  - Service-worker extendable events now dispatch through both `on*` handlers and registered listeners.
+
+- `Rendering/ImageLoader.cs`
+  - Removed direct `HttpClient` fetch path.
+  - Added centralized byte-fetch delegate (`ImageLoader.FetchBytesAsync`) as the only HTTP image load source.
+
+- `Rendering/BrowserApi.cs`
+  - Wired `ImageLoader.FetchBytesAsync` into `ResourceManager.FetchBytesAsync(...)` with `sec-fetch-dest=image`.
+  - WebDriver cookie APIs now use `CustomHtmlEngine` cookie jar snapshot/set/delete paths (no separate in-memory cookie dictionary).
+
+- `DOM/DocumentWrapper.cs`
+- `Scripting/JavaScriptEngine.cs`
+  - Added cookie bridge hooks so `DocumentWrapper` cookie access can route to runtime cookie jar (`CookieBridge`) when available.
+
+- `Core/ModuleLoader.cs`
+  - Added stricter module URI validation:
+    - disallow non `http/https/file` schemes
+    - default block cross-origin `http(s)` module resolution without explicit pipeline support.
+  - Security blocks now surface as `UnauthorizedAccessException` (instead of silent fallback).

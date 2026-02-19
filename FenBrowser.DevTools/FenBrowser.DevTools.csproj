@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
     <RootNamespace>FenBrowser.DevTools</RootNamespace>
     <LangVersion>latest</LangVersion>
+    <RestoreUseStaticGraphEvaluation>false</RestoreUseStaticGraphEvaluation>
   </PropertyGroup>
 
   <ItemGroup>

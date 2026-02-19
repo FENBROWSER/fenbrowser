@@ -1,6 +1,6 @@
 # FenBrowser Codex - Volume I: System Manifest & Architecture
 
-**State as of:** 2026-02-17
+**State as of:** 2026-02-19
 **Codex Version:** 1.0
 
 ## 1. Introduction
@@ -89,6 +89,19 @@ The executable wrapper.
 - **Output**: `bin/Debug/net8.0-windows`
 - **CI Build Artifact**: `.github/workflows/build-fenbrowser-exe.yml` restores and publishes `FenBrowser.Host` for `win-x64` in `Release` as a self-contained single-file executable (with full content self-extraction enabled for runtime native dependencies) and uploads artifact `fenbrowser-win-x64`.
 - **Logs**: Checked in `Videos/FENBROWSER/logs`. `debug_screenshot.png` is the visual truth.
+
+## 6. Process Model & Build Notes (2026-02-19)
+
+- **Process Model Baseline**:
+  - FenBrowser remains **in-process** today, but host-side process-model interfaces now exist to prevent architecture lock-in.
+  - New host abstraction path:
+    - `FenBrowser.Host.ProcessIsolation.IProcessIsolationCoordinator`
+    - `InProcessIsolationCoordinator` (active)
+    - `ProcessIsolationCoordinatorFactory` (`FEN_PROCESS_ISOLATION` switch, brokered mode reserved).
+
+- **Build Resolver Stabilization Notes**:
+  - Repository includes `Directory.Build.props` restore/resolver safety overrides to improve determinism on machines exhibiting silent project-graph failures.
+  - Known machine-specific issue can still surface as `Build FAILED (0 warnings, 0 errors)` during full host/tests builds; component-level build validation should be used when this occurs.
 
 ---
 

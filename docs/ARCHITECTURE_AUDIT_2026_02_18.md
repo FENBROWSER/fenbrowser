@@ -1033,3 +1033,88 @@ Validation snapshot:
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug -clp:ErrorsOnly` succeeded.
 - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug -clp:ErrorsOnly` remains blocked on this machine with the pre-existing resolver-state pattern (`0 warnings / 0 errors emitted`).
 - `dotnet test` run for targeted worker/storage suites was intentionally interrupted to avoid long-running terminal contention in this environment.
+
+## 20) Eight-Gap Implementation Tranche (2026-02-19, continuation pass)
+
+Implemented now:
+
+1. **Service-worker `respondWith()` propagation closure (finding 12)**
+- `FenBrowser.FenEngine/WebAPIs/FetchEvent.cs`
+  - Added explicit registration and settlement waiting APIs for `respondWith()` promises.
+  - Added settlement model (`RespondWithSettlement`) with fulfilled/rejected/timeout states.
+- `FenBrowser.FenEngine/WebAPIs/FetchApi.cs`
+  - `fetch(...)` now consumes fulfilled `respondWith()` values and returns SW response directly.
+  - Rejected `respondWith()` now rejects fetch promise.
+  - Timeout/unrecognized values fall back to network with explicit diagnostics.
+- `FenBrowser.FenEngine/Workers/WorkerRuntime.cs`
+  - SW fetch dispatch now waits for `respondWith()` registration window before returning handled state.
+
+2. **Image loader centralized network closure (finding 16 residual)**
+- `FenBrowser.FenEngine/Rendering/ImageLoader.cs`
+  - Removed direct `HttpClient` fetch path.
+  - Added centralized byte-fetch delegate (`ImageLoader.FetchBytesAsync`) as required network source.
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+  - Wired image fetch delegate to `ResourceManager.FetchBytesAsync(...)` with image request metadata.
+
+3. **Worker parity + lifecycle hardening continuation (finding 19 residual)**
+- `FenBrowser.FenEngine/Workers/WorkerGlobalScope.cs`
+  - Added `addEventListener/removeEventListener/dispatchEvent`.
+  - Unified dispatch path across `on*` handlers and event-listener registrations.
+- `FenBrowser.FenEngine/Workers/ServiceWorkerGlobalScope.cs`
+  - Fetch/install/activate events now dispatch via unified event path.
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Worker script policy now consults subresource policy as `"worker"` destination before runtime creation.
+- `FenBrowser.Core/ResourceManager.cs`
+  - Worker CSP directive now prefers `worker-src` with `child-src` fallback.
+- `FenBrowser.FenEngine/Workers/WorkerRuntime.cs`
+  - Replaced thread sleep idle loop with signal-driven wait.
+
+4. **Process-isolation architecture seam (finding 22)**
+- `FenBrowser.Host/ProcessIsolation/IProcessIsolationCoordinator.cs` (new)
+- `FenBrowser.Host/ProcessIsolation/InProcessIsolationCoordinator.cs` (new)
+- `FenBrowser.Host/ProcessIsolation/ProcessIsolationCoordinatorFactory.cs` (new)
+  - Added explicit process model seam to prepare brokered renderer move without destabilizing current in-process model.
+- `FenBrowser.Host/ChromeManager.cs`
+  - Host now initializes and uses process-isolation coordinator during tab lifecycle.
+
+5. **Cookie model unification continuation (finding 23)**
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+  - Removed separate WebDriver in-memory cookie dictionary.
+  - WebDriver cookie APIs now read/write through `CustomHtmlEngine` cookie jar path.
+- `FenBrowser.FenEngine/DOM/DocumentWrapper.cs`
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Added cookie bridge hooks so `DocumentWrapper` can reuse runtime cookie source (`CookieBridge`) when available.
+- `FenBrowser.FenEngine/DevTools/DevToolsCore.cs`
+  - Added cookie provider/set/delete/clear delegate hooks to avoid independent cookie state in normal host wiring.
+
+6. **Module edge hardening continuation (finding 29 residual)**
+- `FenBrowser.FenEngine/Core/ModuleLoader.cs`
+  - Added module URI validation for scheme safety and default cross-origin blocking for `http(s)` module loads.
+  - Security block path now surfaces `UnauthorizedAccessException` (instead of silent fallback).
+- `FenBrowser.Tests/Engine/ModuleLoaderTests.cs`
+  - Added regression tests for cross-origin blocking and unsafe-scheme blocking.
+
+7. **Blocking wait-path cleanup continuation (finding 26 residual)**
+- `FenBrowser.Host/BrowserIntegration.cs`
+  - Removed `Task.Wait`/`.Result` timeout bridge in script evaluation path.
+- `FenBrowser.Host/ChromeManager.cs`
+  - Replaced `.Result`/`.Wait` UI-dispatch callsites with centralized synchronous bridge helpers.
+- `FenBrowser.FenEngine/Workers/WorkerRuntime.cs`
+  - Removed `Thread.Sleep(10)` hot loop usage in worker runtime.
+
+8. **Build resolver stabilization continuation (finding 25 residual)**
+- `Directory.Build.props` (new)
+  - Added restore/resolver guard properties for unstable machine state.
+- `FenBrowser.DevTools/FenBrowser.DevTools.csproj`
+- `FenBrowser.Tests/FenBrowser.Tests.csproj`
+  - Added static-graph restore disable hints for resolver stability in this environment.
+
+Validation snapshot:
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug -clp:ErrorsOnly` succeeded after tranche changes.
+- `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug` still fails on this machine in project-reference target framework resolution with no surfaced compiler diagnostics (machine/environment resolver state).
+- `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug` still fails with same machine-specific resolver pattern.
+
+Residual status after this tranche:
+- Findings 12/16/19/23/26/29 are materially advanced and now wired in primary runtime paths.
+- Finding 22 (full multi-process browser/renderer split) remains **architectural foundation only** in this tranche (interface/factory seam added; brokered runtime not yet implemented).
+- Finding 25 remains **environment-partial** (mitigations added; machine-specific resolver failure still reproducible for Host/Tests).
