@@ -11,13 +11,19 @@ namespace FenBrowser.FenEngine.Core
         private readonly FenEnvironment _globalEnv;
         private readonly IExecutionContext _context;
         private readonly Func<Uri, string> _contentFetcher; // Helper for sync fetching (blocking)
+        private readonly Func<Uri, bool> _uriPolicy;
         public bool ThrowOnEvaluationError { get; set; }
 
-        public ModuleLoader(FenEnvironment globalEnv, IExecutionContext context, Func<Uri, string> contentFetcher = null)
+        public ModuleLoader(
+            FenEnvironment globalEnv,
+            IExecutionContext context,
+            Func<Uri, string> contentFetcher = null,
+            Func<Uri, bool> uriPolicy = null)
         {
             _globalEnv = globalEnv;
             _context = context;
             _contentFetcher = contentFetcher ?? DefaultFileFetcher;
+            _uriPolicy = uriPolicy;
         }
 
         private static string DefaultFileFetcher(Uri uri)
@@ -144,6 +150,10 @@ namespace FenBrowser.FenEngine.Core
             {
                 if (Uri.TryCreate(path, UriKind.Absolute, out var uri))
                 {
+                    if (_uriPolicy != null && !_uriPolicy(uri))
+                    {
+                        throw new UnauthorizedAccessException($"Module load blocked by policy: {uri}");
+                    }
                     code = _contentFetcher(uri);
                 }
                 else

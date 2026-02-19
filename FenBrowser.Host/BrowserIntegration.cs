@@ -338,35 +338,61 @@ public class BrowserIntegration
     }
     
     /// <summary>
-    /// Navigate to the given URL.
+    /// Navigate from trusted user input (address bar/search box).
     /// </summary>
-    public async Task NavigateAsync(string url)
+    public Task NavigateAsync(string url) => NavigateInternalAsync(url, isUserInput: true);
+
+    /// <summary>
+    /// Navigate from programmatic sources (WebDriver/script/callback paths).
+    /// </summary>
+    public Task NavigateProgrammaticAsync(string url) => NavigateInternalAsync(url, isUserInput: false);
+
+    private async Task NavigateInternalAsync(string url, bool isUserInput)
     {
         if (string.IsNullOrWhiteSpace(url)) return;
-        
+
         // Reset navigation timing for unstyled layout skip
         _lastNavigationTime = DateTime.Now;
         _hasFirstStyledRender = false;
-        
+
         // Add protocol if missing
-        if (!url.StartsWith("http://") && !url.StartsWith("https://") && 
-            !url.StartsWith("file://") && !url.StartsWith("data:") && 
-            !url.StartsWith("fen://") && !url.StartsWith("view-source:"))
+        if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+            !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase) &&
+            !url.StartsWith("file://", StringComparison.OrdinalIgnoreCase) &&
+            !url.StartsWith("data:", StringComparison.OrdinalIgnoreCase) &&
+            !url.StartsWith("fen://", StringComparison.OrdinalIgnoreCase) &&
+            !url.StartsWith("view-source:", StringComparison.OrdinalIgnoreCase))
         {
             // Check for local file path (e.g. C:\... or /...)
-            bool isLocalPath = (url.Length >= 2 && url[1] == ':') || url.StartsWith("/") || url.StartsWith("\\") || url.StartsWith("./") || url.StartsWith("../");
-            
+            bool isLocalPath = (url.Length >= 2 && url[1] == ':') ||
+                               url.StartsWith("/") ||
+                               url.StartsWith("\\") ||
+                               url.StartsWith("./") ||
+                               url.StartsWith("../");
+
             if (isLocalPath)
             {
-                try
+                if (isUserInput)
                 {
-                    string fullPath = System.IO.Path.GetFullPath(url);
-                    url = "file://" + fullPath.Replace("\\", "/");
+                    try
+                    {
+                        string fullPath = System.IO.Path.GetFullPath(url);
+                        url = "file://" + fullPath.Replace("\\", "/");
+                    }
+                    catch
+                    {
+                        url = "file://" + url.Replace("\\", "/");
+                    }
                 }
-                catch { url = "file://" + url.Replace("\\", "/"); }
+                else
+                {
+                    FenLogger.Warn("[BrowserIntegration] Programmatic local-path normalization blocked; delegating to navigation policy.", LogCategory.Navigation);
+                }
             }
             // Default to http for localhost/127.0.0.1 to facilitate debugging
-            else if (url.StartsWith("localhost") || url.StartsWith("127.0.0.1") || url.StartsWith("[::1]"))
+            else if (url.StartsWith("localhost", StringComparison.OrdinalIgnoreCase) ||
+                     url.StartsWith("127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
+                     url.StartsWith("[::1]", StringComparison.OrdinalIgnoreCase))
             {
                 url = "http://" + url;
             }
@@ -376,9 +402,8 @@ public class BrowserIntegration
             }
         }
 
-        
         FenLogger.Info($"[BrowserIntegration] Navigating to: {url}", LogCategory.General);
-        
+
         if (url.StartsWith("fen://", StringComparison.OrdinalIgnoreCase))
         {
             // fen://settings is handled by a special widget overlay, not the engine
@@ -389,17 +414,24 @@ public class BrowserIntegration
                 NeedsRepaint?.Invoke();
                 return;
             }
-            
+
             // fen://newtab and other fen:// URLs should be rendered by the engine
             _overrideUrl = null;
             // Fall through to navigate via the browser engine
         }
-        
+
         _overrideUrl = null;
-        
+
         try
         {
-            await _browser.NavigateAsync(url);
+            if (isUserInput)
+            {
+                await _browser.NavigateUserInputAsync(url);
+            }
+            else
+            {
+                await _browser.NavigateAsync(url);
+            }
         }
         catch (Exception ex)
         {
@@ -771,7 +803,7 @@ public class BrowserIntegration
             {
                 FenLogger.Info($"[BrowserIntegration] Link clicked: {href}", LogCategory.General);
                 LinkClicked?.Invoke(href);
-                _ = NavigateAsync(href);
+                _ = NavigateProgrammaticAsync(href);
                 return true;
             }
         }

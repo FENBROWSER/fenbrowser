@@ -244,4 +244,14 @@ To implement a new command (e.g., `GET /session/{id}/print`):
   - `ImplementedCommands=58`
   - `MissingCount=0`
 
+### 4.8 Remaining Findings Tranche - CSP Origin Tests (2026-02-19)
+
+- Added:
+  - `FenBrowser.Tests/Core/Network/CspPolicyTests.cs`
+- Coverage in new tests:
+  - `'self'` allow when explicit same-origin context is provided.
+  - `'self'` deny when origin context is missing.
+  - wildcard subdomain allow behavior.
+  - explicit port mismatch deny behavior.
+
 _End of Volume VI_

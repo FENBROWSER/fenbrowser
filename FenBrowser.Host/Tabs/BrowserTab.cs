@@ -105,6 +105,14 @@ public class BrowserTab
     {
         await Browser.NavigateAsync(url);
     }
+
+    /// <summary>
+    /// Navigate this tab programmatically (automation/script paths).
+    /// </summary>
+    public async Task NavigateProgrammaticAsync(string url)
+    {
+        await Browser.NavigateProgrammaticAsync(url);
+    }
     
     /// <summary>
     /// Render this tab's content.

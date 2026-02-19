@@ -919,7 +919,7 @@ namespace FenBrowser.FenEngine.Rendering
                              "object" => "object-src",
                              _ => "default-src"
                          };
-                         return ActivePolicy.IsAllowed(directive, u); 
+                        return ActivePolicy.IsAllowed(directive, u, baseUri);
                      }
                      return true;
                  },
@@ -932,7 +932,7 @@ namespace FenBrowser.FenEngine.Rendering
                  if (!allowJs) return false;
                  if (ActivePolicy != null)
                  {
-                     bool allowed = ActivePolicy.IsAllowed("script-src", null, nonce, isInline: true);
+                    bool allowed = ActivePolicy.IsAllowed("script-src", null, nonce, baseUri, isInline: true);
                      if (allowed && nonce == "wrong456") 
                      {
                           FenLogger.Error($"[CSP-CRITICAL] Nonce 'wrong456' ALLOWED! ActivePolicy hash={ActivePolicy.GetHashCode()}", LogCategory.Rendering);

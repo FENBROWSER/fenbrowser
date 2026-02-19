@@ -13,13 +13,29 @@ namespace FenBrowser.Core.Security
         /// </summary>
         public bool IsAllowed(string directiveName, Uri url, bool isInline = false, bool isEval = false)
         {
-            return IsAllowed(directiveName, url, null, isInline, isEval);
+            return IsAllowed(directiveName, url, nonce: null, origin: null, isInline: isInline, isEval: isEval);
+        }
+
+        /// <summary>
+        /// Check if a resource URL is allowed by the policy with an explicit origin context.
+        /// </summary>
+        public bool IsAllowed(string directiveName, Uri url, Uri origin, bool isInline = false, bool isEval = false)
+        {
+            return IsAllowed(directiveName, url, nonce: null, origin: origin, isInline: isInline, isEval: isEval);
         }
 
         /// <summary>
         /// Check if a resource is allowed, optionally validating a nonce.
         /// </summary>
         public bool IsAllowed(string directiveName, Uri url, string nonce, bool isInline = false, bool isEval = false)
+        {
+            return IsAllowed(directiveName, url, nonce, origin: null, isInline: isInline, isEval: isEval);
+        }
+
+        /// <summary>
+        /// Check if a resource is allowed with explicit nonce and origin context.
+        /// </summary>
+        public bool IsAllowed(string directiveName, Uri url, string nonce, Uri origin, bool isInline = false, bool isEval = false)
         {
             // If no policy, everything allowed
             if (Directives.Count == 0) return true;
@@ -45,7 +61,7 @@ namespace FenBrowser.Core.Security
 
             if (directive == null) return true; 
 
-            return directive.IsAllowed(url, nonce, isInline, isEval);
+            return directive.IsAllowed(url, nonce, isInline, isEval, origin);
         }
 
         public static CspPolicy Parse(string headerValue)

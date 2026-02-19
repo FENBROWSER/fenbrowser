@@ -4,6 +4,12 @@ using FenBrowser.Core;
 
 namespace FenBrowser.FenEngine.Rendering
 {
+    public enum NavigationRequestKind
+    {
+        UserInput,
+        Programmatic
+    }
+
     public class NavigationManager
     {
         private readonly ResourceManager _resourceManager;
@@ -13,7 +19,17 @@ namespace FenBrowser.FenEngine.Rendering
             _resourceManager = resourceManager;
         }
 
-        public async Task<FetchResult> NavigateAsync(string url)
+        public Task<FetchResult> NavigateUserInputAsync(string url)
+        {
+            return NavigateAsync(url, NavigationRequestKind.UserInput);
+        }
+
+        public Task<FetchResult> NavigateAsync(string url)
+        {
+            return NavigateAsync(url, NavigationRequestKind.Programmatic);
+        }
+
+        public async Task<FetchResult> NavigateAsync(string url, NavigationRequestKind requestKind)
         {
             // 1. Normalize URL
             if (string.IsNullOrWhiteSpace(url)) 
@@ -30,9 +46,11 @@ namespace FenBrowser.FenEngine.Rendering
                  return new FetchResult { Status = FetchStatus.Success, Content = NewTabRenderer.Render(), FinalUri = new Uri("fen://newtab"), ContentType = "text/html" };
             }
 
-            // Handle local file paths
-            // Fix: Only treat as file if it looks like a Windows path (drive letter or UNC)
-            if (System.IO.Path.IsPathRooted(url) && !url.StartsWith("http") && !url.StartsWith("file://"))
+            // Handle local file paths (only for trusted user input)
+            if (requestKind == NavigationRequestKind.UserInput &&
+                System.IO.Path.IsPathRooted(url) &&
+                !url.StartsWith("http", StringComparison.OrdinalIgnoreCase) &&
+                !url.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
             {
                 // Check if it has a colon (e.g. C:\) or starts with \\ (UNC)
                 if (url.IndexOf(':') >= 0 || url.StartsWith("\\\\"))
@@ -40,6 +58,16 @@ namespace FenBrowser.FenEngine.Rendering
                     url = "file:///" + url.Replace("\\", "/");
                     try { FenBrowser.Core.FenLogger.Debug($"[NavigationManager] Converted to file URI: {url}", FenBrowser.Core.Logging.LogCategory.Navigation); } catch {}
                 }
+            }
+            else if (requestKind == NavigationRequestKind.Programmatic &&
+                     System.IO.Path.IsPathRooted(url) &&
+                     !url.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
+            {
+                return new FetchResult
+                {
+                    Status = FetchStatus.UnknownError,
+                    ErrorDetail = "Programmatic rooted-path navigation is blocked by policy"
+                };
             }
 
             // Default to HTTPS if no scheme
@@ -55,6 +83,16 @@ namespace FenBrowser.FenEngine.Rendering
                  return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = "Invalid URL format" };
             }
 
+            if (string.Equals(uri.Scheme, "file", StringComparison.OrdinalIgnoreCase) &&
+                !IsFileNavigationAllowed(requestKind))
+            {
+                return new FetchResult
+                {
+                    Status = FetchStatus.UnknownError,
+                    ErrorDetail = "file:// navigation blocked by policy"
+                };
+            }
+
             // Handle images
             var path = uri.AbsolutePath.ToLowerInvariant();
             try { FenBrowser.Core.FenLogger.Debug($"[NavigationManager] Checking image: path='{path}' endsWithJpg={path.EndsWith(".jpg")}", FenBrowser.Core.Logging.LogCategory.Navigation); } catch {}
@@ -67,6 +105,44 @@ namespace FenBrowser.FenEngine.Rendering
 
             // 2. Fetch content
             return await _resourceManager.FetchTextDetailedAsync(uri);
+        }
+
+        private static bool IsFileNavigationAllowed(NavigationRequestKind requestKind)
+        {
+            var settings = BrowserSettings.Instance;
+            if (!settings.AllowFileSchemeNavigation)
+            {
+                return false;
+            }
+
+            if (requestKind != NavigationRequestKind.Programmatic)
+            {
+                return true;
+            }
+
+            var webdriverEnabled = string.Equals(
+                Environment.GetEnvironmentVariable("FEN_WEBDRIVER"),
+                "1",
+                StringComparison.Ordinal);
+            var automationMode = string.Equals(
+                Environment.GetEnvironmentVariable("FEN_AUTOMATION_MODE"),
+                "1",
+                StringComparison.Ordinal);
+
+            if (!webdriverEnabled && !automationMode)
+            {
+                return true;
+            }
+
+            if (settings.AllowAutomationFileNavigation)
+            {
+                return true;
+            }
+
+            return string.Equals(
+                Environment.GetEnvironmentVariable("FEN_ALLOW_AUTOMATION_FILE_NAVIGATION"),
+                "1",
+                StringComparison.Ordinal);
         }
     }
 }
