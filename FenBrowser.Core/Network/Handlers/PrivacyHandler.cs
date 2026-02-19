@@ -9,11 +9,20 @@ namespace FenBrowser.Core.Network.Handlers
         public async Task HandleAsync(NetworkContext context, Func<Task> next, CancellationToken ct)
         {
             var req = context.Request;
+            var settings = BrowserSettings.Instance;
 
             // 1. DNT Header
-            if (!req.Headers.Contains("DNT"))
+            if (settings.SendDoNotTrack)
             {
-                req.Headers.TryAddWithoutValidation("DNT", "1");
+                if (!req.Headers.Contains("DNT"))
+                {
+                    req.Headers.TryAddWithoutValidation("DNT", "1");
+                }
+            }
+            else
+            {
+                // Explicitly remove DNT when user opts out.
+                req.Headers.Remove("DNT");
             }
 
             // 2. Referer Trimming
@@ -32,7 +41,7 @@ namespace FenBrowser.Core.Network.Handlers
             }
 
             // 3. Third-Party Cookie Blocking
-            if (BrowserSettings.Instance.BlockThirdPartyCookies)
+            if (settings.BlockThirdPartyCookies)
             {
                 // Check if Sec-Fetch-Site suggests cross-site/cross-origin
                 // Note: The ResourceManager sets up Sec-Fetch-Site headers *after* this handler usually, in FetchTextWithOptionsAsync, 

@@ -87,6 +87,67 @@ namespace FenBrowser.WebDriver.Commands
             
             return WebDriverResponse.Success(refs);
         }
+
+        public async Task<WebDriverResponse> FindElementFromElementAsync(string sessionId, string parentElementId, JsonElement? body)
+        {
+            var session = _handler.GetSession(sessionId);
+            var parent = session.GetElement(parentElementId);
+            var (strategy, selector) = ParseLocator(body);
+
+            if (_handler.Browser == null)
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchElement, "No element found");
+            }
+
+            var element = await _handler.Browser.FindElementAsync(strategy, selector, parent);
+            if (element == null)
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchElement, $"No element found using {strategy}: {selector}");
+            }
+
+            var elementId = session.RegisterElement(element);
+            return WebDriverResponse.Success(new ElementReference(elementId));
+        }
+
+        public async Task<WebDriverResponse> FindElementsFromElementAsync(string sessionId, string parentElementId, JsonElement? body)
+        {
+            var session = _handler.GetSession(sessionId);
+            var parent = session.GetElement(parentElementId);
+            var (strategy, selector) = ParseLocator(body);
+
+            if (_handler.Browser == null)
+            {
+                return WebDriverResponse.Success(Array.Empty<ElementReference>());
+            }
+
+            var elements = await _handler.Browser.FindElementsAsync(strategy, selector, parent);
+            var refs = new List<ElementReference>();
+            foreach (var element in elements ?? Array.Empty<object>())
+            {
+                var elementId = session.RegisterElement(element);
+                refs.Add(new ElementReference(elementId));
+            }
+
+            return WebDriverResponse.Success(refs);
+        }
+
+        public async Task<WebDriverResponse> GetActiveElementAsync(string sessionId)
+        {
+            var session = _handler.GetSession(sessionId);
+            if (_handler.Browser == null)
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchElement, "Browser not connected");
+            }
+
+            var element = await _handler.Browser.GetActiveElementAsync();
+            if (element == null)
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchElement, "No active element");
+            }
+
+            var elementId = session.RegisterElement(element);
+            return WebDriverResponse.Success(new ElementReference(elementId));
+        }
         
         /// <summary>
         /// Get element text.
@@ -170,6 +231,116 @@ namespace FenBrowser.WebDriver.Commands
             
             var value = await _handler.Browser.GetElementAttributeAsync(element, name);
             return WebDriverResponse.Success(value);
+        }
+
+        public async Task<WebDriverResponse> IsSelectedAsync(string sessionId, string elementId)
+        {
+            var session = _handler.GetSession(sessionId);
+            var element = session.GetElement(elementId);
+            if (_handler.Browser == null) return WebDriverResponse.Success(false);
+            var selected = await _handler.Browser.IsElementSelectedAsync(element);
+            return WebDriverResponse.Success(selected);
+        }
+
+        public async Task<WebDriverResponse> GetPropertyAsync(string sessionId, string elementId, string name)
+        {
+            var session = _handler.GetSession(sessionId);
+            var element = session.GetElement(elementId);
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "Property name is required");
+            }
+            if (_handler.Browser == null) return WebDriverResponse.Success(null);
+            var value = await _handler.Browser.GetElementPropertyAsync(element, name);
+            return WebDriverResponse.Success(value);
+        }
+
+        public async Task<WebDriverResponse> GetCssValueAsync(string sessionId, string elementId, string propertyName)
+        {
+            var session = _handler.GetSession(sessionId);
+            var element = session.GetElement(elementId);
+            if (string.IsNullOrWhiteSpace(propertyName))
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "CSS property name is required");
+            }
+            if (_handler.Browser == null) return WebDriverResponse.Success(string.Empty);
+            var value = await _handler.Browser.GetElementCssValueAsync(element, propertyName);
+            return WebDriverResponse.Success(value ?? string.Empty);
+        }
+
+        public async Task<WebDriverResponse> GetTagNameAsync(string sessionId, string elementId)
+        {
+            var session = _handler.GetSession(sessionId);
+            var element = session.GetElement(elementId);
+            if (_handler.Browser == null) return WebDriverResponse.Success(string.Empty);
+            var tag = await _handler.Browser.GetElementTagNameAsync(element);
+            return WebDriverResponse.Success(tag ?? string.Empty);
+        }
+
+        public async Task<WebDriverResponse> GetRectAsync(string sessionId, string elementId)
+        {
+            var session = _handler.GetSession(sessionId);
+            var element = session.GetElement(elementId);
+            if (_handler.Browser == null)
+            {
+                return WebDriverResponse.Success(new WdElementRect());
+            }
+
+            var rect = await _handler.Browser.GetElementRectAsync(element);
+            return WebDriverResponse.Success(rect ?? new WdElementRect());
+        }
+
+        public async Task<WebDriverResponse> IsEnabledAsync(string sessionId, string elementId)
+        {
+            var session = _handler.GetSession(sessionId);
+            var element = session.GetElement(elementId);
+            if (_handler.Browser == null) return WebDriverResponse.Success(false);
+            var enabled = await _handler.Browser.IsElementEnabledAsync(element);
+            return WebDriverResponse.Success(enabled);
+        }
+
+        public async Task<WebDriverResponse> GetComputedRoleAsync(string sessionId, string elementId)
+        {
+            var session = _handler.GetSession(sessionId);
+            var element = session.GetElement(elementId);
+            if (_handler.Browser == null) return WebDriverResponse.Success(string.Empty);
+            var role = await _handler.Browser.GetElementComputedRoleAsync(element);
+            return WebDriverResponse.Success(role ?? string.Empty);
+        }
+
+        public async Task<WebDriverResponse> GetComputedLabelAsync(string sessionId, string elementId)
+        {
+            var session = _handler.GetSession(sessionId);
+            var element = session.GetElement(elementId);
+            if (_handler.Browser == null) return WebDriverResponse.Success(string.Empty);
+            var label = await _handler.Browser.GetElementComputedLabelAsync(element);
+            return WebDriverResponse.Success(label ?? string.Empty);
+        }
+
+        public async Task<WebDriverResponse> ClearAsync(string sessionId, string elementId)
+        {
+            var session = _handler.GetSession(sessionId);
+            var element = session.GetElement(elementId);
+            if (_handler.Browser == null)
+            {
+                throw new WebDriverException(ErrorCodes.ElementNotInteractable, "Browser not connected");
+            }
+
+            await _handler.Browser.ClearElementAsync(element);
+            return WebDriverResponse.Success(null);
+        }
+
+        public async Task<WebDriverResponse> TakeElementScreenshotAsync(string sessionId, string elementId)
+        {
+            var session = _handler.GetSession(sessionId);
+            var element = session.GetElement(elementId);
+            if (_handler.Browser == null)
+            {
+                throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
+            }
+
+            var base64 = await _handler.Browser.TakeElementScreenshotAsync(element);
+            return WebDriverResponse.Success(base64 ?? string.Empty);
         }
         
         private (string strategy, string selector) ParseLocator(JsonElement? body)

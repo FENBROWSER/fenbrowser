@@ -948,7 +948,8 @@ pre {{
             {
                 _engine.ClearAllCookies();
                 _resources.ClearCache();
-                Console.WriteLine("[BrowserHost] Browsing data cleared (Cookies + Cache)");
+                FenBrowser.FenEngine.WebAPIs.StorageApi.ClearAllStorage(deletePersistentFile: true);
+                Console.WriteLine("[BrowserHost] Browsing data cleared (Cookies + Cache + Storage)");
             }
             catch (Exception ex)
             {

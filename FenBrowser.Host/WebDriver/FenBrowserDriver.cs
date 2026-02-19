@@ -7,269 +7,367 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
-using FenBrowser.Core.Dom.V2;
+using FenBrowser.FenEngine.Rendering;
 using FenBrowser.WebDriver.Commands;
 using FenBrowser.WebDriver.Protocol;
 
 namespace FenBrowser.Host.WebDriver
 {
     /// <summary>
-    /// Bridges the WebDriver server and the FenBrowser host.
+    /// Bridges the WebDriver server and BrowserIntegration.
     /// </summary>
     public class FenBrowserDriver : IBrowserDriver
     {
         private readonly BrowserIntegration _integration;
-        
+
         public FenBrowserDriver(BrowserIntegration integration)
         {
             _integration = integration;
         }
-        
+
+        private BrowserHost Host => _integration?.Host;
+
         public async Task NavigateAsync(string url)
         {
             await _integration.NavigateAsync(url);
         }
-        
-        public Task<string> GetCurrentUrlAsync()
-        {
-            return Task.FromResult(_integration.CurrentUrl);
-        }
-        
-        public Task<string> GetTitleAsync()
-        {
-            // Title is usually managed via events, but we can try to extract it from DOM if needed
-            // For now, BrowserIntegration doesn't expose a Title property directly, 
-            // but we can crawl the DOM for <title>
-            var titleNode = FindTitleInDom(_integration.Document);
-            return Task.FromResult(titleNode ?? "FenBrowser");
-        }
-        
-        private string FindTitleInDom(Element root)
-        {
-            if (root == null) return null;
-            
-            // Look for <title> in <head>
-            var head = root.ChildNodes.OfType<Element>().FirstOrDefault(c => c.TagName?.Equals("head", StringComparison.OrdinalIgnoreCase) == true);
-            if (head != null)
-            {
-                var title = head.ChildNodes.OfType<Element>().FirstOrDefault(c => c.TagName?.Equals("title", StringComparison.OrdinalIgnoreCase) == true);
-                if (title != null)
-                {
-                    return title.ChildNodes.OfType<Text>().FirstOrDefault()?.Data;
-                }
-            }
-            
-            return null;
-        }
-        
-        public async Task GoBackAsync()
-        {
-            await _integration.GoBackAsync();
-        }
-        
-        public async Task GoForwardAsync()
-        {
-            await _integration.GoForwardAsync();
-        }
-        
-        public async Task RefreshAsync()
-        {
-            await _integration.RefreshAsync();
-        }
-        
-        public Task<object> FindElementAsync(string strategy, string selector)
-        {
-            var element = SearchDomByCss(_integration.Document, strategy, selector);
-            return Task.FromResult<object>(element);
-        }
-        
-        public Task<object[]> FindElementsAsync(string strategy, string selector)
-        {
-            var elements = SearchMultipleDomByCss(_integration.Document, strategy, selector);
-            return Task.FromResult(elements.Cast<object>().ToArray());
-        }
-        
-        private Element SearchDomByCss(Element root, string strategy, string selector)
-        {
-            if (root == null) return null;
-            
-            // Map strategy if needed (W3C maps everything to 'css selector' internally if using CSS)
-            if (strategy == "id") return FindElementById(root, selector);
-            if (strategy == "tag name") return FindElementByTag(root, selector);
-            if (strategy == "link text") return FindElementByLinkText(root, selector);
-            
-            // Descendant selector support (minimal)
-            if (selector.Contains(" "))
-            {
-                var parts = selector.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                Element current = root;
-                foreach (var part in parts)
-                {
-                    current = SearchDomByCss(current, "css selector", part);
-                    if (current == null) return null;
-                }
-                return current;
-            }
 
-            if (selector.StartsWith("#"))
-            {
-                return FindElementById(root, selector.Substring(1));
-            }
-            else if (selector.StartsWith("."))
-            {
-                return FindElementByClass(root, selector.Substring(1));
-            }
-            else
-            {
-                return FindElementByTag(root, selector);
-            }
-        }
-        
-        private List<Element> SearchMultipleDomByCss(Element root, string strategy, string selector)
+        public Task<string> GetCurrentUrlAsync() => Task.FromResult(_integration.CurrentUrl);
+        public Task<string> GetTitleAsync() => Host?.GetTitleAsync() ?? Task.FromResult("FenBrowser");
+        public Task GoBackAsync() => _integration.GoBackAsync();
+        public Task GoForwardAsync() => _integration.GoForwardAsync();
+        public Task RefreshAsync() => _integration.RefreshAsync();
+
+        public async Task<object> FindElementAsync(string strategy, string selector, object parentElement = null)
         {
-            var results = new List<Element>();
-            if (root == null) return results;
-            
-            // Simple Tag selector for multiple
-            CollectElementsByTag(root, selector, results);
-            return results;
+            if (Host == null) return null;
+            var parentId = parentElement as string;
+            var id = await Host.FindElementAsync(strategy, selector, parentId);
+            return id;
         }
 
-        private Element FindElementByLinkText(Element root, string text)
+        public async Task<object[]> FindElementsAsync(string strategy, string selector, object parentElement = null)
         {
-            if (root.TagName?.Equals("a", StringComparison.OrdinalIgnoreCase) == true)
-            {
-                var elText = string.Join("", root.ChildNodes.OfType<Text>().Select(t => t.Data));
-                if (elText.Trim() == text) return root;
-            }
-                
-            foreach (var child in root.ChildNodes.OfType<Element>())
-            {
-                var found = FindElementByLinkText(child, text);
-                if (found != null) return found;
-            }
-            return null;
+            if (Host == null) return Array.Empty<object>();
+            var parentId = parentElement as string;
+            var ids = await Host.FindElementsAsync(strategy, selector, parentId);
+            return ids.Select(id => (object)id).ToArray();
         }
-        
-        private Element FindElementById(Element root, string id)
+
+        public async Task<object> GetActiveElementAsync()
         {
-            if (root.Id == id)
-                return root;
-                
-            foreach (var child in root.ChildNodes.OfType<Element>())
-            {
-                var found = FindElementById(child, id);
-                if (found != null) return found;
-            }
-            return null;
+            if (Host == null) return null;
+            return await Host.GetActiveElementAsync();
         }
-        
-        private Element FindElementByClass(Element root, string className)
+
+        public async Task<bool> IsElementSelectedAsync(object element)
         {
-            if (root.GetAttribute("class")?.Split(' ').Contains(className) == true)
-                return root;
-                
-            foreach (var child in root.ChildNodes.OfType<Element>())
-            {
-                var found = FindElementByClass(child, className);
-                if (found != null) return found;
-            }
-            return null;
+            if (Host == null || element is not string id) return false;
+            return await Host.IsElementSelectedAsync(id);
         }
-        
-        private Element FindElementByTag(Element root, string tag)
+
+        public async Task<object> GetElementPropertyAsync(object element, string name)
         {
-            if (root.TagName?.Equals(tag, StringComparison.OrdinalIgnoreCase) == true)
-                return root;
-                
-            foreach (var child in root.ChildNodes.OfType<Element>())
-            {
-                var found = FindElementByTag(child, tag);
-                if (found != null) return found;
-            }
-            return null;
+            if (Host == null || element is not string id) return null;
+            return await Host.GetElementPropertyAsync(id, name);
         }
-        
-        private void CollectElementsByTag(Element root, string tag, List<Element> results)
+
+        public async Task<string> GetElementCssValueAsync(object element, string propertyName)
         {
-            if (root.TagName?.Equals(tag, StringComparison.OrdinalIgnoreCase) == true)
-                results.Add(root);
-                
-            foreach (var child in root.ChildNodes.OfType<Element>())
-            {
-                CollectElementsByTag(child, tag, results);
-            }
+            if (Host == null || element is not string id) return "";
+            return await Host.GetElementCssValueAsync(id, propertyName);
         }
-        
-        public Task<string> GetElementTextAsync(object element)
+
+        public async Task<string> GetElementTextAsync(object element)
         {
-            if (element is Element el)
-            {
-                return Task.FromResult(_integration.EvaluateScript($"document.getElementById('{el.Id}')?.innerText")?.ToString() ?? "");
-            }
-            return Task.FromResult("");
+            if (Host == null || element is not string id) return "";
+            return await Host.GetElementTextAsync(id);
         }
-        
+
+        public async Task<string> GetElementTagNameAsync(object element)
+        {
+            if (Host == null || element is not string id) return "";
+            return await Host.GetElementTagNameAsync(id);
+        }
+
+        public async Task<WdElementRect> GetElementRectAsync(object element)
+        {
+            if (Host == null || element is not string id) return new WdElementRect();
+            var rect = await Host.GetElementRectAsync(id);
+            return new WdElementRect { X = rect.X, Y = rect.Y, Width = rect.Width, Height = rect.Height };
+        }
+
+        public async Task<bool> IsElementEnabledAsync(object element)
+        {
+            if (Host == null || element is not string id) return false;
+            return await Host.IsElementEnabledAsync(id);
+        }
+
+        public async Task<string> GetElementComputedRoleAsync(object element)
+        {
+            if (Host == null || element is not string id) return "";
+            return await Host.GetElementComputedRoleAsync(id);
+        }
+
+        public async Task<string> GetElementComputedLabelAsync(object element)
+        {
+            if (Host == null || element is not string id) return "";
+            return await Host.GetElementComputedLabelAsync(id);
+        }
+
         public async Task ClickElementAsync(object element)
         {
-            if (element is Element el)
-            {
-                var rect = _integration.GetElementRect(el);
-                if (rect.HasValue)
-                {
-                    float centerX = rect.Value.Left + (rect.Value.Width / 2);
-                    float centerY = rect.Value.Top + (rect.Value.Height / 2);
-                    await _integration.HandleClick(centerX, centerY);
-                }
-            }
+            if (Host == null || element is not string id) return;
+            await Host.ClickElementAsync(id);
         }
-        
+
+        public async Task ClearElementAsync(object element)
+        {
+            if (Host == null || element is not string id) return;
+            await Host.ClearElementAsync(id);
+        }
+
         public async Task SendKeysAsync(object element, string text)
         {
-            if (element is Element el)
-            {
-                _integration.FocusNode(el);
-                foreach (var c in text)
-                {
-                    await _integration.HandleKeyPress(c.ToString());
-                }
-            }
+            if (Host == null || element is not string id) return;
+            await Host.SendKeysToElementAsync(id, text ?? string.Empty);
         }
-        
-        public Task<string> GetElementAttributeAsync(object element, string name)
+
+        public async Task<string> GetElementAttributeAsync(object element, string name)
         {
-            if (element is Element el)
-            {
-                return Task.FromResult(el.GetAttribute(name));
-            }
-            return Task.FromResult<string>(null);
+            if (Host == null || element is not string id) return "";
+            return await Host.GetElementAttributeAsync(id, name);
         }
-        
+
+        public Task<string> GetPageSourceAsync()
+        {
+            if (Host == null) return Task.FromResult("<html></html>");
+            return Host.GetPageSourceAsync();
+        }
+
         public Task<object> ExecuteScriptAsync(string script, object[] args)
         {
-            var result = _integration.EvaluateScript(script);
-            return Task.FromResult(result);
+            if (Host == null) return Task.FromResult<object>(null);
+            return Host.ExecuteScriptAsync(script, args);
         }
-        
+
         public Task<object> ExecuteAsyncScriptAsync(string script, object[] args, int timeout)
         {
-            // Fallback to sync for now
-            return ExecuteScriptAsync(script, args);
+            if (Host == null) return Task.FromResult<object>(null);
+            return Host.ExecuteAsyncScriptAsync(script, args, timeout);
         }
-        
-        public async Task<string> TakeScreenshotAsync()
+
+        public Task<string> TakeScreenshotAsync()
         {
-            return await _integration.CaptureScreenshotAsync();
+            return _integration.CaptureScreenshotAsync();
         }
-        
+
+        public async Task<string> TakeElementScreenshotAsync(object element)
+        {
+            if (Host == null || element is not string id) return "";
+            return await Host.CaptureElementScreenshotAsync(id);
+        }
+
+        public async Task<string> PrintPageAsync(WdPrintOptions options)
+        {
+            if (Host == null) return "";
+            var page = options?.Page ?? new WdPrintPageOptions();
+            var landscape = string.Equals(options?.Orientation, "landscape", StringComparison.OrdinalIgnoreCase);
+            var scale = options?.Scale ?? 1.0;
+            return await Host.PrintToPdfAsync(page.Width, page.Height, landscape, scale);
+        }
+
         public (int x, int y, int width, int height) GetWindowRect()
         {
-            return (0, 0, 1024, 768); // Placeholder
+            if (Host == null) return (0, 0, 1024, 768);
+            var rect = Host.GetWindowRect();
+            return (rect.X, rect.Y, rect.Width, rect.Height);
         }
-        
+
         public void SetWindowRect(int? x, int? y, int? width, int? height)
         {
-            // Logic to resize window
+            Host?.SetWindowRect(x, y, width, height);
+        }
+
+        public (int x, int y, int width, int height) MaximizeWindow()
+        {
+            if (Host == null) return (0, 0, 1024, 768);
+            var rect = Host.MaximizeWindow();
+            return (rect.X, rect.Y, rect.Width, rect.Height);
+        }
+
+        public (int x, int y, int width, int height) MinimizeWindow()
+        {
+            if (Host == null) return (0, 0, 1024, 768);
+            var rect = Host.MinimizeWindow();
+            return (rect.X, rect.Y, rect.Width, rect.Height);
+        }
+
+        public (int x, int y, int width, int height) FullscreenWindow()
+        {
+            if (Host == null) return (0, 0, 1024, 768);
+            var rect = Host.FullscreenWindow();
+            return (rect.X, rect.Y, rect.Width, rect.Height);
+        }
+
+        public async Task<string> NewWindowAsync(string typeHint)
+        {
+            if (Host != null)
+            {
+                await Host.CreateNewTabAsync();
+            }
+            return Guid.NewGuid().ToString("N");
+        }
+
+        public Task SwitchToWindowAsync(string windowHandle)
+        {
+            // Session-level handle state is managed in WebDriver session.
+            return Task.CompletedTask;
+        }
+
+        public Task SwitchToFrameAsync(object frameReference)
+        {
+            if (Host == null) return Task.CompletedTask;
+            return Host.SwitchToFrameAsync(frameReference);
+        }
+
+        public Task SwitchToParentFrameAsync()
+        {
+            if (Host == null) return Task.CompletedTask;
+            return Host.SwitchToParentFrameAsync();
+        }
+
+        public async Task<IReadOnlyList<WdCookie>> GetAllCookiesAsync()
+        {
+            if (Host == null) return Array.Empty<WdCookie>();
+            var cookies = await Host.GetAllCookiesAsync();
+            return cookies.Select(ToWdCookie).ToList();
+        }
+
+        public async Task<WdCookie> GetNamedCookieAsync(string name)
+        {
+            if (Host == null) return null;
+            var cookie = await Host.GetCookieAsync(name);
+            return cookie == null ? null : ToWdCookie(cookie);
+        }
+
+        public Task AddCookieAsync(WdCookie cookie)
+        {
+            if (Host == null) return Task.CompletedTask;
+            return Host.AddCookieAsync(ToEngineCookie(cookie));
+        }
+
+        public Task DeleteCookieAsync(string name)
+        {
+            if (Host == null) return Task.CompletedTask;
+            return Host.DeleteCookieAsync(name);
+        }
+
+        public Task DeleteAllCookiesAsync()
+        {
+            if (Host == null) return Task.CompletedTask;
+            return Host.DeleteAllCookiesAsync();
+        }
+
+        public Task PerformActionsAsync(IReadOnlyList<WdActionSequence> actions)
+        {
+            if (Host == null) return Task.CompletedTask;
+            var mapped = (actions ?? Array.Empty<WdActionSequence>()).Select(ToEngineActionChain).ToList();
+            return Host.PerformActionsAsync(mapped);
+        }
+
+        public Task ReleaseActionsAsync()
+        {
+            if (Host == null) return Task.CompletedTask;
+            return Host.ReleaseActionsAsync();
+        }
+
+        public Task<bool> HasAlertAsync()
+        {
+            if (Host == null) return Task.FromResult(false);
+            return Host.HasAlertAsync();
+        }
+
+        public Task DismissAlertAsync()
+        {
+            if (Host == null) return Task.CompletedTask;
+            return Host.DismissAlertAsync();
+        }
+
+        public Task AcceptAlertAsync()
+        {
+            if (Host == null) return Task.CompletedTask;
+            return Host.AcceptAlertAsync();
+        }
+
+        public Task<string> GetAlertTextAsync()
+        {
+            if (Host == null) return Task.FromResult(string.Empty);
+            return Host.GetAlertTextAsync();
+        }
+
+        public Task SendAlertTextAsync(string text)
+        {
+            if (Host == null) return Task.CompletedTask;
+            return Host.SendAlertTextAsync(text ?? string.Empty);
+        }
+
+        private static WdCookie ToWdCookie(FenBrowser.FenEngine.Rendering.WebDriverCookie cookie)
+        {
+            return new WdCookie
+            {
+                Name = cookie?.Name ?? string.Empty,
+                Value = cookie?.Value ?? string.Empty,
+                Path = cookie?.Path ?? "/",
+                Domain = cookie?.Domain ?? string.Empty,
+                Secure = cookie?.Secure ?? false,
+                HttpOnly = cookie?.HttpOnly ?? false,
+                Expiry = cookie?.Expiry,
+                SameSite = cookie?.SameSite ?? "Lax"
+            };
+        }
+
+        private static FenBrowser.FenEngine.Rendering.WebDriverCookie ToEngineCookie(WdCookie cookie)
+        {
+            return new FenBrowser.FenEngine.Rendering.WebDriverCookie
+            {
+                Name = cookie?.Name ?? string.Empty,
+                Value = cookie?.Value ?? string.Empty,
+                Path = cookie?.Path ?? "/",
+                Domain = cookie?.Domain ?? string.Empty,
+                Secure = cookie?.Secure ?? false,
+                HttpOnly = cookie?.HttpOnly ?? false,
+                Expiry = cookie?.Expiry,
+                SameSite = cookie?.SameSite ?? "Lax"
+            };
+        }
+
+        private static ActionChain ToEngineActionChain(WdActionSequence sequence)
+        {
+            var chain = new ActionChain
+            {
+                Type = sequence?.Type ?? string.Empty,
+                Id = sequence?.Id ?? string.Empty
+            };
+
+            if (sequence?.Actions != null)
+            {
+                foreach (var action in sequence.Actions)
+                {
+                    chain.Actions.Add(new InputAction
+                    {
+                        Type = action?.Type ?? string.Empty,
+                        Duration = action?.Duration ?? 0,
+                        X = action?.X ?? 0,
+                        Y = action?.Y ?? 0,
+                        Button = action?.Button ?? 0,
+                        Value = action?.Value ?? string.Empty,
+                        Origin = action?.Origin ?? string.Empty
+                    });
+                }
+            }
+
+            return chain;
         }
     }
 }

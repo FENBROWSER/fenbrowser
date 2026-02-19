@@ -1,6 +1,6 @@
 # FenBrowser Codex - Volume III: The Engine Room
 
-**State as of:** 2026-02-17
+**State as of:** 2026-02-18
 **Codex Version:** 1.0
 
 ## 1. Overview
@@ -568,3 +568,35 @@ So you want to add `border-radius`? Follow these steps:
     - `testRunner.notifyDone`
     - parsed harness-status console output
     - settled `testRunner.reportResult` output.
+
+### 6.15 Phase-5 Storage Wiring (2026-02-18)
+
+- `WebAPIs/StorageApi.cs`
+  - Added explicit storage-clear APIs:
+    - `ClearLocalStorage(bool deletePersistentFile = true)`
+    - `ClearAllStorage(bool deletePersistentFile = true)`
+  - `CreateSessionStorage(...)` now partitions storage by runtime instance and origin key to avoid cross-instance bleed.
+
+- `Core/FenRuntime.cs`
+  - `sessionStorage` binding now passes current origin provider into `StorageApi.CreateSessionStorage(...)`.
+
+- `Rendering/BrowserApi.cs`
+  - `ClearBrowsingData()` now clears storage alongside cookies and cache (`Cookies + Cache + Storage`).
+
+### 6.16 Phase-5 Storage/Policy Wiring - Tranche B (2026-02-18)
+
+- `WebAPIs/StorageApi.cs`
+  - Added direct coordinator APIs used by non-DOM callers:
+    - local/session `Get*`, `Set*`, `Remove*`, `Clear*`, `GetAll*`
+    - `BuildSessionScope(partitionId, origin)` for deterministic session partitioning.
+
+- `DevTools/DevToolsCore.cs`
+  - DevTools storage API (`Get/Set/Clear` local/session) now routes through `StorageApi` rather than separate private dictionaries.
+
+- `Scripting/JavaScriptEngine.cs`
+  - Legacy local/session storage access paths now route through `StorageApi` with origin + session-scope keys.
+  - Added popup policy enforcement for `window.open(...)` in the script-eval bridge path.
+
+- `Core/FenRuntime.cs`
+  - `navigator.doNotTrack` now reflects `BrowserSettings.SendDoNotTrack`.
+  - Added `window.open` policy gate bound to `BrowserSettings.BlockPopups` with same-window fallback behavior.

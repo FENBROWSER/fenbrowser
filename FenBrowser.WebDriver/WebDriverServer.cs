@@ -11,6 +11,7 @@
 
 using System;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -66,6 +67,7 @@ namespace FenBrowser.WebDriver
         public void Start()
         {
             ThrowIfDisposed();
+            ValidateCommandCoverage();
             
             _listener.Start();
             Log($"WebDriver server started on port {_port}");
@@ -214,6 +216,37 @@ namespace FenBrowser.WebDriver
         private void Log(string message)
         {
             OnLog?.Invoke($"[WebDriver] {message}");
+        }
+
+        private void ValidateCommandCoverage()
+        {
+            var registered = _router.GetRegisteredCommands()
+                .OrderBy(x => x, StringComparer.Ordinal)
+                .ToArray();
+            var implemented = CommandHandler.GetImplementedCommands()
+                .OrderBy(x => x, StringComparer.Ordinal)
+                .ToArray();
+
+            var missing = registered.Except(implemented, StringComparer.Ordinal).ToArray();
+            var extra = implemented.Except(registered, StringComparer.Ordinal).ToArray();
+
+            Log($"Command coverage: routes={_router.GetRegisteredRouteCount()}, uniqueCommands={registered.Length}, implemented={implemented.Length}, missing={missing.Length}, extra={extra.Length}");
+            if (missing.Length > 0)
+            {
+                Log($"Missing command handlers: {string.Join(", ", missing)}");
+            }
+            if (extra.Length > 0)
+            {
+                Log($"Implemented-but-unrouted commands: {string.Join(", ", extra)}");
+            }
+
+            var strictRaw = Environment.GetEnvironmentVariable("FEN_WEBDRIVER_STRICT_COMMAND_COVERAGE");
+            var strict = string.Equals(strictRaw, "1", StringComparison.Ordinal) ||
+                         string.Equals(strictRaw, "true", StringComparison.OrdinalIgnoreCase);
+            if (strict && (missing.Length > 0 || extra.Length > 0))
+            {
+                throw new InvalidOperationException("WebDriver command coverage strict mode failed. Set FEN_WEBDRIVER_STRICT_COMMAND_COVERAGE=0 to allow partial coverage.");
+            }
         }
         
         private void ThrowIfDisposed()

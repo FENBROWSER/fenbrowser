@@ -21,6 +21,7 @@ using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
 using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType; // Added for IExecutionContext
 using FenBrowser.FenEngine.Security;
+using FenBrowser.FenEngine.WebAPIs;
 using SkiaSharp;
 using FenBrowser.FenEngine.DOM;
 
@@ -1045,6 +1046,7 @@ namespace FenBrowser.FenEngine.Scripting
         private readonly Dictionary<string, Dictionary<string, string>> _sessionStorageMap =
             new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
         private readonly object _storageLock = new object();
+        private readonly string _sessionStoragePartitionId = Guid.NewGuid().ToString("N");
         
 
         // loader/event firing
@@ -1574,30 +1576,29 @@ namespace FenBrowser.FenEngine.Scripting
             var mLSset = Regex.Match(line, @"^\s*localStorage\s*\.setItem\s*\(\s*['""](?<k>.+?)['""]\s*,\s*['""](?<v>.*?)['""]\s*\)\s*;?$", RegexOptions.IgnoreCase);
             if (mLSset.Success)
             {
-                var bag = GetLocalStorageFor(ctx?.BaseUri ?? _ctx?.BaseUri);
-                lock (_storageLock) bag[mLSset.Groups["k"].Value] = mLSset.Groups["v"].Value;
+                var originKey = OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri);
+                StorageApi.SetLocalStorageItem(originKey, mLSset.Groups["k"].Value, mLSset.Groups["v"].Value);
                 return true;
             }
             var mLSgetCb = Regex.Match(line, @"^\s*localStorage\s*\.getItem\s*\(\s*['""](?<k>.+?)['""]\s*,\s*(?<fn>[A-Za-z_$][A-ZaZ0-9_$]*)\s*\)\s*;?$", RegexOptions.IgnoreCase);
             if (mLSgetCb.Success)
             {
-                var bag = GetLocalStorageFor(ctx?.BaseUri ?? _ctx?.BaseUri);
-                string val = null; lock (_storageLock) bag.TryGetValue(mLSgetCb.Groups["k"].Value, out val);
+                var originKey = OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri);
+                var val = StorageApi.GetLocalStorageItem(originKey, mLSgetCb.Groups["k"].Value);
                 var esc = JsEscape(val ?? "", '\''); EnqueueMicrotask(() => { try { RunInline(mLSgetCb.Groups["fn"].Value + "('" + esc + "')", _ctx); } catch { } });
                 return true;
             }
             var mLSrem = Regex.Match(line, @"^\s*localStorage\s*\.removeItem\s*\(\s*['""](?<k>.+?)['""]\s*\)\s*;?$", RegexOptions.IgnoreCase);
             if (mLSrem.Success)
             {
-                var bag = GetLocalStorageFor(ctx?.BaseUri ?? _ctx?.BaseUri);
-                lock (_storageLock) bag.Remove(mLSrem.Groups["k"].Value);
+                var originKey = OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri);
+                StorageApi.RemoveLocalStorageItem(originKey, mLSrem.Groups["k"].Value);
                 return true;
             }
             if (Regex.IsMatch(line, @"^\s*localStorage\s*\.clear\s*\(\s*\)\s*;?$", RegexOptions.IgnoreCase))
             {
-                var bag = GetLocalStorageFor(ctx?.BaseUri ?? _ctx?.BaseUri);
-                lock (_storageLock) bag.Clear();
-                try { var _ = SaveLocalStorageAsync(); } catch { }
+                var originKey = OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri);
+                StorageApi.ClearLocalStorage(originKey);
                 return true;
             }
 
@@ -1605,29 +1606,33 @@ namespace FenBrowser.FenEngine.Scripting
             var mSSset = Regex.Match(line, @"^\s*sessionStorage\s*\.setItem\s*\(\s*['\""](?<k>.+?)['\""]\s*,\s*['\""](?<v>.*?)['\""]\s*\)\s*;?$", RegexOptions.IgnoreCase);
             if (mSSset.Success)
             {
-                var bagSS = GetSessionStorageFor(ctx?.BaseUri ?? _ctx?.BaseUri);
-                lock (_storageLock) bagSS[mSSset.Groups["k"].Value] = mSSset.Groups["v"].Value;
+                var originKey = OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri);
+                var sessionScope = StorageApi.BuildSessionScope(_sessionStoragePartitionId, originKey);
+                StorageApi.SetSessionStorageItem(sessionScope, mSSset.Groups["k"].Value, mSSset.Groups["v"].Value);
                 return true;
             }
             var mSSget = Regex.Match(line, @"^\s*sessionStorage\s*\.getItem\s*\(\s*['\""](?<k>.+?)['\""]\s*,\s*(?<fn>[A-ZaZ_$][A-ZaZ0-9_$]*)\s*\)\s*;?$", RegexOptions.IgnoreCase);
             if (mSSget.Success)
             {
-                var bagSS = GetSessionStorageFor(ctx?.BaseUri ?? _ctx?.BaseUri);
-                string vSS = null; lock (_storageLock) bagSS.TryGetValue(mSSget.Groups["k"].Value, out vSS);
+                var originKey = OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri);
+                var sessionScope = StorageApi.BuildSessionScope(_sessionStoragePartitionId, originKey);
+                var vSS = StorageApi.GetSessionStorageItem(sessionScope, mSSget.Groups["k"].Value);
                 var escSS = JsEscape(vSS ?? "", '\''); EnqueueMicrotask(() => { try { RunInline(mSSget.Groups["fn"].Value + "('" + escSS + "')", _ctx); } catch { } });
                 return true;
             }
             var mSSrem = Regex.Match(line, @"^\s*sessionStorage\s*\.removeItem\s*\(\s*['\""](?<k>.+?)['\""]\s*\)\s*;?$", RegexOptions.IgnoreCase);
             if (mSSrem.Success)
             {
-                var bagSS = GetSessionStorageFor(ctx?.BaseUri ?? _ctx?.BaseUri);
-                lock (_storageLock) bagSS.Remove(mSSrem.Groups["k"].Value);
+                var originKey = OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri);
+                var sessionScope = StorageApi.BuildSessionScope(_sessionStoragePartitionId, originKey);
+                StorageApi.RemoveSessionStorageItem(sessionScope, mSSrem.Groups["k"].Value);
                 return true;
             }
             if (Regex.IsMatch(line, @"^\s*sessionStorage\s*\.clear\s*\(\s*\)\s*;?$", RegexOptions.IgnoreCase))
             {
-                var bagSS = GetSessionStorageFor(ctx?.BaseUri ?? _ctx?.BaseUri);
-                lock (_storageLock) bagSS.Clear();
+                var originKey = OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri);
+                var sessionScope = StorageApi.BuildSessionScope(_sessionStoragePartitionId, originKey);
+                StorageApi.ClearSessionStorage(sessionScope);
                 return true;
             }
 
@@ -1865,6 +1870,23 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             }
 
             // ---------- location.assign / replace / href= ----------
+            var mWindowOpen = System.Text.RegularExpressions.Regex.Match(
+                line,
+                @"^\s*(?:window\s*\.\s*)?open\s*\(\s*['""](?<u>.+?)['""](?:\s*,.*)?\)\s*;?$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (mWindowOpen.Success)
+            {
+                if (BrowserSettings.Instance.BlockPopups)
+                {
+                    try { _host.SetStatus("popup blocked by policy"); } catch { }
+                    return true;
+                }
+
+                var u = Resolve(ctx?.BaseUri ?? _ctx?.BaseUri, mWindowOpen.Groups["u"].Value);
+                if (u != null) { try { _host.Navigate(u); } catch { } }
+                return true;
+            }
+
             var mAssign = System.Text.RegularExpressions.Regex.Match(line, @"^\s*location\s*\.\s*assign\s*\(\s*['""](?<u>.+?)['""]\s*\)\s*;?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             if (mAssign.Success)
             {
@@ -1977,10 +1999,45 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             catch { }
         }
 
-    public void LocalStorageSet(string key, string value, JsContext ctx) { try { if (!SandboxAllows(SandboxFeature.Storage, "localStorage.setItem")) return; var bag = GetLocalStorageFor(ctx?.BaseUri ?? _ctx?.BaseUri); lock(_storageLock) bag[key] = value ?? ""; PersistLocalStorage(); } catch { } }
-    public string LocalStorageGet(string key, JsContext ctx) { try { if (!SandboxAllows(SandboxFeature.Storage, "localStorage.getItem")) return null; var bag = GetLocalStorageFor(ctx?.BaseUri ?? _ctx?.BaseUri); string v=null; lock(_storageLock) bag.TryGetValue(key, out v); return v; } catch { return null; } }
-    public void LocalStorageRemove(string key, JsContext ctx) { try { if (!SandboxAllows(SandboxFeature.Storage, "localStorage.removeItem")) return; var bag = GetLocalStorageFor(ctx?.BaseUri ?? _ctx?.BaseUri); lock(_storageLock) bag.Remove(key); PersistLocalStorage(); } catch { } }
-    public void LocalStorageClear(JsContext ctx) { try { if (!SandboxAllows(SandboxFeature.Storage, "localStorage.clear")) return; var bag = GetLocalStorageFor(ctx?.BaseUri ?? _ctx?.BaseUri); lock(_storageLock) bag.Clear(); PersistLocalStorage(); } catch { } }
+    public void LocalStorageSet(string key, string value, JsContext ctx)
+    {
+        try
+        {
+            if (!SandboxAllows(SandboxFeature.Storage, "localStorage.setItem")) return;
+            StorageApi.SetLocalStorageItem(OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri), key, value);
+        }
+        catch { }
+    }
+
+    public string LocalStorageGet(string key, JsContext ctx)
+    {
+        try
+        {
+            if (!SandboxAllows(SandboxFeature.Storage, "localStorage.getItem")) return null;
+            return StorageApi.GetLocalStorageItem(OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri), key);
+        }
+        catch { return null; }
+    }
+
+    public void LocalStorageRemove(string key, JsContext ctx)
+    {
+        try
+        {
+            if (!SandboxAllows(SandboxFeature.Storage, "localStorage.removeItem")) return;
+            StorageApi.RemoveLocalStorageItem(OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri), key);
+        }
+        catch { }
+    }
+
+    public void LocalStorageClear(JsContext ctx)
+    {
+        try
+        {
+            if (!SandboxAllows(SandboxFeature.Storage, "localStorage.clear")) return;
+            StorageApi.ClearLocalStorage(OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri));
+        }
+        catch { }
+    }
 
     public void Reset(JsContext ctx)
         {

@@ -797,3 +797,79 @@ Implemented now:
 Residual Phase-3 scope remains:
 - Full WPT harness completion should eventually use stronger engine-side structured result extraction rather than console/status heuristics.
 - Host build resolver issue still blocks full-repo validation on this machine.
+
+## 16) Phase-5 Execution Log (Started 2026-02-18, tranche A)
+
+Implemented now:
+
+1. **Settings policy wiring: DNT enforcement + startup diagnostics**
+- `FenBrowser.Core/Network/Handlers/PrivacyHandler.cs`
+  - DNT header now follows user setting (`SendDoNotTrack=true` => set `DNT: 1`; `false` => remove `DNT`).
+- `FenBrowser.Core/ResourceManager.cs`
+  - Added one-time startup diagnostics logging for policy bindings:
+    - runtime-enforced toggles reported explicitly
+    - UI toggles still pending runtime wiring reported as pending.
+
+2. **Storage clear-path wiring into browsing data flow**
+- `FenBrowser.FenEngine/WebAPIs/StorageApi.cs`
+  - Added `ClearLocalStorage(...)` and `ClearAllStorage(...)`.
+  - `sessionStorage` is now partitioned by runtime instance + origin keying path.
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Session storage creation now passes current origin provider to `StorageApi`.
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+  - `ClearBrowsingData()` now clears storage in addition to cookies and cache.
+
+3. **WebDriver route/handler parity diagnostics guard**
+- `FenBrowser.WebDriver/CommandRouter.cs`
+  - Added registered-command introspection and route-count exposure.
+- `FenBrowser.WebDriver/Commands/CommandHandler.cs`
+  - Added explicit implemented-command manifest.
+- `FenBrowser.WebDriver/WebDriverServer.cs`
+  - Startup now logs route/implementation coverage and missing command list.
+  - Added strict-mode fail gate via env flag:
+    - `FEN_WEBDRIVER_STRICT_COMMAND_COVERAGE=1`
+
+4. **WebDriver command-surface completion (tranche B)**
+- `FenBrowser.WebDriver/Commands/CommandHandler.cs`
+  - Added concrete handling for the previously missing command set (cookies/actions/alerts/print/window-context/element-state routes).
+  - Route command coverage now matches implementation coverage.
+- `FenBrowser.WebDriver/Commands/ElementCommands.cs`
+  - Added `FindElementFromElement`, `FindElementsFromElement`, active element/state/property/css/role/label/rect/clear/element screenshot handlers.
+- `FenBrowser.WebDriver/Commands/WindowCommands.cs`
+  - Added switch/new window + frame switching + maximize/minimize/fullscreen command handlers.
+- `FenBrowser.Host/WebDriver/FenBrowserDriver.cs`
+- `FenBrowser.Host/WebDriver/HostBrowserDriver.cs`
+  - Expanded host-side driver adapters to support the full Phase-5 WebDriver command surface.
+- Coverage verification from source:
+  - `RouteCommands=58`
+  - `ImplementedCommands=58`
+  - `MissingCount=0`
+
+5. **Storage coordinator consolidation (tranche B)**
+- `FenBrowser.FenEngine/WebAPIs/StorageApi.cs`
+  - Added direct storage-coordinator APIs for local/session get/set/remove/clear/all operations.
+  - Added deterministic session-scope key builder for partition + origin scoping.
+- `FenBrowser.FenEngine/DevTools/DevToolsCore.cs`
+  - DevTools local/session storage API now routes through `StorageApi` instead of private duplicated dictionaries.
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - local/session storage accessors now route through `StorageApi` keyed by origin and session partition.
+
+6. **Settings policy runtime wiring closure (tranche B)**
+- `FenBrowser.Core/Network/Handlers/SafeBrowsingHandler.cs`
+  - Added runtime URL safety block handler bound to `BrowserSettings.SafeBrowsing`.
+- `FenBrowser.Core/ResourceManager.cs`
+  - Added `SafeBrowsingHandler` to runtime network pipeline.
+  - `ImproveBrowser` now controls client-hints emission path (`Sec-CH-UA*`) at runtime.
+  - Policy diagnostics now distinguish enforced vs remaining pending (`UseSecureDNS`).
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - `navigator.doNotTrack` now follows `BrowserSettings.SendDoNotTrack`.
+  - Added `window.open` popup gate bound to `BrowserSettings.BlockPopups` (deny-by-policy when enabled).
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Added `window.open(...)` parsing path with popup-policy enforcement for script-eval bridge path.
+- `FenBrowser.Host/Widgets/SettingsPageWidget.cs`
+  - Hid non-runtime-wired privacy toggles from UI surface (`UseSecureDNS`, `ImproveBrowser`) to avoid presenting non-functional controls.
+
+Phase-5 status:
+- **Completed** for findings 24/25/26 scope with the current architecture constraints.
+- Remaining future enhancement:
+  - `UseSecureDNS` remains intentionally hidden until a real DNS-over-HTTPS resolver path is implemented end-to-end.
