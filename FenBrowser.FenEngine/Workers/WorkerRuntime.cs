@@ -212,8 +212,8 @@ namespace FenBrowser.FenEngine.Workers
                     }
                     else
                     {
-                        // No tasks ready; wait briefly for new work.
-                        _taskSignal.WaitOne(10);
+                        // No tasks ready; block until new work arrives (or terminate signal).
+                        _taskSignal.WaitOne();
                     }
                 }
             }
@@ -258,7 +258,14 @@ namespace FenBrowser.FenEngine.Workers
             }
 
             // Spec requires respondWith() registration during fetch event dispatch.
-            return await fetchEvent.WaitForRespondWithRegistrationAsync(TimeSpan.FromMilliseconds(200)).ConfigureAwait(false);
+            var hasRespondWith = await fetchEvent.WaitForRespondWithRegistrationAsync(TimeSpan.FromMilliseconds(200)).ConfigureAwait(false);
+            if (!hasRespondWith)
+            {
+                return false;
+            }
+
+            _ = fetchEvent.WaitForLifetimePromisesAsync(TimeSpan.FromMilliseconds(300));
+            return true;
         }
 
         /// <summary>
@@ -304,6 +311,69 @@ namespace FenBrowser.FenEngine.Workers
                 throw new InvalidOperationException("Worker script fetcher is not configured");
 
             return await fetcher(_resolvedScriptUri).ConfigureAwait(false);
+        }
+
+        internal void ImportScripts(params string[] scriptUrls)
+        {
+            if (scriptUrls == null || scriptUrls.Length == 0)
+                return;
+
+            if (_runtime == null)
+                throw new InvalidOperationException("Worker runtime is not initialized");
+
+            if (_scriptFetcher == null)
+                throw new InvalidOperationException("Worker script fetcher is not configured");
+
+            foreach (var raw in scriptUrls)
+            {
+                if (string.IsNullOrWhiteSpace(raw))
+                    continue;
+
+                var target = ResolveImportScriptUri(raw);
+                if (target == null)
+                    throw new ArgumentException($"Invalid importScripts URL: {raw}", nameof(scriptUrls));
+
+                if (_scriptUriAllowed != null && !_scriptUriAllowed(target))
+                    throw new UnauthorizedAccessException($"importScripts blocked by policy: {target}");
+
+                var content = _scriptFetcher(target).GetAwaiter().GetResult();
+                if (string.IsNullOrWhiteSpace(content))
+                    continue;
+
+                _runtime.ExecuteSimple(content);
+                FenLogger.Debug($"[WorkerRuntime] importScripts executed: {target}", LogCategory.JavaScript);
+            }
+        }
+
+        private Uri ResolveImportScriptUri(string candidate)
+        {
+            Uri baseUri = _resolvedScriptUri;
+            if (baseUri == null && !Uri.TryCreate(_origin, UriKind.Absolute, out baseUri))
+                return null;
+
+            if (!Uri.TryCreate(baseUri, candidate, out var resolved))
+                return null;
+
+            if (!(resolved.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                  resolved.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+            {
+                return null;
+            }
+
+            if (!IsSameOrigin(baseUri, resolved))
+                return null;
+
+            return resolved;
+        }
+
+        private static bool IsSameOrigin(Uri left, Uri right)
+        {
+            if (left == null || right == null)
+                return false;
+
+            return left.Scheme.Equals(right.Scheme, StringComparison.OrdinalIgnoreCase) &&
+                   left.Host.Equals(right.Host, StringComparison.OrdinalIgnoreCase) &&
+                   left.Port == right.Port;
         }
 
         public void Dispose()

@@ -254,8 +254,8 @@ The Omnibox implementation.
 - `ProcessIsolation/IProcessIsolationCoordinator.cs` (new)
 - `ProcessIsolation/InProcessIsolationCoordinator.cs` (new)
 - `ProcessIsolation/ProcessIsolationCoordinatorFactory.cs` (new)
-  - Added explicit process-model coordination seam for host runtime (`in-process` baseline, brokered mode reserved).
-  - New environment hook: `FEN_PROCESS_ISOLATION=brokered` currently warns and falls back to in-process.
+  - Added explicit process-model coordination seam for host runtime with environment selection.
+  - Environment hook: `FEN_PROCESS_ISOLATION=brokered` enables brokered per-tab renderer child-process mode.
 
 - `ChromeManager.cs`
   - Host startup now initializes process isolation coordinator and tracks tab creation/activation through it.
@@ -263,5 +263,62 @@ The Omnibox implementation.
 
 - `BrowserIntegration.cs`
   - Replaced timeout path based on `Task.Wait(...)`/`.Result` with `Task.WhenAny(...)` + `GetAwaiter().GetResult()` bridge for legacy sync API compatibility.
+
+### 6.12 Completion Pass - Brokered Runtime and Stability Wiring (2026-02-19)
+
+- `ProcessIsolation/BrokeredProcessIsolationCoordinator.cs` (new)
+  - Added concrete brokered process coordinator:
+    - per-tab renderer child process launch
+    - tab-close cleanup
+    - shutdown cleanup.
+
+- `Program.cs`
+  - Added renderer-child startup mode:
+    - CLI arg: `--renderer-child`
+    - env flag: `FEN_RENDERER_CHILD=1`
+  - Renderer child loop monitors parent process lifetime and exits cleanly when parent terminates.
+
+- `ChromeManager.cs`
+  - Added tab-close and shutdown calls into process-isolation coordinator (`OnTabClosed`, `Shutdown`).
+  - Favorites button now toggles favorites-bar visibility and repaints root UI (removed placeholder TODO path).
+
+- `Compositor.cs`
+  - Added offscreen frame-buffer composition path to reduce visible backbuffer blink/flicker.
+
+- `BrowserIntegration.cs`
+- `DevToolsHostAdapter.cs`
+  - Added `ScrollToElement(...)` bridge path from DevTools host adapter into browser integration viewport scrolling.
+
+### 6.13 Final Process-Isolation Closure - Authenticated IPC Routing (2026-02-19)
+
+- `ProcessIsolation/RendererIpc.cs` (new)
+- `ProcessIsolation/RendererInputEvent.cs` (new)
+- `ProcessIsolation/ProcessIsolationRuntime.cs` (new)
+  - Added typed IPC envelope/payload model for brokered renderer communication.
+  - Added per-tab named-pipe session with:
+    - current-user-only pipe access
+    - per-session auth token handshake
+    - lifecycle + ack/error/frame-ready read loop.
+
+- `ProcessIsolation/IProcessIsolationCoordinator.cs`
+- `ProcessIsolation/InProcessIsolationCoordinator.cs`
+- `ProcessIsolation/BrokeredProcessIsolationCoordinator.cs`
+  - Extended isolation coordinator contract with event channels:
+    - `OnNavigationRequested(...)`
+    - `OnInputEvent(...)`
+    - `OnFrameRequested(...)`.
+  - Brokered coordinator now owns session lifecycle and forwards tab events to child process via IPC.
+
+- `Tabs/BrowserTab.cs`
+- `Widgets/WebContentWidget.cs`
+- `ChromeManager.cs`
+  - Host now emits navigation/input/frame requests through the process-isolation runtime coordinator.
+  - Coordinator registration/teardown is now explicit in host lifecycle.
+
+- `Program.cs`
+  - Renderer child mode now runs authenticated IPC command loop.
+  - Child side executes routed navigation/input operations using isolated `BrowserHost` instance.
+  - Parent liveness monitoring remains enforced to prevent orphan renderer children.
+  - Current frame channel is heartbeat/metadata (`FrameReady`); direct pixel transport is intentionally deferred.
 
 _End of Volume IV_

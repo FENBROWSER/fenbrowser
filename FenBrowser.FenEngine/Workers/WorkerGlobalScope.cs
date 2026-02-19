@@ -115,7 +115,7 @@ namespace FenBrowser.FenEngine.Workers
             {
                 if (args.Length > 0)
                 {
-                    var data = args[0].ToObject();
+                    var data = args[0].ToNativeObject();
                     _runtime.PostMessageToMain(data);
                 }
                 return FenValue.Undefined;
@@ -129,11 +129,21 @@ namespace FenBrowser.FenEngine.Workers
                 return FenValue.Undefined;
             })));
 
-            // importScripts(urls...) - placeholder
+            // importScripts(urls...) - fetch and execute additional worker scripts synchronously.
             Set("importScripts", FenValue.FromFunction(new FenFunction("importScripts", (args, thisVal) =>
             {
-                // In a real implementation, this would fetch and execute scripts
-                FenLogger.Debug($"[WorkerGlobalScope] importScripts called with {args.Length} URLs", LogCategory.JavaScript);
+                if (args.Length == 0)
+                {
+                    return FenValue.Undefined;
+                }
+
+                var urls = new string[args.Length];
+                for (int i = 0; i < args.Length; i++)
+                {
+                    urls[i] = args[i].ToString();
+                }
+
+                _runtime.ImportScripts(urls);
                 return FenValue.Undefined;
             })));
 

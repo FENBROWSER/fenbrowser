@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
 
@@ -52,18 +53,72 @@ namespace FenBrowser.FenEngine.Workers
 
         private FenValue Update(FenValue[] args, FenValue thisVal)
         {
-            // Simple promise wrapper
-            var promise = new FenObject(); 
-            // TODO: Trigger update logic via Manager
-            return FenValue.FromObject(promise); 
+            return FenValue.FromObject(CreatePromise(async () =>
+            {
+                var updated = await ServiceWorkerManager.Instance.UpdateRegistrationAsync(Scope).ConfigureAwait(false);
+                return FenValue.FromObject(updated);
+            }));
         }
 
         private FenValue Unregister(FenValue[] args, FenValue thisVal)
         {
-             // TODO: Trigger unregister logic via Manager
-             // Returns Promise<boolean>
-             var promise = new FenObject();
-             return FenValue.FromObject(promise);
+             return FenValue.FromObject(CreatePromise(async () =>
+             {
+                 var removed = await ServiceWorkerManager.Instance.UnregisterAsync(Scope).ConfigureAwait(false);
+                 return FenValue.FromBoolean(removed);
+             }));
+        }
+
+        private static FenObject CreatePromise(Func<Task<FenValue>> valueFactory)
+        {
+            var promise = new FenObject();
+            Task.Run(async () =>
+            {
+                try
+                {
+                    var result = await valueFactory().ConfigureAwait(false);
+                    promise.Set("__state", FenValue.FromString("fulfilled"));
+                    promise.Set("__result", result);
+                    if (promise.Has("onFulfilled"))
+                    {
+                        var cb = promise.Get("onFulfilled").AsFunction();
+                        cb?.Invoke(new[] { result }, null);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    var reason = FenValue.FromString(ex.Message);
+                    promise.Set("__state", FenValue.FromString("rejected"));
+                    promise.Set("__reason", reason);
+                    if (promise.Has("onRejected"))
+                    {
+                        var cb = promise.Get("onRejected").AsFunction();
+                        cb?.Invoke(new[] { reason }, null);
+                    }
+                }
+            });
+
+            promise.Set("then", FenValue.FromFunction(new FenFunction("then", (args, _) =>
+            {
+                if (args.Length > 0) promise.Set("onFulfilled", args[0]);
+                if (args.Length > 1) promise.Set("onRejected", args[1]);
+
+                var state = promise.Get("__state").ToString();
+                if (string.Equals(state, "fulfilled", StringComparison.OrdinalIgnoreCase) &&
+                    args.Length > 0 && args[0].IsFunction)
+                {
+                    args[0].AsFunction().Invoke(new[] { promise.Get("__result") }, null);
+                }
+                else if (string.Equals(state, "rejected", StringComparison.OrdinalIgnoreCase) &&
+                         args.Length > 1 && args[1].IsFunction)
+                {
+                    args[1].AsFunction().Invoke(new[] { promise.Get("__reason") }, null);
+                }
+
+                return FenValue.FromObject(promise);
+            })));
+
+            return promise;
         }
     }
 }

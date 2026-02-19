@@ -82,7 +82,7 @@ namespace FenBrowser.FenEngine.Workers
             {
                 if (pmArgs.Length > 0)
                 {
-                    var data = pmArgs[0].ToObject();
+                    var data = pmArgs[0].ToNativeObject();
                     runtime.PostMessage(data);
                 }
                 return FenValue.Undefined;

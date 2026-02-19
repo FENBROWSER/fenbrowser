@@ -45,25 +45,41 @@ namespace FenBrowser.FenEngine.Workers
             if (args.Length < 1) return FenValue.Undefined; // Reject
 
             var scriptUrl = args[0].ToString();
-            // TODO: Resolve relative URL against document base
-            
+            var scriptUri = ResolveAndValidateScriptUri(scriptUrl);
+            if (scriptUri == null)
+            {
+                return FenValue.FromObject(CreatePromise(() =>
+                    Task.FromException<FenValue>(new InvalidOperationException($"Invalid service worker script URL: {scriptUrl}"))));
+            }
+             
             var options = args.Length > 1 ? args[1].AsObject() : null;
             var scopeVal = options != null ? options.Get("scope") : FenValue.Undefined;
-            var scope = !scopeVal.IsUndefined ? scopeVal.ToString() : "./"; 
-            // TODO: Resolve scope
+            var rawScope = !scopeVal.IsUndefined ? scopeVal.ToString() : "./";
+            var scope = ResolveAndValidateScope(rawScope, scriptUri);
+            if (scope == null)
+            {
+                return FenValue.FromObject(CreatePromise(() =>
+                    Task.FromException<FenValue>(new InvalidOperationException($"Invalid service worker scope: {rawScope}"))));
+            }
 
             // Return Promise
             return FenValue.FromObject(CreatePromise(async () =>
             {
-                var reg = await ServiceWorkerManager.Instance.Register(scriptUrl, scope);
+                var reg = await ServiceWorkerManager.Instance.Register(scriptUri.AbsoluteUri, scope).ConfigureAwait(false);
                 return FenValue.FromObject(reg);
             }));
         }
 
         private FenValue GetRegistration(FenValue[] args, FenValue thisVal)
         {
-            var scope = args.Length > 0 ? args[0].ToString() : "./";
-            
+            var rawScope = args.Length > 0 ? args[0].ToString() : "/";
+            var scope = ResolveAndValidateScope(rawScope, ResolveOriginRoot());
+            if (scope == null)
+            {
+                return FenValue.FromObject(CreatePromise(() =>
+                    Task.FromException<FenValue>(new InvalidOperationException($"Invalid registration scope: {rawScope}"))));
+            }
+             
             return FenValue.FromObject(CreatePromise(async () => {
                  // In reality async check
                  var reg = ServiceWorkerManager.Instance.GetRegistration(scope);
@@ -141,6 +157,96 @@ namespace FenBrowser.FenEngine.Workers
 
                 return FenValue.FromObject(promise); 
             })));
+        }
+
+        private Uri ResolveOriginRoot()
+        {
+            if (!Uri.TryCreate(_origin, UriKind.Absolute, out var originUri))
+            {
+                return null;
+            }
+
+            return new UriBuilder(originUri)
+            {
+                Path = "/",
+                Query = string.Empty,
+                Fragment = string.Empty
+            }.Uri;
+        }
+
+        private Uri ResolveAndValidateScriptUri(string candidate)
+        {
+            if (string.IsNullOrWhiteSpace(candidate))
+            {
+                return null;
+            }
+
+            var originRoot = ResolveOriginRoot();
+            if (originRoot == null)
+            {
+                return null;
+            }
+
+            if (!Uri.TryCreate(originRoot, candidate, out var resolved))
+            {
+                return null;
+            }
+
+            if (!IsHttpScheme(resolved) || !IsSameOrigin(originRoot, resolved))
+            {
+                return null;
+            }
+
+            return new UriBuilder(resolved)
+            {
+                Query = string.Empty,
+                Fragment = string.Empty
+            }.Uri;
+        }
+
+        private string ResolveAndValidateScope(string scopeValue, Uri baseUri)
+        {
+            if (baseUri == null || !IsHttpScheme(baseUri))
+            {
+                return null;
+            }
+
+            var normalizedScopeInput = string.IsNullOrWhiteSpace(scopeValue) ? "./" : scopeValue;
+            if (!Uri.TryCreate(baseUri, normalizedScopeInput, out var resolvedScope))
+            {
+                return null;
+            }
+
+            if (!IsHttpScheme(resolvedScope) || !IsSameOrigin(baseUri, resolvedScope))
+            {
+                return null;
+            }
+
+            var builder = new UriBuilder(resolvedScope)
+            {
+                Query = string.Empty,
+                Fragment = string.Empty
+            };
+            if (!builder.Path.EndsWith("/", StringComparison.Ordinal))
+            {
+                builder.Path += "/";
+            }
+            return builder.Uri.AbsoluteUri;
+        }
+
+        private static bool IsHttpScheme(Uri uri)
+        {
+            if (uri == null) return false;
+            return uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                   uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsSameOrigin(Uri left, Uri right)
+        {
+            if (left == null || right == null) return false;
+            return string.Equals(left.Scheme, right.Scheme, StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(left.Host, right.Host, StringComparison.OrdinalIgnoreCase) &&
+                   left.Port == right.Port;
         }
     }
 }

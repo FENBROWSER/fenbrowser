@@ -1,10 +1,23 @@
+using System;
+
 namespace FenBrowser.FenEngine.Scripting;
 
-public class JavaScriptRuntime
+public sealed class JavaScriptRuntime
 {
-    public void Execute(string code)
+    private readonly JavaScriptEngine _engine;
+
+    public JavaScriptRuntime(JavaScriptEngine engine)
     {
-        // TODO: Integrate Jint or V8
-        // Execution handled by JavaScriptEngine
+        _engine = engine ?? throw new ArgumentNullException(nameof(engine));
+    }
+
+    public object Execute(string code)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            return null;
+        }
+
+        return _engine.Evaluate(code);
     }
 }

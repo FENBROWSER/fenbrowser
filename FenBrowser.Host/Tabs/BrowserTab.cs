@@ -1,4 +1,5 @@
 using SkiaSharp;
+using FenBrowser.Host.ProcessIsolation;
 
 namespace FenBrowser.Host.Tabs;
 
@@ -103,6 +104,7 @@ public class BrowserTab
     /// </summary>
     public async Task NavigateAsync(string url)
     {
+        ProcessIsolationRuntime.Current?.OnNavigationRequested(this, url, isUserInput: true);
         await Browser.NavigateAsync(url);
     }
 
@@ -111,6 +113,7 @@ public class BrowserTab
     /// </summary>
     public async Task NavigateProgrammaticAsync(string url)
     {
+        ProcessIsolationRuntime.Current?.OnNavigationRequested(this, url, isUserInput: false);
         await Browser.NavigateProgrammaticAsync(url);
     }
     

@@ -236,13 +236,59 @@ namespace FenBrowser.FenEngine.DevTools
                     // Check condition if exists
                     if (!string.IsNullOrEmpty(bp.Condition) && _interpreter != null)
                     {
-                        // TODO: Evaluate condition
-                        // For now assume true if condition string is not empty
+                        var evaluated = EvaluateExpression(bp.Condition);
+                        if (!IsTruthyConditionResult(evaluated))
+                        {
+                            return false;
+                        }
                     }
                     return true;
                 }
             }
             return false;
+        }
+
+        private static bool IsTruthyConditionResult(object evaluated)
+        {
+            if (evaluated == null)
+            {
+                return false;
+            }
+
+            if (evaluated is bool b)
+            {
+                return b;
+            }
+
+            var text = evaluated.ToString()?.Trim();
+            if (string.IsNullOrEmpty(text))
+            {
+                return false;
+            }
+
+            if (text.StartsWith("[Error:", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (bool.TryParse(text, out var parsedBool))
+            {
+                return parsedBool;
+            }
+
+            if (double.TryParse(text, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var parsedNumber))
+            {
+                return Math.Abs(parsedNumber) > double.Epsilon;
+            }
+
+            if (string.Equals(text, "undefined", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(text, "null", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(text, "NaN", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return true;
         }
 
         /// <summary>

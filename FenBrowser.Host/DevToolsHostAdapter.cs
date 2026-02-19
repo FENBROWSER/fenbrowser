@@ -88,7 +88,7 @@ public class DevToolsHostAdapter : IDevToolsHost
     
     public void ScrollToElement(Element element)
     {
-        // TODO
+        Program.RunOnMainThread(() => _browser.ScrollToElement(element));
     }
 
     public void RequestCursorChange(CursorType cursor)

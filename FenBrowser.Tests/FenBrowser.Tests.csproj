@@ -6,6 +6,8 @@
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
     <RestoreUseStaticGraphEvaluation>false</RestoreUseStaticGraphEvaluation>
+    <!-- Work around machine-specific MSBuild project-reference resolution instability. -->
+    <BuildInParallel>false</BuildInParallel>
   </PropertyGroup>
 
   <ItemGroup>

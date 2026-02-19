@@ -1,3 +1,4 @@
+using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.Host.Tabs;
 
@@ -21,6 +22,26 @@ namespace FenBrowser.Host.ProcessIsolation
         }
 
         public void OnTabActivated(BrowserTab tab)
+        {
+        }
+
+        public void OnNavigationRequested(BrowserTab tab, string url, bool isUserInput)
+        {
+        }
+
+        public void OnInputEvent(BrowserTab tab, RendererInputEvent inputEvent)
+        {
+        }
+
+        public void OnFrameRequested(BrowserTab tab, float viewportWidth, float viewportHeight)
+        {
+        }
+
+        public void OnTabClosed(BrowserTab tab)
+        {
+        }
+
+        public void Shutdown()
         {
         }
     }

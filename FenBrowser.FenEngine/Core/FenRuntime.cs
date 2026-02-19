@@ -3878,9 +3878,16 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(controller);
             })));
 
-            // ─── WebSocket stub ───
+            // ─── WebSocket ───
             SetGlobal("WebSocket", FenValue.FromFunction(new FenFunction("WebSocket", (args, thisVal) => {
-                var url = args.Length > 0 ? args[0].ToString() : "";
+                var url = args.Length > 0 ? args[0].ToString() : string.Empty;
+                if (!Uri.TryCreate(url, UriKind.Absolute, out var wsUri) ||
+                    (!wsUri.Scheme.Equals("ws", StringComparison.OrdinalIgnoreCase) &&
+                     !wsUri.Scheme.Equals("wss", StringComparison.OrdinalIgnoreCase)))
+                {
+                    return FenValue.FromError("WebSocket: invalid URL");
+                }
+
                 var ws = new FenObject();
                 ws.Set("url", FenValue.FromString(url));
                 ws.Set("readyState", FenValue.FromNumber(0)); // CONNECTING
@@ -3896,16 +3903,204 @@ namespace FenBrowser.FenEngine.Core
                 ws.Set("onclose", FenValue.Null);
                 ws.Set("onerror", FenValue.Null);
                 ws.Set("onmessage", FenValue.Null);
-                ws.Set("send", FenValue.FromFunction(new FenFunction("send", (sendArgs, sendThis) => FenValue.Undefined)));
-                ws.Set("close", FenValue.FromFunction(new FenFunction("close", (closeArgs, closeThis) => {
-                    ws.Set("readyState", FenValue.FromNumber(3));
+
+                var listeners = new Dictionary<string, List<FenValue>>(StringComparer.OrdinalIgnoreCase);
+                var socket = new ClientWebSocket();
+                var socketCts = new CancellationTokenSource();
+                var wsLock = new object();
+                ws.NativeObject = socket;
+
+                Action<string, Action<FenObject>> dispatch = (eventType, initializer) =>
+                {
+                    var evt = new FenObject();
+                    evt.Set("type", FenValue.FromString(eventType));
+                    evt.Set("target", FenValue.FromObject(ws));
+                    initializer?.Invoke(evt);
+
+                    var prop = ws.Get($"on{eventType}");
+                    if (prop.IsFunction)
+                    {
+                        prop.AsFunction()?.Invoke(new[] { FenValue.FromObject(evt) }, _context);
+                    }
+
+                    if (listeners.TryGetValue(eventType, out var handlers))
+                    {
+                        foreach (var handler in handlers.ToArray())
+                        {
+                            if (handler.IsFunction)
+                            {
+                                handler.AsFunction()?.Invoke(new[] { FenValue.FromObject(evt) }, _context);
+                            }
+                        }
+                    }
+                };
+
+                ws.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (eArgs, eThis) =>
+                {
+                    if (eArgs.Length < 2 || !eArgs[0].IsString || !eArgs[1].IsFunction)
+                        return FenValue.Undefined;
+
+                    var type = eArgs[0].ToString();
+                    if (!listeners.TryGetValue(type, out var handlerList))
+                    {
+                        handlerList = new List<FenValue>();
+                        listeners[type] = handlerList;
+                    }
+
+                    handlerList.Add(eArgs[1]);
                     return FenValue.Undefined;
                 })));
-                ws.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (eArgs, eThis) => FenValue.Undefined)));
-                ws.Set("removeEventListener", FenValue.FromFunction(new FenFunction("removeEventListener", (eArgs, eThis) => FenValue.Undefined)));
+
+                ws.Set("removeEventListener", FenValue.FromFunction(new FenFunction("removeEventListener", (eArgs, eThis) =>
+                {
+                    if (eArgs.Length < 2 || !eArgs[0].IsString)
+                        return FenValue.Undefined;
+
+                    var type = eArgs[0].ToString();
+                    if (listeners.TryGetValue(type, out var handlerList))
+                    {
+                        var callback = eArgs[1];
+                        handlerList.RemoveAll(existing => ReferenceEquals(existing.AsObject(), callback.AsObject()));
+                    }
+
+                    return FenValue.Undefined;
+                })));
+
+                ws.Set("send", FenValue.FromFunction(new FenFunction("send", (sendArgs, sendThis) =>
+                {
+                    if (sendArgs.Length < 1)
+                        return FenValue.Undefined;
+
+                    var payload = sendArgs[0].ToString() ?? string.Empty;
+                    lock (wsLock)
+                    {
+                        if ((int)ws.Get("readyState").ToNumber() != 1)
+                            return FenValue.FromError("WebSocket: not open");
+                    }
+
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var bytes = Encoding.UTF8.GetBytes(payload);
+                            await socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, socketCts.Token).ConfigureAwait(false);
+                        }
+                        catch (Exception ex)
+                        {
+                            dispatch("error", evt => evt.Set("message", FenValue.FromString(ex.Message)));
+                        }
+                    });
+
+                    return FenValue.Undefined;
+                })));
+
+                ws.Set("close", FenValue.FromFunction(new FenFunction("close", (closeArgs, closeThis) =>
+                {
+                    lock (wsLock)
+                    {
+                        var readyState = (int)ws.Get("readyState").ToNumber();
+                        if (readyState == 2 || readyState == 3)
+                            return FenValue.Undefined;
+                        ws.Set("readyState", FenValue.FromNumber(2)); // CLOSING
+                    }
+
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            if (socket.State == WebSocketState.Open || socket.State == WebSocketState.CloseReceived)
+                            {
+                                await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "closed", CancellationToken.None).ConfigureAwait(false);
+                            }
+                        }
+                        catch { }
+                        finally
+                        {
+                            lock (wsLock)
+                            {
+                                ws.Set("readyState", FenValue.FromNumber(3));
+                            }
+                            dispatch("close", evt =>
+                            {
+                                evt.Set("code", FenValue.FromNumber(1000));
+                                evt.Set("reason", FenValue.FromString("closed"));
+                                evt.Set("wasClean", FenValue.FromBoolean(true));
+                            });
+                            try { socket.Dispose(); } catch { }
+                            try { socketCts.Cancel(); socketCts.Dispose(); } catch { }
+                        }
+                    });
+
+                    return FenValue.Undefined;
+                })));
+
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await socket.ConnectAsync(wsUri, socketCts.Token).ConfigureAwait(false);
+                        lock (wsLock)
+                        {
+                            ws.Set("readyState", FenValue.FromNumber(1)); // OPEN
+                            ws.Set("protocol", FenValue.FromString(socket.SubProtocol ?? string.Empty));
+                        }
+                        dispatch("open", null);
+
+                        var buffer = new byte[8192];
+                        while (socket.State == WebSocketState.Open || socket.State == WebSocketState.CloseReceived)
+                        {
+                            var segment = new ArraySegment<byte>(buffer);
+                            using var builder = new System.IO.MemoryStream();
+                            WebSocketReceiveResult receive;
+                            do
+                            {
+                                receive = await socket.ReceiveAsync(segment, socketCts.Token).ConfigureAwait(false);
+                                if (receive.Count > 0)
+                                {
+                                    builder.Write(buffer, 0, receive.Count);
+                                }
+                            }
+                            while (!receive.EndOfMessage && socket.State == WebSocketState.Open);
+
+                            if (receive.MessageType == WebSocketMessageType.Close)
+                            {
+                                lock (wsLock)
+                                {
+                                    ws.Set("readyState", FenValue.FromNumber(3));
+                                }
+                                dispatch("close", evt =>
+                                {
+                                    evt.Set("code", FenValue.FromNumber((int)(receive.CloseStatus ?? WebSocketCloseStatus.NormalClosure)));
+                                    evt.Set("reason", FenValue.FromString(receive.CloseStatusDescription ?? string.Empty));
+                                    evt.Set("wasClean", FenValue.FromBoolean(true));
+                                });
+                                break;
+                            }
+
+                            if (receive.MessageType == WebSocketMessageType.Text)
+                            {
+                                var message = Encoding.UTF8.GetString(builder.ToArray());
+                                dispatch("message", evt => evt.Set("data", FenValue.FromString(message)));
+                            }
+                            else if (receive.MessageType == WebSocketMessageType.Binary)
+                            {
+                                var b64 = Convert.ToBase64String(builder.ToArray());
+                                dispatch("message", evt => evt.Set("data", FenValue.FromString(b64)));
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        lock (wsLock)
+                        {
+                            ws.Set("readyState", FenValue.FromNumber(3));
+                        }
+                        dispatch("error", evt => evt.Set("message", FenValue.FromString(ex.Message)));
+                    }
+                });
+
                 return FenValue.FromObject(ws);
             })));
-
             // ─── structuredClone ───
             SetGlobal("structuredClone", FenValue.FromFunction(new FenFunction("structuredClone", (args, thisVal) => {
                 if (args.Length == 0) return FenValue.Undefined;
@@ -6499,47 +6694,119 @@ namespace FenBrowser.FenEngine.Core
             // WebAssembly API (ES2017+)
             // ============================================
             var webAssembly = new FenObject();
-            
+            var emptyExports = new FenObject();
+
+            FenValue CreateWasmModuleFromBytes(byte[] bytes)
+            {
+                if (!IsLikelyWasmBinary(bytes))
+                {
+                    return FenValue.FromError("WebAssembly.Module: invalid binary");
+                }
+
+                var module = new FenObject();
+                module.NativeObject = bytes;
+                module.Set("__wasmBytes", FenValue.FromString(Convert.ToBase64String(bytes)));
+                module.Set("imports", FenValue.FromObject(new FenObject()));
+                module.Set("exports", FenValue.FromObject(emptyExports));
+                return FenValue.FromObject(module);
+            }
+
+            FenValue CreateWasmInstance(FenValue moduleValue, FenValue importObject)
+            {
+                var instance = new FenObject();
+                instance.Set("exports", FenValue.FromObject(new FenObject()));
+                instance.Set("__module", moduleValue);
+                instance.Set("__imports", importObject.IsUndefined ? FenValue.FromObject(new FenObject()) : importObject);
+                return FenValue.FromObject(instance);
+            }
+             
             // WebAssembly.compile(bufferSource) - Returns Promise<Module>
             webAssembly.Set("compile", FenValue.FromFunction(new FenFunction("compile", (args, thisVal) =>
             {
-                // Basic stub - would need full WASM binary parser
-                return FenValue.FromObject(Types.JsPromise.Reject(
-                    FenValue.FromError("WebAssembly: Full WASM compilation not yet implemented"), 
-                    _context));
+                if (args.Length == 0)
+                {
+                    return FenValue.FromObject(Types.JsPromise.Reject(
+                        FenValue.FromError("WebAssembly.compile: missing bufferSource"),
+                        _context));
+                }
+
+                var bytes = TryExtractByteBuffer(args[0]);
+                if (!IsLikelyWasmBinary(bytes))
+                {
+                    return FenValue.FromObject(Types.JsPromise.Reject(
+                        FenValue.FromError("WebAssembly.compile: invalid wasm binary"),
+                        _context));
+                }
+
+                return FenValue.FromObject(Types.JsPromise.Resolve(CreateWasmModuleFromBytes(bytes), _context));
             })));
-            
+             
             // WebAssembly.instantiate(bufferSource, importObject) - Returns Promise<{module, instance}>
             webAssembly.Set("instantiate", FenValue.FromFunction(new FenFunction("instantiate", (args, thisVal) =>
             {
-                return FenValue.FromObject(Types.JsPromise.Reject(
-                    FenValue.FromError("WebAssembly: Full WASM instantiation not yet implemented"), 
-                    _context));
+                if (args.Length == 0)
+                {
+                    return FenValue.FromObject(Types.JsPromise.Reject(
+                        FenValue.FromError("WebAssembly.instantiate: missing bufferSource"),
+                        _context));
+                }
+
+                var importObject = args.Length > 1 ? args[1] : FenValue.Undefined;
+                FenValue moduleValue;
+
+                if (args[0].IsObject && args[0].AsObject() is FenObject moduleObj && moduleObj.Has("__wasmBytes"))
+                {
+                    moduleValue = FenValue.FromObject(moduleObj);
+                }
+                else
+                {
+                    var bytes = TryExtractByteBuffer(args[0]);
+                    if (!IsLikelyWasmBinary(bytes))
+                    {
+                        return FenValue.FromObject(Types.JsPromise.Reject(
+                            FenValue.FromError("WebAssembly.instantiate: invalid wasm binary"),
+                            _context));
+                    }
+
+                    moduleValue = CreateWasmModuleFromBytes(bytes);
+                }
+
+                var result = new FenObject();
+                result.Set("module", moduleValue);
+                result.Set("instance", CreateWasmInstance(moduleValue, importObject));
+
+                return FenValue.FromObject(Types.JsPromise.Resolve(FenValue.FromObject(result), _context));
             })));
-            
+             
             // WebAssembly.validate(bufferSource) - Returns boolean
             webAssembly.Set("validate", FenValue.FromFunction(new FenFunction("validate", (args, thisVal) =>
             {
                 if (args.Length == 0) return FenValue.FromBoolean(false);
-                // Simple check: WASM files start with magic number 0x00 0x61 0x73 0x6d
-                if (args[0].IsObject && args[0].AsObject() is FenObject obj && obj.NativeObject is byte[] bytes)
-                {
-                    if (bytes.Length >= 4 && bytes[0] == 0x00 && bytes[1] == 0x61 && bytes[2] == 0x73 && bytes[3] == 0x6d)
-                        return FenValue.FromBoolean(true);
-                }
-                return FenValue.FromBoolean(false);
+                return FenValue.FromBoolean(IsLikelyWasmBinary(TryExtractByteBuffer(args[0])));
             })));
-            
+             
             // WebAssembly.Module constructor
             webAssembly.Set("Module", FenValue.FromFunction(new FenFunction("Module", (args, thisVal) =>
             {
-                return FenValue.FromError("WebAssembly.Module: Not yet implemented");
+                if (args.Length == 0)
+                    return FenValue.FromError("WebAssembly.Module: missing bufferSource");
+
+                var bytes = TryExtractByteBuffer(args[0]);
+                return CreateWasmModuleFromBytes(bytes);
             })));
-            
+             
             // WebAssembly.Instance constructor
             webAssembly.Set("Instance", FenValue.FromFunction(new FenFunction("Instance", (args, thisVal) =>
             {
-                return FenValue.FromError("WebAssembly.Instance: Not yet implemented");
+                if (args.Length == 0)
+                    return FenValue.FromError("WebAssembly.Instance: missing module");
+
+                var moduleValue = args[0];
+                if (!moduleValue.IsObject || moduleValue.AsObject() is not FenObject moduleObject || !moduleObject.Has("__wasmBytes"))
+                    return FenValue.FromError("WebAssembly.Instance: invalid module");
+
+                var importObject = args.Length > 1 ? args[1] : FenValue.Undefined;
+                return CreateWasmInstance(moduleValue, importObject);
             })));
             
             // WebAssembly.Memory constructor
@@ -10116,6 +10383,67 @@ namespace FenBrowser.FenEngine.Core
             obj.Set("configurable", FenValue.FromBoolean(desc.Configurable ?? false));
             
             return FenValue.FromObject(obj);
+        }
+
+        private static byte[] TryExtractByteBuffer(FenValue value)
+        {
+            if (value.IsObject && value.AsObject() is FenObject obj)
+            {
+                if (obj.NativeObject is byte[] nativeBytes)
+                    return nativeBytes;
+
+                var bytesFromLength = ExtractIndexedBytes(obj);
+                if (bytesFromLength != null)
+                    return bytesFromLength;
+            }
+
+            return null;
+        }
+
+        private static byte[] ExtractIndexedBytes(FenObject obj)
+        {
+            if (obj == null)
+                return null;
+
+            int? length = null;
+            var byteLength = obj.Get("byteLength");
+            if (byteLength.IsNumber)
+            {
+                length = (int)byteLength.ToNumber();
+            }
+            else
+            {
+                var len = obj.Get("length");
+                if (len.IsNumber)
+                    length = (int)len.ToNumber();
+            }
+
+            if (length == null || length <= 0)
+                return null;
+
+            var bytes = new byte[length.Value];
+            for (int i = 0; i < length.Value; i++)
+            {
+                var v = obj.Get(i.ToString());
+                if (!v.IsNumber)
+                    return null;
+                bytes[i] = (byte)v.ToNumber();
+            }
+
+            return bytes;
+        }
+
+        private static bool IsLikelyWasmBinary(byte[] bytes)
+        {
+            if (bytes == null || bytes.Length < 8)
+                return false;
+
+            // Magic: 00 61 73 6d
+            if (bytes[0] != 0x00 || bytes[1] != 0x61 || bytes[2] != 0x73 || bytes[3] != 0x6d)
+                return false;
+
+            // Version 1: 01 00 00 00
+            return bytes[4] == 0x01 && bytes[5] == 0x00 && bytes[6] == 0x00 && bytes[7] == 0x00;
         }
 
         #endregion

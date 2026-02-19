@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using FenBrowser.FenEngine.Core;
 using Xunit;
+using FenExecutionContext = FenBrowser.FenEngine.Core.ExecutionContext;
 
 namespace FenBrowser.Tests.Engine
 {
@@ -10,22 +11,22 @@ namespace FenBrowser.Tests.Engine
         [Fact]
         public void Resolve_Uses_Exact_ImportMap_Entry()
         {
-            var loader = new ModuleLoader(new FenEnvironment(), new ExecutionContext());
+            var loader = new ModuleLoader(new FenEnvironment(), new FenExecutionContext());
             loader.SetImportMap(
                 new Dictionary<string, string>
                 {
-                    ["lit"] = "https://cdn.example.com/lit/index.js"
+                    ["lit"] = "https://app.example.com/vendor/lit/index.js"
                 },
                 new Uri("https://app.example.com/main.js"));
 
             var resolved = loader.Resolve("lit", "https://app.example.com/main.js");
-            Assert.Equal("https://cdn.example.com/lit/index.js", resolved);
+            Assert.Equal("https://app.example.com/vendor/lit/index.js", resolved);
         }
 
         [Fact]
         public void Resolve_Uses_Prefix_ImportMap_Entry()
         {
-            var loader = new ModuleLoader(new FenEnvironment(), new ExecutionContext());
+            var loader = new ModuleLoader(new FenEnvironment(), new FenExecutionContext());
             loader.SetImportMap(
                 new Dictionary<string, string>
                 {
@@ -40,7 +41,7 @@ namespace FenBrowser.Tests.Engine
         [Fact]
         public void Resolve_Appends_Js_For_Http_Module_Without_Extension()
         {
-            var loader = new ModuleLoader(new FenEnvironment(), new ExecutionContext());
+            var loader = new ModuleLoader(new FenEnvironment(), new FenExecutionContext());
 
             var resolved = loader.Resolve("./modules/runtime", "https://app.example.com/main.js");
             Assert.Equal("https://app.example.com/modules/runtime.js", resolved);
@@ -49,7 +50,7 @@ namespace FenBrowser.Tests.Engine
         [Fact]
         public void Resolve_Blocks_CrossOrigin_Http_Modules_ByDefault()
         {
-            var loader = new ModuleLoader(new FenEnvironment(), new ExecutionContext());
+            var loader = new ModuleLoader(new FenEnvironment(), new FenExecutionContext());
 
             Assert.Throws<UnauthorizedAccessException>(() =>
                 loader.Resolve("https://cdn.example.com/mod.js", "https://app.example.com/main.js"));
@@ -58,7 +59,7 @@ namespace FenBrowser.Tests.Engine
         [Fact]
         public void Resolve_Blocks_Unsafe_Module_Schemes()
         {
-            var loader = new ModuleLoader(new FenEnvironment(), new ExecutionContext());
+            var loader = new ModuleLoader(new FenEnvironment(), new FenExecutionContext());
 
             Assert.Throws<UnauthorizedAccessException>(() =>
                 loader.Resolve("javascript:alert(1)", "https://app.example.com/main.js"));
