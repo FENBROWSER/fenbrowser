@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
@@ -14,13 +15,24 @@ namespace FenBrowser.FenEngine.Workers
     public class WorkerConstructor
     {
         private readonly string _baseOrigin;
+        private readonly Uri _baseUri;
         private readonly FenBrowser.FenEngine.Storage.IStorageBackend _storageBackend;
+        private readonly Func<Uri, Task<string>> _scriptFetcher;
+        private readonly Func<Uri, bool> _scriptUriAllowed;
         private readonly List<WorkerRuntime> _activeWorkers = new();
 
-        public WorkerConstructor(string baseOrigin, FenBrowser.FenEngine.Storage.IStorageBackend storageBackend)
+        public WorkerConstructor(
+            string baseOrigin,
+            FenBrowser.FenEngine.Storage.IStorageBackend storageBackend,
+            Uri baseUri = null,
+            Func<Uri, Task<string>> scriptFetcher = null,
+            Func<Uri, bool> scriptUriAllowed = null)
         {
             _baseOrigin = baseOrigin ?? "null";
+            _baseUri = baseUri;
             _storageBackend = storageBackend;
+            _scriptFetcher = scriptFetcher;
+            _scriptUriAllowed = scriptUriAllowed;
         }
 
         /// <summary>
@@ -42,8 +54,24 @@ namespace FenBrowser.FenEngine.Workers
             var scriptUrl = args[0].ToString();
             FenLogger.Debug($"[WorkerConstructor] Creating worker for: {scriptUrl}", LogCategory.JavaScript);
 
+            if (!TryResolveScriptUri(scriptUrl, _baseUri, out var resolvedScriptUri))
+            {
+                throw new ArgumentException($"Invalid worker script URL: {scriptUrl}");
+            }
+
+            if (_scriptUriAllowed != null && !_scriptUriAllowed(resolvedScriptUri))
+            {
+                throw new UnauthorizedAccessException($"Worker script URL blocked by policy: {resolvedScriptUri}");
+            }
+
             // Create the worker runtime
-            var runtime = new WorkerRuntime(scriptUrl, _baseOrigin, _storageBackend);
+            var runtime = new WorkerRuntime(
+                resolvedScriptUri.ToString(),
+                _baseOrigin,
+                _storageBackend,
+                _scriptFetcher,
+                _scriptUriAllowed,
+                isServiceWorker: false);
             _activeWorkers.Add(runtime);
 
             // Create the Worker object exposed to JS
@@ -130,6 +158,34 @@ namespace FenBrowser.FenEngine.Workers
         /// Get count of active workers
         /// </summary>
         public int ActiveWorkerCount => _activeWorkers.Count;
+
+        private static bool TryResolveScriptUri(string scriptUrl, Uri baseUri, out Uri resolved)
+        {
+            resolved = null;
+            if (string.IsNullOrWhiteSpace(scriptUrl))
+                return false;
+
+            if (Uri.TryCreate(scriptUrl, UriKind.Absolute, out var absolute))
+            {
+                resolved = absolute;
+                return IsSupportedWorkerScheme(resolved);
+            }
+
+            if (baseUri != null && Uri.TryCreate(baseUri, scriptUrl, out var relative))
+            {
+                resolved = relative;
+                return IsSupportedWorkerScheme(resolved);
+            }
+
+            return false;
+        }
+
+        private static bool IsSupportedWorkerScheme(Uri uri)
+        {
+            if (uri == null) return false;
+            return uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                   uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
+        }
 
         private FenValue ConvertToFenValue(object obj)
         {

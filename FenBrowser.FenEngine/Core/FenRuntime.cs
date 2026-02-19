@@ -18,6 +18,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType;
 using FenBrowser.FenEngine.Storage;
+using FenBrowser.Core.Network.Handlers;
 
 namespace FenBrowser.FenEngine.Core
 {
@@ -67,6 +68,12 @@ namespace FenBrowser.FenEngine.Core
             get => _context.RequestRender;
             set => _context.SetRequestRender(value);
         }
+
+        /// <summary>
+        /// Centralized network delegate for all runtime HTTP fetches (fetch/XHR/worker scripts).
+        /// BrowserHost/JavaScriptEngine must set this to enforce shared policy (CSP/CORS/cookies/TLS).
+        /// </summary>
+        public Func<HttpRequestMessage, Task<HttpResponseMessage>> NetworkFetchHandler { get; set; }
 
         public void SetHistoryBridge(IHistoryBridge bridge) => _historyBridge = bridge;
 
@@ -168,6 +175,43 @@ namespace FenBrowser.FenEngine.Core
         {
              if (BaseUri  == null) return "null";
              return $"{BaseUri.Scheme}://{BaseUri.Host}:{BaseUri.Port}";
+        }
+
+        private async Task<HttpResponseMessage> SendNetworkRequestAsync(HttpRequestMessage request)
+        {
+            var handler = NetworkFetchHandler;
+            if (handler == null)
+                throw new InvalidOperationException("Network fetch handler not configured on runtime");
+
+            return await handler(request).ConfigureAwait(false);
+        }
+
+        private async Task<string> FetchWorkerScriptAsync(Uri scriptUri)
+        {
+            if (scriptUri == null)
+                throw new ArgumentNullException(nameof(scriptUri));
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, scriptUri);
+            var response = await SendNetworkRequestAsync(request).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            return await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+        }
+
+        private bool IsWorkerScriptUriAllowed(Uri scriptUri)
+        {
+            if (scriptUri == null) return false;
+
+            if (!(scriptUri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                  scriptUri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+            {
+                return false;
+            }
+
+            // Dedicated worker scripts are restricted to same-origin in the current policy profile.
+            if (BaseUri != null && !CorsHandler.IsSameOrigin(scriptUri, BaseUri))
+                return false;
+
+            return true;
         }
 
         public IValue ExecuteFunction(FenFunction func, FenValue[] args)
@@ -2263,7 +2307,12 @@ namespace FenBrowser.FenEngine.Core
             SetGlobal("caches", FenValue.FromObject(cacheStorage));
 
             // Worker API - Persistent storage for workers
-            var workerCtor = new FenBrowser.FenEngine.Workers.WorkerConstructor(GetCurrentOrigin(), _storageBackend);
+            var workerCtor = new FenBrowser.FenEngine.Workers.WorkerConstructor(
+                GetCurrentOrigin(),
+                _storageBackend,
+                BaseUri,
+                FetchWorkerScriptAsync,
+                IsWorkerScriptUriAllowed);
             SetGlobal("Worker", FenValue.FromFunction(workerCtor.GetConstructorFunction()));
 
             // Timers
@@ -5953,7 +6002,8 @@ namespace FenBrowser.FenEngine.Core
                  FenValue.FromObject(new JsFloat32Array(args.Length > 0 ? args[0] : null, args.Length > 1 ? args[1] : null, args.Length > 2 ? args[2] : null)))));
 
             // --- XHR ---
-            SetGlobal("XMLHttpRequest", FenValue.FromFunction(new FenFunction("XMLHttpRequest", (args, thisVal) => FenValue.FromObject(new XMLHttpRequest(_context)))));
+            SetGlobal("XMLHttpRequest", FenValue.FromFunction(new FenFunction("XMLHttpRequest", (args, thisVal) =>
+                FenValue.FromObject(new XMLHttpRequest(_context, SendNetworkRequestAsync)))));
 
 
             
@@ -8218,8 +8268,6 @@ namespace FenBrowser.FenEngine.Core
 
         #region Fetch API Helpers
 
-        private static readonly HttpClient _httpClient = new HttpClient();
-
         /// <summary>
         /// Creates a rejected Promise-like object
         /// </summary>
@@ -8301,7 +8349,7 @@ namespace FenBrowser.FenEngine.Core
                             headers.ContainsKey("Content-Type") ? headers["Content-Type"] : "application/json");
                     }
 
-                    var response = await _httpClient.SendAsync(request);
+                    var response = await SendNetworkRequestAsync(request).ConfigureAwait(false);
                     var responseText = await response.Content.ReadAsStringAsync();
                     var statusCode = (int)response.StatusCode;
                     var reasonPhrase = response.ReasonPhrase;

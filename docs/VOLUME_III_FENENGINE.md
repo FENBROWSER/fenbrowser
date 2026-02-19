@@ -644,3 +644,41 @@ So you want to add `border-radius`? Follow these steps:
 - `Scripting/JavaScriptEngine.cs`
   - Runtime now parses `<script type="importmap">` and applies entries to the core module loader.
   - Added same-origin guard for http(s) module loads when explicit CORS pipeline is not available.
+
+### 6.19 Phase-6 Security/Isolation Hardening (2026-02-19)
+
+- `Core/FenRuntime.cs`
+  - Added centralized `NetworkFetchHandler` delegate for runtime-side network operations.
+  - Routed runtime `fetch(...)` and XHR construction through centralized network delegate path.
+  - Worker constructor wiring now receives worker-script fetch + policy delegates from runtime.
+
+- `WebAPIs/XMLHttpRequest.cs`
+  - Removed direct per-request `HttpClient` usage.
+  - Added injected network delegate path (`Func<HttpRequestMessage, Task<HttpResponseMessage>>`) as the only send path.
+
+- `Workers/WorkerConstructor.cs`
+  - Added strict URL resolution and scheme gating for worker scripts.
+  - Non-http(s) script URLs are denied before runtime creation.
+
+- `Workers/WorkerRuntime.cs`
+  - Removed raw `HttpClient` and local-file fallback script loading.
+  - Added centralized fetcher requirement for worker script bootstrap.
+  - Added service-worker fetch-event dispatch path (`DispatchServiceWorkerFetchAsync`).
+
+- `Workers/ServiceWorkerManager.cs`
+  - Added injected script fetcher/policy wiring.
+  - Service-worker runtime startup now validates/resolves script URLs.
+  - `DispatchFetchEvent(...)` now dispatches into runtime instead of hardcoded false.
+
+- `WebAPIs/FetchApi.cs`
+  - Added ServiceWorker fetch-event dispatch call prior to normal network fallback.
+
+- `Storage/FileStorageBackend.cs`
+  - Added storage path sanitization for origin/database names.
+  - Added normalized root-containment assertion to block IndexedDB path traversal.
+
+- `Scripting/JavaScriptEngine.cs`
+  - Removed legacy `IndexedDBService.Register(...)` override to preserve runtime `indexedDB` as canonical implementation.
+
+- `Rendering/BrowserApi.cs`
+  - Removed eager `ResourceManager` field initialization; now initialized once in constructor path.

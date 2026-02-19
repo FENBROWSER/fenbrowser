@@ -188,6 +188,24 @@ namespace FenBrowser.Tests.Storage
         }
 
         [Fact]
+        public async Task File_OpenDatabase_SanitizesTraversalLikeNames()
+        {
+            var dangerousName = "..\\..\\evil:db/..";
+            var result = await _fileBackend.OpenDatabase("https://example.com", dangerousName, 1);
+            Assert.True(result.Success);
+
+            var root = Path.GetFullPath(_testPath).ToLowerInvariant();
+            var files = Directory.GetFiles(_testPath, "*.json", SearchOption.AllDirectories);
+            Assert.NotEmpty(files);
+
+            foreach (var file in files)
+            {
+                var full = Path.GetFullPath(file).ToLowerInvariant();
+                Assert.StartsWith(root, full);
+            }
+        }
+
+        [Fact]
         public async Task File_Count_ReturnsCorrectCount()
         {
             await _fileBackend.OpenDatabase("https://example.com", "testdb", 1);

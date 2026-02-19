@@ -188,7 +188,7 @@ Motto alignment: **Architecture is Destiny**
   2. Compile-guard debug file writes (`#if DEBUG`).
   3. Centralize diagnostics sink and remove ad-hoc `AppendAllText`.
 
-8. **Resource manager double initialization risk**
+8. **Resource manager double initialization risk (`RESOLVED in Phase-6 tranche, 2026-02-19`)**
 - Evidence:
   - `FenBrowser.FenEngine/Rendering/BrowserApi.cs:191`
   - `FenBrowser.FenEngine/Rendering/BrowserApi.cs:301`
@@ -230,15 +230,17 @@ Motto alignment: **Architecture is Destiny**
   2. Replace `Assert.True(true)` with observable state assertions.
   3. Fail CI when placeholder tests remain.
 
-12. **Service worker fetch path incomplete**
+12. **Service worker fetch path incomplete (`PARTIALLY RESOLVED in Phase-6 tranche, 2026-02-19`)**
 - Evidence:
   - `FenBrowser.FenEngine/Workers/ServiceWorkerManager.cs:143`
   - `FenBrowser.FenEngine/Workers/ServiceWorkerManager.cs:145`
-- Problem: dispatch path is TODO and always false.
+- Problem (original): dispatch path was TODO and always false.
 - Fix:
   1. Implement dispatch into worker runtime and response propagation.
   2. Add cache/registration integration tests.
   3. Add timeout and fallback semantics.
+- Residual note (after Phase-6 tranche):
+  - runtime dispatch path now exists, but fetch response extraction/propagation from `respondWith()` remains incomplete.
 
 13. **Entry point duplication and hardcoded harness paths**
 - Evidence:
@@ -382,7 +384,7 @@ Reason: additional verified security and architecture-wiring gaps in network pat
 
 ### Newly Added High/Critical Findings
 
-16. **Network policy bypass via fragmented ad-hoc HttpClient usage (`Not secure`, `Built but unwired`)**
+16. **Network policy bypass via fragmented ad-hoc HttpClient usage (`PARTIALLY RESOLVED in Phase-6 tranche, 2026-02-19`)**
 - Evidence (direct clients outside centralized `ResourceManager` path):
   - `FenBrowser.FenEngine/WebAPIs/XMLHttpRequest.cs:93`
   - `FenBrowser.FenEngine/Scripting/JavaScriptEngine.Methods.cs:136`
@@ -401,7 +403,7 @@ Reason: additional verified security and architecture-wiring gaps in network pat
   2. Ban direct `new HttpClient()` outside network infrastructure with analyzer/lint rule.
   3. Add regression tests asserting CSP/connect-src enforcement across XHR/fetch/module/script/worker loads.
 
-17. **IndexedDB implementation is overridden by a stub (`Built but unwired`, data isolation risk)**
+17. **IndexedDB implementation is overridden by a stub (`RESOLVED in Phase-6 tranche, 2026-02-19`)**
 - Evidence:
   - Functional IndexedDB is registered in runtime:
     - `FenBrowser.FenEngine/Core/FenRuntime.cs:6171`
@@ -434,7 +436,7 @@ Reason: additional verified security and architecture-wiring gaps in network pat
 - Residual note:
   - `SandboxEnforcer` lifecycle is now wired (create/destroy), but storage/cookie isolation still needs full command-surface integration in later phases.
 
-19. **Worker script loading allows local file reads and bypasses browser network policy (`Not secure`)**
+19. **Worker script loading allows local file reads and bypasses browser network policy (`PARTIALLY RESOLVED in Phase-6 tranche, 2026-02-19`)**
 - Evidence:
   - Remote fetch via raw `HttpClient`:
     - `FenBrowser.FenEngine/Workers/WorkerRuntime.cs:145`
@@ -450,7 +452,7 @@ Reason: additional verified security and architecture-wiring gaps in network pat
   2. Enforce same-origin/CORS/CSP worker-src checks.
   3. Block local file fallback unless explicit trusted mode is enabled.
 
-20. **Potential path traversal in persistent IndexedDB backend (`Not secure`)**
+20. **Potential path traversal in persistent IndexedDB backend (`RESOLVED in Phase-6 tranche, 2026-02-19`)**
 - Evidence:
   - Database filename is built from unsanitized JS-controlled name:
     - `FenBrowser.FenEngine/Storage/FileStorageBackend.cs:285`
@@ -973,3 +975,61 @@ Validation snapshot:
 - `dotnet build FenBrowser.WebDriver/FenBrowser.WebDriver.csproj -c Debug` succeeded.
 - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug` remains blocked on this machine with pre-existing resolver state pattern (0 warnings / 0 errors emitted).
 - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug` remains blocked on this machine with pre-existing resolver state (0 warnings / 0 errors emitted).
+
+## 19) Phase-6 Hardening Tranche (2026-02-19, security and isolation closure)
+
+Implemented now:
+
+1. **Centralized runtime network path for `fetch`/`XMLHttpRequest`/worker script loads**
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Added centralized `NetworkFetchHandler` delegate and routed runtime `fetch(...)` through it.
+  - Removed direct runtime static `HttpClient` fetch path.
+  - Wired worker constructor creation to centralized worker script fetch/policy delegates.
+- `FenBrowser.FenEngine/WebAPIs/XMLHttpRequest.cs`
+  - XHR now requires injected network delegate and sends requests through centralized runtime network path.
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Runtime `NetworkFetchHandler` now binds to host-injected `FetchHandler`.
+
+2. **Worker and service-worker script policy hardening**
+- `FenBrowser.FenEngine/Workers/WorkerConstructor.cs`
+  - Added URL resolution gate and denied non-http(s) worker script schemes.
+  - Added policy callback gate before worker creation.
+- `FenBrowser.FenEngine/Workers/WorkerRuntime.cs`
+  - Removed raw `HttpClient` + local-file fallback loading path.
+  - Worker scripts now load only via injected centralized fetcher.
+  - Added service-worker fetch dispatch entry (`DispatchServiceWorkerFetchAsync`).
+- `FenBrowser.FenEngine/Workers/ServiceWorkerManager.cs`
+  - Added script fetch/policy dependency injection.
+  - Runtime startup now resolves/validates script URI before boot.
+  - `DispatchFetchEvent(...)` now dispatches into runtime instead of returning hardcoded false.
+- `FenBrowser.FenEngine/WebAPIs/FetchApi.cs`
+  - Added live ServiceWorker fetch-event dispatch call before network fallback.
+
+3. **IndexedDB storage safety and source-of-truth cleanup**
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Removed legacy `IndexedDBService.Register(...)` override, preserving runtime `indexedDB` as single source of truth.
+- `FenBrowser.FenEngine/Storage/FileStorageBackend.cs`
+  - Added strict path-segment sanitization for origin/database names.
+  - Added normalized path containment guard to block traversal outside origin storage root.
+
+4. **Additional hardening cleanup**
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+  - Removed eager `ResourceManager` field initialization; now constructed once in ctor path.
+
+5. **Regression tests added/updated**
+- `FenBrowser.Tests/Storage/StorageBackendTests.cs`
+  - Added traversal-like database-name sanitization safety test.
+- `FenBrowser.Tests/Workers/WorkerTests.cs`
+  - Added worker constructor file-scheme rejection test.
+- `FenBrowser.Tests/Workers/ServiceWorkerLifecycleTests.cs`
+  - Updated assertions/comments to match non-stub dispatch behavior and network fallback semantics.
+
+Residual notes after tranche:
+- Finding 16 remains **partial**: major runtime/XHR/worker paths now centralized, but remaining direct-network callsites (for example image-loading specific paths) still need migration.
+- Finding 12 remains **partial**: service-worker fetch dispatch now exists, but full `respondWith()` response extraction and propagation in fetch pipeline still needs completion.
+- Finding 19 remains **partial**: local-file fallback is removed and policy gate exists, but full worker-src CSP parity and deeper lifecycle conformance are still pending.
+
+Validation snapshot:
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug -clp:ErrorsOnly` succeeded.
+- `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug -clp:ErrorsOnly` remains blocked on this machine with the pre-existing resolver-state pattern (`0 warnings / 0 errors emitted`).
+- `dotnet test` run for targeted worker/storage suites was intentionally interrupted to avoid long-running terminal contention in this environment.

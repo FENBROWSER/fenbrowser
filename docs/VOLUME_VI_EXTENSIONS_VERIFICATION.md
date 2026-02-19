@@ -265,4 +265,16 @@ To implement a new command (e.g., `GET /session/{id}/print`):
   - module loader resolves prefix import-map entries.
   - extensionless relative HTTP module specifiers normalize to `.js`.
 
+### 4.10 Phase-6 Hardening Regression Additions (2026-02-19)
+
+- Updated:
+  - `FenBrowser.Tests/Workers/ServiceWorkerLifecycleTests.cs`
+    - reflects live dispatch path semantics (dispatch present; no-`respondWith` cases still fall back to network).
+
+- Added:
+  - `FenBrowser.Tests/Workers/WorkerTests.cs`
+    - verifies worker constructor rejects `file://` script URLs.
+  - `FenBrowser.Tests/Storage/StorageBackendTests.cs`
+    - verifies traversal-like IndexedDB names are sanitized into safe in-root file paths.
+
 _End of Volume VI_
