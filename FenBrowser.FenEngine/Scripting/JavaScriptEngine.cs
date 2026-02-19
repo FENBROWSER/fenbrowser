@@ -2125,15 +2125,56 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         */
         private string FetchTextSync(Uri uri)
         {
+            if (uri == null) return "";
             try
             {
-                using (var hc = new HttpClient())
+                if (FetchOverride != null)
                 {
-                    try { hc.DefaultRequestHeaders.UserAgent.ParseAdd(BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent)); } catch { }
-                    return hc.GetStringAsync(uri).GetAwaiter().GetResult();
+                    var viaOverride = FetchOverride(uri).GetAwaiter().GetResult();
+                    if (viaOverride != null) return viaOverride;
+                }
+
+                if (ExternalScriptFetcher != null)
+                {
+                    var viaExternal = ExternalScriptFetcher(uri, _ctx?.BaseUri).GetAwaiter().GetResult();
+                    if (viaExternal != null) return viaExternal;
+                }
+
+                if (uri.IsFile && File.Exists(uri.LocalPath))
+                {
+                    return File.ReadAllText(uri.LocalPath);
+                }
+
+                FenLogger.Warn($"[JavaScriptEngine] Blocked fallback module/script fetch for unsupported URI without browser fetch pipeline: {uri}", LogCategory.Network);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[JavaScriptEngine] FetchTextSync failed for '{uri}': {ex.Message}", LogCategory.Network);
+            }
+            return "";
+        }
+
+        private bool IsModuleUriAllowed(Uri uri)
+        {
+            if (uri == null) return false;
+
+            if (SubresourceAllowed != null)
+            {
+                try
+                {
+                    if (!SubresourceAllowed(uri, "script"))
+                    {
+                        return false;
+                    }
+                }
+                catch
+                {
+                    return false;
                 }
             }
-            catch { return ""; }
+
+            var scheme = (uri.Scheme ?? string.Empty).ToLowerInvariant();
+            return scheme == "https" || scheme == "http" || scheme == "file" || scheme == "data";
         }
 
         // Request the host to re-render if available (non-breaking: optional interface)
@@ -2698,7 +2739,8 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                     var moduleLoader = new FenBrowser.FenEngine.Core.ModuleLoader(
                         _fenRuntime.GlobalEnv, 
                         _fenRuntime.Context,
-                        uri => FetchTextSync(uri) // Use existing sync fetcher
+                        uri => FetchTextSync(uri),
+                        uri => IsModuleUriAllowed(uri)
                     );
                     _fenRuntime.SetModuleLoader(moduleLoader);
 

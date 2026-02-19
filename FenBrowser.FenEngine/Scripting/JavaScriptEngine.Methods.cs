@@ -131,18 +131,22 @@ namespace FenBrowser.FenEngine.Scripting
         {
             if (uri  == null) return null;
             if (FetchOverride != null) return await FetchOverride(uri);
-            try
+            if (ExternalScriptFetcher != null) return await ExternalScriptFetcher(uri, referer);
+
+            if (uri.IsFile)
             {
-                using (var client = new System.Net.Http.HttpClient())
+                try
                 {
-                    return await client.GetStringAsync(uri);
+                    return await System.IO.File.ReadAllTextAsync(uri.LocalPath).ConfigureAwait(false);
+                }
+                catch
+                {
+                    return null;
                 }
             }
-            catch (Exception ex)
-            {
-                FenLogger.Error($"[JS] FetchModuleTextAsync Error: {ex.Message}", LogCategory.Network, ex);
-                return null; 
-            }
+
+            FenLogger.Warn($"[JS] Blocked module fetch without centralized fetcher: {uri}", LogCategory.Network);
+            return null;
         }
 
         public void ExecuteScriptBlock(string code, string src = null)

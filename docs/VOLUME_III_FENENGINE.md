@@ -600,3 +600,26 @@ So you want to add `border-radius`? Follow these steps:
 - `Core/FenRuntime.cs`
   - `navigator.doNotTrack` now reflects `BrowserSettings.SendDoNotTrack`.
   - Added `window.open` policy gate bound to `BrowserSettings.BlockPopups` with same-window fallback behavior.
+
+### 6.17 Remaining Findings Tranche - Navigation/Module Hardening (2026-02-19)
+
+- `Rendering/NavigationManager.cs`
+  - Added explicit navigation intent model:
+    - `NavigationRequestKind.UserInput`
+    - `NavigationRequestKind.Programmatic`
+  - Rooted local-path auto-conversion is now limited to trusted user-input flow.
+  - Added `file://` capability gate with automation deny-by-default behavior.
+
+- `Rendering/BrowserApi.cs`
+  - Added `NavigateUserInputAsync(...)` path to preserve address-bar normalization while keeping default navigation programmatic.
+
+- `Core/ModuleLoader.cs`
+  - Added URI policy callback to allow/deny module loads before content fetch.
+
+- `Scripting/JavaScriptEngine.cs`
+- `Scripting/JavaScriptEngine.Methods.cs`
+  - Removed raw `HttpClient` fallback for module/script fetch paths.
+  - Module content fetch now prefers centralized browser fetch delegates and blocks unsupported fallback paths.
+
+- `Rendering/CustomHtmlEngine.cs`
+  - CSP subresource + nonce checks now pass explicit base-document origin context.

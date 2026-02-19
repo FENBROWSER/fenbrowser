@@ -229,4 +229,19 @@ The Omnibox implementation.
   - Privacy settings UI now hides non-runtime-wired controls (`UseSecureDNS`, `ImproveBrowser`) to avoid exposing non-functional toggles.
   - Runtime-wired controls (`Safe Browsing`, `Block pop-ups`) remain visible and active.
 
+### 6.9 Remaining Findings Tranche - Navigation Intent Split (2026-02-19)
+
+- `BrowserIntegration.cs`
+  - Split navigation entrypoints into:
+    - user-input navigation (address-bar flow)
+    - programmatic navigation (WebDriver/script/callback flow).
+  - Programmatic local-path normalization is now blocked and delegated to engine policy gates.
+
+- `Tabs/BrowserTab.cs`
+  - Added explicit programmatic navigation method for automation pathways.
+
+- `WebDriver/FenBrowserDriver.cs`
+- `WebDriver/HostBrowserDriver.cs`
+  - Updated WebDriver navigation wiring to use programmatic navigation path only.
+
 _End of Volume IV_

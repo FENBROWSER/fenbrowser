@@ -381,3 +381,19 @@ _End of Volume II_
   - Added `SafeBrowsingHandler` into the active network handler pipeline.
   - `ImproveBrowser` now controls emission of client-hints request headers (`Sec-CH-UA*`) at runtime.
   - Policy diagnostics now report `UseSecureDNS` as pending while enforced toggles include `SafeBrowsing`/`ImproveBrowser`/`BlockPopups`.
+
+### 6.10 Remaining Findings Tranche - CSP/Navigation Policy (2026-02-19)
+
+- `Security/CspPolicy.cs`
+  - Added origin-aware `IsAllowed(...)` overloads so `'self'` checks receive explicit origin context.
+
+- `ResourceManager.cs`
+  - CSP checks now pass origin context across text/image/bytes/generic-request paths.
+  - Policy diagnostics now include file-navigation settings:
+    - `AllowFileSchemeNavigation`
+    - `AllowAutomationFileNavigation`.
+
+- `BrowserSettings.cs`
+  - Added runtime policy toggles for hardened file navigation behavior:
+    - `AllowFileSchemeNavigation` (global gate)
+    - `AllowAutomationFileNavigation` (automation override).

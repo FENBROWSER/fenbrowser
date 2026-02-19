@@ -19,11 +19,15 @@ namespace FenBrowser.Host.WebDriver
             {
                 if (_tabs.ActiveTab == null)
                 {
-                    _tabs.CreateTab(url);
+                    _tabs.CreateTab();
+                    if (_tabs.ActiveTab != null)
+                    {
+                        await _tabs.ActiveTab.NavigateProgrammaticAsync(url);
+                    }
                 }
                 else
                 {
-                    await _tabs.ActiveTab.NavigateAsync(url);
+                    await _tabs.ActiveTab.NavigateProgrammaticAsync(url);
                 }
             });
         }
@@ -66,7 +70,7 @@ namespace FenBrowser.Host.WebDriver
             {
                 if (_tabs.ActiveTab != null)
                 {
-                    await _tabs.ActiveTab.NavigateAsync(_tabs.ActiveTab.Url);
+                    await _tabs.ActiveTab.NavigateProgrammaticAsync(_tabs.ActiveTab.Url);
                 }
             });
         }

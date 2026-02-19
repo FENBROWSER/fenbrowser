@@ -600,7 +600,7 @@ Reason: additional confirmed gaps in process model, cookie/storage coherence, pr
   2. Remove or hide toggles that are not functionally wired.
   3. Add startup diagnostics logging showing active policy settings actually enforced.
 
-27. **Navigation hardening still permissive for local-file auto conversion (`Not secure` in hostile contexts)**
+27. **Navigation hardening still permissive for local-file auto conversion (`RESOLVED in remaining-tranche, 2026-02-19`)**
 - Evidence:
   - Rooted local paths are converted to `file:///...`:
     - `FenBrowser.FenEngine/Rendering/NavigationManager.cs:35`
@@ -614,7 +614,7 @@ Reason: additional confirmed gaps in process model, cookie/storage coherence, pr
   2. Separate user-typed URL normalization from programmatic navigation policy.
   3. Add deny-by-default mode for automation contexts.
 
-28. **CSP `'self'` evaluation path is under-specified in caller usage (`Correctness/spec gap`)**
+28. **CSP `'self'` evaluation path is under-specified in caller usage (`RESOLVED in remaining-tranche, 2026-02-19`)**
 - Evidence:
   - `'self'` requires non-null origin:
     - `FenBrowser.Core/Security/CspPolicy.cs:138`
@@ -628,7 +628,7 @@ Reason: additional confirmed gaps in process model, cookie/storage coherence, pr
   2. Add CSP unit tests specifically for `'self'`, subdomains, and port handling.
   3. Keep one mandatory call signature that includes origin context.
 
-29. **ES module loader default path is file-only (`Half-built`)**
+29. **ES module loader default path is file-only (`PARTIALLY RESOLVED in remaining-tranche, 2026-02-19`)**
 - Evidence:
   - Default module loader fetcher only supports `file://`:
     - `FenBrowser.FenEngine/Core/ModuleLoader.cs:23`
@@ -637,6 +637,9 @@ Reason: additional confirmed gaps in process model, cookie/storage coherence, pr
   1. Integrate module fetch with centralized network/CSP/CORS pipeline.
   2. Add proper module-map caching and import resolution for http(s).
   3. Add module security checks aligned with script policy.
+- Residual note (after tranche):
+  - Browser-context module loads now use centralized fetch delegates and URI policy gates.
+  - Full import-map + complete CORS/module-map semantics are still future work.
 
 ### Updated Priority Insertions (Third Pass)
 
@@ -873,3 +876,52 @@ Phase-5 status:
 - **Completed** for findings 24/25/26 scope with the current architecture constraints.
 - Remaining future enhancement:
   - `UseSecureDNS` remains intentionally hidden until a real DNS-over-HTTPS resolver path is implemented end-to-end.
+
+## 17) Remaining Findings Tranche (2026-02-19, post Phase-5)
+
+Implemented now:
+
+1. **Navigation hardening with explicit intent separation (finding 27)**
+- `FenBrowser.FenEngine/Rendering/NavigationManager.cs`
+  - Added navigation intent model (`UserInput` vs `Programmatic`).
+  - Added policy gate for `file://` navigation:
+    - `BrowserSettings.AllowFileSchemeNavigation`
+    - `BrowserSettings.AllowAutomationFileNavigation`
+    - env override: `FEN_ALLOW_AUTOMATION_FILE_NAVIGATION=1`
+  - Programmatic rooted-path auto-conversion is now blocked.
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+  - Added `NavigateUserInputAsync(...)` and routed default navigation through programmatic intent.
+- `FenBrowser.Host/BrowserIntegration.cs`
+  - Split host navigation into user-input vs programmatic paths and removed unsafe programmatic local-path normalization.
+- `FenBrowser.Host/WebDriver/FenBrowserDriver.cs`
+- `FenBrowser.Host/WebDriver/HostBrowserDriver.cs`
+- `FenBrowser.Host/Tabs/BrowserTab.cs`
+  - WebDriver now uses programmatic navigation path explicitly.
+
+2. **CSP `'self'` origin-threading closure (finding 28)**
+- `FenBrowser.Core/Security/CspPolicy.cs`
+  - Added mandatory origin-aware overloads for CSP checks.
+- `FenBrowser.Core/ResourceManager.cs`
+  - CSP checks now thread origin context through `FetchTextAsync`, `FetchImageAsync`, `FetchBytesAsync`, and `SendAsync(...)`.
+- `FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs`
+  - Subresource and inline nonce checks now pass base-document origin to CSP policy.
+
+3. **Module loader hardening (finding 29 tranche A)**
+- `FenBrowser.FenEngine/Core/ModuleLoader.cs`
+  - Added optional URI policy gate for module loads.
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.Methods.cs`
+  - Removed raw `HttpClient` fallback module/script fetch paths.
+  - Browser-context module fetch now prefers centralized delegates (`FetchOverride` / `ExternalScriptFetcher`) and enforces URI policy checks.
+  - Unsupported direct fallback fetch is blocked instead of bypassing network policy.
+
+4. **CSP regression tests**
+- Added:
+  - `FenBrowser.Tests/Core/Network/CspPolicyTests.cs`
+  - covers `'self'` with explicit origin, missing-origin block, wildcard subdomain allow, and port mismatch block.
+
+Validation snapshot:
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Debug` succeeded.
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` succeeded.
+- `dotnet build FenBrowser.WebDriver/FenBrowser.WebDriver.csproj -c Debug` succeeded.
+- `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug` remains blocked on this machine with pre-existing resolver state (0 warnings / 0 errors emitted).

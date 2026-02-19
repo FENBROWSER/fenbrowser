@@ -29,7 +29,7 @@ namespace FenBrowser.Host.WebDriver
 
         public async Task NavigateAsync(string url)
         {
-            await _integration.NavigateAsync(url);
+            await _integration.NavigateProgrammaticAsync(url);
         }
 
         public Task<string> GetCurrentUrlAsync() => Task.FromResult(_integration.CurrentUrl);

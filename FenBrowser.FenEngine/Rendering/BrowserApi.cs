@@ -603,7 +603,17 @@ namespace FenBrowser.FenEngine.Rendering
             finally { _isNavigatingHistory = false; }
         }
 
-        public async Task<bool> NavigateAsync(string url)
+        public Task<bool> NavigateUserInputAsync(string url)
+        {
+            return NavigateAsync(url, NavigationRequestKind.UserInput);
+        }
+
+        public Task<bool> NavigateAsync(string url)
+        {
+            return NavigateAsync(url, NavigationRequestKind.Programmatic);
+        }
+
+        private async Task<bool> NavigateAsync(string url, NavigationRequestKind requestKind)
         {
             try { FenLogger.Debug($"[BrowserHost] NavigateAsync called for: '{url}'", LogCategory.Navigation); } catch {}
 
@@ -695,7 +705,7 @@ namespace FenBrowser.FenEngine.Rendering
                 FetchResult result = null;
                 for (int attempt = 1; attempt <= maxTransientNavAttempts; attempt++)
                 {
-                    result = await _navManager.NavigateAsync(url);
+                    result = await _navManager.NavigateAsync(url, requestKind);
                     if (!ShouldRetryTopLevelNavigation(result, url, attempt, maxTransientNavAttempts))
                         break;
 

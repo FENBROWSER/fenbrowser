@@ -120,7 +120,9 @@ namespace FenBrowser.Core
                 $"EnableTrackingPrevention={settings.EnableTrackingPrevention}",
                 $"SafeBrowsing={settings.SafeBrowsing}",
                 $"ImproveBrowser={settings.ImproveBrowser}",
-                $"BlockPopups={settings.BlockPopups}"
+                $"BlockPopups={settings.BlockPopups}",
+                $"AllowFileSchemeNavigation={settings.AllowFileSchemeNavigation}",
+                $"AllowAutomationFileNavigation={settings.AllowAutomationFileNavigation}"
             });
             var pending = string.Join(", ", new[]
             {
@@ -167,6 +169,31 @@ namespace FenBrowser.Core
         private static string SafePartition(string origin)
         {
             return string.IsNullOrWhiteSpace(origin) ? "default" : origin.ToLowerInvariant();
+        }
+
+        private static Uri ExtractOrigin(Uri candidate)
+        {
+            if (candidate == null || !candidate.IsAbsoluteUri)
+            {
+                return null;
+            }
+
+            if (string.Equals(candidate.Scheme, "data", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(candidate.Scheme, "blob", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            try
+            {
+                var port = candidate.IsDefaultPort ? -1 : candidate.Port;
+                var builder = new UriBuilder(candidate.Scheme, candidate.Host, port);
+                return builder.Uri;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static string DetermineSecFetchSite(Uri referer, Uri request)
@@ -273,7 +300,8 @@ namespace FenBrowser.Core
                 }
                 
                 // If checking subresources
-                if (!ActivePolicy.IsAllowed(directive, url))
+                var origin = ExtractOrigin(referer);
+                if (!ActivePolicy.IsAllowed(directive, url, origin))
                 {
                     System.Diagnostics.Debug.WriteLine($"[CSP] Blocked {url} ({directive})");
                     return null;
@@ -743,7 +771,7 @@ namespace FenBrowser.Core
             if (url == null) return null;
 
             // CSP Check
-            if (ActivePolicy != null && !ActivePolicy.IsAllowed("img-src", url))
+            if (ActivePolicy != null && !ActivePolicy.IsAllowed("img-src", url, ExtractOrigin(referer)))
             {
                  System.Diagnostics.Debug.WriteLine($"[CSP] Blocked image {url}");
                  return null;
@@ -899,7 +927,7 @@ namespace FenBrowser.Core
                 else if (secFetchDest == "audio" || secFetchDest == "video") directive = "media-src";
                 else if (secFetchDest == "object") directive = "object-src";
                 
-                if (!ActivePolicy.IsAllowed(directive, url)) return null;
+                if (!ActivePolicy.IsAllowed(directive, url, ExtractOrigin(referer))) return null;
             }
 
             // url = UpgradeIfHsts(url); // Handled by HstsHandler
@@ -960,7 +988,7 @@ namespace FenBrowser.Core
             if (policy != null)
             {
                 // Default to connect-src for generic fetch/XHR
-                if (!policy.IsAllowed("connect-src", request.RequestUri))
+                if (!policy.IsAllowed("connect-src", request.RequestUri, ExtractOrigin(request.Headers.Referrer)))
                 {
                     FenLogger.Warn($"[CSP] Blocked generic request to {request.RequestUri} (connect-src)", LogCategory.Network);
                     throw new Exception($"Blocked by Content Security Policy (connect-src): {request.RequestUri}");
