@@ -609,16 +609,8 @@ public class SettingsPageWidget : Widget
                 _switchClearOnExit.Arrange(new SKRect(switchX, currentY + 8, switchX + 50, currentY + 32));
                 currentY += 60;
 
-                _switchSecureDNS.IsVisible = true;
-                _switchSecureDNS.Arrange(new SKRect(switchX, currentY + 8, switchX + 50, currentY + 32));
-                currentY += 60;
-
                 _switchSafeBrowsing.IsVisible = true;
                 _switchSafeBrowsing.Arrange(new SKRect(switchX, currentY + 8, switchX + 50, currentY + 32));
-                currentY += 60;
-
-                _switchImproveBrowser.IsVisible = true;
-                _switchImproveBrowser.Arrange(new SKRect(switchX, currentY + 8, switchX + 50, currentY + 32));
                 currentY += 60;
 
                 _switchBlockPopups.IsVisible = true;
@@ -944,14 +936,8 @@ public class SettingsPageWidget : Widget
                 canvas.DrawText("Clear cookies on exit", contentLeft, currentY + 20, labelPaint);
                 canvas.DrawText("Delete all cookies when browser closes", contentLeft, currentY + 38, descPaint);
                 currentY += 60;
-                canvas.DrawText("Use Secure DNS", contentLeft, currentY + 20, labelPaint);
-                canvas.DrawText("Encrypt DNS lookups using web protocols", contentLeft, currentY + 38, descPaint);
-                currentY += 60;
                 canvas.DrawText("Safe Browsing", contentLeft, currentY + 20, labelPaint);
                 canvas.DrawText("Protects you and your device from dangerous sites", contentLeft, currentY + 38, descPaint);
-                currentY += 60;
-                canvas.DrawText("Help improve FenBrowser", contentLeft, currentY + 20, labelPaint);
-                canvas.DrawText("Send optional diagnostic data to the team", contentLeft, currentY + 38, descPaint);
                 currentY += 60;
                 canvas.DrawText("Block pop-ups", contentLeft, currentY + 20, labelPaint);
                 canvas.DrawText("Prevent websites from opening unnecessary windows", contentLeft, currentY + 38, descPaint);
