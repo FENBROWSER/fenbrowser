@@ -56,6 +56,10 @@ namespace FenBrowser.FenEngine.DevTools
         private const string DevToolsSessionScope = "devtools-session:global";
         private readonly List<Cookie> _cookies = new();
         private readonly Dictionary<string, object> _indexedDBStores = new();
+        public Func<IEnumerable<Cookie>> CookieSnapshotProvider { get; set; }
+        public Action<Cookie> CookieSetter { get; set; }
+        public Action<string, string> CookieDeleteHandler { get; set; }
+        public Action CookieClearHandler { get; set; }
 
         // ===== Events =====
         public event Action<string, int, string> OnBreakpointHit;
@@ -752,6 +756,12 @@ namespace FenBrowser.FenEngine.DevTools
         // === Cookies ===
         public void SetCookie(Cookie cookie)
         {
+            if (CookieSetter != null)
+            {
+                CookieSetter(cookie);
+                return;
+            }
+
             // Remove existing cookie with same name/domain/path
             _cookies.RemoveAll(c => c.Name == cookie.Name && c.Domain == cookie.Domain && c.Path == cookie.Path);
             _cookies.Add(cookie);
@@ -759,17 +769,33 @@ namespace FenBrowser.FenEngine.DevTools
 
         public Cookie GetCookie(string name, string domain)
         {
-            return _cookies.FirstOrDefault(c => c.Name == name && c.Domain == domain);
+            var snapshot = CookieSnapshotProvider != null ? CookieSnapshotProvider() : _cookies;
+            return snapshot.FirstOrDefault(c => c.Name == name && c.Domain == domain);
         }
 
-        public IEnumerable<Cookie> GetAllCookies() => _cookies;
+        public IEnumerable<Cookie> GetAllCookies() => CookieSnapshotProvider != null ? CookieSnapshotProvider() : _cookies;
 
         public void DeleteCookie(string name, string domain)
         {
+            if (CookieDeleteHandler != null)
+            {
+                CookieDeleteHandler(name, domain);
+                return;
+            }
+
             _cookies.RemoveAll(c => c.Name == name && (domain == null || c.Domain == domain));
         }
 
-        public void ClearCookies() => _cookies.Clear();
+        public void ClearCookies()
+        {
+            if (CookieClearHandler != null)
+            {
+                CookieClearHandler();
+                return;
+            }
+
+            _cookies.Clear();
+        }
 
         // === IndexedDB ===
         public void CreateIndexedDBStore(string dbName, string storeName)

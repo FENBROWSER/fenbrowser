@@ -49,11 +49,7 @@ namespace FenBrowser.FenEngine.Workers
         // Helper to dispatch ExtendableEvent
         public void DispatchExtendableEvent(string type, FenValue evtObj)
         {
-             var handler = Get($"on{type}");
-             if (!handler.IsUndefined && handler.IsFunction)
-             {
-                 handler.AsFunction().Invoke(new FenValue[] { evtObj }, Runtime.Context);
-             }
+             DispatchEventToHandlers(type, evtObj);
         }
 
         // --- Promise Helper ---

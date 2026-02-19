@@ -45,5 +45,23 @@ namespace FenBrowser.Tests.Engine
             var resolved = loader.Resolve("./modules/runtime", "https://app.example.com/main.js");
             Assert.Equal("https://app.example.com/modules/runtime.js", resolved);
         }
+
+        [Fact]
+        public void Resolve_Blocks_CrossOrigin_Http_Modules_ByDefault()
+        {
+            var loader = new ModuleLoader(new FenEnvironment(), new ExecutionContext());
+
+            Assert.Throws<UnauthorizedAccessException>(() =>
+                loader.Resolve("https://cdn.example.com/mod.js", "https://app.example.com/main.js"));
+        }
+
+        [Fact]
+        public void Resolve_Blocks_Unsafe_Module_Schemes()
+        {
+            var loader = new ModuleLoader(new FenEnvironment(), new ExecutionContext());
+
+            Assert.Throws<UnauthorizedAccessException>(() =>
+                loader.Resolve("javascript:alert(1)", "https://app.example.com/main.js"));
+        }
     }
 }

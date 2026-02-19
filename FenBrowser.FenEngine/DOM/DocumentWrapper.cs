@@ -639,10 +639,25 @@ namespace FenBrowser.FenEngine.DOM
         }
 
         // --- Cookie Implementation ---
+        public static Func<Uri, string> CookieReadBridge { get; set; }
+        public static Action<Uri, string> CookieWriteBridge { get; set; }
         private readonly Dictionary<string, string> _cookies = new Dictionary<string, string>();
 
         private string GetCookieString()
         {
+            if (_baseUri != null && CookieReadBridge != null)
+            {
+                try
+                {
+                    var bridged = CookieReadBridge(_baseUri);
+                    if (bridged != null)
+                    {
+                        return bridged;
+                    }
+                }
+                catch { }
+            }
+
             // Format: key=value; key2=value2
             return string.Join("; ", _cookies.Select(kv => $"{kv.Key}={kv.Value}"));
         }
@@ -650,6 +665,16 @@ namespace FenBrowser.FenEngine.DOM
         private void SetCookie(string cookieStr)
         {
             if (string.IsNullOrWhiteSpace(cookieStr)) return;
+
+            if (_baseUri != null && CookieWriteBridge != null)
+            {
+                try
+                {
+                    CookieWriteBridge(_baseUri, cookieStr);
+                    return;
+                }
+                catch { }
+            }
 
             // Basic parsing: split by ';' to ignore attributes for now (path, domain, expires)
             // Real implementation would parse attributes and checking matching logic

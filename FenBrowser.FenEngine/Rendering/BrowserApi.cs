@@ -361,6 +361,54 @@ namespace FenBrowser.FenEngine.Rendering
                 catch { }
             };
 
+            DevToolsCore.Instance.CookieSnapshotProvider = () =>
+            {
+                var scope = ResolveCookieScope();
+                if (scope == null)
+                {
+                    return Enumerable.Empty<FenBrowser.FenEngine.DevTools.Cookie>();
+                }
+
+                return _engine.GetCookieSnapshot(scope)
+                    .Select(kv => new FenBrowser.FenEngine.DevTools.Cookie
+                    {
+                        Name = kv.Key,
+                        Value = kv.Value,
+                        Domain = scope.Host,
+                        Path = "/",
+                        Secure = scope.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+                    })
+                    .ToList();
+            };
+            DevToolsCore.Instance.CookieSetter = cookie =>
+            {
+                if (cookie == null) return;
+                var scope = ResolveCookieScope();
+                if (scope != null)
+                {
+                    _engine.SetCookie(scope, cookie.Name, cookie.Value ?? string.Empty, string.IsNullOrWhiteSpace(cookie.Path) ? "/" : cookie.Path);
+                }
+            };
+            DevToolsCore.Instance.CookieDeleteHandler = (name, domain) =>
+            {
+                if (string.IsNullOrWhiteSpace(name)) return;
+                var scope = ResolveCookieScope();
+                if (scope != null && (string.IsNullOrWhiteSpace(domain) || domain.Equals(scope.Host, StringComparison.OrdinalIgnoreCase)))
+                {
+                    _engine.DeleteCookie(scope, name);
+                }
+            };
+            DevToolsCore.Instance.CookieClearHandler = () =>
+            {
+                var scope = ResolveCookieScope();
+                if (scope == null) return;
+                var keys = _engine.GetCookieSnapshot(scope).Keys.ToArray();
+                foreach (var key in keys)
+                {
+                    _engine.DeleteCookie(scope, key);
+                }
+            };
+
 
             _engine.RepaintReady += (elem) =>
             {
@@ -470,6 +518,18 @@ namespace FenBrowser.FenEngine.Rendering
             };
             _navManager = new NavigationManager(_resources);
             
+            ImageLoader.FetchBytesAsync = async (uri) =>
+            {
+                if (uri == null) return null;
+                var fetchUri = !string.IsNullOrEmpty(WPTRootPath) ? RemapWptUri(uri) : uri;
+                return await _resources.FetchBytesAsync(
+                        fetchUri,
+                        referer: _current,
+                        accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                        secFetchDest: "image")
+                    .ConfigureAwait(false);
+            };
+
             // Wire up ImageLoader to trigger RepaintReady when images finish loading
             ImageLoader.RequestRepaint = () =>
             {
@@ -1922,36 +1982,116 @@ pre {{
             return Task.FromResult("");
         }
 
-        // Cookie management
-        private readonly Dictionary<string, WebDriverCookie> _cookies = new Dictionary<string, WebDriverCookie>();
-
         public Task<List<WebDriverCookie>> GetAllCookiesAsync()
         {
-            return Task.FromResult(_cookies.Values.ToList());
+            var scope = ResolveCookieScope();
+            if (scope == null)
+            {
+                return Task.FromResult(new List<WebDriverCookie>());
+            }
+
+            var snapshot = _engine.GetCookieSnapshot(scope);
+            var cookies = snapshot.Select(kv => new WebDriverCookie
+            {
+                Name = kv.Key,
+                Value = kv.Value,
+                Domain = scope.Host,
+                Path = "/",
+                Secure = scope.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+            }).ToList();
+
+            return Task.FromResult(cookies);
         }
 
         public Task<WebDriverCookie> GetCookieAsync(string name)
         {
-            _cookies.TryGetValue(name, out var cookie);
-            return Task.FromResult(cookie);
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return Task.FromResult<WebDriverCookie>(null);
+            }
+
+            var scope = ResolveCookieScope();
+            if (scope == null)
+            {
+                return Task.FromResult<WebDriverCookie>(null);
+            }
+
+            var snapshot = _engine.GetCookieSnapshot(scope);
+            if (!snapshot.TryGetValue(name, out var value))
+            {
+                return Task.FromResult<WebDriverCookie>(null);
+            }
+
+            return Task.FromResult<WebDriverCookie>(new WebDriverCookie
+            {
+                Name = name,
+                Value = value,
+                Domain = scope.Host,
+                Path = "/",
+                Secure = scope.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+            });
         }
 
         public Task AddCookieAsync(WebDriverCookie cookie)
         {
-            _cookies[cookie.Name] = cookie;
+            if (cookie == null || string.IsNullOrWhiteSpace(cookie.Name))
+            {
+                return Task.CompletedTask;
+            }
+
+            var scope = ResolveCookieScope();
+            if (scope != null)
+            {
+                _engine.SetCookie(scope, cookie.Name, cookie.Value ?? string.Empty, cookie.Path ?? "/");
+            }
             return Task.CompletedTask;
         }
 
         public Task DeleteCookieAsync(string name)
         {
-            _cookies.Remove(name);
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return Task.CompletedTask;
+            }
+
+            var scope = ResolveCookieScope();
+            if (scope != null)
+            {
+                _engine.DeleteCookie(scope, name);
+            }
             return Task.CompletedTask;
         }
 
         public Task DeleteAllCookiesAsync()
         {
-            _cookies.Clear();
+            var scope = ResolveCookieScope();
+            if (scope == null)
+            {
+                return Task.CompletedTask;
+            }
+
+            var keys = _engine.GetCookieSnapshot(scope).Keys.ToArray();
+            foreach (var key in keys)
+            {
+                _engine.DeleteCookie(scope, key);
+            }
             return Task.CompletedTask;
+        }
+
+        private Uri ResolveCookieScope()
+        {
+            if (_current == null || !_current.IsAbsoluteUri)
+            {
+                return null;
+            }
+
+            if (!_current.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+                !_current.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            return _current;
         }
 
         // Actions - Pointer/Keyboard state

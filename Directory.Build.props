@@ -1,0 +1,8 @@
+<Project>
+  <PropertyGroup>
+    <!-- Work around intermittent restore graph failures that return 0 warnings/0 errors on this machine. -->
+    <RestoreUseStaticGraphEvaluation>false</RestoreUseStaticGraphEvaluation>
+    <RestoreUseSkipNonexistentTargets>false</RestoreUseSkipNonexistentTargets>
+    <MSBuildEnableWorkloadResolver>false</MSBuildEnableWorkloadResolver>
+  </PropertyGroup>
+</Project>

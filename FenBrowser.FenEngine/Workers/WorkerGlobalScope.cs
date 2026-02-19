@@ -29,16 +29,7 @@ namespace FenBrowser.FenEngine.Workers
         public WorkerRuntime Runtime => _runtime;
         private readonly string _origin;
         private readonly string _name;
-
-        /// <summary>
-        /// Message handler callback
-        /// </summary>
-        public FenValue OnMessage { get; set; }
-
-        /// <summary>
-        /// Error handler callback
-        /// </summary>
-        public FenValue OnError { get; set; }
+        private readonly Dictionary<string, List<FenValue>> _eventListeners = new(StringComparer.OrdinalIgnoreCase);
 
         public WorkerGlobalScope(WorkerRuntime runtime, string origin, string name = "")
         {
@@ -62,6 +53,62 @@ namespace FenBrowser.FenEngine.Workers
             location.Set("origin", FenValue.FromString(_origin));
             location.Set("href", FenValue.FromString(_origin));
             Set("location", FenValue.FromObject(location));
+
+            // addEventListener(type, callback)
+            Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (args, thisVal) =>
+            {
+                if (args.Length < 2 || !args[0].IsString || !args[1].IsFunction)
+                {
+                    return FenValue.Undefined;
+                }
+
+                var type = args[0].ToString();
+                if (!_eventListeners.TryGetValue(type, out var listeners))
+                {
+                    listeners = new List<FenValue>();
+                    _eventListeners[type] = listeners;
+                }
+
+                listeners.Add(args[1]);
+                return FenValue.Undefined;
+            })));
+
+            // removeEventListener(type, callback)
+            Set("removeEventListener", FenValue.FromFunction(new FenFunction("removeEventListener", (args, thisVal) =>
+            {
+                if (args.Length < 2 || !args[0].IsString)
+                {
+                    return FenValue.Undefined;
+                }
+
+                var type = args[0].ToString();
+                if (_eventListeners.TryGetValue(type, out var listeners))
+                {
+                    var callback = args[1];
+                    listeners.RemoveAll(existing => SameCallback(existing, callback));
+                }
+
+                return FenValue.Undefined;
+            })));
+
+            // dispatchEvent(event)
+            Set("dispatchEvent", FenValue.FromFunction(new FenFunction("dispatchEvent", (args, thisVal) =>
+            {
+                if (args.Length == 0 || !args[0].IsObject)
+                {
+                    return FenValue.FromBoolean(false);
+                }
+
+                var evt = args[0].AsObject();
+                var type = evt?.Has("type") == true ? evt.Get("type").ToString() : string.Empty;
+                if (string.IsNullOrWhiteSpace(type))
+                {
+                    return FenValue.FromBoolean(false);
+                }
+
+                DispatchEventToHandlers(type, args[0]);
+                return FenValue.FromBoolean(true);
+            })));
 
             // postMessage(data)
             Set("postMessage", FenValue.FromFunction(new FenFunction("postMessage", (args, thisVal) =>
@@ -131,9 +178,8 @@ namespace FenBrowser.FenEngine.Workers
             })));
             Set("console", FenValue.FromObject(console));
 
-            // onmessage/onerror as getters/setters
-            OnMessage = FenValue.Null;
-            OnError = FenValue.Null;
+            Set("onmessage", FenValue.Null);
+            Set("onerror", FenValue.Null);
         }
 
         /// <summary>
@@ -141,19 +187,11 @@ namespace FenBrowser.FenEngine.Workers
         /// </summary>
         public void DispatchMessage(object data)
         {
-            if (OnMessage.IsUndefined || !OnMessage.IsFunction)
-                return;
-
             var evt = new FenObject();
             evt.Set("data", ConvertToFenValue(data));
             evt.Set("type", FenValue.FromString("message"));
             evt.Set("origin", FenValue.FromString(_origin));
-
-            var fn = OnMessage.AsFunction();
-            if (fn.IsNative && fn.NativeImplementation != null)
-            {
-                fn.NativeImplementation(new FenValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
-            }
+            DispatchEventToHandlers("message", FenValue.FromObject(evt));
         }
 
         /// <summary>
@@ -161,18 +199,51 @@ namespace FenBrowser.FenEngine.Workers
         /// </summary>
         public void DispatchError(Exception ex)
         {
-            if (OnError.IsUndefined || !OnError.IsFunction)
-                return;
-
             var evt = new FenObject();
             evt.Set("message", FenValue.FromString(ex.Message));
             evt.Set("type", FenValue.FromString("error"));
+            DispatchEventToHandlers("error", FenValue.FromObject(evt));
+        }
 
-            var fn = OnError.AsFunction();
-            if (fn.IsNative && fn.NativeImplementation != null)
+        protected void DispatchEventToHandlers(string eventType, FenValue eventObject)
+        {
+            if (string.IsNullOrWhiteSpace(eventType))
             {
-                fn.NativeImplementation(new FenValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
+                return;
             }
+
+            var propertyHandler = Get($"on{eventType}");
+            if (propertyHandler.IsFunction)
+            {
+                propertyHandler.AsFunction().Invoke(new[] { eventObject }, Runtime.Context);
+            }
+
+            if (_eventListeners.TryGetValue(eventType, out var listeners))
+            {
+                var snapshot = listeners.ToArray();
+                foreach (var listener in snapshot)
+                {
+                    if (listener.IsFunction)
+                    {
+                        listener.AsFunction().Invoke(new[] { eventObject }, Runtime.Context);
+                    }
+                }
+            }
+        }
+
+        private static bool SameCallback(FenValue left, FenValue right)
+        {
+            if (!left.IsFunction || !right.IsFunction)
+            {
+                return false;
+            }
+
+            if (ReferenceEquals(left.AsObject(), right.AsObject()))
+            {
+                return true;
+            }
+
+            return string.Equals(left.ToString(), right.ToString(), StringComparison.Ordinal);
         }
 
         private FenValue ConvertToFenValue(object obj)

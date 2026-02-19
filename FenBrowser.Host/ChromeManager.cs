@@ -19,6 +19,7 @@ using FenBrowser.FenEngine.Rendering;
 using FenBrowser.WebDriver;
 using FenBrowser.WebDriver.Commands;
 using FenBrowser.Host.WebDriver;
+using FenBrowser.Host.ProcessIsolation;
 
 namespace FenBrowser.Host
 {
@@ -54,6 +55,7 @@ namespace FenBrowser.Host
         // WebDriver
         private WebDriverServer _webDriverServer;
         private FenBrowserDriver _webDriverAdapter;
+        private IProcessIsolationCoordinator _processIsolation;
 
         // Track Active Tab
         private BrowserTab _currentActiveTab;
@@ -65,6 +67,8 @@ namespace FenBrowser.Host
         public void Initialize(string initialUrl)
         {
             FenLogger.Info("[ChromeManager] Initializing Widgets...", LogCategory.General);
+            _processIsolation = ProcessIsolationCoordinatorFactory.CreateFromEnvironment();
+            _processIsolation.Initialize();
 
             InitializeWidgets(initialUrl);
             InitializeDevTools();
@@ -82,6 +86,7 @@ namespace FenBrowser.Host
 
             // Wire TabManager
             TabManager.Instance.ActiveTabChanged += OnActiveTabChanged;
+            TabManager.Instance.TabAdded += tab => _processIsolation?.OnTabCreated(tab);
             
             // Create Initial Tab
             TabManager.Instance.CreateTab(initialUrl);
@@ -249,17 +254,17 @@ namespace FenBrowser.Host
             
             // DOM Access
             _devToolsServer.InitializeDom(
-                () => WindowManager.Instance.RunOnMainThread(() => tab.Browser.Document).Result,
-                nodeId => WindowManager.Instance.RunOnMainThread(() => {
+                () => RunOnUiThread(() => tab.Browser.Document),
+                nodeId => RunOnUiThread(() => {
                     var node = _devToolsServer.Registry.GetNode(nodeId.Value);
                     tab.Browser.HighlightElement(node as Element);
-                }).Wait()
+                })
             );
             
             // CSS Access
             _devToolsServer.InitializeCss(
-                node => WindowManager.Instance.RunOnMainThread(() => tab.Browser.ComputedStyles.TryGetValue(node, out var s) ? s : null).Result, 
-                node => WindowManager.Instance.RunOnMainThread(() => {
+                node => RunOnUiThread(() => tab.Browser.ComputedStyles.TryGetValue(node, out var s) ? s : null), 
+                node => RunOnUiThread(() => {
                     try
                     {
                         return node is Element el && tab.Browser.CssSources != null 
@@ -270,8 +275,8 @@ namespace FenBrowser.Host
                     {
                         return new System.Collections.Generic.List<CssLoader.MatchedRule>();
                     }
-                }).Result,
-                (node, prop, val) => WindowManager.Instance.RunOnMainThread(() => {
+                }),
+                (node, prop, val) => RunOnUiThread(() => {
                     if (node is Element el) {
                         // Simple style patching
                          var existing = el.GetAttribute("style") ?? "";
@@ -282,9 +287,9 @@ namespace FenBrowser.Host
                          
                          el.SetAttribute("style", string.Join("; ", styles.Select(kv => $"{kv.Key}: {kv.Value}")));
                          tab.Browser.InvalidateComputedStyle(el);
-                    }
-                }).Wait(),
-                () => WindowManager.Instance.RunOnMainThread(() => tab.Browser.RequestRepaint()).Wait()
+                     }
+                }),
+                () => RunOnUiThread(() => tab.Browser.RequestRepaint())
             );
 
             // Update WebDriver focus
@@ -306,6 +311,16 @@ namespace FenBrowser.Host
             }
             
             _devTools.Attach(_devToolsHost);
+        }
+
+        private static T RunOnUiThread<T>(Func<T> action)
+        {
+            return WindowManager.Instance.RunOnMainThread(action).GetAwaiter().GetResult();
+        }
+
+        private static void RunOnUiThread(Action action)
+        {
+            WindowManager.Instance.RunOnMainThread(action).GetAwaiter().GetResult();
         }
 
         private void RegisterKeyboardShortcuts()
@@ -335,6 +350,8 @@ namespace FenBrowser.Host
 
         private void OnActiveTabChanged(BrowserTab tab)
         {
+            _processIsolation?.OnTabActivated(tab);
+
             if (_currentActiveTab != null)
             {
                 _currentActiveTab.Browser.UrlChanged -= OnBrowserUrlChanged;
