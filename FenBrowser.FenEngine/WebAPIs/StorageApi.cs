@@ -98,12 +98,117 @@ namespace FenBrowser.FenEngine.WebAPIs
             _sessionStorage.Clear();
         }
 
+        public static void ClearLocalStorage(bool deletePersistentFile = true)
+        {
+            _localStorage.Clear();
+
+            if (!deletePersistentFile)
+            {
+                Save();
+                return;
+            }
+
+            lock (_ioLock)
+            {
+                try
+                {
+                    if (File.Exists(LocalStoragePath))
+                    {
+                        File.Delete(LocalStoragePath);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[StorageApi] Clear local storage file failed: {ex.Message}");
+                }
+            }
+        }
+
+        public static void ClearAllStorage(bool deletePersistentFile = true)
+        {
+            ClearSessionStorage();
+            ClearLocalStorage(deletePersistentFile);
+        }
+
+        public static string BuildSessionScope(string partitionId, string origin)
+        {
+            var normalizedPartition = string.IsNullOrWhiteSpace(partitionId) ? "default" : partitionId.Trim().ToLowerInvariant();
+            return $"{normalizedPartition}:{NormalizeOrigin(origin)}";
+        }
+
+        public static string GetLocalStorageItem(string origin, string key)
+        {
+            if (string.IsNullOrEmpty(key)) return null;
+            var store = _localStorage.GetOrAdd(NormalizeOrigin(origin), _ => new ConcurrentDictionary<string, string>());
+            return store.TryGetValue(key, out var value) ? value : null;
+        }
+
+        public static void SetLocalStorageItem(string origin, string key, string value)
+        {
+            if (string.IsNullOrEmpty(key)) return;
+            var store = _localStorage.GetOrAdd(NormalizeOrigin(origin), _ => new ConcurrentDictionary<string, string>());
+            store[key] = value ?? string.Empty;
+            Save();
+        }
+
+        public static void RemoveLocalStorageItem(string origin, string key)
+        {
+            if (string.IsNullOrEmpty(key)) return;
+            var store = _localStorage.GetOrAdd(NormalizeOrigin(origin), _ => new ConcurrentDictionary<string, string>());
+            store.TryRemove(key, out _);
+            Save();
+        }
+
+        public static void ClearLocalStorage(string origin)
+        {
+            _localStorage.TryRemove(NormalizeOrigin(origin), out _);
+            Save();
+        }
+
+        public static IReadOnlyDictionary<string, string> GetAllLocalStorageItems(string origin)
+        {
+            var store = _localStorage.GetOrAdd(NormalizeOrigin(origin), _ => new ConcurrentDictionary<string, string>());
+            return new Dictionary<string, string>(store);
+        }
+
+        public static string GetSessionStorageItem(string sessionScope, string key)
+        {
+            if (string.IsNullOrEmpty(key)) return null;
+            var store = _sessionStorage.GetOrAdd(sessionScope ?? "session:null", _ => new ConcurrentDictionary<string, string>());
+            return store.TryGetValue(key, out var value) ? value : null;
+        }
+
+        public static void SetSessionStorageItem(string sessionScope, string key, string value)
+        {
+            if (string.IsNullOrEmpty(key)) return;
+            var store = _sessionStorage.GetOrAdd(sessionScope ?? "session:null", _ => new ConcurrentDictionary<string, string>());
+            store[key] = value ?? string.Empty;
+        }
+
+        public static void RemoveSessionStorageItem(string sessionScope, string key)
+        {
+            if (string.IsNullOrEmpty(key)) return;
+            var store = _sessionStorage.GetOrAdd(sessionScope ?? "session:null", _ => new ConcurrentDictionary<string, string>());
+            store.TryRemove(key, out _);
+        }
+
+        public static void ClearSessionStorage(string sessionScope)
+        {
+            _sessionStorage.TryRemove(sessionScope ?? "session:null", out _);
+        }
+
+        public static IReadOnlyDictionary<string, string> GetAllSessionStorageItems(string sessionScope)
+        {
+            var store = _sessionStorage.GetOrAdd(sessionScope ?? "session:null", _ => new ConcurrentDictionary<string, string>());
+            return new Dictionary<string, string>(store);
+        }
+
         /// <summary>
         /// Creates a persistent, origin-keyed storage (localStorage).
         /// </summary>
         public static FenObject CreateLocalStorage(Func<string> getOrigin)
         {
-             return new DomStorage("localStorage", getOrigin, (origin) => 
+             return new DomStorage("localStorage", () => NormalizeOrigin(getOrigin?.Invoke()), (origin) => 
              {
                  return _localStorage.GetOrAdd(origin, _ => new ConcurrentDictionary<string, string>());
              }, Save);
@@ -114,11 +219,25 @@ namespace FenBrowser.FenEngine.WebAPIs
         /// Note: This simple implementation isolates per instance, which is correct for tabs.
         /// (Reload persistence requires tying this to a session ID, which we skip for now).
         /// </summary>
-        public static FenObject CreateSessionStorage()
+        public static FenObject CreateSessionStorage(Func<string> getOrigin = null)
         {
-            var store = new ConcurrentDictionary<string, string>();
-            // Origin is ignored for the backing store lookup, but we might still use it for events later.
-            return new DomStorage("sessionStorage", () => "session", (origin) => store, null);
+            // Partition by storage instance to avoid cross-tab bleed, then by origin.
+            var partitionId = Guid.NewGuid().ToString("N");
+            var originProvider = getOrigin ?? (() => "session");
+            return new DomStorage("sessionStorage",
+                () => BuildSessionScope(partitionId, originProvider()),
+                (originKey) => _sessionStorage.GetOrAdd(originKey, _ => new ConcurrentDictionary<string, string>()),
+                null);
+        }
+
+        private static string NormalizeOrigin(string origin)
+        {
+            if (string.IsNullOrWhiteSpace(origin))
+            {
+                return "null";
+            }
+
+            return origin.Trim().ToLowerInvariant();
         }
 
         public class DomStorage : FenObject

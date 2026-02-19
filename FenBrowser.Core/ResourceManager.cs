@@ -72,6 +72,7 @@ namespace FenBrowser.Core
         }
 
         private readonly bool _isPrivate;
+        private static int _policyBindingDiagnosticsLogged;
 
         public CspPolicy ActivePolicy { get; set; }
 
@@ -95,11 +96,39 @@ namespace FenBrowser.Core
                 new TrackingPreventionHandler(), // Enhanced Tracking Prevention (Phase 5)
                 new AdBlockHandler(() => BrowserSettings.Instance.EnableTrackingPrevention),
                 new PrivacyHandler(),
+                new SafeBrowsingHandler(() => BrowserSettings.Instance.SafeBrowsing),
                 // Only enable HSTS disk persistence if not private
                 new HstsHandler(_isPrivate ? null : Path.Combine(AppContext.BaseDirectory, "Cache")), 
                 new HttpHandler(http)
             };
             _client = new NetworkClient(handlers);
+            EmitPolicyBindingDiagnostics();
+        }
+
+        private static void EmitPolicyBindingDiagnostics()
+        {
+            if (System.Threading.Interlocked.CompareExchange(ref _policyBindingDiagnosticsLogged, 1, 0) != 0)
+            {
+                return;
+            }
+
+            var settings = BrowserSettings.Instance;
+            var enforced = string.Join(", ", new[]
+            {
+                $"SendDoNotTrack={settings.SendDoNotTrack}",
+                $"BlockThirdPartyCookies={settings.BlockThirdPartyCookies}",
+                $"EnableTrackingPrevention={settings.EnableTrackingPrevention}",
+                $"SafeBrowsing={settings.SafeBrowsing}",
+                $"ImproveBrowser={settings.ImproveBrowser}",
+                $"BlockPopups={settings.BlockPopups}"
+            });
+            var pending = string.Join(", ", new[]
+            {
+                $"UseSecureDNS={settings.UseSecureDNS}"
+            });
+
+            FenLogger.Info($"[PolicyBindings] Runtime-enforced toggles: {enforced}", LogCategory.Network);
+            FenLogger.Warn($"[PolicyBindings] UI toggles pending full runtime wiring: {pending}", LogCategory.Network);
         }
 
         public void ClearCache()
@@ -308,14 +337,15 @@ namespace FenBrowser.Core
                     // Get User-Agent from settings
                     var destLower = (secFetchDest ?? "").ToLowerInvariant();
                     var useMobile = (destLower == "document" || destLower == "iframe");
-                    var selectedUserAgent = BrowserSettings.Instance.SelectedUserAgent;
+                    var settings = BrowserSettings.Instance;
+                    var selectedUserAgent = settings.SelectedUserAgent;
                     var ua = BrowserSettings.GetUserAgentString(selectedUserAgent, useMobile);
                     
                     AddHeaderSafe(req, "User-Agent", ua);
                     
                     // Add Client Hints for modern detection
                     var hints = BrowserSettings.GetClientHints(selectedUserAgent, useMobile);
-                    if (!string.IsNullOrEmpty(hints))
+                    if (settings.ImproveBrowser && !string.IsNullOrEmpty(hints))
                     {
                         AddHeaderSafe(req, "Sec-CH-UA", hints);
                         AddHeaderSafe(req, "Sec-CH-UA-Mobile", useMobile ? "?1" : "?0");
@@ -554,7 +584,7 @@ namespace FenBrowser.Core
 
                     // Add Client Hints
                     var hints = BrowserSettings.GetClientHints(selectedUserAgent, useMobile);
-                    if (!string.IsNullOrEmpty(hints))
+                    if (BrowserSettings.Instance.ImproveBrowser && !string.IsNullOrEmpty(hints))
                     {
                         AddHeaderSafe(req, "Sec-CH-UA", hints);
                         AddHeaderSafe(req, "Sec-CH-UA-Mobile", useMobile ? "?1" : "?0");

@@ -19,6 +19,7 @@ namespace FenBrowser.WebDriver
     public class CommandRouter
     {
         private readonly List<Route> _routes = new();
+        private readonly HashSet<string> _registeredCommands = new(StringComparer.Ordinal);
         
         public CommandRouter()
         {
@@ -120,6 +121,7 @@ namespace FenBrowser.WebDriver
         private void AddRoute(string method, string pathTemplate, string command)
         {
             _routes.Add(new Route(method, pathTemplate, command));
+            _registeredCommands.Add(command);
         }
         
         /// <summary>
@@ -136,6 +138,9 @@ namespace FenBrowser.WebDriver
             
             return null;
         }
+
+        public IReadOnlyCollection<string> GetRegisteredCommands() => _registeredCommands;
+        public int GetRegisteredRouteCount() => _routes.Count;
     }
     
     /// <summary>

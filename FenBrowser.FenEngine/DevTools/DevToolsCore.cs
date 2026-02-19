@@ -12,6 +12,7 @@ using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.DOM;
 using FenBrowser.FenEngine.Rendering;
+using FenBrowser.FenEngine.WebAPIs;
 
 namespace FenBrowser.FenEngine.DevTools
 {
@@ -51,8 +52,8 @@ namespace FenBrowser.FenEngine.DevTools
         private int _requestIdCounter = 0;
 
         // ===== Storage =====
-        private readonly Dictionary<string, string> _localStorage = new();
-        private readonly Dictionary<string, string> _sessionStorage = new();
+        private const string DevToolsStorageOrigin = "devtools://global";
+        private const string DevToolsSessionScope = "devtools-session:global";
         private readonly List<Cookie> _cookies = new();
         private readonly Dictionary<string, object> _indexedDBStores = new();
 
@@ -711,42 +712,42 @@ namespace FenBrowser.FenEngine.DevTools
         // === LocalStorage ===
         public void SetLocalStorage(string key, string value)
         {
-            _localStorage[key] = value;
+            StorageApi.SetLocalStorageItem(DevToolsStorageOrigin, key, value);
         }
 
         public string GetLocalStorage(string key)
         {
-            return _localStorage.TryGetValue(key, out var value) ? value : null;
+            return StorageApi.GetLocalStorageItem(DevToolsStorageOrigin, key);
         }
 
         public void RemoveLocalStorage(string key)
         {
-            _localStorage.Remove(key);
+            StorageApi.RemoveLocalStorageItem(DevToolsStorageOrigin, key);
         }
 
-        public Dictionary<string, string> GetAllLocalStorage() => new(_localStorage);
+        public Dictionary<string, string> GetAllLocalStorage() => new(StorageApi.GetAllLocalStorageItems(DevToolsStorageOrigin));
 
-        public void ClearLocalStorage() => _localStorage.Clear();
+        public void ClearLocalStorage() => StorageApi.ClearLocalStorage(DevToolsStorageOrigin);
 
         // === SessionStorage ===
         public void SetSessionStorage(string key, string value)
         {
-            _sessionStorage[key] = value;
+            StorageApi.SetSessionStorageItem(DevToolsSessionScope, key, value);
         }
 
         public string GetSessionStorage(string key)
         {
-            return _sessionStorage.TryGetValue(key, out var value) ? value : null;
+            return StorageApi.GetSessionStorageItem(DevToolsSessionScope, key);
         }
 
         public void RemoveSessionStorage(string key)
         {
-            _sessionStorage.Remove(key);
+            StorageApi.RemoveSessionStorageItem(DevToolsSessionScope, key);
         }
 
-        public Dictionary<string, string> GetAllSessionStorage() => new(_sessionStorage);
+        public Dictionary<string, string> GetAllSessionStorage() => new(StorageApi.GetAllSessionStorageItems(DevToolsSessionScope));
 
-        public void ClearSessionStorage() => _sessionStorage.Clear();
+        public void ClearSessionStorage() => StorageApi.ClearSessionStorage(DevToolsSessionScope);
 
         // === Cookies ===
         public void SetCookie(Cookie cookie)

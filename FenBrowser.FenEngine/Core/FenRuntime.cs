@@ -3305,7 +3305,7 @@ namespace FenBrowser.FenEngine.Core
             navigator.Set("languages", FenValue.FromObject(CreateArray(new[] { "en-US", "en" })));
             navigator.Set("cookieEnabled", FenValue.FromBoolean(true));
             navigator.Set("onLine", FenValue.FromBoolean(true));
-            navigator.Set("doNotTrack", FenValue.FromString("1")); // Privacy: DNT enabled by default
+            navigator.Set("doNotTrack", FenValue.FromString(BrowserSettings.Instance.SendDoNotTrack ? "1" : "0"));
             // Privacy: Use generic values to prevent fingerprinting (unlike Chrome/Firefox)
             navigator.Set("hardwareConcurrency", FenValue.FromNumber(4)); // Generic, not actual CPU cores
             navigator.Set("deviceMemory", FenValue.FromNumber(8)); // Generic, not actual RAM
@@ -3445,8 +3445,8 @@ namespace FenBrowser.FenEngine.Core
             var localStorage = FenBrowser.FenEngine.WebAPIs.StorageApi.CreateLocalStorage(GetCurrentOrigin);
             SetGlobal("localStorage", FenValue.FromObject(localStorage));
 
-            // sessionStorage - Partitioned using StorageApi (per instance)
-            var sessionStorage = FenBrowser.FenEngine.WebAPIs.StorageApi.CreateSessionStorage();
+            // sessionStorage - Partitioned per runtime instance and origin
+            var sessionStorage = FenBrowser.FenEngine.WebAPIs.StorageApi.CreateSessionStorage(GetCurrentOrigin);
             SetGlobal("sessionStorage", FenValue.FromObject(sessionStorage));
 
             // window object - Comprehensive with all standard properties
@@ -3524,6 +3524,52 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromBoolean(true);
             }));
             window.Set("dispatchEvent", dispatchEventFunc);
+
+            // window.open (popup gate + same-window fallback)
+            var windowOpenFunc = FenValue.FromFunction(new FenFunction("open", (FenValue[] args, FenValue thisVal) =>
+            {
+                if (BrowserSettings.Instance.BlockPopups)
+                {
+                    FenLogger.Warn("[FenRuntime] window.open blocked by BlockPopups policy", LogCategory.General);
+                    return FenValue.Null;
+                }
+
+                var requestedUrl = args.Length > 0 ? args[0].ToString() : string.Empty;
+                if (string.IsNullOrWhiteSpace(requestedUrl))
+                {
+                    return FenValue.Null;
+                }
+
+                try
+                {
+                    if (_historyBridge != null)
+                    {
+                        _historyBridge.PushState(null, string.Empty, requestedUrl);
+                    }
+                }
+                catch { }
+
+                try
+                {
+                    if (Uri.TryCreate(requestedUrl, UriKind.Absolute, out var resolved))
+                    {
+                        location.Set("href", FenValue.FromString(resolved.AbsoluteUri));
+                        location.Set("protocol", FenValue.FromString(resolved.Scheme + ":"));
+                        location.Set("host", FenValue.FromString(resolved.Authority));
+                        location.Set("hostname", FenValue.FromString(resolved.Host));
+                        location.Set("pathname", FenValue.FromString(string.IsNullOrEmpty(resolved.AbsolutePath) ? "/" : resolved.AbsolutePath));
+                    }
+                    else
+                    {
+                        location.Set("href", FenValue.FromString(requestedUrl));
+                    }
+                }
+                catch { }
+
+                // Same-window fallback for now until full popup/tab orchestration is wired.
+                return FenValue.FromObject(window);
+            }));
+            window.Set("open", windowOpenFunc);
             
             SetGlobal("window", FenValue.FromObject(window));
 
@@ -3547,6 +3593,7 @@ namespace FenBrowser.FenEngine.Core
             SetGlobal("addEventListener", addEventListenerFunc);
             SetGlobal("removeEventListener", removeEventListenerFunc);
             SetGlobal("dispatchEvent", dispatchEventFunc);
+            SetGlobal("open", windowOpenFunc);
 
             // globalThis - ES2020 (reference to global object)
             SetGlobal("globalThis", FenValue.FromObject(window));
