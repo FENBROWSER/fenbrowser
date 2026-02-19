@@ -273,8 +273,8 @@ namespace FenBrowser.FenEngine.Storage
 
         private string GetOriginPath(string origin)
         {
-            // Sanitize origin for filesystem
-            var safe = origin.Replace("://", "_").Replace("/", "_").Replace(":", "_");
+            // Origin partition key must remain a safe directory name.
+            var safe = BuildSafeOriginSegment(origin);
             return Path.Combine(_basePath, safe);
         }
 
@@ -282,7 +282,49 @@ namespace FenBrowser.FenEngine.Storage
         {
             var originPath = GetOriginPath(origin);
             Directory.CreateDirectory(originPath);
-            return Path.Combine(originPath, $"{name}.json");
+
+            var safeDbName = SanitizePathSegment(name, "default");
+            var dbPath = Path.GetFullPath(Path.Combine(originPath, $"{safeDbName}.json"));
+            var originRoot = Path.GetFullPath(originPath);
+
+            if (!dbPath.StartsWith(originRoot, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Invalid database path");
+
+            return dbPath;
+        }
+
+        private static string BuildSafeOriginSegment(string origin)
+        {
+            if (string.IsNullOrWhiteSpace(origin))
+                return "origin_null";
+
+            if (Uri.TryCreate(origin, UriKind.Absolute, out var uri))
+            {
+                var port = uri.IsDefaultPort ? string.Empty : $"_{uri.Port}";
+                return SanitizePathSegment($"{uri.Scheme}_{uri.Host}{port}", "origin");
+            }
+
+            return SanitizePathSegment(origin, "origin");
+        }
+
+        private static string SanitizePathSegment(string raw, string fallback)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+                return fallback;
+
+            var cleaned = new string(raw
+                .Select(ch => Path.GetInvalidFileNameChars().Contains(ch) ? '_' : ch)
+                .Select(ch => (ch == '/' || ch == '\\' || ch == ':') ? '_' : ch)
+                .ToArray())
+                .Trim('.', ' ');
+
+            if (string.IsNullOrWhiteSpace(cleaned))
+                cleaned = fallback;
+
+            if (cleaned.Length > 120)
+                cleaned = cleaned.Substring(0, 120);
+
+            return cleaned;
         }
 
         private async Task<DatabaseState> GetDatabaseState(string origin, string name)

@@ -22,10 +22,14 @@ namespace FenBrowser.FenEngine.WebAPIs
         private readonly Dictionary<string, string> _requestHeaders = new Dictionary<string, string>();
         private HttpResponseMessage _response;
         private readonly IExecutionContext _context;
+        private readonly Func<HttpRequestMessage, Task<HttpResponseMessage>> _networkFetch;
         
-        public XMLHttpRequest(IExecutionContext context)
+        public XMLHttpRequest(
+            IExecutionContext context,
+            Func<HttpRequestMessage, Task<HttpResponseMessage>> networkFetch = null)
         {
             _context = context;
+            _networkFetch = networkFetch;
             Set("UNSENT", FenValue.FromNumber(UNSENT));
             Set("OPENED", FenValue.FromNumber(OPENED));
             Set("HEADERS_RECEIVED", FenValue.FromNumber(HEADERS_RECEIVED));
@@ -90,9 +94,8 @@ namespace FenBrowser.FenEngine.WebAPIs
             {
                 try
                 {
-                    using (var client = new HttpClient())
+                    using (var req = new HttpRequestMessage(new HttpMethod(_method), _url))
                     {
-                        var req = new HttpRequestMessage(new HttpMethod(_method), _url);
                         foreach(var h in _requestHeaders)
                         {
                             req.Headers.TryAddWithoutValidation(h.Key, h.Value);
@@ -107,8 +110,12 @@ namespace FenBrowser.FenEngine.WebAPIs
                             }
                         }
 
-                        // Send
-                        _response = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
+                        var fetch = _networkFetch;
+                        if (fetch == null)
+                            throw new InvalidOperationException("XMLHttpRequest network handler not configured");
+
+                        // Send through centralized browser network pipeline.
+                        _response = await fetch(req).ConfigureAwait(false);
                         
                         _context.ScheduleCallback(() => {
                             Set("status", FenValue.FromNumber((int)_response.StatusCode));

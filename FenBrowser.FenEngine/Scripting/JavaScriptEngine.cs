@@ -59,11 +59,13 @@ namespace FenBrowser.FenEngine.Scripting
             try { FenLogger.Debug("[JavaScriptEngine] Constructor Start", LogCategory.JavaScript); } catch { }
             _host = host;
             _storageBackend = new FenBrowser.FenEngine.Storage.FileStorageBackend();
-            
-            // Initialize ServiceWorkerManager with the same storage backend
-            FenBrowser.FenEngine.Workers.ServiceWorkerManager.Instance.Initialize(_storageBackend);
 
             InitRuntime();
+            // Service workers share the same storage and centralized network path as the runtime.
+            FenBrowser.FenEngine.Workers.ServiceWorkerManager.Instance.Initialize(
+                _storageBackend,
+                FetchThroughNetworkHandlerAsync,
+                IsWorkerScriptUriAllowed);
             try { FenLogger.Debug("[JavaScriptEngine] Constructor: InitRuntime Done", LogCategory.JavaScript); } catch { }
             SetupMutationObserver();
             // _mini = new MiniJs.Engine();
@@ -138,6 +140,11 @@ namespace FenBrowser.FenEngine.Scripting
 
             try { FenLogger.Debug("[JavaScriptEngine] InitRuntime: Creating FenRuntime...", LogCategory.JavaScript); } catch { }
             _fenRuntime = new FenRuntime(context, _storageBackend, this);
+            _fenRuntime.NetworkFetchHandler = async (req) =>
+            {
+                if (FetchHandler == null) throw new Exception("FetchHandler not configured on engine");
+                return await FetchHandler(req).ConfigureAwait(false);
+            };
             try { FenLogger.Debug("[JavaScriptEngine] InitRuntime: FenRuntime Created", LogCategory.JavaScript); } catch { }
             // Connect console messages to BrowserHost
             _fenRuntime.OnConsoleMessage = msg => 
@@ -704,9 +711,33 @@ namespace FenBrowser.FenEngine.Scripting
             
             // Notifications API - Notification constructor
             _fenRuntime.SetGlobal("Notification", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.NotificationsAPI.CreateNotificationConstructor()));
+        }
 
-            // IndexedDB API
-            FenBrowser.FenEngine.WebAPIs.IndexedDBService.Register(_fenRuntime.Context);
+        private async Task<string> FetchThroughNetworkHandlerAsync(Uri uri)
+        {
+            if (uri == null) throw new ArgumentNullException(nameof(uri));
+            if (FetchHandler == null) throw new InvalidOperationException("FetchHandler not configured on engine");
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+            var response = await FetchHandler(request).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            return await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+        }
+
+        private bool IsWorkerScriptUriAllowed(Uri scriptUri)
+        {
+            if (scriptUri == null) return false;
+            if (!(scriptUri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                  scriptUri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+            {
+                return false;
+            }
+
+            var baseUri = _ctx?.BaseUri;
+            if (baseUri != null && !CorsHandler.IsSameOrigin(scriptUri, baseUri))
+                return false;
+
+            return true;
         }
 
 

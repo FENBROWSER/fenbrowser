@@ -61,7 +61,16 @@ namespace FenBrowser.FenEngine.WebAPIs
                         var sw = FenBrowser.FenEngine.Workers.ServiceWorkerManager.Instance.GetController(request.Url);
                         if (sw != null)
                         {
-                             // TODO: Implement SW interception properly
+                            var fetchEvt = new FetchEvent("fetch", request, context);
+                            var handled = await FenBrowser.FenEngine.Workers.ServiceWorkerManager.Instance
+                                .DispatchFetchEvent(sw, fetchEvt)
+                                .ConfigureAwait(false);
+                            if (handled)
+                            {
+                                DiagnosticPaths.AppendRootText("js_debug.log", $"[Fetch] ServiceWorker handled event for {request.Url}\n");
+                                // Response extraction from respondWith() promise is still pending.
+                                // Fall through to network fetch for now.
+                            }
                         }
 
                         // 2. Network Fetch via Handler

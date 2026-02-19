@@ -194,6 +194,23 @@ namespace FenBrowser.Tests.Workers
         }
 
         [Fact]
+        public void WorkerConstructor_BlocksFileSchemeScriptUrls()
+        {
+            var constructor = new WorkerConstructor(
+                "https://example.com",
+                new InMemoryStorageBackend(),
+                new Uri("https://example.com/app/"),
+                _ => Task.FromResult(string.Empty),
+                _ => true);
+
+            var fn = constructor.GetConstructorFunction();
+            Assert.NotNull(fn.NativeImplementation);
+
+            Assert.Throws<ArgumentException>(() =>
+                fn.NativeImplementation(new[] { FenValue.FromString("file:///C:/temp/worker.js") }, FenValue.Undefined));
+        }
+
+        [Fact]
         public void WorkerGlobalScope_HasRequiredProperties()
         {
             var runtime = new WorkerRuntime("test.js", "https://example.com");

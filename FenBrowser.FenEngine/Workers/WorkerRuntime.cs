@@ -6,7 +6,6 @@ using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core; // Added for IExecutionContext
 using FenBrowser.FenEngine.Core.EventLoop;
 using FenBrowser.FenEngine.Core.Interfaces; // Added for IExecutionContext
-using FenBrowser.Core.Network;
 
 namespace FenBrowser.FenEngine.Workers
 {
@@ -23,6 +22,10 @@ namespace FenBrowser.FenEngine.Workers
         private readonly string _origin;
         private readonly FenBrowser.FenEngine.Storage.IStorageBackend _storageBackend;
         private readonly string _scriptUrl;
+        private readonly Uri _resolvedScriptUri;
+        private readonly Func<Uri, Task<string>> _scriptFetcher;
+        private readonly Func<Uri, bool> _scriptUriAllowed;
+        private readonly bool _isServiceWorker;
         private readonly TaskQueue _taskQueue;
         private readonly MicrotaskQueue _microtaskQueue;
         private readonly CancellationTokenSource _cts;
@@ -49,16 +52,38 @@ namespace FenBrowser.FenEngine.Workers
         /// </summary>
         /// <param name="scriptUrl">URL of the worker script</param>
         /// <param name="origin">Origin for security context</param>
-        public WorkerRuntime(string scriptUrl, string origin, FenBrowser.FenEngine.Storage.IStorageBackend storageBackend = null)
+        public WorkerRuntime(
+            string scriptUrl,
+            string origin,
+            FenBrowser.FenEngine.Storage.IStorageBackend storageBackend = null,
+            Func<Uri, Task<string>> scriptFetcher = null,
+            Func<Uri, bool> scriptUriAllowed = null,
+            bool isServiceWorker = false)
         {
             _scriptUrl = scriptUrl ?? throw new ArgumentNullException(nameof(scriptUrl));
             _origin = origin ?? "null";
             _storageBackend = storageBackend ?? new FenBrowser.FenEngine.Storage.InMemoryStorageBackend();
+            _scriptFetcher = scriptFetcher;
+            _scriptUriAllowed = scriptUriAllowed;
+            _isServiceWorker = isServiceWorker;
             _taskQueue = new TaskQueue();
             _microtaskQueue = new MicrotaskQueue();
             _cts = new CancellationTokenSource();
             Context = new FenBrowser.FenEngine.Core.ExecutionContext(null); // Basic context for worker
             _isRunning = true;
+
+            if (!Uri.TryCreate(_scriptUrl, UriKind.Absolute, out _resolvedScriptUri))
+            {
+                if (Uri.TryCreate(_origin, UriKind.Absolute, out var originUri) &&
+                    Uri.TryCreate(originUri, _scriptUrl, out var resolvedFromOrigin))
+                {
+                    _resolvedScriptUri = resolvedFromOrigin;
+                }
+                else
+                {
+                    throw new ArgumentException($"Worker script URL must be absolute or origin-resolvable: {_scriptUrl}", nameof(scriptUrl));
+                }
+            }
 
             // Start worker thread
             _workerThread = new Thread(WorkerThreadProc)
@@ -127,7 +152,9 @@ namespace FenBrowser.FenEngine.Workers
             try
             {
                 // Initialize dedicated runtime
-                _globalScope = new WorkerGlobalScope(this, _origin);
+                _globalScope = _isServiceWorker
+                    ? new ServiceWorkerGlobalScope(this, _origin, string.Empty, _storageBackend)
+                    : new WorkerGlobalScope(this, _origin);
                 _runtime = new FenRuntime(); // We need a way to set the global object or prototype
                 
                 // Inject globals into the worker runtime
@@ -140,16 +167,7 @@ namespace FenBrowser.FenEngine.Workers
                 // Load and execute worker script
                 _ = Task.Run(async () => {
                     try {
-                        string scriptContent = "";
-                        if (_scriptUrl.StartsWith("http")) {
-                            using (var client = new System.Net.Http.HttpClient())
-                            {
-                                scriptContent = await client.GetStringAsync(new Uri(_scriptUrl));
-                            }
-                        } else {
-                            // Local file handling or relative URL
-                            scriptContent = File.Exists(_scriptUrl) ? File.ReadAllText(_scriptUrl) : "";
-                        }
+                        var scriptContent = await LoadWorkerScriptAsync().ConfigureAwait(false);
 
                         if (!string.IsNullOrEmpty(scriptContent)) {
                             _taskQueue.Enqueue(() => {
@@ -203,6 +221,33 @@ namespace FenBrowser.FenEngine.Workers
             FenLogger.Debug("[WorkerRuntime] Worker thread stopped", LogCategory.JavaScript);
         }
 
+        public async Task<bool> DispatchServiceWorkerFetchAsync(FenBrowser.FenEngine.WebAPIs.FetchEvent fetchEvent)
+        {
+            if (!_isServiceWorker || fetchEvent == null || !_isRunning || _isDisposed)
+                return false;
+
+            if (_globalScope is not ServiceWorkerGlobalScope swScope)
+                return false;
+
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _taskQueue.Enqueue(() =>
+            {
+                try
+                {
+                    swScope.DispatchExtendableEvent("fetch", FenValue.FromObject(fetchEvent));
+                    tcs.TrySetResult(fetchEvent.RespondWithPromise != null);
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Error($"[WorkerRuntime] Fetch event dispatch error: {ex.Message}", LogCategory.Errors);
+                    OnError?.Invoke(ex);
+                    tcs.TrySetResult(false);
+                }
+            }, TaskSource.Networking, "ServiceWorker.FetchEvent");
+
+            return await tcs.Task.ConfigureAwait(false);
+        }
+
         /// <summary>
         /// Send a message from worker to main thread (called by worker script)
         /// </summary>
@@ -234,6 +279,18 @@ namespace FenBrowser.FenEngine.Workers
         private void InvokeOnMessage(WorkerMessageEvent evt)
         {
             _globalScope?.DispatchMessage(evt.Data);
+        }
+
+        private async Task<string> LoadWorkerScriptAsync()
+        {
+            if (_scriptUriAllowed != null && !_scriptUriAllowed(_resolvedScriptUri))
+                throw new UnauthorizedAccessException($"Worker script blocked by policy: {_resolvedScriptUri}");
+
+            var fetcher = _scriptFetcher;
+            if (fetcher == null)
+                throw new InvalidOperationException("Worker script fetcher is not configured");
+
+            return await fetcher(_resolvedScriptUri).ConfigureAwait(false);
         }
 
         public void Dispose()

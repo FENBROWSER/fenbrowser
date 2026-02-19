@@ -28,12 +28,19 @@ namespace FenBrowser.FenEngine.Workers
         private readonly ConcurrentDictionary<string, WorkerRuntime> _activeRuntimes = new();
         
         private FenBrowser.FenEngine.Storage.IStorageBackend _storageBackend;
+        private Func<Uri, Task<string>> _scriptFetcher;
+        private Func<Uri, bool> _scriptUriAllowed;
 
         private ServiceWorkerManager() { }
         
-        public void Initialize(FenBrowser.FenEngine.Storage.IStorageBackend storageBackend)
+        public void Initialize(
+            FenBrowser.FenEngine.Storage.IStorageBackend storageBackend,
+            Func<Uri, Task<string>> scriptFetcher = null,
+            Func<Uri, bool> scriptUriAllowed = null)
         {
             _storageBackend = storageBackend;
+            _scriptFetcher = scriptFetcher;
+            _scriptUriAllowed = scriptUriAllowed;
         }
 
         public async Task<ServiceWorkerRegistration> Register(string scriptUrl, string scope)
@@ -121,7 +128,20 @@ namespace FenBrowser.FenEngine.Workers
                 if (reg.Active  == null)
                 {
                     // Create actual runtime for events
-                    var runtime = new WorkerRuntime(scriptUrl, scope, _storageBackend);
+                    var scriptUri = ResolveScriptUri(scriptUrl, scope);
+                    if (scriptUri == null)
+                        throw new InvalidOperationException($"Invalid service worker script URL: {scriptUrl}");
+
+                    if (_scriptUriAllowed != null && !_scriptUriAllowed(scriptUri))
+                        throw new UnauthorizedAccessException($"Service worker script blocked by policy: {scriptUri}");
+
+                    var runtime = new WorkerRuntime(
+                        scriptUri.ToString(),
+                        scope,
+                        _storageBackend,
+                        _scriptFetcher,
+                        _scriptUriAllowed,
+                        isServiceWorker: true);
                     _activeRuntimes[scope] = runtime;
                     
                     ActivateWorker(scope, reg, sw);
@@ -129,6 +149,7 @@ namespace FenBrowser.FenEngine.Workers
             }
             catch (Exception ex)
             {
+                FenBrowser.Core.FenLogger.Error($"[ServiceWorkerManager] Runtime start failed: {ex.Message}", LogCategory.ServiceWorker);
                 sw.UpdateState("redundant");
             }
         }
@@ -140,11 +161,34 @@ namespace FenBrowser.FenEngine.Workers
             // Lookup runtime by scope directly
             if (_activeRuntimes.TryGetValue(sw.Scope, out var runtime))
             {
-                 // TODO: Implement actual runtime dispatch
                 FenBrowser.Core.FenLogger.Debug($"[ServiceWorkerManager] Dispatch FetchEvent to {sw.Scope}", LogCategory.ServiceWorker);
-                return false;
+                return await runtime.DispatchServiceWorkerFetchAsync(fetchEvt).ConfigureAwait(false);
             }
             return false;
+        }
+
+        private static Uri ResolveScriptUri(string scriptUrl, string scope)
+        {
+            if (string.IsNullOrWhiteSpace(scriptUrl))
+                return null;
+
+            if (Uri.TryCreate(scriptUrl, UriKind.Absolute, out var absolute))
+                return IsHttpScheme(absolute) ? absolute : null;
+
+            if (Uri.TryCreate(scope, UriKind.Absolute, out var scopeUri) &&
+                Uri.TryCreate(scopeUri, scriptUrl, out var relative))
+            {
+                return IsHttpScheme(relative) ? relative : null;
+            }
+
+            return null;
+        }
+
+        private static bool IsHttpScheme(Uri uri)
+        {
+            if (uri == null) return false;
+            return uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                   uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
         }
 
         private void ActivateWorker(string scope, ServiceWorkerRegistration reg, ServiceWorker sw)

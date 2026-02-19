@@ -65,14 +65,10 @@ namespace FenBrowser.Tests.Workers
             req.Set("url", FenValue.FromString("https://example.com/api/data"));
             var evt = new FetchEvent("fetch", req, mockContext);
 
-            // Mock respondWith
-            // We need to simulate the SW calling evt.respondWith(promise)
-            // Since we don't have a real JS engine running the SW script, we manually invoke it?
-            // Wait, DispatchFetchEvent returns false because we didn't implement runtime dispatch.
-            // So this test expects FALSE for now (network fallback).
+            // Without a script-provided onfetch/respondWith path, dispatch falls back to network.
             
             var handled = await _manager.DispatchFetchEvent(sw, evt);
-            Assert.False(handled); // Because our DispatchFetchEvent stub returns false
+            Assert.False(handled);
             
             // Ideally we'd test true handling, but that requires full runtime injection which is mocking heavy.
             // We can manually set the respondWith promise on the event to verify the event structure works.

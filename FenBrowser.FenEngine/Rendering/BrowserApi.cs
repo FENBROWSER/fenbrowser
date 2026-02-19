@@ -188,7 +188,7 @@ namespace FenBrowser.FenEngine.Rendering
     public sealed class BrowserHost : IBrowser, IDisposable, IHistoryBridge
     {
         private readonly CustomHtmlEngine _engine = new CustomHtmlEngine();
-        private readonly ResourceManager _resources = new ResourceManager(new HttpClient());
+        private readonly ResourceManager _resources;
         private readonly NavigationManager _navManager;
         private readonly FenBrowser.FenEngine.Core.EngineLoop _engineLoop; // Phase 5: Engine Loop
         private readonly InputManager _inputManager = new InputManager();
