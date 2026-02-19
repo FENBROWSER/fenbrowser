@@ -291,7 +291,10 @@ namespace FenBrowser.Core
                 var directive = "default-src";
                 if (dest == "script") directive = "script-src";
                 else if (dest == "style") directive = "style-src";
-                else if (dest == "worker") directive = "child-src"; // or worker-src
+                else if (dest == "worker")
+                {
+                    directive = ActivePolicy.Directives.ContainsKey("worker-src") ? "worker-src" : "child-src";
+                }
                 else if (dest == "iframe") directive = "frame-src";
                 
                 if (directive != "default-src" || !string.IsNullOrEmpty(dest))

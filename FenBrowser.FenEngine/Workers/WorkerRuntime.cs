@@ -29,6 +29,7 @@ namespace FenBrowser.FenEngine.Workers
         private readonly TaskQueue _taskQueue;
         private readonly MicrotaskQueue _microtaskQueue;
         private readonly CancellationTokenSource _cts;
+        private readonly AutoResetEvent _taskSignal;
         private readonly Thread _workerThread;
         private bool _isRunning;
         private bool _isDisposed;
@@ -69,6 +70,7 @@ namespace FenBrowser.FenEngine.Workers
             _taskQueue = new TaskQueue();
             _microtaskQueue = new MicrotaskQueue();
             _cts = new CancellationTokenSource();
+            _taskSignal = new AutoResetEvent(false);
             Context = new FenBrowser.FenEngine.Core.ExecutionContext(null); // Basic context for worker
             _isRunning = true;
 
@@ -126,6 +128,7 @@ namespace FenBrowser.FenEngine.Workers
                     OnError?.Invoke(ex);
                 }
             }, TaskSource.Messaging, "Worker.postMessage");
+            _taskSignal.Set();
         }
 
         /// <summary>
@@ -140,6 +143,7 @@ namespace FenBrowser.FenEngine.Workers
             _cts.Cancel();
             _taskQueue.Clear();
             _microtaskQueue.Clear();
+            _taskSignal.Set();
         }
 
         /// <summary>
@@ -179,6 +183,7 @@ namespace FenBrowser.FenEngine.Workers
                                     OnError?.Invoke(ex);
                                 }
                             }, TaskSource.Networking, "Worker-ScriptLoad");
+                            _taskSignal.Set();
                         }
                     } catch (Exception ex) {
                         FenLogger.Error($"[WorkerRuntime] Script fetch error: {ex.Message}", LogCategory.Errors);
@@ -207,8 +212,8 @@ namespace FenBrowser.FenEngine.Workers
                     }
                     else
                     {
-                        // No tasks, sleep briefly
-                        Thread.Sleep(10);
+                        // No tasks ready; wait briefly for new work.
+                        _taskSignal.WaitOne(10);
                     }
                 }
             }
@@ -229,23 +234,31 @@ namespace FenBrowser.FenEngine.Workers
             if (_globalScope is not ServiceWorkerGlobalScope swScope)
                 return false;
 
-            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var dispatchDone = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             _taskQueue.Enqueue(() =>
             {
                 try
                 {
                     swScope.DispatchExtendableEvent("fetch", FenValue.FromObject(fetchEvent));
-                    tcs.TrySetResult(fetchEvent.RespondWithPromise != null);
+                    dispatchDone.TrySetResult(true);
                 }
                 catch (Exception ex)
                 {
                     FenLogger.Error($"[WorkerRuntime] Fetch event dispatch error: {ex.Message}", LogCategory.Errors);
                     OnError?.Invoke(ex);
-                    tcs.TrySetResult(false);
+                    dispatchDone.TrySetResult(false);
                 }
             }, TaskSource.Networking, "ServiceWorker.FetchEvent");
+            _taskSignal.Set();
 
-            return await tcs.Task.ConfigureAwait(false);
+            var dispatched = await dispatchDone.Task.ConfigureAwait(false);
+            if (!dispatched)
+            {
+                return false;
+            }
+
+            // Spec requires respondWith() registration during fetch event dispatch.
+            return await fetchEvent.WaitForRespondWithRegistrationAsync(TimeSpan.FromMilliseconds(200)).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -300,6 +313,7 @@ namespace FenBrowser.FenEngine.Workers
             
             Terminate();
             _cts.Dispose();
+            _taskSignal.Dispose();
             
             FenLogger.Debug("[WorkerRuntime] Worker disposed", LogCategory.JavaScript);
         }

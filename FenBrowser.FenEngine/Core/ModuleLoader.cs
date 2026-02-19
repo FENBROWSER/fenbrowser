@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using FenBrowser.Core.Network.Handlers;
 using FenBrowser.FenEngine.Core.Interfaces;
 
 namespace FenBrowser.FenEngine.Core
@@ -90,12 +91,21 @@ namespace FenBrowser.FenEngine.Core
 
                 if (TryResolveImportMap(baseUri, specifier, out var mapResolved))
                 {
+                    if (Uri.TryCreate(mapResolved, UriKind.Absolute, out var mapUri) && IsDisallowedModuleUri(mapUri, baseUri))
+                    {
+                        throw new UnauthorizedAccessException($"Module import-map resolution blocked: {mapResolved}");
+                    }
                     return mapResolved;
                 }
 
                 if (Uri.TryCreate(baseUri, specifier, out var resolved))
                 {
-                    return NormalizeResolvedModuleUri(specifier, resolved).AbsoluteUri;
+                    var normalized = NormalizeResolvedModuleUri(specifier, resolved);
+                    if (IsDisallowedModuleUri(normalized, baseUri))
+                    {
+                        throw new UnauthorizedAccessException($"Module resolution blocked: {normalized}");
+                    }
+                    return normalized.AbsoluteUri;
                 }
 
                 // Handle bare module specifiers (e.g., "react", "lodash")
@@ -110,6 +120,10 @@ namespace FenBrowser.FenEngine.Core
                 }
 
                 return specifier; // Fallback
+            }
+            catch (UnauthorizedAccessException)
+            {
+                throw;
             }
             catch
             {
@@ -193,6 +207,37 @@ namespace FenBrowser.FenEngine.Core
             return builder.Uri;
         }
 
+        private bool IsDisallowedModuleUri(Uri resolved, Uri referrer)
+        {
+            if (resolved == null || !resolved.IsAbsoluteUri)
+            {
+                return false;
+            }
+
+            if (_uriPolicy != null && !_uriPolicy(resolved))
+            {
+                return true;
+            }
+
+            var scheme = (resolved.Scheme ?? string.Empty).ToLowerInvariant();
+            if (scheme != "http" && scheme != "https" && scheme != "file")
+            {
+                return true;
+            }
+
+            if ((scheme == "http" || scheme == "https") &&
+                referrer != null &&
+                referrer.IsAbsoluteUri &&
+                (string.Equals(referrer.Scheme, "http", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(referrer.Scheme, "https", StringComparison.OrdinalIgnoreCase)) &&
+                !CorsHandler.IsSameOrigin(resolved, referrer))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
         /// <summary>
         /// Resolve bare module specifiers using node_modules lookup algorithm
         /// </summary>
@@ -267,6 +312,10 @@ namespace FenBrowser.FenEngine.Core
             {
                 if (Uri.TryCreate(path, UriKind.Absolute, out var uri))
                 {
+                    if (IsDisallowedModuleUri(uri, _context?.CurrentModulePath != null && Uri.TryCreate(_context.CurrentModulePath, UriKind.Absolute, out var currentModuleUri) ? currentModuleUri : null))
+                    {
+                        throw new UnauthorizedAccessException($"Module load blocked by policy: {uri}");
+                    }
                     if (_uriPolicy != null && !_uriPolicy(uri))
                     {
                         throw new UnauthorizedAccessException($"Module load blocked by policy: {uri}");

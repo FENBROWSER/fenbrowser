@@ -1,6 +1,8 @@
 using System;
+using System.Threading.Tasks;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.FenEngine.Core.Types;
 
 namespace FenBrowser.FenEngine.WebAPIs
 {
@@ -11,6 +13,8 @@ namespace FenBrowser.FenEngine.WebAPIs
     {
         private readonly IObject _request;
         private readonly IExecutionContext _context;
+        private readonly TaskCompletionSource<bool> _respondWithRegistered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public FetchEvent(string type, IObject request, IExecutionContext context) 
         {
@@ -25,6 +29,7 @@ namespace FenBrowser.FenEngine.WebAPIs
 
         // Response promise set by respondWith
         public FenObject RespondWithPromise { get; private set; }
+        public bool HasRespondWith => RespondWithPromise != null;
 
         private FenValue RespondWith(FenValue[] args, FenValue thisVal)
         {
@@ -34,8 +39,127 @@ namespace FenBrowser.FenEngine.WebAPIs
             if (promise != null)
             {
                 RespondWithPromise = promise as FenObject;
+                _respondWithRegistered.TrySetResult(true);
             }
             return FenValue.Undefined;
+        }
+
+        public async Task<bool> WaitForRespondWithRegistrationAsync(TimeSpan timeout)
+        {
+            if (HasRespondWith)
+            {
+                return true;
+            }
+
+            var completed = await Task.WhenAny(_respondWithRegistered.Task, Task.Delay(timeout)).ConfigureAwait(false);
+            if (completed != _respondWithRegistered.Task)
+            {
+                return false;
+            }
+
+            return await _respondWithRegistered.Task.ConfigureAwait(false);
+        }
+
+        public async Task<RespondWithSettlement> WaitForRespondWithSettlementAsync(TimeSpan timeout)
+        {
+            if (!HasRespondWith || RespondWithPromise == null)
+            {
+                return RespondWithSettlement.NotHandled();
+            }
+
+            if (TryGetLegacySettledState(RespondWithPromise, out var legacy))
+            {
+                return legacy;
+            }
+
+            var settle = new TaskCompletionSource<RespondWithSettlement>(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (!TryAttachPromiseSettlementHandlers(RespondWithPromise, settle))
+            {
+                return RespondWithSettlement.NotHandled();
+            }
+
+            var completed = await Task.WhenAny(settle.Task, Task.Delay(timeout)).ConfigureAwait(false);
+            if (completed != settle.Task)
+            {
+                return RespondWithSettlement.Timeout();
+            }
+
+            return await settle.Task.ConfigureAwait(false);
+        }
+
+        private bool TryAttachPromiseSettlementHandlers(FenObject promise, TaskCompletionSource<RespondWithSettlement> settle)
+        {
+            if (promise == null)
+            {
+                return false;
+            }
+
+            if (promise is JsPromise jsPromise)
+            {
+                jsPromise.Then(
+                    FenValue.FromFunction(new FenFunction("swRespondWithFulfilled", (a, _) =>
+                    {
+                        settle.TrySetResult(RespondWithSettlement.Fulfilled(a.Length > 0 ? a[0] : FenValue.Undefined));
+                        return FenValue.Undefined;
+                    })),
+                    FenValue.FromFunction(new FenFunction("swRespondWithRejected", (a, _) =>
+                    {
+                        settle.TrySetResult(RespondWithSettlement.Rejected(a.Length > 0 ? a[0] : FenValue.Undefined));
+                        return FenValue.Undefined;
+                    })));
+                return true;
+            }
+
+            var then = promise.Get("then");
+            if (!then.IsFunction)
+            {
+                return false;
+            }
+
+            var resolveFn = FenValue.FromFunction(new FenFunction("swRespondWithFulfilled", (a, _) =>
+            {
+                settle.TrySetResult(RespondWithSettlement.Fulfilled(a.Length > 0 ? a[0] : FenValue.Undefined));
+                return FenValue.Undefined;
+            }));
+
+            var rejectFn = FenValue.FromFunction(new FenFunction("swRespondWithRejected", (a, _) =>
+            {
+                settle.TrySetResult(RespondWithSettlement.Rejected(a.Length > 0 ? a[0] : FenValue.Undefined));
+                return FenValue.Undefined;
+            }));
+
+            then.AsFunction().Invoke(new[] { resolveFn, rejectFn }, _context);
+            return true;
+        }
+
+        private static bool TryGetLegacySettledState(FenObject promise, out RespondWithSettlement settlement)
+        {
+            settlement = default;
+            if (promise == null)
+            {
+                return false;
+            }
+
+            var stateValue = promise.Get("__state");
+            if (stateValue.IsUndefined)
+            {
+                return false;
+            }
+
+            var state = stateValue.ToString();
+            if (string.Equals(state, "fulfilled", StringComparison.OrdinalIgnoreCase))
+            {
+                settlement = RespondWithSettlement.Fulfilled(promise.Get("__result"));
+                return true;
+            }
+
+            if (string.Equals(state, "rejected", StringComparison.OrdinalIgnoreCase))
+            {
+                settlement = RespondWithSettlement.Rejected(promise.Get("__reason"));
+                return true;
+            }
+
+            return false;
         }
 
         private FenValue WaitUntil(FenValue[] args, FenValue thisVal)
@@ -43,5 +167,43 @@ namespace FenBrowser.FenEngine.WebAPIs
             // TODO: Track lifetime extension
             return FenValue.Undefined;
         }
+    }
+
+    public readonly struct RespondWithSettlement
+    {
+        public bool IsHandled { get; }
+        public bool IsSettled { get; }
+        public bool IsFulfilled { get; }
+        public bool IsRejected { get; }
+        public bool IsTimeout { get; }
+        public FenValue Value { get; }
+
+        private RespondWithSettlement(
+            bool isHandled,
+            bool isSettled,
+            bool isFulfilled,
+            bool isRejected,
+            bool isTimeout,
+            FenValue value)
+        {
+            IsHandled = isHandled;
+            IsSettled = isSettled;
+            IsFulfilled = isFulfilled;
+            IsRejected = isRejected;
+            IsTimeout = isTimeout;
+            Value = value;
+        }
+
+        public static RespondWithSettlement NotHandled() =>
+            new(false, false, false, false, false, FenValue.Undefined);
+
+        public static RespondWithSettlement Timeout() =>
+            new(true, false, false, false, true, FenValue.Undefined);
+
+        public static RespondWithSettlement Fulfilled(FenValue value) =>
+            new(true, true, true, false, false, value);
+
+        public static RespondWithSettlement Rejected(FenValue reason) =>
+            new(true, true, false, true, false, reason);
     }
 }

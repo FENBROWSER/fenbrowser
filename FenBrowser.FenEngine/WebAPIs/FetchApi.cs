@@ -68,8 +68,31 @@ namespace FenBrowser.FenEngine.WebAPIs
                             if (handled)
                             {
                                 DiagnosticPaths.AppendRootText("js_debug.log", $"[Fetch] ServiceWorker handled event for {request.Url}\n");
-                                // Response extraction from respondWith() promise is still pending.
-                                // Fall through to network fetch for now.
+                                var swSettlement = await fetchEvt
+                                    .WaitForRespondWithSettlementAsync(TimeSpan.FromMilliseconds(1000))
+                                    .ConfigureAwait(false);
+
+                                if (swSettlement.IsFulfilled &&
+                                    TryCreateJsResponseFromServiceWorkerValue(swSettlement.Value, context, out var swResponse))
+                                {
+                                    resolve.Invoke(new FenValue[] { FenValue.FromObject(swResponse) }, context);
+                                    return;
+                                }
+
+                                if (swSettlement.IsRejected)
+                                {
+                                    var rejection = swSettlement.Value.IsUndefined ? "respondWith() rejected" : swSettlement.Value.ToString();
+                                    throw new Exception($"ServiceWorker respondWith rejection: {rejection}");
+                                }
+
+                                if (swSettlement.IsTimeout)
+                                {
+                                    DiagnosticPaths.AppendRootText("js_debug.log", $"[Fetch] ServiceWorker respondWith timeout for {request.Url}; falling back to network\n");
+                                }
+                                else
+                                {
+                                    DiagnosticPaths.AppendRootText("js_debug.log", $"[Fetch] ServiceWorker provided unrecognized response for {request.Url}; falling back to network\n");
+                                }
                             }
                         }
 
@@ -108,6 +131,97 @@ namespace FenBrowser.FenEngine.WebAPIs
                  });
                  return FenValue.Undefined;
              })), context));
+        }
+
+        private static bool TryCreateJsResponseFromServiceWorkerValue(FenValue value, IExecutionContext context, out JsResponse jsResponse)
+        {
+            jsResponse = null;
+            if (!value.IsObject)
+            {
+                return false;
+            }
+
+            if (value.AsObject() is JsResponse existingResponse)
+            {
+                jsResponse = existingResponse;
+                return true;
+            }
+
+            var obj = value.AsObject();
+            if (obj == null)
+            {
+                return false;
+            }
+
+            var status = 200;
+            if (obj.Has("status") && obj.Get("status").IsNumber)
+            {
+                status = (int)obj.Get("status").ToNumber();
+            }
+
+            if (!Enum.IsDefined(typeof(System.Net.HttpStatusCode), status))
+            {
+                status = 200;
+            }
+
+            var response = new HttpResponseMessage((System.Net.HttpStatusCode)status);
+
+            if (obj.Has("body"))
+            {
+                var bodyValue = obj.Get("body");
+                if (!bodyValue.IsUndefined && !bodyValue.IsNull)
+                {
+                    response.Content = new StringContent(bodyValue.ToString());
+                }
+            }
+
+            if (obj.Has("headers"))
+            {
+                var headersValue = obj.Get("headers");
+                if (headersValue.IsObject)
+                {
+                    TryCopyHeaders(headersValue.AsObject(), response);
+                }
+            }
+
+            jsResponse = new JsResponse(response, context);
+            return true;
+        }
+
+        private static void TryCopyHeaders(IObject headerObject, HttpResponseMessage response)
+        {
+            if (headerObject == null || response == null)
+            {
+                return;
+            }
+
+            if (headerObject is JsHeaders jsHeaders)
+            {
+                foreach (var header in jsHeaders.GetHeaders())
+                {
+                    TryApplyHeader(response, header.Key, header.Value);
+                }
+                return;
+            }
+
+            foreach (var key in headerObject.Keys())
+            {
+                TryApplyHeader(response, key, headerObject.Get(key).ToString());
+            }
+        }
+
+        private static void TryApplyHeader(HttpResponseMessage response, string key, string value)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                return;
+            }
+
+            if (!response.Headers.TryAddWithoutValidation(key, value))
+            {
+                response.Content ??= new StringContent(string.Empty);
+                response.Content.Headers.TryAddWithoutValidation(key, value);
+            }
         }
     }
 
