@@ -2,7 +2,6 @@ using SkiaSharp;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Net.Http;
 using System.Threading.Tasks;
 using System.IO;
 using System.Threading;
@@ -70,8 +69,6 @@ namespace FenBrowser.FenEngine.Rendering
         private static readonly ConcurrentDictionary<string, SKBitmap> _legacyCache = 
             new ConcurrentDictionary<string, SKBitmap>();
         
-        private static readonly HttpClient _httpClient;
-        
         // ========== Lazy Loading Support ==========
         private static readonly ConcurrentDictionary<string, LazyImageInfo> _lazyRegistry = 
             new ConcurrentDictionary<string, LazyImageInfo>();
@@ -104,20 +101,12 @@ namespace FenBrowser.FenEngine.Rendering
         // RULE 3 & 5: SVG rendering through adapter with safety limits
         private static readonly ISvgRenderer _svgRenderer = new SvgSkiaRenderer();
         
-        static ImageLoader()
-        {
-            // Use a dedicated client with redirect support
-            var handler = new HttpClientHandler
-            {
-                AllowAutoRedirect = true,
-                UseCookies = false, // We don't need cookies for images usually, and it saves overhead
-                AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate
-            };
-            
-            _httpClient = new HttpClient(handler);
-            _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-        }
-        
+        /// <summary>
+        /// Centralized image byte fetch delegate (wired by BrowserHost).
+        /// Avoids direct ImageLoader network access paths.
+        /// </summary>
+        public static Func<Uri, Task<byte[]>> FetchBytesAsync { get; set; }
+
         // Callback to request a repaint when image loads
         public static Action RequestRepaint { get; set; }
         
@@ -669,7 +658,24 @@ namespace FenBrowser.FenEngine.Rendering
 
                 FenLogger.Debug($"[ImageLoader] Fetching: {url}", LogCategory.Rendering);
 
-                var data = await _httpClient.GetByteArrayAsync(url);
+                if (!Uri.TryCreate(url, UriKind.Absolute, out var absoluteUri))
+                {
+                    return;
+                }
+
+                var fetcher = FetchBytesAsync;
+                if (fetcher == null)
+                {
+                    FenLogger.Warn("[ImageLoader] FetchBytesAsync delegate is not configured; skipping image load", LogCategory.Rendering);
+                    return;
+                }
+
+                var data = await fetcher(absoluteUri).ConfigureAwait(false);
+                if (data == null || data.Length == 0)
+                {
+                    FenLogger.Warn($"[ImageLoader] Empty image response for: {url}", LogCategory.Rendering);
+                    return;
+                }
                 SKBitmap bitmap = null;
                 
                 // SVG Detection (Basic)
