@@ -87,7 +87,12 @@ namespace FenBrowser.Tests.Workers
         public void WorkerRuntime_OnError_EventFires()
         {
             // Arrange
-            var worker = new WorkerRuntime("http://::invalid-uri", "https://example.com");
+            var worker = new WorkerRuntime(
+                "https://example.com/worker.js",
+                "https://example.com",
+                new InMemoryStorageBackend(),
+                _ => Task.FromException<string>(new InvalidOperationException("fetch-failed")),
+                _ => true);
             Exception receivedException = null;
             var errorEvent = new ManualResetEventSlim(false);
 
@@ -97,7 +102,7 @@ namespace FenBrowser.Tests.Workers
                 errorEvent.Set();
             };
 
-            // Invalid URI script loading should trigger OnError from worker startup task.
+            // Script fetch failure should trigger OnError from worker startup task.
             Assert.True(errorEvent.Wait(2000), "Expected worker startup error event.");
             Assert.NotNull(receivedException);
 
@@ -208,6 +213,53 @@ namespace FenBrowser.Tests.Workers
 
             Assert.Throws<ArgumentException>(() =>
                 fn.NativeImplementation(new[] { FenValue.FromString("file:///C:/temp/worker.js") }, FenValue.Undefined));
+        }
+
+        [Fact]
+        public void WorkerRuntime_ImportScripts_LoadsAndExecutesDependency()
+        {
+            var messageEvent = new ManualResetEventSlim(false);
+            object payload = null;
+
+            string Fetcher(Uri uri)
+            {
+                if (uri.AbsoluteUri.EndsWith("/main.js", StringComparison.OrdinalIgnoreCase))
+                    return "importScripts('dep.js');";
+                if (uri.AbsoluteUri.EndsWith("/dep.js", StringComparison.OrdinalIgnoreCase))
+                    return "postMessage('dep-loaded');";
+                return string.Empty;
+            }
+
+            var runtime = new WorkerRuntime(
+                "https://example.com/main.js",
+                "https://example.com",
+                new InMemoryStorageBackend(),
+                uri => Task.FromResult(Fetcher(uri)),
+                _ => true);
+
+            try
+            {
+                runtime.OnMessage += data =>
+                {
+                    payload = data;
+                    messageEvent.Set();
+                };
+
+                var deadline = DateTime.UtcNow.AddSeconds(3);
+                while (!messageEvent.IsSet && DateTime.UtcNow < deadline)
+                {
+                    EventLoopCoordinator.Instance.ProcessNextTask();
+                    Thread.Sleep(10);
+                }
+
+                Assert.True(messageEvent.IsSet, "Expected dependency script to post a message.");
+                Assert.Equal("dep-loaded", payload?.ToString());
+            }
+            finally
+            {
+                runtime.Terminate();
+                runtime.Dispose();
+            }
         }
 
         [Fact]

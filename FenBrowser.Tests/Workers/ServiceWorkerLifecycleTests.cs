@@ -5,6 +5,7 @@ using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Workers;
 using FenBrowser.FenEngine.WebAPIs;
 using Xunit;
+using FenExecutionContext = FenBrowser.FenEngine.Core.ExecutionContext;
 
 namespace FenBrowser.Tests.Workers
 {
@@ -44,10 +45,39 @@ namespace FenBrowser.Tests.Workers
 
             var controller = _manager.GetController("https://example.com/blog/post-1");
             Assert.NotNull(controller);
-            Assert.Equal(script, controller.ScriptURL);
+            Assert.Equal("https://example.com/blog/sw-blog.js", controller.ScriptURL);
 
             var noController = _manager.GetController("https://example.com/shop/");
             Assert.Null(noController);
+        }
+
+        [Fact]
+        public async Task GetRegistration_UsesLongestNestedScopeMatch()
+        {
+            var baseScope = "https://example.com/app/";
+            var nestedScope = "https://example.com/app/blog/";
+
+            await _manager.Register("sw-root.js", baseScope);
+            await _manager.Register("sw-blog.js", nestedScope);
+
+            var match = _manager.GetRegistration("https://example.com/app/blog/post-1");
+            Assert.NotNull(match);
+            Assert.Equal(nestedScope, match.Scope);
+        }
+
+        [Fact]
+        public async Task Unregister_RemovesRegistrationAndController()
+        {
+            var scope = "https://example.com/unreg/";
+            await _manager.Register("sw-unreg.js", scope);
+
+            var controller = _manager.GetController("https://example.com/unreg/data");
+            Assert.NotNull(controller);
+
+            var removed = await _manager.UnregisterAsync(scope);
+            Assert.True(removed);
+            Assert.Null(_manager.GetRegistration(scope));
+            Assert.Null(_manager.GetController("https://example.com/unreg/data"));
         }
 
         [Fact]
@@ -60,7 +90,7 @@ namespace FenBrowser.Tests.Workers
             Assert.NotNull(sw);
 
             // 2. Dispatch Fetch Event
-            var mockContext = new FenBrowser.FenEngine.Core.ExecutionContext(null); // Mock context
+            var mockContext = new FenExecutionContext(null); // Mock context
             var req = new FenObject();
             req.Set("url", FenValue.FromString("https://example.com/api/data"));
             var evt = new FetchEvent("fetch", req, mockContext);
@@ -88,7 +118,7 @@ namespace FenBrowser.Tests.Workers
         [Fact]
         public async Task FetchEvent_WaitsForRespondWithRegistration()
         {
-            var mockContext = new ExecutionContext(null);
+            var mockContext = new FenExecutionContext(null);
             var req = new FenObject();
             req.Set("url", FenValue.FromString("https://example.com/api/data"));
             var evt = new FetchEvent("fetch", req, mockContext);
