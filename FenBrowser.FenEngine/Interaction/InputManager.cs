@@ -96,7 +96,7 @@ namespace FenBrowser.FenEngine.Interaction
                                           evt.Type == InputEventType.TouchMove ||
                                           evt.Type == InputEventType.TouchEnd))
             {
-                // TODO: Use Stacking-Context aware HitTest
+                // HitTester uses paint-tree reverse traversal when available (stacking-context aware).
                 var target = HitTester.HitTest(renderContext, evt.X, evt.Y);
                 evt.Target = target;
             }

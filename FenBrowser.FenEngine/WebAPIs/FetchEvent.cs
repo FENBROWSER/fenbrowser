@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
@@ -13,6 +14,7 @@ namespace FenBrowser.FenEngine.WebAPIs
     {
         private readonly IObject _request;
         private readonly IExecutionContext _context;
+        private readonly List<FenObject> _lifetimePromises = new();
         private readonly TaskCompletionSource<bool> _respondWithRegistered =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -164,8 +166,77 @@ namespace FenBrowser.FenEngine.WebAPIs
 
         private FenValue WaitUntil(FenValue[] args, FenValue thisVal)
         {
-            // TODO: Track lifetime extension
+            if (args.Length < 1)
+            {
+                return FenValue.Undefined;
+            }
+
+            var promise = args[0].AsObject() as FenObject;
+            if (promise != null)
+            {
+                _lifetimePromises.Add(promise);
+            }
+
             return FenValue.Undefined;
+        }
+
+        public async Task<bool> WaitForLifetimePromisesAsync(TimeSpan timeout)
+        {
+            if (_lifetimePromises.Count == 0)
+            {
+                return true;
+            }
+
+            var waits = new List<Task<RespondWithSettlement>>(_lifetimePromises.Count);
+            foreach (var promise in _lifetimePromises)
+            {
+                waits.Add(WaitForPromiseSettlementAsync(promise, timeout));
+            }
+
+            var all = Task.WhenAll(waits);
+            var completed = await Task.WhenAny(all, Task.Delay(timeout)).ConfigureAwait(false);
+            if (completed != all)
+            {
+                return false;
+            }
+
+            var settlements = await all.ConfigureAwait(false);
+            foreach (var settlement in settlements)
+            {
+                if (settlement.IsRejected || settlement.IsTimeout)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private async Task<RespondWithSettlement> WaitForPromiseSettlementAsync(FenObject promise, TimeSpan timeout)
+        {
+            if (promise == null)
+            {
+                return RespondWithSettlement.NotHandled();
+            }
+
+            if (TryGetLegacySettledState(promise, out var legacy))
+            {
+                return legacy;
+            }
+
+            var settle = new TaskCompletionSource<RespondWithSettlement>(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (!TryAttachPromiseSettlementHandlers(promise, settle))
+            {
+                return RespondWithSettlement.NotHandled();
+            }
+
+            var completed = await Task.WhenAny(settle.Task, Task.Delay(timeout)).ConfigureAwait(false);
+            if (completed != settle.Task)
+            {
+                return RespondWithSettlement.Timeout();
+            }
+
+            return await settle.Task.ConfigureAwait(false);
         }
     }
 

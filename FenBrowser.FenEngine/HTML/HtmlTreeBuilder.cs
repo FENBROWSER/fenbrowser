@@ -95,7 +95,8 @@ namespace FenBrowser.FenEngine.HTML
                 case InsertionMode.Initial:
                     if (token is DoctypeToken)
                     {
-                        // TODO: Set quirks mode based on public/system id
+                        var doctype = token.As<DoctypeToken>();
+                        _doc.Mode = DetermineQuirksMode(doctype);
                         _mode = InsertionMode.BeforeHtml;
                     }
                     else if (IsWhitespace(token)) { /* Ignore */ }
@@ -257,6 +258,43 @@ namespace FenBrowser.FenEngine.HTML
                     else if (token is EofToken) { /* Stop */ }
                     break;
             }
+        }
+
+        private static QuirksMode DetermineQuirksMode(DoctypeToken dt)
+        {
+            if (dt == null) return QuirksMode.Quirks;
+            if (dt.ForceQuirks) return QuirksMode.Quirks;
+
+            var name = (dt.Name ?? string.Empty).Trim().ToLowerInvariant();
+            if (!string.Equals(name, "html", StringComparison.Ordinal))
+                return QuirksMode.Quirks;
+
+            var publicId = (dt.PublicIdentifier ?? string.Empty).Trim().ToLowerInvariant();
+            var systemId = (dt.SystemIdentifier ?? string.Empty).Trim().ToLowerInvariant();
+
+            // WHATWG quirks triggers (condensed but compatible set).
+            if (publicId.StartsWith("-//w3o//dtd w3 html 3.0//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//w3c//dtd html 4.0 transitional//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//w3c//dtd html 4.0 frameset//", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//w3c//dtd html 3.2", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//ietf//dtd html", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//microsoft//dtd internet explorer", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//netscape comm. corp.//dtd", StringComparison.Ordinal) ||
+                publicId.StartsWith("-//webtechs//dtd mozilla html", StringComparison.Ordinal))
+            {
+                return QuirksMode.Quirks;
+            }
+
+            if ((publicId.StartsWith("-//w3c//dtd xhtml 1.0 transitional//", StringComparison.Ordinal) ||
+                 publicId.StartsWith("-//w3c//dtd xhtml 1.0 frameset//", StringComparison.Ordinal)) ||
+                ((publicId.StartsWith("-//w3c//dtd html 4.01 transitional//", StringComparison.Ordinal) ||
+                  publicId.StartsWith("-//w3c//dtd html 4.01 frameset//", StringComparison.Ordinal)) &&
+                 string.IsNullOrEmpty(systemId)))
+            {
+                return QuirksMode.LimitedQuirks;
+            }
+
+            return QuirksMode.NoQuirks;
         }
         
         private bool HandleInHead(HtmlToken token)

@@ -38,7 +38,7 @@ namespace FenBrowser.FenEngine.Workers
                  return FenValue.FromObject(CreatePromise(() => Task.FromResult(FenValue.Undefined)));
             })));
 
-            Set("clients", FenValue.FromObject(new FenObject())); // TODO: Implement Clients interface
+            Set("clients", FenValue.FromObject(new ServiceWorkerClients(origin)));
 
             // Events
             Set("oninstall", FenValue.Null);

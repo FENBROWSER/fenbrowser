@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using FenBrowser.Core.Dom.V2;
 
 namespace FenBrowser.FenEngine.Interaction
@@ -38,7 +39,7 @@ namespace FenBrowser.FenEngine.Interaction
         public bool IsFocusable(Element element)
         {
             if (element == null) return false;
-            
+             
             // Check TabIndex
             if (element.GetAttribute("tabindex") != null) return true;
             
@@ -46,11 +47,76 @@ namespace FenBrowser.FenEngine.Interaction
             var tag = element.TagName.ToLowerInvariant();
             if (tag == "input" || tag == "button" || tag == "select" || tag == "textarea") return true;
             if (tag == "a" && element.GetAttribute("href") != null) return true;
-            
+             
             return false;
         }
 
-        // TODO: Implement Tab Navigation (FindNextFocusable)
+        public Element FindNextFocusable(Node root, bool reverse = false)
+        {
+            var focusables = CollectFocusableElements(root);
+            if (focusables.Count == 0)
+            {
+                return null;
+            }
+
+            // tabindex ordering: positive values first ascending, then zero/implicit tree order.
+            var ordered = focusables
+                .Select((element, order) => new
+                {
+                    Element = element,
+                    Order = order,
+                    TabIndex = ParseTabIndex(element)
+                })
+                .OrderBy(item => item.TabIndex <= 0 ? int.MaxValue : item.TabIndex)
+                .ThenBy(item => item.Order)
+                .Select(item => item.Element)
+                .ToList();
+
+            var currentIndex = FocusedElement != null ? ordered.IndexOf(FocusedElement) : -1;
+            if (reverse)
+            {
+                var index = currentIndex <= 0 ? ordered.Count - 1 : currentIndex - 1;
+                return ordered[index];
+            }
+
+            var next = (currentIndex + 1) % ordered.Count;
+            return ordered[next];
+        }
+
+        private static int ParseTabIndex(Element element)
+        {
+            var raw = element?.GetAttribute("tabindex");
+            if (int.TryParse(raw, out var value))
+            {
+                return value;
+            }
+
+            return 0;
+        }
+
+        private List<Element> CollectFocusableElements(Node root)
+        {
+            var results = new List<Element>();
+            if (root == null)
+            {
+                return results;
+            }
+
+            if (root is Element rootElement && IsFocusable(rootElement))
+            {
+                results.Add(rootElement);
+            }
+
+            foreach (var node in root.Descendants())
+            {
+                if (node is Element element && IsFocusable(element))
+                {
+                    results.Add(element);
+                }
+            }
+
+            return results;
+        }
     }
 }
 

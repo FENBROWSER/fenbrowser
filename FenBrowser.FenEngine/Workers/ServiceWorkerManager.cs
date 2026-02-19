@@ -47,28 +47,63 @@ namespace FenBrowser.FenEngine.Workers
         {
             FenBrowser.Core.FenLogger.Debug($"[ServiceWorkerManager] Registering {scriptUrl} for scope {scope}", LogCategory.ServiceWorker);
 
+            var normalizedScope = NormalizeScope(scope);
+            if (normalizedScope == null)
+                throw new ArgumentException($"Invalid service worker scope: {scope}", nameof(scope));
+
             // 1. Check existing registration
-            if (!_registrations.ContainsKey(scope))
+            if (!_registrations.ContainsKey(normalizedScope))
             {
-                _registrations[scope] = new ServiceWorkerRegistration(scope);
+                _registrations[normalizedScope] = new ServiceWorkerRegistration(normalizedScope);
             }
-            var registration = _registrations[scope];
+            var registration = _registrations[normalizedScope];
+
+            var scriptUri = ResolveScriptUri(scriptUrl, normalizedScope);
+            if (scriptUri == null)
+                throw new InvalidOperationException($"Invalid service worker script URL: {scriptUrl}");
+
+            if (!IsSameOrigin(scriptUri, new Uri(normalizedScope, UriKind.Absolute)))
+                throw new UnauthorizedAccessException($"Cross-origin service worker script blocked: {scriptUri}");
 
             // 2. Lifecycle: "Installing"
-            var sw = new ServiceWorker(scriptUrl, scope, "installing");
+            var sw = new ServiceWorker(scriptUri.AbsoluteUri, normalizedScope, "installing");
             registration.SetInstalling(sw);
 
             // 3. Spin up runtime (simplified)
             // In real browser: Download script -> byte-for-byte check -> spin up
-            await Task.Run(() => StartWorkerRuntime(scriptUrl, scope, sw, registration));
+            await Task.Run(() => StartWorkerRuntime(scriptUri.AbsoluteUri, normalizedScope, sw, registration));
 
             return registration;
         }
 
         public ServiceWorkerRegistration GetRegistration(string scope)
         {
-            if (_registrations.TryGetValue(scope, out var reg)) return reg;
-            // TODO: Partial match for nested scopes
+            var normalizedScope = NormalizeScope(scope);
+            if (normalizedScope == null)
+                return null;
+
+            if (_registrations.TryGetValue(normalizedScope, out var reg))
+                return reg;
+
+            // Longest prefix match for nested scopes.
+            // Example: query /app/blog/post should match /app/blog/ before /app/.
+            ServiceWorkerRegistration matched = null;
+            var maxLen = -1;
+            foreach (var kvp in _registrations)
+            {
+                if (!normalizedScope.StartsWith(kvp.Key, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (kvp.Key.Length > maxLen)
+                {
+                    matched = kvp.Value;
+                    maxLen = kvp.Key.Length;
+                }
+            }
+
+            if (matched != null)
+                return matched;
+
             return null;
         }
         
@@ -77,13 +112,17 @@ namespace FenBrowser.FenEngine.Workers
         /// </summary>
         public ServiceWorker GetController(string documentUrl)
         {
+            var normalizedDocumentUrl = NormalizeUrlForMatch(documentUrl);
+            if (normalizedDocumentUrl == null)
+                return null;
+
             // Naive scope matching: Longest matching prefix
             string matchedScope = null;
             int maxLen = -1;
 
             foreach (var scope in _registrations.Keys)
             {
-                if (documentUrl.StartsWith(scope) && scope.Length > maxLen)
+                if (normalizedDocumentUrl.StartsWith(scope, StringComparison.OrdinalIgnoreCase) && scope.Length > maxLen)
                 {
                     // Must have an ACTIVE worker
                     if (_registrations[scope].Active != null)
@@ -95,6 +134,50 @@ namespace FenBrowser.FenEngine.Workers
             }
 
             return matchedScope != null ? _registrations[matchedScope].Active : null;
+        }
+
+        public async Task<ServiceWorkerRegistration> UpdateRegistrationAsync(string scope)
+        {
+            var registration = GetRegistration(scope);
+            if (registration == null)
+                throw new InvalidOperationException($"No service worker registration for scope: {scope}");
+
+            var activeScript = registration.Active?.ScriptURL ?? registration.Waiting?.ScriptURL ?? registration.Installing?.ScriptURL;
+            if (string.IsNullOrWhiteSpace(activeScript))
+                throw new InvalidOperationException($"No script URL available for registration scope: {registration.Scope}");
+
+            return await Register(activeScript, registration.Scope).ConfigureAwait(false);
+        }
+
+        public Task<bool> UnregisterAsync(string scope)
+        {
+            var registration = GetRegistration(scope);
+            if (registration == null)
+                return Task.FromResult(false);
+
+            var key = registration.Scope;
+            if (!_registrations.TryRemove(key, out var removed))
+                return Task.FromResult(false);
+
+            if (_activeRuntimes.TryRemove(key, out var runtime))
+            {
+                try
+                {
+                    runtime.Terminate();
+                    runtime.Dispose();
+                }
+                catch { }
+            }
+
+            removed.Installing?.UpdateState("redundant");
+            removed.Waiting?.UpdateState("redundant");
+            removed.Active?.UpdateState("redundant");
+            removed.SetInstalling(null);
+            removed.SetWaiting(null);
+            removed.SetActive(null);
+
+            FenBrowser.Core.FenLogger.Debug($"[ServiceWorkerManager] Unregistered scope {key}", LogCategory.ServiceWorker);
+            return Task.FromResult(true);
         }
 
         public void PostMessageToWorker(string scope, object message)
@@ -125,16 +208,16 @@ namespace FenBrowser.FenEngine.Workers
                 reg.SetWaiting(sw);
 
                 // For testing/simplicity: Auto-Activate if no existing active worker
+                var scriptUri = ResolveScriptUri(scriptUrl, scope);
+                if (scriptUri == null)
+                    throw new InvalidOperationException($"Invalid service worker script URL: {scriptUrl}");
+
+                if (_scriptUriAllowed != null && !_scriptUriAllowed(scriptUri))
+                    throw new UnauthorizedAccessException($"Service worker script blocked by policy: {scriptUri}");
+
                 if (reg.Active  == null)
                 {
                     // Create actual runtime for events
-                    var scriptUri = ResolveScriptUri(scriptUrl, scope);
-                    if (scriptUri == null)
-                        throw new InvalidOperationException($"Invalid service worker script URL: {scriptUrl}");
-
-                    if (_scriptUriAllowed != null && !_scriptUriAllowed(scriptUri))
-                        throw new UnauthorizedAccessException($"Service worker script blocked by policy: {scriptUri}");
-
                     var runtime = new WorkerRuntime(
                         scriptUri.ToString(),
                         scope,
@@ -142,9 +225,19 @@ namespace FenBrowser.FenEngine.Workers
                         _scriptFetcher,
                         _scriptUriAllowed,
                         isServiceWorker: true);
-                    _activeRuntimes[scope] = runtime;
-                    
-                    ActivateWorker(scope, reg, sw);
+                    ActivateWorker(scope, reg, sw, runtime);
+                }
+                else
+                {
+                    // Replace active worker with updated script/runtime.
+                    var runtime = new WorkerRuntime(
+                        scriptUri.AbsoluteUri,
+                        scope,
+                        _storageBackend,
+                        _scriptFetcher,
+                        _scriptUriAllowed,
+                        isServiceWorker: true);
+                    ActivateWorker(scope, reg, sw, runtime);
                 }
             }
             catch (Exception ex)
@@ -184,6 +277,55 @@ namespace FenBrowser.FenEngine.Workers
             return null;
         }
 
+        private static string NormalizeScope(string scope)
+        {
+            if (!Uri.TryCreate(scope, UriKind.Absolute, out var scopeUri))
+                return null;
+
+            if (!IsHttpScheme(scopeUri))
+                return null;
+
+            var builder = new UriBuilder(scopeUri)
+            {
+                Query = string.Empty,
+                Fragment = string.Empty
+            };
+
+            var path = builder.Path ?? "/";
+            if (!path.EndsWith("/", StringComparison.Ordinal))
+            {
+                path += "/";
+            }
+
+            builder.Path = path;
+            return builder.Uri.AbsoluteUri;
+        }
+
+        private static string NormalizeUrlForMatch(string url)
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+                return null;
+
+            if (!IsHttpScheme(uri))
+                return null;
+
+            return new UriBuilder(uri)
+            {
+                Query = string.Empty,
+                Fragment = string.Empty
+            }.Uri.AbsoluteUri;
+        }
+
+        private static bool IsSameOrigin(Uri left, Uri right)
+        {
+            if (left == null || right == null)
+                return false;
+
+            return string.Equals(left.Scheme, right.Scheme, StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(left.Host, right.Host, StringComparison.OrdinalIgnoreCase) &&
+                   left.Port == right.Port;
+        }
+
         private static bool IsHttpScheme(Uri uri)
         {
             if (uri == null) return false;
@@ -191,17 +333,34 @@ namespace FenBrowser.FenEngine.Workers
                    uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
         }
 
-        private void ActivateWorker(string scope, ServiceWorkerRegistration reg, ServiceWorker sw)
+        private void ActivateWorker(string scope, ServiceWorkerRegistration reg, ServiceWorker sw, WorkerRuntime runtime)
         {
             FenBrowser.Core.FenLogger.Debug($"[ServiceWorkerManager] Activating {scope}", LogCategory.ServiceWorker);
             sw.UpdateState("activating");
-            
+
+            WorkerRuntime oldRuntime = null;
+            if (_activeRuntimes.TryGetValue(scope, out var existing))
+            {
+                oldRuntime = existing;
+            }
+            _activeRuntimes[scope] = runtime;
+             
             // Fire 'activate' event
             // ...
 
             sw.UpdateState("activated");
             reg.SetWaiting(null);
             reg.SetActive(sw);
+
+            if (oldRuntime != null && !ReferenceEquals(oldRuntime, runtime))
+            {
+                try
+                {
+                    oldRuntime.Terminate();
+                    oldRuntime.Dispose();
+                }
+                catch { }
+            }
         }
     }
 }
