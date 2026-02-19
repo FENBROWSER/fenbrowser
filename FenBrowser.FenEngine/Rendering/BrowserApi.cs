@@ -269,27 +269,29 @@ namespace FenBrowser.FenEngine.Rendering
             var config = NetworkConfiguration.Instance;
             var handler = FenBrowser.Core.Network.HttpClientFactory.CreateHandler();
             
-            // Add certificate callback for security display + optional soft-fail
-            handler.ServerCertificateCustomValidationCallback = (msg, cert, chain, errors) =>
-            {
-                var info = new CertificateInfo
+            // Add certificate callback for security display + optional soft-fail.
+            FenBrowser.Core.Network.HttpClientFactory.ConfigureServerCertificateValidation(
+                handler,
+                (msg, cert, chain, errors) =>
                 {
-                    Subject   = cert.Subject,
-                    Issuer    = cert.Issuer,
-                    NotBefore = cert is System.Security.Cryptography.X509Certificates.X509Certificate2 cert2 ? cert2.NotBefore : DateTime.MinValue,
-                    NotAfter  = cert is System.Security.Cryptography.X509Certificates.X509Certificate2 cert2b ? cert2b.NotAfter : DateTime.MaxValue,
-                    IsValid   = errors == System.Net.Security.SslPolicyErrors.None,
-                    Thumbprint = cert.GetCertHashString()
-                };
+                    var info = new CertificateInfo
+                    {
+                        Subject   = cert?.Subject ?? string.Empty,
+                        Issuer    = cert?.Issuer ?? string.Empty,
+                        NotBefore = cert?.NotBefore ?? DateTime.MinValue,
+                        NotAfter  = cert?.NotAfter ?? DateTime.MaxValue,
+                        IsValid   = errors == System.Net.Security.SslPolicyErrors.None,
+                        Thumbprint = cert?.GetCertHashString() ?? string.Empty
+                    };
 
-                _lastCertificate = info;
-                _lastSslErrors   = errors;
+                    _lastCertificate = info;
+                    _lastSslErrors   = errors;
 
-                // Enforce strict validation by default; only allow override via settings.
-                if (FenBrowser.Core.NetworkConfiguration.Instance.IgnoreCertificateErrors)
-                    return true;
-                return errors == System.Net.Security.SslPolicyErrors.None;
-            };
+                    // Enforce strict validation by default; only allow override via settings.
+                    if (FenBrowser.Core.NetworkConfiguration.Instance.IgnoreCertificateErrors)
+                        return true;
+                    return errors == System.Net.Security.SslPolicyErrors.None;
+                });
             
             // Create HTTP/2 + Brotli enabled client
             var httpClient = FenBrowser.Core.Network.HttpClientFactory.CreateClient(handler);
@@ -442,6 +444,11 @@ namespace FenBrowser.FenEngine.Rendering
 
                         window.completion_callback = function(t, s) {
                                 console.log('[Bridge] Global Complete');
+                                if (window.testRunner && window.testRunner.reportHarnessStatus) {
+                                    var statusText = '';
+                                    try { statusText = s && typeof s.status !== 'undefined' ? String(s.status) : ''; } catch(e) {}
+                                    window.testRunner.reportHarnessStatus('complete', statusText);
+                                }
                                 if (window.testRunner && window.testRunner.notifyDone) {
                                     window.testRunner.notifyDone();
                                 }

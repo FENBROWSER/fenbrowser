@@ -628,7 +628,7 @@ Reason: additional confirmed gaps in process model, cookie/storage coherence, pr
   2. Add CSP unit tests specifically for `'self'`, subdomains, and port handling.
   3. Keep one mandatory call signature that includes origin context.
 
-29. **ES module loader default path is file-only (`PARTIALLY RESOLVED in remaining-tranche, 2026-02-19`)**
+29. **ES module loader default path is file-only (`PARTIALLY RESOLVED in remaining-tranche + phase-completion tranche, 2026-02-19`)**
 - Evidence:
   - Default module loader fetcher only supports `file://`:
     - `FenBrowser.FenEngine/Core/ModuleLoader.cs:23`
@@ -639,7 +639,7 @@ Reason: additional confirmed gaps in process model, cookie/storage coherence, pr
   3. Add module security checks aligned with script policy.
 - Residual note (after tranche):
   - Browser-context module loads now use centralized fetch delegates and URI policy gates.
-  - Full import-map + complete CORS/module-map semantics are still future work.
+  - Import-map resolution is now wired into runtime module resolution; full spec-complete module-map/CORS edge handling remains future work.
 
 ### Updated Priority Insertions (Third Pass)
 
@@ -798,7 +798,6 @@ Implemented now:
   - `docs/VERIFICATION_BASELINES.md`
 
 Residual Phase-3 scope remains:
-- Full WPT harness completion should eventually use stronger engine-side structured result extraction rather than console/status heuristics.
 - Host build resolver issue still blocks full-repo validation on this machine.
 
 ## 16) Phase-5 Execution Log (Started 2026-02-18, tranche A)
@@ -863,7 +862,7 @@ Implemented now:
 - `FenBrowser.Core/ResourceManager.cs`
   - Added `SafeBrowsingHandler` to runtime network pipeline.
   - `ImproveBrowser` now controls client-hints emission path (`Sec-CH-UA*`) at runtime.
-  - Policy diagnostics now distinguish enforced vs remaining pending (`UseSecureDNS`).
+  - Policy diagnostics now distinguish enforced vs remaining pending (`UseSecureDNS`) in tranche-B baseline.
 - `FenBrowser.FenEngine/Core/FenRuntime.cs`
   - `navigator.doNotTrack` now follows `BrowserSettings.SendDoNotTrack`.
   - Added `window.open` popup gate bound to `BrowserSettings.BlockPopups` (deny-by-policy when enabled).
@@ -874,8 +873,7 @@ Implemented now:
 
 Phase-5 status:
 - **Completed** for findings 24/25/26 scope with the current architecture constraints.
-- Remaining future enhancement:
-  - `UseSecureDNS` remains intentionally hidden until a real DNS-over-HTTPS resolver path is implemented end-to-end.
+- `UseSecureDNS` follow-up was completed in phase-completion tranche (see section 18).
 
 ## 17) Remaining Findings Tranche (2026-02-19, post Phase-5)
 
@@ -924,4 +922,54 @@ Validation snapshot:
 - `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Debug` succeeded.
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` succeeded.
 - `dotnet build FenBrowser.WebDriver/FenBrowser.WebDriver.csproj -c Debug` succeeded.
+- `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug` remains blocked on this machine with pre-existing resolver state (0 warnings / 0 errors emitted).
+
+## 18) Phase-Completion Tranche (2026-02-19, remaining phases closure)
+
+Implemented now:
+
+1. **Phase-3 residual closure: structured WPT completion path**
+- `FenBrowser.FenEngine/WebAPIs/TestHarnessAPI.cs`
+  - Added structured execution snapshot (`GetExecutionSnapshot`) with explicit completion signal, harness-status flags, and result event counts.
+  - Added `reportHarnessStatus(...)` API path and completion signal provenance tracking.
+- `FenBrowser.FenEngine/Testing/WPTTestRunner.cs`
+  - Completion wait loop now uses structured `TestHarnessAPI` snapshot signals first.
+  - Console text parsing retained only as compatibility fallback when no structured signal appears.
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+  - WPT bridge injection now reports structured harness completion via `testRunner.reportHarnessStatus('complete', ...)` before `notifyDone()`.
+
+2. **Secure DNS runtime wiring completion**
+- `FenBrowser.Core/Network/SecureDnsResolver.cs` (new)
+  - Added DNS-over-HTTPS resolver with response parsing and short TTL cache.
+  - Endpoint source:
+    - `BrowserSettings.SecureDnsEndpoint`
+    - optional override `FEN_SECURE_DNS_ENDPOINT`.
+- `FenBrowser.Core/Network/HttpClientFactory.cs`
+  - Transport switched to `SocketsHttpHandler` with `ConnectCallback` for DoH-resolved connections when `UseSecureDNS=true`.
+  - Added certificate-validation configurator helper for host integration.
+- `FenBrowser.Core/BrowserSettings.cs`
+  - Added `SecureDnsEndpoint` setting.
+- `FenBrowser.Core/ResourceManager.cs`
+  - Policy diagnostics now treat `UseSecureDNS` as runtime-enforced.
+- `FenBrowser.Host/Widgets/SettingsPageWidget.cs`
+  - Re-exposed `Use Secure DNS` toggle in privacy UI since runtime binding now exists.
+
+3. **Module-loader conformance tranche**
+- `FenBrowser.FenEngine/Core/ModuleLoader.cs`
+  - Added import-map support (`SetImportMap`) with exact + prefix mapping resolution.
+  - Added HTTP module normalization for extensionless relative specifiers (`.js` append path).
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Runtime now parses `<script type=\"importmap\">` and wires entries into `ModuleLoader`.
+  - Strengthened module URI policy with same-origin enforcement for http(s) module loads outside explicit CORS pipeline.
+
+4. **New regression tests**
+- Added:
+  - `FenBrowser.Tests/Engine/ModuleLoaderTests.cs`
+  - `FenBrowser.Tests/WebAPIs/TestHarnessApiTests.cs`
+
+Validation snapshot:
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Debug` succeeded.
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` succeeded.
+- `dotnet build FenBrowser.WebDriver/FenBrowser.WebDriver.csproj -c Debug` succeeded.
+- `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug` remains blocked on this machine with pre-existing resolver state pattern (0 warnings / 0 errors emitted).
 - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug` remains blocked on this machine with pre-existing resolver state (0 warnings / 0 errors emitted).

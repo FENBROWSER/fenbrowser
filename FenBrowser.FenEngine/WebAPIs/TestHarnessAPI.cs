@@ -30,6 +30,10 @@ namespace FenBrowser.FenEngine.WebAPIs
         private static StringBuilder _testLog = new StringBuilder();
         private static List<TestResult> _results = new List<TestResult>();
         private static int _testTimeout = 10000; // Default 10s
+        private static string _completionSignal = "none";
+        private static bool _harnessStatusSeen = false;
+        private static string _harnessStatus = string.Empty;
+        private static int _resultEventCount = 0;
         
         public class TestResult
         {
@@ -48,6 +52,19 @@ namespace FenBrowser.FenEngine.WebAPIs
             NotRun,
             PreconditionFailed
         }
+
+        public sealed class ExecutionSnapshot
+        {
+            public bool TestMode { get; set; }
+            public bool WaitingForDone { get; set; }
+            public bool TestDone { get; set; }
+            public string CompletionSignal { get; set; }
+            public bool HarnessStatusSeen { get; set; }
+            public string HarnessStatus { get; set; }
+            public int ResultEventCount { get; set; }
+            public int StructuredResultCount { get; set; }
+            public int TimeoutMs { get; set; }
+        }
         
         // --- Public API ---
         
@@ -62,6 +79,10 @@ namespace FenBrowser.FenEngine.WebAPIs
             _testLog.Clear();
             _results.Clear();
             _testTimeout = timeoutMs;
+            _completionSignal = "none";
+            _harnessStatusSeen = false;
+            _harnessStatus = string.Empty;
+            _resultEventCount = 0;
         }
         
         /// <summary>
@@ -101,12 +122,32 @@ namespace FenBrowser.FenEngine.WebAPIs
         /// Get configured timeout in ms.
         /// </summary>
         public static int GetTimeout() => _testTimeout;
+
+        /// <summary>
+        /// Get a structured execution snapshot for runner-level completion logic.
+        /// </summary>
+        public static ExecutionSnapshot GetExecutionSnapshot()
+        {
+            return new ExecutionSnapshot
+            {
+                TestMode = _testMode,
+                WaitingForDone = _waitUntilDone && !_testDone,
+                TestDone = _testDone,
+                CompletionSignal = _completionSignal,
+                HarnessStatusSeen = _harnessStatusSeen,
+                HarnessStatus = _harnessStatus,
+                ResultEventCount = _resultEventCount,
+                StructuredResultCount = _results.Count,
+                TimeoutMs = _testTimeout
+            };
+        }
         
         /// <summary>
         /// Add a test result.
         /// </summary>
         public static void AddResult(string name, TestStatus status, string message = null, string stack = null)
         {
+            _resultEventCount++;
             _results.Add(new TestResult
             {
                 Name = name,
@@ -123,6 +164,29 @@ namespace FenBrowser.FenEngine.WebAPIs
         {
             _testLog.AppendLine(message);
         }
+
+        public static void ReportHarnessStatus(string status, string message = null)
+        {
+            _harnessStatusSeen = true;
+            _harnessStatus = status ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(message))
+            {
+                Log($"[testRunner] harness_status={status} message={message}");
+            }
+            else
+            {
+                Log($"[testRunner] harness_status={status}");
+            }
+
+            if (string.Equals(status, "complete", StringComparison.OrdinalIgnoreCase))
+            {
+                _testDone = true;
+                if (_completionSignal == "none")
+                {
+                    _completionSignal = "testRunner.reportHarnessStatus";
+                }
+            }
+        }
         
         // --- FenRuntime Registration ---
         
@@ -137,6 +201,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             testRunner.Set("notifyDone", FenValue.FromFunction(new FenFunction("notifyDone", (args, thisVal) =>
             {
                 _testDone = true;
+                _completionSignal = "testRunner.notifyDone";
                 Log("[testRunner] notifyDone() called");
                 return FenValue.Undefined;
             })));
@@ -154,6 +219,15 @@ namespace FenBrowser.FenEngine.WebAPIs
             {
                 var msg = args.Length > 0 ? args[0].ToString() : "";
                 Log(msg);
+                return FenValue.Undefined;
+            })));
+
+            // reportHarnessStatus(status, message) - Structured harness lifecycle signal
+            testRunner.Set("reportHarnessStatus", FenValue.FromFunction(new FenFunction("reportHarnessStatus", (args, thisVal) =>
+            {
+                var status = args.Length > 0 ? args[0].ToString() : "";
+                var message = args.Length > 1 ? args[1].ToString() : null;
+                ReportHarnessStatus(status, message);
                 return FenValue.Undefined;
             })));
             
@@ -191,6 +265,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             testRunner.Set("completeTest", FenValue.FromFunction(new FenFunction("completeTest", (args, thisVal) =>
             {
                 _testDone = true;
+                _completionSignal = "testRunner.completeTest";
                 Log("[testRunner] completeTest() called");
                 return FenValue.Undefined;
             })));

@@ -226,8 +226,8 @@ The Omnibox implementation.
   - Driver-side behavior now routes through `BrowserHost` APIs instead of placeholder-only paths.
 
 - `Widgets/SettingsPageWidget.cs`
-  - Privacy settings UI now hides non-runtime-wired controls (`UseSecureDNS`, `ImproveBrowser`) to avoid exposing non-functional toggles.
-  - Runtime-wired controls (`Safe Browsing`, `Block pop-ups`) remain visible and active.
+  - Privacy settings UI keeps runtime-wired controls visible (`Safe Browsing`, `Block pop-ups`).
+  - `ImproveBrowser` remains hidden in privacy UI until broader UX policy for telemetry controls is finalized.
 
 ### 6.9 Remaining Findings Tranche - Navigation Intent Split (2026-02-19)
 
@@ -243,5 +243,10 @@ The Omnibox implementation.
 - `WebDriver/FenBrowserDriver.cs`
 - `WebDriver/HostBrowserDriver.cs`
   - Updated WebDriver navigation wiring to use programmatic navigation path only.
+
+### 6.10 Phase-Completion Tranche - Secure DNS UI Wiring (2026-02-19)
+
+- `Widgets/SettingsPageWidget.cs`
+  - Re-enabled `Use Secure DNS` toggle visibility in privacy settings after runtime DoH transport wiring landed in core network stack.
 
 _End of Volume IV_

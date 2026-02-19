@@ -254,4 +254,15 @@ To implement a new command (e.g., `GET /session/{id}/print`):
   - wildcard subdomain allow behavior.
   - explicit port mismatch deny behavior.
 
+### 4.9 Phase-Completion Tranche - Structured WPT + Module Loader Tests (2026-02-19)
+
+- Added:
+  - `FenBrowser.Tests/WebAPIs/TestHarnessApiTests.cs`
+  - `FenBrowser.Tests/Engine/ModuleLoaderTests.cs`
+- Coverage in new tests:
+  - structured test harness snapshot tracks completion + result events.
+  - module loader resolves exact import-map entries.
+  - module loader resolves prefix import-map entries.
+  - extensionless relative HTTP module specifiers normalize to `.js`.
+
 _End of Volume VI_

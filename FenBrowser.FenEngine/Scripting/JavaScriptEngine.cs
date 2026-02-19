@@ -22,6 +22,7 @@ using FenBrowser.FenEngine.Core.Interfaces;
 using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType; // Added for IExecutionContext
 using FenBrowser.FenEngine.Security;
 using FenBrowser.FenEngine.WebAPIs;
+using FenBrowser.Core.Network.Handlers;
 using SkiaSharp;
 using FenBrowser.FenEngine.DOM;
 
@@ -2174,7 +2175,98 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             }
 
             var scheme = (uri.Scheme ?? string.Empty).ToLowerInvariant();
+            if (scheme == "http" || scheme == "https")
+            {
+                var baseUri = _ctx?.BaseUri;
+                if (baseUri != null &&
+                    (string.Equals(baseUri.Scheme, "http", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(baseUri.Scheme, "https", StringComparison.OrdinalIgnoreCase)) &&
+                    !CorsHandler.IsSameOrigin(uri, baseUri))
+                {
+                    FenLogger.Warn($"[JavaScriptEngine] Blocked cross-origin module without explicit CORS pipeline: {uri}", LogCategory.Network);
+                    return false;
+                }
+            }
+
             return scheme == "https" || scheme == "http" || scheme == "file" || scheme == "data";
+        }
+
+        private void ApplyImportMapsFromDom(FenBrowser.FenEngine.Core.ModuleLoader moduleLoader, Uri baseUri)
+        {
+            if (moduleLoader == null || _domRoot == null)
+            {
+                return;
+            }
+
+            var imports = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var node in _domRoot.SelfAndDescendants())
+            {
+                if (node is not Element element)
+                {
+                    continue;
+                }
+
+                if (!string.Equals(element.TagName, "script", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var type = element.GetAttribute("type")?.Trim();
+                if (!string.Equals(type, "importmap", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var json = element.TextContent ?? string.Empty;
+                TryReadImportMapEntries(json, imports);
+            }
+
+            if (imports.Count == 0)
+            {
+                return;
+            }
+
+            moduleLoader.SetImportMap(imports, baseUri);
+            FenLogger.Info($"[JavaScriptEngine] Applied import map entries: {imports.Count}", LogCategory.JavaScript);
+        }
+
+        private static void TryReadImportMapEntries(string json, Dictionary<string, string> target)
+        {
+            if (target == null || string.IsNullOrWhiteSpace(json))
+            {
+                return;
+            }
+
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                if (!doc.RootElement.TryGetProperty("imports", out var importsElement) ||
+                    importsElement.ValueKind != JsonValueKind.Object)
+                {
+                    return;
+                }
+
+                foreach (var entry in importsElement.EnumerateObject())
+                {
+                    if (entry.Value.ValueKind != JsonValueKind.String)
+                    {
+                        continue;
+                    }
+
+                    var key = entry.Name?.Trim();
+                    var value = entry.Value.GetString()?.Trim();
+                    if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(value))
+                    {
+                        continue;
+                    }
+
+                    target[key] = value;
+                }
+            }
+            catch
+            {
+                // Import map parse failure is non-fatal for script execution.
+            }
         }
 
         // Request the host to re-render if available (non-breaking: optional interface)
@@ -2742,6 +2834,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                         uri => FetchTextSync(uri),
                         uri => IsModuleUriAllowed(uri)
                     );
+                    ApplyImportMapsFromDom(moduleLoader, baseUri);
                     _fenRuntime.SetModuleLoader(moduleLoader);
 
                     // Inject global error handler

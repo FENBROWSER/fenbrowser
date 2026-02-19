@@ -118,6 +118,7 @@ namespace FenBrowser.Core
                 $"SendDoNotTrack={settings.SendDoNotTrack}",
                 $"BlockThirdPartyCookies={settings.BlockThirdPartyCookies}",
                 $"EnableTrackingPrevention={settings.EnableTrackingPrevention}",
+                $"UseSecureDNS={settings.UseSecureDNS}",
                 $"SafeBrowsing={settings.SafeBrowsing}",
                 $"ImproveBrowser={settings.ImproveBrowser}",
                 $"BlockPopups={settings.BlockPopups}",
@@ -126,7 +127,7 @@ namespace FenBrowser.Core
             });
             var pending = string.Join(", ", new[]
             {
-                $"UseSecureDNS={settings.UseSecureDNS}"
+                "none"
             });
 
             FenLogger.Info($"[PolicyBindings] Runtime-enforced toggles: {enforced}", LogCategory.Network);

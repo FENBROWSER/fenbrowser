@@ -623,3 +623,24 @@ So you want to add `border-radius`? Follow these steps:
 
 - `Rendering/CustomHtmlEngine.cs`
   - CSP subresource + nonce checks now pass explicit base-document origin context.
+
+### 6.18 Phase-Completion Tranche - WPT Structured Signals and Module Conformance (2026-02-19)
+
+- `WebAPIs/TestHarnessAPI.cs`
+  - Added structured execution snapshot API (`GetExecutionSnapshot`) for runner-side completion logic.
+  - Added explicit harness-status reporting path (`reportHarnessStatus`) and completion provenance tracking.
+
+- `Testing/WPTTestRunner.cs`
+  - Completion loop now prioritizes structured `TestHarnessAPI` signals.
+  - Console parsing remains as compatibility fallback only when structured signals are absent.
+
+- `Rendering/BrowserApi.cs`
+  - WPT bridge injection now emits structured harness completion via `testRunner.reportHarnessStatus('complete', ...)` before `notifyDone()`.
+
+- `Core/ModuleLoader.cs`
+  - Added import-map support (`SetImportMap`) with exact and prefix match resolution.
+  - Added extensionless HTTP module normalization (`.js` append for relative module specifiers).
+
+- `Scripting/JavaScriptEngine.cs`
+  - Runtime now parses `<script type="importmap">` and applies entries to the core module loader.
+  - Added same-origin guard for http(s) module loads when explicit CORS pipeline is not available.
