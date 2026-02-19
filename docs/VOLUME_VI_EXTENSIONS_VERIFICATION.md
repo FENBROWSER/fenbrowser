@@ -274,7 +274,41 @@ To implement a new command (e.g., `GET /session/{id}/print`):
 - Added:
   - `FenBrowser.Tests/Workers/WorkerTests.cs`
     - verifies worker constructor rejects `file://` script URLs.
-  - `FenBrowser.Tests/Storage/StorageBackendTests.cs`
-    - verifies traversal-like IndexedDB names are sanitized into safe in-root file paths.
+- `FenBrowser.Tests/Storage/StorageBackendTests.cs`
+  - verifies traversal-like IndexedDB names are sanitized into safe in-root file paths.
+
+### 4.11 Completion Pass - Build Stability and Smoke Verification (2026-02-19)
+
+- `FenBrowser.Host/FenBrowser.Host.csproj`
+- `FenBrowser.Tests/FenBrowser.Tests.csproj`
+  - Added deterministic project-reference build setting:
+    - `<BuildInParallel>false</BuildInParallel>`
+  - Purpose: prevent machine-local silent `_GetProjectReferenceTargetFrameworkProperties` failures during Host/Tests builds.
+
+- `FenBrowser.Tests/Workers/ServiceWorkerLifecycleTests.cs`
+- `FenBrowser.Tests/Engine/ModuleLoaderTests.cs`
+- `FenBrowser.Tests/Workers/WorkerTests.cs`
+  - Updated expectations to align with hardened URL normalization and module-origin policy behavior.
+  - Updated worker startup error regression to verify fetch-failure event flow using valid script URL.
+
+- Smoke run snapshot:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~ServiceWorkerLifecycleTests|FullyQualifiedName~ModuleLoaderTests|FullyQualifiedName~WorkerTests"`
+  - Result: `Passed 27/27`.
+
+### 4.12 Final Completion Pass - Process-Isolation IPC Validation (2026-02-19)
+
+- Build validation snapshot:
+  - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug -clp:ErrorsOnly`
+  - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug -clp:ErrorsOnly`
+  - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug -clp:ErrorsOnly`
+  - all succeeded in this machine state.
+
+- Smoke regression snapshot:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~ServiceWorkerLifecycleTests|FullyQualifiedName~ModuleLoaderTests|FullyQualifiedName~WorkerTests"`
+  - Result: `Passed 27/27`.
+
+- Coverage note:
+  - Process-isolation IPC transport was validated through host compilation and runtime wiring paths in this tranche.
+  - Dedicated end-to-end process-isolation integration tests are a follow-up verification expansion item.
 
 _End of Volume VI_

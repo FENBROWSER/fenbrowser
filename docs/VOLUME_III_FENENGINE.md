@@ -723,3 +723,45 @@ So you want to add `border-radius`? Follow these steps:
     - disallow non `http/https/file` schemes
     - default block cross-origin `http(s)` module resolution without explicit pipeline support.
   - Security blocks now surface as `UnauthorizedAccessException` (instead of silent fallback).
+
+### 6.21 Completion Pass - Worker/ServiceWorker Conformance and Runtime Hygiene (2026-02-19)
+
+- `Workers/ServiceWorkerManager.cs`
+  - Added same-origin script registration validation and normalized scope resolution.
+  - Added longest-prefix scope match in `GetRegistration(...)`.
+  - Added explicit update/unregister paths with runtime disposal (`UpdateRegistrationAsync`, `UnregisterAsync`).
+
+- `Workers/ServiceWorkerContainer.cs`
+  - Added script URL and scope URL normalization/validation in `register(...)` and `getRegistration(...)`.
+  - Added same-origin checks for both script and scope handling.
+
+- `Workers/ServiceWorkerRegistration.cs`
+  - Implemented `update()` and `unregister()` promise-backed lifecycle methods.
+
+- `Workers/ServiceWorker.cs`
+  - Added `statechange` event dispatch with `addEventListener/removeEventListener/dispatchEvent`.
+  - `postMessage(...)` now converts payloads via `ToNativeObject()` for primitive-safe transport.
+
+- `Workers/ServiceWorkerGlobalScope.cs`
+- `Workers/ServiceWorkerClients.cs` (new)
+  - Exposed concrete `clients` object with `claim()`, `matchAll()`, and `openWindow(...)` behavior guards.
+
+- `WebAPIs/FetchEvent.cs`
+  - Added `waitUntil(...)` lifetime promise tracking and await helpers for dispatch paths.
+
+- `Workers/WorkerRuntime.cs`
+  - Added `importScripts(...)` implementation with same-origin/scheme checks.
+  - Service-worker fetch dispatch now waits for `respondWith()` registration and then tracks lifetime promises.
+
+- `Workers/WorkerGlobalScope.cs`
+- `Workers/WorkerConstructor.cs`
+  - Worker `postMessage(...)` payload conversion now uses `ToNativeObject()` to preserve primitive data.
+
+- `HTML/HtmlTreeBuilder.cs`
+  - Initial insertion-mode now sets document quirks mode from doctype detection logic.
+
+- `Interaction/FocusManager.cs`
+  - Added tabindex-aware `FindNextFocusable(...)` traversal for keyboard focus movement.
+
+- `Scripting/JavaScriptRuntime.cs`
+  - Replaced placeholder wrapper with concrete forwarding runtime over `JavaScriptEngine`.

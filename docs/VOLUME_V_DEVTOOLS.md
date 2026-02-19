@@ -152,4 +152,14 @@ Contains the generated CDP domain classes and DTOs.
 - `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
   - Wired DevTools cookie delegates to `CustomHtmlEngine` cookie jar-backed operations.
 
+### 5.6 Completion Pass - Debugger/Host Wiring Closure (2026-02-19)
+
+- `FenBrowser.FenEngine/DevTools/DevToolsCore.cs`
+  - `ShouldPause(...)` now evaluates conditional breakpoints via runtime expression evaluation.
+  - Added explicit truthiness interpretation helper for condition results.
+
+- `FenBrowser.Host/DevToolsHostAdapter.cs`
+- `FenBrowser.Host/BrowserIntegration.cs`
+  - DevTools `ScrollToElement` now routes through host adapter to viewport-centered scroll behavior in browser integration.
+
 _End of Volume V_
