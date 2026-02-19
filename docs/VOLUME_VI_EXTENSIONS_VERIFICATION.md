@@ -1,6 +1,6 @@
 # FenBrowser Codex - Volume VI: Extensions & Verification
 
-**State as of:** 2026-02-12
+**State as of:** 2026-02-18
 **Codex Version:** 1.0
 
 ## 1. Overview
@@ -199,5 +199,49 @@ To implement a new command (e.g., `GET /session/{id}/print`):
   - Fails CI on placeholder assertions.
   - Fails CI on stale `WptRunner.cs` doc references.
   - Fails CI when `docs/VERIFICATION_BASELINES.md` drifts from `test262_results.md` metrics.
+
+### 4.6 Phase-5 WebDriver Coverage Guard (2026-02-18)
+
+- `FenBrowser.WebDriver/CommandRouter.cs`
+  - Added route/command introspection for registered commands and route counts.
+
+- `FenBrowser.WebDriver/Commands/CommandHandler.cs`
+  - Added explicit manifest of currently implemented commands for parity checks.
+
+- `FenBrowser.WebDriver/WebDriverServer.cs`
+  - Added startup coverage diagnostics:
+    - total routes
+    - unique routed commands
+    - implemented command count
+    - missing and extra command lists
+  - Added strict startup gate for parity enforcement:
+    - set `FEN_WEBDRIVER_STRICT_COMMAND_COVERAGE=1` to fail startup when coverage is incomplete.
+
+### 4.7 Phase-5 WebDriver Command Completion (2026-02-18)
+
+- `FenBrowser.WebDriver/Commands/CommandHandler.cs`
+  - Added concrete handling for the previously missing cookie/action/alert/print/window-context/element-state commands.
+  - Implemented-command manifest now reaches full route parity.
+
+- `FenBrowser.WebDriver/Commands/ElementCommands.cs`
+  - Added:
+    - `FindElementFromElement`, `FindElementsFromElement`
+    - active-element and element-state/property/css/tag/rect/enabled/role/label routes
+    - element clear + element screenshot routes.
+
+- `FenBrowser.WebDriver/Commands/WindowCommands.cs`
+  - Added:
+    - switch/new window routes
+    - switch frame/parent frame routes
+    - maximize/minimize/fullscreen routes.
+
+- `FenBrowser.Host/WebDriver/FenBrowserDriver.cs`
+- `FenBrowser.Host/WebDriver/HostBrowserDriver.cs`
+  - Expanded driver adapters to implement the complete Phase-5 WebDriver command surface.
+
+- Coverage snapshot after completion:
+  - `RouteCommands=58`
+  - `ImplementedCommands=58`
+  - `MissingCount=0`
 
 _End of Volume VI_

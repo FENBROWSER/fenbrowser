@@ -52,6 +52,10 @@ Audit of external libraries (Silk.NET, SkiaSharp, etc.) and their licenses.
 
 Definitions of standard terminology ("Box", "Node", "Bridge", etc.).
 
+### [Appendix F: Architecture Audit (2026-02-18)](ARCHITECTURE_AUDIT_2026_02_18.md)
+
+Deep source audit with 1-100 scoring, maturity buckets, security risks, and issue-to-fix mapping.
+
 ---
 
-_State as of 2026-02-06_
+_State as of 2026-02-18_

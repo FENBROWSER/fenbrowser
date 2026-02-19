@@ -1,6 +1,6 @@
 # FenBrowser Codex - Volume IV: The Host Application
 
-**State as of:** 2026-02-06
+**State as of:** 2026-02-18
 **Codex Version:** 1.0
 
 ## 1. Overview
@@ -217,5 +217,16 @@ The Omnibox implementation.
   - Removed machine-specific absolute default paths for test suites.
   - Default Test262 root now resolves to `Path.Combine(Directory.GetCurrentDirectory(), "test262")`.
   - Default WPT root now resolves to `Path.Combine(Directory.GetCurrentDirectory(), "wpt")`.
+
+### 6.8 Phase-5 Host Integration Completion (2026-02-18)
+
+- `WebDriver/FenBrowserDriver.cs`
+- `WebDriver/HostBrowserDriver.cs`
+  - Expanded host WebDriver adapters to implement the full command surface used by `FenBrowser.WebDriver` (window context, element-state, cookies, actions, alerts, print, and element screenshot operations).
+  - Driver-side behavior now routes through `BrowserHost` APIs instead of placeholder-only paths.
+
+- `Widgets/SettingsPageWidget.cs`
+  - Privacy settings UI now hides non-runtime-wired controls (`UseSecureDNS`, `ImproveBrowser`) to avoid exposing non-functional toggles.
+  - Runtime-wired controls (`Safe Browsing`, `Block pop-ups`) remain visible and active.
 
 _End of Volume IV_

@@ -1,6 +1,6 @@
 # FenBrowser Codex - Volume II: The Core Foundation
 
-**State as of:** 2026-02-06
+**State as of:** 2026-02-18
 **Codex Version:** 1.0
 
 ## 1. Overview
@@ -360,3 +360,24 @@ _End of Volume II_
 
 - `Engine/PhaseGuard.cs`
   - Replaced machine-specific hardcoded debug log path with `DiagnosticPaths.AppendRootText(...)`.
+
+### 6.8 Phase-5 Runtime Policy Wiring (2026-02-18)
+
+- `Network/Handlers/PrivacyHandler.cs`
+  - `DNT` header behavior now follows `BrowserSettings.SendDoNotTrack` at request time instead of unconditional injection.
+  - When DNT is disabled by user policy, any existing `DNT` header is removed before send.
+
+- `ResourceManager.cs`
+  - Added one-time policy-binding diagnostics at startup (`[PolicyBindings]`):
+    - logs runtime-enforced toggles currently bound into network flow
+    - logs UI-visible toggles that remain pending full runtime enforcement.
+
+### 6.9 Phase-5 Runtime Policy Wiring - Tranche B (2026-02-18)
+
+- `Network/Handlers/SafeBrowsingHandler.cs`
+  - Added a runtime URL safety gate (known-dangerous host deny-list path) behind `BrowserSettings.SafeBrowsing`.
+
+- `ResourceManager.cs`
+  - Added `SafeBrowsingHandler` into the active network handler pipeline.
+  - `ImproveBrowser` now controls emission of client-hints request headers (`Sec-CH-UA*`) at runtime.
+  - Policy diagnostics now report `UseSecureDNS` as pending while enforced toggles include `SafeBrowsing`/`ImproveBrowser`/`BlockPopups`.
