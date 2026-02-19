@@ -79,6 +79,30 @@ namespace FenBrowser.Tests.Workers
             respondWithFunc.Invoke(new FenValue[] { promise }, null);
             
             Assert.NotNull(evt.RespondWithPromise);
+
+            var settled = await evt.WaitForRespondWithSettlementAsync(TimeSpan.FromMilliseconds(200));
+            Assert.True(settled.IsFulfilled);
+            Assert.Equal(200, settled.Value.AsObject().Get("status").ToNumber());
+        }
+
+        [Fact]
+        public async Task FetchEvent_WaitsForRespondWithRegistration()
+        {
+            var mockContext = new ExecutionContext(null);
+            var req = new FenObject();
+            req.Set("url", FenValue.FromString("https://example.com/api/data"));
+            var evt = new FetchEvent("fetch", req, mockContext);
+
+            var registeredBefore = await evt.WaitForRespondWithRegistrationAsync(TimeSpan.FromMilliseconds(20));
+            Assert.False(registeredBefore);
+
+            var response = new FenObject();
+            response.Set("status", FenValue.FromNumber(204));
+            var promise = CreatePromise(FenValue.FromObject(response));
+            evt.Get("respondWith").AsFunction().Invoke(new FenValue[] { promise }, null);
+
+            var registeredAfter = await evt.WaitForRespondWithRegistrationAsync(TimeSpan.FromMilliseconds(20));
+            Assert.True(registeredAfter);
         }
         
         private FenValue CreatePromise(FenValue result)
