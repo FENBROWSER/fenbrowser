@@ -363,6 +363,8 @@ namespace FenBrowser.Host
             {
                 _currentActiveTab.Browser.UrlChanged -= OnBrowserUrlChanged;
                 _currentActiveTab.Browser.ContextMenuRequested -= OnContextMenuRequested;
+                _currentActiveTab.LoadingChanged -= OnActiveTabLoadingChanged;
+                _currentActiveTab.TitleChanged -= OnActiveTabTitleChanged;
             }
             
             _currentActiveTab = tab;
@@ -371,9 +373,16 @@ namespace FenBrowser.Host
             {
                 tab.Browser.UrlChanged += OnBrowserUrlChanged;
                 tab.Browser.ContextMenuRequested += OnContextMenuRequested;
+                tab.LoadingChanged += OnActiveTabLoadingChanged;
+                tab.TitleChanged += OnActiveTabTitleChanged;
                 _toolbar.SetUrl(tab.Url);
                 UpdateBookmarkStar(tab.Url);
                 WindowManager.Instance.Window.Title = $"FenBrowser - {tab.Title}";
+                _statusBar.SetLoading(tab.IsLoading);
+            }
+            else
+            {
+                _statusBar.SetLoading(false);
             }
             _root.Invalidate();
         }
@@ -383,6 +392,28 @@ namespace FenBrowser.Host
             _toolbar.SetUrl(url);
             UpdateBookmarkStar(url);
             _root.Invalidate();
+        }
+
+        private void OnActiveTabLoadingChanged(BrowserTab tab)
+        {
+            if (tab == null || tab != _currentActiveTab)
+            {
+                return;
+            }
+
+            _statusBar.SetLoading(tab.IsLoading);
+            _root?.Invalidate();
+        }
+
+        private void OnActiveTabTitleChanged(BrowserTab tab)
+        {
+            if (tab == null || tab != _currentActiveTab)
+            {
+                return;
+            }
+
+            WindowManager.Instance.Window.Title = $"FenBrowser - {tab.Title}";
+            _root?.Invalidate();
         }
         
         private void UpdateBookmarkStar(string url)
@@ -550,13 +581,17 @@ namespace FenBrowser.Host
                  // Implement Window Drag
                  // Delta logic:
                  var deltaX = (int)(x - _lastMousePos.X);
-                 var deltaY = (int)(y - _lastMousePos.Y);
+                  var deltaY = (int)(y - _lastMousePos.Y);
                  if (deltaX != 0 || deltaY != 0)
                     WindowManager.Instance.Window.Position += new Silk.NET.Maths.Vector2D<int>(deltaX, deltaY);
             }
 
              var cap = InputManager.Instance.CapturedWidget;
-             if (cap != null) { cap.OnMouseMove(x,y); return; }
+             if (cap != null) { 
+                 cap.OnMouseMove(x,y); 
+                 CursorManager.ApplyPendingCursor(m);
+                 return; 
+             }
 
              var hit = _root?.HitTestDeep(x,y);
              
@@ -566,6 +601,11 @@ namespace FenBrowser.Host
              }
              
              if (hit != null) {
+                 if (!(hit is WebContentWidget)) {
+                     CursorManager.ResetCursor(m);
+                     _statusBar?.ClearHoverUrl();
+                 }
+                 
                  hit.OnMouseMove(x,y);
                  
                  if (hit is WebContentWidget web && TabManager.Instance.ActiveTab != null) {
@@ -579,11 +619,10 @@ namespace FenBrowser.Host
                       var result = activeTab.Browser.HandleMouseMove(x,y, web.Bounds.Left, web.Bounds.Top);
                       CursorManager.UpdateFromHitTest(m, result);
                       _statusBar?.UpdateFromHitTest(result);
-                 } else {
-                     CursorManager.ResetCursor(m);
-                     _statusBar?.ClearHoverUrl();
                  }
              }
+             
+             CursorManager.ApplyPendingCursor(m);
              
              if (_contextMenu?.IsOpen == true) _contextMenu.OnMouseMove(x,y);
         }
