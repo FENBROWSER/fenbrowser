@@ -16,6 +16,8 @@ public static class CursorManager
     private static DateTime _lastUpdate = DateTime.MinValue;
     private static readonly TimeSpan _throttleInterval = TimeSpan.FromMilliseconds(16); // ~60fps
     
+    private static FenCursorType _pendingCursor = FenCursorType.Default;
+
     /// <summary>
     /// Update the cursor based on hit test result.
     /// Only throttle when cursor is NOT changing (to prevent hammering same cursor).
@@ -23,23 +25,25 @@ public static class CursorManager
     /// </summary>
     public static void UpdateCursor(IMouse mouse, FenCursorType cursor)
     {
-        // If cursor is the same, throttle to prevent excessive system calls
-        if (cursor == _currentCursor)
+        _pendingCursor = cursor;
+    }
+    
+    public static void ApplyPendingCursor(IMouse mouse)
+    {
+        if (_pendingCursor == _currentCursor)
         {
             var now = DateTime.UtcNow;
             if ((now - _lastUpdate) < _throttleInterval)
                 return;
             _lastUpdate = now;
-            return; // Already have correct cursor, nothing to do
+            return;
         }
         
-        // Cursor is changing - apply immediately
-        FenLogger.Debug($"[Cursor] Changed: {_currentCursor} → {cursor}", LogCategory.Events);
-        _currentCursor = cursor;
+        FenLogger.Debug($"[Cursor] Changed: {_currentCursor} → {_pendingCursor}", LogCategory.Events);
+        _currentCursor = _pendingCursor;
         _lastUpdate = DateTime.UtcNow;
         
-        // Map to Silk.NET cursor and set
-        var silkCursor = MapToSilkCursor(cursor);
+        var silkCursor = MapToSilkCursor(_pendingCursor);
         mouse.Cursor.StandardCursor = silkCursor;
     }
     
