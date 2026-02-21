@@ -32,14 +32,22 @@ namespace FenBrowser.FenEngine.Rendering
         private readonly SkiaRenderer _renderer = new SkiaRenderer();
         private readonly Dictionary<Node, BoxModel> _boxes = new Dictionary<Node, BoxModel>();
         private readonly Interaction.ScrollManager _scrollManager = new Interaction.ScrollManager();
+        private readonly PaintCompositingStabilityController _paintStabilityController = new PaintCompositingStabilityController();
+        private readonly PaintDamageTracker _paintDamageTracker = new PaintDamageTracker();
+        private readonly DamageRasterizationPolicy _damageRasterizationPolicy = new DamageRasterizationPolicy();
+        private readonly ScrollDamageComputer _scrollDamageComputer = new ScrollDamageComputer();
+        private readonly DamageRegionNormalizationPolicy _damageNormalizationPolicy = new DamageRegionNormalizationPolicy();
+        private readonly FrameBudgetAdaptivePolicy _frameBudgetAdaptivePolicy = new FrameBudgetAdaptivePolicy();
 
         private IReadOnlyDictionary<Node, CssComputed> _lastStyles;
         private LayoutResult _lastLayout;
         private ImmutablePaintTree _lastPaintTree;
+        private IReadOnlyList<SKRect> _lastDamageRegions = Array.Empty<SKRect>();
         private float _viewportWidth;
         private float _viewportHeight;
         private float _lastViewportWidth;
         private float _lastViewportHeight;
+        private float _lastScrollY;
         private Node _lastRoot;
         
         /// <summary>
@@ -51,6 +59,13 @@ namespace FenBrowser.FenEngine.Rendering
         /// Access to scroll manager.
         /// </summary>
         public Interaction.ScrollManager ScrollManager => _scrollManager;
+
+        /// <summary>
+        /// Damage regions computed from the most recent paint-tree delta.
+        /// </summary>
+        public IReadOnlyList<SKRect> LastDamageRegions => _lastDamageRegions;
+        public bool LastFrameUsedDamageRasterization { get; private set; }
+        public float LastDamageAreaRatio { get; private set; }
         
 
         
@@ -81,7 +96,8 @@ namespace FenBrowser.FenEngine.Rendering
             SKRect viewport, 
             string baseUrl = null, 
             Action<SKSize, List<InputOverlayData>> onLayoutUpdated = null, 
-            SKSize? separateLayoutViewport = null)
+            SKSize? separateLayoutViewport = null,
+            bool hasBaseFrame = false)
         {
             if (root == null || canvas == null) return;
             
@@ -96,8 +112,7 @@ namespace FenBrowser.FenEngine.Rendering
             var pipelineContext = PipelineContext.Current;
             try
             {
-            pipelineContext.BeginFrame();
-            try {
+            using var _frameScope = pipelineContext.BeginScopedFrame();
             DiagnosticPaths.AppendRootText("debug_render_start.txt", $"Render Start: Root={root?.GetType().Name}\n");
             CurrentOverlays.Clear();
             
@@ -190,8 +205,7 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }
 
-                pipelineContext.BeginStage(PipelineStage.Styling);
-                try
+                using (pipelineContext.BeginScopedStage(PipelineStage.Styling))
                 {
                     if (stylesChanged || hasActiveAnimations)
                     {
@@ -200,16 +214,11 @@ namespace FenBrowser.FenEngine.Rendering
 
                     pipelineContext.SetStyleSnapshot(styles ?? new Dictionary<Node, CssComputed>());
                 }
-                finally
-                {
-                    pipelineContext.EndStage();
-                }
 
                 if (hasActiveAnimations) isLayoutDirty = true;
 
                 // PHASE 1: Layout using the new LayoutEngine
-                pipelineContext.BeginStage(PipelineStage.Layout);
-                try
+                using (pipelineContext.BeginScopedStage(PipelineStage.Layout))
                 {
                 RenderPipeline.EnterLayout();
                 if (isLayoutDirty)
@@ -299,28 +308,29 @@ namespace FenBrowser.FenEngine.Rendering
                 RenderPipeline.EndLayout(); // State -> LayoutFrozen
                 pipelineContext.SetLayoutSnapshot(_lastLayout);
                 }
-                finally
-                {
-                    pipelineContext.EndStage();
-                }
                 
                 // Update Scroll Animations
-                if (_scrollManager.OnFrame())
+                bool scrollAnimationActive = _scrollManager.OnFrame();
+                if (scrollAnimationActive)
                 {
                     // Scroll changed -> Paint Dirty
                     // (We don't strict-track scroll dirty yet, so relying on this or just repainting)
                 }
 
                 // PHASE 2: Build Paint Tree
-                pipelineContext.BeginStage(PipelineStage.Painting);
-                try
+                using (pipelineContext.BeginScopedStage(PipelineStage.Painting))
                 {
                 RenderPipeline.EnterPaint(); // Checks LayoutFrozen
-                bool isPaintDirty = isLayoutDirty || root.PaintDirty || root.ChildPaintDirty || _lastPaintTree == null;
-                if (ImageLoader.HasActiveAnimatedImages)
-                {
-                    isPaintDirty = true;
-                }
+                bool paintInvalidationSignal = isLayoutDirty
+                                               || root.PaintDirty
+                                               || root.ChildPaintDirty
+                                               || ImageLoader.HasActiveAnimatedImages
+                                               || scrollAnimationActive;
+                // PC-4: Suppress forced rebuilds under sustained frame-budget pressure.
+                bool adaptiveSuppressed = _frameBudgetAdaptivePolicy.ShouldSuppressForcedRebuild(RenderPipeline.FrameBudget);
+                bool forcePaintRebuild = _paintStabilityController.ShouldForcePaintRebuild && !adaptiveSuppressed;
+                bool isPaintDirty = paintInvalidationSignal || _lastPaintTree == null || forcePaintRebuild;
+                bool rebuiltPaintTree = false;
                 // If scroll changed, we usually repaint. But ScrollManager handles offsets in PaintTreeBuilder.
                 // If we skip build, we use old PaintTree with old scroll offsets? 
                 // Currently NewPaintTreeBuilder reads scroll offsets.
@@ -335,6 +345,7 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     pipelineContext.DirtyFlags.InvalidatePaint();
                     FenLogger.Debug($"[SkiaDomRenderer] Invoke NewPaintTreeBuilder... Root={root.GetType().Name} BoxCount={_boxes.Count}");
+                    var previousPaintTree = _lastPaintTree;
                     var paintTree = NewPaintTreeBuilder.Build(
                         root,
                         _boxes,
@@ -344,21 +355,41 @@ namespace FenBrowser.FenEngine.Rendering
                         _scrollManager,
                         baseUrl);
                     _lastPaintTree = paintTree;
+                    rebuiltPaintTree = true;
 
+                    // PC-3: Tree-diff damage.
+                    var currentViewport = new SKRect(0, 0, _viewportWidth, _viewportHeight);
+                    var treeDiffDamage = _paintDamageTracker.ComputeDamageRegions(
+                        previousPaintTree,
+                        paintTree,
+                        currentViewport);
 
-                    
+                    // PC-3: Scroll-aware damage strips merged with tree-diff damage.
+                    float currentScrollY = GetDocumentScrollY(root);
+                    var scrollDamage = _scrollDamageComputer.ComputeScrollDamage(
+                        _lastScrollY,
+                        currentScrollY,
+                        new SKSize(_lastViewportWidth, _lastViewportHeight),
+                        currentViewport);
+                    _lastScrollY = currentScrollY;
+
+                    var allDamage = new System.Collections.Generic.List<SKRect>(treeDiffDamage);
+                    foreach (var r in scrollDamage) allDamage.Add(r);
+
+                    _lastDamageRegions = allDamage.Count > 0
+                        ? _damageNormalizationPolicy.Normalize(allDamage, currentViewport)
+                        : treeDiffDamage;
+
                     // Clear Paint Dirty Flags
                     RecursivelyClearDirty(root, InvalidationKind.Paint);
                 }
                 else
                 {
+                     _lastDamageRegions = Array.Empty<SKRect>();
                      // FenLogger.Debug("[SkiaDomRenderer] Skipping Paint Tree Build (Clean)");
                 }
+                _paintStabilityController.ObserveFrame(paintInvalidationSignal, rebuiltPaintTree);
                 pipelineContext.SetPaintSnapshot(_lastPaintTree);
-                }
-                finally
-                {
-                    pipelineContext.EndStage();
                 }
 
 
@@ -409,19 +440,41 @@ namespace FenBrowser.FenEngine.Rendering
                 } 
                 catch {}
                 
-                _renderer.Render(canvas, _lastPaintTree, viewport, bgColor);
-                
-                RenderPipeline.EndPaint(); // State -> Composite
+                using (pipelineContext.BeginScopedStage(PipelineStage.Rasterizing))
+                {
+                    bool useDamageRasterization = _damageRasterizationPolicy.ShouldUseDamageRasterization(
+                        hasBaseFrame,
+                        _lastDamageRegions,
+                        viewport,
+                        out var damageAreaRatio);
 
+                    LastDamageAreaRatio = damageAreaRatio;
+                    LastFrameUsedDamageRasterization = useDamageRasterization;
 
-                
-                // Callback with layout info
-                CurrentOverlays.Clear();
-                CollectOverlays();
-                float totalHeight = _lastLayout?.ContentHeight ?? _viewportHeight;
-                onLayoutUpdated?.Invoke(new SKSize(_viewportWidth, totalHeight), CurrentOverlays);
-                
-                RenderPipeline.EndFrame(); // State -> Idle
+                    if (useDamageRasterization)
+                    {
+                        _renderer.RenderDamaged(canvas, _lastPaintTree, viewport, bgColor, _lastDamageRegions);
+                    }
+                    else
+                    {
+                        _renderer.Render(canvas, _lastPaintTree, viewport, bgColor);
+                    }
+                    RenderPipeline.EndPaint(); // State -> Composite
+                }
+
+                using (pipelineContext.BeginScopedStage(PipelineStage.Presenting))
+                {
+                    RenderPipeline.EnterPresent();
+                    // Callback with layout info
+                    CurrentOverlays.Clear();
+                    CollectOverlays();
+                    float totalHeight = _lastLayout?.ContentHeight ?? _viewportHeight;
+                    onLayoutUpdated?.Invoke(new SKSize(_viewportWidth, totalHeight), CurrentOverlays);
+
+                    RenderPipeline.EndFrame(); // State -> Idle
+                    // PC-4: Record frame duration for EMA-based adaptive pressure tracking.
+                    _frameBudgetAdaptivePolicy.ObserveFrame(RenderPipeline.LastFrameDuration);
+                }
             }
             catch (Exception ex)
             {
@@ -431,6 +484,10 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 // CRITICAL FIX: Clear stale state to prevent "Ghost UI" where old page features remain interactive
                 _lastPaintTree = null;
+                _lastDamageRegions = Array.Empty<SKRect>();
+                LastFrameUsedDamageRasterization = false;
+                LastDamageAreaRatio = 0f;
+                _paintStabilityController.Reset();
                 _boxes.Clear();
                 CurrentOverlays.Clear();
                 
@@ -443,11 +500,6 @@ namespace FenBrowser.FenEngine.Rendering
             
             // [Verification] Finalize and log report
             FenBrowser.Core.Verification.ContentVerifier.PerformVerification();
-            }
-            finally
-            {
-                pipelineContext.EndFrame();
-            }
             }
             finally
             {
@@ -669,6 +721,20 @@ namespace FenBrowser.FenEngine.Rendering
                     RecursivelyClearDirty(child, kind);
                 }
             }
+        }
+
+        /// <summary>
+        /// Gets the document-level vertical scroll offset for scroll-damage computation.
+        /// Uses the body or documentElement as the primary scrollable container.
+        /// Falls back to 0 when no scroll state is available.
+        /// </summary>
+        private float GetDocumentScrollY(Node root)
+        {
+            Element scrollable = (root as Document)?.DocumentElement ?? root as Element;
+            if (scrollable == null) return 0f;
+            var state = _scrollManager.GetScrollState(scrollable);
+            if (state != null) return state.ScrollY;
+            return 0f;
         }
 
         private void CollectAllNodes(IReadOnlyList<PaintNodeBase> nodes, List<PaintNodeBase> result)
