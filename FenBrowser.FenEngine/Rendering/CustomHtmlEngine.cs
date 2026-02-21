@@ -7,6 +7,7 @@ using System.Text;
 using System.Net;
 using System.Threading.Tasks;
 using System.IO;
+using System.Diagnostics;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core.Parsing;
@@ -27,12 +28,72 @@ using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Rendering
 {
+    public sealed class RenderTelemetrySnapshot
+    {
+        public long TokenizingMs { get; init; }
+        public long ParsingMs { get; init; }
+        public long TokenizingAndParsingMs { get; init; }
+        public int ParseTokenCount { get; init; }
+        public int TokenizingCheckpointCount { get; init; }
+        public int ParsingCheckpointCount { get; init; }
+        public int ParsingDocumentCheckpointCount { get; init; }
+        public int DocumentReadyTokenCount { get; init; }
+        public int ParseIncrementalRepaintCount { get; init; }
+        public long StreamingPreparseMs { get; init; }
+        public int StreamingPreparseCheckpointCount { get; init; }
+        public int StreamingPreparseRepaintCount { get; init; }
+        public bool InterleavedParseUsed { get; init; }
+        public int InterleavedTokenBatchSize { get; init; }
+        public int InterleavedBatchCount { get; init; }
+        public bool InterleavedFallbackUsed { get; init; }
+        public long CssAndStyleMs { get; init; }
+        public long InitialVisualTreeMs { get; init; }
+        public long ScriptExecutionMs { get; init; }
+        public long PostScriptVisualTreeMs { get; init; }
+        public long TotalRenderMs { get; init; }
+        public bool JavaScriptExecuted { get; init; }
+    }
+
+    internal sealed class DomParseResult
+    {
+        public Node Dom { get; set; }
+        public long TokenizingMs { get; set; }
+        public long ParsingMs { get; set; }
+        public int TokenCount { get; set; }
+        public int TokenizingCheckpointCount { get; set; }
+        public int ParsingCheckpointCount { get; set; }
+        public int ParsingDocumentCheckpointCount { get; set; }
+        public int DocumentReadyTokenCount { get; set; }
+        public int IncrementalRepaintCount { get; set; }
+        public long StreamingPreparseMs { get; set; }
+        public int StreamingPreparseCheckpointCount { get; set; }
+        public int StreamingPreparseRepaintCount { get; set; }
+        public bool InterleavedParseUsed { get; set; }
+        public int InterleavedTokenBatchSize { get; set; }
+        public int InterleavedBatchCount { get; set; }
+        public bool InterleavedFallbackUsed { get; set; }
+    }
+
+    internal sealed class ParseCheckpointState
+    {
+        public int ParsingDocumentCheckpointCount { get; set; }
+        public int ParsingCheckpointOrdinal { get; set; }
+        public int IncrementalRepaintCount { get; set; }
+    }
+
     /// <summary>
     /// Clean, dependency-free wrapper suitable for WP8.1 without WebView.
     /// </summary>
 #nullable enable
     public sealed class CustomHtmlEngine : IDisposable
     {
+        private const int IncrementalParseRepaintMaxCount = 8;
+        private const int IncrementalParseRepaintCheckpointStride = 2;
+        private const int StreamingPreparseMinHtmlLength = 32768;
+        private const int StreamingPreparseRepaintMaxCount = 4;
+        private const int StreamingPreparseRepaintCheckpointStride = 3;
+        private const int InterleavedPrimaryParseMinHtmlLength = 8192;
+
         public Func<Uri, Task<string>> ScriptFetcher { get; set; }
         public Func<System.Net.Http.HttpRequestMessage, Task<System.Net.Http.HttpResponseMessage>> FetchHandler { get; set; }
 
@@ -53,6 +114,7 @@ namespace FenBrowser.FenEngine.Rendering
         public List<CssLoader.CssSource> LastCssSources { get; private set; }
 
         public LayoutResult LastLayout { get; private set; }
+        public RenderTelemetrySnapshot LastRenderTelemetry { get; private set; }
         public IExecutionContext Context => _activeJs?.GlobalContext;
 
         public RenderContext? BuildRenderContext()
@@ -74,6 +136,9 @@ namespace FenBrowser.FenEngine.Rendering
         public event Action<SKRect?> HighlightRectChanged;
         public event Func<string, JsPermissions, Task<bool>> PermissionRequested; // Permission API event
         public bool EnableJavaScript { get; set; } = true;
+        public bool EnableIncrementalParseRepaint { get; set; } = true;
+        public bool EnableStreamingParsePrepass { get; set; } = true;
+        public bool EnableInterleavedPrimaryParse { get; set; } = true;
 
 
         private FenBrowser.FenEngine.Core.Interfaces.IHistoryBridge _historyBridge;
@@ -796,21 +861,65 @@ namespace FenBrowser.FenEngine.Rendering
             EventLoopCoordinator.Instance.NotifyLayoutDirty();
         }
 
-        private async Task<Node> RunDomParseAsync(string html)
+        private async Task<DomParseResult> RunDomParseAsync(string html)
         {
+            var parseInput = html ?? string.Empty;
             // CRITICAL FIX: Use production HtmlTreeBuilder from Core.Parsing
             // The FenEngine version doesn't properly implement RAWTEXT state for style/script,
             // causing CSS content to leak as visible text nodes
-            var builder = new FenBrowser.Core.Parsing.HtmlTreeBuilder(html ?? string.Empty);
+            var builder = new FenBrowser.Core.Parsing.HtmlTreeBuilder(parseInput);
+            builder.ParseCheckpointTokenInterval = 512;
+            builder.InterleavedTokenBatchSize = ResolveInterleavedTokenBatchSize(EnableInterleavedPrimaryParse, parseInput.Length);
+            var parseCheckpointState = new ParseCheckpointState();
+            var streamingPreparseMs = 0L;
+            var streamingPreparseCheckpointCount = 0;
+            var streamingPreparseRepaintCount = 0;
+            AttachParseDocumentCheckpointCallback(builder, parseCheckpointState);
             try
             {
+                if (ShouldRunStreamingParsePrepass(EnableStreamingParsePrepass, parseInput.Length))
+                {
+                    streamingPreparseMs = await RunStreamingPreparseAsync(
+                        parseInput,
+                        checkpointCount => streamingPreparseCheckpointCount = checkpointCount,
+                        repaintCount => streamingPreparseRepaintCount = repaintCount).ConfigureAwait(false);
+                }
+
                 FenLogger.Debug("[RenderAsync] Starting parse (Production Parser)...", LogCategory.Rendering);
+                var interleavedFallbackUsed = false;
                 var doc = await Task.Run<Node>(() =>
                 {
-                    try { return builder.Build(); }
+                    try
+                    {
+                        return builder.BuildWithPipelineStages(PipelineContext.Current);
+                    }
                     catch (Exception pex)
                     {
                         FenLogger.Error($"[RenderAsync] Parse exception: {pex.Message}", LogCategory.Rendering);
+                        if (builder.InterleavedTokenBatchSize > 0)
+                        {
+                            try
+                            {
+                                FenLogger.Warn("[RenderAsync] Retrying parse with interleaved mode disabled", LogCategory.Rendering);
+                                parseCheckpointState.ParsingDocumentCheckpointCount = 0;
+                                parseCheckpointState.ParsingCheckpointOrdinal = 0;
+                                parseCheckpointState.IncrementalRepaintCount = 0;
+
+                                var fallbackBuilder = new FenBrowser.Core.Parsing.HtmlTreeBuilder(parseInput);
+                                fallbackBuilder.ParseCheckpointTokenInterval = builder.ParseCheckpointTokenInterval;
+                                fallbackBuilder.InterleavedTokenBatchSize = 0;
+                                AttachParseDocumentCheckpointCallback(fallbackBuilder, parseCheckpointState);
+                                var fallbackDoc = fallbackBuilder.BuildWithPipelineStages(PipelineContext.Current);
+                                builder = fallbackBuilder;
+                                interleavedFallbackUsed = true;
+                                return fallbackDoc;
+                            }
+                            catch (Exception fallbackEx)
+                            {
+                                FenLogger.Error($"[RenderAsync] Fallback parse exception: {fallbackEx.Message}", LogCategory.Rendering);
+                            }
+                        }
+
                         return new FenBrowser.Core.Dom.V2.Document();
                     }
                 });
@@ -824,8 +933,27 @@ namespace FenBrowser.FenEngine.Rendering
                      System.IO.File.WriteAllText(DiagnosticPaths.GetRootArtifactPath("dom_dump.txt"), sb.ToString());
                 } catch {}
 
-                // Return DocumentElement (the HTML element), not the Document wrapper
-                return (doc as FenBrowser.Core.Dom.V2.Document)?.DocumentElement ?? doc;
+                var metrics = builder.LastBuildMetrics ?? new FenBrowser.Core.Parsing.HtmlParseBuildMetrics();
+                return new DomParseResult
+                {
+                    // Return DocumentElement (the HTML element), not the Document wrapper
+                    Dom = (doc as FenBrowser.Core.Dom.V2.Document)?.DocumentElement ?? doc,
+                    TokenizingMs = Math.Max(0, metrics.TokenizingMs),
+                    ParsingMs = Math.Max(0, metrics.ParsingMs),
+                    TokenCount = Math.Max(0, metrics.TokenCount),
+                    TokenizingCheckpointCount = Math.Max(0, metrics.TokenizingCheckpointCount),
+                    ParsingCheckpointCount = Math.Max(0, metrics.ParsingCheckpointCount),
+                    ParsingDocumentCheckpointCount = Math.Max(0, parseCheckpointState.ParsingDocumentCheckpointCount),
+                    DocumentReadyTokenCount = Math.Max(0, metrics.DocumentReadyTokenCount),
+                    IncrementalRepaintCount = Math.Max(0, parseCheckpointState.IncrementalRepaintCount),
+                    StreamingPreparseMs = Math.Max(0, streamingPreparseMs),
+                    StreamingPreparseCheckpointCount = Math.Max(0, streamingPreparseCheckpointCount),
+                    StreamingPreparseRepaintCount = Math.Max(0, streamingPreparseRepaintCount),
+                    InterleavedParseUsed = metrics.UsedInterleavedBuild,
+                    InterleavedTokenBatchSize = Math.Max(0, metrics.InterleavedTokenBatchSize),
+                    InterleavedBatchCount = Math.Max(0, metrics.InterleavedBatchCount),
+                    InterleavedFallbackUsed = interleavedFallbackUsed
+                };
             }
             catch (Exception ex)
             {
@@ -944,7 +1072,9 @@ namespace FenBrowser.FenEngine.Rendering
                      }
                      return allowed;
                  }
-                 FenLogger.Warn("[CSP] ActivePolicy is NULL during nonce check!", LogCategory.Rendering);
+                 // No CSP policy from HTTP header or meta tag — permissively allow inline scripts.
+                 // This is correct behavior; the warning was misleading noise.
+                 FenLogger.Debug("[CSP] No ActivePolicy during nonce check — permissively allowing inline script.", LogCategory.Rendering);
                  return true;
              };
              
@@ -1095,6 +1225,28 @@ namespace FenBrowser.FenEngine.Rendering
 
             await RaiseLoadingChangedAsync(true);
             var _pageLoadStopwatch = System.Diagnostics.Stopwatch.StartNew();
+            long lastStageMarkMs = 0;
+            long tokenizingMs = 0;
+            long parsingMs = 0;
+            long tokenizingAndParsingMs = 0;
+            int parseTokenCount = 0;
+            int tokenizingCheckpointCount = 0;
+            int parsingCheckpointCount = 0;
+            int parsingDocumentCheckpointCount = 0;
+            int documentReadyTokenCount = 0;
+            int incrementalParseRepaintCount = 0;
+            long streamingPreparseMs = 0;
+            int streamingPreparseCheckpointCount = 0;
+            int streamingPreparseRepaintCount = 0;
+            bool interleavedParseUsed = false;
+            int interleavedTokenBatchSize = 0;
+            int interleavedBatchCount = 0;
+            bool interleavedFallbackUsed = false;
+            long cssAndStyleMs = 0;
+            long initialVisualTreeMs = 0;
+            long scriptExecutionMs = 0;
+            long postScriptVisualTreeMs = 0;
+            bool javascriptExecuted = false;
             
             // Store raw HTML for DOM comparison feature
             _lastRawHtml = html;
@@ -1111,19 +1263,47 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 // 1. Helper: Parse DOM
-                var dom = await RunDomParseAsync(html);
+                var parseResult = await RunDomParseAsync(html);
+                var dom = parseResult?.Dom;
                 if (dom == null) return null;
                 _activeDom = dom;
+                tokenizingMs = Math.Max(0, parseResult?.TokenizingMs ?? 0);
+                parsingMs = Math.Max(0, parseResult?.ParsingMs ?? 0);
+                parseTokenCount = Math.Max(0, parseResult?.TokenCount ?? 0);
+                tokenizingCheckpointCount = Math.Max(0, parseResult?.TokenizingCheckpointCount ?? 0);
+                parsingCheckpointCount = Math.Max(0, parseResult?.ParsingCheckpointCount ?? 0);
+                parsingDocumentCheckpointCount = Math.Max(0, parseResult?.ParsingDocumentCheckpointCount ?? 0);
+                documentReadyTokenCount = Math.Max(0, parseResult?.DocumentReadyTokenCount ?? 0);
+                incrementalParseRepaintCount = Math.Max(0, parseResult?.IncrementalRepaintCount ?? 0);
+                streamingPreparseMs = Math.Max(0, parseResult?.StreamingPreparseMs ?? 0);
+                streamingPreparseCheckpointCount = Math.Max(0, parseResult?.StreamingPreparseCheckpointCount ?? 0);
+                streamingPreparseRepaintCount = Math.Max(0, parseResult?.StreamingPreparseRepaintCount ?? 0);
+                interleavedParseUsed = parseResult?.InterleavedParseUsed ?? false;
+                interleavedTokenBatchSize = Math.Max(0, parseResult?.InterleavedTokenBatchSize ?? 0);
+                interleavedBatchCount = Math.Max(0, parseResult?.InterleavedBatchCount ?? 0);
+                interleavedFallbackUsed = parseResult?.InterleavedFallbackUsed ?? false;
                 
                 // CRITICAL FIX: Invalidate old styles immediately so the renderer stops using them.
                 // This forces BrowserIntegration to wait (showing previous frame or spinner) until new styles are ready.
                 LastComputedStyles = null;
                 
-                FenLogger.Debug($"[PERF] DOM Parse: {_pageLoadStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
+                var elapsed = _pageLoadStopwatch.ElapsedMilliseconds;
+                tokenizingAndParsingMs = Math.Max(0, tokenizingMs + parsingMs);
+                if (tokenizingAndParsingMs <= 0)
+                {
+                    tokenizingAndParsingMs = Math.Max(0, elapsed - lastStageMarkMs);
+                }
+                lastStageMarkMs = elapsed;
+                FenLogger.Debug(
+                    $"[PERF] DOM Parse: total={elapsed}ms tokenizing={tokenizingMs}ms parsing={parsingMs}ms tokens={parseTokenCount} docReadyToken={documentReadyTokenCount} parseRepaints={incrementalParseRepaintCount} streaming(ms={streamingPreparseMs},cp={streamingPreparseCheckpointCount},rp={streamingPreparseRepaintCount}) interleaved(used={(interleavedParseUsed ? 1 : 0)},batch={interleavedTokenBatchSize},chunks={interleavedBatchCount},fallback={(interleavedFallbackUsed ? 1 : 0)}) checkpoints(t={tokenizingCheckpointCount},p={parsingCheckpointCount},dom={parsingDocumentCheckpointCount})",
+                    LogCategory.Rendering);
 
                 // 2. Helper: Load CSS
                 await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync);
-                FenLogger.Debug($"[PERF] CSS Load: {_pageLoadStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
+                elapsed = _pageLoadStopwatch.ElapsedMilliseconds;
+                cssAndStyleMs = Math.Max(0, elapsed - lastStageMarkMs);
+                lastStageMarkMs = elapsed;
+                FenLogger.Debug($"[PERF] CSS Load: {elapsed}ms", LogCategory.Rendering);
 
                 // 2.5. Security: CSP Meta Parsing
                 ActivePolicy = null;
@@ -1200,39 +1380,52 @@ namespace FenBrowser.FenEngine.Rendering
                     allowJs = false;
                 }
 
+                // HTML spec §4.12.1: When scripting is enabled, <noscript> must not render.
+                // Remove noscript elements entirely when JS is on to prevent their raw HTML-encoded
+                // fallback content (scripts, styles, inline HTML strings) from leaking into the page.
                 if (allowJs)
                 {
-                    // DISABLED: FenBrowser has limited JS support, so we keep noscript 
-                    // fallback content visible for sites that heavily depend on JS (like Google Search)
-                    // var noscripts = dom.Descendants().Where(n => string.Equals(n.TagName, "noscript", StringComparison.OrdinalIgnoreCase)).ToList();
-                    // foreach (var node in noscripts) node.Remove();
-                }
-
-                // FIX: Google Search puts <style>table,div,span,p{display:none}</style> inside <noscript>.
-                // Since we render <noscript> (due to partial JS support), this style applies globally and hides everything.
-                // We must remove <style> tags from potentially visible <noscript> elements.
-                try
-                {
-                    var noscriptElements = dom.Descendants().OfType<Element>()
-                        .Where(n => string.Equals(n.TagName, "noscript", StringComparison.OrdinalIgnoreCase))
-                        .ToList();
-
-                    foreach (var ns in noscriptElements)
+                    try
                     {
-                        var stylesInNoscript = ns.Descendants().OfType<Element>()
-                            .Where(s => string.Equals(s.TagName, "style", StringComparison.OrdinalIgnoreCase))
+                        var noscripts = dom.Descendants().OfType<Element>()
+                            .Where(n => string.Equals(n.TagName, "noscript", StringComparison.OrdinalIgnoreCase))
                             .ToList();
-                        
-                        foreach (var style in stylesInNoscript)
-                        {
-                            FenLogger.Debug($"[CustomHtmlEngine] Removing harmful <style> from <noscript>", LogCategory.Rendering);
-                            style.Remove();
-                        }
+                        foreach (var ns in noscripts) ns.Remove();
+                        if (noscripts.Count > 0)
+                            FenLogger.Debug($"[CustomHtmlEngine] Removed {noscripts.Count} <noscript> element(s) (JS on — spec §4.12.1)", LogCategory.Rendering);
+                    }
+                    catch (Exception nsEx)
+                    {
+                        FenLogger.Warn($"[CustomHtmlEngine] Failed to remove noscript elements: {nsEx.Message}", LogCategory.Rendering);
                     }
                 }
-                catch (Exception ex)
+                else
                 {
-                    FenLogger.Warn($"[CustomHtmlEngine] Failed to sanitize noscript: {ex.Message}", LogCategory.Rendering);
+                    // JS is disabled — noscript content should be visible.
+                    // FIX: Google Search puts <style>table,div,span,p{display:none}</style> inside <noscript>.
+                    // Since we render <noscript>, this style applies globally and hides everything.
+                    // Remove only harmful <style> tags from <noscript> when keeping noscript visible.
+                    try
+                    {
+                        var noscriptElements = dom.Descendants().OfType<Element>()
+                            .Where(n => string.Equals(n.TagName, "noscript", StringComparison.OrdinalIgnoreCase))
+                            .ToList();
+                        foreach (var ns in noscriptElements)
+                        {
+                            var stylesInNoscript = ns.Descendants().OfType<Element>()
+                                .Where(s => string.Equals(s.TagName, "style", StringComparison.OrdinalIgnoreCase))
+                                .ToList();
+                            foreach (var style in stylesInNoscript)
+                            {
+                                FenLogger.Debug($"[CustomHtmlEngine] Removing harmful <style> from <noscript>", LogCategory.Rendering);
+                                style.Remove();
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        FenLogger.Warn($"[CustomHtmlEngine] Failed to sanitize noscript: {ex.Message}", LogCategory.Rendering);
+                    }
                 }
 
                 _activeJs = SetupJavaScriptEngine(baseUri, onNavigate, allowJs, fetchExternalCssAsync);
@@ -1245,21 +1438,31 @@ namespace FenBrowser.FenEngine.Rendering
                 FenLogger.Debug("[CustomHtmlEngine] Calling BuildVisualTreeAsync...", LogCategory.Rendering);
                 var vh = (double?)GetPrimaryWindowHeight();
                 var control = await BuildVisualTreeAsync(dom as Element, baseUri, cssFetcher, imageLoader, onNavigate, _activeJs, viewportWidth, vh, onFixedBackground, includeDiagnosticsBanner: false).ConfigureAwait(false);
-                FenLogger.Debug($"[PERF] Visual Tree 1: {_pageLoadStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
+                elapsed = _pageLoadStopwatch.ElapsedMilliseconds;
+                initialVisualTreeMs = Math.Max(0, elapsed - lastStageMarkMs);
+                lastStageMarkMs = elapsed;
+                FenLogger.Debug($"[PERF] Visual Tree 1: {elapsed}ms", LogCategory.Rendering);
 
                 // 6. Run Scripts
                 object element = control; 
                 if (_activeJs != null)
                 {
+                    javascriptExecuted = true;
                     await RunScriptsAsync(_activeJs, dom as Element, baseUri);
-                    FenLogger.Debug($"[PERF] Script Run: {_pageLoadStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
+                    elapsed = _pageLoadStopwatch.ElapsedMilliseconds;
+                    scriptExecutionMs = Math.Max(0, elapsed - lastStageMarkMs);
+                    lastStageMarkMs = elapsed;
+                    FenLogger.Debug($"[PERF] Script Run: {elapsed}ms", LogCategory.Rendering);
                     // Re-build visual tree after scripts
                     FenLogger.Debug("[RenderAsync] Re-building visual tree...", LogCategory.Rendering);
                     try
                     {
                         var vh2 = (double?)GetPrimaryWindowHeight();
                         element = await BuildVisualTreeAsync(dom as Element, baseUri, cssFetcher, imageLoader, onNavigate, _activeJs, viewportWidth, vh2, onFixedBackground, includeDiagnosticsBanner: false).ConfigureAwait(false);
-                        FenLogger.Debug($"[PERF] Visual Tree 2: {_pageLoadStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
+                        elapsed = _pageLoadStopwatch.ElapsedMilliseconds;
+                        postScriptVisualTreeMs = Math.Max(0, elapsed - lastStageMarkMs);
+                        lastStageMarkMs = elapsed;
+                        FenLogger.Debug($"[PERF] Visual Tree 2: {elapsed}ms", LogCategory.Rendering);
                     }
                     catch (Exception vtEx)
                     {
@@ -1275,9 +1478,227 @@ namespace FenBrowser.FenEngine.Rendering
             }
             finally
             {
-                FenLogger.Debug($"[PERF] FULL PAGE LOAD TIME: {_pageLoadStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
+                var totalRenderMs = _pageLoadStopwatch.ElapsedMilliseconds;
+                LastRenderTelemetry = new RenderTelemetrySnapshot
+                {
+                    TokenizingMs = tokenizingMs,
+                    ParsingMs = parsingMs,
+                    TokenizingAndParsingMs = tokenizingAndParsingMs,
+                    ParseTokenCount = parseTokenCount,
+                    TokenizingCheckpointCount = tokenizingCheckpointCount,
+                    ParsingCheckpointCount = parsingCheckpointCount,
+                    ParsingDocumentCheckpointCount = parsingDocumentCheckpointCount,
+                    DocumentReadyTokenCount = documentReadyTokenCount,
+                    ParseIncrementalRepaintCount = incrementalParseRepaintCount,
+                    StreamingPreparseMs = streamingPreparseMs,
+                    StreamingPreparseCheckpointCount = streamingPreparseCheckpointCount,
+                    StreamingPreparseRepaintCount = streamingPreparseRepaintCount,
+                    InterleavedParseUsed = interleavedParseUsed,
+                    InterleavedTokenBatchSize = interleavedTokenBatchSize,
+                    InterleavedBatchCount = interleavedBatchCount,
+                    InterleavedFallbackUsed = interleavedFallbackUsed,
+                    CssAndStyleMs = cssAndStyleMs,
+                    InitialVisualTreeMs = initialVisualTreeMs,
+                    ScriptExecutionMs = scriptExecutionMs,
+                    PostScriptVisualTreeMs = postScriptVisualTreeMs,
+                    TotalRenderMs = totalRenderMs,
+                    JavaScriptExecuted = javascriptExecuted
+                };
+                FenLogger.Debug($"[PERF] FULL PAGE LOAD TIME: {totalRenderMs}ms", LogCategory.Rendering);
                 await RaiseLoadingChangedAsync(false);
             }
+        }
+
+        private async Task<long> RunStreamingPreparseAsync(string html, Action<int> checkpointCountUpdated, Action<int> repaintCountUpdated)
+        {
+            if (string.IsNullOrEmpty(html))
+            {
+                checkpointCountUpdated?.Invoke(0);
+                repaintCountUpdated?.Invoke(0);
+                return 0;
+            }
+
+            var checkpointCount = 0;
+            var repaintCount = 0;
+            var parseStopwatch = Stopwatch.StartNew();
+            try
+            {
+                using var parser = new StreamingHtmlParser(html);
+                await parser.ParseIncrementallyAsync(document =>
+                {
+                    checkpointCount++;
+                    if (TryEmitStreamingParseRepaint(document, checkpointCount, ref repaintCount))
+                    {
+                        repaintCountUpdated?.Invoke(repaintCount);
+                    }
+                    checkpointCountUpdated?.Invoke(checkpointCount);
+                }).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[RenderAsync] Streaming preparse failed: {ex.Message}", LogCategory.Rendering);
+            }
+
+            checkpointCountUpdated?.Invoke(checkpointCount);
+            repaintCountUpdated?.Invoke(repaintCount);
+            parseStopwatch.Stop();
+            return parseStopwatch.ElapsedMilliseconds;
+        }
+
+        private bool TryEmitStreamingParseRepaint(Document document, int checkpointOrdinal, ref int repaintCount)
+        {
+            if (document?.DocumentElement == null)
+            {
+                return false;
+            }
+
+            if (!ShouldEmitStreamingPreparseRepaint(checkpointOrdinal, repaintCount))
+            {
+                return false;
+            }
+
+            Element snapshotRoot = null;
+            try
+            {
+                snapshotRoot = document.DocumentElement.CloneNode(true) as Element;
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[RenderAsync] Streaming preparse snapshot clone failed: {ex.Message}", LogCategory.Rendering);
+                return false;
+            }
+
+            if (snapshotRoot == null)
+            {
+                return false;
+            }
+
+            repaintCount++;
+            _activeDom = snapshotRoot;
+            LastComputedStyles = null;
+            OnRepaintReady(snapshotRoot);
+            return true;
+        }
+
+        private void TryEmitIncrementalParseRepaint(Document document, HtmlParseCheckpoint checkpoint, int parsingCheckpointOrdinal, ref int incrementalRepaintCount)
+        {
+            if (!EnableIncrementalParseRepaint ||
+                document?.DocumentElement == null ||
+                checkpoint == null ||
+                checkpoint.Phase != HtmlParseBuildPhase.Parsing)
+            {
+                return;
+            }
+
+            if (!ShouldEmitIncrementalParseRepaint(parsingCheckpointOrdinal, checkpoint.IsFinal, incrementalRepaintCount))
+            {
+                return;
+            }
+
+            Element snapshotRoot = null;
+            try
+            {
+                snapshotRoot = document.DocumentElement.CloneNode(true) as Element;
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[RenderAsync] Incremental parse snapshot clone failed: {ex.Message}", LogCategory.Rendering);
+                return;
+            }
+
+            if (snapshotRoot == null)
+            {
+                return;
+            }
+
+            incrementalRepaintCount++;
+            _activeDom = snapshotRoot;
+            LastComputedStyles = null;
+            OnRepaintReady(snapshotRoot);
+        }
+
+        private static bool ShouldEmitIncrementalParseRepaint(int parsingCheckpointOrdinal, bool isFinalCheckpoint, int incrementalRepaintCount)
+        {
+            if (incrementalRepaintCount >= IncrementalParseRepaintMaxCount)
+            {
+                return false;
+            }
+
+            if (incrementalRepaintCount == 0)
+            {
+                return true;
+            }
+
+            if (isFinalCheckpoint)
+            {
+                return true;
+            }
+
+            return parsingCheckpointOrdinal > 0 &&
+                (parsingCheckpointOrdinal % IncrementalParseRepaintCheckpointStride) == 0;
+        }
+
+        private static bool ShouldRunStreamingParsePrepass(bool enabled, int htmlLength)
+        {
+            return enabled && htmlLength >= StreamingPreparseMinHtmlLength;
+        }
+
+        private static int ResolveInterleavedTokenBatchSize(bool enabled, int htmlLength)
+        {
+            if (!enabled || htmlLength < InterleavedPrimaryParseMinHtmlLength)
+            {
+                return 0;
+            }
+
+            if (htmlLength >= 524288)
+            {
+                return 512;
+            }
+
+            if (htmlLength >= 131072)
+            {
+                return 256;
+            }
+
+            return 128;
+        }
+
+        private void AttachParseDocumentCheckpointCallback(
+            FenBrowser.Core.Parsing.HtmlTreeBuilder builder,
+            ParseCheckpointState parseCheckpointState)
+        {
+            if (builder == null || parseCheckpointState == null)
+            {
+                return;
+            }
+
+            builder.ParseDocumentCheckpointCallback = (document, checkpoint) =>
+            {
+                if (checkpoint != null && checkpoint.Phase == HtmlParseBuildPhase.Parsing)
+                {
+                    parseCheckpointState.ParsingDocumentCheckpointCount++;
+                    parseCheckpointState.ParsingCheckpointOrdinal++;
+                    var repaintCount = parseCheckpointState.IncrementalRepaintCount;
+                    TryEmitIncrementalParseRepaint(document, checkpoint, parseCheckpointState.ParsingCheckpointOrdinal, ref repaintCount);
+                    parseCheckpointState.IncrementalRepaintCount = repaintCount;
+                }
+            };
+        }
+
+        private static bool ShouldEmitStreamingPreparseRepaint(int checkpointOrdinal, int repaintCount)
+        {
+            if (repaintCount >= StreamingPreparseRepaintMaxCount)
+            {
+                return false;
+            }
+
+            if (repaintCount == 0)
+            {
+                return true;
+            }
+
+            return checkpointOrdinal > 0 &&
+                (checkpointOrdinal % StreamingPreparseRepaintCheckpointStride) == 0;
         }
 
                 /// Convenience wrapper to kick off a render without awaiting the resulting element.
