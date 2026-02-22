@@ -5,7 +5,7 @@ using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using Silk.NET.Input;
 using Silk.NET.Maths;
-using Silk.NET.OpenGL;
+using Silk.NET.OpenGLES;
 using Silk.NET.Windowing;
 using SkiaSharp;
 using FenBrowser.Host.Input;
@@ -83,6 +83,7 @@ namespace FenBrowser.Host
             
             options.TransparentFramebuffer = false;
             options.Title = "FenBrowser";
+            options.API = new GraphicsAPI(ContextAPI.OpenGLES, ContextProfile.Core, ContextFlags.Default, new APIVersion(3, 0));
 
             _window = Silk.NET.Windowing.Window.Create(options);
             _window.Load += Load;
@@ -100,7 +101,7 @@ namespace FenBrowser.Host
         {
             FenLogger.Info("[WindowManager] Window loaded, initializing Graphics...", LogCategory.General);
             
-            _gl = _window.CreateOpenGL();
+            _gl = _window.CreateOpenGLES();
             InitializeInput();
             InitializeSkia();
 
