@@ -31,9 +31,10 @@
 
   <ItemGroup>
     <!-- Silk.NET for native windowing and input -->
+    <PackageReference Include="Silk.NET.OpenGLES" Version="2.21.0" />
+    <PackageReference Include="Silk.NET.OpenGLES.Extensions.EXT" Version="2.23.0" />
     <PackageReference Include="Silk.NET.Windowing" Version="2.21.0" />
     <PackageReference Include="Silk.NET.Input" Version="2.21.0" />
-    <PackageReference Include="Silk.NET.OpenGL" Version="2.21.0" />
     
     <!-- SkiaSharp for 2D rendering -->
     <PackageReference Include="SkiaSharp" Version="2.88.9" />
