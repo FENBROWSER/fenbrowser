@@ -32,6 +32,7 @@
   <ItemGroup>
     <!-- Silk.NET for native windowing and input -->
     <PackageReference Include="Silk.NET.OpenGLES" Version="2.21.0" />
+    <PackageReference Include="Silk.NET.OpenGLES.ANGLE.Native" Version="2025.9.12" />
     <PackageReference Include="Silk.NET.OpenGLES.Extensions.EXT" Version="2.23.0" />
     <PackageReference Include="Silk.NET.Windowing" Version="2.21.0" />
     <PackageReference Include="Silk.NET.Input" Version="2.21.0" />
