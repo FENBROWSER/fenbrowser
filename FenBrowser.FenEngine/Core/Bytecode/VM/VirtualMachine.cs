@@ -90,6 +90,62 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 _stack[_sp++] = FenValue.FromNumber(left * right);
                                 break;
                             }
+                            case OpCode.Equal:
+                            {
+                                var right = _stack[--_sp];
+                                var left = _stack[--_sp];
+                                _stack[_sp++] = FenValue.FromBoolean(left.LooseEquals(right));
+                                break;
+                            }
+                            case OpCode.StrictEqual:
+                            {
+                                var right = _stack[--_sp];
+                                var left = _stack[--_sp];
+                                _stack[_sp++] = FenValue.FromBoolean(left.StrictEquals(right));
+                                break;
+                            }
+                            case OpCode.LessThan:
+                            {
+                                var right = _stack[--_sp];
+                                var left = _stack[--_sp];
+                                var result = FenValue.AbstractRelationalComparison(left, right, null, true);
+                                _stack[_sp++] = FenValue.FromBoolean(result.ToBoolean());
+                                break;
+                            }
+                            case OpCode.GreaterThan:
+                            {
+                                var right = _stack[--_sp];
+                                var left = _stack[--_sp];
+                                var result = FenValue.AbstractRelationalComparison(right, left, null, false);
+                                _stack[_sp++] = FenValue.FromBoolean(result.ToBoolean());
+                                break;
+                            }
+                            case OpCode.Jump:
+                            {
+                                int offset = ReadInt32(instructions, ref frame);
+                                frame.IP = offset;
+                                break;
+                            }
+                            case OpCode.JumpIfFalse:
+                            {
+                                int offset = ReadInt32(instructions, ref frame);
+                                var condition = _stack[--_sp];
+                                if (!condition.ToBoolean())
+                                {
+                                    frame.IP = offset;
+                                }
+                                break;
+                            }
+                            case OpCode.JumpIfTrue:
+                            {
+                                int offset = ReadInt32(instructions, ref frame);
+                                var condition = _stack[--_sp];
+                                if (condition.ToBoolean())
+                                {
+                                    frame.IP = offset;
+                                }
+                                break;
+                            }
                             case OpCode.LoadVar:
                             {
                                 int nameIndex = ReadInt32(instructions, ref frame);
