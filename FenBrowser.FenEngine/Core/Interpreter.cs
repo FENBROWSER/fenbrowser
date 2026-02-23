@@ -337,6 +337,41 @@ namespace FenBrowser.FenEngine.Core
                                 var targetObjVal = targetObj.AsObject();
                                 if (targetObjVal != null)
                                 {
+                                    if (targetObjVal is FenObject fenObjIC)
+                                    {
+                                        var currentShape = fenObjIC.GetShape();
+                                        if (currentShape == leftMember.CachedShape && leftMember.CachedIndex >= 0)
+                                        {
+                                            var fastStorage = fenObjIC.GetPropertyStorage();
+                                            if (leftMember.CachedIndex < fastStorage.Length)
+                                            {
+                                                var fastDesc = fastStorage[leftMember.CachedIndex];
+                                                if (fastDesc.IsData && fastDesc.Writable == true)
+                                                {
+                                                    fastDesc.Value = value;
+                                                    fastStorage[leftMember.CachedIndex] = fastDesc;
+                                                    return value;
+                                                }
+                                            }
+                                        }
+
+                                        targetObjVal.Set(leftMember.Property, value, context);
+                                        
+                                        var newShape = fenObjIC.GetShape();
+                                        if (newShape.TryGetPropertyOffset(leftMember.Property, out var slowIndex))
+                                        {
+                                            leftMember.CachedShape = newShape;
+                                            leftMember.CachedIndex = slowIndex;
+                                        }
+                                        else
+                                        {
+                                            leftMember.CachedShape = null;
+                                            leftMember.CachedIndex = -1;
+                                        }
+                                        
+                                        return value;
+                                    }
+
                                     targetObjVal.Set(leftMember.Property, value, context);
                                     return value;
                                 }
@@ -356,11 +391,11 @@ namespace FenBrowser.FenEngine.Core
                         {
                             var targetObj = Eval(leftIndex.Left, env, context);
                             if (IsError(targetObj)) return targetObj;
-                            
+
                             var indexVal = Eval(leftIndex.Index, env, context);
                             if (IsError(indexVal)) return indexVal;
-                            
-                            var key = indexVal.ToString();
+
+                            var key = ComputedPropKey(indexVal);
                             
                             if (targetObj.IsObject)
                             {
@@ -384,6 +419,28 @@ namespace FenBrowser.FenEngine.Core
                         FenValue function = FenValue.Undefined;
                         FenValue thisContext = FenValue.Undefined;
 
+                        // obj[Symbol.something]() — computed method call: resolve function and set this
+                        if (callExpr.Function is IndexExpression callIndex && !(callExpr.Function is MemberExpression))
+                        {
+                            var callObj = ToFenValue(Eval(callIndex.Left, env, context));
+                            if (IsError(callObj)) return callObj;
+                            var callIdxVal = ToFenValue(Eval(callIndex.Index, env, context));
+                            if (IsError(callIdxVal)) return callIdxVal;
+                            if (callObj.IsObject || callObj.IsFunction)
+                            {
+                                var propKey2 = ComputedPropKey(callIdxVal);
+                                var resolvedFn = callObj.AsObject()?.Get(propKey2, context) ?? FenValue.Undefined;
+                                if (!resolvedFn.IsUndefined)
+                                {
+                                    function = resolvedFn;
+                                    thisContext = callObj;
+                                    var callArgs2 = EvalExpressionsWithSpread(callExpr.Arguments, env, context);
+                                    if (callArgs2.Count == 1 && IsError(callArgs2[0])) return callArgs2[0];
+                                    return ApplyFunction(function, callArgs2, context, thisContext);
+                                }
+                            }
+                        }
+
                         if (callExpr.Function is MemberExpression me)
                         {
                             var obj = ToFenValue(Eval(me.Object, env, context));
@@ -403,14 +460,23 @@ namespace FenBrowser.FenEngine.Core
                                     // bind(thisArg, ...args) - Returns a bound function
                                     var boundThis = fnArgs.Count > 0 ? fnArgs[0] : FenValue.Undefined;
                                     var boundArgs = fnArgs.Count > 1 ? fnArgs.Skip(1).ToList() : new List<FenValue>();
-                                    
+
+                                    // Capture context for the bound function's execution context
+                                    var capturedContext = context;
                                     var boundFn = new FenFunction("bound " + targetFn.Name, (invokeArgs, _) =>
                                     {
                                         var allArgs = new List<FenValue>(boundArgs);
                                         allArgs.AddRange(invokeArgs);
-                                        return targetFn.Invoke(allArgs.ToArray(), context);
+                                        // Create a new context with boundThis so the callee sees the correct 'this'
+                                        var boundCtx = new ExecutionContext
+                                        {
+                                            Environment = capturedContext?.Environment,
+                                            ThisBinding = boundThis,
+                                            StrictMode = capturedContext?.StrictMode ?? false
+                                        };
+                                        return targetFn.Invoke(allArgs.ToArray(), boundCtx);
                                     });
-                                    
+
                                     return FenValue.FromFunction(boundFn);
                                 }
                                 else if (me.Property == "call")
@@ -452,7 +518,44 @@ namespace FenBrowser.FenEngine.Core
                                     var o = obj.AsObject();
                                     if (o != null) 
                                     {
-                                        function = o.Get(me.Property, context);
+                                        if (o is FenObject fenObjIC)
+                                        {
+                                            var currentShape = fenObjIC.GetShape();
+                                            if (currentShape == me.CachedShape && me.CachedIndex >= 0)
+                                            {
+                                                var fastStorage = fenObjIC.GetPropertyStorage();
+                                                if (me.CachedIndex < fastStorage.Length)
+                                                {
+                                                    var fastDesc = fastStorage[me.CachedIndex];
+                                                    if (fastDesc.IsAccessor && fastDesc.Getter != null)
+                                                        function = fastDesc.Getter.Invoke(new FenValue[] { obj }, context);
+                                                    else
+                                                        function = fastDesc.Value ?? FenValue.Undefined;
+                                                    goto FastPathResolved;
+                                                }
+                                            }
+
+                                            function = fenObjIC.Get(me.Property, context);
+                                            
+                                            // Call accesses don't mutate the shape, but we cache the offset
+                                            if (currentShape.TryGetPropertyOffset(me.Property, out var slowIndex))
+                                            {
+                                                me.CachedShape = currentShape;
+                                                me.CachedIndex = slowIndex;
+                                            }
+                                            else
+                                            {
+                                                me.CachedShape = null;
+                                                me.CachedIndex = -1;
+                                            }
+                                            
+                                        FastPathResolved:;
+                                        }
+                                        else
+                                        {
+                                            function = o.Get(me.Property, context);
+                                        }
+
                                         if (me.Property == "throws" || me.Property == "assert")
                                         {
                                             // Console.WriteLine($"[DEBUG] CallExpressionMemberGet: prop={me.Property}, valType={function.Type}");
@@ -501,11 +604,47 @@ namespace FenBrowser.FenEngine.Core
                         }
                         else
                         {
+                            // Direct eval: eval("code") — execute code string in current scope
+                            if (callExpr.Function is Identifier directEvalId && directEvalId.Value == "eval")
+                            {
+                                var evalRawArgs = EvalExpressionsWithSpread(callExpr.Arguments, env, context);
+                                if (evalRawArgs.Count == 0) return FenValue.Undefined;
+                                var evalArg = evalRawArgs[0];
+                                if (!evalArg.IsString) return evalArg; // eval(non-string) returns arg unchanged
+
+                                var evalCode = evalArg.ToString();
+                                if (context?.StrictMode == true) evalCode = "\"use strict\";\n" + evalCode;
+
+                                try
+                                {
+                                    var evalLexer = new Lexer(evalCode);
+                                    var evalParser = new Parser(evalLexer, allowReturnOutsideFunction: true);
+                                    var evalProgram = evalParser.ParseProgram();
+
+                                    if (evalParser.Errors.Count > 0)
+                                        return FenValue.FromError($"SyntaxError: {evalParser.Errors[0]}");
+
+                                    // Execute each statement in the CURRENT environment (direct eval semantics)
+                                    IValue evalResult = FenValue.Undefined;
+                                    foreach (var evalStmt in evalProgram.Statements)
+                                    {
+                                        evalResult = Eval(evalStmt, env, context);
+                                        var evalFv = ToFenValue(evalResult);
+                                        if (IsError(evalFv)) return evalFv;
+                                    }
+                                    return UnwrapReturnValue(ToFenValue(evalResult));
+                                }
+                                catch (Exception evalEx)
+                                {
+                                    return FenValue.FromError($"SyntaxError: {evalEx.Message}");
+                                }
+                            }
+
                             function = ToFenValue(Eval(callExpr.Function, env, context));
                         }
 
                         if (function.Type == JsValueType.Error) return (FenValue)function;
-                        
+
                         var args = EvalExpressionsWithSpread(callExpr.Arguments, env, context);
                         if (args.Count == 1 && IsError(args[0])) return args[0];
 
@@ -1742,6 +1881,8 @@ namespace FenBrowser.FenEngine.Core
                     return FenValue.FromObject(iterResult);
                 })));
                 iterator.Set("[Symbol.iterator]", FenValue.FromFunction(new FenFunction("[Symbol.iterator]", (a, t) => FenValue.FromObject(iterator))));
+                if (FenObject.DefaultIteratorPrototype != null)
+                    iterator.SetPrototype(FenObject.DefaultIteratorPrototype);
                 return FenValue.FromObject(iterator);
             })));
 
@@ -3942,19 +4083,114 @@ namespace FenBrowser.FenEngine.Core
             }
             else if (left.IsObject || left.IsFunction)
             {
-                var obj = left.AsObject();
-                if (obj != null)
+                // Handled below by generic auto-boxing and IC wrapper
+            }
+
+            // Generic Auto-Box and IC logic
+            var fenValIC = ToFenValue(left);
+            var targetObj = fenValIC.AsObject();
+            if (targetObj != null)
+            {
+                if (targetObj is FenObject fenObjIC)
                 {
-                    var val = obj.Get(me.Property, context);
-                    if (me.Property == "throws" || me.Property == "assert")
+                    var currentShape = fenObjIC.GetShape();
+                    if (currentShape == me.CachedShape && me.CachedIndex >= 0)
                     {
-                        // Console.WriteLine($"[DEBUG] MemberGet: prop={me.Property}, val={val.Type}");
+                        var fastStorage = fenObjIC.GetPropertyStorage();
+                        if (me.CachedIndex < fastStorage.Length)
+                        {
+                            var fastDesc = fastStorage[me.CachedIndex];
+                            if (fastDesc.IsAccessor && fastDesc.Getter != null)
+                                return fastDesc.Getter.Invoke(new FenValue[] { ToFenValue(left) }, context);
+                            return fastDesc.Value ?? FenValue.Undefined;
+                        }
+                    }
+
+                    var val = fenObjIC.Get(me.Property, context);
+                    
+                    if (currentShape.TryGetPropertyOffset(me.Property, out var slowIndex))
+                    {
+                        me.CachedShape = currentShape;
+                        me.CachedIndex = slowIndex;
+                    }
+                    else
+                    {
+                        me.CachedShape = null;
+                        me.CachedIndex = -1;
                     }
                     if (val != null) return val;
+                }
+                else
+                {
+                    var val = targetObj.Get(me.Property, context);
+                    if (val != null) return val;
+                }
+            }
+            else
+            {
+                // Fallback for primitives without an auto-boxed wrapper
+                FenObject primitiveProto = null;
+                if (fenValIC.IsString)
+                {
+                    primitiveProto = GetStringPrototype();
+                }
+                else if (fenValIC.IsNumber)
+                {
+                    primitiveProto = GetNumberPrototype();
+                }
+                else if (fenValIC.IsBoolean)
+                {
+                    var boolGlobal = env.Get("Boolean");
+                    if (boolGlobal != null && boolGlobal.IsFunction)
+                    {
+                        var pVal = boolGlobal.AsFunction().Get("prototype", context);
+                        if (pVal != null && pVal.IsObject)
+                        {
+                            primitiveProto = pVal.AsObject() as FenObject;
+                        }
+                    }
+                }
+                else if (fenValIC.IsSymbol)
+                {
+                    var symGlobal = env.Get("Symbol");
+                    if (symGlobal != null && symGlobal.IsFunction)
+                    {
+                        var pVal = symGlobal.AsFunction().Get("prototype", context);
+                        if (pVal != null && pVal.IsObject)
+                        {
+                            primitiveProto = pVal.AsObject() as FenObject;
+                        }
+                    }
+                }
+
+                if (primitiveProto != null)
+                {
+                    var val = primitiveProto.Get(me.Property, context);
+                    if (val != null && !val.IsUndefined)
+                    {
+                        // Some methods require the primitive as their context
+                        return val;
+                    }
                 }
             }
 
             return FenValue.Undefined;
+        }
+
+        /// <summary>
+        /// Convert a computed property index (possibly a Symbol) to a string property key.
+        /// Well-known symbols use the canonical "[Symbol.xxx]" format to match runtime storage.
+        /// User-defined symbols use their unique "@@{id}" key.
+        /// </summary>
+        private static string ComputedPropKey(FenValue index)
+        {
+            if (index.IsSymbol)
+            {
+                var sym = index.AsSymbol();
+                if (sym != null)
+                    return sym.IsWellKnownSymbol ? $"[{sym.Description}]" : sym.ToPropertyKey();
+            }
+            return index.ToString();
         }
 
         private IValue EvalIndexExpression(IndexExpression ie, FenEnvironment env, IExecutionContext context)
@@ -3970,7 +4206,7 @@ namespace FenBrowser.FenEngine.Core
                 var obj = left.AsObject();
                 if (obj != null)
                 {
-                    var val = obj.Get(index.ToString(), context);
+                    var val = obj.Get(ComputedPropKey(index), context);
                     if (val != null) return val;
                 }
             }
