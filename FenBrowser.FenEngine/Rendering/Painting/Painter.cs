@@ -111,6 +111,9 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             // 4. Border
             _boxPainter.PaintBorder(canvas, box, style, opacity);
 
+            // 4.5 Outline (Outside Border)
+            _boxPainter.PaintOutline(canvas, box, style);
+
             // 5. Content (text or image)
             if (element.TagName?.ToLowerInvariant() == "img")
             {
@@ -225,10 +228,53 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             // Apply transform origin (default: center)
             float ox = box.Left + box.Width / 2;
             float oy = box.Top + box.Height / 2;
+            
+            if (!string.IsNullOrEmpty(style.TransformOrigin) && style.TransformOrigin != "center")
+            {
+                var parts = style.TransformOrigin.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length > 0)
+                {
+                    ox = ParseOriginMapping(parts[0], box.Left, box.Width);
+                }
+                if (parts.Length > 1)
+                {
+                    oy = ParseOriginMapping(parts[1], box.Top, box.Height);
+                }
+            }
 
             canvas.Translate(ox, oy);
+
+            // Apply Perspective if provided
+            if (!string.IsNullOrEmpty(style.Perspective) && style.Perspective != "none")
+            {
+               if (float.TryParse(style.Perspective.Replace("px", ""), out float perspectiveValue) && perspectiveValue > 0)
+               {
+                   SKMatrix44 perspectiveMatrix = SKMatrix44.CreateIdentity();
+                   perspectiveMatrix[3, 2] = -1f / perspectiveValue; // Typical CSS perspective projection
+                   matrix = matrix.PostConcat(perspectiveMatrix.Matrix);
+               }
+            }
+
             canvas.Concat(ref matrix);
             canvas.Translate(-ox, -oy);
+        }
+
+        private float ParseOriginMapping(string part, float offset, float length)
+        {
+            float val = offset + length / 2; // Default to center
+            if (part == "left" || part == "top") return offset;
+            if (part == "right" || part == "bottom") return offset + length;
+            if (part == "center") return val;
+
+            if (part.EndsWith("%") && float.TryParse(part.TrimEnd('%'), out float pct))
+            {
+                return offset + (length * (pct / 100f));
+            }
+            if (part.EndsWith("px") && float.TryParse(part.Replace("px", ""), out float px))
+            {
+                return offset + px;
+            }
+            return val;
         }
 
         /// <summary>
