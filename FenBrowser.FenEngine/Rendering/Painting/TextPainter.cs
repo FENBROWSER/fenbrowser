@@ -84,25 +84,38 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             float letterSpacing = (float)(style?.LetterSpacing ?? 0);
             float wordSpacing = (float)(style?.WordSpacing ?? 0);
 
-            // Improved word wrap
             var words = text.Split(' ');
             var line = "";
             float x = box.Left;
 
+            // Improved word wrap
+            // Check text-indent
+            float indentOffset = 0;
+            if (style?.TextIndent.HasValue == true)
+            {
+                indentOffset = (float)style.TextIndent.Value;
+            }
+
+            bool isFirstLine = true;
             foreach (var word in words)
             {
                 var testLine = string.IsNullOrEmpty(line) ? word : line + " " + word;
                 float testWidth = MeasureTextWithSpacing(testLine, paint, letterSpacing, wordSpacing);
+                float currentAvailableWidth = box.Width - (isFirstLine ? indentOffset : 0);
 
-                if (testWidth > box.Width && !string.IsNullOrEmpty(line))
+                if (testWidth > currentAvailableWidth && !string.IsNullOrEmpty(line))
                 {
                     // Draw current line
+                    float drawX = x + (isFirstLine ? indentOffset : 0);
+                    
                     if (letterSpacing != 0 || wordSpacing != 0)
-                        DrawTextWithSpacing(canvas, line, x, y, paint, letterSpacing, wordSpacing);
+                        DrawTextWithSpacing(canvas, line, drawX, y, paint, letterSpacing, wordSpacing);
                     else
-                        canvas.DrawText(line, x, y, paint);
+                        canvas.DrawText(line, drawX, y, paint);
+                        
                     y += lineHeight;
                     line = word;
+                    isFirstLine = false;
 
                     if (y > box.Bottom) break; // Overflow
                 }
@@ -115,10 +128,12 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             // Draw remaining
             if (!string.IsNullOrEmpty(line) && y <= box.Bottom)
             {
+                float drawX = x + (isFirstLine ? indentOffset : 0);
+                
                 if (letterSpacing != 0 || wordSpacing != 0)
-                    DrawTextWithSpacing(canvas, line, x, y, paint, letterSpacing, wordSpacing);
+                    DrawTextWithSpacing(canvas, line, drawX, y, paint, letterSpacing, wordSpacing);
                 else
-                    canvas.DrawText(line, x, y, paint);
+                    canvas.DrawText(line, drawX, y, paint);
             }
         }
 
@@ -236,10 +251,55 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                 Style = SKPaintStyle.Stroke
             };
 
+            // Custom thickness
+            if (!string.IsNullOrEmpty(style.TextDecorationThickness) && style.TextDecorationThickness != "auto" && style.TextDecorationThickness != "from-font")
+            {
+                if (float.TryParse(style.TextDecorationThickness.Replace("px", ""), out float thickness))
+                {
+                    linePaint.StrokeWidth = thickness;
+                }
+            }
+
+            // Custom offset
+            float offsetOverride = 0;
+            if (!string.IsNullOrEmpty(style.TextUnderlineOffset) && style.TextUnderlineOffset != "auto")
+            {
+                if (float.TryParse(style.TextUnderlineOffset.Replace("px", ""), out float offset))
+                {
+                    offsetOverride = offset;
+                }
+            }
+
+            // Decoration style (solid, double, dotted, dashed, wavy)
+            var decStyle = style.TextDecorationStyle?.ToLowerInvariant() ?? "solid";
+            
+            if (decStyle == "dashed")
+            {
+                linePaint.PathEffect = SKPathEffect.CreateDash(new[] { linePaint.StrokeWidth * 3, linePaint.StrokeWidth * 3 }, 0);
+            }
+            else if (decStyle == "dotted")
+            {
+                linePaint.PathEffect = SKPathEffect.CreateDash(new[] { linePaint.StrokeWidth, linePaint.StrokeWidth * 2 }, 0);
+                linePaint.StrokeCap = SKStrokeCap.Round;
+            }
+
             if (decoration.Contains("underline"))
             {
-                float underlineY = y + metrics.Descent / 2;
-                canvas.DrawLine(x, underlineY, x + textWidth, underlineY, linePaint);
+                float underlineY = y + metrics.Descent / 2 + offsetOverride;
+                
+                if (decStyle == "wavy")
+                {
+                    DrawWavyLine(canvas, x, underlineY, textWidth, linePaint);
+                }
+                else if (decStyle == "double")
+                {
+                    canvas.DrawLine(x, underlineY - linePaint.StrokeWidth, x + textWidth, underlineY - linePaint.StrokeWidth, linePaint);
+                    canvas.DrawLine(x, underlineY + linePaint.StrokeWidth, x + textWidth, underlineY + linePaint.StrokeWidth, linePaint);
+                }
+                else
+                {
+                    canvas.DrawLine(x, underlineY, x + textWidth, underlineY, linePaint);
+                }
             }
 
             if (decoration.Contains("line-through"))
@@ -247,12 +307,37 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                 float strikeY = y - metrics.Ascent / 3;
                 canvas.DrawLine(x, strikeY, x + textWidth, strikeY, linePaint);
             }
-
+            
             if (decoration.Contains("overline"))
             {
                 float overlineY = y + metrics.Ascent;
                 canvas.DrawLine(x, overlineY, x + textWidth, overlineY, linePaint);
             }
+        }
+        
+        private void DrawWavyLine(SKCanvas canvas, float x, float y, float width, SKPaint paint)
+        {
+            using var path = new SKPath();
+            float waveLength = paint.StrokeWidth * 4;
+            float amplitude = paint.StrokeWidth * 1.5f;
+
+            path.MoveTo(x, y);
+            
+            float currentX = x;
+            bool up = true;
+            
+            while (currentX < x + width)
+            {
+                float nextX = Math.Min(currentX + waveLength / 2, x + width);
+                float controlY = up ? y - amplitude : y + amplitude;
+                
+                path.QuadTo(currentX + (nextX - currentX) / 2, controlY, nextX, y);
+                
+                currentX = nextX;
+                up = !up;
+            }
+
+            canvas.DrawPath(path, paint);
         }
 
         private float GetLineHeight(CssComputed style, SKFontMetrics metrics)
