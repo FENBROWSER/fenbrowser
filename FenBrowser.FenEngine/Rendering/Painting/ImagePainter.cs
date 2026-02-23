@@ -143,7 +143,31 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                     break;
             }
 
+            // Apply object-position
+            if (!string.IsNullOrEmpty(style?.ObjectPosition) && objectFit != "fill" && objectFit != "cover")
+            {
+                var parts = style.ObjectPosition.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                float posX = 0.5f; // center
+                float posY = 0.5f; // center
+
+                if (parts.Length > 0) posX = ParsePositionFraction(parts[0], 0.5f);
+                if (parts.Length > 1) posY = ParsePositionFraction(parts[1], 0.5f);
+                
+                // When we have custom object-position, override the centering logic above
+                destX = box.Left + (boxW - destW) * posX;
+                destY = box.Top + (boxH - destH) * posY;
+            }
+
             return new SKRect(destX, destY, destX + destW, destY + destH);
+        }
+
+        private float ParsePositionFraction(string part, float defaultValue)
+        {
+            if (part == "left" || part == "top") return 0f;
+            if (part == "center") return 0.5f;
+            if (part == "right" || part == "bottom") return 1f;
+            if (part.EndsWith("%") && float.TryParse(part.TrimEnd('%'), out float pct)) return pct / 100f;
+            return defaultValue;
         }
 
         /// <summary>
