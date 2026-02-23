@@ -19,6 +19,32 @@ namespace FenBrowser.FenEngine.Rendering.Painting
         {
             if (style == null) return;
 
+            // Handle background clip
+            SKRect bgBox = box;
+            if (!string.IsNullOrEmpty(style.BackgroundClip))
+            {
+                var clip = style.BackgroundClip.ToLowerInvariant();
+                var border = style.BorderThickness;
+                var pad = style.Padding;
+                
+                if (clip == "padding-box")
+                {
+                    bgBox = new SKRect(
+                        box.Left + (float)border.Left,
+                        box.Top + (float)border.Top,
+                        box.Right - (float)border.Right,
+                        box.Bottom - (float)border.Bottom);
+                }
+                else if (clip == "content-box")
+                {
+                    bgBox = new SKRect(
+                        box.Left + (float)border.Left + (float)pad.Left,
+                        box.Top + (float)border.Top + (float)pad.Top,
+                        box.Right - (float)border.Right - (float)pad.Right,
+                        box.Bottom - (float)border.Bottom - (float)pad.Bottom);
+                }
+            }
+
             // Background color
             if (style.BackgroundColor.HasValue)
             {
@@ -31,7 +57,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                     BlendMode = blendMode
                 };
 
-                DrawWithRadius(canvas, box, style.BorderRadius, paint);
+                DrawWithRadius(canvas, bgBox, style.BorderRadius, paint);
             }
 
             // Background image
@@ -43,14 +69,15 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                     var bitmap = imagePainter.GetCachedImage(url);
                     if (bitmap != null)
                     {
-                        DrawBackgroundImage(canvas, box, style, bitmap, opacity, blendMode);
+                        DrawBackgroundImage(canvas, bgBox, box, style, bitmap, opacity, blendMode);
                     }
                 }
             }
         }
 
-        private void DrawBackgroundImage(SKCanvas canvas, SKRect box, CssComputed style, SKBitmap bitmap, byte opacity, SKBlendMode blendMode)
+        private void DrawBackgroundImage(SKCanvas canvas, SKRect bgBox, SKRect borderBox, CssComputed style, SKBitmap bitmap, byte opacity, SKBlendMode blendMode)
         {
+            var box = bgBox;
             var bgSize = style.BackgroundSize?.ToLowerInvariant() ?? "auto";
             var bgRepeat = style.BackgroundRepeat?.ToLowerInvariant() ?? "repeat";
             var bgPos = style.BackgroundPosition?.ToLowerInvariant() ?? "0% 0%";
@@ -92,16 +119,32 @@ namespace FenBrowser.FenEngine.Rendering.Painting
 
             float transX = 0;
             float transY = 0;
+            
+            // Handle background origin
+            SKRect originBox = borderBox;
+            var origin = style.BackgroundOrigin?.ToLowerInvariant();
+            if (origin == "padding-box")
+            {
+                var b = style.BorderThickness;
+                originBox = new SKRect(borderBox.Left + (float)b.Left, borderBox.Top + (float)b.Top, borderBox.Right - (float)b.Right, borderBox.Bottom - (float)b.Bottom);
+            }
+            else if (origin == "content-box")
+            {
+                var b = style.BorderThickness;
+                var p = style.Padding;
+                originBox = new SKRect(borderBox.Left + (float)b.Left + (float)p.Left, borderBox.Top + (float)b.Top + (float)p.Top, borderBox.Right - (float)b.Right - (float)p.Right, borderBox.Bottom - (float)b.Bottom - (float)p.Bottom);
+            }
+
             if (bgPos.Contains("center")) 
             { 
-               transX = (box.Width - bitmap.Width * scaleX) / 2;
-               transY = (box.Height - bitmap.Height * scaleY) / 2;
+               transX = (originBox.Width - bitmap.Width * scaleX) / 2;
+               transY = (originBox.Height - bitmap.Height * scaleY) / 2;
             }
-            else if (bgPos.Contains("right")) { transX = box.Width - bitmap.Width * scaleX; }
-            else if (bgPos.Contains("bottom")) { transY = box.Height - bitmap.Height * scaleY; }
+            else if (bgPos.Contains("right")) { transX = originBox.Width - bitmap.Width * scaleX; }
+            else if (bgPos.Contains("bottom")) { transY = originBox.Height - bitmap.Height * scaleY; }
 
             var matrix = SKMatrix.CreateScale(scaleX, scaleY);
-            matrix = matrix.PostConcat(SKMatrix.CreateTranslation(box.Left + transX, box.Top + transY));
+            matrix = matrix.PostConcat(SKMatrix.CreateTranslation(originBox.Left + transX, originBox.Top + transY));
 
             using var shader = SKShader.CreateBitmap(bitmap, tileX, tileY, matrix);
             using var paint = new SKPaint
@@ -111,12 +154,12 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                 BlendMode = blendMode,
             };
 
-            if (opacity < 255)
+            var radius = style.BorderRadius;
+            if (radius.TopLeft.Value == 0 && radius.TopRight.Value == 0 && radius.BottomRight.Value == 0 && radius.BottomLeft.Value == 0)
             {
-                paint.Color = new SKColor(255, 255, 255, opacity);
+                 radius = new CssCornerRadius(0);
             }
-
-            DrawWithRadius(canvas, box, style.BorderRadius, paint);
+            DrawWithRadius(canvas, bgBox, radius, paint);
         }
 
         private SKShader CreateShaderFromBrush(object brush, SKRect bounds, float opacity)
@@ -243,7 +286,45 @@ namespace FenBrowser.FenEngine.Rendering.Painting
         /// </summary>
         public void PaintOutline(SKCanvas canvas, SKRect box, CssComputed style)
         {
-            // Outline implementation if needed
+            if (style == null || string.IsNullOrEmpty(style.OutlineWidth) || style.OutlineStyle == "none") return;
+
+            float width = 0;
+            if (float.TryParse(style.OutlineWidth.Replace("px", ""), out float w)) width = w;
+            else if (style.OutlineWidth == "thin") width = 1;
+            else if (style.OutlineWidth == "medium") width = 3;
+            else if (style.OutlineWidth == "thick") width = 5;
+
+            if (width <= 0) return;
+
+            float offset = 0;
+            if (!string.IsNullOrEmpty(style.OutlineOffset) && float.TryParse(style.OutlineOffset.Replace("px", ""), out float o))
+            {
+                offset = o;
+            }
+
+            SKColor color = SKColors.Black;
+            if (!string.IsNullOrEmpty(style.OutlineColor))
+            {
+                color = ParseColor(style.OutlineColor);
+            }
+
+            using var paint = new SKPaint
+            {
+                Color = color,
+                IsAntialias = true,
+                Style = SKPaintStyle.Stroke,
+                StrokeWidth = width
+            };
+
+            SetupBorderStyle(paint, style.OutlineStyle ?? "solid", width);
+
+            var outlineRect = new SKRect(
+                box.Left - width / 2 - offset,
+                box.Top - width / 2 - offset,
+                box.Right + width / 2 + offset,
+                box.Bottom + width / 2 + offset);
+
+            canvas.DrawRect(outlineRect, paint);
         }
 
         /// <summary>
