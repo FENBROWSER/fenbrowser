@@ -42,6 +42,20 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             // Apply transform if present
             ApplyTransform(canvas, box, style);
 
+            // Apply mask-image if present
+            bool hasMask = false;
+            string maskUrl = null;
+            if (!string.IsNullOrEmpty(style?.MaskImage) && style.MaskImage.StartsWith("url(", StringComparison.OrdinalIgnoreCase))
+            {
+                maskUrl = style.MaskImage.Substring(4).TrimEnd(')', ' ', '\'', '"').TrimStart(' ', '\'', '"');
+                var maskBitmap = _imagePainter.GetCachedImage(maskUrl);
+                if (maskBitmap != null)
+                {
+                    hasMask = true;
+                    canvas.SaveLayer(paint: null);
+                }
+            }
+
             // Apply clip-path if present
             SKPath clipPath = null;
             if (!string.IsNullOrEmpty(style?.ClipPath) && style.ClipPath != "none")
@@ -92,7 +106,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             }
 
             // 3. Background (with blend mode)
-            _boxPainter.PaintBackground(canvas, box, style, opacity, blendMode);
+            _boxPainter.PaintBackground(canvas, box, style, opacity, blendMode, _imagePainter);
 
             // 4. Border
             _boxPainter.PaintBorder(canvas, box, style, opacity);
@@ -112,6 +126,21 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             {
                 canvas.Restore();
                 filter?.Dispose();
+            }
+
+            if (hasMask)
+            {
+                var maskBitmap = _imagePainter.GetCachedImage(maskUrl);
+                if (maskBitmap != null)
+                {
+                    using var maskPaint = new SKPaint
+                    {
+                        BlendMode = SKBlendMode.DstIn,
+                        IsAntialias = true
+                    };
+                    canvas.DrawBitmap(maskBitmap, box, maskPaint);
+                }
+                canvas.Restore();
             }
 
             canvas.Restore();
