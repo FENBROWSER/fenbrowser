@@ -118,9 +118,72 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     }
                 }
             }
+            else if (node is BlockStatement blockStmt)
+            {
+                foreach (var stmt in blockStmt.Statements)
+                {
+                    Visit(stmt);
+                }
+            }
+            else if (node is IfStatement ifStmt)
+            {
+                Visit(ifStmt.Condition);
+                int jumpIfFalseOffset = EmitJump(OpCode.JumpIfFalse);
+                
+                Visit(ifStmt.Consequence);
+
+                if (ifStmt.Alternative != null)
+                {
+                    int jumpOverAltOffset = EmitJump(OpCode.Jump);
+                    PatchJump(jumpIfFalseOffset);
+                    Visit(ifStmt.Alternative);
+                    PatchJump(jumpOverAltOffset);
+                }
+                else
+                {
+                    PatchJump(jumpIfFalseOffset);
+                }
+            }
+            else if (node is WhileStatement whileStmt)
+            {
+                int loopStart = _instructions.Count;
+                Visit(whileStmt.Condition);
+                int jumpIfFalseOffset = EmitJump(OpCode.JumpIfFalse);
+                
+                Visit(whileStmt.Body);
+                
+                Emit(OpCode.Jump);
+                EmitInt32(loopStart);
+                
+                PatchJump(jumpIfFalseOffset);
+            }
+            else if (node is ForStatement forStmt)
+            {
+                if (forStmt.Init != null) Visit(forStmt.Init);
+                
+                int loopStart = _instructions.Count;
+                int jumpIfFalseOffset = -1;
+                
+                if (forStmt.Condition != null)
+                {
+                    Visit(forStmt.Condition);
+                    jumpIfFalseOffset = EmitJump(OpCode.JumpIfFalse);
+                }
+                
+                if (forStmt.Body != null) Visit(forStmt.Body);
+                if (forStmt.Update != null) Visit(forStmt.Update);
+                
+                Emit(OpCode.Jump);
+                EmitInt32(loopStart);
+                
+                if (jumpIfFalseOffset != -1)
+                {
+                    PatchJump(jumpIfFalseOffset);
+                }
+            }
             else
             {
-                throw new NotImplementedException($"Compiler: Node type {node.GetType().Name} not supported in Bytecode Phase 1.");
+                throw new NotImplementedException($"Compiler: Node type {node.GetType().Name} not supported in Bytecode Phase 2.");
             }
         }
 
@@ -138,6 +201,23 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         {
             _constants.Add(val);
             return _constants.Count - 1;
+        }
+
+        private int EmitJump(OpCode opcode)
+        {
+            Emit(opcode);
+            _instructions.AddRange(BitConverter.GetBytes(0));
+            return _instructions.Count - 4;
+        }
+
+        private void PatchJump(int offset)
+        {
+            int jumpTarget = _instructions.Count;
+            byte[] bytes = BitConverter.GetBytes(jumpTarget);
+            for (int i = 0; i < 4; i++)
+            {
+                _instructions[offset + i] = bytes[i];
+            }
         }
     }
 }
