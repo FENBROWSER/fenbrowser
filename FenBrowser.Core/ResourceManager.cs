@@ -25,6 +25,22 @@ namespace FenBrowser.Core
         UnknownError
     }
 
+    /// <summary>
+    /// Parsed value of the X-Frame-Options response header.
+    /// Controls whether the fetched document may be displayed in a frame.
+    /// </summary>
+    public enum XFrameOptionsPolicy
+    {
+        /// <summary>No X-Frame-Options header present — framing is allowed.</summary>
+        None,
+        /// <summary>DENY — the document must not be displayed in any frame.</summary>
+        Deny,
+        /// <summary>SAMEORIGIN — only same-origin pages may frame this document.</summary>
+        SameOrigin,
+        /// <summary>ALLOW-FROM (deprecated) — only the specified origin may frame this document.</summary>
+        AllowFrom,
+    }
+
     public class FetchResult
     {
         public FetchStatus Status;
@@ -39,6 +55,14 @@ namespace FenBrowser.Core
         public bool Redirected;
         public int RedirectCount;
         public IReadOnlyList<string> RedirectChain;
+
+        /// <summary>Parsed X-Frame-Options policy from the response headers.</summary>
+        public XFrameOptionsPolicy XFrameOptions { get; set; } = XFrameOptionsPolicy.None;
+        /// <summary>
+        /// For ALLOW-FROM policy, the allowed origin URI string.
+        /// Null for DENY / SAMEORIGIN / None.
+        /// </summary>
+        public string XFrameAllowFromUri { get; set; }
     }
 
     public sealed class ResourceManager
@@ -665,29 +689,24 @@ namespace FenBrowser.Core
                     }
                     catch (HttpRequestException httpEx)
                     {
-                        // Try to detect SSL/DNS errors from the message or inner exception
                         var msg = httpEx.Message;
                         if (httpEx.InnerException != null) msg += " " + httpEx.InnerException.Message;
-                        
-                        if (msg.Contains("SSL") || msg.Contains("cert") || msg.Contains("security"))
-                        {
-                            return new FetchResult
-                            {
-                                Status = FetchStatus.SslError,
-                                ErrorDetail = msg,
-                                FinalUri = current,
-                                Redirected = redirectChain.Count > 1,
-                                RedirectCount = Math.Max(0, redirectChain.Count - 1),
-                                RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray()
-                            };
-                        }
+
+                        // Use .NET 9 HttpRequestError enum for reliable SSL detection,
+                        // then fall back to message-keyword heuristic for older inner exception types.
+                        bool isSsl = httpEx.HttpRequestError == System.Net.Http.HttpRequestError.SecureConnectionError
+                            || msg.Contains("SSL",      StringComparison.OrdinalIgnoreCase)
+                            || msg.Contains("cert",     StringComparison.OrdinalIgnoreCase)
+                            || msg.Contains("security", StringComparison.OrdinalIgnoreCase)
+                            || msg.Contains("TLS",      StringComparison.OrdinalIgnoreCase)
+                            || msg.Contains("trust",    StringComparison.OrdinalIgnoreCase);
 
                         return new FetchResult
                         {
-                            Status = FetchStatus.ConnectionFailed,
+                            Status      = isSsl ? FetchStatus.SslError : FetchStatus.ConnectionFailed,
                             ErrorDetail = msg,
-                            FinalUri = current,
-                            Redirected = redirectChain.Count > 1,
+                            FinalUri    = current,
+                            Redirected  = redirectChain.Count > 1,
                             RedirectCount = Math.Max(0, redirectChain.Count - 1),
                             RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray()
                         };
@@ -783,16 +802,38 @@ namespace FenBrowser.Core
                 // [Verification] Register source truth
                 FenBrowser.Core.Verification.ContentVerifier.RegisterSource(url?.ToString() ?? "unknown", text?.Length ?? 0, text?.GetHashCode() ?? 0);
 
-                return new FetchResult { 
-                    Status = FetchStatus.Success, 
-                    Content = text, 
-                    StatusCode = (int)resp.StatusCode, 
+                // Parse X-Frame-Options header for frame-embedding enforcement
+                var xFramePolicy = XFrameOptionsPolicy.None;
+                string xFrameAllowFrom = null;
+                if (resp.Headers.TryGetValues("X-Frame-Options", out var xfoValues))
+                {
+                    var xfoRaw = string.Join(",", xfoValues).Trim().ToUpperInvariant();
+                    if (xfoRaw.Contains("DENY"))
+                        xFramePolicy = XFrameOptionsPolicy.Deny;
+                    else if (xfoRaw.Contains("SAMEORIGIN"))
+                        xFramePolicy = XFrameOptionsPolicy.SameOrigin;
+                    else if (xfoRaw.Contains("ALLOW-FROM"))
+                    {
+                        xFramePolicy = XFrameOptionsPolicy.AllowFrom;
+                        // Extract the URI after "ALLOW-FROM "
+                        var raw = string.Join(",", xfoValues).Trim();
+                        var idx = raw.IndexOf("ALLOW-FROM", StringComparison.OrdinalIgnoreCase);
+                        if (idx >= 0) xFrameAllowFrom = raw.Substring(idx + "ALLOW-FROM".Length).Trim();
+                    }
+                }
+
+                return new FetchResult {
+                    Status = FetchStatus.Success,
+                    Content = text,
+                    StatusCode = (int)resp.StatusCode,
                     FinalUri = finalUri,
                     ContentType = ct,
                     Headers = resp.Headers,
                     Redirected = redirectChain.Count > 1,
                     RedirectCount = Math.Max(0, redirectChain.Count - 1),
-                    RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray()
+                    RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
+                    XFrameOptions = xFramePolicy,
+                    XFrameAllowFromUri = xFrameAllowFrom,
                 };
             }
             catch (Exception ex) {
