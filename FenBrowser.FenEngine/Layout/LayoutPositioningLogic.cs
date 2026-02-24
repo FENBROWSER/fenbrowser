@@ -80,11 +80,31 @@ namespace FenBrowser.FenEngine.Layout
 
             string tag = element.TagName?.ToUpperInvariant() ?? string.Empty;
 
+            if (ReplacedElementSizing.IsReplacedElementTag(tag))
+            {
+                float attrW = 0f;
+                float attrH = 0f;
+                ReplacedElementSizing.TryGetLengthAttribute(element, "width", out attrW);
+                ReplacedElementSizing.TryGetLengthAttribute(element, "height", out attrH);
+
+                var resolved = ReplacedElementSizing.ResolveReplacedSize(
+                    tag,
+                    style,
+                    new SKSize(float.PositiveInfinity, float.PositiveInfinity),
+                    width,
+                    height,
+                    attrW,
+                    attrH,
+                    constrainAutoToAvailableWidth: false);
+
+                width = resolved.Width;
+                height = resolved.Height;
+                return;
+            }
+
             if (width <= 0f)
             {
                 if (TryParseLengthAttribute(element, "width", out var attrW)) width = attrW;
-                else if (tag == "IMG") width = 300f;
-                else if (tag == "SVG" || tag == "CANVAS") width = 24f;
                 else if (tag == "INPUT") width = 150f;
                 else if (tag == "TEXTAREA") width = 200f;
                 else if (tag == "SELECT") width = 120f;
@@ -100,8 +120,6 @@ namespace FenBrowser.FenEngine.Layout
             {
                 if (TryParseLengthAttribute(element, "height", out var attrH)) height = attrH;
                 else if (style.LineHeight.HasValue && style.LineHeight.Value > 0) height = (float)style.LineHeight.Value;
-                else if (tag == "IMG") height = 150f;
-                else if (tag == "SVG" || tag == "CANVAS") height = 24f;
                 else if (tag == "INPUT" || tag == "SELECT") height = 24f;
                 else if (tag == "BUTTON") height = 36f;
                 else if (tag == "TEXTAREA") height = 48f;

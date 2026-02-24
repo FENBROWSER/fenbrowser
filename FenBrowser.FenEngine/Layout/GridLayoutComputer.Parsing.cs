@@ -27,6 +27,11 @@ namespace FenBrowser.FenEngine.Layout
             {
                 if (t.MinLimit.IsPercent) t.MinLimit = GridTrackSize.FromPx(containerSize * t.MinLimit.Value / 100f);
                 if (t.MaxLimit.IsPercent) t.MaxLimit = GridTrackSize.FromPx(containerSize * t.MaxLimit.Value / 100f);
+                if (t.MaxLimit.Type == GridUnitType.FitContent && t.MaxLimit.FitContentIsPercent)
+                {
+                    float resolvedLimit = containerSize > 0 ? (containerSize * t.MaxLimit.FitContentLimit / 100f) : 0;
+                    t.MaxLimit = GridTrackSize.FromFitContent(resolvedLimit);
+                }
                 
                 // Initialize BaseSize to MinLimit (if fixed)
                 if (t.MinLimit.IsPx) t.BaseSize = t.MinLimit.Value;
@@ -40,23 +45,34 @@ namespace FenBrowser.FenEngine.Layout
             if (index >= tokens.Length) return;
             string t = tokens[index];
 
+            if (t == "," || t == ")")
+            {
+                index++;
+                return;
+            }
+
             if (t.Equals("repeat", StringComparison.OrdinalIgnoreCase))
             {
                 index++; // consume 'repeat'
                 Consume(tokens, ref index, "(");
                 
-                string countStr = tokens[index++];
+                string countStr = index < tokens.Length ? tokens[index++] : "1";
                 Consume(tokens, ref index, ",");
                 
                 int count = 1;
-                bool isAutoFill = false;
+                bool isAutoRepeat = false;
+                AutoRepeatMode repeatMode = AutoRepeatMode.None;
                 if (countStr.Equals("auto-fill", StringComparison.OrdinalIgnoreCase) || countStr.Equals("auto-fit", StringComparison.OrdinalIgnoreCase))
                 {
-                    isAutoFill = true;
-                    // For now, default to 1 as placeholder until auto-fill calc is added
-                    count = 1; 
+                    isAutoRepeat = true;
+                    repeatMode = countStr.Equals("auto-fit", StringComparison.OrdinalIgnoreCase)
+                        ? AutoRepeatMode.Fit
+                        : AutoRepeatMode.Fill;
                 }
-                else int.TryParse(countStr, out count);
+                else if (!int.TryParse(countStr, out count) || count < 1)
+                {
+                    count = 1;
+                }
 
                 var repeatedTracks = new List<GridTrack>();
                 while (index < tokens.Length && tokens[index] != ")")
@@ -65,35 +81,23 @@ namespace FenBrowser.FenEngine.Layout
                 }
                 Consume(tokens, ref index, ")");
 
-                if (isAutoFill)
+                if (repeatedTracks.Count == 0)
                 {
-                    // Calculate minimum size of repeated block
-                    float minBlockSize = 0;
-                    foreach (var rpt in repeatedTracks)
-                    {
-                        if (rpt.MinLimit.IsPx) minBlockSize += rpt.MinLimit.Value;
-                        else if (rpt.BaseSize > 0) minBlockSize += rpt.BaseSize;
-                        // Treat auto/fr minimum as 0? Or 1px?
-                        // Spec requires min-track-list-size. If 0, we risk infinite.
-                        // For auto-fill, assume at least 1px if 0 to avoid div/0 or infinite.
-                        else minBlockSize += 1; // Safety fallback
-                    }
-                    
-                    if (minBlockSize > 0 && containerSize > 0)
-                    {
-                        // Formula: N * size + (N-1) * gap <= available
-                        // N * (size + gap) <= available + gap
-                        float repeatedSize = minBlockSize + gap;
-                        count = (int)((containerSize + gap) / repeatedSize);
-                        if (count < 1) count = 1;
-                    }
+                    return;
+                }
+
+                if (isAutoRepeat)
+                {
+                    count = ResolveAutoRepeatCount(repeatedTracks, containerSize, gap);
                 }
                 
                 for (int i = 0; i < count; i++)
                 {
                     foreach (var baseTrack in repeatedTracks)
                     {
-                        tracks.Add(CloneTrack(baseTrack));
+                        var clonedTrack = CloneTrack(baseTrack);
+                        clonedTrack.AutoRepeatMode = repeatMode;
+                        tracks.Add(clonedTrack);
                     }
                 }
             }
@@ -124,7 +128,7 @@ namespace FenBrowser.FenEngine.Layout
                 // If limit is Px, we store it. If limit is Percent, we convert if possible?
                 // limit usually <length> or <percentage>.
                 if (limit.IsPx) track.MaxLimit = GridTrackSize.FromFitContent(limit.Value);
-                else if (limit.IsPercent) track.MaxLimit = GridTrackSize.FromFitContent(limit.Value); // Value is raw %? Need context.
+                else if (limit.IsPercent) track.MaxLimit = GridTrackSize.FromFitContent(limit.Value, isPercent: true);
                 // Assuming ParseSimpleSize returns Px or Percent.
                 // If Px, value is absolute. If Percent, value is % number.
                 // We'll store value logic in FromFitContent.
@@ -153,6 +157,90 @@ namespace FenBrowser.FenEngine.Layout
                     track.MaxLimit = size;
                 }
                 tracks.Add(track);
+            }
+        }
+
+        private static int ResolveAutoRepeatCount(List<GridTrack> repeatedTracks, float containerSize, float gap)
+        {
+            if (repeatedTracks == null || repeatedTracks.Count == 0)
+            {
+                return 1;
+            }
+
+            if (containerSize <= 0 || float.IsNaN(containerSize) || float.IsInfinity(containerSize))
+            {
+                return 1;
+            }
+
+            float safeGap = Math.Max(0, gap);
+            float trackSpan = 0;
+            foreach (var track in repeatedTracks)
+            {
+                if (!TryResolveAutoRepeatTrackMinBreadth(track, containerSize, out float breadth))
+                {
+                    // Unresolved intrinsic/flex minima: keep deterministic single-repeat fallback.
+                    return 1;
+                }
+
+                trackSpan += Math.Max(0, breadth);
+            }
+
+            int tracksPerRepeat = Math.Max(1, repeatedTracks.Count);
+            float denominator = trackSpan + (tracksPerRepeat * safeGap);
+            if (denominator <= 0)
+            {
+                return 1;
+            }
+
+            // Total width for N repeats with K tracks each:
+            // N * trackSpan + (N*K - 1) * gap <= containerSize
+            // N * (trackSpan + K*gap) <= containerSize + gap
+            int repeatCount = (int)Math.Floor((containerSize + safeGap) / denominator);
+            return Math.Max(1, repeatCount);
+        }
+
+        private static bool TryResolveAutoRepeatTrackMinBreadth(GridTrack track, float containerSize, out float breadth)
+        {
+            breadth = 0;
+
+            if (track == null)
+            {
+                return false;
+            }
+
+            var min = track.MinLimit;
+            if (TryResolveDefiniteBreadth(min, containerSize, out breadth))
+            {
+                return true;
+            }
+
+            // For cases like minmax(auto, 120px), the max track sizing function is definite
+            // and can be used to derive repeat breadth for auto-repeat count computation.
+            var max = track.MaxLimit;
+            if (TryResolveDefiniteBreadth(max, containerSize, out breadth))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryResolveDefiniteBreadth(GridTrackSize size, float containerSize, out float breadth)
+        {
+            breadth = 0;
+            switch (size.Type)
+            {
+                case GridUnitType.Px:
+                    breadth = size.Value;
+                    return true;
+                case GridUnitType.Percent:
+                    breadth = containerSize * size.Value / 100f;
+                    return true;
+                case GridUnitType.FitContent:
+                    breadth = size.FitContentLimit > 0 ? size.FitContentLimit : size.Value;
+                    return true;
+                default:
+                    return false;
             }
         }
 

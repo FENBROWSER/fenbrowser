@@ -14,8 +14,17 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
         {
             if (element == null) 
             {
-               if (fallbackNode != null) yield return fallbackNode;
-               yield break;
+                if (fallbackNode?.ChildNodes != null)
+                {
+                    foreach (var child in fallbackNode.ChildNodes)
+                    {
+                        if (child != null)
+                        {
+                            yield return child;
+                        }
+                    }
+                }
+                yield break;
             }
             // In a real refactor, use computer.GetChildrenWithPseudos(element) if exposed, or copy logic.
             // Assuming we expose it.

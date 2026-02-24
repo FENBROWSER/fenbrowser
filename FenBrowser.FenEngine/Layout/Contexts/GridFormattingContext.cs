@@ -2,15 +2,16 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using FenBrowser.Core.Css;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Layout.Tree;
 using SkiaSharp;
-using FenBrowser.Core.Logging;
 
 namespace FenBrowser.FenEngine.Layout.Contexts
 {
     /// <summary>
-    /// Implements CSS Grid Layout (Level 1).
-    /// Handles simplified track sizing (fr, px, auto) and auto-placement.
+    /// Grid formatting context backed by the production GridLayoutComputer.
+    /// This avoids divergent placeholder behavior between box-tree layout and the
+    /// main grid algorithm path.
     /// </summary>
     public class GridFormattingContext : FormattingContext
     {
@@ -19,145 +20,269 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         protected override void LayoutCore(LayoutBox box, LayoutState state)
         {
-            if (!(box is BlockBox container)) return;
-
-            // 1. Resolve Container Dimensions
-            LayoutBoxOps.ComputeBoxModelFromContent(container, 
-                state.AvailableSize.Width, 
-                Math.Max(0, state.AvailableSize.Height)); // Placeholder
-
-            // 2. Parse Grid Definition
-            var style = container.ComputedStyle;
-            var colDefinitions = ParseTrackList(style.Map.ContainsKey("grid-template-columns") ? style.Map["grid-template-columns"] : "none");
-            var rowDefinitions = ParseTrackList(style.Map.ContainsKey("grid-template-rows") ? style.Map["grid-template-rows"] : "none");
-
-            // Implicit grid support
-            var autoFlow = style.Map.ContainsKey("grid-auto-flow") ? style.Map["grid-auto-flow"] : "row";
-
-            // 3. Place Items into Cells (Auto-Placement Algorithm)
-            var items = container.Children.Where(c => c.ComputedStyle?.Display?.Contains("none") != true).ToList();
-            var placement = new Dictionary<LayoutBox, GridArea>();
-            int cursorRow = 1, cursorCol = 1;
-
-            if (colDefinitions.Count == 0) colDefinitions.Add(new GridTrack(1, GridUnit.Fr)); // Default 1 col
-            int maxCols = colDefinitions.Count; // Simplified: explicit columns only for now
-
-            foreach (var item in items)
+            if (box is not BlockBox container || container.SourceNode is not Element containerElement)
             {
-                // Simple auto-placement: Next available cell
-                // Todo: Read grid-column-start/end
-                placement[item] = new GridArea(cursorRow, cursorCol, 1, 1);
-                
-                cursorCol++;
-                if (cursorCol > maxCols)
+                return;
+            }
+
+            var containerStyle = container.ComputedStyle ?? new CssComputed();
+            ResolveContainerWidth(container, containerStyle, state);
+
+            var nodeToBox = new Dictionary<Node, LayoutBox>();
+            var styles = new Dictionary<Node, CssComputed>();
+            CollectNodeMappings(container, nodeToBox, styles);
+            styles[containerElement] = containerStyle;
+
+            // Grid formatting should follow the laid-out box tree children that survived
+            // visibility/display filtering, not raw DOM children.
+            var childrenSource = container.Children
+                .Select(child => child.SourceNode)
+                .Where(node => node != null)
+                .ToList();
+
+            LayoutMetrics MeasureNode(Node node, SKSize availableSize, int depth)
+            {
+                if (!nodeToBox.TryGetValue(node, out var childBox))
                 {
-                    cursorCol = 1;
-                    cursorRow++;
+                    return new LayoutMetrics();
+                }
+
+                float childWidth = availableSize.Width;
+                if (float.IsNaN(childWidth))
+                {
+                    childWidth = 0f;
+                }
+
+                float childHeight = availableSize.Height;
+                if (float.IsNaN(childHeight) || float.IsInfinity(childHeight))
+                {
+                    childHeight = state.ContainingBlockHeight > 0f ? state.ContainingBlockHeight : state.ViewportHeight;
+                }
+
+                float containingWidth = (!float.IsInfinity(childWidth) && childWidth > 0f)
+                    ? childWidth
+                    : Math.Max(0f, container.Geometry.ContentBox.Width);
+
+                var childState = new LayoutState(
+                    new SKSize(childWidth, childHeight),
+                    containingWidth,
+                    childHeight,
+                    state.ViewportWidth,
+                    state.ViewportHeight,
+                    state.Deadline);
+
+                FormattingContext.Resolve(childBox).Layout(childBox, childState);
+
+                return new LayoutMetrics
+                {
+                    MaxChildWidth = Math.Max(0f, childBox.Geometry.MarginBox.Width),
+                    ContentHeight = Math.Max(0f, childBox.Geometry.MarginBox.Height),
+                    ActualHeight = Math.Max(0f, childBox.Geometry.MarginBox.Height)
+                };
+            }
+
+            void ArrangeNode(Node node, SKRect rect, int depth)
+            {
+                if (!nodeToBox.TryGetValue(node, out var childBox))
+                {
+                    return;
+                }
+
+                float width = Math.Max(0f, rect.Width);
+                float height = Math.Max(0f, rect.Height);
+
+                LayoutBoxOps.ComputeBoxModelFromContent(childBox, width, height);
+
+                float absoluteLeft = container.Geometry.ContentBox.Left + rect.Left;
+                float absoluteTop = container.Geometry.ContentBox.Top + rect.Top;
+                LayoutBoxOps.SetPosition(childBox, absoluteLeft, absoluteTop);
+
+                var childState = new LayoutState(
+                    new SKSize(width, height),
+                    width,
+                    height > 0f ? height : state.ContainingBlockHeight,
+                    state.ViewportWidth,
+                    state.ViewportHeight,
+                    state.Deadline);
+
+                FormattingContext.Resolve(childBox).Layout(childBox, childState);
+
+                // Child layout may have recomputed local geometry; keep final grid placement.
+                LayoutBoxOps.SetPosition(childBox, absoluteLeft, absoluteTop);
+            }
+
+            float measureHeightConstraint = state.AvailableSize.Height;
+            if (float.IsNaN(measureHeightConstraint))
+            {
+                measureHeightConstraint = state.ViewportHeight;
+            }
+
+            var metrics = GridLayoutComputer.Measure(
+                containerElement,
+                new SKSize(container.Geometry.ContentBox.Width, measureHeightConstraint),
+                styles,
+                0,
+                MeasureNode,
+                childrenSource);
+
+            var arrangedBoxes = new Dictionary<Node, BoxModel>();
+            GridLayoutComputer.Arrange(
+                containerElement,
+                new SKRect(0f, 0f, container.Geometry.ContentBox.Width, Math.Max(0f, metrics.ContentHeight)),
+                styles,
+                arrangedBoxes,
+                0,
+                ArrangeNode,
+                MeasureNode,
+                childrenSource);
+
+            float computedContentHeight = Math.Max(metrics.ContentHeight, ComputeChildrenBottom(container));
+            computedContentHeight = ApplyHeightConstraints(containerStyle, computedContentHeight, state);
+
+            LayoutBoxOps.ComputeBoxModelFromContent(container, container.Geometry.ContentBox.Width, computedContentHeight);
+        }
+
+        private static void CollectNodeMappings(
+            LayoutBox box,
+            IDictionary<Node, LayoutBox> nodeToBox,
+            IDictionary<Node, CssComputed> styles)
+        {
+            if (box.SourceNode != null)
+            {
+                if (!nodeToBox.ContainsKey(box.SourceNode))
+                {
+                    nodeToBox[box.SourceNode] = box;
+                }
+
+                if (!styles.ContainsKey(box.SourceNode))
+                {
+                    styles[box.SourceNode] = box.ComputedStyle ?? new CssComputed();
                 }
             }
 
-            // 4. Size Tracks (The Hard Part)
-            // Simplified: Treat all 'fr' as equal shares of remaining space
-            // Treat 'auto' as content-based (requires measuring items)
-            float totalFixedWidth = colDefinitions.Where(t => t.Unit == GridUnit.Px).Sum(t => t.Value);
-            float availableSpace = container.Geometry.ContentBox.Width - totalFixedWidth;
-            float totalFr = colDefinitions.Where(t => t.Unit == GridUnit.Fr).Sum(t => t.Value);
-            
-            var colWidths = new List<float>();
-            foreach (var track in colDefinitions)
+            foreach (var child in box.Children)
             {
-                if (track.Unit == GridUnit.Px) colWidths.Add(track.Value);
-                else if (track.Unit == GridUnit.Fr) colWidths.Add(availableSpace * (track.Value / totalFr));
-                else colWidths.Add(0); // Auto not fully supported yet in this snippet
+                CollectNodeMappings(child, nodeToBox, styles);
             }
-
-            // Rows - usually auto-sized based on content height
-            // We need to measure row heights based on items in them
-            var rowHeights = new Dictionary<int, float>();
-            foreach (var kvp in placement)
-            {
-                var item = kvp.Key;
-                var area = kvp.Value;
-                
-                // Measure item with fixed width
-                float targetWidth = colWidths[area.ColStart - 1]; // Simplified 1-cell span
-                
-                // Layout Item
-                var childState = state.Clone();
-                childState.AvailableSize = new SKSize(targetWidth, state.AvailableSize.Height); // Unconstrained height
-                FormattingContext.Resolve(item).Layout(item, childState); // Recursive layout
-                
-                float h = item.Geometry.MarginBox.Height;
-                if (!rowHeights.ContainsKey(area.RowStart) || h > rowHeights[area.RowStart])
-                    rowHeights[area.RowStart] = h;
-            }
-
-            // 5. Final Geometry Calculation
-            float gapRow = ParseGap(style, "row-gap");
-            float gapCol = ParseGap(style, "column-gap");
-
-            foreach (var kvp in placement)
-            {
-                var item = kvp.Key;
-                var area = kvp.Value;
-                
-                float x = 0;
-                for (int i = 0; i < area.ColStart - 1; i++) x += colWidths[i] + gapCol;
-                
-                float y = 0;
-                for (int i = 0; i < area.RowStart - 1; i++) y += (rowHeights.ContainsKey(i+1) ? rowHeights[i+1] : 0) + gapRow; // 1-based index issues?
-
-                LayoutBoxOps.SetPosition(item, x, y);
-                // Resize explicitly to fill cell?
-                // grid-stretch behavior...
-                var targetW = colWidths[area.ColStart - 1];
-                var targetH = rowHeights[area.RowStart];
-                LayoutBoxOps.ComputeBoxModelFromContent(item, targetW, targetH); 
-            }
-            
-            // Set Container Height
-            float finalH = 0;
-            foreach(var h in rowHeights.Values) finalH += h + gapRow;
-             if (rowHeights.Count > 0) finalH -= gapRow; // Remove last gap
-            
-            LayoutBoxOps.ComputeBoxModelFromContent(container, container.Geometry.ContentBox.Width, finalH);
         }
 
-        private float ParseGap(CssComputed style, string prop)
+        private static float ComputeChildrenBottom(LayoutBox container)
         {
-            if (style.Map.ContainsKey(prop) && float.TryParse(style.Map[prop].Replace("px",""), out float val)) return val;
-            return 0;
-        }
-
-        private List<GridTrack> ParseTrackList(string val)
-        {
-            var list = new List<GridTrack>();
-            if (val == "none") return list;
-            
-            var parts = val.Split(' ');
-            foreach (var p in parts)
+            if (container.Children.Count == 0)
             {
-                if (p.EndsWith("fr") && float.TryParse(p.Replace("fr",""), out float fr)) 
-                    list.Add(new GridTrack(fr, GridUnit.Fr));
-                else if (p.EndsWith("px") && float.TryParse(p.Replace("px",""), out float px)) 
-                    list.Add(new GridTrack(px, GridUnit.Px));
-                else if (p == "auto") 
-                    list.Add(new GridTrack(0, GridUnit.Auto));
+                return 0f;
             }
-            return list;
+
+            float contentTop = container.Geometry.ContentBox.Top;
+            float maxBottom = 0f;
+            foreach (var child in container.Children)
+            {
+                maxBottom = Math.Max(maxBottom, child.Geometry.MarginBox.Bottom - contentTop);
+            }
+
+            return Math.Max(0f, maxBottom);
         }
 
-        private struct GridArea { 
-            public int RowStart, ColStart, RowSpan, ColSpan; 
-            public GridArea(int r, int c, int rs, int cs) { RowStart=r; ColStart=c; RowSpan=rs; ColSpan=cs; }
+        private static float ApplyHeightConstraints(CssComputed style, float contentHeight, LayoutState state)
+        {
+            float resolved = Math.Max(0f, contentHeight);
+            if (style == null)
+            {
+                return resolved;
+            }
+
+            float containingHeight = state.ContainingBlockHeight > 0f
+                ? state.ContainingBlockHeight
+                : state.ViewportHeight;
+
+            if (style.Height.HasValue)
+            {
+                resolved = (float)style.Height.Value;
+            }
+            else if (style.HeightPercent.HasValue && containingHeight > 0f)
+            {
+                resolved = (float)(style.HeightPercent.Value / 100d * containingHeight);
+            }
+
+            if (style.MinHeight.HasValue)
+            {
+                resolved = Math.Max(resolved, (float)style.MinHeight.Value);
+            }
+            else if (style.MinHeightPercent.HasValue && containingHeight > 0f)
+            {
+                resolved = Math.Max(resolved, (float)(style.MinHeightPercent.Value / 100d * containingHeight));
+            }
+
+            if (style.MaxHeight.HasValue)
+            {
+                resolved = Math.Min(resolved, (float)style.MaxHeight.Value);
+            }
+            else if (style.MaxHeightPercent.HasValue && containingHeight > 0f)
+            {
+                resolved = Math.Min(resolved, (float)(style.MaxHeightPercent.Value / 100d * containingHeight));
+            }
+
+            return Math.Max(0f, resolved);
         }
 
-        private struct GridTrack {
-            public float Value;
-            public GridUnit Unit;
-            public GridTrack(float v, GridUnit u) { Value = v; Unit = u; }
-        }
+        private static void ResolveContainerWidth(LayoutBox box, CssComputed style, LayoutState state)
+        {
+            style ??= new CssComputed();
 
-        private enum GridUnit { Px, Fr, Auto, Percent }
+            float rawAvailable = state.AvailableSize.Width;
+            bool widthUnconstrained = float.IsInfinity(rawAvailable) || float.IsNaN(rawAvailable);
+            float available = widthUnconstrained ? state.ViewportWidth : rawAvailable;
+            if (float.IsInfinity(available) || float.IsNaN(available) || available <= 0f)
+            {
+                available = 1920f;
+            }
+
+            box.Geometry.Padding = style.Padding;
+            box.Geometry.Border = style.BorderThickness;
+            box.Geometry.Margin = style.Margin;
+
+            float horizontalChrome = (float)(
+                style.Padding.Left + style.Padding.Right +
+                style.BorderThickness.Left + style.BorderThickness.Right +
+                style.Margin.Left + style.Margin.Right);
+
+            float width;
+            if (style.Width.HasValue)
+            {
+                width = (float)style.Width.Value;
+            }
+            else if (style.WidthPercent.HasValue)
+            {
+                width = (float)(style.WidthPercent.Value / 100d * available);
+            }
+            else if (widthUnconstrained)
+            {
+                width = Math.Max(0f, available - horizontalChrome);
+            }
+            else
+            {
+                width = Math.Max(0f, rawAvailable - horizontalChrome);
+            }
+
+            if (style.MinWidth.HasValue)
+            {
+                width = Math.Max(width, (float)style.MinWidth.Value);
+            }
+            else if (style.MinWidthPercent.HasValue)
+            {
+                width = Math.Max(width, (float)(style.MinWidthPercent.Value / 100d * available));
+            }
+
+            if (style.MaxWidth.HasValue)
+            {
+                width = Math.Min(width, (float)style.MaxWidth.Value);
+            }
+            else if (style.MaxWidthPercent.HasValue)
+            {
+                width = Math.Min(width, (float)(style.MaxWidthPercent.Value / 100d * available));
+            }
+
+            LayoutBoxOps.ComputeBoxModelFromContent(box, Math.Max(0f, width), Math.Max(0f, box.Geometry.ContentBox.Height));
+        }
     }
 }

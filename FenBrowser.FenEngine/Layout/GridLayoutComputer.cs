@@ -41,7 +41,8 @@ namespace FenBrowser.FenEngine.Layout
             
             // Content Sizing (for auto/min-content/max-content)
             public float MinContent { get; set; }    
-            public float MaxContent { get; set; }    
+            public float MaxContent { get; set; }
+            public AutoRepeatMode AutoRepeatMode { get; set; } = AutoRepeatMode.None;
         }
 
         public struct GridTrackSize
@@ -49,6 +50,7 @@ namespace FenBrowser.FenEngine.Layout
             public float Value;
             public GridUnitType Type;
             public float FitContentLimit; // For fit-content(limit)
+            public bool FitContentIsPercent;
 
             public static GridTrackSize Auto => new GridTrackSize { Type = GridUnitType.Auto };
             public static GridTrackSize MinContent => new GridTrackSize { Type = GridUnitType.MinContent };
@@ -56,7 +58,7 @@ namespace FenBrowser.FenEngine.Layout
             public static GridTrackSize FromPx(float px) => new GridTrackSize { Value = px, Type = GridUnitType.Px };
             public static GridTrackSize FromFr(float fr) => new GridTrackSize { Value = fr, Type = GridUnitType.Fr };
             public static GridTrackSize FromPercent(float pct) => new GridTrackSize { Value = pct, Type = GridUnitType.Percent };
-            public static GridTrackSize FromFitContent(float limit) => new GridTrackSize { Value = limit, Type = GridUnitType.FitContent, FitContentLimit = limit };
+            public static GridTrackSize FromFitContent(float limit, bool isPercent = false) => new GridTrackSize { Value = limit, Type = GridUnitType.FitContent, FitContentLimit = limit, FitContentIsPercent = isPercent };
             
             public bool IsAuto => Type == GridUnitType.Auto;
             public bool IsFlex => Type == GridUnitType.Fr;
@@ -66,6 +68,7 @@ namespace FenBrowser.FenEngine.Layout
         }
 
         public enum GridUnitType { Px, Fr, Percent, Auto, MinContent, MaxContent, FitContent }
+        public enum AutoRepeatMode { None, Fill, Fit }
 
         /// <summary>
         /// Represents a grid item's position
@@ -467,8 +470,28 @@ namespace FenBrowser.FenEngine.Layout
                 MaxLimit = t.MaxLimit,
                 MinContent = t.MinContent,
                 MaxContent = t.MaxContent,
-                GrowthLimit = t.GrowthLimit
+                GrowthLimit = t.GrowthLimit,
+                AutoRepeatMode = t.AutoRepeatMode
             };
+        }
+
+        private static void CollapseTrailingAutoFitTracks(List<GridTrack> tracks, int usedTrackCount)
+        {
+            if (tracks == null || tracks.Count == 0)
+            {
+                return;
+            }
+
+            int minRetained = Math.Max(1, usedTrackCount);
+            while (tracks.Count > minRetained)
+            {
+                if (tracks[tracks.Count - 1].AutoRepeatMode != AutoRepeatMode.Fit)
+                {
+                    break;
+                }
+
+                tracks.RemoveAt(tracks.Count - 1);
+            }
         }
 
         /// <summary>
@@ -530,14 +553,23 @@ namespace FenBrowser.FenEngine.Layout
             // Compute Layout
             var placement = ComputePlacements(items, styles, columnTracks.Count, rowTracks.Count, autoFlow, areas);
             var positions = placement.Positions;
+            int usedColCount = positions.Count > 0 ? positions.Values.Max(p => p.ColumnEnd - 1) : 0;
+            int usedRowCount = positions.Count > 0 ? positions.Values.Max(p => p.RowEnd - 1) : 0;
+
+            // auto-fit collapses unused trailing explicit repeat tracks.
+            CollapseTrailingAutoFitTracks(columnTracks, usedColCount);
+            CollapseTrailingAutoFitTracks(rowTracks, usedRowCount);
+
+            int requiredColCount = Math.Max(usedColCount, columnTracks.Count);
+            int requiredRowCount = Math.Max(usedRowCount, rowTracks.Count);
 
             // Fill implicit tracks
-            while (columnTracks.Count < placement.ColCount) {
+            while (columnTracks.Count < requiredColCount) {
                 // Cycle through auto patterns
                 var pattern = autoColTracks[(columnTracks.Count - columnTracksOriginalCount) % autoColTracks.Count];
                 columnTracks.Add(CloneTrack(pattern));
             }
-            while (rowTracks.Count < placement.RowCount) {
+            while (rowTracks.Count < requiredRowCount) {
                 var pattern = autoRowTracks[(rowTracks.Count - rowTracksOriginalCount) % autoRowTracks.Count];
                 rowTracks.Add(CloneTrack(pattern));
             }
@@ -545,6 +577,7 @@ namespace FenBrowser.FenEngine.Layout
             // Resolve intrinsic sizes for columns (Auto, MinContent, MaxContent, FitContent)
             // This sets BaseSize based on content
             MeasureTracksIntrinsic(columnTracks, items, positions, styles, true, depth, measureNode);
+            MeasureTracksIntrinsic(rowTracks, items, positions, styles, false, depth, measureNode);
             
             // Resolve flexible tracks (fr units)
             ResolveFlexibleTracks(columnTracks, availableSize.Width, columnGap);
@@ -623,15 +656,24 @@ namespace FenBrowser.FenEngine.Layout
             // Compute Layout
             var placement = ComputePlacements(items, styles, columnTracks.Count, rowTracks.Count, autoFlow, areas);
             var positions = placement.Positions;
+            int usedColCount = positions.Count > 0 ? positions.Values.Max(p => p.ColumnEnd - 1) : 0;
+            int usedRowCount = positions.Count > 0 ? positions.Values.Max(p => p.RowEnd - 1) : 0;
+
+            // auto-fit collapses unused trailing explicit repeat tracks.
+            CollapseTrailingAutoFitTracks(columnTracks, usedColCount);
+            CollapseTrailingAutoFitTracks(rowTracks, usedRowCount);
+
+            int requiredColCount = Math.Max(usedColCount, columnTracks.Count);
+            int requiredRowCount = Math.Max(usedRowCount, rowTracks.Count);
 
             // Fill implicit tracks
-            while (columnTracks.Count < placement.ColCount) {
+            while (columnTracks.Count < requiredColCount) {
                 int index = (columnTracks.Count - columnTracksOriginalCount) % autoColTracks.Count;
                 if (index < 0) index = 0;
                 var pattern = autoColTracks[index];
                 columnTracks.Add(CloneTrack(pattern));
             }
-            while (rowTracks.Count < placement.RowCount) {
+            while (rowTracks.Count < requiredRowCount) {
                 int index = (rowTracks.Count - rowTracksOriginalCount) % autoRowTracks.Count;
                 if(index < 0) index = 0;
                 var pattern = autoRowTracks[index];
@@ -641,6 +683,11 @@ namespace FenBrowser.FenEngine.Layout
             // Resolve intrinsic sizes for columns (Auto, MinContent, MaxContent, FitContent)
             // This sets BaseSize based on content
             MeasureTracksIntrinsic(columnTracks, items, positions, styles, true, depth, measureNode);
+            MeasureTracksIntrinsic(rowTracks, items, positions, styles, false, depth, measureNode);
+
+            // Ensure arrange pass uses the same content-derived auto-row sizing
+            // as measure pass before flex/stretch resolution.
+            MeasureAutoRowHeights(rowTracks, columnTracks, items, positions, styles, columnGap, depth, measureNode);
 
             // Resolve Track Sizes
             ResolveFlexibleTracks(columnTracks, bounds.Width, columnGap);
@@ -770,9 +817,10 @@ namespace FenBrowser.FenEngine.Layout
                 if (justify != "stretch" && hasExplicitW) itemW = (float)itemStyle.Width.Value;
                 if (align != "stretch" && hasExplicitH) itemH = (float)itemStyle.Height.Value;
 
-                // Calculate intra-cell offsets
-                float cellX = trackX + contentXOffset;
-                float cellY = trackY + contentYOffset;
+                // Track starts already include content alignment offsets.
+                // Adding them again here double-shifts items for align/justify-content.
+                float cellX = trackX;
+                float cellY = trackY;
                 
                 if (justify == "center") cellX += (trackW - itemW) / 2;
                 else if (justify == "end" || justify == "right" || justify == "flex-end") cellX += (trackW - itemW);

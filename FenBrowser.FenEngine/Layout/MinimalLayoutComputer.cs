@@ -169,7 +169,7 @@ namespace FenBrowser.FenEngine.Layout
                 }
             }
             
-            // Legacy <center> still appears in modern Google markup around submit controls.
+                // Legacy <center> is still encountered in web content and maps to centered inline layout.
             // Ensure the semantic centering behavior exists even when UA selector application misses it.
             if (node is Element centerElem &&
                 string.Equals(centerElem.TagName, "CENTER", StringComparison.OrdinalIgnoreCase))
@@ -247,12 +247,8 @@ namespace FenBrowser.FenEngine.Layout
                  if (style.Before.PseudoElementInstance == null)
                  {
                      style.Before.PseudoElementInstance = new PseudoElement(element, "before", style.Before);
-                     if (!string.IsNullOrEmpty(style.Before.Content) && style.Before.Content != "none" && !style.Before.Content.Contains("url("))
-                     {
-                         string text = style.Before.Content.Trim('"', '\'');
-                         style.Before.PseudoElementInstance.AppendChild(new Text(text));
-                     }
                  }
+                 EnsurePseudoTextContent(style.Before.PseudoElementInstance, style.Before.Content);
                  yield return style.Before.PseudoElementInstance;
             }
 
@@ -276,12 +272,8 @@ namespace FenBrowser.FenEngine.Layout
                  if (style.After.PseudoElementInstance == null)
                  {
                      style.After.PseudoElementInstance = new PseudoElement(element, "after", style.After);
-                     if (!string.IsNullOrEmpty(style.After.Content) && style.After.Content != "none" && !style.After.Content.Contains("url("))
-                     {
-                         string text = style.After.Content.Trim('"', '\'');
-                         style.After.PseudoElementInstance.AppendChild(new Text(text));
-                     }
                  }
+                 EnsurePseudoTextContent(style.After.PseudoElementInstance, style.After.Content);
                  yield return style.After.PseudoElementInstance;
             }
         }
@@ -289,6 +281,69 @@ namespace FenBrowser.FenEngine.Layout
         private static bool IsVisiblePseudo(CssComputed pseudoStyle)
         {
             return !string.IsNullOrEmpty(pseudoStyle.Content) && pseudoStyle.Content != "none";
+        }
+
+        private static void EnsurePseudoTextContent(PseudoElement pseudoElement, string rawContent)
+        {
+            if (pseudoElement == null)
+            {
+                return;
+            }
+
+            var text = NormalizePseudoText(rawContent);
+            if (string.IsNullOrEmpty(text))
+            {
+                return;
+            }
+
+            if (pseudoElement.ChildNodes.Length == 0)
+            {
+                pseudoElement.AppendChild(new Text(text));
+                return;
+            }
+
+            if (pseudoElement.ChildNodes[0] is Text existingText && pseudoElement.ChildNodes.Length == 1)
+            {
+                if (!string.Equals(existingText.Data, text, StringComparison.Ordinal))
+                {
+                    existingText.Data = text;
+                }
+                return;
+            }
+
+            for (int i = 0; i < pseudoElement.ChildNodes.Length; i++)
+            {
+                if (pseudoElement.ChildNodes[i] is Text textNode)
+                {
+                    if (!string.Equals(textNode.Data, text, StringComparison.Ordinal))
+                    {
+                        textNode.Data = text;
+                    }
+                    return;
+                }
+            }
+
+            pseudoElement.AppendChild(new Text(text));
+        }
+
+        private static string NormalizePseudoText(string rawContent)
+        {
+            if (string.IsNullOrWhiteSpace(rawContent))
+            {
+                return null;
+            }
+
+            if (string.Equals(rawContent, "none", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            if (rawContent.IndexOf("url(", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return null;
+            }
+
+            return rawContent.Trim().Trim('"', '\'');
         }
         
         private void SetProperty(CssComputed style, string name, object val) {
@@ -1101,16 +1156,6 @@ namespace FenBrowser.FenEngine.Layout
                     {
                         FenLogger.Debug($"[ARRANGE-CORE] Tag={eDebug.TagName} Id={eDebug.GetAttribute("id")} ShouldHide={ShouldHide(node, style)} Rect={finalRect} StyleDisp={style?.Display}");
                     }
-                    if (string.Equals(eDebug.TagName, "SPAN", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var pEl = eDebug.ParentNode as Element;
-                        if (pEl != null &&
-                            string.Equals(pEl.TagName, "A", StringComparison.OrdinalIgnoreCase) &&
-                            ((pEl.GetAttribute("aria-label")?.IndexOf("Sign in", StringComparison.OrdinalIgnoreCase) ?? -1) >= 0))
-                        {
-                            FenLogger.Info($"[TRACE-GB_U] ArrangeNodeCore finalRect={finalRect} styleDisplay={style?.Display} parent={pEl.TagName}.{pEl.GetAttribute("class")}", LogCategory.Layout);
-                        }
-                    }
                 }
 
 
@@ -1614,12 +1659,6 @@ namespace FenBrowser.FenEngine.Layout
             {
                 if (_inlineCache.ContainsKey(element))
                 {
-                    // FenLogger.Debug($"[IFC-CACHE-HIT] Element={element.TagName} Hash={element.GetHashCode()}", LogCategory.Rendering);
-                    if (string.Equals(element.TagName, "A", StringComparison.OrdinalIgnoreCase) &&
-                        ((element.GetAttribute("class")?.IndexOf("gb_A", StringComparison.OrdinalIgnoreCase) ?? -1) >= 0))
-                    {
-                        FenLogger.Info($"[IFC-TRACE] HIT container=A.gb_A finalRect={finalRect}", LogCategory.Layout);
-                    }
                     ArrangeInlineContext(element, finalRect, depth);
                     return; 
                 }
@@ -1627,11 +1666,6 @@ namespace FenBrowser.FenEngine.Layout
                 {
                      // Trace miss
                      // FenLogger.Debug($"[IFC-CACHE-MISS] Element={element.TagName} Hash={element.GetHashCode()} CacheCount={_inlineCache.Count}", LogCategory.Rendering);
-                     if (string.Equals(element.TagName, "A", StringComparison.OrdinalIgnoreCase) &&
-                         ((element.GetAttribute("class")?.IndexOf("gb_A", StringComparison.OrdinalIgnoreCase) ?? -1) >= 0))
-                     {
-                         FenLogger.Info($"[IFC-TRACE] MISS container=A.gb_A finalRect={finalRect} cacheCount={_inlineCache.Count}", LogCategory.Layout);
-                     }
                 }    
             }    else
                 {
@@ -1874,17 +1908,6 @@ namespace FenBrowser.FenEngine.Layout
             var target = element ?? fallbackNode as Element; // Ensure Element
             if (target == null) return new LayoutMetrics();
             
-            // V8 DIAGNOSTICS
-            string dbgCls = target.GetAttribute("class") ?? "";
-            if (target.TagName == "DIV" && dbgCls.Contains("sites-grid"))
-            {
-                 FenLogger.Debug($"[FLEX-ENTRY-V8] Measuring .sites-grid Children={target.Children.Length} Avail={availableSize.Width}x{availableSize.Height}", LogCategory.Rendering);
-                 foreach(var c in target.Children) {
-                    var cEl = c as Element;
-                    FenLogger.Debug($"  - Child <{cEl?.TagName} class='{cEl?.GetAttribute("class")}'>", LogCategory.Rendering);
-                 }
-            }
-
             return CssFlexLayout.Measure(
                 target, 
                 availableSize, 
@@ -2134,26 +2157,23 @@ namespace FenBrowser.FenEngine.Layout
         
         private LayoutMetrics MeasureVideo(Element element, SKSize availableSize)
         {
-            // Default video size: 300x150 (HTML5 spec)
             var style = GetStyle(element);
-            float w = 300;
-            float h = 150;
-            
-            // Check for explicit width/height attributes
-            string widthAttr = element.GetAttribute("width");
-            string heightAttr = element.GetAttribute("height");
-            
-            if (!string.IsNullOrEmpty(widthAttr) && float.TryParse(widthAttr, out float aw)) w = aw;
-            if (!string.IsNullOrEmpty(heightAttr) && float.TryParse(heightAttr, out float ah)) h = ah;
-            
-            // Override with CSS if specified
-            if (style != null)
-            {
-                if (style.Width.HasValue) w = (float)style.Width.Value;
-                if (style.Height.HasValue) h = (float)style.Height.Value;
-            }
-            
-            return new LayoutMetrics { ContentHeight = h, MaxChildWidth = w };
+            float attrW = 0f;
+            float attrH = 0f;
+            ReplacedElementSizing.TryGetLengthAttribute(element, "width", out attrW);
+            ReplacedElementSizing.TryGetLengthAttribute(element, "height", out attrH);
+
+            var resolved = ReplacedElementSizing.ResolveReplacedSize(
+                "VIDEO",
+                style,
+                availableSize,
+                0f,
+                0f,
+                attrW,
+                attrH,
+                constrainAutoToAvailableWidth: true);
+
+            return new LayoutMetrics { ContentHeight = resolved.Height, MaxChildWidth = resolved.Width };
         }
         
         private LayoutMetrics MeasureAudio(Element element, SKSize availableSize)
@@ -2181,26 +2201,23 @@ namespace FenBrowser.FenEngine.Layout
         
         private LayoutMetrics MeasureIframe(Element element, SKSize availableSize)
         {
-            // Default iframe size: 300x150 (HTML5 spec)
             var style = GetStyle(element);
-            float w = 300;
-            float h = 150;
-            
-            // Check for explicit width/height attributes
-            string widthAttr = element.GetAttribute("width");
-            string heightAttr = element.GetAttribute("height");
-            
-            if (!string.IsNullOrEmpty(widthAttr) && float.TryParse(widthAttr, out float aw)) w = aw;
-            if (!string.IsNullOrEmpty(heightAttr) && float.TryParse(heightAttr, out float ah)) h = ah;
-            
-            // Override with CSS if specified
-            if (style != null)
-            {
-                if (style.Width.HasValue) w = (float)style.Width.Value;
-                if (style.Height.HasValue) h = (float)style.Height.Value;
-            }
-            
-            return new LayoutMetrics { ContentHeight = h, MaxChildWidth = w };
+            float attrW = 0f;
+            float attrH = 0f;
+            ReplacedElementSizing.TryGetLengthAttribute(element, "width", out attrW);
+            ReplacedElementSizing.TryGetLengthAttribute(element, "height", out attrH);
+
+            var resolved = ReplacedElementSizing.ResolveReplacedSize(
+                "IFRAME",
+                style,
+                availableSize,
+                0f,
+                0f,
+                attrW,
+                attrH,
+                constrainAutoToAvailableWidth: true);
+
+            return new LayoutMetrics { ContentHeight = resolved.Height, MaxChildWidth = resolved.Width };
         }
         
         private LayoutMetrics MeasureProgress(Element element, SKSize availableSize)
@@ -2294,7 +2311,8 @@ namespace FenBrowser.FenEngine.Layout
                     return m;
                 },
                 depth,
-                (_activeBfcFloats.Count > 0 ? _activeBfcFloats.Peek() : null)
+                (_activeBfcFloats.Count > 0 ? _activeBfcFloats.Peek() : null),
+                GetChildrenWithPseudos(container, container)
             );
             
             if (container.TagName == "A" || container.GetAttribute("class") == "o3j99")
@@ -2306,11 +2324,6 @@ namespace FenBrowser.FenEngine.Layout
             _inlineCache[container] = result;
              // /* [PERF-REMOVED] */
             FenLogger.Debug($"[IFC-CACHE-SET] Container={container.TagName} Id={container.GetAttribute("id")} Class={container.GetAttribute("class")} Lines={result.TextLines.Count} Rects={result.ElementRects.Count}", LogCategory.Rendering);
-            if (string.Equals(container.TagName, "A", StringComparison.OrdinalIgnoreCase) &&
-                ((container.GetAttribute("class")?.IndexOf("gb_A", StringComparison.OrdinalIgnoreCase) ?? -1) >= 0))
-            {
-                FenLogger.Info($"[IFC-TRACE] SET container=A.gb_A inlineWidth={result.AvailableInlineWidth} maxW={result.Metrics.MaxChildWidth} lines={result.TextLines.Count} rects={result.ElementRects.Count}", LogCategory.Layout);
-            }
             
             // Merge text lines into global text cache locally so we don't need to pass InlineLayoutResult around
             foreach (var kvp in result.TextLines)
@@ -2440,7 +2453,9 @@ namespace FenBrowser.FenEngine.Layout
                     new SKSize(arrangeWidth, finalRect.Height),
                     GetStyle,
                     (elem, sz, d) => MeasureNode(elem, sz, d),
-                    depth
+                    depth,
+                    (_activeBfcFloats.Count > 0 ? _activeBfcFloats.Peek() : null),
+                    GetChildrenWithPseudos(container, container)
                 );
                 _inlineCache[container] = newResult;
                 result = newResult;
@@ -2673,217 +2688,90 @@ namespace FenBrowser.FenEngine.Layout
 
         private LayoutMetrics MeasureImage(Element elem, SKSize availableSize)
         {
-            float w = 0, h = 0;
             var style = GetStyle(elem);
+            string tag = elem?.TagName?.ToUpperInvariant() ?? "IMG";
 
-            // 1. PRIORITIZE CSS DIMENSIONS
-            // If CSS defines width/height, we MUST use it, regardless of the bitmap.
-            bool hasCssW = false;
-            bool hasCssH = false;
+            float attrW = 0f;
+            float attrH = 0f;
+            ReplacedElementSizing.TryGetLengthAttribute(elem, "width", out attrW);
+            ReplacedElementSizing.TryGetLengthAttribute(elem, "height", out attrH);
 
-            if (style != null)
+            float intrinsicW = 0f;
+            float intrinsicH = 0f;
+
+            if (tag == "SVG")
             {
-                if (style.Width.HasValue) 
-                { 
-                    w = (float)style.Width.Value; 
-                    hasCssW = true; 
-                }
-                else if (style.WidthPercent.HasValue)
+                if (ReplacedElementSizing.TryParseSvgViewBoxSize(elem, out float vbW, out float vbH))
                 {
-                    // Calculate from available size if possible
-                    if (!float.IsInfinity(availableSize.Width))
-                    {
-                        w = (float)style.WidthPercent.Value / 100f * availableSize.Width;
-                        hasCssW = true;
-                    }
-                }
-
-                if (style.Height.HasValue) 
-                { 
-                    h = (float)style.Height.Value; 
-                    hasCssH = true; 
-                }
-                // Note: Height percent is harder without explicit parent height, ignoring for now
-            }
-
-            // 2. Try HTML attributes if CSS is missing
-            if ((!hasCssW || !hasCssH) && elem != null)
-            {
-                string widthAttr = elem.GetAttribute("width");
-                string heightAttr = elem.GetAttribute("height");
-                
-                if (!hasCssW && !string.IsNullOrEmpty(widthAttr) && float.TryParse(widthAttr.Replace("px", ""), out float attrW))
-                    w = attrW;
-                
-                if (!hasCssH && !string.IsNullOrEmpty(heightAttr) && float.TryParse(heightAttr.Replace("px", ""), out float attrH))
-                    h = attrH;
-            }
-
-            // 3. Try Bitmap / SVG logic
-            // Only strictly needed if we are missing dimensions, OR if we need to preserve aspect ratio.
-            // For now, if we have explicit CSS W+H, we might skip this or just use it for rendering later.
-            // But usually we want to know the intrinsic ratio if one dim is missing.
-            
-            float intW = 0, intH = 0;
-            
-            // Special handling for Inline SVG
-            if (elem != null && elem.TagName == "SVG")
-            {
-                // SVGs default to 300x150 in browsers if no size is specified
-                intW = 300;
-                intH = 150;
-                
-                string viewBox = elem.GetAttribute("viewBox") ?? elem.GetAttribute("viewbox");
-                if (!string.IsNullOrEmpty(viewBox))
-                {
-                    var parts = viewBox.Split(new[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries);
-                    // viewBox="min-x min-y width height"
-                    if (parts.Length == 4)
-                    {
-                        if (float.TryParse(parts[2], out float vbW) && float.TryParse(parts[3], out float vbH))
-                        {
-                            // Use abs() as some viewBox have negative coordinates for translation
-                            intW = Math.Abs(vbW);
-                            intH = Math.Abs(vbH);
-                            FenLogger.Debug($"[SVG-VIEWBOX] Parsed viewBox '{viewBox}' => {intW}x{intH}");
-                        }
-                    }
-                }
-                
-                // Apply width/height HTML attributes for SVGs if viewBox didn't yield good sizes
-                if ((intW <= 0 || intH <= 0) || (intW > 900 || intH > 900))
-                {
-                    // Look for explicit width/height attributes which often contain smaller display size
-                    string svgW = elem.GetAttribute("width");
-                    string svgH = elem.GetAttribute("height");
-                    
-                    if (!string.IsNullOrEmpty(svgW) && float.TryParse(svgW.Replace("px", ""), out float aw))
-                        intW = aw;
-                    if (!string.IsNullOrEmpty(svgH) && float.TryParse(svgH.Replace("px", ""), out float ah))
-                        intH = ah;
-                }
-                
-                // Default for small icons if still no size
-                if (intW <= 0) intW = 24;
-                if (intH <= 0) intH = 24;
-            }
-            else if (elem != null)
-            {
-                string src = elem.GetAttribute("src");
-                if (!string.IsNullOrEmpty(src))
-                {
-                    // Resolve Relative URLs
-                    if (!src.StartsWith("http", StringComparison.OrdinalIgnoreCase) && 
-                        !src.StartsWith("data:", StringComparison.OrdinalIgnoreCase) && 
-                        !string.IsNullOrEmpty(_baseUri))
-                    {
-                        try 
-                        {
-                            if (src.StartsWith("//"))
-                            {
-                                var scheme = new Uri(_baseUri).Scheme;
-                                src = scheme + ":" + src;
-                            }
-                            else if (src.StartsWith("/"))
-                            {
-                                var uri = new Uri(_baseUri);
-                                src = $"{uri.Scheme}://{uri.Host}{src}";
-                            }
-                            else
-                            {
-                                var uri = new Uri(_baseUri);
-                                src = $"{uri.Scheme}://{uri.Host}/{src}"; // Simplified
-                            }
-                        }
-                        catch {}
-                    }
-
-                    var bitmap = Rendering.ImageLoader.GetImage(src);
-                    if (bitmap != null)
-                    {
-                        intW = bitmap.Width;
-                        intH = bitmap.Height;
-                        // Console.WriteLine($"[MeasureImage] Loaded {src} ({intW}x{intH})");
-                    }
-                    else
-                    {
-                        // Placeholder / Loading state
-                        // If we have no dimensions yet, we assume a standard placeholder size
-                        // so the layout doesn't collapse to 0.
-                        intW = 24; 
-                        intH = 24;
-                    }
-                }
-                
-                // Parse SVG viewBox for inline SVGs (no src attribute)
-                if (intW <= 0 && intH <= 0 && elem.TagName.Equals("SVG", StringComparison.OrdinalIgnoreCase))
-                {
-                    string viewBox = elem.GetAttribute("viewBox") ?? elem.GetAttribute("viewbox");
-                    if (!string.IsNullOrEmpty(viewBox))
-                    {
-                        // viewBox format: "minX minY width height"
-                        var parts = viewBox.Split(new[] {' ', ','}, StringSplitOptions.RemoveEmptyEntries);
-                        if (parts.Length >= 4)
-                        {
-                            if (float.TryParse(parts[2], out float vbW) && float.TryParse(parts[3], out float vbH))
-                            {
-                                intW = vbW;
-                                intH = vbH;
-                                FenLogger.Debug($"[SVG-VIEWBOX] Parsed viewBox '{viewBox}' => {intW}x{intH}");
-                            }
-                        }
-                    }
-                    
-                    // Fallback for small SVGs without viewBox
-                    if (intW <= 0 || intH <= 0)
-                    {
-                        intW = 24;
-                        intH = 24;
-                    }
+                    intrinsicW = vbW;
+                    intrinsicH = vbH;
+                    FenLogger.Debug($"[SVG-VIEWBOX] Parsed viewBox => {intrinsicW}x{intrinsicH}");
                 }
             }
-
-            // 4. Apply Intrinsic Dimensions / Aspect Ratio
-            if (w <= 0 && h <= 0)
+            else if (tag == "IMG" && TryResolveImageIntrinsicSize(elem, out float bmpW, out float bmpH))
             {
-                // No CSS, No Attr. Use intrinsic.
-                if (intW > 0 && intH > 0) { w = intW; h = intH; }
-                else { w = 300; h = 150; } // HTML default for replaced elements
-            }
-            else if (w > 0 && h <= 0)
-            {
-                // Have W, miss H. Maintain ratio.
-                if (intW > 0 && intH > 0) h = w * (intH / intW);
-                else h = w * 0.5f; // Random guess if no intrinsic
-            }
-            else if (h > 0 && w <= 0)
-            {
-                 // Have H, miss W. Maintain ratio.
-                 if (intW > 0 && intH > 0) w = h * (intW / intH);
-                 else w = h * 2.0f;
+                intrinsicW = bmpW;
+                intrinsicH = bmpH;
             }
 
-            // 5. Constrain
-            if (w > availableSize.Width)
-            {
-                float ratio = w > 0 ? availableSize.Width / w : 1;
-                w = availableSize.Width;
-                h *= ratio;
-            }
+            var resolved = ReplacedElementSizing.ResolveReplacedSize(
+                tag,
+                style,
+                availableSize,
+                intrinsicW,
+                intrinsicH,
+                attrW,
+                attrH,
+                constrainAutoToAvailableWidth: true);
 
-            // Ensure non-zero for visibility
-            if (w < 1) w = 1;
-            if (h < 1) h = 1;
+            float w = resolved.Width;
+            float h = resolved.Height;
 
             if (elem.TagName == "IMG")
-                FenLogger.Debug($"[IMG-DEBUG-MEASURE] res={w}x{h} int={intW}x{intH} avail={availableSize.Width}x{availableSize.Height} cssW={hasCssW} cssH={hasCssH} attrW={elem.GetAttribute("width")}");
+            {
+                FenLogger.Debug($"[IMG-DEBUG-MEASURE] res={w}x{h} int={intrinsicW}x{intrinsicH} avail={availableSize.Width}x{availableSize.Height} attrW={elem.GetAttribute("width")} attrH={elem.GetAttribute("height")}");
+            }
 
             return new LayoutMetrics { ContentHeight = h, ActualHeight = h, MaxChildWidth = w };
+        }
+
+        private bool TryResolveImageIntrinsicSize(Element elem, out float width, out float height)
+        {
+            width = 0f;
+            height = 0f;
+            if (elem == null) return false;
+
+            string src = elem.GetAttribute("src");
+            if (string.IsNullOrWhiteSpace(src)) return false;
+
+            string resolved = ResolveResourceUrl(src);
+            var bitmap = Rendering.ImageLoader.GetImage(resolved);
+            if (bitmap == null) return false;
+
+            width = bitmap.Width;
+            height = bitmap.Height;
+            return width > 0f && height > 0f;
+        }
+
+        private string ResolveResourceUrl(string src)
+        {
+            if (string.IsNullOrWhiteSpace(src)) return src;
+            if (Uri.TryCreate(src, UriKind.Absolute, out var absolute)) return absolute.ToString();
+
+            if (!string.IsNullOrWhiteSpace(_baseUri) &&
+                Uri.TryCreate(_baseUri, UriKind.Absolute, out var baseUri) &&
+                Uri.TryCreate(baseUri, src, out var resolved))
+            {
+                return resolved.ToString();
+            }
+
+            return src;
         }
 
         private bool ShouldHide(Node node, CssComputed style)
         {
             if (node == null) return true;
+            if (node is Document) return false;
 
             // Ignore indentation/newline-only text in non-inline normal-flow containers.
             if (node is Text textNode && string.IsNullOrWhiteSpace(textNode.Data))
@@ -2962,6 +2850,14 @@ namespace FenBrowser.FenEngine.Layout
 
             // Never hide html/body
             if (tag == "html" || tag == "body") return false;
+
+            // Table semantics must stay in layout even when only text descendants exist.
+            // Hiding these breaks intrinsic column sizing and rowspan/colspan behavior.
+            if (tag == "table" || tag == "thead" || tag == "tbody" || tag == "tfoot" ||
+                tag == "tr" || tag == "td" || tag == "th" || tag == "caption")
+            {
+                return false;
+            }
                 
                 // Explicitly hide metadata/invisible tags
                 if (tag == "head" || tag == "script" || tag == "style" || tag == "template" || tag == "link" || tag == "meta" || tag == "title" || tag == "noscript")
@@ -2987,9 +2883,9 @@ namespace FenBrowser.FenEngine.Layout
                 
                 // Check for content or explicit styling
                 bool hasContent = false;
-                if (e.Children != null) 
+                if (e.ChildNodes != null)
                 { 
-                    foreach (var c in e.Children) 
+                    foreach (var c in e.ChildNodes)
                     { 
                         if (c is Element) { hasContent = true; break; } 
                         if (c is Text t && !string.IsNullOrWhiteSpace(t.Data)) { hasContent = true; break; } 

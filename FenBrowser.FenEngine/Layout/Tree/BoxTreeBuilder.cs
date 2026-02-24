@@ -231,6 +231,12 @@ namespace FenBrowser.FenEngine.Layout.Tree
         {
             if (string.IsNullOrEmpty(tag)) return "block";
 
+            // HTML custom elements default to inline in the UA default style model unless author CSS changes it.
+            if (tag.Contains("-", StringComparison.Ordinal))
+            {
+                return "inline";
+            }
+
             return tag switch
             {
                 // Hidden metadata/script nodes.

@@ -737,26 +737,25 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 if (w <= 0) w = 120f;
                 if (h <= 0) h = 24f;
             }
-            else if (tag == "IMG")
+            else if (ReplacedElementSizing.IsReplacedElementTag(tag))
             {
-                if (w <= 0 && TryGetLengthAttribute(el, "width", out var attrW)) w = attrW;
-                if (h <= 0 && TryGetLengthAttribute(el, "height", out var attrH)) h = attrH;
-                if (w <= 0) w = 300f;
-                if (h <= 0) h = 150f;
-            }
-            else if (tag == "SVG")
-            {
-                if (w <= 0 && TryGetLengthAttribute(el, "width", out var attrW)) w = attrW;
-                if (h <= 0 && TryGetLengthAttribute(el, "height", out var attrH)) h = attrH;
-                if (w <= 0) w = 24f;
-                if (h <= 0) h = 24f;
-            }
-            else if (tag == "CANVAS")
-            {
-                if (w <= 0 && TryGetLengthAttribute(el, "width", out var attrW)) w = attrW;
-                if (h <= 0 && TryGetLengthAttribute(el, "height", out var attrH)) h = attrH;
-                if (w <= 0) w = 300f;
-                if (h <= 0) h = 150f;
+                float attrW = 0f;
+                float attrH = 0f;
+                ReplacedElementSizing.TryGetLengthAttribute(el, "width", out attrW);
+                ReplacedElementSizing.TryGetLengthAttribute(el, "height", out attrH);
+
+                var resolved = ReplacedElementSizing.ResolveReplacedSize(
+                    tag,
+                    box.ComputedStyle,
+                    new SKSize(float.PositiveInfinity, float.PositiveInfinity),
+                    0f,
+                    0f,
+                    attrW,
+                    attrH,
+                    constrainAutoToAvailableWidth: false);
+
+                if (w <= 0) w = resolved.Width;
+                if (h <= 0) h = resolved.Height;
             }
             else
             {
