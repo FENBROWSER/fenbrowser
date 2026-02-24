@@ -23,7 +23,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
     public class CallFrame
     {
-        public CodeBlock Block { get; }
+        public CodeBlock Block { get; private set; }
         
         /// <summary>
         /// Instruction Pointer (index in Block.Instructions)
@@ -33,22 +33,46 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         /// <summary>
         /// Lexical Environment for the function
         /// </summary>
-        public FenEnvironment Environment { get; }
+        public FenEnvironment Environment { get; private set; }
         
         /// <summary>
         /// Stack base pointer to restore the VM stack to exactly the right height on return
         /// </summary>
-        public int StackBase { get; }
+        public int StackBase { get; private set; }
 
-        public Stack<ExceptionHandler> ExceptionHandlers { get; }
+        private Stack<ExceptionHandler> _exceptionHandlers;
+        public Stack<ExceptionHandler> ExceptionHandlers
+        {
+            get
+            {
+                if (_exceptionHandlers == null)
+                    _exceptionHandlers = new Stack<ExceptionHandler>();
+                return _exceptionHandlers;
+            }
+        }
+        
+        public bool HasExceptionHandlers => _exceptionHandlers != null && _exceptionHandlers.Count > 0;
+
+        public bool IsConstruct { get; set; }
+        public FenObject ConstructedObject { get; set; }
 
         public CallFrame(CodeBlock block, FenEnvironment env, int stackBase)
+        {
+            Reset(block, env, stackBase);
+        }
+
+        public void Reset(CodeBlock block, FenEnvironment env, int stackBase)
         {
             Block = block;
             Environment = env;
             StackBase = stackBase;
             IP = 0;
-            ExceptionHandlers = new Stack<ExceptionHandler>();
+            IsConstruct = false;
+            ConstructedObject = null;
+            if (_exceptionHandlers != null)
+            {
+                _exceptionHandlers.Clear();
+            }
         }
     }
 }
