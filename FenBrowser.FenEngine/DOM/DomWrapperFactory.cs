@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
@@ -6,41 +7,40 @@ namespace FenBrowser.FenEngine.DOM
 {
     public static class DomWrapperFactory
     {
+        // Identity cache: same Node → same IObject wrapper (satisfies Web IDL "same object" requirement).
+        // ConditionalWeakTable keeps weak references to keys so entries are automatically removed
+        // when the Node is garbage-collected.
+        private static readonly ConditionalWeakTable<Node, IObject> _wrapperCache
+            = new ConditionalWeakTable<Node, IObject>();
+
         public static FenValue Wrap(Node node, IExecutionContext context)
         {
-            if (node  == null) return FenValue.Null;
+            if (node == null) return FenValue.Null;
 
-            // TODO: Add identity map caching (WeakReference) to ensure same wrapper for same node
-            
+            if (_wrapperCache.TryGetValue(node, out var cached))
+                return FenValue.FromObject(cached);
+
+            IObject wrapper;
             if (node is Document doc)
-            {
-                return FenValue.FromObject(new DocumentWrapper(doc, context));
-            }
+                wrapper = new DocumentWrapper(doc, context);
             else if (node is Element element)
-            {
-                return FenValue.FromObject(new ElementWrapper(element, context));
-            }
+                wrapper = new ElementWrapper(element, context);
             else if (node is Text text)
-            {
-                return FenValue.FromObject(new TextWrapper(text, context));
-            }
+                wrapper = new TextWrapper(text, context);
             else if (node is Comment comment)
-            {
-                return FenValue.FromObject(new CommentWrapper(comment, context));
-            }
+                wrapper = new CommentWrapper(comment, context);
             else if (node is ShadowRoot shadow)
-            {
-                 return FenValue.FromObject(new ShadowRootWrapper(shadow, context));
-            }
+                wrapper = new ShadowRootWrapper(shadow, context);
             else if (node is DocumentFragment fragment)
-            {
-                 return FenValue.FromObject(new NodeWrapper(fragment, context));
-            }
-            // return FenValue.FromObject(new DocumentFragmentWrapper(fragment, context));
-            // Placeholder if wrapper absent
-            
-            // Generic fallback?
-            return FenValue.Null;
+                wrapper = new NodeWrapper(fragment, context);
+            else
+                return FenValue.Null;
+
+            _wrapperCache.Add(node, wrapper);
+            return FenValue.FromObject(wrapper);
         }
+
+        /// <summary>Clear the identity cache on page navigation so stale wrappers are not reused.</summary>
+        public static void ClearCache() => _wrapperCache.Clear();
     }
 }

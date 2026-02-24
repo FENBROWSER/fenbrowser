@@ -65,7 +65,12 @@ public readonly record struct HitTestResult(
     /// <summary>
     /// The bounding box of the hit element in local coordinates.
     /// </summary>
-    SkiaSharp.SKRect? BoundingBox = null
+    SkiaSharp.SKRect? BoundingBox = null,
+
+    /// <summary>
+    /// The src attribute of an img element (if hit element is an img).
+    /// </summary>
+    string? ImageSrc = null
 )
 {
     /// <summary>

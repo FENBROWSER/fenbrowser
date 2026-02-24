@@ -179,6 +179,7 @@ namespace FenBrowser.FenEngine.DOM
             public void PopCallFrame() => _inner.PopCallFrame();
             public void CheckCallStackLimit() => _inner.CheckCallStackLimit();
             public void CheckExecutionTimeLimit() => _inner.CheckExecutionTimeLimit();
+            public FenBrowser.FenEngine.Rendering.Core.ILayoutEngine GetLayoutEngine() => _inner.GetLayoutEngine();
         }
     }
 }

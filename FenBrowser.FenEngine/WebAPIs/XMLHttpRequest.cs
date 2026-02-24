@@ -64,13 +64,40 @@ namespace FenBrowser.FenEngine.WebAPIs
             }
         }
 
+        // SECURITY: Whitelist of allowed HTTP methods (prevents CRLF / request-smuggling)
+        private static readonly HashSet<string> _allowedMethods = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH" };
+
+        // SECURITY: WHATWG forbidden request headers — must never be set by scripts
+        private static readonly HashSet<string> _forbiddenHeaders = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "accept-charset", "accept-encoding", "access-control-request-headers",
+            "access-control-request-method", "connection", "content-length",
+            "cookie", "cookie2", "date", "dnt", "expect", "host", "keep-alive",
+            "origin", "referer", "te", "trailer", "transfer-encoding", "upgrade", "via"
+        };
+
+        // SECURITY: Strip CR/LF to prevent header injection attacks
+        private static string SanitizeHeaderValue(string value) =>
+            value?.Replace("\r", "").Replace("\n", "") ?? "";
+
         private FenValue Open(FenValue[] args, FenValue thisVal)
         {
             if (args.Length < 2) return FenValue.FromError("TypeError: Not enough arguments");
-            _method = args[0].ToString();
+
+            // SECURITY: Validate method against whitelist
+            var rawMethod = args[0].ToString().Trim().ToUpperInvariant();
+            if (!_allowedMethods.Contains(rawMethod))
+                return FenValue.FromError($"SecurityError: '{rawMethod}' is not an allowed HTTP method.");
+            _method = rawMethod;
+
+            // SECURITY: Validate URL scheme — only http/https permitted
             _url = args[1].ToString();
+            if (!Uri.TryCreate(_url, UriKind.Absolute, out var parsedUri) ||
+                (parsedUri.Scheme != "http" && parsedUri.Scheme != "https"))
+                return FenValue.FromError($"SecurityError: URL scheme not allowed for '{_url}'.");
+
             _async = args.Length > 2 ? args[2].ToBoolean() : true;
-            
             SetReadyState(OPENED);
             return FenValue.Undefined;
         }
@@ -79,7 +106,17 @@ namespace FenBrowser.FenEngine.WebAPIs
         {
             if (_readyState != OPENED) return FenValue.FromError("InvalidStateError");
             if (args.Length < 2) return FenValue.Undefined;
-            _requestHeaders[args[0].ToString()] = args[1].ToString();
+
+            var name  = SanitizeHeaderValue(args[0].ToString()).Trim();
+            var value = SanitizeHeaderValue(args[1].ToString());
+
+            // SECURITY: Block WHATWG forbidden headers and Proxy-/Sec- prefixed headers
+            if (_forbiddenHeaders.Contains(name) ||
+                name.StartsWith("proxy-", StringComparison.OrdinalIgnoreCase) ||
+                name.StartsWith("sec-", StringComparison.OrdinalIgnoreCase))
+                return FenValue.FromError($"NotAllowedError: '{name}' is a forbidden header name.");
+
+            _requestHeaders[name] = value;
             return FenValue.Undefined;
         }
 

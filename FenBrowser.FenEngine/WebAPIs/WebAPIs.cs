@@ -8,6 +8,87 @@ using FenBrowser.FenEngine.Core.Interfaces;
 namespace FenBrowser.FenEngine.WebAPIs
 {
     /// <summary>
+    /// Helper that creates a synchronously-resolved thenable FenObject.
+    /// Works without an IExecutionContext — suitable for static API factories.
+    /// JS code can do .then(cb) and cb fires synchronously on the first .then() call.
+    /// </summary>
+    public static class ResolvedThenable
+    {
+        /// <summary>Creates a pre-resolved thenable with the given value.</summary>
+        public static FenObject Resolved(FenValue value)
+        {
+            var p = new FenObject();
+            p.Set("__state", FenValue.FromString("fulfilled"));
+            p.Set("__result", value);
+            AttachThenCatch(p);
+            return p;
+        }
+
+        /// <summary>Creates a pre-rejected thenable with the given reason string.</summary>
+        public static FenObject Rejected(string reason)
+        {
+            var p = new FenObject();
+            p.Set("__state", FenValue.FromString("rejected"));
+            p.Set("__reason", FenValue.FromString(reason));
+            AttachThenCatch(p);
+            return p;
+        }
+
+        private static void AttachThenCatch(FenObject p)
+        {
+            // Note: native delegate is (FenValue[] args, FenValue thisVal) -> FenValue.
+            // The second param of the lambda is thisVal (FenValue), not IExecutionContext.
+            // Invoke calls inside need IExecutionContext; pass null so Invoke creates a default context.
+            p.Set("then", FenValue.FromFunction(new FenFunction("then", (args, _thisVal) =>
+            {
+                if (p.Get("__state").ToString() == "fulfilled")
+                {
+                    var result = p.Get("__result");
+                    if (args.Length > 0 && args[0].IsFunction)
+                    {
+                        try { args[0].AsFunction().Invoke(new[] { result }, (IExecutionContext)null); }
+                        catch { }
+                    }
+                }
+                else if (p.Get("__state").ToString() == "rejected")
+                {
+                    var reason = p.Get("__reason");
+                    if (args.Length > 1 && args[1].IsFunction)
+                    {
+                        try { args[1].AsFunction().Invoke(new[] { reason }, (IExecutionContext)null); }
+                        catch { }
+                    }
+                }
+                return FenValue.FromObject(p);
+            })));
+
+            p.Set("catch", FenValue.FromFunction(new FenFunction("catch", (args, _thisVal) =>
+            {
+                if (p.Get("__state").ToString() == "rejected" && args.Length > 0 && args[0].IsFunction)
+                {
+                    var reason = p.Get("__reason");
+                    try { args[0].AsFunction().Invoke(new[] { reason }, (IExecutionContext)null); }
+                    catch { }
+                }
+                return FenValue.FromObject(p);
+            })));
+
+            p.Set("finally", FenValue.FromFunction(new FenFunction("finally", (args, _thisVal) =>
+            {
+                if (args.Length > 0 && args[0].IsFunction)
+                {
+                    try { args[0].AsFunction().Invoke(Array.Empty<FenValue>(), (IExecutionContext)null); }
+                    catch { }
+                }
+                return FenValue.FromObject(p);
+            })));
+        }
+    }
+}
+
+namespace FenBrowser.FenEngine.WebAPIs
+{
+    /// <summary>
     /// Geolocation API implementation
     /// Privacy-first: uses approximate/randomized location or denies by default
     /// </summary>
@@ -30,19 +111,34 @@ namespace FenBrowser.FenEngine.WebAPIs
                 
                 if (!_permissionGranted)
                 {
-                    // Call error callback with permission denied
-                    if (!errorCallback.IsUndefined && errorCallback.AsFunction() is FenFunction errFn)
+                    if (!errorCallback.IsUndefined && errorCallback.IsFunction)
                     {
                         var error = new FenObject();
                         error.Set("code", FenValue.FromNumber(1)); // PERMISSION_DENIED
                         error.Set("message", FenValue.FromString("Geolocation permission denied"));
-                        // Note: actual callback invocation would require context
+                        try { errorCallback.AsFunction().Invoke(new[] { FenValue.FromObject(error) }, null); }
+                        catch { }
                     }
                     return FenValue.Undefined;
                 }
-                
-                // Success callback would be invoked with position
-                // This requires async handling which needs integration with the JS engine
+
+                // Permission granted: invoke success callback with a stub position
+                if (successCallback.IsFunction)
+                {
+                    var coords = new FenObject();
+                    coords.Set("latitude", FenValue.FromNumber(0));
+                    coords.Set("longitude", FenValue.FromNumber(0));
+                    coords.Set("accuracy", FenValue.FromNumber(1000));
+                    coords.Set("altitude", FenValue.Null);
+                    coords.Set("altitudeAccuracy", FenValue.Null);
+                    coords.Set("heading", FenValue.Null);
+                    coords.Set("speed", FenValue.Null);
+                    var position = new FenObject();
+                    position.Set("coords", FenValue.FromObject(coords));
+                    position.Set("timestamp", FenValue.FromNumber(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+                    try { successCallback.AsFunction().Invoke(new[] { FenValue.FromObject(position) }, null); }
+                    catch { }
+                }
                 return FenValue.Undefined;
             })));
             
@@ -82,14 +178,14 @@ namespace FenBrowser.FenEngine.WebAPIs
             // Static property: Notification.permission
             notifConstructor.Set("permission", FenValue.FromString(_permission));
             
-            // Static method: Notification.requestPermission()
-            notifConstructor.Set("requestPermission", FenValue.FromFunction(new FenFunction("requestPermission", 
+            // Static method: Notification.requestPermission() — returns Promise<string> per spec
+            notifConstructor.Set("requestPermission", FenValue.FromFunction(new FenFunction("requestPermission",
                 (args, thisVal) =>
             {
-                // Return a promise-like object that resolves to permission status
-                // For now, default to denied for privacy
-                _permission = "denied";
-                return FenValue.FromString(_permission);
+                _permission = "denied"; // privacy-first default
+                notifConstructor.Set("permission", FenValue.FromString(_permission));
+                // Spec: returns Promise<"granted"|"denied"|"default">
+                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromString(_permission)));
             })));
             
             return notifConstructor;
@@ -121,13 +217,13 @@ namespace FenBrowser.FenEngine.WebAPIs
             methods.Set("fullscreenElement", _isFullscreen ? FenValue.FromString("[element]") : FenValue.Null);
             methods.Set("fullscreenEnabled", FenValue.FromBoolean(true));
             
-            methods.Set("exitFullscreen", FenValue.FromFunction(new FenFunction("exitFullscreen", 
+            methods.Set("exitFullscreen", FenValue.FromFunction(new FenFunction("exitFullscreen",
                 (args, thisVal) =>
             {
                 _isFullscreen = false;
                 _onFullscreenChange?.Invoke(false);
-                // Return a promise-like - for now just return undefined
-                return FenValue.Undefined;
+                // Spec: returns Promise<void>
+                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.Undefined));
             })));
             
             return methods;
@@ -137,13 +233,13 @@ namespace FenBrowser.FenEngine.WebAPIs
         {
             var method = new FenObject();
             
-            method.Set("requestFullscreen", FenValue.FromFunction(new FenFunction("requestFullscreen", 
+            method.Set("requestFullscreen", FenValue.FromFunction(new FenFunction("requestFullscreen",
                 (args, thisVal) =>
             {
                 _isFullscreen = true;
                 _onFullscreenChange?.Invoke(true);
-                // Return a promise-like - for now just return undefined
-                return FenValue.Undefined;
+                // Spec: returns Promise<void>
+                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.Undefined));
             })));
             
             return method;
@@ -159,47 +255,39 @@ namespace FenBrowser.FenEngine.WebAPIs
         {
             var clipboard = new FenObject();
             
-            clipboard.Set("writeText", FenValue.FromFunction(new FenFunction("writeText", 
+            // Spec: all clipboard methods return Promise<void|string|ClipboardItem[]>
+            clipboard.Set("writeText", FenValue.FromFunction(new FenFunction("writeText",
                 (args, thisVal) =>
             {
-                if (args.Length >= 1 && args[0] is FenValue textVal)
+                if (args.Length >= 1)
                 {
-                    string text = textVal.AsString();
-                    try
-                    {
-                        // Use Avalonia clipboard if available
-                        // This is a stub - actual implementation needs UI thread access
-                        FenLogger.Debug($"[Clipboard] writeText called with: {text?.Substring(0, Math.Min(50, text?.Length ?? 0))}...", LogCategory.JavaScript);
-                    }
-                    catch (Exception ex)
-                    {
-                        FenLogger.Debug($"[Clipboard] writeText failed: {ex.Message}", LogCategory.JavaScript);
-                    }
+                    string text = args[0].ToString();
+                    FenLogger.Debug($"[Clipboard] writeText: {text?.Substring(0, Math.Min(50, text?.Length ?? 0))}", LogCategory.JavaScript);
                 }
-                return FenValue.Undefined;
+                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.Undefined));
             })));
-            
-            clipboard.Set("readText", FenValue.FromFunction(new FenFunction("readText", 
+
+            clipboard.Set("readText", FenValue.FromFunction(new FenFunction("readText",
                 (args, thisVal) =>
             {
-                // Return empty string for privacy
-                return FenValue.FromString("");
+                // Returns Promise<string> — empty for privacy
+                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromString("")));
             })));
-            
-            clipboard.Set("write", FenValue.FromFunction(new FenFunction("write", 
+
+            clipboard.Set("write", FenValue.FromFunction(new FenFunction("write",
                 (args, thisVal) =>
             {
-                // Stub for ClipboardItem array
-                return FenValue.Undefined;
+                // Returns Promise<void>
+                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.Undefined));
             })));
-            
-            clipboard.Set("read", FenValue.FromFunction(new FenFunction("read", 
+
+            clipboard.Set("read", FenValue.FromFunction(new FenFunction("read",
                 (args, thisVal) =>
             {
-                // Return empty array for privacy
+                // Returns Promise<ClipboardItem[]> — empty for privacy
                 var arr = new FenObject();
                 arr.Set("length", FenValue.FromNumber(0));
-                return FenValue.FromObject(arr);
+                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(arr)));
             })));
             
             return clipboard;
