@@ -30,7 +30,7 @@ namespace FenBrowser.Test262Benchmark
 
             // Initialize Runner
             // 3-minute timeout per test — anything longer is a failure
-            var runner = new Test262Runner(test262Path, timeoutMs: 180000);
+            var runner = new Test262Runner(test262Path, timeoutMs: 5000);
 
             Console.WriteLine("Discovering tests...");
             var allFiles = runner.DiscoverTests("").ToList();

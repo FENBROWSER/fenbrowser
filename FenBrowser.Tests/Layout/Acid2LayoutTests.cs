@@ -24,11 +24,8 @@ namespace FenBrowser.Tests.Layout
             var computer = new MinimalLayoutComputer(styles, 800, 600);
             computer.Measure(doc, new SKSize(800, 600));
             computer.Arrange(doc, new SKRect(0, 0, 800, 600));
-            
-            var boxesField = typeof(MinimalLayoutComputer).GetField("_boxes", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var boxes = boxesField.GetValue(computer) as System.Collections.Concurrent.ConcurrentDictionary<Node, BoxModel>;
-            
-            return (computer, boxes[root]);
+
+            return (computer, computer.GetBox(root));
         }
 
         [Fact]
@@ -67,11 +64,9 @@ namespace FenBrowser.Tests.Layout
             var computer = new MinimalLayoutComputer(styles, 800, 600);
             computer.Measure(doc, new SKSize(800, 600));
             computer.Arrange(doc, new SKRect(0, 0, 800, 600));
-            
-            var boxesField = typeof(MinimalLayoutComputer).GetField("_boxes", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var boxes = boxesField.GetValue(computer) as System.Collections.Concurrent.ConcurrentDictionary<Node, BoxModel>;
-            
-            var childBox = boxes[absChild];
+
+            var childBox = computer.GetBox(absChild);
+            Assert.NotNull(childBox);
             
             Assert.Equal(50, childBox.ContentBox.Height);
         }
@@ -108,12 +103,11 @@ namespace FenBrowser.Tests.Layout
             var computer = new MinimalLayoutComputer(styles, 800, 600);
             computer.Measure(doc, new SKSize(800, 600));
             computer.Arrange(doc, new SKRect(0, 0, 800, 600));
-            
-            var boxesField = typeof(MinimalLayoutComputer).GetField("_boxes", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var boxes = boxesField.GetValue(computer) as System.Collections.Concurrent.ConcurrentDictionary<Node, BoxModel>;
-            
-            var containerBox = boxes[container];
-            var childBox = boxes[absChild];
+
+            var containerBox = computer.GetBox(container);
+            var childBox = computer.GetBox(absChild);
+            Assert.NotNull(containerBox);
+            Assert.NotNull(childBox);
             
             var cbX = containerBox.PaddingBox.Left;
             var cbY = containerBox.PaddingBox.Top;

@@ -166,5 +166,77 @@ namespace FenBrowser.Tests.Layout
             Assert.Equal(100, boxes[items[4]].ContentBox.Top); // Row height 100px? Row Gap 0?
             // Row Gap defaults to 0 in CreateGrid unless set.
         }
+
+        [Fact]
+        public void AutoFill_MultiTrackPattern_AccountsForInternalAndInterTrackGaps()
+        {
+            // repeat(auto-fill, 100px 50px), gap:10, width:540
+            // Per repeat:
+            // track span = 150
+            // tracks per repeat = 2
+            // width formula: N*(150 + 2*10) <= 540 + 10 => N <= 3
+            // So 3 repeats -> 6 tracks.
+            var (container, items, styles) = CreateGrid("repeat(auto-fill, 100px 50px)", "100px", 6);
+            styles[container].Width = 540;
+            styles[container].ColumnGap = 10;
+
+            var boxes = ArrangeGrid(container, styles);
+
+            Assert.Equal(0, boxes[items[0]].ContentBox.Left);     // col 1 (100px)
+            Assert.Equal(110, boxes[items[1]].ContentBox.Left);   // col 2 (50px)
+            Assert.Equal(170, boxes[items[2]].ContentBox.Left);   // col 3 (100px)
+            Assert.Equal(280, boxes[items[3]].ContentBox.Left);   // col 4 (50px)
+            Assert.Equal(340, boxes[items[4]].ContentBox.Left);   // col 5 (100px)
+            Assert.Equal(450, boxes[items[5]].ContentBox.Left);   // col 6 (50px)
+        }
+
+        [Fact]
+        public void AutoFill_UnresolvedIntrinsicTrack_UsesSingleRepeatFallback()
+        {
+            // repeat(auto-fill, auto) has unresolved intrinsic minimum.
+            // Fallback should be deterministic single-repeat (1 column), not explosive track expansion.
+            var (container, items, styles) = CreateGrid("repeat(auto-fill, auto)", "100px", 3);
+            styles[container].Width = 1000;
+
+            var boxes = ArrangeGrid(container, styles);
+
+            // Single auto column stretches to container width.
+            Assert.Equal(1000, boxes[items[0]].ContentBox.Width);
+
+            // Remaining items flow to next rows because only one explicit column exists.
+            Assert.Equal(0, boxes[items[1]].ContentBox.Left);
+            Assert.Equal(100, boxes[items[1]].ContentBox.Top);
+        }
+
+        [Fact]
+        public void AutoFit_CollapsesUnusedTrailingTracks_BeforeJustifyContentDistribution()
+        {
+            var (container, items, styles) = CreateGrid("repeat(auto-fit, 100px)", "100px", 2);
+            styles[container].Width = 500;
+            styles[container].JustifyContent = "space-between";
+
+            var boxes = ArrangeGrid(container, styles);
+
+            Assert.Equal(0, boxes[items[0]].ContentBox.Left);
+            Assert.Equal(400, boxes[items[1]].ContentBox.Left);
+        }
+
+        [Fact]
+        public void AutoFill_MinMaxAutoDefiniteMax_UsesDefiniteMaxForRepeatCount()
+        {
+            // repeat(auto-fill, minmax(auto, 120px)) in 500px container
+            // should resolve to 4 columns (480px total), not single-repeat fallback.
+            var (container, items, styles) = CreateGrid("repeat(auto-fill, minmax(auto, 120px))", "100px", 5);
+            styles[container].Width = 500;
+
+            var boxes = ArrangeGrid(container, styles);
+
+            Assert.Equal(0, boxes[items[0]].ContentBox.Left);
+            Assert.Equal(120, boxes[items[1]].ContentBox.Left);
+            Assert.Equal(240, boxes[items[2]].ContentBox.Left);
+            Assert.Equal(360, boxes[items[3]].ContentBox.Left);
+            Assert.Equal(0, boxes[items[4]].ContentBox.Left);
+            Assert.Equal(100, boxes[items[4]].ContentBox.Top);
+        }
     }
 }

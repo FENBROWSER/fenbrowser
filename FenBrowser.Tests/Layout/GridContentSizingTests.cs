@@ -122,5 +122,76 @@ namespace FenBrowser.Tests.Layout
             
             Assert.Equal(100, boxes[items[0]].ContentBox.Width);
         }
+
+        [Fact]
+        public void FitContent_Percent_ResolvesAgainstContainerWidth()
+        {
+            var (container, items, styles) = CreateGrid("fit-content(50%)", "auto", 1);
+            styles[container].Width = 400;
+            styles[container].Height = 300;
+
+            // Keep item intrinsic width unconstrained so fit-content limit drives final width.
+            styles[items[0]].Width = null;
+            styles[items[0]].MinWidth = 0;
+            styles[items[0]].MaxWidth = null;
+
+            var boxes = ArrangeGrid(container, styles);
+            Assert.Equal(200, boxes[items[0]].ContentBox.Width);
+        }
+
+        [Fact]
+        public void AutoRows_ArrangePreservesContentContributionBeforeStretch()
+        {
+            var (container, items, styles) = CreateGrid("100px", "auto auto", 2);
+            styles[container].Width = 100;
+            styles[container].Height = 600; // Definite container height should not erase content-derived row minima.
+
+            styles[items[0]].Height = 20;
+            styles[items[1]].Height = 70;
+            styles[items[0]].Width = 100;
+            styles[items[1]].Width = 100;
+
+            LayoutMetrics MeasureChild(Node n, SKSize available, int d)
+            {
+                if (styles.TryGetValue(n, out var s))
+                {
+                    float w = (float)(s.Width ?? 0);
+                    float h = (float)(s.Height ?? 0);
+                    return new LayoutMetrics
+                    {
+                        MaxChildWidth = w,
+                        ContentHeight = h,
+                        MinContentWidth = w,
+                        MaxContentWidth = w
+                    };
+                }
+                return new LayoutMetrics();
+            }
+
+            var measured = GridLayoutComputer.Measure(container, new SKSize(100, 600), styles, 0, MeasureChild);
+
+            var boxes = new Dictionary<Node, BoxModel>();
+            GridLayoutComputer.Arrange(
+                container,
+                new SKRect(0, 0, 100, measured.ContentHeight),
+                styles,
+                boxes,
+                0,
+                (node, rect, depth) =>
+                {
+                    if (node is Element el)
+                    {
+                        if (!boxes.ContainsKey(el)) boxes[el] = new BoxModel();
+                        boxes[el].ContentBox = rect;
+                        boxes[el].BorderBox = rect;
+                    }
+                },
+                MeasureChild);
+
+            Assert.Equal(0, boxes[items[0]].ContentBox.Top);
+            // Row 1 contributes 20px intrinsic height, then remaining free space is distributed
+            // across auto rows. This keeps content contribution visible before stretch.
+            Assert.Equal(275, boxes[items[1]].ContentBox.Top);
+        }
     }
 }

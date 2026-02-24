@@ -253,6 +253,62 @@ namespace FenBrowser.Tests.Layout
         }
 
         [Fact]
+        public void AlignItems_Baseline_UsesItemBaselinesInsteadOfFlexStart()
+        {
+            var container = CreateFlexContainer(2);
+            var style = new CssComputed
+            {
+                Display = "flex",
+                FlexDirection = "row",
+                AlignItems = "baseline",
+                Width = 400,
+                Height = 200
+            };
+
+            var styles = CreateStyles(container, style);
+            styles[container.Children[0]] = new CssComputed { Width = 100, Height = 100 };
+            styles[container.Children[1]] = new CssComputed { Width = 100, Height = 50 };
+
+            var computer = CreateComputer(container, styles);
+            computer.Measure(container, new SKSize(400, 200));
+            computer.Arrange(container, new SKRect(0, 0, 400, 200));
+
+            var tall = computer.GetBox(container.Children[0]);
+            var shortBox = computer.GetBox(container.Children[1]);
+
+            Assert.Equal(0, tall.ContentBox.Top);
+            Assert.Equal(50, shortBox.ContentBox.Top);
+        }
+
+        [Fact]
+        public void AlignSelf_Baseline_OverridesContainerCrossAlignment()
+        {
+            var container = CreateFlexContainer(2);
+            var style = new CssComputed
+            {
+                Display = "flex",
+                FlexDirection = "row",
+                AlignItems = "flex-end",
+                Width = 400,
+                Height = 200
+            };
+
+            var styles = CreateStyles(container, style);
+            styles[container.Children[0]] = new CssComputed { Width = 100, Height = 100, AlignSelf = "baseline" };
+            styles[container.Children[1]] = new CssComputed { Width = 100, Height = 50, AlignSelf = "baseline" };
+
+            var computer = CreateComputer(container, styles);
+            computer.Measure(container, new SKSize(400, 200));
+            computer.Arrange(container, new SKRect(0, 0, 400, 200));
+
+            var tall = computer.GetBox(container.Children[0]);
+            var shortBox = computer.GetBox(container.Children[1]);
+
+            Assert.Equal(0, tall.ContentBox.Top);
+            Assert.Equal(50, shortBox.ContentBox.Top);
+        }
+
+        [Fact]
         public void AlignItems_Stretch()
         {
             // Container height 600px. Item height auto.
