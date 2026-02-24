@@ -123,6 +123,12 @@ namespace FenBrowser.FenEngine.Core.Interfaces
         /// Whether strict mode is enabled
         /// </summary>
         bool StrictMode { get; set; }
+
+        /// <summary>
+        /// Gets the layout engine from the active browser host, if available.
+        /// </summary>
+        /// <returns>The layout engine or null</returns>
+        FenBrowser.FenEngine.Rendering.Core.ILayoutEngine GetLayoutEngine() => null;
     }
 }
 

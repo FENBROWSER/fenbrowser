@@ -15,9 +15,19 @@ namespace FenBrowser.FenEngine.Core.Interfaces
         FenValue Get(string key, IExecutionContext context = null);
 
         /// <summary>
+        /// Get a property value with a specific receiver (for ES6 getters)
+        /// </summary>
+        FenValue GetWithReceiver(string key, FenValue receiver, IExecutionContext context = null) => Get(key, context);
+
+        /// <summary>
         /// Set a property value
         /// </summary>
         void Set(string key, FenValue value, IExecutionContext context = null);
+
+        /// <summary>
+        /// Set a property value with a specific receiver (for ES6 setters)
+        /// </summary>
+        void SetWithReceiver(string key, FenValue value, FenValue receiver, IExecutionContext context = null) => Set(key, value, context);
 
         /// <summary>
         /// Check if object has a property
