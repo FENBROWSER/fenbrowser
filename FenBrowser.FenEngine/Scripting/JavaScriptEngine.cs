@@ -93,7 +93,9 @@ namespace FenBrowser.FenEngine.Scripting
         private void InitRuntime()
         {
             _ctx = _ctx ?? new JsContext();
-            var permissions = new PermissionManager(JsPermissions.StandardWeb);
+            // Eval is granted by default for browser contexts (eval is valid JS).
+            // CSP enforcement in BrowserApi will revoke it when 'unsafe-eval' is absent from script-src.
+            var permissions = new PermissionManager(JsPermissions.StandardWeb | JsPermissions.Eval);
             
             // Wire up the permission handler
             permissions.PermissionRequestedHandler = async (origin, perm) =>
