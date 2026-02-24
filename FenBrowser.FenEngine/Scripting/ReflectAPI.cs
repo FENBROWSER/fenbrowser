@@ -150,6 +150,8 @@ namespace FenBrowser.FenEngine.Scripting
             public void PopCallFrame() { }
             public void CheckCallStackLimit() { }
             public void CheckExecutionTimeLimit() { }
+            
+            public FenBrowser.FenEngine.Rendering.Core.ILayoutEngine GetLayoutEngine() => null;
         }
     }
 }
