@@ -1,4 +1,5 @@
 using SkiaSharp;
+using FenBrowser.Host.ProcessIsolation;
 
 namespace FenBrowser.Host.Tabs;
 
@@ -13,7 +14,38 @@ public class TabManager
     private readonly Stack<BrowserTab> _closedTabs = new();
     
     private static TabManager _instance;
-    public static TabManager Instance => _instance ??= new TabManager();
+    public static TabManager Instance 
+    {
+        get
+        {
+            if (_instance == null)
+            {
+                _instance = new TabManager();
+                _instance.Initialize();
+            }
+            return _instance;
+        }
+    }
+    
+    // Wire up crash events
+    private void Initialize()
+    {
+        if (ProcessIsolationRuntime.Current != null)
+        {
+            ProcessIsolationRuntime.Current.RendererCrashed += OnRendererCrashed;
+        }
+    }
+
+    private void OnRendererCrashed(int tabId, string reason)
+    {
+        var tab = _tabs.FirstOrDefault(t => t.Id == tabId);
+        if (tab != null)
+        {
+            tab.NotifyCrashed(reason);
+            // Optionally force UI refresh
+            ActiveTabChanged?.Invoke(ActiveTab);
+        }
+    }
     
     /// <summary>
     /// All open tabs.

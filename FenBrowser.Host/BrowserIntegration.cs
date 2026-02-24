@@ -81,8 +81,11 @@ public class BrowserIntegration
     // --- Scroll Physics ---
     private readonly ScrollPhysics _scrollPhysics = new();
     
-    public BrowserIntegration()
+    public FenBrowser.Host.Tabs.BrowserTab OwnerTab { get; }
+    
+    public BrowserIntegration(FenBrowser.Host.Tabs.BrowserTab ownerTab = null)
     {
+        OwnerTab = ownerTab;
         _browser = new BrowserHost();
         _renderer = new SkiaDomRenderer();
 
@@ -113,6 +116,8 @@ public class BrowserIntegration
         
         _browser.RepaintReady += (s, e) =>
         {
+            if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true) return;
+
             // CRITICAL FIX: Sync DOM immediately when RenderAsync fires RepaintReady
             _root = _browser.GetDomRoot();
             _styles = _browser.ComputedStyles;
@@ -174,6 +179,29 @@ public class BrowserIntegration
             }
             catch {}
         }, null, 1000, 500);
+
+        if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current != null)
+        {
+            FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.FrameReceived += OnFrameReceivedFromRenderer;
+        }
+
+        // Wire CSS animation/transition engine → repaint loop.
+        // CssAnimationEngine runs a 16ms timer that interpolates values but never signals
+        // the engine thread on its own. Subscribe here so each animation tick wakes the
+        // engine loop and the interpolated frame is actually rendered.
+        CssAnimationEngine.Instance.OnAnimationFrame += _ =>
+        {
+            _needsRepaint = true;
+            _wakeEvent.Set();
+        };
+    }
+
+    private void OnFrameReceivedFromRenderer(int tabId, FenBrowser.Host.ProcessIsolation.RendererFrameReadyPayload payload)
+    {
+        if (OwnerTab != null && OwnerTab.Id != tabId) return;
+
+        _needsRepaint = true;
+        NeedsRepaint?.Invoke();
     }
 
     public void HighlightElement(Element? element)
@@ -243,6 +271,12 @@ public class BrowserIntegration
                 try { action(); }
                 catch (Exception ex) { FenLogger.Error($"[EngineLoop] Action error: {ex.Message}", LogCategory.General); }
             }
+
+            if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
+            {
+                _wakeEvent.WaitOne(100);
+                continue;
+            }
             
             // 2. Pump JS Event Loop (Tasks & Microtasks)
             // Execute one slice of work per frame tick to keep UI responsive
@@ -281,35 +315,34 @@ public class BrowserIntegration
                     // Debug: Log synced state
                     FenLogger.Info($"[EngineLoop] After sync: Root={(_root != null ? _root.TagName : "NULL")}, Styles={(_styles != null ? _styles.Count.ToString() : "NULL")}", LogCategory.Rendering);
                     
-                    // CRITICAL FIX: Skip layout if CSS styles not yet attached to THIS DOM
-                    // Use root.ComputedStyle as the check (set by CSS cascade on this DOM)
-                    // BUT don't block forever - allow render after timeout
+                    // PERF: Skip RecordFrame while CSS cascade hasn't produced any styles yet.
+                    // Running layout on an unstyled DOM wastes CPU and delays the first styled paint.
+                    // Instead, wait for up to 60 seconds; after that fall through to show a blank.
                     if (!_hasFirstStyledRender && _root != null)
                     {
-                        // Update styles reference in case engine created a new dictionary
                         _styles = _browser.ComputedStyles;
-                        
+
                         if (_styles == null || _styles.Count == 0)
                         {
-                            // Check if we've been waiting too long
                             var elapsed = DateTime.Now - _lastNavigationTime;
-                            if (elapsed.TotalMilliseconds < 5000)
+                            if (elapsed.TotalMilliseconds < 60000)
                             {
-                                FenLogger.Debug($"[EngineLoop] Styles not ready ({_styles?.Count ?? 0}). Proceeding with unstyled layout. ({elapsed.TotalMilliseconds:F0}ms)", LogCategory.Rendering);
-                                // Schedule ONE more repaint after a delay, not a continuous spin.
-                                // The wake event will fire when styles arrive or JS enqueues work.
+                                // CSS still loading — skip this frame entirely; wake again in 100ms
+                                FenLogger.Debug($"[EngineLoop] Waiting for CSS styles ({elapsed.TotalMilliseconds:F0}ms)", LogCategory.Rendering);
+                                _wakeEvent.WaitOne(100);
+                                continue;
                             }
                             else
                             {
-                                FenLogger.Warn($"[EngineLoop] TIMEOUT: Allowing unstyled layout after {elapsed.TotalMilliseconds:F0}ms. Styles still null/empty.", LogCategory.Rendering);
+                                FenLogger.Warn($"[EngineLoop] CSS timeout after {elapsed.TotalMilliseconds:F0}ms — rendering unstyled.", LogCategory.Rendering);
                             }
                         }
                     }
                     if (_root != null && _root.ComputedStyle != null)
                     {
-                        _hasFirstStyledRender = true; // Mark that we now have styles attached to this DOM
+                        _hasFirstStyledRender = true;
                     }
-                    
+
                     lock (_rendererLock)
                     {
                         RecordFrame(_lastViewportSize);
@@ -366,7 +399,8 @@ public class BrowserIntegration
             !url.StartsWith("file://", StringComparison.OrdinalIgnoreCase) &&
             !url.StartsWith("data:", StringComparison.OrdinalIgnoreCase) &&
             !url.StartsWith("fen://", StringComparison.OrdinalIgnoreCase) &&
-            !url.StartsWith("view-source:", StringComparison.OrdinalIgnoreCase))
+            !url.StartsWith("view-source:", StringComparison.OrdinalIgnoreCase) &&
+            !url.StartsWith("about:", StringComparison.OrdinalIgnoreCase))
         {
             // Check for local file path (e.g. C:\... or /...)
             bool isLocalPath = (url.Length >= 2 && url[1] == ':') ||
@@ -429,6 +463,15 @@ public class BrowserIntegration
 
         try
         {
+            if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
+            {
+                if (OwnerTab != null)
+                {
+                    FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.OnNavigationRequested(OwnerTab, url, isUserInput);
+                }
+                return;
+            }
+
             if (isUserInput)
             {
                 await _browser.NavigateUserInputAsync(url);
@@ -1012,6 +1055,22 @@ public class BrowserIntegration
     {
         var result = PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
         var (docX, docY) = TranslateWindowToDocument(windowX, windowY, viewportOffsetX, viewportOffsetY);
+
+        if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
+        {
+            if (OwnerTab != null)
+            {
+                var evt = new FenBrowser.Host.ProcessIsolation.RendererInputEvent 
+                { 
+                    Type = FenBrowser.Host.ProcessIsolation.RendererInputEventType.MouseMove, 
+                    X = docX, 
+                    Y = docY 
+                };
+                FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.OnInputEvent(OwnerTab, evt);
+            }
+            return result;
+        }
+
         _browser.OnMouseMove(docX, docY);
         return result;
     }
@@ -1071,6 +1130,23 @@ public class BrowserIntegration
     {
         var (docX, docY) = TranslateWindowToDocument(windowX, windowY, viewportOffsetX, viewportOffsetY);
         var result = PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
+        
+        if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
+        {
+            if (OwnerTab != null)
+            {
+                var evt = new FenBrowser.Host.ProcessIsolation.RendererInputEvent 
+                { 
+                    Type = FenBrowser.Host.ProcessIsolation.RendererInputEventType.MouseDown, 
+                    X = docX, 
+                    Y = docY, 
+                    Button = button 
+                };
+                FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.OnInputEvent(OwnerTab, evt);
+            }
+            return result;
+        }
+
         _browser.OnMouseDown(docX, docY, button);
         return result;
     }
@@ -1079,6 +1155,29 @@ public class BrowserIntegration
     {
         var (docX, docY) = TranslateWindowToDocument(windowX, windowY, viewportOffsetX, viewportOffsetY);
         var result = PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
+        
+        if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
+        {
+            if (OwnerTab != null)
+            {
+                var evt = new FenBrowser.Host.ProcessIsolation.RendererInputEvent 
+                { 
+                    Type = FenBrowser.Host.ProcessIsolation.RendererInputEventType.MouseUp, 
+                    X = docX, 
+                    Y = docY, 
+                    Button = button, 
+                    EmitClick = emitClick 
+                };
+                FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.OnInputEvent(OwnerTab, evt);
+            }
+            
+            if (emitClick && button == 0 && result.IsLink && !string.IsNullOrEmpty(result.Href))
+            {
+                LinkClicked?.Invoke(ResolveHrefForUi(result.Href));
+            }
+            return result;
+        }
+
         _browser.OnMouseUp(docX, docY, button);
         if (emitClick && button == 0)
         {

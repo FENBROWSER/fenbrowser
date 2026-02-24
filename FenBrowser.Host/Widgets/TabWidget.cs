@@ -2,6 +2,7 @@ using SkiaSharp;
 using FenBrowser.Host.Widgets;
 using FenBrowser.Host.Tabs;
 using FenBrowser.Host.Theme;
+using System;
 
 namespace FenBrowser.Host.Widgets;
 
@@ -14,12 +15,14 @@ public class TabWidget : Widget
     private readonly BrowserTab _tab;
     private bool _isHovered;
     private bool _isCloseHovered;
+    private long _lastSpinnerInvalidationMs;
     
     private const float TAB_WIDTH = 180;
     private const float TAB_HEIGHT = 32;
     private const float CLOSE_BUTTON_SIZE = 16;
     private const float FAVICON_SIZE = 16;
     private const float PADDING = 8;
+    private const int SPINNER_INVALIDATE_INTERVAL_MS = 16;
     
     /// <summary>
     /// The tab this widget represents.
@@ -48,7 +51,21 @@ public class TabWidget : Widget
         Name = tab.Title;
         // Initial bounds will be set by parent via Arrange
         
-        _tab.TitleChanged += t => Invalidate();
+        _tab.TitleChanged += OnTabStateChanged;
+        _tab.LoadingChanged += OnTabStateChanged;
+        _tab.NeedsRepaint += OnTabStateChanged;
+    }
+
+    public void Detach()
+    {
+        _tab.TitleChanged -= OnTabStateChanged;
+        _tab.LoadingChanged -= OnTabStateChanged;
+        _tab.NeedsRepaint -= OnTabStateChanged;
+    }
+
+    private void OnTabStateChanged(BrowserTab _)
+    {
+        Invalidate();
     }
     
     protected override SKSize OnMeasure(SKSize availableSpace)
@@ -199,9 +216,24 @@ public class TabWidget : Widget
                 Style = SKPaintStyle.Stroke,
                 StrokeWidth = 2
             };
+
+            long nowMs = Environment.TickCount64;
+            float spinnerAngle = (float)((nowMs % 1000) / 1000.0 * 360.0);
+
             // Half-circle for "spinner" feel
             canvas.DrawArc(new SKRect(faviconX, faviconY, faviconX + FAVICON_SIZE, faviconY + FAVICON_SIZE), 
-                           (float)(DateTime.Now.Millisecond / 1000.0 * 360), 270, false, loadPaint);
+                           spinnerAngle, 270, false, loadPaint);
+
+            // Keep spinner animating even with no external mouse/input invalidations.
+            if (nowMs - _lastSpinnerInvalidationMs >= SPINNER_INVALIDATE_INTERVAL_MS)
+            {
+                _lastSpinnerInvalidationMs = nowMs;
+                Invalidate(new SKRect(faviconX, faviconY, faviconX + FAVICON_SIZE, faviconY + FAVICON_SIZE));
+            }
+        }
+        else
+        {
+            _lastSpinnerInvalidationMs = 0;
         }
     }
     

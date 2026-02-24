@@ -18,5 +18,11 @@ namespace FenBrowser.Host.ProcessIsolation
         void OnFrameRequested(BrowserTab tab, float viewportWidth, float viewportHeight);
         void OnTabClosed(BrowserTab tab);
         void Shutdown();
+
+        // Server-to-Host events for pushing back state
+        event Action<int, RendererFrameReadyPayload> FrameReceived;
+        
+        // Fired when the renderer crashes and cannot be automatically restarted
+        event Action<int, string> RendererCrashed;
     }
 }
