@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core;
@@ -26,6 +28,8 @@ namespace FenBrowser.FenEngine.Workers
         private readonly Func<Uri, Task<string>> _scriptFetcher;
         private readonly Func<Uri, bool> _scriptUriAllowed;
         private readonly bool _isServiceWorker;
+        private readonly Dictionary<string, string> _prefetchedScriptCache = new(StringComparer.OrdinalIgnoreCase);
+        private readonly object _prefetchedScriptCacheLock = new();
         private readonly TaskQueue _taskQueue;
         private readonly MicrotaskQueue _microtaskQueue;
         private readonly CancellationTokenSource _cts;
@@ -35,6 +39,13 @@ namespace FenBrowser.FenEngine.Workers
         private bool _isDisposed;
         private FenRuntime _runtime;
         private WorkerGlobalScope _globalScope;
+        private const int MaxImportScriptsPrefetchDepth = 32;
+        private static readonly Regex ImportScriptsCallRegex = new(
+            @"\bimportScripts\s*\((?<args>[^)]*)\)",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant);
+        private static readonly Regex ImportScriptsLiteralUrlRegex = new(
+            "['\"](?<url>[^'\"]+)['\"]",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
         /// <summary>
         /// Event fired when the worker sends a message to the main thread
@@ -293,6 +304,17 @@ namespace FenBrowser.FenEngine.Workers
         }
 
         /// <summary>
+        /// Schedule a task in the worker task queue (e.g. timer callbacks).
+        /// Per HTML spec, timer callbacks are tasks, not microtasks.
+        /// </summary>
+        internal void QueueTask(Action callback, string label = "timer")
+        {
+            if (_isDisposed || !_isRunning) return;
+            _taskQueue.Enqueue(callback, TaskSource.Timer, label);
+            _taskSignal.Set();
+        }
+
+        /// <summary>
         /// Placeholder for invoking the worker's onmessage handler
         /// In a real implementation, this would call into the JS engine
         /// </summary>
@@ -310,7 +332,9 @@ namespace FenBrowser.FenEngine.Workers
             if (fetcher == null)
                 throw new InvalidOperationException("Worker script fetcher is not configured");
 
-            return await fetcher(_resolvedScriptUri).ConfigureAwait(false);
+            var rootScript = await fetcher(_resolvedScriptUri).ConfigureAwait(false);
+            await PrefetchImportScriptsGraphAsync(_resolvedScriptUri, rootScript, new HashSet<string>(StringComparer.OrdinalIgnoreCase)).ConfigureAwait(false);
+            return rootScript;
         }
 
         internal void ImportScripts(params string[] scriptUrls)
@@ -336,12 +360,92 @@ namespace FenBrowser.FenEngine.Workers
                 if (_scriptUriAllowed != null && !_scriptUriAllowed(target))
                     throw new UnauthorizedAccessException($"importScripts blocked by policy: {target}");
 
-                var content = _scriptFetcher(target).GetAwaiter().GetResult();
+                if (!TryGetPrefetchedScript(target, out var content))
+                    throw new InvalidOperationException($"importScripts target was not prefetched: {target}");
+
                 if (string.IsNullOrWhiteSpace(content))
                     continue;
 
                 _runtime.ExecuteSimple(content);
                 FenLogger.Debug($"[WorkerRuntime] importScripts executed: {target}", LogCategory.JavaScript);
+            }
+        }
+
+        private void CachePrefetchedScript(Uri target, string content)
+        {
+            if (target == null || string.IsNullOrWhiteSpace(content))
+                return;
+
+            lock (_prefetchedScriptCacheLock)
+            {
+                _prefetchedScriptCache[target.AbsoluteUri] = content;
+            }
+        }
+
+        private bool TryGetPrefetchedScript(Uri target, out string content)
+        {
+            content = null;
+            if (target == null)
+                return false;
+
+            lock (_prefetchedScriptCacheLock)
+            {
+                return _prefetchedScriptCache.TryGetValue(target.AbsoluteUri, out content);
+            }
+        }
+
+        private IEnumerable<string> ExtractImportScriptsSpecifiers(string source)
+        {
+            if (string.IsNullOrWhiteSpace(source))
+                yield break;
+
+            foreach (Match call in ImportScriptsCallRegex.Matches(source))
+            {
+                var args = call.Groups["args"]?.Value;
+                if (string.IsNullOrWhiteSpace(args))
+                    continue;
+
+                foreach (Match url in ImportScriptsLiteralUrlRegex.Matches(args))
+                {
+                    var value = url.Groups["url"]?.Value;
+                    if (!string.IsNullOrWhiteSpace(value))
+                        yield return value.Trim();
+                }
+            }
+        }
+
+        private async Task PrefetchImportScriptsGraphAsync(Uri ownerScriptUri, string source, HashSet<string> visited, int depth = 0)
+        {
+            if (ownerScriptUri == null || string.IsNullOrWhiteSpace(source) || _scriptFetcher == null || visited == null)
+                return;
+
+            if (depth > MaxImportScriptsPrefetchDepth)
+            {
+                FenLogger.Warn($"[WorkerRuntime] importScripts prefetch depth limit reached: {ownerScriptUri}", LogCategory.JavaScript);
+                return;
+            }
+
+            foreach (var specifier in ExtractImportScriptsSpecifiers(source))
+            {
+                if (!Uri.TryCreate(ownerScriptUri, specifier, out var target))
+                    continue;
+
+                target = ResolveImportScriptUri(target.AbsoluteUri);
+                if (target == null)
+                    continue;
+
+                if (!visited.Add(target.AbsoluteUri))
+                    continue;
+
+                if (_scriptUriAllowed != null && !_scriptUriAllowed(target))
+                    continue;
+
+                var content = await _scriptFetcher(target).ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(content))
+                    continue;
+
+                CachePrefetchedScript(target, content);
+                await PrefetchImportScriptsGraphAsync(target, content, visited, depth + 1).ConfigureAwait(false);
             }
         }
 
