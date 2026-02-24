@@ -12,6 +12,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
     {
         private List<SKRect> _leftFloats = new List<SKRect>();
         private List<SKRect> _rightFloats = new List<SKRect>();
+        public bool HasFloats => _leftFloats.Count > 0 || _rightFloats.Count > 0;
 
         public void AddFloat(LayoutBox floatBox, bool isLeft)
         {
@@ -66,6 +67,32 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 foreach (var rect in _rightFloats) if (rect.Bottom > maxY) maxY = rect.Bottom;
             }
             return maxY;
+        }
+
+        /// <summary>
+        /// Returns the next Y band where float occupancy may change.
+        /// </summary>
+        public float GetNextVerticalPosition(float currentY)
+        {
+            float next = float.PositiveInfinity;
+
+            foreach (var rect in _leftFloats)
+            {
+                if (rect.Bottom > currentY && rect.Bottom < next)
+                {
+                    next = rect.Bottom;
+                }
+            }
+
+            foreach (var rect in _rightFloats)
+            {
+                if (rect.Bottom > currentY && rect.Bottom < next)
+                {
+                    next = rect.Bottom;
+                }
+            }
+
+            return float.IsInfinity(next) ? currentY : next;
         }
     }
 }

@@ -16,6 +16,11 @@ namespace FenBrowser.FenEngine.Layout
     {
         public delegate LayoutMetrics MeasureFunc(Node node, SKSize availableSize, int depth);
 
+        private static bool TagEquals(Element element, string tagName)
+        {
+            return string.Equals(element?.TagName, tagName, StringComparison.OrdinalIgnoreCase);
+        }
+
         public class TableCellSlot : IDisposable
         {
             public Element Element;
@@ -257,7 +262,10 @@ namespace FenBrowser.FenEngine.Layout
                 if (!occupied.ContainsKey(r)) occupied[r] = new HashSet<int>();
                 
                 int cOffset = 0;
-                var cells = tr.ChildNodes.OfType<Element>().Where(e => e.TagName == "TD" || e.TagName == "TH").ToList();
+                var cells = tr.ChildNodes
+                    .OfType<Element>()
+                    .Where(e => TagEquals(e, "TD") || TagEquals(e, "TH"))
+                    .ToList();
 
                 if (grid.Rows.Count <= r) grid.Rows.Add(new List<TableCellSlot>());
 
@@ -321,7 +329,6 @@ namespace FenBrowser.FenEngine.Layout
             {
                  // Use first row to define columns
                  var firstRow = grid.Rows[0];
-                 int colIdx = 0;
                  float allocated = 0;
                  int autoCols = 0;
                  // Track which columns are 'auto'
@@ -332,15 +339,16 @@ namespace FenBrowser.FenEngine.Layout
                      var cellStyle = styles.ContainsKey(slot.Element) ? styles[slot.Element] : null;
                      float w = 0;
                      if (cellStyle != null && cellStyle.Width.HasValue) w = (float)cellStyle.Width.Value;
+                     int startCol = slot.ColumnIndex;
                      
                      if (w > 0)
                      {
                          float perCol = w / slot.ColSpan;
                          for(int k=0; k<slot.ColSpan; k++) 
                          {
-                             if (colIdx + k < grid.ColumnCount) 
+                             if (startCol + k < grid.ColumnCount) 
                              {
-                                 grid.ColumnWidths[colIdx + k] = perCol;
+                                 grid.ColumnWidths[startCol + k] = Math.Max(grid.ColumnWidths[startCol + k], perCol);
                              }
                          }
                          allocated += w;
@@ -349,11 +357,10 @@ namespace FenBrowser.FenEngine.Layout
                      {
                          for(int k=0; k<slot.ColSpan; k++) 
                          {
-                             if (colIdx + k < grid.ColumnCount) isAutoCol[colIdx+k] = true;
+                             if (startCol + k < grid.ColumnCount) isAutoCol[startCol + k] = true;
                          }
                          autoCols += slot.ColSpan;
                      }
-                     colIdx += slot.ColSpan;
                  }
                  
                  // Distribute remainder to auto columns
@@ -376,9 +383,9 @@ namespace FenBrowser.FenEngine.Layout
             
             for (int r = 0; r < grid.Rows.Count; r++)
             {
-                int colIdx = 0;
                 foreach (var slot in grid.Rows[r])
                 {
+                    int startCol = slot.ColumnIndex;
                     // For min-width, we ideally need 'min-content'. Using 0 or minimal as proxy.
                     // For max-width, use infinite available space.
                     var metrics = measureNode(slot.Element, new SKSize(float.PositiveInfinity, float.PositiveInfinity), depth + 1);
@@ -386,13 +393,15 @@ namespace FenBrowser.FenEngine.Layout
                     
                     if (slot.ColSpan == 1)
                     {
-                        grid.ColumnWidths[colIdx] = Math.Max(grid.ColumnWidths[colIdx], slot.MaxWidth);
+                        if (startCol >= 0 && startCol < grid.ColumnWidths.Count)
+                        {
+                            grid.ColumnWidths[startCol] = Math.Max(grid.ColumnWidths[startCol], slot.MaxWidth);
+                        }
                     }
                     else
                     {
-                        spanningCells.Add((slot, colIdx));
+                        spanningCells.Add((slot, startCol));
                     }
-                    colIdx += slot.ColSpan;
                 }
             }
 
@@ -400,13 +409,27 @@ namespace FenBrowser.FenEngine.Layout
             foreach (var (slot, startCol) in spanningCells)
             {
                 float currentSpanWidth = 0;
-                for (int i = 0; i < slot.ColSpan; i++) currentSpanWidth += grid.ColumnWidths[startCol + i];
+                for (int i = 0; i < slot.ColSpan; i++)
+                {
+                    int col = startCol + i;
+                    if (col >= 0 && col < grid.ColumnWidths.Count)
+                    {
+                        currentSpanWidth += grid.ColumnWidths[col];
+                    }
+                }
 
                 if (currentSpanWidth < slot.MaxWidth)
                 {
                     float deficit = (slot.MaxWidth + 1.0f) - currentSpanWidth;
                     float addPerCol = deficit / slot.ColSpan;
-                    for (int i = 0; i < slot.ColSpan; i++) grid.ColumnWidths[startCol + i] += addPerCol;
+                    for (int i = 0; i < slot.ColSpan; i++)
+                    {
+                        int col = startCol + i;
+                        if (col >= 0 && col < grid.ColumnWidths.Count)
+                        {
+                            grid.ColumnWidths[col] += addPerCol;
+                        }
+                    }
                 }
             }
             
@@ -434,19 +457,59 @@ namespace FenBrowser.FenEngine.Layout
                     for(int i=0; i<grid.ColumnCount; i++) grid.ColumnWidths[i] = perCol;
                 }
             }
+
+            // Guardrail: columns that actually participate in the table grid must not collapse to 0.
+            // This keeps visible cells measurable/paintable even when upstream measurement returns 0.
+            var hasColumnCells = new bool[grid.ColumnCount];
+            foreach (var row in grid.Rows)
+            {
+                foreach (var slot in row)
+                {
+                    for (int i = 0; i < slot.ColSpan; i++)
+                    {
+                        int col = slot.ColumnIndex + i;
+                        if (col >= 0 && col < hasColumnCells.Length)
+                        {
+                            hasColumnCells[col] = true;
+                        }
+                    }
+                }
+            }
+
+            const float MinParticipatingColumnWidth = 10f;
+            for (int i = 0; i < grid.ColumnWidths.Count; i++)
+            {
+                if (hasColumnCells[i] && grid.ColumnWidths[i] <= 0f)
+                {
+                    grid.ColumnWidths[i] = MinParticipatingColumnWidth;
+                }
+            }
         }
 
         private static void MeasureRows(TableGridState grid, IReadOnlyDictionary<Node, CssComputed> styles, MeasureFunc measureNode, int depth)
         {
+            grid.RowHeights.Clear();
+            for (int i = 0; i < grid.Rows.Count; i++)
+            {
+                grid.RowHeights.Add(0f);
+            }
+
+            var spanningCells = new List<(int StartRow, TableCellSlot Slot, float RequiredHeight)>();
+
             for (int r = 0; r < grid.Rows.Count; r++)
             {
-                float maxRowHeight = 0;
-                int colIdx = 0;
                 foreach (var slot in grid.Rows[r])
                 {
                     // Calculate current spanning width
                     float spanWidth = 0;
-                    for (int i = 0; i < slot.ColSpan; i++) spanWidth += grid.ColumnWidths[colIdx + i];
+                    for (int i = 0; i < slot.ColSpan; i++)
+                    {
+                        int col = slot.ColumnIndex + i;
+                        if (col >= 0 && col < grid.ColumnWidths.Count)
+                        {
+                            spanWidth += grid.ColumnWidths[col];
+                        }
+                    }
 
                     // Measure height with fixed width
                     var metrics = measureNode(slot.Element, new SKSize(spanWidth, float.PositiveInfinity), depth + 1);
@@ -454,11 +517,48 @@ namespace FenBrowser.FenEngine.Layout
 
                     if (slot.RowSpan == 1)
                     {
-                        maxRowHeight = Math.Max(maxRowHeight, slot.CalculatedHeight);
+                        grid.RowHeights[r] = Math.Max(grid.RowHeights[r], slot.CalculatedHeight);
                     }
-                    colIdx += slot.ColSpan;
+                    else
+                    {
+                        spanningCells.Add((r, slot, slot.CalculatedHeight));
+                    }
                 }
-                grid.RowHeights.Add(Math.Max(maxRowHeight, 20)); // Ensure min height
+            }
+
+            // Minimum row-height floor for visible table rows.
+            for (int i = 0; i < grid.RowHeights.Count; i++)
+            {
+                grid.RowHeights[i] = Math.Max(grid.RowHeights[i], 20f);
+            }
+
+            // Distribute rowspan-required height across spanned rows.
+            foreach (var span in spanningCells)
+            {
+                int availableRows = grid.RowHeights.Count - span.StartRow;
+                if (availableRows <= 0)
+                {
+                    continue;
+                }
+
+                int spanRows = Math.Max(1, Math.Min(span.Slot.RowSpan, availableRows));
+                float currentSpanHeight = 0f;
+                for (int i = 0; i < spanRows; i++)
+                {
+                    currentSpanHeight += grid.RowHeights[span.StartRow + i];
+                }
+
+                if (currentSpanHeight >= span.RequiredHeight)
+                {
+                    continue;
+                }
+
+                float deficit = span.RequiredHeight - currentSpanHeight;
+                float addPerRow = deficit / spanRows;
+                for (int i = 0; i < spanRows; i++)
+                {
+                    grid.RowHeights[span.StartRow + i] += addPerRow;
+                }
             }
         }
 
@@ -467,10 +567,10 @@ namespace FenBrowser.FenEngine.Layout
             var trs = new List<Element>();
             foreach (var child in table.ChildNodes.OfType<Element>())
             {
-                if (child.TagName == "TR") trs.Add(child);
-                else if (child.TagName == "THEAD" || child.TagName == "TBODY" || child.TagName == "TFOOT")
+                if (TagEquals(child, "TR")) trs.Add(child);
+                else if (TagEquals(child, "THEAD") || TagEquals(child, "TBODY") || TagEquals(child, "TFOOT"))
                 {
-                    trs.AddRange(child.ChildNodes.OfType<Element>().Where(e => e.TagName == "TR"));
+                    trs.AddRange(child.ChildNodes.OfType<Element>().Where(e => TagEquals(e, "TR")));
                 }
             }
             return trs;

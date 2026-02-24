@@ -46,8 +46,37 @@ namespace FenBrowser.FenEngine.Layout
         
         public static MarginPair FromStyle(Thickness margin, string writingMode = "horizontal-tb")
         {
-             // This is a placeholder - usually we want only one side (top or bottom)
-             return new MarginPair();
+             string mode = (writingMode ?? "horizontal-tb").Trim().ToLowerInvariant();
+
+             double blockStart;
+             double blockEnd;
+
+             // Map block axis margins by writing mode.
+             // horizontal-tb: block axis is top -> bottom
+             // vertical-rl:   block axis is right -> left
+             // vertical-lr:   block axis is left -> right
+             switch (mode)
+             {
+                 case "vertical-rl":
+                 case "sideways-rl":
+                     blockStart = margin.Right;
+                     blockEnd = margin.Left;
+                     break;
+                 case "vertical-lr":
+                 case "sideways-lr":
+                     blockStart = margin.Left;
+                     blockEnd = margin.Right;
+                     break;
+                 default:
+                     blockStart = margin.Top;
+                     blockEnd = margin.Bottom;
+                     break;
+             }
+
+             var pair = new MarginPair();
+             pair.Combine((float)blockStart);
+             pair.Combine((float)blockEnd);
+             return pair;
         }
     }
 

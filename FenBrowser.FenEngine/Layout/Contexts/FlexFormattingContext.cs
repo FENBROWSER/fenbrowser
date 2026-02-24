@@ -116,7 +116,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             if (float.IsNaN(containerCrossSize)) containerCrossSize = 0;
 
             // Clamp auto/unspecified widths to the viewport to avoid runaway inline sizes
-            // that push flex-end content off-screen (e.g., Google header actions).
+            // that push flex-end content off-screen in dense action clusters.
             bool hasExplicitMain =
                 isRow
                     ? (style?.Width.HasValue == true || style?.WidthPercent.HasValue == true || !string.IsNullOrEmpty(style?.WidthExpression))
@@ -716,6 +716,33 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     if (afterAuto) autoMarginCount++;
                 }
 
+                float lineBaselineOffset = 0f;
+                bool lineHasBaselineAlignment = false;
+                if (isRow)
+                {
+                    foreach (var item in line)
+                    {
+                        string itemAlign = ResolveItemAlignment(item.ComputedStyle, alignItems);
+                        if (itemAlign != "baseline")
+                        {
+                            continue;
+                        }
+
+                        // Cross-axis auto margins take precedence over alignment.
+                        bool crossAutoStart = IsMarginAuto(item.ComputedStyle, "top");
+                        bool crossAutoEnd = IsMarginAuto(item.ComputedStyle, "bottom");
+                        if (crossAutoStart || crossAutoEnd)
+                        {
+                            continue;
+                        }
+
+                        lineHasBaselineAlignment = true;
+                        lineBaselineOffset = Math.Max(
+                            lineBaselineOffset,
+                            ResolveBaselineOffsetFromMarginTop(item));
+                    }
+                }
+
                 // justify-content: center and flex-end work even when remaining < 0
                 // (items overflow symmetrically for center, or from the start for flex-end)
                 if (justifyContent == "center")
@@ -789,8 +816,15 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                             y = crossStart + crossFree / 2;
                         else if (itemAlign == "flex-end" || itemAlign == "end")
                             y = crossStart + crossFree;
+                        else if (itemAlign == "baseline" && lineHasBaselineAlignment)
+                        {
+                            float itemBaselineOffset = ResolveBaselineOffsetFromMarginTop(item);
+                            y = crossStart + lineBaselineOffset - itemBaselineOffset;
+                        }
                         else if (itemAlign == "baseline")
-                            y = crossStart; // simplified baseline = flex-start
+                        {
+                            y = crossStart;
+                        }
                         else
                             y = crossStart; // flex-start / stretch
 
@@ -920,7 +954,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             {
                 // In intrinsic/probe passes (available width = infinity), auto-width flex items
                 // must not eagerly fill the containing block; that produces oversized bases and
-                // breaks shrink calculations for control clusters (Google search actions, etc.).
+                // breaks shrink calculations for control clusters.
                 width = hasExplicitWidth
                     ? Math.Max(0, available - (float)(margin.Horizontal + border.Horizontal + padding.Horizontal))
                     : 0f;
@@ -1099,14 +1133,6 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     {
                         width = 200f;
                     }
-                    else if (tag == "SVG" || tag == "CANVAS")
-                    {
-                        if (!TryGetLengthAttribute(el, "width", out width) || width <= 0) width = 24f;
-                    }
-                    else if (tag == "IMG")
-                    {
-                        if (!TryGetLengthAttribute(el, "width", out width) || width <= 0) width = 300f;
-                    }
                 }
 
                 if (height <= 0)
@@ -1127,19 +1153,32 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     {
                         height = 48f;
                     }
-                    else if (tag == "SVG" || tag == "CANVAS")
-                    {
-                        if (!TryGetLengthAttribute(el, "height", out height) || height <= 0) height = 24f;
-                    }
-                    else if (tag == "IMG")
-                    {
-                        if (!TryGetLengthAttribute(el, "height", out height) || height <= 0) height = 150f;
-                    }
+                }
+
+                if ((width <= 0 || height <= 0) && ReplacedElementSizing.IsReplacedElementTag(tag))
+                {
+                    float attrW = 0f;
+                    float attrH = 0f;
+                    ReplacedElementSizing.TryGetLengthAttribute(el, "width", out attrW);
+                    ReplacedElementSizing.TryGetLengthAttribute(el, "height", out attrH);
+
+                    var resolved = ReplacedElementSizing.ResolveReplacedSize(
+                        tag,
+                        box.ComputedStyle,
+                        new SKSize(box.Geometry.ContentBox.Width, box.Geometry.ContentBox.Height),
+                        0f,
+                        0f,
+                        attrW,
+                        attrH,
+                        constrainAutoToAvailableWidth: false);
+
+                    if (width <= 0) width = resolved.Width;
+                    if (height <= 0) height = resolved.Height;
                 }
             }
 
-            // Icon wrappers in Google-like UIs are often flex boxes with one replaced child.
-            // If CSS parsing misses class-applied heights, avoid collapsing these to 0x0.
+            // If a flex wrapper has a single replaced child and unresolved size,
+            // use a small non-zero fallback to prevent collapse.
             if ((width <= 0 || height <= 0) &&
                 string.Equals(box.ComputedStyle?.Display, "flex", StringComparison.OrdinalIgnoreCase) &&
                 box.Children.Count == 1 &&
@@ -1184,44 +1223,6 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             return marginBoxHeight;
         }
 
-        private static bool TryGetLengthAttribute(Element element, string attributeName, out float value)
-        {
-            value = 0f;
-            string raw = element.GetAttribute(attributeName);
-            if (string.IsNullOrWhiteSpace(raw))
-            {
-                return false;
-            }
-
-            raw = raw.Trim();
-            int numericChars = 0;
-            while (numericChars < raw.Length)
-            {
-                char ch = raw[numericChars];
-                if ((ch >= '0' && ch <= '9') || ch == '.' || ch == '-')
-                {
-                    numericChars++;
-                    continue;
-                }
-
-                break;
-            }
-
-            if (numericChars == 0)
-            {
-                return false;
-            }
-
-            string numeric = raw.Substring(0, numericChars);
-            if (!float.TryParse(numeric, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
-            {
-                return false;
-            }
-
-            value = Math.Max(0f, value);
-            return true;
-        }
-        
         private float ComputeFallbackCrossSize(List<LayoutBox> items, bool isRow, LayoutBox container)
         {
             float fallback = 0f;
@@ -1507,6 +1508,80 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return containerAlignItems;
 
             return alignSelf;
+        }
+
+        private static float ResolveBaselineOffsetFromMarginTop(LayoutBox item)
+        {
+            if (item?.Geometry == null)
+            {
+                return 0f;
+            }
+
+            float marginToContent = item.Geometry.ContentBox.Top - item.Geometry.MarginBox.Top;
+            if (!float.IsFinite(marginToContent) || marginToContent < 0f)
+            {
+                marginToContent = 0f;
+            }
+
+            float baseline = 0f;
+            bool hasTextBaseline = HasTextBackedBaseline(item);
+            if (hasTextBaseline)
+            {
+                baseline = item.Geometry.Baseline;
+                if (!float.IsFinite(baseline) || baseline <= 0f)
+                {
+                    baseline = item.Geometry.Ascent;
+                }
+
+                if (float.IsFinite(baseline) && baseline > 0f)
+                {
+                    float offset = marginToContent + baseline;
+                    float marginHeight = item.Geometry.MarginBox.Height;
+                    if (float.IsFinite(marginHeight) && marginHeight > 0f)
+                    {
+                        return Math.Min(marginHeight, Math.Max(0f, offset));
+                    }
+
+                    return Math.Max(0f, offset);
+                }
+            }
+
+            // For non-text flex items, synthesize baseline from the lower border edge.
+            float fallback = item.Geometry.BorderBox.Bottom - item.Geometry.MarginBox.Top;
+            if (float.IsFinite(fallback) && fallback > 0f)
+            {
+                return fallback;
+            }
+
+            fallback = item.Geometry.ContentBox.Bottom - item.Geometry.MarginBox.Top;
+            if (float.IsFinite(fallback) && fallback > 0f)
+            {
+                return fallback;
+            }
+
+            fallback = marginToContent + Math.Max(0f, item.Geometry.ContentBox.Height);
+            return float.IsFinite(fallback) && fallback > 0f ? fallback : 0f;
+        }
+
+        private static bool HasTextBackedBaseline(LayoutBox item)
+        {
+            if (item == null)
+            {
+                return false;
+            }
+
+            if (item is TextLayoutBox textLayoutBox)
+            {
+                return !string.IsNullOrWhiteSpace(textLayoutBox.TextContent);
+            }
+
+            if (item.SourceNode is Text textNode)
+            {
+                return !string.IsNullOrWhiteSpace(textNode.Data);
+            }
+
+            // Element-backed flex items synthesize baseline from border edge.
+            return false;
         }
 
         private static bool IsIgnorableFlexItem(LayoutBox box)

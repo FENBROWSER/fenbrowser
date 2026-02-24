@@ -1002,17 +1002,20 @@ namespace FenBrowser.FenEngine.Layout
                 }
                 else if (node is Element containerElem)
                 {
-                    if (containerElem.Children != null)
+                    var childNodes = containerElem.ChildNodes;
+                    if (childNodes != null)
                     {
-                        foreach (var child in containerElem.Children)
+                        foreach (var child in childNodes)
                         {
-                             ProcessNode(child, style, currentDepth + 1);
+                            ProcessNode(child, style, currentDepth + 1);
                         }
                     }
                 }
             }
 
-            var childrenToProcess = customChildrenSource ?? container.Children;
+            // Inline formatting must process all node types (including text nodes),
+            // not only element children.
+            var childrenToProcess = customChildrenSource ?? container.ChildNodes;
             if (childrenToProcess != null)
             {
                 foreach (var child in childrenToProcess)
