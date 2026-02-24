@@ -46,14 +46,35 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             else if (node is ExpressionStatement exprStmt)
             {
                 Visit(exprStmt.Expression);
+                Emit(OpCode.PopAccumulator);
             }
             else if (node is InfixExpression binExpr)
             {
-                // Push Left, Push Right, Execute Op
-                Visit(binExpr.Left);
-                Visit(binExpr.Right);
-                
-                switch (binExpr.Operator)
+                if (binExpr.Operator == "&&")
+                {
+                    Visit(binExpr.Left);
+                    Emit(OpCode.Dup);
+                    int jumpEnd = EmitJump(OpCode.JumpIfFalse);
+                    Emit(OpCode.Pop);
+                    Visit(binExpr.Right);
+                    PatchJump(jumpEnd);
+                }
+                else if (binExpr.Operator == "||")
+                {
+                    Visit(binExpr.Left);
+                    Emit(OpCode.Dup);
+                    int jumpEnd = EmitJump(OpCode.JumpIfTrue);
+                    Emit(OpCode.Pop);
+                    Visit(binExpr.Right);
+                    PatchJump(jumpEnd);
+                }
+                else
+                {
+                    // Push Left, Push Right, Execute Op
+                    Visit(binExpr.Left);
+                    Visit(binExpr.Right);
+                    
+                    switch (binExpr.Operator)
                 {
                     case "+": Emit(OpCode.Add); break;
                     case "-": Emit(OpCode.Subtract); break;
@@ -64,8 +85,15 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     case "===": Emit(OpCode.StrictEqual); break;
                     case "<": Emit(OpCode.LessThan); break;
                     case ">": Emit(OpCode.GreaterThan); break;
+                    case "&": Emit(OpCode.BitwiseAnd); break;
+                    case "|": Emit(OpCode.BitwiseOr); break;
+                    case "^": Emit(OpCode.BitwiseXor); break;
+                    case "<<": Emit(OpCode.LeftShift); break;
+                    case ">>": Emit(OpCode.RightShift); break;
+                    case ">>>": Emit(OpCode.UnsignedRightShift); break;
                     default:
                         throw new NotImplementedException($"Compiler: Binary operator '{binExpr.Operator}' not supported in Phase 1.");
+                    }
                 }
             }
             else if (node is IntegerLiteral intLit)
@@ -91,6 +119,55 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 Emit(OpCode.LoadVar);
                 EmitInt32(idx);
             }
+            else if (node is ArrayLiteral arrayLit)
+            {
+                foreach (var el in arrayLit.Elements)
+                {
+                    Visit(el);
+                }
+                Emit(OpCode.MakeArray);
+                EmitInt32(arrayLit.Elements.Count);
+            }
+            else if (node is ObjectLiteral objLit)
+            {
+                foreach (var prop in objLit.Pairs)
+                {
+                    int idx = AddConstant(FenValue.FromString(prop.Key));
+                    Emit(OpCode.LoadConst);
+                    EmitInt32(idx);
+                    
+                    Visit(prop.Value);
+                }
+                Emit(OpCode.MakeObject);
+                EmitInt32(objLit.Pairs.Count);
+            }
+            else if (node is MemberExpression memberExpr)
+            {
+                Visit(memberExpr.Object);
+                int idx = AddConstant(FenValue.FromString(memberExpr.Property));
+                Emit(OpCode.LoadConst);
+                EmitInt32(idx);
+                Emit(OpCode.LoadProp);
+            }
+            else if (node is IndexExpression indexExpr)
+            {
+                Visit(indexExpr.Left);
+                Visit(indexExpr.Index);
+                Emit(OpCode.LoadProp);
+            }
+            else if (node is PrefixExpression prefixExpr)
+            {
+                Visit(prefixExpr.Right);
+                switch (prefixExpr.Operator)
+                {
+                    case "-": Emit(OpCode.Negate); break;
+                    case "!": Emit(OpCode.LogicalNot); break;
+                    case "~": Emit(OpCode.BitwiseNot); break;
+                    case "typeof": Emit(OpCode.Typeof); break;
+                    default:
+                        throw new NotImplementedException($"Compiler: Prefix operator '{prefixExpr.Operator}' not supported.");
+                }
+            }
             else if (node is AssignmentExpression assign)
             {
                 if (assign.Left is Identifier idNode)
@@ -99,6 +176,22 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     int idx = AddConstant(FenValue.FromString(idNode.Value));
                     Emit(OpCode.StoreVar);
                     EmitInt32(idx);
+                }
+                else if (assign.Left is MemberExpression assignMember)
+                {
+                    Visit(assignMember.Object);
+                    int idx = AddConstant(FenValue.FromString(assignMember.Property));
+                    Emit(OpCode.LoadConst);
+                    EmitInt32(idx);
+                    Visit(assign.Right);
+                    Emit(OpCode.StoreProp);
+                }
+                else if (assign.Left is IndexExpression assignIndex)
+                {
+                    Visit(assignIndex.Left);
+                    Visit(assignIndex.Index);
+                    Visit(assign.Right);
+                    Emit(OpCode.StoreProp);
                 }
                 else
                 {
@@ -181,9 +274,168 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     PatchJump(jumpIfFalseOffset);
                 }
             }
+            else if (node is ForInStatement forInStmt)
+            {
+                Visit(forInStmt.Object);
+                Emit(OpCode.MakeKeysIterator);
+                
+                int loopStart = _instructions.Count;
+                Emit(OpCode.Dup);
+                Emit(OpCode.IteratorMoveNext);
+                int jumpIfFalseOffset = EmitJump(OpCode.JumpIfFalse);
+                
+                Emit(OpCode.Dup);
+                Emit(OpCode.IteratorCurrent);
+                
+                if (forInStmt.Variable != null)
+                {
+                    int varIdx = AddConstant(FenValue.FromString(forInStmt.Variable.Value));
+                    Emit(OpCode.StoreVar);
+                    EmitInt32(varIdx);
+                }
+                Emit(OpCode.Pop); // pop the assigned/yielded key
+                
+                Visit(forInStmt.Body);
+                Emit(OpCode.Jump);
+                EmitInt32(loopStart);
+                
+                PatchJump(jumpIfFalseOffset);
+                Emit(OpCode.Pop); // Pop iterator
+            }
+            else if (node is ForOfStatement forOfStmt)
+            {
+                Visit(forOfStmt.Iterable);
+                Emit(OpCode.MakeValuesIterator);
+                
+                int loopStart = _instructions.Count;
+                Emit(OpCode.Dup);
+                Emit(OpCode.IteratorMoveNext);
+                int jumpIfFalseOffset = EmitJump(OpCode.JumpIfFalse);
+                
+                Emit(OpCode.Dup);
+                Emit(OpCode.IteratorCurrent);
+                
+                if (forOfStmt.Variable != null)
+                {
+                    int varIdx = AddConstant(FenValue.FromString(forOfStmt.Variable.Value));
+                    Emit(OpCode.StoreVar);
+                    EmitInt32(varIdx);
+                }
+                Emit(OpCode.Pop); // pop the assigned/yielded value
+                
+                Visit(forOfStmt.Body);
+                Emit(OpCode.Jump);
+                EmitInt32(loopStart);
+                
+                PatchJump(jumpIfFalseOffset);
+                Emit(OpCode.Pop); // Pop iterator
+            }
+            else if (node is FunctionLiteral funcLit)
+            {
+                var funcCompiler = new BytecodeCompiler();
+                var compiledBlock = funcCompiler.Compile(funcLit.Body);
+                
+                var templateFunc = new FenFunction(funcLit.Parameters, compiledBlock, null);
+                int idx = AddConstant(FenValue.FromFunction(templateFunc));
+                
+                Emit(OpCode.MakeClosure);
+                EmitInt32(idx);
+            }
+            else if (node is FunctionDeclarationStatement funcDecl)
+            {
+                var funcCompiler = new BytecodeCompiler();
+                var compiledBlock = funcCompiler.Compile(funcDecl.Function.Body);
+                
+                var templateFunc = new FenFunction(funcDecl.Function.Parameters, compiledBlock, null);
+                int funcIdx = AddConstant(FenValue.FromFunction(templateFunc));
+                
+                Emit(OpCode.MakeClosure);
+                EmitInt32(funcIdx);
+                
+                if (funcDecl.Function.Name != null)
+                {
+                    int nameIdx = AddConstant(FenValue.FromString(funcDecl.Function.Name));
+                    Emit(OpCode.StoreVar);
+                    EmitInt32(nameIdx);
+                }
+            }
+            else if (node is ReturnStatement retStmt)
+            {
+                if (retStmt.ReturnValue != null)
+                {
+                    Visit(retStmt.ReturnValue);
+                }
+                else
+                {
+                    Emit(OpCode.LoadUndefined);
+                }
+                Emit(OpCode.Return);
+            }
+            else if (node is ThrowStatement throwStmt)
+            {
+                Visit(throwStmt.Value);
+                Emit(OpCode.Throw);
+            }
+            else if (node is ThrowExpression throwExpr)
+            {
+                Visit(throwExpr.Value);
+                Emit(OpCode.Throw);
+            }
+            else if (node is TryStatement tryStmt)
+            {
+                Emit(OpCode.PushExceptionHandler);
+                int catchOffsetIndex = _instructions.Count;
+                EmitInt32(0);
+                int finallyOffsetIndex = _instructions.Count;
+                EmitInt32(-1); // finally not fully supported in VM yet
+
+                Visit(tryStmt.Block);
+                Emit(OpCode.PopExceptionHandler);
+                
+                int jumpOverCatch = EmitJump(OpCode.Jump);
+                
+                int catchStart = _instructions.Count;
+                if (tryStmt.CatchBlock != null)
+                {
+                    byte[] catchBytes = BitConverter.GetBytes(catchStart);
+                    for (int i=0; i<4; i++) _instructions[catchOffsetIndex+i] = catchBytes[i];
+                    
+                    if (tryStmt.CatchParameter != null)
+                    {
+                        int varIdx = AddConstant(FenValue.FromString(tryStmt.CatchParameter.Value));
+                        Emit(OpCode.StoreVar);
+                        EmitInt32(varIdx);
+                    }
+                    Emit(OpCode.Pop); // Pop exception value
+                    
+                    Visit(tryStmt.CatchBlock);
+                }
+                else
+                {
+                    byte[] cbytes = BitConverter.GetBytes(-1);
+                    for(int i=0; i<4; i++) _instructions[catchOffsetIndex+i] = cbytes[i];
+                }
+                
+                PatchJump(jumpOverCatch);
+                
+                if (tryStmt.FinallyBlock != null)
+                {
+                    Visit(tryStmt.FinallyBlock);
+                }
+            }
+            else if (node is CallExpression callExpr)
+            {
+                Visit(callExpr.Function);
+                foreach (var arg in callExpr.Arguments)
+                {
+                    Visit(arg);
+                }
+                Emit(OpCode.Call);
+                EmitInt32(callExpr.Arguments.Count);
+            }
             else
             {
-                throw new NotImplementedException($"Compiler: Node type {node.GetType().Name} not supported in Bytecode Phase 2.");
+                throw new NotImplementedException($"Compiler: Node type {node.GetType().Name} not supported in Bytecode Phase.");
             }
         }
 

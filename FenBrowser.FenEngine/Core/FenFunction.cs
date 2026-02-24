@@ -11,7 +11,7 @@ namespace FenBrowser.FenEngine.Core
     /// </summary>
     public class FenFunction : FenObject
     {
-        public string Name { get; }
+        public string Name { get; set; }
         public string Source { get; set; } // ES2019: Store original source code
         public Func<FenValue[], FenValue, FenValue> NativeImplementation { get; }
         public bool IsNative { get; }
@@ -27,6 +27,7 @@ namespace FenBrowser.FenEngine.Core
 
         public List<Identifier> Parameters { get; }
         public AstNode Body { get; }
+        public Bytecode.CodeBlock BytecodeBlock { get; set; }
         public FenEnvironment Env { get; }
         public FenObject Prototype { get; set; }
         
@@ -60,6 +61,17 @@ namespace FenBrowser.FenEngine.Core
             Env = env;
             IsNative = false;
             Name = "anonymous";
+            if (DefaultFunctionPrototype != null && !ReferenceEquals(DefaultFunctionPrototype, this))
+                SetPrototype(DefaultFunctionPrototype);
+        }
+
+        public FenFunction(List<Identifier> parameters, Bytecode.CodeBlock bytecodeBlock, FenEnvironment env)
+        {
+            Parameters = parameters;
+            BytecodeBlock = bytecodeBlock;
+            Env = env;
+            IsNative = false;
+            Name = "anonymous_bytecode";
             if (DefaultFunctionPrototype != null && !ReferenceEquals(DefaultFunctionPrototype, this))
                 SetPrototype(DefaultFunctionPrototype);
         }

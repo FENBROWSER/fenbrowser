@@ -7,6 +7,20 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
     /// A lightweight, heap-allocated frame for the Virtual Machine.
     /// Prevents CLR StackOverflowException by managing the AST depth manually.
     /// </summary>
+    public struct ExceptionHandler
+    {
+        public int CatchOffset { get; }
+        public int FinallyOffset { get; }
+        public int StackBase { get; }
+
+        public ExceptionHandler(int catchOffset, int finallyOffset, int stackBase)
+        {
+            CatchOffset = catchOffset;
+            FinallyOffset = finallyOffset;
+            StackBase = stackBase;
+        }
+    }
+
     public class CallFrame
     {
         public CodeBlock Block { get; }
@@ -26,12 +40,15 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         /// </summary>
         public int StackBase { get; }
 
+        public Stack<ExceptionHandler> ExceptionHandlers { get; }
+
         public CallFrame(CodeBlock block, FenEnvironment env, int stackBase)
         {
             Block = block;
             Environment = env;
             StackBase = stackBase;
             IP = 0;
+            ExceptionHandlers = new Stack<ExceptionHandler>();
         }
     }
 }

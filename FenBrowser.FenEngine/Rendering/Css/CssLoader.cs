@@ -312,12 +312,15 @@ namespace FenBrowser.FenEngine.Rendering
                     continue;
                 }
                 
-                string href = link.GetAttribute("href"); 
-                if (string.IsNullOrWhiteSpace(href)) 
+                string href = link.GetAttribute("href");
+                if (string.IsNullOrWhiteSpace(href))
                 {
                     DebugLog(@"css_debug_v2.txt", "[LINK] SKIP: Link has no href\r\n");
                     continue;
                 }
+
+                // SRI — capture integrity attribute before the async closure
+                string sriIntegrity = link.GetAttribute("integrity");
                 
                 DebugLog(@"css_debug_v2.txt", $"[LINK] Found stylesheet href='{href}'\r\n");
 
@@ -358,6 +361,12 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         var css = await fetchExternalCssAsync(abs).ConfigureAwait(false);
                         /* [PERF-REMOVED] */
+                        // SRI check — if the link has an integrity attribute, verify before applying
+                        if (!string.IsNullOrWhiteSpace(css) && !VerifySriIntegrity(css, sriIntegrity))
+                        {
+                            Log(log, $"[CssLoader] [SRI] Blocked stylesheet (hash mismatch): {abs}");
+                            return; // Drop this stylesheet — integrity check failed
+                        }
                         // Limit CSS size to prevent crashes on massive stylesheets (GitHub, etc.)
                         const int MAX_CSS_SIZE = 2_000_000; // 2MB per stylesheet
                         if (!string.IsNullOrWhiteSpace(css) && css.Length <= MAX_CSS_SIZE)
@@ -5453,15 +5462,56 @@ private static double? ExtractPx(string text, string prop)
     {
         if (string.IsNullOrWhiteSpace(val)) return null;
         val = val.Trim();
-        if (val.EndsWith("px", StringComparison.OrdinalIgnoreCase)) 
+        if (val.EndsWith("px", StringComparison.OrdinalIgnoreCase))
         {
              if (double.TryParse(val.Substring(0, val.Length - 2), out double px)) return px;
         }
-        if (val.All(char.IsDigit)) 
+        if (val.All(char.IsDigit))
         {
              if (double.TryParse(val, out double d)) return d;
         }
-        return 0; 
+        return 0;
+    }
+
+    /// <summary>
+    /// Verifies Subresource Integrity (SRI) for fetched content.
+    /// Returns true if integrity is absent (no check needed) or if at least one hash token matches.
+    /// Returns false if one or more tokens are present and none match — caller must block the resource.
+    /// Supported algorithms: sha256, sha384, sha512.
+    /// </summary>
+    private static bool VerifySriIntegrity(string content, string integrity)
+    {
+        if (string.IsNullOrWhiteSpace(integrity)) return true;
+        var tokens = integrity.Trim().Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length == 0) return true;
+
+        var bytes = System.Text.Encoding.UTF8.GetBytes(content ?? "");
+        foreach (var token in tokens)
+        {
+            var dash = token.IndexOf('-');
+            if (dash < 0) continue;
+            var algo = token.Substring(0, dash).ToLowerInvariant();
+            var expectedB64 = token.Substring(dash + 1);
+
+            byte[] hash;
+            try
+            {
+                using var alg = algo switch
+                {
+                    "sha256" => (System.Security.Cryptography.HashAlgorithm)System.Security.Cryptography.SHA256.Create(),
+                    "sha384" => System.Security.Cryptography.SHA384.Create(),
+                    "sha512" => System.Security.Cryptography.SHA512.Create(),
+                    _ => null
+                };
+                if (alg == null) continue; // Unknown algorithm — skip this token
+                hash = alg.ComputeHash(bytes);
+            }
+            catch { continue; }
+
+            if (Convert.ToBase64String(hash) == expectedB64) return true;
+        }
+        // No token matched — block the resource
+        return false;
     }
 }
 }

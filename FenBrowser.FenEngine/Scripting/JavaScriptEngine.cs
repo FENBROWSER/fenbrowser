@@ -2669,9 +2669,11 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         {
             if (scriptEl  == null) return;
 
-            // Check src
+            // Check src and integrity
             string src = null;
             if (scriptEl.Attr != null) scriptEl.Attr.TryGetValue("src", out src);
+            string sriIntegrity = null;
+            if (scriptEl.Attr != null) scriptEl.Attr.TryGetValue("integrity", out sriIntegrity);
 
             if (!string.IsNullOrWhiteSpace(src))
             {
@@ -2701,11 +2703,18 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                 content = await FetchAsync(uri);
 
                             // Dispatch result on main thread
-                            EnqueueMicrotask(() => 
+                            EnqueueMicrotask(() =>
                             {
                                 if (content != null)
                                 {
-                                    try 
+                                    // SRI check for dynamically-inserted external scripts
+                                    if (!VerifySriIntegrity(content, sriIntegrity))
+                                    {
+                                        FenLogger.Warn($"[SRI] Blocked dynamic script (integrity mismatch): {uri}", LogCategory.JavaScript);
+                                        DispatchEvent(scriptEl, "error");
+                                        return;
+                                    }
+                                    try
                                     {
                                         Evaluate(content);
                                         DispatchEvent(scriptEl, "load");
@@ -3111,6 +3120,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                 string type = el.GetAttribute("type")?.ToLowerInvariant() ?? "";
                                 string src = el.GetAttribute("src");
                                 string nonce = el.GetAttribute("nonce");
+                                string integrity = el.GetAttribute("integrity"); // SRI
                                 bool isModule = type == "module";
                             
                                 // Filter invalid types
@@ -3252,6 +3262,13 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                 
                                 if (!string.IsNullOrWhiteSpace(code))
                                 {
+                                    // SRI check — external scripts with an integrity attr must match before execution
+                                    if (!string.IsNullOrEmpty(src) && !VerifySriIntegrity(code, integrity))
+                                    {
+                                        DiagnosticPaths.AppendRootText("js_debug.log", $"[SRI] Blocked script (hash mismatch): {srcInfo}\n");
+                                        FenLogger.Warn($"[SRI] Blocked external script due to integrity mismatch: {srcInfo}", LogCategory.JavaScript);
+                                        continue;
+                                    }
                                     DiagnosticPaths.AppendRootText("js_debug.log", $"[ScriptRun] Executing script: Length={code.Length}, Info={srcInfo}\n");
                                     _fenRuntime.ExecuteSimple(code, srcInfo);
                                     /* [PERF-REMOVED] */
@@ -3435,6 +3452,48 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                 Body = body ?? string.Empty;
                 Ts = ts;
             }
+        }
+
+        /// <summary>
+        /// Verifies Subresource Integrity (SRI) for a fetched resource.
+        /// Returns true if <paramref name="integrity"/> is absent/empty (no check required) or
+        /// if at least one hash token in the space-separated list matches the content.
+        /// Returns false if tokens are present and none match — caller must block the resource.
+        /// Supported algorithms: sha256, sha384, sha512.
+        /// </summary>
+        private static bool VerifySriIntegrity(string content, string integrity)
+        {
+            if (string.IsNullOrWhiteSpace(integrity)) return true;
+            var tokens = integrity.Trim().Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            if (tokens.Length == 0) return true;
+
+            var bytes = System.Text.Encoding.UTF8.GetBytes(content ?? "");
+            foreach (var token in tokens)
+            {
+                var dash = token.IndexOf('-');
+                if (dash < 0) continue;
+                var algo = token.Substring(0, dash).ToLowerInvariant();
+                var expectedB64 = token.Substring(dash + 1);
+
+                byte[] hash;
+                try
+                {
+                    using var alg = algo switch
+                    {
+                        "sha256" => (System.Security.Cryptography.HashAlgorithm)System.Security.Cryptography.SHA256.Create(),
+                        "sha384" => System.Security.Cryptography.SHA384.Create(),
+                        "sha512" => System.Security.Cryptography.SHA512.Create(),
+                        _ => null
+                    };
+                    if (alg == null) continue; // Unknown algorithm — skip token
+                    hash = alg.ComputeHash(bytes);
+                }
+                catch { continue; }
+
+                if (Convert.ToBase64String(hash) == expectedB64) return true;
+            }
+            // No matching token found — block the resource
+            return false;
         }
     }
 

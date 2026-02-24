@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using FenBrowser.FenEngine.Core.Types;
 using FenValue = FenBrowser.FenEngine.Core.FenValue;
+using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType;
 
 namespace FenBrowser.FenEngine.Core.Bytecode.VM
 {
@@ -15,6 +16,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         private const int STACK_SIZE = 16384;
         private readonly FenValue[] _stack = new FenValue[STACK_SIZE];
         private int _sp = 0; // Stack pointer
+        private FenValue _completionValue = FenValue.Undefined; // Stores the result of the last evaluated expression
 
         // Call stack managed entirely on the heap to prevent .NET StackOverflowException
         private readonly Stack<CallFrame> _callFrames = new Stack<CallFrame>(256);
@@ -26,6 +28,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         public FenValue Execute(CodeBlock initialBlock, FenEnvironment initialEnv)
         {
             _sp = 0;
+            _completionValue = FenValue.Undefined;
             _callFrames.Clear();
             
             // Push initial frame
@@ -41,6 +44,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             {
                 while (_callFrames.Count > 0)
                 {
+        fetch_frame:
                     var frame = _callFrames.Peek();
                     var instructions = frame.Block.Instructions;
                     var constants = frame.Block.Constants;
@@ -120,6 +124,48 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 _stack[_sp++] = FenValue.FromBoolean(result.ToBoolean());
                                 break;
                             }
+                            case OpCode.BitwiseAnd:
+                            {
+                                var right = (int)_stack[--_sp].ToNumber();
+                                var left = (int)_stack[--_sp].ToNumber();
+                                _stack[_sp++] = FenValue.FromNumber(left & right);
+                                break;
+                            }
+                            case OpCode.BitwiseOr:
+                            {
+                                var right = (int)_stack[--_sp].ToNumber();
+                                var left = (int)_stack[--_sp].ToNumber();
+                                _stack[_sp++] = FenValue.FromNumber(left | right);
+                                break;
+                            }
+                            case OpCode.BitwiseXor:
+                            {
+                                var right = (int)_stack[--_sp].ToNumber();
+                                var left = (int)_stack[--_sp].ToNumber();
+                                _stack[_sp++] = FenValue.FromNumber(left ^ right);
+                                break;
+                            }
+                            case OpCode.LeftShift:
+                            {
+                                var right = (int)_stack[--_sp].ToNumber() & 0x1F;
+                                var left = (int)_stack[--_sp].ToNumber();
+                                _stack[_sp++] = FenValue.FromNumber(left << right);
+                                break;
+                            }
+                            case OpCode.RightShift:
+                            {
+                                var right = (int)_stack[--_sp].ToNumber() & 0x1F;
+                                var left = (int)_stack[--_sp].ToNumber();
+                                _stack[_sp++] = FenValue.FromNumber(left >> right);
+                                break;
+                            }
+                            case OpCode.UnsignedRightShift:
+                            {
+                                var right = (int)_stack[--_sp].ToNumber() & 0x1F;
+                                var left = (uint)_stack[--_sp].ToNumber();
+                                _stack[_sp++] = FenValue.FromNumber(left >> right);
+                                break;
+                            }
                             case OpCode.Jump:
                             {
                                 int offset = ReadInt32(instructions, ref frame);
@@ -164,6 +210,204 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 _stack[_sp++] = value;
                                 break;
                             }
+                            case OpCode.Dup:
+                            {
+                                var value = _stack[_sp - 1];
+                                _stack[_sp++] = value;
+                                break;
+                            }
+                            case OpCode.Pop:
+                            {
+                                _sp--;
+                                break;
+                            }
+                            case OpCode.PopAccumulator:
+                            {
+                                _completionValue = _stack[--_sp];
+                                break;
+                            }
+                            case OpCode.MakeClosure:
+                            {
+                                int idx = ReadInt32(instructions, ref frame);
+                                var templateFunc = constants[idx].AsObject() as FenFunction;
+                                var newFunc = new FenFunction(templateFunc.Parameters, templateFunc.BytecodeBlock, frame.Environment);
+                                newFunc.Name = templateFunc.Name;
+                                _stack[_sp++] = FenValue.FromFunction(newFunc);
+                                break;
+                            }
+                            case OpCode.Call:
+                            {
+                                int argCount = ReadInt32(instructions, ref frame);
+                                var callee = _stack[_sp - argCount - 1];
+                                
+                                if (!callee.IsFunction) throw new Exception("VM Error: Attempted to call non-function.");
+                                var func = callee.AsObject() as FenFunction;
+                                
+                                var args = new FenValue[argCount];
+                                for (int i = 0; i < argCount; i++) args[argCount - 1 - i] = _stack[--_sp];
+                                _sp--; // Pop callee
+
+                                if (func.IsNative)
+                                {
+                                    _stack[_sp++] = func.NativeImplementation(args, FenValue.Undefined); // Phase 1: no 'this' ctx
+                                }
+                                else if (func.BytecodeBlock != null)
+                                {
+                                    var newEnv = new FenEnvironment(func.Env);
+                                    if (func.Parameters != null)
+                                    {
+                                        for (int i = 0; i < func.Parameters.Count; i++)
+                                        {
+                                            var argVal = i < args.Length ? args[i] : FenValue.Undefined;
+                                            newEnv.Set(func.Parameters[i].Value, argVal);
+                                        }
+                                    }
+                                    
+                                    var newFrame = new CallFrame(func.BytecodeBlock, newEnv, _sp);
+                                    _callFrames.Push(newFrame);
+                                    goto fetch_frame; // Break out of inner loop to process new frame
+                                }
+                                else
+                                {
+                                    throw new Exception("VM Error: AST execution inside Bytecode VM not fully supported yet.");
+                                }
+                                break;
+                            }
+                            case OpCode.MakeArray:
+                            {
+                                int count = ReadInt32(instructions, ref frame);
+                                var arr = FenObject.CreateArray();
+                                for (int i = 0; i < count; i++)
+                                {
+                                    arr.Set(i.ToString(), _stack[_sp - count + i]);
+                                }
+                                _sp -= count;
+                                _stack[_sp++] = FenValue.FromObject(arr);
+                                break;
+                            }
+                            case OpCode.MakeObject:
+                            {
+                                int propCount = ReadInt32(instructions, ref frame);
+                                var obj = new FenObject();
+                                int numValues = propCount * 2;
+                                for (int i = 0; i < numValues; i += 2)
+                                {
+                                    var key = _stack[_sp - numValues + i].AsString();
+                                    var value = _stack[_sp - numValues + i + 1];
+                                    obj.Set(key, value);
+                                }
+                                _sp -= numValues;
+                                _stack[_sp++] = FenValue.FromObject(obj);
+                                break;
+                            }
+                            case OpCode.LoadProp:
+                            {
+                                var prop = _stack[--_sp];
+                                var obj = _stack[--_sp];
+                                if (obj.IsObject)
+                                {
+                                    _stack[_sp++] = obj.AsObject().Get(prop.AsString());
+                                }
+                                else
+                                {
+                                    _stack[_sp++] = FenValue.Undefined;
+                                }
+                                break;
+                            }
+                            case OpCode.StoreProp:
+                            {
+                                var value = _stack[--_sp];
+                                var prop = _stack[--_sp];
+                                var obj = _stack[--_sp];
+                                if (obj.IsObject)
+                                {
+                                    obj.AsObject().Set(prop.AsString(), value);
+                                }
+                                _stack[_sp++] = value;
+                                break;
+                            }
+                            case OpCode.MakeKeysIterator:
+                            {
+                                var objVal = _stack[--_sp];
+                                var iterObj = new FenObject();
+                                if (objVal.IsObject)
+                                {
+                                    iterObj.NativeObject = System.Linq.Enumerable.Select(objVal.AsObject().Keys(), k => FenValue.FromString(k)).GetEnumerator();
+                                }
+                                else
+                                {
+                                    iterObj.NativeObject = new List<FenValue>().GetEnumerator();
+                                }
+                                _stack[_sp++] = FenValue.FromObject(iterObj);
+                                break;
+                            }
+                            case OpCode.MakeValuesIterator:
+                            {
+                                var objVal = _stack[--_sp];
+                                var iterObj = new FenObject();
+                                if (objVal.IsObject)
+                                {
+                                    var obj = objVal.AsObject();
+                                    iterObj.NativeObject = System.Linq.Enumerable.Select(obj.Keys(), k => obj.Get(k)).GetEnumerator();
+                                }
+                                else
+                                {
+                                    iterObj.NativeObject = new List<FenValue>().GetEnumerator();
+                                }
+                                _stack[_sp++] = FenValue.FromObject(iterObj);
+                                break;
+                            }
+                            case OpCode.IteratorMoveNext:
+                            {
+                                var obj = (FenObject)_stack[--_sp].AsObject();
+                                var iter = (IEnumerator<FenValue>)obj.NativeObject;
+                                _stack[_sp++] = FenValue.FromBoolean(iter.MoveNext());
+                                break;
+                            }
+                            case OpCode.IteratorCurrent:
+                            {
+                                var obj = (FenObject)_stack[--_sp].AsObject();
+                                var iter = (IEnumerator<FenValue>)obj.NativeObject;
+                                _stack[_sp++] = iter.Current;
+                                break;
+                            }
+                            case OpCode.Negate:
+                            {
+                                var val = _stack[--_sp].ToNumber();
+                                _stack[_sp++] = FenValue.FromNumber(-val);
+                                break;
+                            }
+                            case OpCode.LogicalNot:
+                            {
+                                var val = _stack[--_sp].ToBoolean();
+                                _stack[_sp++] = FenValue.FromBoolean(!val);
+                                break;
+                            }
+                            case OpCode.BitwiseNot:
+                            {
+                                var val = (int)_stack[--_sp].ToNumber();
+                                _stack[_sp++] = FenValue.FromNumber(~val);
+                                break;
+                            }
+                            case OpCode.Typeof:
+                            {
+                                var val = _stack[--_sp];
+                                string typeStr = "object";
+                                switch (val.Type)
+                                {
+                                    case JsValueType.Undefined: typeStr = "undefined"; break;
+                                    case JsValueType.Null: typeStr = "object"; break;
+                                    case JsValueType.Boolean: typeStr = "boolean"; break;
+                                    case JsValueType.Number: typeStr = "number"; break;
+                                    case JsValueType.String: typeStr = "string"; break;
+                                    case JsValueType.Function: typeStr = "function"; break;
+                                    case JsValueType.Symbol: typeStr = "symbol"; break;
+                                    case JsValueType.BigInt: typeStr = "bigint"; break;
+                                    default: typeStr = "object"; break;
+                                }
+                                _stack[_sp++] = FenValue.FromString(typeStr);
+                                break;
+                            }
                             case OpCode.Return:
                             {
                                 var result = _stack[--_sp];
@@ -174,16 +418,36 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 if (_callFrames.Count > 0)
                                 {
                                     _stack[_sp++] = result;
-                                    break; // break the inner loop to fetch the next frame in the while
+                                    goto fetch_frame; // Re-fetch the caller's frame locals
                                 }
                                 else
                                 {
                                     return result;
                                 }
                             }
+                            case OpCode.PushExceptionHandler:
+                            {
+                                int catchOffset = ReadInt32(instructions, ref frame);
+                                int finallyOffset = ReadInt32(instructions, ref frame);
+                                frame.ExceptionHandlers.Push(new ExceptionHandler(catchOffset, finallyOffset, _sp));
+                                break;
+                            }
+                            case OpCode.PopExceptionHandler:
+                            {
+                                frame.ExceptionHandlers.Pop();
+                                break;
+                            }
+                            case OpCode.Throw:
+                            {
+                                var exceptionValue = _stack[--_sp];
+                                HandleException(exceptionValue, ref frame);
+                                break;
+                            }
                             case OpCode.Halt:
-                                return _sp > 0 ? _stack[--_sp] : FenValue.Undefined;
-                                
+                            {
+                                // Return the completion value rather than top of stack, unless there's a return value pending (which Returns handle)
+                                return _completionValue;
+                            }    
                             default:
                                 throw new Exception($"VM Error: Unhandled OpCode {op} at IP {frame.IP - 1}");
                         }
@@ -192,7 +456,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                     // Reached end of instructions without a return
                     if (_callFrames.Count > 0 && _callFrames.Peek() == frame)
                     {
-                        var result = _sp > 0 ? _stack[--_sp] : FenValue.Undefined;
+                        var result = FenValue.Undefined;
                         _callFrames.Pop();
                         _sp = frame.StackBase;
                         if (_callFrames.Count > 0)
@@ -204,13 +468,56 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             }
             catch (Exception ex)
             {
-                // In a true JS engine, we'd package this into a JS Error wrapped into a FenValue.
-                // For Phase 1, we let it bubble up to host.
-                Console.WriteLine($"[VM Crash] {ex.Message}");
-                throw;
+                // Unwind and handle .NET exceptions gracefully
+                var errorObj = FenValue.FromObject(new FenObject());
+                errorObj.AsObject().Set("message", FenValue.FromString(ex.Message));
+                errorObj.AsObject().Set("name", FenValue.FromString(ex.GetType().Name));
+                
+                var topFrame = _callFrames.Peek();
+                HandleException(errorObj, ref topFrame);
             }
 
             return FenValue.Undefined;
+        }
+
+        private void HandleException(FenValue exceptionValue, ref CallFrame currentFrame)
+        {
+            // Find nearest handler in current frame or unwind CallStack
+            while (_callFrames.Count > 0)
+            {
+                var frame = _callFrames.Peek();
+                if (frame.ExceptionHandlers.Count > 0)
+                {
+                    var handler = frame.ExceptionHandlers.Pop();
+                    _sp = handler.StackBase;
+                    
+                    if (handler.CatchOffset != -1)
+                    {
+                        frame.IP = handler.CatchOffset;
+                        _stack[_sp++] = exceptionValue; // Push error for catch block
+                        return; // Resume execution in RunLoop
+                    }
+                    else if (handler.FinallyOffset != -1)
+                    {
+                        frame.IP = handler.FinallyOffset;
+                        // For pure finally, we might need to store the exception somewhere to rethrow later
+                        // But JS 'finally' without 'catch' is rare in Phase 1
+                        _stack[_sp++] = exceptionValue; 
+                        return; // Resume execution in RunLoop
+                    }
+                }
+                
+                // No handler in this frame, unwind call stack!
+                _callFrames.Pop();
+                if (_callFrames.Count > 0)
+                {
+                    _sp = _callFrames.Peek().StackBase;
+                }
+            }
+            
+            // Uncaught exception!
+            Console.WriteLine($"[VM Uncaught Exception] {exceptionValue.AsString()}");
+            throw new Exception($"Uncaught JS Exception: {exceptionValue.AsString()}");
         }
 
         private int ReadInt32(byte[] instructions, ref CallFrame frame)
