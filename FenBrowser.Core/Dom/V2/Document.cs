@@ -377,10 +377,42 @@ namespace FenBrowser.Core.Dom.V2
             if (string.IsNullOrEmpty(localName))
                 throw new DomException("InvalidCharacterError", "Element name cannot be empty");
 
-            // TODO: Validate name per XML Name production
+            // Validate per XML Name production (https://www.w3.org/TR/xml/#NT-Name)
+            // Name ::= NameStartChar (NameChar)*
+            // NameStartChar ::= ":" | [A-Z] | "_" | [a-z] | [#xC0-#xD6] | ...
+            if (!IsValidXmlName(localName))
+                throw new DomException("InvalidCharacterError", $"'{localName}' is not a valid element name");
             var el = new Element(localName, this);
             return el;
         }
+
+        /// <summary>
+        /// Validates a name against the XML Name production.
+        /// https://www.w3.org/TR/xml/#NT-Name
+        /// </summary>
+        private static bool IsValidXmlName(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            if (!IsNameStartChar(name[0])) return false;
+            for (int i = 1; i < name.Length; i++)
+                if (!IsNameChar(name[i])) return false;
+            return true;
+        }
+
+        private static bool IsNameStartChar(char c) =>
+            c == ':' || c == '_' ||
+            (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+            (c >= '\xC0' && c <= '\xD6') || (c >= '\xD8' && c <= '\xF6') ||
+            (c >= '\xF8' && c <= '\u02FF') || (c >= '\u0370' && c <= '\u037D') ||
+            (c >= '\u037F' && c <= '\u1FFF') || (c >= '\u200C' && c <= '\u200D') ||
+            (c >= '\u2070' && c <= '\u218F') || (c >= '\u2C00' && c <= '\u2FEF') ||
+            (c >= '\u3001' && c <= '\uD7FF') || (c >= '\uF900' && c <= '\uFDCF') ||
+            (c >= '\uFDF0' && c <= '\uFFFD');
+
+        private static bool IsNameChar(char c) =>
+            IsNameStartChar(c) || c == '-' || c == '.' ||
+            (c >= '0' && c <= '9') || c == '\xB7' ||
+            (c >= '\u0300' && c <= '\u036F') || (c >= '\u203F' && c <= '\u2040');
 
         /// <summary>
         /// Creates a new element with the given namespace and qualified name.

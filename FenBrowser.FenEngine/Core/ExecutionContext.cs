@@ -8,12 +8,6 @@ using FenBrowser.Core.Dom.V2; // MutationRecord
 namespace FenBrowser.FenEngine.Core
 {
     /// <summary>
-    /// Execution context for JavaScript code.
-    /// Manages scopes, permissions, resource tracking, and limits.
-    /// </summary>
-
-
-    /// <summary>
     /// Default execution context implementation
     /// </summary>
     public class ExecutionContext : IExecutionContext
@@ -28,24 +22,21 @@ namespace FenBrowser.FenEngine.Core
         public bool ShouldContinue => _executionTimer.Elapsed < Limits.MaxExecutionTime;
         public Action RequestRender { get; private set; }
         public void SetRequestRender(Action action) => RequestRender = action;
-        
-        public Action<Action, int> ScheduleCallback { get; set; } = (action, delay) => 
+
+        public Action<Action, int> ScheduleCallback { get; set; } = (action, delay) =>
         {
-            // Default implementation: Task.Delay then Run
-            // Note: This does NOT run on UI thread by default, host must override for UI safety
-            Task.Run(async () => 
+            Task.Run(async () =>
             {
                 await Task.Delay(delay);
                 action();
             });
         };
 
-        public Action<Action> ScheduleMicrotask { get; set; } = (action) => 
+        public Action<Action> ScheduleMicrotask { get; set; } = (action) =>
         {
-            // Default: Run immediately or Task.Run (unsafe order without EventLoop)
-            // Ideally should be overridden by Host to use EventLoopCoordinator
             Task.Run(() => action());
         };
+
         public FenValue ThisBinding { get; set; }
         public Func<FenValue, FenValue[], FenValue> ExecuteFunction { get; set; }
         public IModuleLoader ModuleLoader { get; set; }
@@ -56,8 +47,15 @@ namespace FenBrowser.FenEngine.Core
         public string CurrentModulePath { get; set; }
         public bool StrictMode { get; set; }
 
+        public Func<FenBrowser.FenEngine.Rendering.Core.ILayoutEngine> LayoutEngineProvider { get; set; }
+
+        public FenBrowser.FenEngine.Rendering.Core.ILayoutEngine GetLayoutEngine()
+        {
+            return LayoutEngineProvider?.Invoke();
+        }
+
         public ExecutionContext(
-            IPermissionManager permissions = null, 
+            IPermissionManager permissions = null,
             IResourceLimits limits = null)
         {
             Permissions = permissions ?? new PermissionManager(JsPermissions.BasicWeb);
@@ -107,4 +105,3 @@ namespace FenBrowser.FenEngine.Core
         }
     }
 }
-

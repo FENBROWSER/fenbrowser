@@ -493,13 +493,13 @@ namespace FenBrowser.Core.Dom.V2
 
             try
             {
-                // 1. CAPTURE PHASE - from window/document down to target's parent
-                evt.EventPhase = EventPhase.Capturing;
+                // Path is from Target (index 0) up to Root (index N).
 
-                for (int i = path.Count - 1; i > 0; i--)
+                // 1. CAPTURE PHASE - from Root down to target's parent
+                evt.EventPhase = EventPhase.Capturing;
+                for (int i = path.Count - 1; i > 0; i--) // Skip 0 which is target
                 {
-                    if (evt.StopPropagationFlag)
-                        break;
+                    if (evt.StopPropagationFlag) break;
 
                     var entry = path[i];
                     evt.CurrentTarget = entry.InvocationTarget;
@@ -517,15 +517,13 @@ namespace FenBrowser.Core.Dom.V2
                     InvokeEventListeners(evt, targetEntry.InvocationTarget, EventPhase.AtTarget);
                 }
 
-                // 3. BUBBLE PHASE - from target's parent up to window/document
+                // 3. BUBBLE PHASE - from target's parent up to Root
                 if (evt.Bubbles && !evt.StopPropagationFlag)
                 {
                     evt.EventPhase = EventPhase.Bubbling;
-
-                    for (int i = 1; i < path.Count; i++)
+                    for (int i = 1; i < path.Count; i++) // Skip 0 which is target
                     {
-                        if (evt.StopPropagationFlag)
-                            break;
+                        if (evt.StopPropagationFlag) break;
 
                         var entry = path[i];
                         evt.CurrentTarget = entry.InvocationTarget;
@@ -620,7 +618,10 @@ namespace FenBrowser.Core.Dom.V2
                     continue;
                 if (phase == EventPhase.Bubbling && listener.Capture)
                     continue;
-                // At target: invoke both capture and bubble listeners
+                
+                // If AtTarget, both capture and bubble listeners map to AtTarget phase,
+                // but we should match the listener's registration type if we want to be strict, 
+                // However spec says AtTarget fires all of them.
 
                 if (evt.StopImmediatePropagationFlag)
                     break;
@@ -655,9 +656,10 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         private static void ReportError(Exception ex, EventTarget target, Event evt)
         {
-            // TODO: Integrate with window.onerror or console
-            System.Diagnostics.Debug.WriteLine(
-                $"[EventDispatcher] Error in listener for '{evt.Type}' on {target}: {ex.Message}");
+            // Route to FenLogger so it surfaces in DevTools console rather than silently to Debug output
+            FenLogger.Error(
+                $"[EventDispatcher] Error in listener for '{evt.Type}' on {target}: {ex.Message}",
+                FenBrowser.Core.Logging.LogCategory.Events);
         }
     }
 }

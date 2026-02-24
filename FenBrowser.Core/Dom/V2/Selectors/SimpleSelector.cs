@@ -2,6 +2,7 @@
 // FenBrowser.Core.Dom.V2.Selectors - Simple Selectors
 
 using System;
+using System.Collections.Generic;
 
 namespace FenBrowser.Core.Dom.V2.Selectors
 {
@@ -183,26 +184,78 @@ namespace FenBrowser.Core.Dom.V2.Selectors
     }
 
     /// <summary>
-    /// Pseudo-element selector: ::before, ::after, etc.
+    /// Pseudo-element selector: ::before, ::after, ::slotted(), ::part(), etc.
     /// </summary>
     public sealed class PseudoElementSelector : SimpleSelector
     {
         private readonly string _name;
+        private readonly string _arg;
 
-        public PseudoElementSelector(string name)
+        public PseudoElementSelector(string name, string arg = null)
         {
             _name = name?.ToLowerInvariant() ?? throw new ArgumentNullException(nameof(name));
+            _arg = arg;
         }
 
         public override bool Matches(Element element)
         {
-            // Pseudo-elements don't match regular element queries
-            // They're handled specially during rendering
+            return _name switch
+            {
+                // ::slotted(selector) — matches elements distributed into a slot
+                // Basic: element is a direct child of a shadow host (in light DOM)
+                "slotted" => element.ParentElement?.ShadowRoot != null,
+
+                // ::part(name) — matches elements with matching part= attribute
+                "part" => MatchesPart(element),
+
+                // ::before, ::after, ::marker etc. — handled by renderer, not element matching
+                _ => false
+            };
+        }
+
+        private bool MatchesPart(Element element)
+        {
+            if (string.IsNullOrEmpty(_arg)) return false;
+            var partAttr = element.GetAttribute("part");
+            if (string.IsNullOrEmpty(partAttr)) return false;
+            var targetPart = _arg.Trim();
+            foreach (var p in partAttr.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
+                if (string.Equals(p, targetPart, StringComparison.Ordinal)) return true;
             return false;
         }
 
         public override Specificity GetSpecificity() => new Specificity(0, 0, 1);
-        public override string ToString() => "::" + _name;
+        public override string ToString() => "::" + _name + (string.IsNullOrEmpty(_arg) ? "" : $"({_arg})");
+    }
+
+    /// <summary>
+    /// :host selector — matches the shadow host element from within a shadow root stylesheet.
+    /// Also matches when used as :host(selector) with an argument.
+    /// </summary>
+    public sealed class HostSelector : SimpleSelector
+    {
+        /// <summary>
+        /// Optional inner selector argument from :host(selector). Null means bare :host.
+        /// </summary>
+        private readonly string _arg;
+
+        public HostSelector(string arg = null)
+        {
+            _arg = string.IsNullOrWhiteSpace(arg) ? null : arg.Trim();
+        }
+
+        public override bool Matches(Element element)
+        {
+            // Basic: element is a shadow host (has an attached shadow root)
+            if (element.ShadowRoot == null) return false;
+            // :host with argument — element must also match the inner selector
+            // We skip deep matching here to avoid a Core→Engine circular dep.
+            // :host() with a non-empty arg is treated as always matching the host when arg is unparsed.
+            return true;
+        }
+
+        public override Specificity GetSpecificity() => new Specificity(0, 1, 0);
+        public override string ToString() => string.IsNullOrEmpty(_arg) ? ":host" : $":host({_arg})";
     }
 
     /// <summary>
@@ -212,6 +265,14 @@ namespace FenBrowser.Core.Dom.V2.Selectors
     {
         private readonly string _name;
 
+        /// <summary>
+        /// Pluggable state provider wired by FenEngine at startup.
+        /// Signature: (element, pseudoClassName) → bool
+        /// Handles dynamic states: hover, focus, active, focus-within, focus-visible, target, valid, invalid.
+        /// Core registers a no-op by default; FenEngine replaces it with ElementStateManager.
+        /// </summary>
+        public static Func<Element, string, bool> StateProvider { get; set; } = (_, _) => false;
+
         public StatePseudoClassSelector(string name)
         {
             _name = name?.ToLowerInvariant() ?? throw new ArgumentNullException(nameof(name));
@@ -219,8 +280,6 @@ namespace FenBrowser.Core.Dom.V2.Selectors
 
         public override bool Matches(Element element)
         {
-            // TODO: Integrate with ElementStateManager
-            // For now, basic implementation
             return _name switch
             {
                 "root" => element.ParentElement == null &&
@@ -240,10 +299,15 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                 "read-only" => HasAttribute(element, "readonly"),
                 "read-write" => !HasAttribute(element, "readonly"),
                 "link" => element.LocalName == "a" && element.HasAttribute("href"),
-                // States that need external manager
+                // Dynamic states delegated to ElementStateManager (wired by FenEngine)
                 "hover" or "active" or "focus" or "focus-visible" or "focus-within" or
-                "visited" or "target" or "valid" or "invalid" or "in-range" or
-                "out-of-range" or "indeterminate" or "default" or "defined" => false,
+                "target" or "valid" or "invalid" or "in-range" or
+                "out-of-range" or "indeterminate" => StateProvider(element, _name),
+                // :defined — true when element is a known/registered custom element or a built-in element
+                "defined" => !element.TagName.Contains('-') ||
+                             StateProvider(element, "defined"),
+                // :visited — intentionally not tracked for privacy
+                "visited" => false,
                 _ => false
             };
         }
@@ -376,11 +440,18 @@ namespace FenBrowser.Core.Dom.V2.Selectors
         private readonly int _a;
         private readonly int _b;
         private readonly bool _fromEnd;
+        private readonly CompiledSelector _ofSelector;
+        private readonly string _ofSelectorText;
 
         public NthChildSelector(string formula, bool fromEnd)
         {
             _fromEnd = fromEnd;
-            ParseFormula(formula, out _a, out _b);
+            ParseFormulaAndOfSelector(formula, out var nthFormula, out _ofSelectorText);
+            ParseFormula(nthFormula, out _a, out _b);
+            if (!string.IsNullOrWhiteSpace(_ofSelectorText))
+            {
+                _ofSelector = SelectorParser.Parse(_ofSelectorText);
+            }
         }
 
         private static void ParseFormula(string formula, out int a, out int b)
@@ -426,6 +497,82 @@ namespace FenBrowser.Core.Dom.V2.Selectors
             }
         }
 
+        private static void ParseFormulaAndOfSelector(string input, out string formula, out string ofSelector)
+        {
+            formula = input?.Trim() ?? "";
+            ofSelector = null;
+
+            if (string.IsNullOrWhiteSpace(input))
+            {
+                return;
+            }
+
+            bool inSingleQuote = false;
+            bool inDoubleQuote = false;
+            int depth = 0;
+
+            for (int i = 0; i < input.Length - 1; i++)
+            {
+                char c = input[i];
+                if (c == '\\' && i + 1 < input.Length)
+                {
+                    i++;
+                    continue;
+                }
+
+                if (!inDoubleQuote && c == '\'')
+                {
+                    inSingleQuote = !inSingleQuote;
+                    continue;
+                }
+
+                if (!inSingleQuote && c == '"')
+                {
+                    inDoubleQuote = !inDoubleQuote;
+                    continue;
+                }
+
+                if (inSingleQuote || inDoubleQuote)
+                {
+                    continue;
+                }
+
+                if (c == '(' || c == '[')
+                {
+                    depth++;
+                    continue;
+                }
+
+                if (c == ')' || c == ']')
+                {
+                    if (depth > 0) depth--;
+                    continue;
+                }
+
+                if (depth == 0 && IsOfKeyword(input, i))
+                {
+                    formula = input.Substring(0, i).Trim();
+                    ofSelector = input.Substring(i + 2).Trim();
+                    return;
+                }
+            }
+        }
+
+        private static bool IsOfKeyword(string input, int index)
+        {
+            if (index < 0 || index + 2 > input.Length)
+                return false;
+            if ((input[index] != 'o' && input[index] != 'O') ||
+                (input[index + 1] != 'f' && input[index + 1] != 'F'))
+            {
+                return false;
+            }
+
+            bool beforeOk = index == 0 || char.IsWhiteSpace(input[index - 1]);
+            bool afterOk = index + 2 >= input.Length || char.IsWhiteSpace(input[index + 2]);
+            return beforeOk && afterOk;
+        }
+
         public override bool Matches(Element element)
         {
             int index = GetIndex(element);
@@ -448,6 +595,26 @@ namespace FenBrowser.Core.Dom.V2.Selectors
             var parent = element.ParentElement;
             if (parent == null) return 0;
 
+            if (_ofSelector != null)
+            {
+                var matches = new List<Element>();
+                for (var sibling = parent.FirstElementChild; sibling != null; sibling = sibling.NextElementSibling)
+                {
+                    if (_ofSelector.Matches(sibling))
+                    {
+                        matches.Add(sibling);
+                    }
+                }
+
+                int position = matches.IndexOf(element);
+                if (position < 0)
+                {
+                    return 0;
+                }
+
+                return _fromEnd ? matches.Count - position : position + 1;
+            }
+
             int index = 0;
             if (_fromEnd)
             {
@@ -462,15 +629,36 @@ namespace FenBrowser.Core.Dom.V2.Selectors
             return index;
         }
 
-        public override Specificity GetSpecificity() => new Specificity(0, 1, 0);
+        public override Specificity GetSpecificity()
+        {
+            var baseSpecificity = new Specificity(0, 1, 0);
+            if (_ofSelector == null)
+            {
+                return baseSpecificity;
+            }
+
+            var arg = _ofSelector.GetSpecificity();
+            return new Specificity(
+                baseSpecificity.A + arg.A,
+                baseSpecificity.B + arg.B,
+                baseSpecificity.C + arg.C);
+        }
 
         public override string ToString()
         {
             var name = _fromEnd ? ":nth-last-child" : ":nth-child";
-            if (_a == 0) return $"{name}({_b})";
-            if (_a == 2 && _b == 1) return $"{name}(odd)";
-            if (_a == 2 && _b == 0) return $"{name}(even)";
-            return $"{name}({_a}n+{_b})";
+            string formula;
+            if (_a == 0) formula = _b.ToString();
+            else if (_a == 2 && _b == 1) formula = "odd";
+            else if (_a == 2 && _b == 0) formula = "even";
+            else formula = $"{_a}n+{_b}";
+
+            if (string.IsNullOrWhiteSpace(_ofSelectorText))
+            {
+                return $"{name}({formula})";
+            }
+
+            return $"{name}({formula} of {_ofSelectorText})";
         }
     }
 

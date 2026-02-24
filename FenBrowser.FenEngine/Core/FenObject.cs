@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.Core.Engine; // Phase enum
+using FenBrowser.FenEngine.Core.Types;
 
 namespace FenBrowser.FenEngine.Core
 {
@@ -23,7 +24,14 @@ namespace FenBrowser.FenEngine.Core
         /// </summary>
         public static IObject DefaultArrayPrototype { get; set; }
 
-        private readonly Dictionary<string, PropertyDescriptor> _properties = new Dictionary<string, PropertyDescriptor>();
+        /// <summary>
+        /// Default prototype for iterator instances (shared %IteratorPrototype%).
+        /// Set by FenRuntime during initialization; used by Interpreter array/string iterators.
+        /// </summary>
+        public static FenObject DefaultIteratorPrototype { get; set; }
+
+        private Shape _shape = Shape.RootShape;
+        private PropertyDescriptor[] _properties = new PropertyDescriptor[4];
         private IObject _prototype;
         private bool _extensible = true;
 
@@ -59,21 +67,31 @@ namespace FenBrowser.FenEngine.Core
 
         public virtual FenValue Get(string key, IExecutionContext context = null)
         {
+            return GetWithReceiver(key, FenValue.FromObject(this), context);
+        }
+
+        public virtual FenValue GetWithReceiver(string key, FenValue receiver, IExecutionContext context = null)
+        {
             // PROXY TRAP: Get
-            if (_properties.TryGetValue("__isProxy__", out var isProxy) && (isProxy.Value.HasValue && isProxy.Value.Value.ToBoolean()))
+            if (_shape.TryGetPropertyOffset("__isProxy__", out var proxyIdx) && 
+                (_properties[proxyIdx].Value.HasValue && _properties[proxyIdx].Value.Value.ToBoolean()))
             {
                 EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
                 
-                if (_properties.TryGetValue("__proxyGet__", out var proxyGet) && (proxyGet.Value.HasValue && proxyGet.Value.Value.IsFunction))
+                if (_shape.TryGetPropertyOffset("__proxyGet__", out var pgIdx) && 
+                    (_properties[pgIdx].Value.HasValue && _properties[pgIdx].Value.Value.IsFunction))
                 {
-                    _properties.TryGetValue("__proxyTarget__", out var target);
-                    var fn = proxyGet.Value.Value.AsFunction();
-                    return fn.Invoke(new FenValue[] { target.Value ?? FenValue.Undefined, FenValue.FromString(key), FenValue.FromObject(this) }, context);
+                    _shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx);
+                    var target = targetIdx >= 0 ? _properties[targetIdx].Value : FenValue.Undefined;
+                    
+                    var fn = _properties[pgIdx].Value.Value.AsFunction();
+                    return fn.Invoke(new FenValue[] { target ?? FenValue.Undefined, FenValue.FromString(key), receiver }, context);
                 }
             }
 
-            if (_properties.TryGetValue(key, out var desc))
+            if (_shape.TryGetPropertyOffset(key, out var index))
             {
+                var desc = _properties[index];
                 // Accessor descriptor: invoke getter
                 if (desc.IsAccessor && desc.Getter != null)
                 {
@@ -84,7 +102,7 @@ namespace FenBrowser.FenEngine.Core
                     }
                     try
                     {
-                        return desc.Getter.Invoke(new FenValue[] { FenValue.FromObject(this) }, context);
+                        return desc.Getter.Invoke(Array.Empty<FenValue>(), context, receiver);
                     }
                     finally
                     {
@@ -96,30 +114,52 @@ namespace FenBrowser.FenEngine.Core
             
             // Prototype chain lookup
             if (_prototype != null)
-                return _prototype.Get(key, context);
+                return _prototype.GetWithReceiver(key, receiver, context);
 
             return FenValue.Undefined;
         }
 
         public virtual void Set(string key, FenValue value, IExecutionContext context = null)
         {
+            SetWithReceiver(key, value, FenValue.FromObject(this), context);
+        }
+
+        public virtual void SetWithReceiver(string key, FenValue value, FenValue receiver, IExecutionContext context = null)
+        {
+            // SECURITY: Intercept __proto__ assignment — update the prototype chain instead of
+            // storing it as a regular data property, which would cause prototype pollution.
+            if (key == "__proto__")
+            {
+                if (value.IsNull)
+                    SetPrototype(null);
+                else if (value.IsObject)
+                    SetPrototype(value.AsObject());
+                // Non-object, non-null __proto__ assignments are silently ignored per spec
+                return;
+            }
+
             // PROXY TRAP: Set
-            if (_properties.TryGetValue("__isProxy__", out var isProxy) && (isProxy.Value.HasValue && isProxy.Value.Value.ToBoolean()))
+            if (_shape.TryGetPropertyOffset("__isProxy__", out var proxyIdx) && 
+                (_properties[proxyIdx].Value.HasValue && _properties[proxyIdx].Value.Value.ToBoolean()))
             {
                 EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
                 
-                if (_properties.TryGetValue("__proxySet__", out var proxySet) && (proxySet.Value.HasValue && proxySet.Value.Value.IsFunction))
+                if (_shape.TryGetPropertyOffset("__proxySet__", out var psIdx) && 
+                    (_properties[psIdx].Value.HasValue && _properties[psIdx].Value.Value.IsFunction))
                 {
-                    _properties.TryGetValue("__proxyTarget__", out var target);
-                    var fn = proxySet.Value.Value.AsFunction();
-                    fn.Invoke(new FenValue[] { target.Value ?? FenValue.Undefined, FenValue.FromString(key), value, FenValue.FromObject(this) }, context);
+                    _shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx);
+                    var target = targetIdx >= 0 ? _properties[targetIdx].Value : FenValue.Undefined;
+                    
+                    var fn = _properties[psIdx].Value.Value.AsFunction();
+                    fn.Invoke(new FenValue[] { target ?? FenValue.Undefined, FenValue.FromString(key), value, receiver }, context);
                     return;
                 }
             }
 
-            // Check if property exists
-            if (_properties.TryGetValue(key, out var existing))
+            // Check if property exists in fast storage
+            if (_shape.TryGetPropertyOffset(key, out var existingIndex))
             {
+                var existing = _properties[existingIndex];
                 // Accessor descriptor: invoke setter
                 if (existing.IsAccessor)
                 {
@@ -132,7 +172,7 @@ namespace FenBrowser.FenEngine.Core
                         }
                         try
                         {
-                            existing.Setter.Invoke(new FenValue[] { FenValue.FromObject(this), value }, context);
+                            existing.Setter.Invoke(new FenValue[] { value }, context, receiver);
                         }
                         finally
                         {
@@ -148,7 +188,7 @@ namespace FenBrowser.FenEngine.Core
                     return; // Silently fail in non-strict mode
                     
                 existing.Value = value;
-                _properties[key] = existing;
+                _properties[existingIndex] = existing;
                 return;
             }
             
@@ -160,8 +200,11 @@ namespace FenBrowser.FenEngine.Core
             IObject proto = _prototype;
             while (proto != null)
             {
-                if (proto is FenObject fenProto && fenProto._properties.TryGetValue(key, out var inherited))
+                // This checks proto without throwing away its caching structure if it's a FenObject
+                if (proto.Has(key) && proto is FenObject fenProto && 
+                    fenProto._shape.TryGetPropertyOffset(key, out var protoIdx))
                 {
+                    var inherited = fenProto._properties[protoIdx];
                     if (inherited.IsAccessor && inherited.Setter != null)
                     {
                         if (++_accessorDepth > MAX_ACCESSOR_DEPTH)
@@ -171,7 +214,7 @@ namespace FenBrowser.FenEngine.Core
                         }
                         try
                         {
-                            inherited.Setter.Invoke(new FenValue[] { FenValue.FromObject(this), value }, context);
+                            inherited.Setter.Invoke(new FenValue[] { value }, context, receiver);
                         }
                         finally
                         {
@@ -183,39 +226,61 @@ namespace FenBrowser.FenEngine.Core
                 proto = proto.GetPrototype();
             }
 
-            // if (key == "throws" || key == "assert")
-            // {
-            //     Console.WriteLine($"[DEBUG] FenObject.Set: {key} = {value.Type} on {this.InternalClass}");
-            // }
-            _properties[key] = PropertyDescriptor.DataDefault(value);
+            // Transition Shape and Append New Property
+            _shape = _shape.TransitionTo(key);
+            int newIndex = _shape.PropertyCount - 1;
+            
+            // Resize array if needed
+            if (newIndex >= _properties.Length)
+            {
+                Array.Resize(ref _properties, _properties.Length * 2);
+            }
+            
+            _properties[newIndex] = PropertyDescriptor.DataDefault(value);
         }
 
         public virtual bool Has(string key, IExecutionContext context = null)
         {
             // PROXY TRAP: Has
-            if (_properties.TryGetValue("__isProxy__", out var isProxy) && (isProxy.Value.HasValue && isProxy.Value.Value.ToBoolean()))
+            if (_shape.TryGetPropertyOffset("__isProxy__", out var proxyIdx) && 
+                (_properties[proxyIdx].Value.HasValue && _properties[proxyIdx].Value.Value.ToBoolean()))
             {
-                if (_properties.TryGetValue("__proxyHas__", out var proxyHas) && (proxyHas.Value.HasValue && proxyHas.Value.Value.IsFunction))
+                if (_shape.TryGetPropertyOffset("__proxyHas__", out var phIdx) && 
+                    (_properties[phIdx].Value.HasValue && _properties[phIdx].Value.Value.IsFunction))
                 {
-                    _properties.TryGetValue("__proxyTarget__", out var target);
-                    var fn = proxyHas.Value.Value.AsFunction();
-                    var res = fn.Invoke(new FenValue[] { target.Value ?? FenValue.Undefined, FenValue.FromString(key) }, context);
+                    _shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx);
+                    var target = targetIdx >= 0 ? _properties[targetIdx].Value : FenValue.Undefined;
+                    
+                    var fn = _properties[phIdx].Value.Value.AsFunction();
+                    var res = fn.Invoke(new FenValue[] { target ?? FenValue.Undefined, FenValue.FromString(key) }, context);
                     return res.ToBoolean();
                 }
             }
 
-            if (_properties.ContainsKey(key)) return true;
+            if (_shape.TryGetPropertyOffset(key, out _)) return true;
             if (_prototype != null) return _prototype.Has(key, context);
             return false;
         }
 
         public virtual bool Delete(string key, IExecutionContext context = null)
         {
-            if (_properties.TryGetValue(key, out var desc))
+            if (_shape.TryGetPropertyOffset(key, out var index))
             {
+                var desc = _properties[index];
                 if (desc.Configurable == false)
                     return false; // Cannot delete non-configurable property
-                return _properties.Remove(key);
+                    
+                // Deleting invalidates the fast path for this specific object, 
+                // but we can't easily rebuild array index maps at runtime efficiently.
+                // For now, we "tombstone" it by removing enumerability and setting value to undefined/empty.
+                desc.Value = null;
+                desc.Enumerable = false;
+                desc.Configurable = true;
+                desc.Writable = true;
+                desc.Getter = null;
+                desc.Setter = null;
+                _properties[index] = desc;
+                return true;
             }
             return true; // Property doesn't exist, deletion "succeeds"
         }
@@ -223,20 +288,28 @@ namespace FenBrowser.FenEngine.Core
         public virtual IEnumerable<string> Keys(IExecutionContext context = null)
         {
             // PROXY TRAP: OwnKeys
-            if (_properties.TryGetValue("__isProxy__", out var isProxy) && (isProxy.Value.HasValue && isProxy.Value.Value.ToBoolean()))
+            if (_shape.TryGetPropertyOffset("__isProxy__", out var proxyIdx) && 
+                (_properties[proxyIdx].Value.HasValue && _properties[proxyIdx].Value.Value.ToBoolean()))
             {
-                if (_properties.TryGetValue("__proxyOwnKeys__", out var proxyKeys) && (proxyKeys.Value.HasValue && proxyKeys.Value.Value.IsFunction))
+                if (_shape.TryGetPropertyOffset("__proxyOwnKeys__", out var pkIdx) && 
+                    (_properties[pkIdx].Value.HasValue && _properties[pkIdx].Value.Value.IsFunction))
                 {
-                    var fn = proxyKeys.Value.Value.AsFunction();
+                    var fn = _properties[pkIdx].Value.Value.AsFunction();
                     fn.Invoke(new FenValue[0], context);
                 }
             }
             
-            foreach (var kvp in _properties)
+            foreach (var key in _shape.GetPropertyNames())
             {
-                // Only yield enumerable properties, skip internal ones
-                if ((kvp.Value.Enumerable ?? false) && !kvp.Key.StartsWith("__") && !kvp.Key.StartsWith("@@"))
-                    yield return kvp.Key;
+                if (_shape.TryGetPropertyOffset(key, out var idx))
+                {
+                    var desc = _properties[idx];
+                    // Skip deleted / tombstoned properties
+                    if (!desc.Value.HasValue && desc.Getter == null && desc.Setter == null && desc.Enumerable == false) continue;
+                    
+                    if ((desc.Enumerable ?? false) && !key.StartsWith("__") && !key.StartsWith("@@"))
+                        yield return key;
+                }
             }
         }
         
@@ -245,10 +318,16 @@ namespace FenBrowser.FenEngine.Core
         /// </summary>
         public virtual IEnumerable<string> GetOwnPropertyNames()
         {
-            foreach (var key in _properties.Keys)
+            foreach (var key in _shape.GetPropertyNames())
             {
-                if (!key.StartsWith("__") && !key.StartsWith("@@"))
-                    yield return key;
+                if (_shape.TryGetPropertyOffset(key, out var idx))
+                {
+                    var desc = _properties[idx];
+                    if (!desc.Value.HasValue && desc.Getter == null && desc.Setter == null && desc.Enumerable == false) continue; // Skip bounds/deleted
+
+                    if (!key.StartsWith("__") && !key.StartsWith("@@"))
+                        yield return key;
+                }
             }
         }
         
@@ -258,7 +337,7 @@ namespace FenBrowser.FenEngine.Core
         public virtual bool DefineOwnProperty(string key, PropertyDescriptor desc)
         {
             PropertyDescriptor current;
-            bool exists = _properties.TryGetValue(key, out current);
+            bool exists = _shape.TryGetPropertyOffset(key, out var index);
 
             if (!exists)
             {
@@ -269,16 +348,25 @@ namespace FenBrowser.FenEngine.Core
                 if (newDesc.IsData)
                 {
                     if (!newDesc.Writable.HasValue) newDesc.Writable = false;
-                    if (!newDesc.Value.HasValue) newDesc.Value = FenValue.Undefined; // Actually Value is struct FenValue, verify default
+                    if (!newDesc.Value.HasValue) newDesc.Value = FenValue.Undefined; 
                 }
                 if (!newDesc.Enumerable.HasValue) newDesc.Enumerable = false;
                 if (!newDesc.Configurable.HasValue) newDesc.Configurable = false;
                 
-                _properties[key] = newDesc;
+                _shape = _shape.TransitionTo(key);
+                index = _shape.PropertyCount - 1;
+                
+                if (index >= _properties.Length)
+                {
+                    Array.Resize(ref _properties, _properties.Length * 2);
+                }
+                
+                _properties[index] = newDesc;
                 return true;
             }
 
             // Existing property
+            current = _properties[index];
             
             // If descriptor is empty, return true
             if (!desc.Value.HasValue && !desc.Writable.HasValue && desc.Getter == null && desc.Setter == null && !desc.Enumerable.HasValue && !desc.Configurable.HasValue)
@@ -299,10 +387,6 @@ namespace FenBrowser.FenEngine.Core
             {
                 // Functionally different (Accessor <-> Data)
                 if (current.Configurable == false) return false;
-                
-                // Preservation of attributes logic handled by caller or just overwrite?
-                // Test262 usually requires "preserve what is not specified". 
-                // Since `desc` has nullables, we can merge.
             }
             else if (current.IsData && desc.IsData)
             {
@@ -330,7 +414,7 @@ namespace FenBrowser.FenEngine.Core
             if (desc.Enumerable.HasValue) merged.Enumerable = desc.Enumerable;
             if (desc.Configurable.HasValue) merged.Configurable = desc.Configurable;
             
-            _properties[key] = merged;
+            _properties[index] = merged;
             return true;
         }
         
@@ -339,8 +423,12 @@ namespace FenBrowser.FenEngine.Core
         /// </summary>
         public virtual PropertyDescriptor? GetOwnPropertyDescriptor(string key)
         {
-            if (_properties.TryGetValue(key, out var desc))
+            if (_shape.TryGetPropertyOffset(key, out var index))
+            {
+                var desc = _properties[index];
+                if (!desc.Value.HasValue && desc.Getter == null && desc.Setter == null && desc.Enumerable == false) return null; // Tombstoned
                 return desc;
+            }
             return null;
         }
         
@@ -349,7 +437,21 @@ namespace FenBrowser.FenEngine.Core
         /// </summary>
         public void SetDirect(string key, FenValue value)
         {
-            _properties[key] = PropertyDescriptor.DataDefault(value);
+            if (_shape.TryGetPropertyOffset(key, out var idx))
+            {
+                _properties[idx] = PropertyDescriptor.DataDefault(value);
+                return;
+            }
+            
+            _shape = _shape.TransitionTo(key);
+            idx = _shape.PropertyCount - 1;
+            
+            if (idx >= _properties.Length)
+            {
+                Array.Resize(ref _properties, _properties.Length * 2);
+            }
+            
+            _properties[idx] = PropertyDescriptor.DataDefault(value);
         }
         
         /// <summary>
@@ -363,12 +465,14 @@ namespace FenBrowser.FenEngine.Core
         public bool Seal()
         {
             _extensible = false;
-            var keys = new List<string>(_properties.Keys);
-            foreach (var key in keys)
+            foreach (var key in _shape.GetPropertyNames())
             {
-                var desc = _properties[key];
-                desc.Configurable = false;
-                _properties[key] = desc;
+                if (_shape.TryGetPropertyOffset(key, out var idx))
+                {
+                    var desc = _properties[idx];
+                    desc.Configurable = false;
+                    _properties[idx] = desc;
+                }
             }
             return true;
         }
@@ -379,13 +483,15 @@ namespace FenBrowser.FenEngine.Core
         public bool Freeze()
         {
             _extensible = false;
-            var keys = new List<string>(_properties.Keys);
-            foreach (var key in keys)
+            foreach (var key in _shape.GetPropertyNames())
             {
-                var desc = _properties[key];
-                desc.Configurable = false;
-                if (desc.IsData) desc.Writable = false;
-                _properties[key] = desc;
+                if (_shape.TryGetPropertyOffset(key, out var idx))
+                {
+                    var desc = _properties[idx];
+                    desc.Configurable = false;
+                    if (desc.IsData) desc.Writable = false;
+                    _properties[idx] = desc;
+                }
             }
             return true;
         }
@@ -396,8 +502,8 @@ namespace FenBrowser.FenEngine.Core
         public bool IsSealed()
         {
             if (_extensible) return false;
-            foreach (var desc in _properties.Values)
-                if (desc.Configurable == true) return false;
+            for (int i = 0; i < _shape.PropertyCount; i++)
+                if (_properties[i].Configurable == true) return false;
             return true;
         }
         
@@ -407,15 +513,25 @@ namespace FenBrowser.FenEngine.Core
         public bool IsFrozen()
         {
             if (_extensible) return false;
-            foreach (var desc in _properties.Values)
+            for (int i = 0; i < _shape.PropertyCount; i++)
             {
-                if (desc.Configurable == true) return false;
-                if (desc.IsData && desc.Writable == true) return false;
+                if (_properties[i].Configurable == true) return false;
+                if (_properties[i].IsData && _properties[i].Writable == true) return false;
             }
             return true;
         }
 
         public virtual IObject GetPrototype() => _prototype;
         public virtual void SetPrototype(IObject prototype) => _prototype = prototype;
+
+        /// <summary>
+        /// Gets the current Shape (Hidden Class) of the object for Inline Caching
+        /// </summary>
+        public Shape GetShape() => _shape;
+
+        /// <summary>
+        /// Provides direct memory array access to the properties for Inline Caching
+        /// </summary>
+        public PropertyDescriptor[] GetPropertyStorage() => _properties;
     }
 }

@@ -33,6 +33,8 @@ namespace FenBrowser.FenEngine.Core.Types
         public static readonly JsSymbol Split = CreateWellKnown("Symbol.split");
         public static readonly JsSymbol Unscopables = CreateWellKnown("Symbol.unscopables");
         public static readonly JsSymbol AsyncIterator = CreateWellKnown("Symbol.asyncIterator");
+        public static readonly JsSymbol Dispose = CreateWellKnown("Symbol.dispose");
+        public static readonly JsSymbol AsyncDispose = CreateWellKnown("Symbol.asyncDispose");
 
         /// <summary>
         /// Create a new unique symbol

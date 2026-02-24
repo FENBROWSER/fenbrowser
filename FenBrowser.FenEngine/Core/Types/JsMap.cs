@@ -87,14 +87,21 @@ namespace FenBrowser.FenEngine.Core.Types
                 if (args.Length < 1 || !args[0].IsFunction) return FenValue.Undefined;
                 var callback = args[0].AsFunction();
                 var thisArg = args.Length > 1 ? args[1] : FenValue.Undefined;
-                
+
                 // Use _context stored
                 // Also standard map.forEach passes (value, key, map)
                 foreach(var kv in _storage)
                 {
-                    callback.Invoke(new FenValue[] { (FenValue)kv.Value, (FenValue)kv.Key, FenValue.FromObject((IObject)this) }, _context); 
+                    callback.Invoke(new FenValue[] { (FenValue)kv.Value, (FenValue)kv.Key, FenValue.FromObject((IObject)this) }, _context);
                 }
                 return FenValue.Undefined;
+            })));
+
+            // [Symbol.iterator] — default iterator returns entries (same as entries())
+            Set("[Symbol.iterator]", FenValue.FromFunction(new FenFunction("[Symbol.iterator]", (args, thisVal) =>
+            {
+                var entries = _storage.Select(kv => FenValue.FromObject(CreateArray(new FenValue[] { (FenValue)kv.Key, (FenValue)kv.Value })));
+                return FenValue.FromObject(CreateIteratorResult(entries));
             })));
         }
 

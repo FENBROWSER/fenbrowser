@@ -227,9 +227,10 @@ namespace FenBrowser.Core.Dom.V2.Selectors
             // Check for case-sensitivity flag
             SkipWhitespace(input, ref i);
             bool caseInsensitive = false;
-            if (i < input.Length && (input[i] == 'i' || input[i] == 'I'))
+            if (i < input.Length &&
+                (input[i] == 'i' || input[i] == 'I' || input[i] == 's' || input[i] == 'S'))
             {
-                caseInsensitive = true;
+                caseInsensitive = input[i] == 'i' || input[i] == 'I';
                 i++;
                 SkipWhitespace(input, ref i);
             }
@@ -403,7 +404,7 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                 TokenType.AttributeSelector => new AttributeSelector(
                     token.Value, token.AttrValue, token.MatchType, token.CaseInsensitive),
                 TokenType.PseudoClass => CreatePseudoClassSelector(token.Value, token.FunctionArg),
-                TokenType.PseudoElement => new PseudoElementSelector(token.Value),
+                TokenType.PseudoElement => new PseudoElementSelector(token.Value, token.FunctionArg),
                 _ => throw new DomException("SyntaxError", $"Unexpected token type {token.Type}")
             };
         }
@@ -427,6 +428,7 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                 "only-of-type" => new OnlyChildSelector(true),
                 "root" => new RootSelector(),
                 "empty" => new EmptySelector(),
+                "host" => new HostSelector(arg),
                 "link" or "visited" or "hover" or "active" or "focus" or
                 "focus-visible" or "focus-within" or "target" or
                 "enabled" or "disabled" or "checked" or "indeterminate" or

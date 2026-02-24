@@ -410,6 +410,13 @@ namespace FenBrowser.Core.Dom.V2
 
         // --- Attribute Change Callbacks ---
 
+        /// <summary>
+        /// Fired whenever a style-affecting attribute (class, id, style) changes on any element.
+        /// Consumers (e.g. BrowserApi) subscribe to schedule a CSS re-cascade so pseudo-class
+        /// selectors and class/id rules reflect the updated DOM state.
+        /// </summary>
+        public static event Action StyleAttributeChanged;
+
         internal void OnAttributeValueChanged(Attr attr, string oldValue)
         {
             var name = attr.Name;
@@ -447,6 +454,7 @@ namespace FenBrowser.Core.Dom.V2
             if (IsStyleAffectingAttribute(name))
             {
                 MarkDirty(InvalidationKind.Style);
+                try { StyleAttributeChanged?.Invoke(); } catch { }
             }
 
             // Update ancestor filter for selector optimization
@@ -483,7 +491,10 @@ namespace FenBrowser.Core.Dom.V2
                 _flags &= ~NodeFlags.HasStyleAttribute;
 
             if (IsStyleAffectingAttribute(name))
+            {
                 MarkDirty(InvalidationKind.Style);
+                try { StyleAttributeChanged?.Invoke(); } catch { }
+            }
 
             UpdateAncestorFilter();
             NotifyAttributeMutation(attr, oldValue);
@@ -612,8 +623,13 @@ namespace FenBrowser.Core.Dom.V2
         {
             get
             {
-                // TODO: Implement slot assignment
-                return null;
+                // Find the <slot> element in the shadow root of this element's parent.
+                // Uses this element's slot attribute value to match the slot name.
+                if (_parentNode is not Element parentEl) return null;
+                var shadowRoot = parentEl.ShadowRoot; // null for closed shadow roots (per spec)
+                if (shadowRoot == null) return null;
+                var slotName = GetAttribute("slot") ?? "";
+                return shadowRoot.GetSlotByName(slotName);
             }
         }
 

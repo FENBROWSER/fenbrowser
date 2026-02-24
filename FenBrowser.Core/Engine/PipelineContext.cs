@@ -48,6 +48,7 @@ namespace FenBrowser.Core.Engine
 
         // Timing information
         private DateTime _frameStartTime;
+        private DateTime _currentStageStartTime;
         private readonly Dictionary<PipelineStage, TimeSpan> _stageTimes = new();
 
         // Viewport dimensions (needed for layout)
@@ -111,6 +112,7 @@ namespace FenBrowser.Core.Engine
         {
             ValidateStageTransition(_currentStage, stage);
             _currentStage = stage;
+            _currentStageStartTime = DateTime.UtcNow;
 
 #if DEBUG
             FenBrowser.Core.FenLogger.Debug(
@@ -126,7 +128,8 @@ namespace FenBrowser.Core.Engine
         {
             if (_currentStage != PipelineStage.Idle)
             {
-                _stageTimes[_currentStage] = DateTime.UtcNow - _frameStartTime;
+                var stageStart = _currentStageStartTime == default ? _frameStartTime : _currentStageStartTime;
+                _stageTimes[_currentStage] = DateTime.UtcNow - stageStart;
             }
             // Note: Don't reset to Idle here - let BeginStage handle transitions
         }
@@ -138,6 +141,7 @@ namespace FenBrowser.Core.Engine
         {
             Interlocked.Increment(ref _frameNumber);
             _frameStartTime = DateTime.UtcNow;
+            _currentStageStartTime = _frameStartTime;
             _stageTimes.Clear();
             _currentStage = PipelineStage.Idle;
         }
@@ -148,6 +152,24 @@ namespace FenBrowser.Core.Engine
         public void EndFrame()
         {
             _currentStage = PipelineStage.Idle;
+        }
+
+        /// <summary>
+        /// Begin a new frame and return a scope that always ends the frame.
+        /// </summary>
+        public PipelineFrameScope BeginScopedFrame()
+        {
+            BeginFrame();
+            return new PipelineFrameScope(this);
+        }
+
+        /// <summary>
+        /// Begin a stage and return a scope that always ends the stage.
+        /// </summary>
+        public PipelineStageScope BeginScopedStage(PipelineStage stage)
+        {
+            BeginStage(stage);
+            return new PipelineStageScope(this);
         }
 
         /// <summary>
@@ -167,9 +189,15 @@ namespace FenBrowser.Core.Engine
             if (to >= from)
                 return;
 
+            // HTML spec requires tokenizer and tree builder to interleave:
+            // the tree builder switches the tokenizer state for <script>, <style>,
+            // <textarea>, etc.  Allow Parsing -> Tokenizing transitions.
+            if (from == PipelineStage.Parsing && to == PipelineStage.Tokenizing)
+                return;
+
             // Backward transitions are forbidden
             throw new PipelineStageException(
-                $"Invalid pipeline stage transition: {from} → {to}. " +
+                $"Invalid pipeline stage transition: {from} -> {to}. " +
                 $"Pipeline stages must proceed forward only.");
         }
 
@@ -363,6 +391,50 @@ namespace FenBrowser.Core.Engine
         }
 
         #endregion
+    }
+
+    /// <summary>
+    /// Scope helper that guarantees EndFrame() even on exceptions.
+    /// </summary>
+    public sealed class PipelineFrameScope : IDisposable
+    {
+        private PipelineContext _context;
+
+        public PipelineFrameScope(PipelineContext context)
+        {
+            _context = context;
+        }
+
+        public void Dispose()
+        {
+            var context = Interlocked.Exchange(ref _context, null);
+            if (context != null)
+            {
+                context.EndFrame();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Scope helper that guarantees EndStage() even on exceptions.
+    /// </summary>
+    public sealed class PipelineStageScope : IDisposable
+    {
+        private PipelineContext _context;
+
+        public PipelineStageScope(PipelineContext context)
+        {
+            _context = context;
+        }
+
+        public void Dispose()
+        {
+            var context = Interlocked.Exchange(ref _context, null);
+            if (context != null)
+            {
+                context.EndStage();
+            }
+        }
     }
 
     /// <summary>

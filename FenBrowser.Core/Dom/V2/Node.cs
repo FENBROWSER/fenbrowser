@@ -108,6 +108,8 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public Node ParentNode => _parentNode;
 
+        internal override EventTarget GetParentForEventDispatch() => _parentNode;
+
         /// <summary>
         /// Returns the parent element (null if parent is not an Element).
         /// https://dom.spec.whatwg.org/#dom-node-parentelement

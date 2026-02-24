@@ -325,10 +325,25 @@ namespace FenBrowser.FenEngine.Core
                 var method = obj.Get(methodName, context);
                 if (method.IsFunction)
                 {
-                    // Set this binding to the object being converted
+                    // Set this binding to the object being converted.
+                    // Always ensure ThisBinding is set (even when context is null) so that
+                    // toString/valueOf methods inside the object can access 'this' correctly.
                     FenValue oldThis = Undefined;
-                    if (context != null) { oldThis = context.ThisBinding; context.ThisBinding = FromObject(obj); }
-                    var result = method.AsFunction().Invoke(new FenValue[0], context);
+                    IExecutionContext invokeCtx = context;
+                    if (context != null)
+                    {
+                        oldThis = context.ThisBinding;
+                        context.ThisBinding = FromObject(obj);
+                    }
+                    else
+                    {
+                        // No outer context — create a minimal one so 'this' is set correctly
+                        invokeCtx = new FenBrowser.FenEngine.Core.ExecutionContext
+                        {
+                            ThisBinding = FromObject(obj)
+                        };
+                    }
+                    var result = method.AsFunction().Invoke(new FenValue[0], invokeCtx);
                     if (context != null) context.ThisBinding = oldThis;
                     // Check if result is primitive
                     if (result.Type != Interfaces.ValueType.Object && result.Type != Interfaces.ValueType.Function)

@@ -36,6 +36,9 @@ namespace FenBrowser.Core
         public CertificateInfo Certificate;
         public System.Net.Security.SslPolicyErrors SslErrors;
         public HttpResponseHeaders Headers;
+        public bool Redirected;
+        public int RedirectCount;
+        public IReadOnlyList<string> RedirectChain;
     }
 
     public sealed class ResourceManager
@@ -595,6 +598,11 @@ namespace FenBrowser.Core
 
             var refererOriginal = referer;
             Uri previousRequest = null;
+            var redirectChain = new List<Uri>();
+            if (url != null)
+            {
+                redirectChain.Add(url);
+            }
 
             try
             {
@@ -645,7 +653,15 @@ namespace FenBrowser.Core
                     }
                     catch (TaskCanceledException)
                     {
-                        return new FetchResult { Status = FetchStatus.Timeout, ErrorDetail = "Connection timed out", FinalUri = current };
+                        return new FetchResult
+                        {
+                            Status = FetchStatus.Timeout,
+                            ErrorDetail = "Connection timed out",
+                            FinalUri = current,
+                            Redirected = redirectChain.Count > 1,
+                            RedirectCount = Math.Max(0, redirectChain.Count - 1),
+                            RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray()
+                        };
                     }
                     catch (HttpRequestException httpEx)
                     {
@@ -654,13 +670,39 @@ namespace FenBrowser.Core
                         if (httpEx.InnerException != null) msg += " " + httpEx.InnerException.Message;
                         
                         if (msg.Contains("SSL") || msg.Contains("cert") || msg.Contains("security"))
-                            return new FetchResult { Status = FetchStatus.SslError, ErrorDetail = msg, FinalUri = current };
-                        
-                        return new FetchResult { Status = FetchStatus.ConnectionFailed, ErrorDetail = msg, FinalUri = current };
+                        {
+                            return new FetchResult
+                            {
+                                Status = FetchStatus.SslError,
+                                ErrorDetail = msg,
+                                FinalUri = current,
+                                Redirected = redirectChain.Count > 1,
+                                RedirectCount = Math.Max(0, redirectChain.Count - 1),
+                                RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray()
+                            };
+                        }
+
+                        return new FetchResult
+                        {
+                            Status = FetchStatus.ConnectionFailed,
+                            ErrorDetail = msg,
+                            FinalUri = current,
+                            Redirected = redirectChain.Count > 1,
+                            RedirectCount = Math.Max(0, redirectChain.Count - 1),
+                            RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray()
+                        };
                     }
                     catch (Exception sendEx)
                     {
-                         return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = sendEx.Message, FinalUri = current };
+                         return new FetchResult
+                         {
+                             Status = FetchStatus.UnknownError,
+                             ErrorDetail = sendEx.Message,
+                             FinalUri = current,
+                             Redirected = redirectChain.Count > 1,
+                             RedirectCount = Math.Max(0, redirectChain.Count - 1),
+                             RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray()
+                         };
                     }
                     
                     if (resp != null)
@@ -672,6 +714,7 @@ namespace FenBrowser.Core
                             previousRequest = current;
                             // current = UpgradeIfHsts(loc); // Handled by HstsHandler
                             current = loc;
+                            redirectChain.Add(current);
                             hops++;
                             /* [PERF-REMOVED] */
                             continue;
@@ -682,7 +725,15 @@ namespace FenBrowser.Core
 
                 if (resp == null)
                 {
-                     return new FetchResult { Status = FetchStatus.ConnectionFailed, ErrorDetail = "No response received", FinalUri = current };
+                     return new FetchResult
+                     {
+                         Status = FetchStatus.ConnectionFailed,
+                         ErrorDetail = "No response received",
+                         FinalUri = current,
+                         Redirected = redirectChain.Count > 1,
+                         RedirectCount = Math.Max(0, redirectChain.Count - 1),
+                         RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray()
+                     };
                 }
 
                 var finalUri = resp?.RequestMessage?.RequestUri ?? current ?? url;
@@ -707,7 +758,10 @@ namespace FenBrowser.Core
                         ErrorDetail = $"HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}", 
                         Content = errBody,
                         FinalUri = finalUri,
-                        ContentType = ct
+                        ContentType = ct,
+                        Redirected = redirectChain.Count > 1,
+                        RedirectCount = Math.Max(0, redirectChain.Count - 1),
+                        RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray()
                     };
                 }
 
@@ -715,7 +769,15 @@ namespace FenBrowser.Core
                 try { text = await resp.Content.ReadAsStringAsync().ConfigureAwait(false); }
                 catch (Exception bodyEx)
                 {
-                    return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = "Failed to read body: " + bodyEx.Message, FinalUri = finalUri };
+                    return new FetchResult
+                    {
+                        Status = FetchStatus.UnknownError,
+                        ErrorDetail = "Failed to read body: " + bodyEx.Message,
+                        FinalUri = finalUri,
+                        Redirected = redirectChain.Count > 1,
+                        RedirectCount = Math.Max(0, redirectChain.Count - 1),
+                        RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray()
+                    };
                 }
 
                 // [Verification] Register source truth
@@ -727,11 +789,22 @@ namespace FenBrowser.Core
                     StatusCode = (int)resp.StatusCode, 
                     FinalUri = finalUri,
                     ContentType = ct,
-                    Headers = resp.Headers
+                    Headers = resp.Headers,
+                    Redirected = redirectChain.Count > 1,
+                    RedirectCount = Math.Max(0, redirectChain.Count - 1),
+                    RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray()
                 };
             }
             catch (Exception ex) {
-                return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = ex.Message, FinalUri = url };
+                return new FetchResult
+                {
+                    Status = FetchStatus.UnknownError,
+                    ErrorDetail = ex.Message,
+                    FinalUri = url,
+                    Redirected = redirectChain.Count > 1,
+                    RedirectCount = Math.Max(0, redirectChain.Count - 1),
+                    RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray()
+                };
             }
         }
 
