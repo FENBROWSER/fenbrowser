@@ -99,6 +99,9 @@ namespace FenBrowser.FenEngine.WebAPIs
                         // 2. Network Fetch via Handler
                         if (fetchHandler  == null) throw new Exception("FetchHandler missing");
 
+                        // SECURITY: Validate URL (scheme + private-IP block) and method
+                        ValidateFetchUrl(request.Url);
+
                         var req = new HttpRequestMessage(new HttpMethod(request.Method), request.Url);
                         if (request.Body != null)
                         {
@@ -223,6 +226,78 @@ namespace FenBrowser.FenEngine.WebAPIs
                 response.Content.Headers.TryAddWithoutValidation(key, value);
             }
         }
+
+        // ------------------------------------------------------------------ security helpers
+
+        // SECURITY: Only http/https permitted — blocks file://, data:, ftp:, javascript:, etc.
+        internal static void ValidateFetchUrl(string url)
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+                throw new InvalidOperationException($"Failed to fetch: '{url}' is not a valid URL.");
+
+            var scheme = uri.Scheme?.ToLowerInvariant();
+            if (scheme != "http" && scheme != "https")
+                throw new InvalidOperationException($"Failed to fetch: URL scheme '{scheme}:' is not allowed.");
+
+            if (IsPrivateOrReservedHost(uri.Host?.ToLowerInvariant()))
+                throw new InvalidOperationException("Failed to fetch: Requests to private or internal network addresses are blocked.");
+        }
+
+        // SECURITY: Whitelist valid HTTP methods — prevents CRLF/request-smuggling injection.
+        private static readonly HashSet<string> _allowedHttpMethods = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH" };
+
+        internal static string ValidateMethod(string method)
+        {
+            var upper = (method ?? "GET").Trim().ToUpperInvariant();
+            if (!_allowedHttpMethods.Contains(upper))
+                throw new InvalidOperationException($"Failed to fetch: '{method}' is not an allowed HTTP method.");
+            return upper;
+        }
+
+        // SECURITY: WHATWG forbidden request headers
+        internal static readonly HashSet<string> _forbiddenRequestHeaders = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "accept-charset", "accept-encoding", "access-control-request-headers",
+            "access-control-request-method", "connection", "content-length",
+            "cookie", "cookie2", "date", "dnt", "expect", "host", "keep-alive",
+            "origin", "referer", "te", "trailer", "transfer-encoding", "upgrade", "via"
+        };
+
+        // SECURITY: Strip CR/LF from header values to prevent header injection
+        internal static string SanitizeHeaderValue(string value) =>
+            value?.Replace("\r", "").Replace("\n", "") ?? "";
+
+        // SECURITY: Returns true for loopback, private RFC-1918, link-local, and CGNAT ranges.
+        private static bool IsPrivateOrReservedHost(string host)
+        {
+            if (string.IsNullOrEmpty(host)) return true;
+            if (host == "localhost" || host == "ip6-localhost" || host == "ip6-loopback") return true;
+
+            if (!System.Net.IPAddress.TryParse(host, out var ip)) return false;
+
+            var bytes = ip.GetAddressBytes();
+
+            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+            {
+                return bytes[0] == 127                                              // 127.0.0.0/8  loopback
+                    || bytes[0] == 0                                                // 0.0.0.0/8
+                    || bytes[0] == 10                                               // 10.0.0.0/8   RFC-1918
+                    || (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31)       // 172.16.0.0/12 RFC-1918
+                    || (bytes[0] == 192 && bytes[1] == 168)                         // 192.168.0.0/16 RFC-1918
+                    || (bytes[0] == 169 && bytes[1] == 254)                         // 169.254.0.0/16 link-local / AWS metadata
+                    || (bytes[0] == 100 && bytes[1] >= 64 && bytes[1] <= 127);     // 100.64.0.0/10 CGNAT
+            }
+
+            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+            {
+                return ip.Equals(System.Net.IPAddress.IPv6Loopback)                // ::1
+                    || (bytes[0] == 0xfe && (bytes[1] & 0xc0) == 0x80)            // fe80::/10 link-local
+                    || ((bytes[0] & 0xfe) == 0xfc);                               // fc00::/7  unique-local
+            }
+
+            return false;
+        }
     }
 
     public class JsRequest : FenObject
@@ -238,7 +313,8 @@ namespace FenBrowser.FenEngine.WebAPIs
                 if (!options.IsNull && options.IsObject)
                 {
                     var opts = options.AsObject();
-                    if (opts.Has("method")) Method = opts.Get("method").ToString().ToUpperInvariant();
+                    // SECURITY: Whitelist method to prevent HTTP method/CRLF injection
+                    if (opts.Has("method")) Method = FetchApi.ValidateMethod(opts.Get("method").ToString());
                     if (opts.Has("body")) Body = opts.Get("body").ToString();
                     if (opts.Has("headers"))
                     {
@@ -286,14 +362,20 @@ namespace FenBrowser.FenEngine.WebAPIs
         private FenValue Append(FenValue[] args, FenValue thisVal)
         {
              if (args.Length < 2) return FenValue.Undefined;
-             var key = args[0].ToString().ToLowerInvariant();
-             var val = args[1].ToString();
-             
+             // Route through SetHeader so CRLF sanitization + forbidden-header checks apply
+             var key = FetchApi.SanitizeHeaderValue(args[0].ToString())?.Trim().ToLowerInvariant() ?? "";
+             var val = FetchApi.SanitizeHeaderValue(args[1].ToString());
+             if (string.IsNullOrEmpty(key)) return FenValue.Undefined;
+             if (FetchApi._forbiddenRequestHeaders.Contains(key) ||
+                 key.StartsWith("proxy-", StringComparison.Ordinal) ||
+                 key.StartsWith("sec-", StringComparison.Ordinal))
+                 return FenValue.Undefined;
+
              if (_headers.ContainsKey(key))
                  _headers[key] += ", " + val;
              else
                  _headers[key] = val;
-                 
+
              return FenValue.Undefined;
         }
 
@@ -324,7 +406,14 @@ namespace FenBrowser.FenEngine.WebAPIs
 
         public void SetHeader(string key, string value)
         {
-             _headers[key.ToLowerInvariant()] = value;
+            // SECURITY: Sanitize to prevent CRLF injection; reject WHATWG forbidden headers
+            var normalKey = FetchApi.SanitizeHeaderValue(key)?.Trim().ToLowerInvariant() ?? "";
+            if (string.IsNullOrEmpty(normalKey)) return;
+            if (FetchApi._forbiddenRequestHeaders.Contains(normalKey) ||
+                normalKey.StartsWith("proxy-", StringComparison.Ordinal) ||
+                normalKey.StartsWith("sec-", StringComparison.Ordinal))
+                return; // Silently ignore forbidden headers per Fetch spec
+            _headers[normalKey] = FetchApi.SanitizeHeaderValue(value);
         }
 
         private FenValue SetHeaderBinding(FenValue[] args, FenValue thisVal)

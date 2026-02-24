@@ -189,6 +189,12 @@ namespace FenBrowser.FenEngine.DOM
                 case "classlist":
                     return FenValue.FromObject(new DOMTokenList(_element, "class", _context));
                 
+                case "getboundingclientrect":
+                    return FenValue.FromFunction(new FenFunction("getBoundingClientRect", GetBoundingClientRectMethod));
+                
+                case "getclientrects":
+                    return FenValue.FromFunction(new FenFunction("getClientRects", GetClientRectsMethod));
+
                 default:
                     return base.Get(key, context);
             }
@@ -252,10 +258,10 @@ namespace FenBrowser.FenEngine.DOM
                 {
                     // Create JavaScript wrapper object with all WebGL methods and constants
                     var wrapper = FenBrowser.FenEngine.Rendering.WebGL.WebGLJavaScriptBindings.CreateJSWrapper(context);
-                    return FenValue.FromObject(new WebGLContextWrapper(context, wrapper));
+                    return FenValue.FromObject(new WebGLContextWrapper(context, wrapper, _element, _context));
                 }
             }
-            
+
             // WebGL2 Context
             if (type == "webgl2")
             {
@@ -264,7 +270,7 @@ namespace FenBrowser.FenEngine.DOM
                 if (context != null)
                 {
                     var wrapper = FenBrowser.FenEngine.Rendering.WebGL.WebGLJavaScriptBindings.CreateJSWrapper(context);
-                    return FenValue.FromObject(new WebGLContextWrapper(context, wrapper));
+                    return FenValue.FromObject(new WebGLContextWrapper(context, wrapper, _element, _context));
                 }
             }
             
@@ -278,13 +284,18 @@ namespace FenBrowser.FenEngine.DOM
         {
             private readonly FenBrowser.FenEngine.Rendering.WebGL.WebGLRenderingContext _context;
             private readonly Dictionary<string, object> _methods;
+            private readonly FenBrowser.Core.Dom.V2.Element _canvasElement;
+            private readonly IExecutionContext _execContext;
             private IObject _prototype;
             public object NativeObject { get; set; }
-            
-            public WebGLContextWrapper(FenBrowser.FenEngine.Rendering.WebGL.WebGLRenderingContext context, object methods)
+
+            public WebGLContextWrapper(FenBrowser.FenEngine.Rendering.WebGL.WebGLRenderingContext context, object methods,
+                FenBrowser.Core.Dom.V2.Element canvasElement = null, IExecutionContext execContext = null)
             {
                 _context = context;
                 _methods = methods as Dictionary<string, object> ?? new Dictionary<string, object>();
+                _canvasElement = canvasElement;
+                _execContext = execContext;
             }
             
             public FenValue Get(string key, IExecutionContext context = null)
@@ -327,7 +338,9 @@ namespace FenBrowser.FenEngine.DOM
                 // Also expose properties like drawingBufferWidth, drawingBufferHeight
                 if (key == "drawingBufferWidth") return FenValue.FromNumber(_context.DrawingBufferWidth);
                 if (key == "drawingBufferHeight") return FenValue.FromNumber(_context.DrawingBufferHeight);
-                if (key == "canvas") return FenValue.Undefined; // TODO: return canvas element
+                if (key == "canvas") return _canvasElement != null
+                    ? DomWrapperFactory.Wrap(_canvasElement, _execContext)
+                    : FenValue.Null;
                 
                 return FenValue.Undefined;
             }
@@ -881,16 +894,26 @@ namespace FenBrowser.FenEngine.DOM
                 null,
                 ""
             ));
-            // TODO: Top layer support
+            // Mark as top-layer modal so UA CSS can apply position:fixed + z-index overlay styling
+            _element.SetAttribute("data-top-layer", "modal");
+            DomMutationQueue.Instance.EnqueueMutation(new DomMutation(
+                MutationType.AttributeChange,
+                InvalidationKind.Style | InvalidationKind.Layout,
+                _element,
+                "data-top-layer",
+                null,
+                "modal"
+            ));
             return FenValue.Undefined;
         }
-        
+
         private FenValue CloseDialog(FenValue[] args, FenValue thisVal)
         {
              if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "close"))
                 throw new FenSecurityError("DOM write permission required");
 
             _element.RemoveAttribute("open");
+            _element.RemoveAttribute("data-top-layer");
              // Enqueue mutation (Deferred)
             DomMutationQueue.Instance.EnqueueMutation(new DomMutation(
                 MutationType.AttributeChange,
@@ -947,6 +970,7 @@ namespace FenBrowser.FenEngine.DOM
              bool capture = false;
              bool once = false;
              bool passive = false;
+             FenObject signalObj = null;
              if (args.Length >= 3)
              {
                 if (args[2].IsBoolean) capture = args[2].ToBoolean();
@@ -957,11 +981,42 @@ namespace FenBrowser.FenEngine.DOM
                        var cVal = opts.Get("capture"); capture = cVal.IsBoolean ? cVal.ToBoolean() : false;
                        var oVal = opts.Get("once"); once = oVal.IsBoolean ? oVal.ToBoolean() : false;
                        var pVal = opts.Get("passive"); passive = pVal.IsBoolean ? pVal.ToBoolean() : false;
+                       var sVal = opts.Get("signal");
+                       if (sVal.IsObject) signalObj = sVal.AsObject() as FenObject;
                    }
                 }
              }
 
-            EventRegistry.Add(_element, type, callback, capture, once, passive);
+             // If signal is already aborted, do not add the listener (per spec)
+             if (signalObj != null && signalObj.Get("aborted").ToBoolean())
+                 return FenValue.Undefined;
+
+            EventTarget.Registry.Add(_element, type, callback, capture, once, passive);
+
+            // Wire AbortSignal: when signal fires "abort", auto-remove this listener
+            if (signalObj != null)
+            {
+                var capturedElement = _element;
+                var capturedType = type;
+                var capturedCallback = callback;
+                var capturedCapture = capture;
+                var addAbortListener = signalObj.Get("addEventListener");
+                if (addAbortListener.IsFunction)
+                {
+                    addAbortListener.AsFunction()?.Invoke(new FenValue[]
+                    {
+                        FenValue.FromString("abort"),
+                        FenValue.FromFunction(new FenBrowser.FenEngine.Core.FenFunction("_signalAbortRemove",
+                            (abortArgs, abortThis) =>
+                            {
+                                EventTarget.Registry.Remove(capturedElement, capturedType,
+                                    capturedCallback, capturedCapture);
+                                return FenValue.Undefined;
+                            }))
+                    }, _context);
+                }
+            }
+
             return FenValue.Undefined;
         }
 
@@ -973,7 +1028,7 @@ namespace FenBrowser.FenEngine.DOM
             bool capture = false;
             if (args.Length >= 3 && args[2].IsBoolean) capture = args[2].ToBoolean();
             
-            EventRegistry.Remove(_element, type, callback, capture);
+            EventTarget.Registry.Remove(_element, type, callback, capture);
             return FenValue.Undefined;
         }
 
@@ -981,13 +1036,9 @@ namespace FenBrowser.FenEngine.DOM
         {
              if (args.Length == 0 || !args[0].IsObject) return FenValue.FromBoolean(false);
              var eventObj = args[0].AsObject() as DomEvent;
-              // Simulate
-              var listeners = EventRegistry.Get(_element, eventObj.Type, false);
-            foreach(var l in listeners) 
-            {
-                 try { l.Callback.AsFunction().Invoke(new FenValue[] { FenValue.FromObject(eventObj) }, _context); } catch {}
-            }
-            return FenValue.FromBoolean(true);
+             // Ensure it's dispatched through the correct DOM Event Flow
+             var notPrevented = EventTarget.DispatchEvent(_element, eventObj, _context);
+             return FenValue.FromBoolean(notPrevented);
         }
 
         private FenValue FocusMethod(FenValue[] args, FenValue thisVal)
@@ -1082,46 +1133,107 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.FromObject(arr);
         }
 
-        // Static Registry for Events (Global for simplicity or per Element?)
-        // Ideally per element. But for now using a static dictionary mapping Element -> Listeners
-        public static class EventRegistry
+        private FenValue GetBoundingClientRectMethod(FenValue[] args, FenValue thisVal)
         {
-            // Map: Element -> EventType -> List<Listener>
-            private static readonly Dictionary<Node, Dictionary<string, List<EventListener>>> _listeners = new Dictionary<Node, Dictionary<string, List<EventListener>>>();
-
-            public static void Add(Node node, string type, FenValue callback, bool capture, bool once, bool passive)
+            if (_context == null)
             {
-                if (!_listeners.ContainsKey(node)) _listeners[node] = new Dictionary<string, List<EventListener>>();
-                if (!_listeners[node].ContainsKey(type)) _listeners[node][type] = new List<EventListener>();
-                
-                _listeners[node][type].Add(new EventListener { Callback = callback, Capture = capture, Once = once, Passive = passive });
+                return FenValue.FromObject(new DOMRectReadOnly(0, 0, 0, 0));
             }
 
-            public static void Remove(Node node, string type, FenValue callback, bool capture)
+            var engine = _context.GetLayoutEngine();
+            if (engine != null)
             {
-                if (_listeners.ContainsKey(node) && _listeners[node].ContainsKey(type))
+                var box = engine.GetBoxForNode(_element);
+                if (box.HasValue)
                 {
-                    _listeners[node][type].RemoveAll(l => l.Callback.Equals(callback) && l.Capture == capture);
+                    return FenValue.FromObject(new DOMRectReadOnly(box.Value.Left, box.Value.Top, box.Value.Width, box.Value.Height));
                 }
-            }
-
-            public static List<EventListener> Get(Node node, string type, bool capture)
-            {
-                if (_listeners.ContainsKey(node) && _listeners[node].ContainsKey(type))
-                {
-                    return _listeners[node][type].Where(l => l.Capture == capture).ToList();
-                }
-                return new List<EventListener>();
             }
             
-            public struct EventListener
+            return FenValue.FromObject(new DOMRectReadOnly(0, 0, 0, 0));
+        }
+
+        private FenValue GetClientRectsMethod(FenValue[] args, FenValue thisVal)
+        {
+            var arr = new FenObject();
+            var rect = GetBoundingClientRectMethod(args, thisVal);
+            
+            // For now, getClientRects just returns an array containing the single bounding rect.
+            // Inline elements that wrap across lines might have multiple rects in reality.
+            var rectObj = rect.AsObject();
+            if (rectObj != null && rectObj.Get("width").ToNumber() > 0)
             {
-                public FenValue Callback;
-                public bool Capture;
-                public bool Once;
-                public bool Passive;
+                arr.Set("0", rect);
+                arr.Set("length", FenValue.FromNumber(1));
+            }
+            else
+            {
+                arr.Set("length", FenValue.FromNumber(0));
+            }
+            
+            return FenValue.FromObject(arr);
+        }
+    }
+
+    /// <summary>
+    /// Implements DOMRectReadOnly interface for getBoundingClientRect
+    /// </summary>
+    public class DOMRectReadOnly : IObject
+    {
+        private readonly double _x;
+        private readonly double _y;
+        private readonly double _width;
+        private readonly double _height;
+        private IObject _prototype;
+
+        public object NativeObject { get; set; }
+
+        public DOMRectReadOnly(double x, double y, double width, double height)
+        {
+            _x = x;
+            _y = y;
+            _width = width;
+            _height = height;
+        }
+
+        public FenValue Get(string key, IExecutionContext context = null)
+        {
+            switch (key.ToLowerInvariant())
+            {
+                case "x": return FenValue.FromNumber(_x);
+                case "y": return FenValue.FromNumber(_y);
+                case "width": return FenValue.FromNumber(_width);
+                case "height": return FenValue.FromNumber(_height);
+                case "top": return FenValue.FromNumber(_y);
+                case "right": return FenValue.FromNumber(_x + _width);
+                case "bottom": return FenValue.FromNumber(_y + _height);
+                case "left": return FenValue.FromNumber(_x);
+                case "tojson": return FenValue.FromFunction(new FenFunction("toJSON", ToJSONMethod));
+                default: return FenValue.Undefined;
             }
         }
+
+        private FenValue ToJSONMethod(FenValue[] args, FenValue thisVal)
+        {
+            var obj = new FenObject();
+            obj.Set("x", FenValue.FromNumber(_x));
+            obj.Set("y", FenValue.FromNumber(_y));
+            obj.Set("width", FenValue.FromNumber(_width));
+            obj.Set("height", FenValue.FromNumber(_height));
+            obj.Set("top", FenValue.FromNumber(_y));
+            obj.Set("right", FenValue.FromNumber(_x + _width));
+            obj.Set("bottom", FenValue.FromNumber(_y + _height));
+            obj.Set("left", FenValue.FromNumber(_x));
+            return FenValue.FromObject(obj);
+        }
+
+        public void Set(string key, FenValue value, IExecutionContext context = null) { } // ReadOnly
+        public bool Has(string key, IExecutionContext context = null) => !Get(key, context).IsUndefined;
+        public bool Delete(string key, IExecutionContext context = null) => false;
+        public IEnumerable<string> Keys(IExecutionContext context = null) => new[] { "x", "y", "width", "height", "top", "right", "bottom", "left", "toJSON" };
+        public IObject GetPrototype() => _prototype;
+        public void SetPrototype(IObject prototype) => _prototype = prototype;
+        public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
     }
 
     public class DOMTokenList : IObject

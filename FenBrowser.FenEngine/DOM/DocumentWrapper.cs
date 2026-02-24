@@ -342,19 +342,7 @@ namespace FenBrowser.FenEngine.DOM
 
         private void DispatchEventInternal(DomEvent evt)
         {
-            var listeners = ElementWrapper.EventRegistry.Get(_root, evt.Type, false);
-            foreach (var l in listeners)
-            {
-                try
-                {
-                    l.Callback.AsFunction().Invoke(new FenValue[] { FenValue.FromObject(evt) }, _context);
-                    if (l.Once) ElementWrapper.EventRegistry.Remove(_root, evt.Type, l.Callback, l.Capture);
-                }
-                catch (Exception ex)
-                {
-                    FenLogger.Error($"[DocumentWrapper] Error dispatching internal event '{evt.Type}': {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript);
-                }
-            }
+            EventTarget.DispatchEvent(_root as Element, evt, _context);
         }
 
         private FenValue CreateDocumentFragment(FenValue[] args, FenValue thisVal)
@@ -590,7 +578,10 @@ namespace FenBrowser.FenEngine.DOM
                 }
             }
 
-            ElementWrapper.EventRegistry.Add(_root, type, callback, capture, once, passive);
+            if (_root is Element rootElement)
+            {
+                EventTarget.Registry.Add(rootElement, type, callback, capture, once, passive);
+            }
             return FenValue.Undefined;
         }
 
@@ -602,7 +593,10 @@ namespace FenBrowser.FenEngine.DOM
             bool capture = false;
             if (args.Length >= 3 && args[2].IsBoolean) capture = args[2].ToBoolean();
             
-            ElementWrapper.EventRegistry.Remove(_root, type, callback, capture);
+            if (_root is Element rootElement)
+            {
+                EventTarget.Registry.Remove(rootElement, type, callback, capture);
+            }
             return FenValue.Undefined;
         }
 
@@ -623,25 +617,21 @@ namespace FenBrowser.FenEngine.DOM
 
             FenLogger.Debug($"[DocumentWrapper] dispatchEvent '{eventObj.Type}'", FenBrowser.Core.Logging.LogCategory.JavaScript);
 
-            // Dispatch on _root using ElementWrapper's logic (if we could access DispatchEventInternal there)
-            // Since we can't easily access private method, we might need to duplicate dispatch logic 
-            // OR just support basic listeners for now.
-            // For detection, just returning true often works.
-            // But let's try to execute listeners if possible.
-            
-            var listeners = ElementWrapper.EventRegistry.Get(_root, eventObj.Type, false);
-            foreach(var l in listeners) 
+            var notPrevented = false;
+            if (_root is Element rootElement)
             {
-                 try { l.Callback.AsFunction().Invoke(new FenValue[] { FenValue.FromObject(eventObj) }, _context); } catch {}
+                notPrevented = EventTarget.DispatchEvent(rootElement, eventObj, _context);
             }
             
-            return FenValue.FromBoolean(true);
+            return FenValue.FromBoolean(notPrevented);
         }
 
         // --- Cookie Implementation ---
         public static Func<Uri, string> CookieReadBridge { get; set; }
         public static Action<Uri, string> CookieWriteBridge { get; set; }
-        private readonly Dictionary<string, string> _cookies = new Dictionary<string, string>();
+
+        // In-memory cookie store for the fallback path (when no CookieBridge configured)
+        private readonly InMemoryCookieStore _cookieStore = new InMemoryCookieStore();
 
         private string GetCookieString()
         {
@@ -650,16 +640,13 @@ namespace FenBrowser.FenEngine.DOM
                 try
                 {
                     var bridged = CookieReadBridge(_baseUri);
-                    if (bridged != null)
-                    {
-                        return bridged;
-                    }
+                    if (bridged != null) return bridged;
                 }
                 catch { }
             }
 
-            // Format: key=value; key2=value2
-            return string.Join("; ", _cookies.Select(kv => $"{kv.Key}={kv.Value}"));
+            // fromScript: true — HttpOnly cookies must not be exposed to JavaScript
+            return _cookieStore.GetCookieString(_baseUri, fromScript: true);
         }
 
         private void SetCookie(string cookieStr)
@@ -668,35 +655,12 @@ namespace FenBrowser.FenEngine.DOM
 
             if (_baseUri != null && CookieWriteBridge != null)
             {
-                try
-                {
-                    CookieWriteBridge(_baseUri, cookieStr);
-                    return;
-                }
+                try { CookieWriteBridge(_baseUri, cookieStr); return; }
                 catch { }
             }
 
-            // Basic parsing: split by ';' to ignore attributes for now (path, domain, expires)
-            // Real implementation would parse attributes and checking matching logic
-            var parts = cookieStr.Split(';');
-            if (parts.Length > 0)
-            {
-                var kv = parts[0].Trim();
-                var eq = kv.IndexOf('=');
-                if (eq > 0)
-                {
-                    var key = kv.Substring(0, eq).Trim();
-                    var val = kv.Substring(eq + 1).Trim();
-                    _cookies[key] = val;
-                }
-                else
-                {
-                    // "key" without value?
-                    _cookies[kv] = "";
-                }
-                
-                FenLogger.Debug($"[DocumentWrapper] Cookie set: {parts[0]}", FenBrowser.Core.Logging.LogCategory.JavaScript);
-            }
+            _cookieStore.SetCookie(cookieStr, _baseUri);
+            FenLogger.Debug($"[DocumentWrapper] Cookie set: {cookieStr.Split(';')[0]}", FenBrowser.Core.Logging.LogCategory.JavaScript);
         }
         public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
     }

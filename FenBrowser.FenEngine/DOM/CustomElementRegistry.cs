@@ -15,13 +15,19 @@ namespace FenBrowser.FenEngine.DOM
     /// </summary>
     public class CustomElementRegistry
     {
-        private readonly Dictionary<string, CustomElementDefinition> _definitions 
+        private readonly Dictionary<string, CustomElementDefinition> _definitions
             = new Dictionary<string, CustomElementDefinition>(StringComparer.OrdinalIgnoreCase);
-        
-        private readonly Dictionary<string, TaskCompletionSource<bool>> _whenDefinedPromises 
+
+        private readonly Dictionary<string, TaskCompletionSource<bool>> _whenDefinedPromises
             = new Dictionary<string, TaskCompletionSource<bool>>(StringComparer.OrdinalIgnoreCase);
-        
+
         private readonly object _lock = new object();
+        private readonly IExecutionContext _context;
+
+        public CustomElementRegistry(IExecutionContext context = null)
+        {
+            _context = context;
+        }
 
         /// <summary>
         /// Define a custom element with the given name and constructor
@@ -161,8 +167,29 @@ namespace FenBrowser.FenEngine.DOM
                     // Mark element as upgraded
                     element.SetAttribute("data-ce-upgraded", "true");
                     FenLogger.Debug($"[CustomElements] Upgraded element: {tag}", LogCategory.JavaScript);
-                    
-                    // TODO: Call connectedCallback if element is in document
+
+                    // Fire connectedCallback if the element is already connected to a document
+                    if (element.IsConnected && _context != null && definition.Constructor is FenValue ctorVal)
+                    {
+                        try
+                        {
+                            var protoObj = ctorVal.AsObject();
+                            if (protoObj != null)
+                            {
+                                var proto = protoObj.Get("prototype");
+                                if (proto.IsObject)
+                                {
+                                    var connectedCb = proto.AsObject()?.Get("connectedCallback");
+                                    if (connectedCb.HasValue && connectedCb.Value.IsFunction)
+                                        connectedCb.Value.AsFunction()?.Invoke(System.Array.Empty<FenValue>(), _context);
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            FenLogger.Error($"[CustomElements] connectedCallback error on <{tag}>: {ex.Message}", LogCategory.JavaScript);
+                        }
+                    }
                 }
                 else
                 {

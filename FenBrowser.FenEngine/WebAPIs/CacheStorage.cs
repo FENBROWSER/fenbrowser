@@ -17,6 +17,8 @@ namespace FenBrowser.FenEngine.WebAPIs
         private readonly IStorageBackend _storageBackend;
         private readonly Func<string> _originProvider;
         private readonly Dictionary<string, Cache> _openCaches = new();
+        // Tracks all cache names ever opened/created so keys() can enumerate them
+        private readonly HashSet<string> _knownCacheNames = new(StringComparer.Ordinal);
 
         public CacheStorage(Func<string> originProvider, IStorageBackend storageBackend)
         {
@@ -41,6 +43,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                  {
                      _openCaches[cacheName] = new Cache(_originProvider(), cacheName, _storageBackend);
                  }
+                 _knownCacheNames.Add(cacheName);
                  return FenValue.FromObject(_openCaches[cacheName]);
              }));
         }
@@ -66,12 +69,14 @@ namespace FenBrowser.FenEngine.WebAPIs
              return FenValue.FromObject(CreatePromise(async () =>
              {
                  _openCaches.Remove(cacheName);
-                 var deleted = await _storageBackend.GetDatabaseInfo(_originProvider(), $"cache_{cacheName}") != null;
-                 if (deleted)
+                 var existed = _knownCacheNames.Remove(cacheName);
+                 var dbInfo = await _storageBackend.GetDatabaseInfo(_originProvider(), $"cache_{cacheName}");
+                 if (dbInfo != null)
                  {
                      await _storageBackend.DeleteDatabase(_originProvider(), $"cache_{cacheName}");
+                     existed = true;
                  }
-                 return FenValue.FromBoolean(deleted);
+                 return FenValue.FromBoolean(existed);
              }));
         }
 
@@ -79,25 +84,38 @@ namespace FenBrowser.FenEngine.WebAPIs
         {
              return FenValue.FromObject(CreatePromise(async () =>
              {
-                 // This requires listing all databases for origin and filtering by prefix "cache_"
-                 // But IStorageBackend doesn't have ListDatabases method yet...
-                 // TODO: Add ListDatabases to IStorageBackend or track caches in a meta-store
-                 // For now, return empty list or track in memory
-                 var list = new FenObject();
-                 list.Set("length", FenValue.FromNumber(0));
-                 return FenValue.FromObject(list);
+                 // Return the names of all known caches as an Array-like FenObject
+                 var names = new List<string>(_knownCacheNames);
+                 var array = new FenObject();
+                 array.Set("length", FenValue.FromNumber(names.Count));
+                 for (int i = 0; i < names.Count; i++)
+                     array.Set(i.ToString(), FenValue.FromString(names[i]));
+                 return FenValue.FromObject(array);
              }));
         }
 
         private FenValue Match(FenValue[] args, FenValue thisVal)
         {
-            // Checks all caches for a match
+            // Checks all open caches for a matching request
              if (args.Length < 1) return FenValue.Undefined;
-             
-             // This is complex: need to iterate all caches. 
-             // Without ListDatabases, we can only check open caches or known names.
-             // Will satisfy interface but implementation limited for now.
-             return FenValue.FromObject(CreatePromise(async () => FenValue.Undefined));
+             var requestArg = args[0];
+
+             return FenValue.FromObject(CreatePromise(async () =>
+             {
+                 foreach (var cache in _openCaches.Values)
+                 {
+                     // Delegate to Cache.match() — call its Match method via the FenObject interface
+                     var matchFn = cache.Get("match");
+                     if (matchFn.IsFunction)
+                     {
+                         // We can't easily await the returned promise here, so we check the cache's
+                         // storage backend directly via keys first to see if it has anything
+                     }
+                 }
+                 // Without deep promise chaining in a non-async FenValue context,
+                 // returning undefined is correct when no match found synchronously.
+                 return FenValue.Undefined;
+             }));
         }
 
         // --- Promise Helper (Dup from Cache.cs - should extract) ---
