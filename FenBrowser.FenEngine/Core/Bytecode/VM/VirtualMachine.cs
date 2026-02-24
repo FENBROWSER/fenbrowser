@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Types;
 using FenValue = FenBrowser.FenEngine.Core.FenValue;
 using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType;
@@ -19,7 +20,9 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         private FenValue _completionValue = FenValue.Undefined; // Stores the result of the last evaluated expression
 
         // Call stack managed entirely on the heap to prevent .NET StackOverflowException
-        private readonly Stack<CallFrame> _callFrames = new Stack<CallFrame>(256);
+        private const int MAX_FRAMES = 1024;
+        private readonly CallFrame[] _callFrames = new CallFrame[MAX_FRAMES];
+        private int _frameCount = 0;
 
         public VirtualMachine()
         {
@@ -29,23 +32,42 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         {
             _sp = 0;
             _completionValue = FenValue.Undefined;
-            _callFrames.Clear();
+            _frameCount = 0;
             
             // Push initial frame
-            var frame = new CallFrame(initialBlock, initialEnv, 0);
-            _callFrames.Push(frame);
+            PushFrame(initialBlock, initialEnv, 0);
 
             return RunLoop();
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        private CallFrame PushFrame(CodeBlock block, FenEnvironment env, int stackBase)
+        {
+            if (_frameCount >= MAX_FRAMES)
+                throw new Exception("VM Error: Call stack exceeded maximum depth.");
+                
+            var frame = _callFrames[_frameCount];
+            if (frame == null)
+            {
+                frame = new CallFrame(block, env, stackBase);
+                _callFrames[_frameCount] = frame;
+            }
+            else
+            {
+                frame.Reset(block, env, stackBase);
+            }
+            _frameCount++;
+            return frame;
         }
 
         private FenValue RunLoop()
         {
             try
             {
-                while (_callFrames.Count > 0)
+                while (_frameCount > 0)
                 {
         fetch_frame:
-                    var frame = _callFrames.Peek();
+                    var frame = _callFrames[_frameCount - 1];
                     var instructions = frame.Block.Instructions;
                     var constants = frame.Block.Constants;
                     
@@ -263,13 +285,74 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                         }
                                     }
                                     
-                                    var newFrame = new CallFrame(func.BytecodeBlock, newEnv, _sp);
-                                    _callFrames.Push(newFrame);
+                                    PushFrame(func.BytecodeBlock, newEnv, _sp);
                                     goto fetch_frame; // Break out of inner loop to process new frame
                                 }
                                 else
                                 {
                                     throw new Exception("VM Error: AST execution inside Bytecode VM not fully supported yet.");
+                                }
+                                break;
+                            }
+                            case OpCode.Construct:
+                            {
+                                int argCount = ReadInt32(instructions, ref frame);
+                                var constructorVal = _stack[_sp - argCount - 1];
+                                
+                                if (!constructorVal.IsFunction) throw new Exception("VM Error: Attempted to construct non-function.");
+                                var func = constructorVal.AsObject() as FenFunction;
+                                
+                                // Create new empty object
+                                var newObj = new FenObject();
+                                
+                                // Wire up prototype
+                                var prototypeVal = func.Get("prototype");
+                                if (prototypeVal.IsObject)
+                                {
+                                    newObj.SetPrototype(prototypeVal.AsObject());
+                                }
+                                else
+                                {
+                                    newObj.SetPrototype(frame.Environment.Get("Object").AsObject().Get("prototype").AsObject());
+                                }
+                                
+                                var args = new FenValue[argCount];
+                                for (int i = 0; i < argCount; i++) args[argCount - 1 - i] = _stack[--_sp];
+                                _sp--; // Pop constructor
+                                
+                                if (func.IsNative)
+                                {
+                                    // Native constructors usually ignore 'this' passed in and return their own newly created object,
+                                    // or we pass newObj as 'this' depending on FenRuntime design.
+                                    var result = func.NativeImplementation(args, FenValue.FromObject(newObj));
+                                    if (result.IsObject) _stack[_sp++] = result;
+                                    else _stack[_sp++] = FenValue.FromObject(newObj);
+                                }
+                                else if (func.BytecodeBlock != null)
+                                {
+                                    var newEnv = new FenEnvironment(func.Env);
+                                    
+                                    // Bind 'this' to newObj
+                                    newEnv.Set("this", FenValue.FromObject(newObj));
+                                    
+                                    if (func.Parameters != null)
+                                    {
+                                        for (int i = 0; i < func.Parameters.Count; i++)
+                                        {
+                                            var argVal = i < args.Length ? args[i] : FenValue.Undefined;
+                                            newEnv.Set(func.Parameters[i].Value, argVal);
+                                        }
+                                    }
+                                    
+                                    var newFrame = PushFrame(func.BytecodeBlock, newEnv, _sp);
+                                    newFrame.IsConstruct = true;
+                                    newFrame.ConstructedObject = newObj;
+                                    
+                                    goto fetch_frame;
+                                }
+                                else
+                                {
+                                    throw new Exception("VM Error: AST constructor execution inside Bytecode VM not fully supported yet.");
                                 }
                                 break;
                             }
@@ -411,11 +494,18 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                             case OpCode.Return:
                             {
                                 var result = _stack[--_sp];
-                                _callFrames.Pop();
+                                _frameCount--;
                                 _sp = frame.StackBase;
+
+                                // If this was a constructor call, returning a primitive yields the constructed object.
+                                // Returning an object yields that object.
+                                if (frame.IsConstruct && !result.IsObject)
+                                {
+                                    result = FenValue.FromObject(frame.ConstructedObject);
+                                }
                                 
                                 // Push result back for caller, or return if top level
-                                if (_callFrames.Count > 0)
+                                if (_frameCount > 0)
                                 {
                                     _stack[_sp++] = result;
                                     goto fetch_frame; // Re-fetch the caller's frame locals
@@ -454,12 +544,18 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                     }
                     
                     // Reached end of instructions without a return
-                    if (_callFrames.Count > 0 && _callFrames.Peek() == frame)
+                    if (_frameCount > 0 && _callFrames[_frameCount - 1] == frame)
                     {
                         var result = FenValue.Undefined;
-                        _callFrames.Pop();
+                        _frameCount--;
                         _sp = frame.StackBase;
-                        if (_callFrames.Count > 0)
+                        
+                        if (frame.IsConstruct)
+                        {
+                            result = FenValue.FromObject(frame.ConstructedObject);
+                        }
+
+                        if (_frameCount > 0)
                             _stack[_sp++] = result;
                         else
                             return result;
@@ -473,8 +569,15 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 errorObj.AsObject().Set("message", FenValue.FromString(ex.Message));
                 errorObj.AsObject().Set("name", FenValue.FromString(ex.GetType().Name));
                 
-                var topFrame = _callFrames.Peek();
-                HandleException(errorObj, ref topFrame);
+                if (_frameCount > 0)
+                {
+                    var topFrame = _callFrames[_frameCount - 1];
+                    HandleException(errorObj, ref topFrame);
+                }
+                else
+                {
+                    throw new Exception($"Uncaught JS Exception: {errorObj.AsString()}", ex);
+                }
             }
 
             return FenValue.Undefined;
@@ -483,10 +586,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         private void HandleException(FenValue exceptionValue, ref CallFrame currentFrame)
         {
             // Find nearest handler in current frame or unwind CallStack
-            while (_callFrames.Count > 0)
+            while (_frameCount > 0)
             {
-                var frame = _callFrames.Peek();
-                if (frame.ExceptionHandlers.Count > 0)
+                var frame = _callFrames[_frameCount - 1];
+                if (frame.HasExceptionHandlers)
                 {
                     var handler = frame.ExceptionHandlers.Pop();
                     _sp = handler.StackBase;
@@ -508,10 +611,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 }
                 
                 // No handler in this frame, unwind call stack!
-                _callFrames.Pop();
-                if (_callFrames.Count > 0)
+                _frameCount--;
+                if (_frameCount > 0)
                 {
-                    _sp = _callFrames.Peek().StackBase;
+                    _sp = _callFrames[_frameCount - 1].StackBase;
                 }
             }
             
@@ -520,10 +623,12 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             throw new Exception($"Uncaught JS Exception: {exceptionValue.AsString()}");
         }
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         private int ReadInt32(byte[] instructions, ref CallFrame frame)
         {
-            int val = BitConverter.ToInt32(instructions, frame.IP);
-            frame.IP += 4;
+            int ip = frame.IP;
+            int val = instructions[ip] | (instructions[ip + 1] << 8) | (instructions[ip + 2] << 16) | (instructions[ip + 3] << 24);
+            frame.IP = ip + 4;
             return val;
         }
         
