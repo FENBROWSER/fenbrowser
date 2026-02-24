@@ -11,6 +11,7 @@ using System.Globalization;
 using SkiaSharp;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.FenEngine.Compatibility;
 using FenBrowser.FenEngine.Rendering.Css; // Direct using, will resolve ambiguity manually or by deleting inner classes
 using NewCss = FenBrowser.FenEngine.Rendering.Css;
 // using FenBrowser.Core.Math; // Namespace moved to Core
@@ -45,7 +46,10 @@ namespace FenBrowser.FenEngine.Rendering
         private static readonly Dictionary<(Element, SelectorChain), bool> _matchCache = new Dictionary<(Element, SelectorChain), bool>();
         private static readonly Dictionary<Element, List<NewCss.CssRule>> _elementMatchedRulesCache = new Dictionary<Element, List<NewCss.CssRule>>();
         private static readonly Dictionary<Element, CssComputed> _elementStyleCache = new Dictionary<Element, CssComputed>();
-        
+
+        // UA stylesheet cache — read from disk only once per process lifetime
+        private static string _cachedUaCss;
+
         // CSS Custom Properties (CSS Variables) storage - keyed by property name (e.g., "--primary-color")
         private static readonly Dictionary<string, string> _customProperties = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private static double _rootFontSize = 16.0;
@@ -174,56 +178,59 @@ namespace FenBrowser.FenEngine.Rendering
             var _cssStopwatch = System.Diagnostics.Stopwatch.StartNew();
 
             // 0) UA stylesheet - load from external file (lowest precedence)
+            // Cached in _cachedUaCss so disk I/O only happens once per process.
             try
             {
-                string uaCss = null;
-                
-
-                    // PRIORITY 1: Check known locations relative to execution
+                if (_cachedUaCss == null)
+                {
                     var appDir = AppDomain.CurrentDomain.BaseDirectory;
-                     var candidatePaths = new List<string>
-                     {
-                          Path.Combine(appDir, "Assets", "ua.css"),
-                          Path.Combine(appDir, "FenBrowser.FenEngine", "Assets", "ua.css"),
-                         Path.Combine(DiagnosticPaths.GetWorkspaceRoot(), "FenBrowser.FenEngine", "Assets", "ua.css"),
-                         Path.Combine(DiagnosticPaths.GetWorkspaceRoot(), "Assets", "ua.css")
-                     };
+                    var candidatePaths = new List<string>
+                    {
+                        Path.Combine(appDir, "Assets", "ua.css"),
+                        Path.Combine(appDir, "FenBrowser.FenEngine", "Assets", "ua.css"),
+                        Path.Combine(appDir, "Resources", "ua.css"),
+                        Path.Combine(appDir, "FenBrowser.FenEngine", "Resources", "ua.css"),
+                        Path.Combine(DiagnosticPaths.GetWorkspaceRoot(), "FenBrowser.FenEngine", "Assets", "ua.css"),
+                        Path.Combine(DiagnosticPaths.GetWorkspaceRoot(), "Assets", "ua.css"),
+                        Path.Combine(DiagnosticPaths.GetWorkspaceRoot(), "FenBrowser.FenEngine", "Resources", "ua.css"),
+                        Path.Combine(DiagnosticPaths.GetWorkspaceRoot(), "Resources", "ua.css")
+                    };
 
                     bool loaded = false;
                     foreach (var path in candidatePaths)
                     {
                         if (File.Exists(path))
                         {
-                             uaCss = File.ReadAllText(path);
-                             FenLogger.Info($"[CssLoader] Loaded UA stylesheet from: {path}", LogCategory.Rendering);
-                             loaded = true;
-                             break;
+                            _cachedUaCss = File.ReadAllText(path);
+                            FenLogger.Info($"[CssLoader] Loaded UA stylesheet from: {path}", LogCategory.Rendering);
+                            loaded = true;
+                            break;
                         }
                     }
-                    
+
                     if (!loaded)
                     {
-                         FenLogger.Warn("[CssLoader] UA stylesheet NOT FOUND. Using minimal fallback.", LogCategory.Rendering);
-                         // Fallback matches the file we just created
-                         uaCss = @"
-                             html,body,div,p,h1,h2,h3,h4,h5,h6,ul,ol,li{display:block;margin:0;padding:0;}
-                             body{margin:8px;font-family:serif;}
-                             h1{font-size:2em;margin:0.67em 0;font-weight:bold;}
-                             h2{font-size:1.5em;margin:0.83em 0;font-weight:bold;}
-                             h3{font-size:1.17em;margin:1em 0;font-weight:bold;}
-                             p,ul,ol{margin:1em 0;}
-                             b,strong{font-weight:bold;}
-                             i,em{font-style:italic;}
-                             pre,code{font-family:monospace;}
-                         ";
+                        FenLogger.Warn("[CssLoader] UA stylesheet NOT FOUND. Using minimal fallback.", LogCategory.Rendering);
+                        _cachedUaCss = @"
+                            html,body,div,p,h1,h2,h3,h4,h5,h6,ul,ol,li{display:block;margin:0;padding:0;}
+                            body{margin:8px;font-family:serif;}
+                            h1{font-size:2em;margin:0.67em 0;font-weight:bold;}
+                            h2{font-size:1.5em;margin:0.83em 0;font-weight:bold;}
+                            h3{font-size:1.17em;margin:1em 0;font-weight:bold;}
+                            p,ul,ol{margin:1em 0;}
+                            b,strong{font-weight:bold;}
+                            i,em{font-style:italic;}
+                            pre,code{font-family:monospace;}
+                            mark{display:inline;background-color:yellow;color:black;}
+                        ";
                     }
-                
-                cssBlobs.Add(new CssSource { CssText = uaCss, Origin = CssOrigin.UserAgent, SourceOrder = sourceIndex++, BaseUri = baseUri });
+                }
+
+                cssBlobs.Add(new CssSource { CssText = _cachedUaCss, Origin = CssOrigin.UserAgent, SourceOrder = sourceIndex++, BaseUri = baseUri });
             }
-            catch (Exception ex) 
-            { 
+            catch (Exception ex)
+            {
                 FenLogger.Error($"[CssLoader] UA stylesheet error: {ex.Message}", LogCategory.Rendering);
-                /* [PERF-REMOVED] */
             }
 
             // 1) Inline <style> tags first (DOM order)
@@ -2651,18 +2658,6 @@ private static double? ExtractPx(string text, string prop)
             if (TryPx(DictGet(css.Map, "max-inline-size"), out sizeVal, currentEmBase)) css.MaxWidth = sizeVal;
             if (TryPx(DictGet(css.Map, "max-block-size"), out sizeVal, currentEmBase)) css.MaxHeight = sizeVal;
             
-            // ROBUSTNESS: If ARTICLE/NAV/MAIN or common containers are missing MaxWidth but have margin:auto,
-            // they are likely intended to be centered. whatismybrowser.com uses ~1074px or ~800px.
-            if (!css.MaxWidth.HasValue && css.MaxWidthPercent == 0 && string.IsNullOrEmpty(css.MaxWidthExpression))
-            {
-                if (tag == "ARTICLE" || tag == "NAV" || tag == "MAIN")
-                {
-                    css.MaxWidth = 1074; // Standard container width for this site
-                    FenLogger.Info($"[CSS-ROBUST] <{tag}> Assigned fallback MaxWidth=1074", LogCategory.CSS);
-                }
-            }
-            
-
             var aspectRatioRaw = Safe(DictGet(css.Map, "aspect-ratio"));
             if (!string.IsNullOrEmpty(aspectRatioRaw) && !aspectRatioRaw.Contains("auto"))
             {
@@ -2747,18 +2742,20 @@ private static double? ExtractPx(string text, string prop)
                     }
                     else
                     {
-                        // TODO: Extract color from complex shorthand (e.g. "url(...) no-repeat red")
-                        // For now simple extraction: check commonly used color names or hex codes in the string
+                        // Extract color from complex shorthand (e.g. "url(...) no-repeat red").
+                        // Skip url() tokens, non-position/size keywords, and use the LAST color found
+                        // (per spec, background-color is always the last value in the last layer).
                         var tokens = SplitTokens(bgShorthand);
+                        SKColor? lastColor = null;
+                        bool inUrl = false;
                         foreach (var t in tokens)
                         {
+                            if (t.StartsWith("url(", StringComparison.OrdinalIgnoreCase)) { inUrl = true; }
+                            if (inUrl) { if (t.EndsWith(")")) inUrl = false; continue; }
                             var c = TryColor(t);
-                            if (c.HasValue) 
-                            { 
-                                css.BackgroundColor = c; 
-                                break; 
-                            }
+                            if (c.HasValue) lastColor = c;
                         }
+                        if (lastColor.HasValue) css.BackgroundColor = lastColor;
                     }
                 }
             }
@@ -3378,93 +3375,14 @@ private static double? ExtractPx(string text, string prop)
             css.TransformOrigin = Safe(DictGet(css.Map, "transform-origin"));
             css.WillChange = Safe(DictGet(css.Map, "will-change"));
 
-            // Overrides for Google.com Layout Fixes
-            string fCls = n?.GetAttribute("class") ?? "";
-            string fTag = n?.TagName?.ToUpper() ?? "";
-
-            // Item 1: Footer Alignment (Hide G-POPUP)
-            if (fTag == "G-POPUP" || fTag == "G-MENU")
-            {
-                 if (string.IsNullOrEmpty(css.Display) || css.Display == "block" || css.Display == "inline-block")
-                 {
-                     css.Display = "none";
-                 }
-            }
-
-            // Item 3: Google search submit row alignment
-            // Keep these wrappers block-level so the row can center within the full search column.
-            if (fCls.Contains("FPdoLc") || fCls.Contains("lJ9FBc"))
-            {
-                css.TextAlign = SKTextAlign.Center;
-                css.Display = "block";
-            }
-
-            // Item 5: Language Links and General Underline Fix
-            // Google.com uses minimal underlines - remove from most anchors
-            if (fTag == "A")
-            {
-                // Default: no underline for Google links unless explicitly styled
-                if (string.IsNullOrEmpty(css.TextDecoration) || css.TextDecoration == "underline")
-                {
-                    css.TextDecoration = "none";
-                }
-                
-                // Check for language links (pHiOh) - also set blue color
-                var parentEl = n.ParentNode as Element;
-                bool isLanguageLink = false;
-                while(parentEl != null) {
-                    string pCls = parentEl.GetAttribute("class") ?? "";
-                    if (pCls.Contains("pHiOh") || pCls.Contains("ayzqOc")) { isLanguageLink = true; break; }
-                    if (string.Equals(parentEl.TagName, "BODY", StringComparison.OrdinalIgnoreCase) || 
-                        string.Equals(parentEl.TagName, "HTML", StringComparison.OrdinalIgnoreCase)) break;
-                    parentEl = parentEl.ParentNode as Element;
-                }
-                if (isLanguageLink)
-                {
-                    css.ForegroundColor = SKColor.Parse("#1a0dab");
-                }
-            }
-            
-            // Also remove underlines from containers that might inherit
-            // Keep language link rows inline-block where needed, but do not alter FPdoLc/lJ9FBc display.
-            if (fCls.Contains("pHiOh") || fCls.Contains("ayzqOc"))
-            {
-                css.TextDecoration = "none";
-                css.Display = "inline-block"; // Force inline-block for shrink-to-fit width
-            }
-            
-            // Fix logo underline - logos/images should never have underlines
-            if (fTag == "IMG" || fTag == "SVG" || fCls.Contains("lnXdpd"))
-            {
-                css.TextDecoration = "none";
-            }
-            
-            // Footer alignment: force space-between for footer container
-            if (fCls.Contains("c93Gbe") || fCls.Contains("fbar"))
-            {
-                css.Display = "flex";
-                css.JustifyContent = "space-between";
-                css.AlignItems = "center";
-            }
-
-            // Item 2: Search Icons Visibility
-            // Google Mic (XDyW0e), Lens (nDcEnd), Container (BKRPef)
-            if (fCls.Contains("XDyW0e") || fCls.Contains("nDcEnd") || fCls.Contains("BKRPef"))
-            {
-                if (css.Display == "none" || string.IsNullOrEmpty(css.Display)) css.Display = "flex";
-                css.Visibility = "visible";
-                css.Opacity = 1.0f;
-            }
-            
-             // Item 8: Header Link Visibility
-             // Ensure gb_ containers are visible
-              if (css.Display == "none" && (fCls.Contains("gb_d") || fCls.Contains("gb_q") || fCls.Contains("gb_g") || fCls.Contains("gb_f") || fCls.StartsWith("gb_")))
-              {
-                  // Verify it's not a submenu (usually deeper structure). 
-                  // Direct children of headers or early divs are usually the visible links.
-                  css.Display = "flex";
-                  css.AlignItems = "center";
-              }
+            // Web-compat policy: no domain/class-specific style overrides.
+            // Behavior fixes must come from standards-based parser/cascade/layout improvements.
+            WebCompatibilityInterventionRegistry.Instance.Apply(
+                new WebCompatibilityInterventionContext(
+                    WebCompatibilityPipelineStage.Cascade,
+                    n,
+                    css,
+                    DateTimeOffset.UtcNow));
 
             if (css.Display == "none") {
                 // ...

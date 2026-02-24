@@ -186,9 +186,80 @@ namespace FenBrowser.FenEngine.Rendering
             if (name == "display-mode")
                 return string.Equals(MediaDisplayMode, val, StringComparison.OrdinalIgnoreCase);
 
-            // TODO: range context syntax (width >= 500px) requires fuller parser
-            
-            return false; // Unknown feature, return false to be safe (spec: unknown = false)
+            // Range context syntax: width >= 500px, width <= 500px, width > 500px etc.
+            return EvaluateRangeFeature(feature);
+        }
+
+        private static bool EvaluateRangeFeature(string feature)
+        {
+            // Try operators in order: >= before >, <= before < to avoid partial matches
+            int idx;
+            string featureName, valueStr;
+
+            if ((idx = feature.IndexOf(">=", StringComparison.Ordinal)) >= 0)
+            {
+                featureName = feature.Substring(0, idx).Trim();
+                valueStr = feature.Substring(idx + 2).Trim();
+                return CompareRangeDimension(featureName, ParseDimensionPx(valueStr), ">=");
+            }
+            if ((idx = feature.IndexOf("<=", StringComparison.Ordinal)) >= 0)
+            {
+                featureName = feature.Substring(0, idx).Trim();
+                valueStr = feature.Substring(idx + 2).Trim();
+                return CompareRangeDimension(featureName, ParseDimensionPx(valueStr), "<=");
+            }
+            if ((idx = feature.IndexOf('>')) >= 0)
+            {
+                featureName = feature.Substring(0, idx).Trim();
+                valueStr = feature.Substring(idx + 1).Trim();
+                return CompareRangeDimension(featureName, ParseDimensionPx(valueStr), ">");
+            }
+            if ((idx = feature.IndexOf('<')) >= 0)
+            {
+                featureName = feature.Substring(0, idx).Trim();
+                valueStr = feature.Substring(idx + 1).Trim();
+                return CompareRangeDimension(featureName, ParseDimensionPx(valueStr), "<");
+            }
+            if ((idx = feature.IndexOf('=')) >= 0)
+            {
+                featureName = feature.Substring(0, idx).Trim();
+                valueStr = feature.Substring(idx + 1).Trim();
+                return CompareRangeDimension(featureName, ParseDimensionPx(valueStr), "=");
+            }
+
+            return true; // Boolean media feature with no operator (e.g. "color")
+        }
+
+        private static double ParseDimensionPx(string val)
+        {
+            val = val.Trim();
+            if (val.EndsWith("px") && double.TryParse(val.AsSpan(0, val.Length - 2),
+                System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double px))
+                return px;
+            if (val.EndsWith("em") && double.TryParse(val.AsSpan(0, val.Length - 2),
+                System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double em))
+                return em * 16; // Approximate 1em = 16px
+            return 0;
+        }
+
+        private static bool CompareRangeDimension(string name, double value, string op)
+        {
+            double? current = name switch
+            {
+                "width" => MediaViewportWidth,
+                "height" => MediaViewportHeight,
+                _ => null
+            };
+            if (!current.HasValue) return false;
+            return op switch
+            {
+                ">=" => current.Value >= value,
+                "<=" => current.Value <= value,
+                ">"  => current.Value > value,
+                "<"  => current.Value < value,
+                "="  => Math.Abs(current.Value - value) < 0.5,
+                _ => false
+            };
         }
 
         private static readonly Dictionary<string, SKColor> _namedColors 

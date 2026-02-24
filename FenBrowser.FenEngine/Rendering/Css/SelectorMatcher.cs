@@ -230,10 +230,28 @@ namespace FenBrowser.FenEngine.Rendering.Css
                         args = selector.Substring(argStart, i - argStart - 1);
                     }
 
+                    var pseudo = new PseudoSelector { Name = name, Args = args };
+                    if (!isElement && !string.IsNullOrWhiteSpace(args))
+                    {
+                        var lowerName = name.ToLowerInvariant();
+                        if (lowerName == "is" || lowerName == "not" || lowerName == "where" || lowerName == "has")
+                        {
+                            pseudo.ParsedArgs = ParseSelectorList(args);
+                        }
+                        else if (lowerName == "nth-child" || lowerName == "nth-last-child")
+                        {
+                            ParseNthArguments(args, out _, out var ofSelector);
+                            if (!string.IsNullOrWhiteSpace(ofSelector))
+                            {
+                                pseudo.ParsedArgs = ParseSelectorList(ofSelector);
+                            }
+                        }
+                    }
+
                     if (isElement)
-                        segment.PseudoElements.Add(new PseudoSelector { Name = name, Args = args });
+                        segment.PseudoElements.Add(pseudo);
                     else
-                        segment.PseudoClasses.Add(new PseudoSelector { Name = name, Args = args });
+                        segment.PseudoClasses.Add(pseudo);
                     continue;
                 }
 
@@ -268,42 +286,178 @@ namespace FenBrowser.FenEngine.Rendering.Css
         private static (AttributeSelector attr, int endPos) ParseAttributeSelector(string s, int start)
         {
             if (s[start] != '[') return (null, start);
-            
-            int end = s.IndexOf(']', start);
+
+            int end = FindAttributeClosingBracket(s, start + 1);
             if (end == -1) return (null, s.Length);
 
             string content = s.Substring(start + 1, end - start - 1).Trim();
             var attr = new AttributeSelector();
 
             // Parse attribute name and optional operator/value
-            int opIdx = -1;
-            string[] ops = { "~=", "|=", "^=", "$=", "*=", "=" };
-            foreach (var op in ops)
-            {
-                opIdx = content.IndexOf(op);
-                if (opIdx >= 0)
-                {
-                    attr.Name = content.Substring(0, opIdx).Trim();
-                    attr.Operator = op;
-                    attr.Value = content.Substring(opIdx + op.Length).Trim().Trim('"', '\'');
-                    
-                    // Check for case-insensitive flag
-                    if (attr.Value.EndsWith(" i") || attr.Value.EndsWith(" I"))
-                    {
-                        attr.CaseInsensitive = true;
-                        attr.Value = attr.Value.Substring(0, attr.Value.Length - 2).Trim();
-                    }
-                    break;
-                }
-            }
+            var ops = new[] { "~=", "|=", "^=", "$=", "*=", "=" };
+            int opIdx = FindAttributeOperatorIndex(content, ops, out var matchedOperator);
 
-            if (opIdx == -1)
+            if (opIdx >= 0)
+            {
+                attr.Name = content.Substring(0, opIdx).Trim();
+                attr.Operator = matchedOperator;
+
+                var rhs = content.Substring(opIdx + matchedOperator.Length).Trim();
+                ParseAttributeValueAndFlags(rhs, out var value, out var caseInsensitive);
+                attr.Value = value;
+                attr.CaseInsensitive = caseInsensitive;
+            }
+            else
             {
                 attr.Name = content;
-                attr.Operator = null; // Just presence check
+                attr.Operator = null; // Presence check
             }
 
             return (attr, end + 1);
+        }
+
+        private static int FindAttributeClosingBracket(string s, int start)
+        {
+            bool inSingleQuote = false;
+            bool inDoubleQuote = false;
+
+            for (int i = start; i < s.Length; i++)
+            {
+                char c = s[i];
+                if (c == '\\' && i + 1 < s.Length)
+                {
+                    i++;
+                    continue;
+                }
+
+                if (!inDoubleQuote && c == '\'')
+                {
+                    inSingleQuote = !inSingleQuote;
+                    continue;
+                }
+
+                if (!inSingleQuote && c == '"')
+                {
+                    inDoubleQuote = !inDoubleQuote;
+                    continue;
+                }
+
+                if (!inSingleQuote && !inDoubleQuote && c == ']')
+                {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+
+        private static int FindAttributeOperatorIndex(string content, string[] operators, out string matchedOperator)
+        {
+            matchedOperator = null;
+            bool inSingleQuote = false;
+            bool inDoubleQuote = false;
+
+            for (int i = 0; i < content.Length; i++)
+            {
+                char c = content[i];
+                if (c == '\\' && i + 1 < content.Length)
+                {
+                    i++;
+                    continue;
+                }
+
+                if (!inDoubleQuote && c == '\'')
+                {
+                    inSingleQuote = !inSingleQuote;
+                    continue;
+                }
+
+                if (!inSingleQuote && c == '"')
+                {
+                    inDoubleQuote = !inDoubleQuote;
+                    continue;
+                }
+
+                if (inSingleQuote || inDoubleQuote)
+                {
+                    continue;
+                }
+
+                foreach (var op in operators)
+                {
+                    if (i + op.Length <= content.Length &&
+                        string.Compare(content, i, op, 0, op.Length, StringComparison.Ordinal) == 0)
+                    {
+                        matchedOperator = op;
+                        return i;
+                    }
+                }
+            }
+
+            return -1;
+        }
+
+        private static void ParseAttributeValueAndFlags(string rhs, out string value, out bool caseInsensitive)
+        {
+            value = string.Empty;
+            caseInsensitive = false;
+
+            if (string.IsNullOrWhiteSpace(rhs))
+            {
+                return;
+            }
+
+            string tail = string.Empty;
+            rhs = rhs.Trim();
+
+            if (rhs.Length > 0 && (rhs[0] == '"' || rhs[0] == '\''))
+            {
+                char quote = rhs[0];
+                int endQuote = 1;
+                while (endQuote < rhs.Length)
+                {
+                    if (rhs[endQuote] == '\\' && endQuote + 1 < rhs.Length)
+                    {
+                        endQuote += 2;
+                        continue;
+                    }
+
+                    if (rhs[endQuote] == quote)
+                    {
+                        break;
+                    }
+
+                    endQuote++;
+                }
+
+                if (endQuote >= rhs.Length)
+                {
+                    value = rhs.Substring(1);
+                    return;
+                }
+
+                value = rhs.Substring(1, Math.Max(0, endQuote - 1));
+                tail = rhs.Substring(endQuote + 1).Trim();
+            }
+            else
+            {
+                int ws = 0;
+                while (ws < rhs.Length && !char.IsWhiteSpace(rhs[ws])) ws++;
+                value = rhs.Substring(0, ws).Trim();
+                tail = ws < rhs.Length ? rhs.Substring(ws).Trim() : string.Empty;
+            }
+
+            if (tail.Length == 0)
+            {
+                return;
+            }
+
+            // Attribute selector flags: i (ASCII case-insensitive), s (case-sensitive).
+            // Case-sensitive is already default behavior; we only need to toggle for i.
+            if (tail.Equals("i", StringComparison.OrdinalIgnoreCase))
+            {
+                caseInsensitive = true;
+            }
         }
 
         private static List<string> SplitByComma(string s)
@@ -471,7 +625,8 @@ namespace FenBrowser.FenEngine.Rendering.Css
             return attr.Operator switch
             {
                 "=" => string.Equals(val, attr.Value, comp),
-                "~=" => val.Split(' ').Any(v => string.Equals(v, attr.Value, comp)),
+                "~=" => val.Split(new[] { ' ', '\t', '\r', '\n', '\f' }, StringSplitOptions.RemoveEmptyEntries)
+                           .Any(v => string.Equals(v, attr.Value, comp)),
                 "|=" => string.Equals(val, attr.Value, comp) || val.StartsWith(attr.Value + "-", comp),
                 "^=" => val.StartsWith(attr.Value, comp),
                 "$=" => val.EndsWith(attr.Value, comp),
@@ -491,7 +646,8 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "first-of-type": return IsFirstOfType(el);
                 case "last-of-type": return IsLastOfType(el);
                 case "only-of-type": return IsFirstOfType(el) && IsLastOfType(el);
-                case "empty": return !el.HasChildNodes; // V2 HasChildNodes
+                case "empty": return IsEmptyElement(el);
+                case "scope": return IsScope(el);
                 case "root": return el.ParentElement == null || el.TagName?.ToUpperInvariant() == "HTML";
                 case "not": 
                 {
@@ -506,9 +662,9 @@ namespace FenBrowser.FenEngine.Rendering.Css
                         return parsedArgs.Any(chain => MatchesChain(el, chain, depth + 1));
                     return ParseSelectorList(args).Any(chain => MatchesChain(el, chain, depth + 1));
                 }
-                case "has": return MatchesHas(el, args, depth + 1);
-                case "nth-child": return MatchesNthChild(el, args);
-                case "nth-last-child": return MatchesNthLastChild(el, args);
+                case "has": return MatchesHas(el, args, parsedArgs, depth + 1);
+                case "nth-child": return MatchesNthChild(el, args, parsedArgs, depth + 1);
+                case "nth-last-child": return MatchesNthLastChild(el, args, parsedArgs, depth + 1);
                 case "nth-of-type": return MatchesNthOfType(el, args);
                 case "nth-last-of-type": return MatchesNthLastOfType(el, args);
                 case "checked": return ElementStateManager.Instance.IsChecked(el);
@@ -580,6 +736,25 @@ namespace FenBrowser.FenEngine.Rendering.Css
             return parent.ChildNodes.FirstOrDefault(c => !c.IsText()) == el; // IsText check via extension or flag
         }
 
+        private static bool IsEmptyElement(Element el)
+        {
+            for (var child = el.FirstChild; child != null; child = child.NextSibling)
+            {
+                // Per Selectors spec, any text node (including whitespace) disqualifies :empty.
+                if (child is Text) return false;
+                if (child is Element) return false;
+            }
+
+            return true;
+        }
+
+        private static bool IsScope(Element el)
+        {
+            // For stylesheet matching without an explicit query scope context,
+            // align :scope with the document root / detached root element.
+            return el.OwnerDocument?.DocumentElement == el || el.ParentElement == null;
+        }
+
         private static bool IsLastChild(Element el)
         {
             var parent = el.ParentNode as ContainerNode;
@@ -608,21 +783,48 @@ namespace FenBrowser.FenEngine.Rendering.Css
              return parent.ChildNodes.OfType<Element>().LastOrDefault(c => string.Equals(c.TagName, el.TagName, StringComparison.OrdinalIgnoreCase)) == el;
         }
 
-        private static bool MatchesNthChild(Element el, string args)
+        private static bool MatchesNthChild(Element el, string args, List<SelectorChain> parsedArgs, int depth)
         {
             var parent = el.ParentNode as ContainerNode;
             if (parent == null) return false;
-            int index = parent.ChildNodes.Where(c => !c.IsText()).ToList().IndexOf(el) + 1;
-            return MatchesNthFormula(index, args);
+
+            ParseNthArguments(args, out var formula, out var ofSelector);
+            var siblings = parent.ChildNodes.OfType<Element>().ToList();
+            if (parsedArgs != null && parsedArgs.Count > 0)
+            {
+                siblings = siblings.Where(sibling => MatchesSelectorList(sibling, parsedArgs, depth + 1)).ToList();
+            }
+            else if (!string.IsNullOrWhiteSpace(ofSelector))
+            {
+                var chains = ParseSelectorList(ofSelector);
+                siblings = siblings.Where(sibling => MatchesSelectorList(sibling, chains, depth + 1)).ToList();
+            }
+
+            int index = siblings.IndexOf(el);
+            if (index < 0) return false;
+            return MatchesNthFormula(index + 1, formula);
         }
 
-        private static bool MatchesNthLastChild(Element el, string args)
+        private static bool MatchesNthLastChild(Element el, string args, List<SelectorChain> parsedArgs, int depth)
         {
             var parent = el.ParentNode as ContainerNode;
             if (parent == null) return false;
-            var siblings = parent.ChildNodes.Where(c => !c.IsText()).ToList();
-            int index = siblings.Count - siblings.IndexOf(el);
-            return MatchesNthFormula(index, args);
+
+            ParseNthArguments(args, out var formula, out var ofSelector);
+            var siblings = parent.ChildNodes.OfType<Element>().ToList();
+            if (parsedArgs != null && parsedArgs.Count > 0)
+            {
+                siblings = siblings.Where(sibling => MatchesSelectorList(sibling, parsedArgs, depth + 1)).ToList();
+            }
+            else if (!string.IsNullOrWhiteSpace(ofSelector))
+            {
+                var chains = ParseSelectorList(ofSelector);
+                siblings = siblings.Where(sibling => MatchesSelectorList(sibling, chains, depth + 1)).ToList();
+            }
+
+            int index = siblings.IndexOf(el);
+            if (index < 0) return false;
+            return MatchesNthFormula(siblings.Count - index, formula);
         }
 
         private static bool MatchesNthOfType(Element el, string args)
@@ -643,46 +845,169 @@ namespace FenBrowser.FenEngine.Rendering.Css
             return MatchesNthFormula(index, args);
         }
 
-        private static bool MatchesHas(Element el, string relativeSelectors, int depth)
+        private static bool MatchesHas(Element el, string relativeSelectors, List<SelectorChain> parsedArgs, int depth)
         {
-            var parsed = ParseSelectorList(relativeSelectors);
+            var parsed = parsedArgs ?? ParseSelectorList(relativeSelectors);
             foreach (var chain in parsed)
             {
-                if (chain.Segments.Count == 0) continue;
-                
-                var first = chain.Segments[0];
-                var combinator = first.Combinator;
-                
-                // Identify candidates based on combinator relative to 'el'
-                IEnumerable<Element> candidates = null;
-                
-                if (combinator == '>') // Child
+                if (chain.Segments.Count == 0)
                 {
-                    candidates = (el as ContainerNode).ChildNodes.OfType<Element>(); // Cast to ContainerNode
+                    continue;
                 }
-                else if (combinator == '+') // Adjacent Sibling
+
+                if (MatchesRelativeChain(el, chain, 0, depth + 1))
                 {
-                    var next = GetNextSibling(el);
-                    if (next != null) candidates = new[] { next };
-                }
-                else if (combinator == '~') // General Sibling
-                {
-                    candidates = GetFollowingSiblings(el);
-                }
-                else // Descendant (Space)
-                {
-                    candidates = el.Descendants().OfType<Element>(); // V2 Node has Descendants()
-                }
-                
-                if (candidates != null)
-                {
-                    foreach (var cand in candidates)
-                    {
-                        if (MatchesChain(cand, chain, depth + 1)) return true;
-                    }
+                    return true;
                 }
             }
             return false;
+        }
+
+        private static bool MatchesRelativeChain(Element anchor, SelectorChain chain, int segmentIndex, int depth)
+        {
+            if (anchor == null || chain == null || depth > 64) return false;
+            if (segmentIndex < 0 || segmentIndex >= chain.Segments.Count) return false;
+
+            var segment = chain.Segments[segmentIndex];
+            var candidates = EnumerateRelatedElements(anchor, segment.Combinator);
+            foreach (var candidate in candidates)
+            {
+                if (!MatchesSegment(candidate, segment, depth + 1))
+                {
+                    continue;
+                }
+
+                if (segmentIndex == chain.Segments.Count - 1)
+                {
+                    return true;
+                }
+
+                if (MatchesRelativeChain(candidate, chain, segmentIndex + 1, depth + 1))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static IEnumerable<Element> EnumerateRelatedElements(Element anchor, char combinator)
+        {
+            return combinator switch
+            {
+                '>' => GetChildElements(anchor),
+                '+' => GetAdjacentNextSibling(anchor),
+                '~' => GetFollowingSiblings(anchor),
+                _ => anchor.Descendants().OfType<Element>()
+            };
+        }
+
+        private static IEnumerable<Element> GetChildElements(Element el)
+        {
+            if (el is ContainerNode container)
+            {
+                return container.ChildNodes.OfType<Element>();
+            }
+
+            return Array.Empty<Element>();
+        }
+
+        private static IEnumerable<Element> GetAdjacentNextSibling(Element el)
+        {
+            var next = GetNextSibling(el);
+            if (next == null)
+            {
+                return Array.Empty<Element>();
+            }
+
+            return new[] { next };
+        }
+
+        private static bool MatchesSelectorList(Element element, List<SelectorChain> selectorList, int depth)
+        {
+            if (selectorList == null || selectorList.Count == 0 || depth > 64) return false;
+            foreach (var chain in selectorList)
+            {
+                if (MatchesChain(element, chain, depth + 1))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static void ParseNthArguments(string args, out string formula, out string ofSelector)
+        {
+            formula = args?.Trim() ?? string.Empty;
+            ofSelector = null;
+
+            if (string.IsNullOrWhiteSpace(args))
+            {
+                return;
+            }
+
+            bool inSingleQuote = false;
+            bool inDoubleQuote = false;
+            int depth = 0;
+
+            for (int i = 0; i < args.Length - 1; i++)
+            {
+                char c = args[i];
+
+                if (c == '\\' && i + 1 < args.Length)
+                {
+                    i++;
+                    continue;
+                }
+
+                if (!inDoubleQuote && c == '\'')
+                {
+                    inSingleQuote = !inSingleQuote;
+                    continue;
+                }
+
+                if (!inSingleQuote && c == '"')
+                {
+                    inDoubleQuote = !inDoubleQuote;
+                    continue;
+                }
+
+                if (inSingleQuote || inDoubleQuote)
+                {
+                    continue;
+                }
+
+                if (c == '(' || c == '[')
+                {
+                    depth++;
+                    continue;
+                }
+
+                if (c == ')' || c == ']')
+                {
+                    if (depth > 0) depth--;
+                    continue;
+                }
+
+                if (depth == 0 && IsNthOfKeyword(args, i))
+                {
+                    formula = args.Substring(0, i).Trim();
+                    ofSelector = args.Substring(i + 2).Trim();
+                    return;
+                }
+            }
+        }
+
+        private static bool IsNthOfKeyword(string args, int index)
+        {
+            if (index < 0 || index + 2 > args.Length) return false;
+            if (args[index] != 'o' && args[index] != 'O') return false;
+            if (args[index + 1] != 'f' && args[index + 1] != 'F') return false;
+
+            bool beforeOk = index == 0 || char.IsWhiteSpace(args[index - 1]);
+            bool afterOk = index + 2 >= args.Length || char.IsWhiteSpace(args[index + 2]);
+            return beforeOk && afterOk;
         }
 
         private static Element GetNextSibling(Element el)
