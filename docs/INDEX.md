@@ -56,6 +56,22 @@ Definitions of standard terminology ("Box", "Node", "Bridge", etc.).
 
 Deep source audit with 1-100 scoring, maturity buckets, security risks, and issue-to-fix mapping.
 
+### [Appendix G: Web Compatibility Production Plan](WEB_COMPAT_PRODUCTION_PLAN.md)
+
+Standards-first compatibility strategy and feature roadmap (no site-specific hacks).
+
+### [Appendix H: Pipeline Production Blueprint (2026-02-20)](PIPELINE_PRODUCTION_BLUEPRINT_2026_02_20.md)
+
+Cross-engine pipeline comparison (Chrome/Firefox/Ladybird patterns), Fen maturity scoring, and production hardening plan.
+
+### [Appendix I: Final Gap System](final_gap_system.md)
+
+Master execution control sheet for subsystem-by-subsystem gap closure with a strict 90+ gate.
+
+### [Appendix J: Pipeline Comparison Snapshot (2026-02-20)](PIPELINE_COMPARISON_SNAPSHOT_2026_02_20.md)
+
+Saved comparison snapshot (Fen vs Chrome/Firefox/Ladybird baseline) captured from project review artifact.
+
 ---
 
-_State as of 2026-02-19_
+_State as of 2026-02-20_

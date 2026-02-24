@@ -1,6 +1,6 @@
 # FenBrowser Codex - Volume II: The Core Foundation
 
-**State as of:** 2026-02-18
+**State as of:** 2026-02-20
 **Codex Version:** 1.0
 
 ## 1. Overview
@@ -96,6 +96,30 @@ Based strictly on the **HTML5 Parsing Specification**.
   - `HandleInBody` (The most common state)
   - `HandleInTable` (Special "foster parenting" rules for misnested tables)
 - **Error Handling**: Implements "quirks mode" behavior for malformed HTML (e.g., missing closing tags).
+- **Stage Telemetry (2026-02-20)**:
+  - `HtmlParseBuildMetrics` now exposes per-build parse timings and volume:
+    - `TokenizingMs`, `ParsingMs`, `TokenCount`.
+  - Checkpoint accounting is now first-class:
+    - `TokenizingCheckpointCount`, `ParsingCheckpointCount`.
+  - Document readiness milestone is measured:
+    - `DocumentReadyTokenCount` (first parsed token index where `DocumentElement` is available).
+  - Interleaved primary-parse metrics are now available:
+    - `UsedInterleavedBuild`, `InterleavedTokenBatchSize`, `InterleavedBatchCount`.
+  - Optional checkpoint callback contract for instrumentation:
+    - `ParseCheckpointTokenInterval`
+    - `ParseCheckpointCallback` (`HtmlParseCheckpoint` with phase + final marker).
+  - Incremental document checkpoint callback is now available:
+    - `ParseDocumentCheckpointCallback(Document, HtmlParseCheckpoint)`
+    - fired on parsing checkpoints (including final) with the current document state.
+  - Interleaved build mode:
+    - `InterleavedTokenBatchSize` controls tokenize/parse batch handoff (`0` keeps legacy full-buffer parse).
+    - Batch handoff preserves parser correctness path while allowing first-class incremental parse progress in the production parser.
+  - Conformance guardrails:
+    - Parser regression suites now compare baseline and interleaved parse outputs for pathological and large multi-batch documents.
+- **Pipeline Stage Entry (2026-02-20)**:
+  - `BuildWithPipelineStages(PipelineContext)` runs parse inside scoped frame and explicit stages:
+    - `PipelineStage.Tokenizing`
+    - `PipelineStage.Parsing`.
 
 ---
 
@@ -252,6 +276,7 @@ Represents text content.
 - **`Security/AttributeSanitizer.cs`**: Validates attribute names/values; inline `on*` handler values are preserved by default for browser compatibility, with opt-in strict blocking via `BlockInlineEventHandlersInStrictMode`.
 - **`Selectors/CssSelector.cs`**: AST for parsed CSS selectors.
 - **`Selectors/SelectorParser.cs`**: recursive descent parser for CSS selectors.
+- **`Selectors/SimpleSelector.cs`**: selector primitive implementations (`:not/:is/:has/:nth-*`, attribute/type/id/class matching).
 - **`HtmlToken.cs`**: Data class for the Tokenizer output.
 - **`ICssParser.cs`**: Interface definition for the CSS engine.
 
@@ -419,3 +444,109 @@ _End of Volume II_
 - `ResourceManager.cs`
   - Updated `worker` destination CSP mapping to prefer `worker-src` when present, with `child-src` fallback.
   - This aligns worker script fetch checks with modern CSP directive precedence.
+
+### 6.13 Pipeline Context Hardening (2026-02-20)
+
+- `Engine/PipelineContext.cs`
+  - Added scoped lifecycle APIs:
+    - `BeginScopedFrame()`
+    - `BeginScopedStage(PipelineStage stage)`
+  - These guarantee `EndFrame()`/`EndStage()` via `IDisposable`, including exception paths.
+  - Stage timing now records real stage duration (stage-start to stage-end), not cumulative frame time.
+  - Normalized transition diagnostics string to ASCII (`->`) for log stability.
+
+### 6.14 Process Isolation Policy Primitives (2026-02-20)
+
+- `ProcessIsolation/RendererIsolationPolicies.cs` (new)
+  - Added origin-assignment policy utilities used by host brokered process model:
+    - stable assignment-key derivation for `http/https` origins
+    - explicit assignment classes for local/opaque navigations (`file://local`, `about://*`, `opaque://<scheme>`)
+    - assignment-change detection helper for renderer recycle decisions.
+  - Added restart policy primitive for renderer crash handling:
+    - bounded restart budget
+    - exponential backoff with max-delay cap
+    - stable-session runtime reset and crash-loop quarantine controls.
+  - Added registry-backed isolation state machine:
+    - `RendererTabIsolationRegistry`
+    - central navigation assignment decisions
+    - expected/stale/unexpected exit classification
+    - restart-plan/replay decision generation
+    - start gating via `CanStartSession(...)` (quarantine + closed-tab enforcement).
+
+- `Tests/Core/RendererIsolationPoliciesTests.cs` (new)
+  - Added regression coverage for:
+    - assignment-key normalization and reassignment decisions
+    - unsupported URL handling
+    - restart budget and backoff policy behavior.
+  - Expanded coverage for registry decisions:
+    - first navigation assignment
+    - cross-origin reassignment triggers
+    - expected/stale exit non-restart paths
+    - restart budget exhaustion and shutdown/closed-tab invariants
+    - stable-runtime restart reset
+    - crash-loop quarantine and user-input quarantine release.
+
+### 6.15 Navigation Lifecycle State Machine (2026-02-20)
+
+- `Engine/NavigationLifecycle.cs` (new)
+  - Added deterministic top-level navigation lifecycle primitives:
+    - `NavigationLifecyclePhase` (`Requested`, `Fetching`, `ResponseReceived`, `Committing`, `Interactive`, `Complete`, `Failed`, `Cancelled`)
+    - `NavigationLifecycleTransition` payload
+    - `NavigationLifecycleSnapshot` state export
+    - `NavigationLifecycleTracker` with monotonic transition enforcement.
+  - Transition engine rejects invalid order and stale navigation ids by design.
+  - Tracker emits lifecycle transitions for host/engine consumers through `Transitioned` event.
+
+- `Tests/Core/NavigationLifecycleTrackerTests.cs` (new)
+  - Added regression coverage for:
+    - deterministic successful phase ordering
+    - invalid transition rejection
+    - stale navigation-id isolation
+    - cancellation terminal behavior.
+
+### 6.16 Navigation Lifecycle Tranche NL-2 (2026-02-20)
+
+- `ResourceManager.cs`
+  - `FetchResult` now carries redirect metadata from the canonical fetch pipeline:
+    - `Redirected`
+    - `RedirectCount`
+    - `RedirectChain`
+  - Redirect metadata is populated across success and error returns for deterministic lifecycle correlation.
+
+- `Engine/NavigationLifecycle.cs`
+  - Lifecycle snapshot/transition payloads now include:
+    - redirect classification (`IsRedirect`, `RedirectCount`)
+    - commit-source tag (`CommitSource`)
+  - Added overload path to mark response metadata and commit source without out-of-band host heuristics.
+
+- `Tests/Core/NavigationLifecycleTrackerTests.cs`
+  - Added metadata regression:
+    - redirect + commit-source values survive response/commit/complete lifecycle progression.
+
+### 6.17 Navigation Lifecycle Tranche NL-4 (2026-02-20)
+
+- `Engine/NavigationSubresourceTracker.cs` (new)
+  - Added navigation-scoped pending subresource tracker:
+    - pending count keyed by navigation id
+    - explicit navigation reset/abandon operations
+    - pending-count event channel (`PendingCountChanged`) for lifecycle completion gates.
+
+- `Tests/Core/NavigationSubresourceTrackerTests.cs` (new)
+  - Added regression coverage for:
+    - per-navigation pending isolation
+    - abandon cleanup behavior
+    - navigation-id tagged pending-count events.
+
+### 6.18 Selector Engine Conformance Tranche CSS-1 (2026-02-20)
+
+- `Dom/V2/Selectors/SimpleSelector.cs`
+  - `NthChildSelector` now supports Selectors-4 `of <selector-list>` filtering.
+  - `NthChildSelector` specificity now includes selector-list specificity contributions when `of` is present.
+
+- `Dom/V2/Selectors/SelectorParser.cs`
+  - Attribute selector parser now accepts explicit `s` flag (case-sensitive override) in addition to `i`.
+
+- `Tests/DOM/SelectorEngineConformanceTests.cs` (new)
+  - Added regression coverage for:
+    - `Element.Matches(...)` with `nth-child(... of ...)`
+    - attribute flag behavior (`i`/`s`) in core selector path.
