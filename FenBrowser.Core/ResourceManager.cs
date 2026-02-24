@@ -1193,7 +1193,22 @@ namespace FenBrowser.Core
                 {
                     System.Diagnostics.Debug.WriteLine($"[CssLoader] BLOCKED JS masquerading as CSS: {url} ({ct})");
                     FenLogger.Warn($"[CssLoader] Blocked non-CSS resource: {url} Content-Type: {ct}", LogCategory.Network);
-                    return null; 
+                    return null;
+                }
+            }
+
+            // X-Content-Type-Options: nosniff — if set, the content-type MUST be text/css
+            if (result.Headers != null && result.Headers.TryGetValues("X-Content-Type-Options", out var xctoVals))
+            {
+                var xcto = string.Join(",", xctoVals).Trim().ToLowerInvariant();
+                if (xcto.Contains("nosniff"))
+                {
+                    var ctCheck = result.ContentType?.ToLowerInvariant() ?? "";
+                    if (!ctCheck.Contains("text/css"))
+                    {
+                        FenLogger.Warn($"[nosniff] Blocked stylesheet — Content-Type '{result.ContentType}' not text/css: {url}", LogCategory.Network);
+                        return null;
+                    }
                 }
             }
 

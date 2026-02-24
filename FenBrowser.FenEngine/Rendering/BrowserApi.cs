@@ -571,7 +571,26 @@ namespace FenBrowser.FenEngine.Rendering
 
                 try
                 {
-                    return await _resources.FetchTextAsync(u, referer: _current, accept: null, secFetchDest: "script").ConfigureAwait(false);
+                    var scriptResult = await _resources.FetchTextDetailedAsync(u, referer: _current, accept: null, secFetchDest: "script").ConfigureAwait(false);
+                    if (scriptResult.Status != FenBrowser.Core.FetchStatus.Success) return null;
+
+                    // X-Content-Type-Options: nosniff — block script if Content-Type is not a JS MIME type
+                    if (scriptResult.Headers != null && scriptResult.Headers.TryGetValues("X-Content-Type-Options", out var xctoVals))
+                    {
+                        var xcto = string.Join(",", xctoVals).Trim().ToLowerInvariant();
+                        if (xcto.Contains("nosniff"))
+                        {
+                            var scriptCt = scriptResult.ContentType?.ToLowerInvariant() ?? "";
+                            bool isJsMime = scriptCt.Contains("javascript") || scriptCt.Contains("ecmascript");
+                            if (!isJsMime)
+                            {
+                                FenLogger.Warn($"[nosniff] Blocked script — Content-Type '{scriptResult.ContentType}' is not a JS MIME type: {u}", LogCategory.JavaScript);
+                                return null;
+                            }
+                        }
+                    }
+
+                    return scriptResult.Content;
                 }
                 finally
                 {

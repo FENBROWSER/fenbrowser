@@ -240,6 +240,15 @@ namespace FenBrowser.FenEngine.WebAPIs
             return origin.Trim().ToLowerInvariant();
         }
 
+        /// <summary>Per-origin storage quota: 5 MB, measured as UTF-16 code units × 2 bytes (matching browser standard).</summary>
+        public const long QuotaBytes = 5L * 1024 * 1024;
+
+        /// <summary>
+        /// Calculates total bytes used by a storage partition (all key+value pairs, UTF-16).
+        /// </summary>
+        private static long CalculateStoreBytes(ConcurrentDictionary<string, string> store)
+            => store.Sum(kvp => ((long)kvp.Key.Length + kvp.Value.Length) * 2);
+
         public class DomStorage : FenObject
         {
             private readonly string _type;
@@ -288,11 +297,20 @@ namespace FenBrowser.FenEngine.WebAPIs
                 if (args.Length < 2) return FenValue.Undefined;
                 var key = args[0].ToString();
                 var val = args[1].ToString();
-                
+
                 var store = GetStore();
+
+                // Per-origin quota check (5 MB, matching browser standard).
+                // Compute bytes already used, subtract existing entry for this key (if any), add new entry.
+                long usedBytes = CalculateStoreBytes(store);
+                if (store.TryGetValue(key, out var existing))
+                    usedBytes -= ((long)key.Length + existing.Length) * 2; // replacing — remove old size
+                long newBytes = usedBytes + ((long)key.Length + val.Length) * 2;
+                if (newBytes > QuotaBytes)
+                    throw new Exception($"QuotaExceededError: The {_type} quota of 5\u00a0MB per origin has been exceeded.");
+
                 store[key] = val;
                 UpdateLength();
-
                 _onMutate?.Invoke();
                 return FenValue.Undefined;
             }

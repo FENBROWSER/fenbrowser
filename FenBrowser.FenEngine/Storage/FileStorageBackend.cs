@@ -200,14 +200,47 @@ namespace FenBrowser.FenEngine.Storage
             return store.Records.TryGetValue(keyStr, out var value) ? value : null;
         }
 
+        /// <summary>Per-origin IndexedDB quota: 50 MB across all databases for one origin.</summary>
+        private const long IdbOriginQuotaBytes = 50L * 1024 * 1024;
+
+        /// <summary>Returns total bytes of all JSON files in the origin's storage directory.</summary>
+        private long GetOriginUsedBytes(string origin)
+        {
+            var dir = GetOriginPath(origin);
+            if (!Directory.Exists(dir)) return 0;
+            return new DirectoryInfo(dir).GetFiles("*.json", SearchOption.TopDirectoryOnly).Sum(f => f.Length);
+        }
+
+        /// <summary>
+        /// Estimates the serialized byte size of a new value being written.
+        /// Used for pre-write quota checks.
+        /// </summary>
+        private long EstimateValueBytes(string keyStr, object value)
+        {
+            try
+            {
+                var json = JsonSerializer.Serialize(value, _jsonOptions);
+                return ((long)keyStr.Length + json.Length) * 2; // UTF-16
+            }
+            catch { return 0; }
+        }
+
         public async Task<object> Put(string origin, string dbName, string storeName, object key, object value)
         {
             var state = await GetDatabaseState(origin, dbName);
             var store = GetObjectStore(state, storeName);
 
             var keyStr = key != null ? SerializeKey(key) : GenerateKey(store);
-            store.Records[keyStr] = value;
 
+            // Quota check: only charge for the new entry if it isn't replacing an existing one
+            if (!store.Records.ContainsKey(keyStr))
+            {
+                long usedBytes = GetOriginUsedBytes(origin);
+                if (usedBytes + EstimateValueBytes(keyStr, value) > IdbOriginQuotaBytes)
+                    throw new InvalidOperationException("QuotaExceededError: IndexedDB storage quota exceeded (50\u00a0MB per origin).");
+            }
+
+            store.Records[keyStr] = value;
             await SaveDatabaseState(GetDatabasePath(origin, dbName), state);
             return key ?? keyStr;
         }
@@ -218,9 +251,14 @@ namespace FenBrowser.FenEngine.Storage
             var store = GetObjectStore(state, storeName);
 
             var keyStr = key != null ? SerializeKey(key) : GenerateKey(store);
-            
+
             if (store.Records.ContainsKey(keyStr))
                 throw new InvalidOperationException($"Key already exists: {keyStr}");
+
+            // Quota check before writing new entry
+            long usedBytes = GetOriginUsedBytes(origin);
+            if (usedBytes + EstimateValueBytes(keyStr, value) > IdbOriginQuotaBytes)
+                throw new InvalidOperationException("QuotaExceededError: IndexedDB storage quota exceeded (50\u00a0MB per origin).");
 
             store.Records[keyStr] = value;
             await SaveDatabaseState(GetDatabasePath(origin, dbName), state);
