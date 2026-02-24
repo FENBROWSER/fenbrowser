@@ -6987,10 +6987,27 @@ namespace FenBrowser.FenEngine.Core
             {
                 if (args.Length == 0) return FenValue.Undefined;
                 if (!args[0].IsString) return args[0]; // non-string eval returns its argument
+
+                // SECURITY: Check JsPermissions.Eval — denied unless explicitly granted.
+                // Browser contexts grant it by default; CSP 'unsafe-eval' enforcement revokes it.
+                if (_context != null && !_context.Permissions.Check(FenBrowser.FenEngine.Security.JsPermissions.Eval))
+                {
+                    _context.Permissions.LogViolation(
+                        FenBrowser.FenEngine.Security.JsPermissions.Eval,
+                        "eval()",
+                        "eval() blocked by permission policy");
+                    return FenValue.FromError("EvalError: Refused to evaluate a string as JavaScript because 'unsafe-eval' is not an allowed source of script in the current security policy.");
+                }
+
+                // SECURITY: Limit input size to prevent DoS through giant eval strings
+                var code = args[0].ToString();
+                if (code.Length > 1_000_000)
+                    return FenValue.FromError("EvalError: eval() input exceeds maximum allowed size (1 MB).");
+
                 // Indirect eval: run in global scope
                 try
                 {
-                    var evalResult = ExecuteSimple(args[0].ToString(), allowReturn: false);
+                    var evalResult = ExecuteSimple(code, allowReturn: false);
                     if (evalResult is FenValue fv) return fv;
                     return FenValue.Undefined;
                 }

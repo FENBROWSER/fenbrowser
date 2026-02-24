@@ -94,8 +94,9 @@ namespace FenBrowser.FenEngine.DOM
                         entry.Path = string.IsNullOrEmpty(attrVal) ? "/" : attrVal;
                         break;
                     case "domain":
-                        // SECURITY: RFC 6265 §5.3 — domain attribute must be a suffix of (or
-                        // equal to) the request host; prevents cross-domain cookie injection.
+                        // SECURITY: RFC 6265 §5.3 step 6 — the domain attribute value must
+                        // domain-match the request URI's host. Silently ignore values that
+                        // don't, rather than honouring them (prevents cross-site cookie injection).
                         var candidateDomain = attrVal.TrimStart('.').ToLowerInvariant();
                         if (!string.IsNullOrEmpty(candidateDomain))
                         {
@@ -145,9 +146,10 @@ namespace FenBrowser.FenEngine.DOM
         /// Return the cookie header string for a given request URI.
         /// Filters by: not expired, path match, domain match, Secure only on HTTPS.
         /// </summary>
+        /// <param name="requestUri">The URI making the request.</param>
         /// <param name="fromScript">
-        /// Pass <c>true</c> from JavaScript (document.cookie) — hides HttpOnly cookies per RFC 6265.
-        /// Pass <c>false</c> when building the outgoing HTTP Cookie header.
+        /// When <c>true</c> (JavaScript context), HttpOnly cookies are excluded per spec.
+        /// Pass <c>false</c> only when building the outgoing HTTP Cookie header.
         /// </param>
         public string GetCookieString(Uri requestUri, bool fromScript = false)
         {
@@ -161,7 +163,7 @@ namespace FenBrowser.FenEngine.DOM
                 if (entry.Secure && !isSecure) continue;
                 if (!entry.PathMatches(requestUri)) continue;
                 if (!entry.DomainMatches(requestUri)) continue;
-                // SECURITY: HttpOnly cookies must not be readable from JavaScript (RFC 6265 §5.2)
+                // SECURITY: HttpOnly cookies must never be readable from JavaScript (RFC 6265 §5.2)
                 if (fromScript && entry.HttpOnly) continue;
 
                 if (!first) sb.Append("; ");

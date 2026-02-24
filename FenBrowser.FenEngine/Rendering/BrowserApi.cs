@@ -921,6 +921,18 @@ namespace FenBrowser.FenEngine.Rendering
                     _resources.ActivePolicy = CurrentPolicy;
                     _engine.ActivePolicy = CurrentPolicy; // Set on engine for inline script/style CSP checks
                     Console.WriteLine($"[CSP] Policy Applied: {string.Join(";", cspValues)}");
+
+                    // SECURITY: Revoke eval() permission if CSP script-src lacks 'unsafe-eval'
+                    var jsContext = _engine.Context;
+                    if (jsContext != null)
+                    {
+                        bool evalAllowed = CurrentPolicy.IsAllowed("script-src", url: null, isEval: true);
+                        if (!evalAllowed)
+                        {
+                            jsContext.Permissions.Revoke(FenBrowser.FenEngine.Security.JsPermissions.Eval);
+                            Console.WriteLine("[CSP] eval() revoked: 'unsafe-eval' not in script-src");
+                        }
+                    }
                 }
 
                 // Store X-Frame-Options policy for the current page.
