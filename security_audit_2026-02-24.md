@@ -114,8 +114,8 @@ These are not code bugs found in audit, but architectural security features a pr
 
 | Feature                                                           | Risk if Missing                                      | Effort | Status             |
 | ----------------------------------------------------------------- | ---------------------------------------------------- | ------ | ------------------ |
-| Subresource Integrity (SRI) — `integrity=` on `<script>`/`<link>` | Compromised CDN silently delivers malicious scripts  | Medium | ❌ Not implemented |
-| `X-Content-Type-Options: nosniff`                                 | MIME-sniffed JS execution from non-JS responses      | Low    | ⚠️ Needs review    |
+| Subresource Integrity (SRI) — `integrity=` on `<script>`/`<link>` | Compromised CDN silently delivers malicious scripts  | Medium | ✅ Done — sha256/384/512 verified in `JavaScriptEngine` and `CssLoader` before execution/application |
+| `X-Content-Type-Options: nosniff`                                 | MIME-sniffed JS execution from non-JS responses      | Low    | ✅ Done — enforced in `FetchCssAsync` (must be text/css) and BrowserApi script fetcher (must be JS MIME type) |
 | `Content-Disposition: attachment` — force download, not render    | Uploaded HTML/SVG served as attachment could execute | Low    | ⚠️ Needs review    |
 | SVG script execution policy (apply CSP to inline SVG scripts)     | SVG `<script>` bypasses CSP                          | Medium | ⚠️ Needs review    |
 | XXE disabled in XML/SVG parser                                    | External entity injection in crafted SVG             | Medium | ⚠️ Needs review    |
@@ -153,7 +153,7 @@ These are not code bugs found in audit, but architectural security features a pr
 
 | Feature                                                   | Risk if Missing                               | Effort | Status             |
 | --------------------------------------------------------- | --------------------------------------------- | ------ | ------------------ |
-| Per-origin storage quota (localStorage, IndexedDB, Cache) | Disk exhaustion DoS                           | Low    | ❌ Not implemented |
+| Per-origin storage quota (localStorage, IndexedDB, Cache) | Disk exhaustion DoS                           | Low    | ✅ Done — localStorage/sessionStorage: 5 MB per origin (throws `QuotaExceededError`); IndexedDB: 50 MB per origin in `FileStorageBackend` |
 | Private/Incognito mode — no disk writes, wipe on close    | Session data persists after private browsing  | Medium | ⚠️ Needs review    |
 | Saved password encryption (OS keychain)                   | Plaintext credentials on disk                 | High   | ❌ Not implemented |
 | Autofill cross-origin iframe block                        | Autofill leaks credentials to embedded frames | Medium | ⚠️ Needs review    |
@@ -184,6 +184,6 @@ These are not code bugs found in audit, but architectural security features a pr
 
 1. ✅ **TLS cert validation** — strict by default; `SslPolicyErrors` now flow into `FetchResult`, error page shows specific per-error headline (name mismatch / expired / untrusted CA / no cert), cert details (subject, issuer, expiry, fingerprint, SANs) shown in Advanced panel. SSL detection upgraded to `HttpRequestError.SecureConnectionError` enum.
 2. ✅ **`X-Frame-Options` enforcement** — `XFrameOptionsPolicy` enum added to `FenBrowser.Core`; parsed from every HTTP response into `FetchResult.XFrameOptions`; stored as `BrowserHost.CurrentXFrameOptions` after each top-level navigation; reset to `None` on new navigation. Full iframe-content blocking activates automatically when `<iframe>` content loading is implemented.
-3. **SRI for external scripts** — `<script integrity="sha384-...">` prevents CDN compromise
-4. **`X-Content-Type-Options: nosniff`** — one-line check, prevents MIME-sniffed script execution
-5. **Per-origin storage quota** — prevents any single page from filling the user's disk
+3. ✅ **SRI for external scripts** — `VerifySriIntegrity()` added to `JavaScriptEngine` and `CssLoader`; reads `integrity` attribute from `<script>`/`<link>`; computes SHA-256/384/512 of fetched bytes; blocks on mismatch. Covers static load, dynamic injection, and external stylesheets.
+4. ✅ **`X-Content-Type-Options: nosniff`** — enforced in `ResourceManager.FetchCssAsync` (content-type must be `text/css`) and BrowserApi script fetcher (content-type must be a JS MIME type); blocks MIME-sniffed execution of non-JS/CSS responses.
+5. ✅ **Per-origin storage quota** — `localStorage`/`sessionStorage`: 5 MB per origin enforced in `DomStorage.SetItem()` (throws `QuotaExceededError`); IndexedDB: 50 MB per origin enforced in `FileStorageBackend.Put()`/`Add()` via origin directory size sum.
