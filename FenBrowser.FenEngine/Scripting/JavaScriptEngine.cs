@@ -110,6 +110,9 @@ namespace FenBrowser.FenEngine.Scripting
 
             var context = new FenBrowser.FenEngine.Core.ExecutionContext(permissions);
 
+            // Configure layout engine provider
+            context.LayoutEngineProvider = () => _host?.GetLayoutEngine();
+
             // Configure function execution delegate
             context.ExecuteFunction = (fn, args) => 
             {
@@ -946,6 +949,23 @@ namespace FenBrowser.FenEngine.Scripting
             new Dictionary<string, LinkedListNode<Tuple<string, ScriptCacheEntry>>>(StringComparer.Ordinal);
         private readonly LinkedList<Tuple<string, ScriptCacheEntry>> _scriptLru =
             new LinkedList<Tuple<string, ScriptCacheEntry>>();
+
+        // Prefetched module source cache keyed by absolute module URI.
+        // This avoids sync-blocking network bridges in module-loader hot paths.
+        private readonly Dictionary<string, string> _prefetchedModuleSource =
+            new Dictionary<string, string>(StringComparer.Ordinal);
+        private readonly object _prefetchedModuleSourceLock = new object();
+        private const int MaxModulePrefetchDepth = 32;
+
+        private static readonly Regex ModuleImportFromRegex = new Regex(
+            @"\b(?:import|export)\b[\s\S]*?\bfrom\s*['""](?<spec>[^'""]+)['""]",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant);
+        private static readonly Regex ModuleImportSideEffectRegex = new Regex(
+            @"\bimport\s*['""](?<spec>[^'""]+)['""]",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant);
+        private static readonly Regex ModuleDynamicImportLiteralRegex = new Regex(
+            @"\bimport\s*\(\s*['""](?<spec>[^'""]+)['""]\s*\)",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
 
         /// <summary>
@@ -2172,21 +2192,198 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             catch { }
         }
         */
-        private string FetchTextSync(Uri uri)
+        private void ResetPrefetchedModuleSource()
         {
-            if (uri == null) return "";
+            lock (_prefetchedModuleSourceLock)
+            {
+                _prefetchedModuleSource.Clear();
+            }
+        }
+
+        private void CachePrefetchedModuleSource(Uri uri, string content)
+        {
+            if (uri == null || string.IsNullOrWhiteSpace(content))
+            {
+                return;
+            }
+
+            lock (_prefetchedModuleSourceLock)
+            {
+                _prefetchedModuleSource[uri.AbsoluteUri] = content;
+            }
+        }
+
+        private bool TryGetPrefetchedModuleSource(Uri uri, out string content)
+        {
+            content = null;
+            if (uri == null)
+            {
+                return false;
+            }
+
+            lock (_prefetchedModuleSourceLock)
+            {
+                return _prefetchedModuleSource.TryGetValue(uri.AbsoluteUri, out content);
+            }
+        }
+
+        private async Task<string> FetchModuleTextForLoaderAsync(Uri uri, Uri referer)
+        {
+            if (uri == null) return string.Empty;
             try
             {
                 if (FetchOverride != null)
                 {
-                    var viaOverride = FetchOverride(uri).GetAwaiter().GetResult();
+                    var viaOverride = await FetchOverride(uri).ConfigureAwait(false);
                     if (viaOverride != null) return viaOverride;
                 }
 
                 if (ExternalScriptFetcher != null)
                 {
-                    var viaExternal = ExternalScriptFetcher(uri, _ctx?.BaseUri).GetAwaiter().GetResult();
+                    var viaExternal = await ExternalScriptFetcher(uri, referer ?? _ctx?.BaseUri).ConfigureAwait(false);
                     if (viaExternal != null) return viaExternal;
+                }
+
+                if (uri.IsFile && File.Exists(uri.LocalPath))
+                {
+                    return await File.ReadAllTextAsync(uri.LocalPath).ConfigureAwait(false);
+                }
+
+                FenLogger.Warn($"[JavaScriptEngine] Blocked module fetch for unsupported URI without browser fetch pipeline: {uri}", LogCategory.Network);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[JavaScriptEngine] Module fetch failed for '{uri}': {ex.Message}", LogCategory.Network);
+            }
+
+            return string.Empty;
+        }
+
+        private IEnumerable<string> ExtractModuleSpecifiers(string source)
+        {
+            if (string.IsNullOrWhiteSpace(source))
+            {
+                yield break;
+            }
+
+            foreach (Match match in ModuleImportFromRegex.Matches(source))
+            {
+                var spec = match.Groups["spec"]?.Value;
+                if (!string.IsNullOrWhiteSpace(spec))
+                {
+                    yield return spec.Trim();
+                }
+            }
+
+            foreach (Match match in ModuleImportSideEffectRegex.Matches(source))
+            {
+                var spec = match.Groups["spec"]?.Value;
+                if (!string.IsNullOrWhiteSpace(spec))
+                {
+                    yield return spec.Trim();
+                }
+            }
+
+            foreach (Match match in ModuleDynamicImportLiteralRegex.Matches(source))
+            {
+                var spec = match.Groups["spec"]?.Value;
+                if (!string.IsNullOrWhiteSpace(spec))
+                {
+                    yield return spec.Trim();
+                }
+            }
+        }
+
+        private async Task PrefetchModuleGraphAsync(
+            FenBrowser.FenEngine.Core.ModuleLoader moduleLoader,
+            Uri moduleUri,
+            Uri referrerUri,
+            HashSet<string> visited,
+            int depth = 0)
+        {
+            if (moduleLoader == null || moduleUri == null || visited == null)
+            {
+                return;
+            }
+
+            if (depth > MaxModulePrefetchDepth)
+            {
+                FenLogger.Warn($"[JavaScriptEngine] Module prefetch depth limit reached at {moduleUri}", LogCategory.JavaScript);
+                return;
+            }
+
+            var moduleKey = moduleUri.AbsoluteUri;
+            if (!visited.Add(moduleKey))
+            {
+                return;
+            }
+
+            if (!IsModuleUriAllowed(moduleUri))
+            {
+                return;
+            }
+
+            var source = await FetchModuleTextForLoaderAsync(moduleUri, referrerUri).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(source))
+            {
+                return;
+            }
+
+            CachePrefetchedModuleSource(moduleUri, source);
+
+            foreach (var specifier in ExtractModuleSpecifiers(source))
+            {
+                string resolved;
+                try
+                {
+                    resolved = moduleLoader.Resolve(specifier, moduleKey);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(resolved))
+                {
+                    continue;
+                }
+
+                if (!Uri.TryCreate(resolved, UriKind.Absolute, out var dependencyUri))
+                {
+                    continue;
+                }
+
+                if (!IsModuleUriAllowed(dependencyUri))
+                {
+                    continue;
+                }
+
+                await PrefetchModuleGraphAsync(moduleLoader, dependencyUri, moduleUri, visited, depth + 1).ConfigureAwait(false);
+            }
+        }
+
+        private string BuildInlineModulePseudoPath(Uri baseUri)
+        {
+            if (baseUri != null &&
+                baseUri.IsAbsoluteUri &&
+                (baseUri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                 baseUri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+                 baseUri.Scheme.Equals(Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase)))
+            {
+                return new Uri(baseUri, $".fen-inline/module-{Guid.NewGuid():N}.js").AbsoluteUri;
+            }
+
+            return $"https://fen.invalid/.fen-inline/module-{Guid.NewGuid():N}.js";
+        }
+
+        private string FetchTextSync(Uri uri)
+        {
+            if (uri == null) return "";
+            try
+            {
+                if (TryGetPrefetchedModuleSource(uri, out var prefetched))
+                {
+                    return prefetched;
                 }
 
                 if (uri.IsFile && File.Exists(uri.LocalPath))
@@ -2194,7 +2391,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                     return File.ReadAllText(uri.LocalPath);
                 }
 
-                FenLogger.Warn($"[JavaScriptEngine] Blocked fallback module/script fetch for unsupported URI without browser fetch pipeline: {uri}", LogCategory.Network);
+                FenLogger.Warn($"[JavaScriptEngine] Missing prefetched module source for '{uri}'. Module graph must be prefetched asynchronously.", LogCategory.Network);
             }
             catch (Exception ex)
             {
@@ -2875,6 +3072,8 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                 {
                     /* [PERF-REMOVED] */
                     
+                    ResetPrefetchedModuleSource();
+
                     // Create ModuleLoader if needed (lazy init)
                     var moduleLoader = new FenBrowser.FenEngine.Core.ModuleLoader(
                         _fenRuntime.GlobalEnv, 
@@ -2978,7 +3177,17 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                             
                                             if (isModule)
                                             {
-                                                try { moduleLoader.LoadModule(scriptUri.AbsoluteUri); } catch { }
+                                                try
+                                                {
+                                                    await PrefetchModuleGraphAsync(
+                                                        moduleLoader,
+                                                        scriptUri,
+                                                        baseUri,
+                                                        new HashSet<string>(StringComparer.Ordinal))
+                                                        .ConfigureAwait(false);
+                                                    moduleLoader.LoadModule(scriptUri.AbsoluteUri);
+                                                }
+                                                catch { }
                                                 continue;
                                             }
 
@@ -3006,7 +3215,37 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                     
                                     if (isModule && !string.IsNullOrWhiteSpace(code))
                                     {
-                                        try { moduleLoader.LoadModuleSrc(code, $"inline-module-{Guid.NewGuid()}.js"); } catch { }
+                                        try
+                                        {
+                                            var inlineModulePath = BuildInlineModulePseudoPath(baseUri);
+                                            foreach (var specifier in ExtractModuleSpecifiers(code))
+                                            {
+                                                string resolved;
+                                                try
+                                                {
+                                                    resolved = moduleLoader.Resolve(specifier, inlineModulePath);
+                                                }
+                                                catch
+                                                {
+                                                    continue;
+                                                }
+
+                                                if (!Uri.TryCreate(resolved, UriKind.Absolute, out var dependencyUri))
+                                                {
+                                                    continue;
+                                                }
+
+                                                await PrefetchModuleGraphAsync(
+                                                    moduleLoader,
+                                                    dependencyUri,
+                                                    new Uri(inlineModulePath),
+                                                    new HashSet<string>(StringComparer.Ordinal))
+                                                    .ConfigureAwait(false);
+                                            }
+
+                                            moduleLoader.LoadModuleSrc(code, inlineModulePath);
+                                        }
+                                        catch { }
                                         continue; 
                                     }
                                 }
@@ -3067,9 +3306,17 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         // Backward compatibility wrapper (deprecated)
         public void SetDom(Node domRoot, Uri baseUri = null)
         {
-             // This is dangerous if called on UI thread, but provided for compatibility compilation
-             // Ideally calls should move to SetDomAsync
-             SetDomAsync(domRoot, baseUri).Wait();
+             _ = SetDomAsync(domRoot, baseUri).ContinueWith(
+                 t =>
+                 {
+                     FenLogger.Error(
+                         $"[JavaScriptEngine] Deprecated SetDom bridge failed: {t.Exception?.GetBaseException().Message}",
+                         LogCategory.JavaScript,
+                         t.Exception);
+                 },
+                 CancellationToken.None,
+                 TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                 TaskScheduler.Default);
         }
 
         private void RunGlobalScript(string js)
@@ -3204,6 +3451,9 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         void Log(string msg);
         void ScrollToElement(Element element);
         void FocusNode(Element element);
+
+        /// <summary>Returns the active layout engine, if available.</summary>
+        FenBrowser.FenEngine.Rendering.Core.ILayoutEngine GetLayoutEngine() => null;
     }
 
     // Optional host interface: if implemented, JavaScriptEngine will call RequestRender() when DOM changes

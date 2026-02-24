@@ -1,12 +1,47 @@
 using FenBrowser.Core.Dom.V2;
+using FenBrowser.Core.Engine;
 using FenBrowser.Core.Logging;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Text;
 
 namespace FenBrowser.Core.Parsing
 {
+    public sealed class HtmlParseBuildMetrics
+    {
+        public long TokenizingMs { get; set; }
+        public long ParsingMs { get; set; }
+        public int TokenCount { get; set; }
+        public int TokenizingCheckpointCount { get; set; }
+        public int ParsingCheckpointCount { get; set; }
+        public int DocumentReadyTokenCount { get; set; }
+        public bool UsedInterleavedBuild { get; set; }
+        public int InterleavedTokenBatchSize { get; set; }
+        public int InterleavedBatchCount { get; set; }
+    }
+
+    public enum HtmlParseBuildPhase
+    {
+        Tokenizing,
+        Parsing
+    }
+
+    public sealed class HtmlParseCheckpoint
+    {
+        public HtmlParseCheckpoint(HtmlParseBuildPhase phase, int processedTokenCount, bool isFinal)
+        {
+            Phase = phase;
+            ProcessedTokenCount = processedTokenCount;
+            IsFinal = isFinal;
+        }
+
+        public HtmlParseBuildPhase Phase { get; }
+        public int ProcessedTokenCount { get; }
+        public bool IsFinal { get; }
+    }
+
     /// <summary>
     /// A production-grade HTML5 Tree Builder.
     /// Implements insertion modes and tree construction rules.
@@ -32,6 +67,11 @@ namespace FenBrowser.Core.Parsing
         private Element _formElement;
         
         private bool _framesetOk = true;
+        public HtmlParseBuildMetrics LastBuildMetrics { get; private set; } = new HtmlParseBuildMetrics();
+        public int ParseCheckpointTokenInterval { get; set; } = 256;
+        public int InterleavedTokenBatchSize { get; set; }
+        public Action<HtmlParseCheckpoint> ParseCheckpointCallback { get; set; }
+        public Action<Document, HtmlParseCheckpoint> ParseDocumentCheckpointCallback { get; set; }
 
         public HtmlTreeBuilder(string html)
         {
@@ -45,11 +85,235 @@ namespace FenBrowser.Core.Parsing
 
         public Document Build()
         {
-            foreach (var token in _tokenizer.Tokenize())
+            return BuildInternal(null);
+        }
+
+        public Document BuildWithPipelineStages(PipelineContext pipelineContext)
+        {
+            if (pipelineContext == null)
             {
-                ProcessToken(token);
+                throw new ArgumentNullException(nameof(pipelineContext));
             }
-            return _document;
+
+            return BuildInternal(pipelineContext);
+        }
+
+        private Document BuildInternal(PipelineContext pipelineContext)
+        {
+            long tokenizingTicks = 0;
+            long parsingTicks = 0;
+            var tokenCount = 0;
+            var tokenizingCheckpointCount = 0;
+            var parsingCheckpointCount = 0;
+            var documentReadyTokenCount = 0;
+            var parsedTokenCount = 0;
+            var interleavedBatchCount = 0;
+            var tokenBatchSize = Math.Max(0, InterleavedTokenBatchSize);
+            var useInterleavedBuild = tokenBatchSize > 0;
+            var tokenBuffer = new List<HtmlToken>(useInterleavedBuild ? tokenBatchSize : 256);
+            IDisposable frameScope = null;
+            IDisposable tokenizingStageScope = null;
+            IDisposable parsingStageScope = null;
+
+            try
+            {
+                if (pipelineContext != null)
+                {
+                    frameScope = pipelineContext.BeginScopedFrame();
+                    tokenizingStageScope = pipelineContext.BeginScopedStage(PipelineStage.Tokenizing);
+                }
+
+                using (var enumerator = _tokenizer.Tokenize().GetEnumerator())
+                {
+                    while (true)
+                    {
+                        var tokenizeStart = Stopwatch.GetTimestamp();
+                        if (!enumerator.MoveNext())
+                        {
+                            break;
+                        }
+
+                        tokenizingTicks += Stopwatch.GetTimestamp() - tokenizeStart;
+                        var token = enumerator.Current;
+                        tokenBuffer.Add(token);
+                        tokenCount++;
+
+                        if (ShouldEmitCheckpoint(tokenCount))
+                        {
+                            tokenizingCheckpointCount++;
+                            EmitCheckpoint(HtmlParseBuildPhase.Tokenizing, tokenCount, isFinal: false);
+                        }
+
+                        if (useInterleavedBuild && tokenBuffer.Count >= tokenBatchSize)
+                        {
+                            tokenizingStageScope?.Dispose();
+                            tokenizingStageScope = null;
+
+                            if (pipelineContext != null)
+                            {
+                                parsingStageScope = pipelineContext.BeginScopedStage(PipelineStage.Parsing);
+                            }
+
+                            ProcessTokenBatch(
+                                tokenBuffer,
+                                ref parsingTicks,
+                                ref parsedTokenCount,
+                                ref parsingCheckpointCount,
+                                ref documentReadyTokenCount);
+                            interleavedBatchCount++;
+                            tokenBuffer.Clear();
+
+                            parsingStageScope?.Dispose();
+                            parsingStageScope = null;
+
+                            if (pipelineContext != null)
+                            {
+                                tokenizingStageScope = pipelineContext.BeginScopedStage(PipelineStage.Tokenizing);
+                            }
+                        }
+                    }
+                }
+
+                tokenizingCheckpointCount++;
+                EmitCheckpoint(HtmlParseBuildPhase.Tokenizing, tokenCount, isFinal: true);
+                tokenizingStageScope?.Dispose();
+                tokenizingStageScope = null;
+
+                if (pipelineContext != null)
+                {
+                    parsingStageScope = pipelineContext.BeginScopedStage(PipelineStage.Parsing);
+                }
+
+                if (tokenBuffer.Count > 0)
+                {
+                    ProcessTokenBatch(
+                        tokenBuffer,
+                        ref parsingTicks,
+                        ref parsedTokenCount,
+                        ref parsingCheckpointCount,
+                        ref documentReadyTokenCount);
+                    if (useInterleavedBuild)
+                    {
+                        interleavedBatchCount++;
+                    }
+                }
+
+                parsingCheckpointCount++;
+                var finalParsingCheckpoint = new HtmlParseCheckpoint(HtmlParseBuildPhase.Parsing, parsedTokenCount, isFinal: true);
+                EmitCheckpoint(finalParsingCheckpoint);
+                EmitDocumentCheckpoint(finalParsingCheckpoint);
+
+                LastBuildMetrics = new HtmlParseBuildMetrics
+                {
+                    TokenizingMs = TicksToMilliseconds(tokenizingTicks),
+                    ParsingMs = TicksToMilliseconds(parsingTicks),
+                    TokenCount = tokenCount,
+                    TokenizingCheckpointCount = tokenizingCheckpointCount,
+                    ParsingCheckpointCount = parsingCheckpointCount,
+                    DocumentReadyTokenCount = documentReadyTokenCount,
+                    UsedInterleavedBuild = useInterleavedBuild,
+                    InterleavedTokenBatchSize = tokenBatchSize,
+                    InterleavedBatchCount = interleavedBatchCount
+                };
+                return _document;
+            }
+            finally
+            {
+                parsingStageScope?.Dispose();
+                tokenizingStageScope?.Dispose();
+                frameScope?.Dispose();
+            }
+        }
+
+        private void ProcessTokenBatch(
+            List<HtmlToken> tokenBuffer,
+            ref long parsingTicks,
+            ref int parsedTokenCount,
+            ref int parsingCheckpointCount,
+            ref int documentReadyTokenCount)
+        {
+            if (tokenBuffer == null || tokenBuffer.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var token in tokenBuffer)
+            {
+                var parseStart = Stopwatch.GetTimestamp();
+                ProcessToken(token);
+                parsingTicks += Stopwatch.GetTimestamp() - parseStart;
+                parsedTokenCount++;
+                if (documentReadyTokenCount == 0 && _document.DocumentElement != null)
+                {
+                    documentReadyTokenCount = parsedTokenCount;
+                }
+
+                if (ShouldEmitCheckpoint(parsedTokenCount))
+                {
+                    parsingCheckpointCount++;
+                    var checkpoint = new HtmlParseCheckpoint(HtmlParseBuildPhase.Parsing, parsedTokenCount, isFinal: false);
+                    EmitCheckpoint(checkpoint);
+                    EmitDocumentCheckpoint(checkpoint);
+                }
+            }
+        }
+
+        private bool ShouldEmitCheckpoint(int processedTokenCount)
+        {
+            return ParseCheckpointTokenInterval > 0 &&
+                processedTokenCount > 0 &&
+                (processedTokenCount % ParseCheckpointTokenInterval) == 0;
+        }
+
+        private void EmitCheckpoint(HtmlParseBuildPhase phase, int processedTokenCount, bool isFinal)
+        {
+            EmitCheckpoint(new HtmlParseCheckpoint(phase, processedTokenCount, isFinal));
+        }
+
+        private void EmitCheckpoint(HtmlParseCheckpoint checkpoint)
+        {
+            var callback = ParseCheckpointCallback;
+            if (callback == null)
+            {
+                return;
+            }
+
+            try
+            {
+                callback(checkpoint);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[HTML] Parse checkpoint callback error: {ex.Message}", LogCategory.HtmlParsing);
+            }
+        }
+
+        private void EmitDocumentCheckpoint(HtmlParseCheckpoint checkpoint)
+        {
+            var callback = ParseDocumentCheckpointCallback;
+            if (callback == null)
+            {
+                return;
+            }
+
+            try
+            {
+                callback(_document, checkpoint);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[HTML] Parse document checkpoint callback error: {ex.Message}", LogCategory.HtmlParsing);
+            }
+        }
+
+        private static long TicksToMilliseconds(long ticks)
+        {
+            if (ticks <= 0)
+            {
+                return 0;
+            }
+
+            return (long)((ticks * 1000.0) / Stopwatch.Frequency);
         }
 
         private enum InsertionMode
@@ -84,9 +348,36 @@ namespace FenBrowser.Core.Parsing
 
         private void ProcessToken(HtmlToken token)
         {
+            // TEMP DEBUG: trace mode when processing tokens near xtSCL/aajZCb area
+            {
+                string curCls = (CurrentNode as Element)?.GetAttribute("class") ?? "";
+                string curTag = (CurrentNode as Element)?.TagName ?? "?";
+                bool trace = curCls.Contains("xtSCL") || curCls.Contains("aajZCb") ||
+                             curCls.Contains("FPdoLc") || curCls.Contains("VfL2Y") ||
+                             curCls.Contains("WzNHm") || curCls.Contains("JUypV") ||
+                             curCls.Contains("LRZwuc") || curCls.Contains("lJ9FBc");
+                // Also trace when token mentions FPdoLc
+                if (token is StartTagToken stDbg && stDbg.Attributes != null)
+                {
+                    foreach (var attr in stDbg.Attributes)
+                        if (attr.Name == "class" && attr.Value.Contains("FPdoLc")) trace = true;
+                }
+                if (trace)
+                {
+                    string tokenDesc = token switch {
+                        StartTagToken st => $"StartTag({st.TagName})",
+                        EndTagToken et => $"EndTag({et.TagName})",
+                        CharacterToken ct => $"Char({(ct.Data?.Length > 30 ? ct.Data.Substring(0,30)+"..." : ct.Data)})",
+                        CommentToken => "Comment",
+                        _ => token.GetType().Name
+                    };
+                    FenLogger.Info($"[PARSE-TRACE] Mode={_insertionMode} CurrentNode={((CurrentNode as Element)?.TagName ?? "?")}[{curCls}] Token={tokenDesc} StackDepth={_openElements.Count}", Logging.LogCategory.HtmlParsing);
+                }
+            }
+
             // Simplified dispatch based on mode
             bool processed = false;
-            
+
             // Loop for re-processing tokens (mode switching without consuming)
             while (!processed)
             {
@@ -499,18 +790,15 @@ namespace FenBrowser.Core.Parsing
                     return true;
                 }
                 
-                // "base", "link", etc... -> error, push back to head
-                if (st.TagName == "base" || st.TagName == "link" || st.TagName == "meta" || st.TagName == "script" || st.TagName == "style" || st.TagName == "title")
+                // These head-content elements must be processed via HandleInHead to ensure
+                // the tokenizer state is correctly switched (ScriptData/RawText/RcData).
+                // Without this, the body of <script>/<style> gets parsed as regular HTML.
+                if (st.TagName == "base" || st.TagName == "link" || st.TagName == "meta" ||
+                    st.TagName == "script" || st.TagName == "style" || st.TagName == "title" ||
+                    st.TagName == "noframes" || st.TagName == "template")
                 {
-                     // Append TO HEAD
-                     // This requires we keep reference to head (we do: _headElement)
-                     var node = CreateElement(st);
-                     _headElement.AppendChild(node);
-                     // If it has content (script/style/title), we are in trouble because we aren't switching modes correctly to parse their content.
-                     // But wait, "Process token ... in InHead mode".
-                     // So specific logic needed. 
-                     // Simplified: Just ignore for now or implement properly later. 
-                     return true;
+                    // Spec says: "Process the token using the rules for the in head insertion mode."
+                    return HandleInHead(token);
                 }
                  
                  if (st.TagName == "head") return true; // Ignore
@@ -579,7 +867,25 @@ namespace FenBrowser.Core.Parsing
                 
                 if (st.TagName == "li")
                 {
-                    if ((CurrentNode as Element)?.TagName == "li") PopUntil("li");
+                    // HTML5 spec §12.2.6.4.7: walk backwards through open elements
+                    // looking for an open <li>. Pass through <div>, <address>, <p>
+                    // (which are "special" but excluded from the stop condition).
+                    // Stop at any other "special" element.
+                    // Stack.ElementAt(0) = top (current node), increasing index goes toward bottom.
+                    for (int idx = 0; idx < _openElements.Count; idx++)
+                    {
+                        var node = _openElements.ElementAt(idx);
+                        string nodeName = node?.TagName?.ToLowerInvariant();
+                        if (nodeName == "li")
+                        {
+                            GenerateImpliedEndTags("li");
+                            PopUntil("li");
+                            break;
+                        }
+                        // Stop at "special" elements, EXCEPT div, address, and p
+                        if (nodeName != "div" && nodeName != "address" && nodeName != "p" && IsSpecialElement(nodeName))
+                            break;
+                    }
                     if ((CurrentNode as Element)?.TagName == "p") ClosePElement();
                     InsertHtmlElement(st);
                     return true;
@@ -587,8 +893,20 @@ namespace FenBrowser.Core.Parsing
                 
                 if (st.TagName == "dd" || st.TagName == "dt")
                 {
-                     if ((CurrentNode as Element)?.TagName == "dd") PopUntil("dd");
-                     if ((CurrentNode as Element)?.TagName == "dt") PopUntil("dt");
+                     // HTML5 spec §12.2.6.4.7: walk backwards like <li>
+                     for (int idx = 0; idx < _openElements.Count; idx++)
+                     {
+                         var node = _openElements.ElementAt(idx);
+                         string nodeName = node?.TagName?.ToLowerInvariant();
+                         if (nodeName == "dd" || nodeName == "dt")
+                         {
+                             GenerateImpliedEndTags(nodeName);
+                             PopUntil(nodeName);
+                             break;
+                         }
+                         if (nodeName != "div" && nodeName != "address" && nodeName != "p" && IsSpecialElement(nodeName))
+                             break;
+                     }
                      if ((CurrentNode as Element)?.TagName == "p") ClosePElement();
                      InsertHtmlElement(st);
                      return true;
@@ -1386,9 +1704,11 @@ namespace FenBrowser.Core.Parsing
                 return true;
             }
             
-            // Should not happen in RCDATA/RAWTEXT unless tokenizer has issues or script data?
-            // If somehow we get here, ignore or treat as char?
-            return false; 
+            // Per HTML spec: any other token in "text" mode → pop the current node,
+            // switch back to the original insertion mode, and reprocess.
+            _openElements.Pop();
+            SwitchTo(_originalInsertionMode);
+            return false; // Reprocess in original mode
         }
 
         // --- Helpers ---
@@ -1537,6 +1857,7 @@ namespace FenBrowser.Core.Parsing
             CurrentNode.AppendChild(el);
             // FenLogger.Debug($"[Parser] Pushing {el.TagName}_{el.GetHashCode()} to stack (Depth: {_openElements.Count})", LogCategory.HtmlParsing);
             _openElements.Push(el);
+
             return el;
         }
         
@@ -1599,6 +1920,37 @@ namespace FenBrowser.Core.Parsing
                     string.Equals(tag, "rt", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(tag, "rtc", StringComparison.OrdinalIgnoreCase);
         }
+
+        /// <summary>
+        /// HTML5 "special" category elements.  Used by the <li>/<dd>/<dt> start-tag
+        /// loop to decide when to stop walking backwards through the open-elements stack.
+        /// </summary>
+        private static bool IsSpecialElement(string tag)
+        {
+            if (string.IsNullOrEmpty(tag)) return false;
+            switch (tag)
+            {
+                case "address": case "applet": case "area": case "article": case "aside":
+                case "base": case "basefont": case "bgsound": case "blockquote": case "body":
+                case "br": case "button": case "caption": case "center": case "col":
+                case "colgroup": case "dd": case "details": case "dialog": case "dir":
+                case "div": case "dl": case "dt": case "embed": case "fieldset":
+                case "figcaption": case "figure": case "footer": case "form": case "frame":
+                case "frameset": case "h1": case "h2": case "h3": case "h4": case "h5": case "h6":
+                case "head": case "header": case "hgroup": case "hr": case "html":
+                case "iframe": case "img": case "input": case "keygen": case "li":
+                case "link": case "listing": case "main": case "marquee": case "menu":
+                case "meta": case "nav": case "noembed": case "noframes": case "noscript":
+                case "object": case "ol": case "p": case "param": case "plaintext":
+                case "pre": case "script": case "section": case "select": case "source":
+                case "style": case "summary": case "table": case "tbody": case "td":
+                case "template": case "textarea": case "tfoot": case "th": case "thead":
+                case "title": case "tr": case "track": case "ul": case "wbr": case "xmp":
+                    return true;
+                default:
+                    return false;
+            }
+        }
         
         private bool StackHas(string tagName)
         {
@@ -1609,13 +1961,12 @@ namespace FenBrowser.Core.Parsing
         {
             var targetFound = _openElements.Any(e => string.Equals(e.TagName, tagName, StringComparison.OrdinalIgnoreCase));
             // FenLogger.Debug($"[Parser] PopUntil({tagName}). Target in stack: {targetFound}. Current top: {(_openElements.Count > 0 ? _openElements.Peek().TagName : "NULL")}", LogCategory.HtmlParsing);
-            
+
             if (targetFound)
             {
                 while (_openElements.Count > 1)
                 {
                     var popped = _openElements.Pop();
-                    // FenLogger.Debug($"[Parser] Popped {popped.TagName}_{popped.GetHashCode()}", LogCategory.HtmlParsing);
                     if (string.Equals(popped.TagName, tagName, StringComparison.OrdinalIgnoreCase)) break;
                 }
             }

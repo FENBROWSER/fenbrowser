@@ -36,11 +36,21 @@ namespace FenBrowser.FenEngine.Core
         public FenValue ProxyHandler { get; set; }
         public FenValue ProxyTarget { get; set; }
 
+        /// <summary>
+        /// Default prototype for function objects (Function.prototype).
+        /// Set by FenRuntime after Function.prototype is created so that
+        /// user-defined functions inherit .call(), .apply(), .bind() etc.
+        /// </summary>
+        public static IObject DefaultFunctionPrototype { get; set; }
+
         public FenFunction(string name, Func<FenValue[], FenValue, FenValue> nativeImplementation)
         {
             Name = name;
             NativeImplementation = nativeImplementation;
             IsNative = true;
+            // Functions inherit from Function.prototype (which inherits from Object.prototype)
+            if (DefaultFunctionPrototype != null && !ReferenceEquals(DefaultFunctionPrototype, this))
+                SetPrototype(DefaultFunctionPrototype);
         }
 
         public FenFunction(List<Identifier> parameters, BlockStatement body, FenEnvironment env)
@@ -50,6 +60,8 @@ namespace FenBrowser.FenEngine.Core
             Env = env;
             IsNative = false;
             Name = "anonymous";
+            if (DefaultFunctionPrototype != null && !ReferenceEquals(DefaultFunctionPrototype, this))
+                SetPrototype(DefaultFunctionPrototype);
         }
 
         public FenFunction(List<Identifier> parameters, AstNode body, FenEnvironment env)
@@ -59,9 +71,35 @@ namespace FenBrowser.FenEngine.Core
             Env = env;
             IsNative = false;
             Name = "arrow";
+            if (DefaultFunctionPrototype != null && !ReferenceEquals(DefaultFunctionPrototype, this))
+                SetPrototype(DefaultFunctionPrototype);
         }
 
-        public FenValue Invoke(FenValue[] args, IExecutionContext context)
+        /// <summary>
+        /// Override Get to expose 'name' and 'length' as standard function properties
+        /// without requiring every FenFunction to explicitly set them.
+        /// </summary>
+        public override FenValue Get(string key, IExecutionContext context = null)
+        {
+            // 'name' — return the C# Name field if no explicit 'name' property was set
+            if (key == "name")
+            {
+                var explicitName = base.Get("name", context);
+                if (!explicitName.IsUndefined) return explicitName;
+                return FenValue.FromString(Name ?? "");
+            }
+            // 'length' — return parameter count for user-defined, 0 for native unless overridden
+            if (key == "length")
+            {
+                var explicitLen = base.Get("length", context);
+                if (!explicitLen.IsUndefined) return explicitLen;
+                int paramCount = Parameters?.Count ?? 0;
+                return FenValue.FromNumber(paramCount);
+            }
+            return base.Get(key, context);
+        }
+
+        public FenValue Invoke(FenValue[] args, IExecutionContext context, FenValue? thisArg = null)
         {
             // PROXY TRAP: Apply
             if (context == null)
@@ -71,6 +109,8 @@ namespace FenBrowser.FenEngine.Core
                 else context.Environment = new FenEnvironment(null); // Global fallback?    
                 context.ThisBinding = FenValue.Undefined;
             }
+
+            var actualThis = thisArg ?? (context?.ThisBinding ?? FenValue.Undefined);
 
             if (!ProxyHandler.IsUndefined && ProxyHandler.IsObject)
             {
@@ -98,8 +138,7 @@ namespace FenBrowser.FenEngine.Core
             {
                 try
                 {
-                    var thisVal = context != null ? context.ThisBinding : FenValue.Undefined;
-                    return NativeImplementation(args, thisVal);
+                    return NativeImplementation(args, actualThis);
                 }
                 catch (Exception ex)
                 {
@@ -117,7 +156,7 @@ namespace FenBrowser.FenEngine.Core
                     FenValue.FromFunction(this),
                     new List<FenValue>(args),
                     context,
-                    context?.ThisBinding ?? FenValue.Undefined);
+                    actualThis);
             }
             catch (Exception ex)
             {

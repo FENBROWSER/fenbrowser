@@ -87,6 +87,12 @@ namespace FenBrowser.FenEngine.Core.Types
                 return FenValue.Undefined;
             })));
 
+            // [Symbol.iterator] — default iterator is values()
+            Set("[Symbol.iterator]", FenValue.FromFunction(new FenFunction("[Symbol.iterator]", (args, thisVal) =>
+            {
+                return FenValue.FromObject(CreateIteratorResult(_storage));
+            })));
+
             // ES2025: Set methods
             Set("union", FenValue.FromFunction(new FenFunction("union", Union)));
             Set("intersection", FenValue.FromFunction(new FenFunction("intersection", Intersection)));

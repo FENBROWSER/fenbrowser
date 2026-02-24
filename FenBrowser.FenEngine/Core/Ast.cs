@@ -378,6 +378,10 @@ namespace FenBrowser.FenEngine.Core
         public Expression Object { get; set; } // Left side: document, el, etc.
         public string Property { get; set; } // Property name: "getElementById", "textContent"
 
+        // Inline Caching properties
+        public Types.Shape CachedShape { get; set; }
+        public int CachedIndex { get; set; } = -1; // -1 indicates cache miss/uninitialized
+
         public override string String()
         {
             return $"{Object.String()}.{Property}";

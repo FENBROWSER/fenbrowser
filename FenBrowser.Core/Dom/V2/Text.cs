@@ -94,8 +94,11 @@ namespace FenBrowser.Core.Dom.V2
         {
             get
             {
-                // TODO: Implement slot assignment for shadow DOM
-                return null;
+                // Find the <slot> element in the shadow root of this node's parent.
+                // Text nodes have no slot attribute so they use the default slot (name="").
+                if (_parentNode is not Element parentEl) return null;
+                var shadowRoot = parentEl.ShadowRoot; // null for closed shadow roots (per spec)
+                return shadowRoot?.GetSlotByName("");
             }
         }
 

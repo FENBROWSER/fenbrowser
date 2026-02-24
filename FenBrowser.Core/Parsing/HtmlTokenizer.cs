@@ -29,6 +29,12 @@ namespace FenBrowser.Core.Parsing
         private TokenizerState _returnState;
         private uint _charRefValue;
 
+        // Queue for characters that need to be emitted before continuing state machine
+        private readonly Queue<char> _pendingChars = new Queue<char>();
+
+        // Temporary buffer for script data escape end-tag matching
+        private StringBuilder _scriptEscapeBuffer = new StringBuilder();
+
         public HtmlTokenizer(string input)
         {
             _input = input ?? "";
@@ -68,6 +74,20 @@ namespace FenBrowser.Core.Parsing
             ScriptDataLessThanSign,
             ScriptDataEndTagOpen,
             ScriptDataEndTagName,
+            ScriptDataEscapeStart,
+            ScriptDataEscapeStartDash,
+            ScriptDataEscaped,
+            ScriptDataEscapedDash,
+            ScriptDataEscapedDashDash,
+            ScriptDataEscapedLessThanSign,
+            ScriptDataEscapedEndTagOpen,
+            ScriptDataEscapedEndTagName,
+            ScriptDataDoubleEscapeStart,
+            ScriptDataDoubleEscaped,
+            ScriptDataDoubleEscapedDash,
+            ScriptDataDoubleEscapedDashDash,
+            ScriptDataDoubleEscapedLessThanSign,
+            ScriptDataDoubleEscapeEnd,
             BeforeAttributeName,
             AttributeName,
             AfterAttributeName,
@@ -119,6 +139,10 @@ namespace FenBrowser.Core.Parsing
 
         private HtmlToken NextToken()
         {
+            // Drain any pending characters first (emitted by multi-char transitions)
+            if (_pendingChars.Count > 0)
+                return EmitCharacter(_pendingChars.Dequeue());
+
             // This loop runs until a token is emitted
             while (_position <= _length)
             {
@@ -502,10 +526,12 @@ namespace FenBrowser.Core.Parsing
                         else if (c == '!')
                         {
                             Consume();
-                            // Script data escape start? This is getting complex.
-                            // Simplified for now: treat as data
-                             SwitchTo(TokenizerState.ScriptData);
-                             return EmitCharacter('<');
+                            SwitchTo(TokenizerState.ScriptDataEscapeStart);
+                            // Emit '<' and '!' characters — the caller will get '<',
+                            // then on next call we continue in ScriptDataEscapeStart.
+                            // We need to queue the '!' for emission too.
+                            _pendingChars.Enqueue('!');
+                            return EmitCharacter('<');
                         }
                         else
                         {
@@ -543,8 +569,11 @@ namespace FenBrowser.Core.Parsing
                             }
                              else
                             {
-                                 SwitchTo(TokenizerState.ScriptData);
-                                 return EmitCharacter('<'); 
+                                // Not an appropriate end tag. Emit '<', '/' and the accumulated tag name chars as script data.
+                                SwitchTo(TokenizerState.ScriptData);
+                                _pendingChars.Enqueue('/');
+                                foreach (var ch in _currentTag.TagName) _pendingChars.Enqueue(ch);
+                                return EmitCharacter('<'); 
                             }
                         }
                         else if (char.IsLetter(c))
@@ -554,8 +583,377 @@ namespace FenBrowser.Core.Parsing
                         }
                          else
                         {
+                            // Not a letter and not '>': emit '<', '/' and accumulated tag name chars, then reconsume.
                             SwitchTo(TokenizerState.ScriptData);
+                            _pendingChars.Enqueue('/');
+                            foreach (var ch in _currentTag.TagName) _pendingChars.Enqueue(ch);
                             return EmitCharacter('<');
+                        }
+                        break;
+
+                    // ================================================================
+                    // HTML5 §13.2.5.17 – Script data escape start state
+                    // ================================================================
+                    case TokenizerState.ScriptDataEscapeStart:
+                        if (c == '-')
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.ScriptDataEscapeStartDash);
+                            return EmitCharacter('-');
+                        }
+                        else
+                        {
+                            // Not a `<!--` sequence; reconsume in script data
+                            SwitchTo(TokenizerState.ScriptData);
+                        }
+                        break;
+
+                    // ================================================================
+                    // HTML5 §13.2.5.18 – Script data escape start dash state
+                    // ================================================================
+                    case TokenizerState.ScriptDataEscapeStartDash:
+                        if (c == '-')
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.ScriptDataEscapedDashDash);
+                            return EmitCharacter('-');
+                        }
+                        else
+                        {
+                            // Only one dash — not `<!--`; reconsume in script data
+                            SwitchTo(TokenizerState.ScriptData);
+                        }
+                        break;
+
+                    // ================================================================
+                    // HTML5 §13.2.5.19 – Script data escaped state
+                    // ================================================================
+                    case TokenizerState.ScriptDataEscaped:
+                        if (c == '-')
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.ScriptDataEscapedDash);
+                            return EmitCharacter('-');
+                        }
+                        else if (c == '<')
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.ScriptDataEscapedLessThanSign);
+                        }
+                        else if (c == '\0' && IsEof())
+                        {
+                            EmitError("eof-in-script-html-comment-like-text");
+                            return new EofToken();
+                        }
+                        else
+                        {
+                            Consume();
+                            return EmitCharacter(c);
+                        }
+                        break;
+
+                    // ================================================================
+                    // HTML5 §13.2.5.20 – Script data escaped dash state
+                    // ================================================================
+                    case TokenizerState.ScriptDataEscapedDash:
+                        if (c == '-')
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.ScriptDataEscapedDashDash);
+                            return EmitCharacter('-');
+                        }
+                        else if (c == '<')
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.ScriptDataEscapedLessThanSign);
+                        }
+                        else if (c == '\0' && IsEof())
+                        {
+                            EmitError("eof-in-script-html-comment-like-text");
+                            return new EofToken();
+                        }
+                        else
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.ScriptDataEscaped);
+                            return EmitCharacter(c);
+                        }
+                        break;
+
+                    // ================================================================
+                    // HTML5 §13.2.5.21 – Script data escaped dash dash state
+                    // ================================================================
+                    case TokenizerState.ScriptDataEscapedDashDash:
+                        if (c == '-')
+                        {
+                            Consume();
+                            return EmitCharacter('-');
+                        }
+                        else if (c == '<')
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.ScriptDataEscapedLessThanSign);
+                        }
+                        else if (c == '>')
+                        {
+                            // End of the escaped section: `-->` closes it
+                            Consume();
+                            SwitchTo(TokenizerState.ScriptData);
+                            return EmitCharacter('>');
+                        }
+                        else if (c == '\0' && IsEof())
+                        {
+                            EmitError("eof-in-script-html-comment-like-text");
+                            return new EofToken();
+                        }
+                        else
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.ScriptDataEscaped);
+                            return EmitCharacter(c);
+                        }
+                        break;
+
+                    // ================================================================
+                    // HTML5 §13.2.5.22 – Script data escaped less-than sign state
+                    // ================================================================
+                    case TokenizerState.ScriptDataEscapedLessThanSign:
+                        if (c == '/')
+                        {
+                            Consume();
+                            _scriptEscapeBuffer.Clear();
+                            SwitchTo(TokenizerState.ScriptDataEscapedEndTagOpen);
+                        }
+                        else if (char.IsLetter(c))
+                        {
+                            _scriptEscapeBuffer.Clear();
+                            // Don't consume — reconsume in double escape start
+                            _pendingChars.Enqueue('<');
+                            SwitchTo(TokenizerState.ScriptDataDoubleEscapeStart);
+                        }
+                        else
+                        {
+                            SwitchTo(TokenizerState.ScriptDataEscaped);
+                            return EmitCharacter('<');
+                        }
+                        break;
+
+                    // ================================================================
+                    // HTML5 §13.2.5.23 – Script data escaped end tag open state
+                    // ================================================================
+                    case TokenizerState.ScriptDataEscapedEndTagOpen:
+                        if (char.IsLetter(c))
+                        {
+                            _currentTag = new EndTagToken();
+                            _currentTag.TagName = "";
+                            // Reconsume in end tag name
+                            SwitchTo(TokenizerState.ScriptDataEscapedEndTagName);
+                        }
+                        else
+                        {
+                            _pendingChars.Enqueue('/');
+                            SwitchTo(TokenizerState.ScriptDataEscaped);
+                            return EmitCharacter('<');
+                        }
+                        break;
+
+                    // ================================================================
+                    // HTML5 §13.2.5.24 – Script data escaped end tag name state
+                    // ================================================================
+                    case TokenizerState.ScriptDataEscapedEndTagName:
+                    {
+                        bool isAppropriateEscaped = _currentTag.TagName == LastStartTagName;
+                        if ((c == '\t' || c == '\n' || c == '\f' || c == ' ') && isAppropriateEscaped)
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.BeforeAttributeName);
+                        }
+                        else if (c == '/' && isAppropriateEscaped)
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.SelfClosingStartTag);
+                        }
+                        else if (c == '>' && isAppropriateEscaped)
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.Data);
+                            return EmitCurrentTag();
+                        }
+                        else if (char.IsLetter(c))
+                        {
+                            Consume();
+                            _currentTag.TagName += char.ToLowerInvariant(c);
+                        }
+                        else
+                        {
+                            // Not appropriate — emit buffered chars and reconsume
+                            _pendingChars.Enqueue('/');
+                            foreach (char ch in _currentTag.TagName)
+                                _pendingChars.Enqueue(ch);
+                            SwitchTo(TokenizerState.ScriptDataEscaped);
+                            return EmitCharacter('<');
+                        }
+                        break;
+                    }
+
+                    // ================================================================
+                    // HTML5 §13.2.5.25 – Script data double escape start state
+                    // ================================================================
+                    case TokenizerState.ScriptDataDoubleEscapeStart:
+                        if (c == '\t' || c == '\n' || c == '\f' || c == ' ' || c == '/' || c == '>')
+                        {
+                            Consume();
+                            if (_scriptEscapeBuffer.ToString() == "script")
+                                SwitchTo(TokenizerState.ScriptDataDoubleEscaped);
+                            else
+                                SwitchTo(TokenizerState.ScriptDataEscaped);
+                            return EmitCharacter(c);
+                        }
+                        else if (char.IsLetter(c))
+                        {
+                            Consume();
+                            _scriptEscapeBuffer.Append(char.ToLowerInvariant(c));
+                            return EmitCharacter(c);
+                        }
+                        else
+                        {
+                            // Reconsume in script data escaped
+                            SwitchTo(TokenizerState.ScriptDataEscaped);
+                        }
+                        break;
+
+                    // ================================================================
+                    // HTML5 §13.2.5.26 – Script data double escaped state
+                    // ================================================================
+                    case TokenizerState.ScriptDataDoubleEscaped:
+                        if (c == '-')
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.ScriptDataDoubleEscapedDash);
+                            return EmitCharacter('-');
+                        }
+                        else if (c == '<')
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.ScriptDataDoubleEscapedLessThanSign);
+                            return EmitCharacter('<');
+                        }
+                        else if (c == '\0' && IsEof())
+                        {
+                            EmitError("eof-in-script-html-comment-like-text");
+                            return new EofToken();
+                        }
+                        else
+                        {
+                            Consume();
+                            return EmitCharacter(c);
+                        }
+                        break;
+
+                    // ================================================================
+                    // HTML5 §13.2.5.27 – Script data double escaped dash state
+                    // ================================================================
+                    case TokenizerState.ScriptDataDoubleEscapedDash:
+                        if (c == '-')
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.ScriptDataDoubleEscapedDashDash);
+                            return EmitCharacter('-');
+                        }
+                        else if (c == '<')
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.ScriptDataDoubleEscapedLessThanSign);
+                            return EmitCharacter('<');
+                        }
+                        else if (c == '\0' && IsEof())
+                        {
+                            EmitError("eof-in-script-html-comment-like-text");
+                            return new EofToken();
+                        }
+                        else
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.ScriptDataDoubleEscaped);
+                            return EmitCharacter(c);
+                        }
+                        break;
+
+                    // ================================================================
+                    // HTML5 §13.2.5.28 – Script data double escaped dash dash state
+                    // ================================================================
+                    case TokenizerState.ScriptDataDoubleEscapedDashDash:
+                        if (c == '-')
+                        {
+                            Consume();
+                            return EmitCharacter('-');
+                        }
+                        else if (c == '<')
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.ScriptDataDoubleEscapedLessThanSign);
+                            return EmitCharacter('<');
+                        }
+                        else if (c == '>')
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.ScriptData);
+                            return EmitCharacter('>');
+                        }
+                        else if (c == '\0' && IsEof())
+                        {
+                            EmitError("eof-in-script-html-comment-like-text");
+                            return new EofToken();
+                        }
+                        else
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.ScriptDataDoubleEscaped);
+                            return EmitCharacter(c);
+                        }
+                        break;
+
+                    // ================================================================
+                    // HTML5 §13.2.5.29 – Script data double escaped less-than sign state
+                    // ================================================================
+                    case TokenizerState.ScriptDataDoubleEscapedLessThanSign:
+                        if (c == '/')
+                        {
+                            Consume();
+                            _scriptEscapeBuffer.Clear();
+                            SwitchTo(TokenizerState.ScriptDataDoubleEscapeEnd);
+                            return EmitCharacter('/');
+                        }
+                        else
+                        {
+                            // Reconsume in double escaped
+                            SwitchTo(TokenizerState.ScriptDataDoubleEscaped);
+                        }
+                        break;
+
+                    // ================================================================
+                    // HTML5 §13.2.5.30 – Script data double escape end state
+                    // ================================================================
+                    case TokenizerState.ScriptDataDoubleEscapeEnd:
+                        if (c == '\t' || c == '\n' || c == '\f' || c == ' ' || c == '/' || c == '>')
+                        {
+                            Consume();
+                            if (_scriptEscapeBuffer.ToString() == "script")
+                                SwitchTo(TokenizerState.ScriptDataEscaped);
+                            else
+                                SwitchTo(TokenizerState.ScriptDataDoubleEscaped);
+                            return EmitCharacter(c);
+                        }
+                        else if (char.IsLetter(c))
+                        {
+                            Consume();
+                            _scriptEscapeBuffer.Append(char.ToLowerInvariant(c));
+                            return EmitCharacter(c);
+                        }
+                        else
+                        {
+                            // Reconsume in double escaped
+                            SwitchTo(TokenizerState.ScriptDataDoubleEscaped);
                         }
                         break;
 

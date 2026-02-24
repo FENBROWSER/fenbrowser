@@ -418,6 +418,11 @@ namespace FenBrowser.Core.Dom.V2
             // Notify observers
             NotifyChildListMutation(null, node);
 
+            if (node is Element el)
+            {
+                el.UpdateAncestorFilter();
+            }
+
             return node;
         }
 
@@ -454,6 +459,11 @@ namespace FenBrowser.Core.Dom.V2
             // Notify observers
             NotifyChildListMutation(null, node);
 
+            if (node is Element el)
+            {
+                el.UpdateAncestorFilter();
+            }
+
             return node;
         }
 
@@ -488,6 +498,11 @@ namespace FenBrowser.Core.Dom.V2
 
             // Notify observers
             NotifyChildListMutation(child, null);
+
+            if (child is Element el)
+            {
+                el.UpdateAncestorFilter();
+            }
 
             return child;
         }
