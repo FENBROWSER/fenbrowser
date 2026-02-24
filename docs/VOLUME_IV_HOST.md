@@ -321,4 +321,149 @@ The Omnibox implementation.
   - Parent liveness monitoring remains enforced to prevent orphan renderer children.
   - Current frame channel is heartbeat/metadata (`FrameReady`); direct pixel transport is intentionally deferred.
 
+### 6.14 Process-Isolation Hardening Tranche ISO-1 (2026-02-20)
+
+- `Core/ProcessIsolation/RendererIsolationPolicies.cs` (new)
+  - Added deterministic origin-assignment policy primitives:
+    - `OriginIsolationPolicy.TryGetAssignmentKey(...)`
+    - `OriginIsolationPolicy.RequiresReassignment(...)`
+  - Added bounded crash-restart policy:
+    - `RendererRestartPolicy` (max attempts + exponential backoff + cap).
+
+- `ProcessIsolation/BrokeredProcessIsolationCoordinator.cs`
+  - Added per-tab isolation state tracking:
+    - assignment key
+    - last navigation replay data
+    - active/expected child PID
+    - restart-attempt accounting.
+  - Added origin-strict process reassignment on cross-origin top-level navigation.
+  - Added child-process crash detection (`Process.Exited`) with bounded restart and backoff policy.
+  - Added renderer startup environment policy wiring:
+    - `FEN_RENDERER_SANDBOX_PROFILE=renderer_minimal`
+    - `FEN_RENDERER_CAPABILITIES=navigate,input,frame`
+    - `FEN_RENDERER_ASSIGNMENT_KEY=<origin-key>`.
+
+- `Program.cs`
+  - Added renderer-child startup assertions for sandbox profile and capability set.
+  - Added assignment-key startup logging.
+  - Frame request handler now returns explicit frame metadata:
+    - `surfaceWidth`, `surfaceHeight`, `dirtyRegionCount`, `hasDamage`.
+
+- `ProcessIsolation/RendererIpc.cs`
+  - Expanded `RendererFrameReadyPayload` with surface/damage metadata fields.
+  - Host-side frame-ready logs now include surface and dirty-region metrics.
+
+- `Tests/Core/RendererIsolationPoliciesTests.cs` (new)
+  - Added policy regression coverage for:
+    - origin-assignment key derivation/reassignment decisions
+    - restart-budget limits
+    - exponential backoff behavior.
+
+### 6.15 Process-Isolation Gate Tranche ISO-2 (2026-02-20)
+
+- `Core/ProcessIsolation/RendererIsolationPolicies.cs`
+  - Added `RendererTabIsolationRegistry` policy state machine:
+    - per-tab assignment state
+    - navigation assignment decision (`requiresReassignment`)
+    - expected/stale/unexpected exit classification
+    - restart plan generation (delay + replay payload).
+
+- `ProcessIsolation/BrokeredProcessIsolationCoordinator.cs`
+  - Coordinator now delegates policy decisions to the registry:
+    - navigation isolation decisions
+    - crash/exit decision handling
+    - replay navigation after bounded restart.
+  - Assignment transitions now log previous -> requested assignment keys through policy decision output.
+
+- `Tests/Core/RendererIsolationPoliciesTests.cs`
+  - Expanded to cover registry state machine behavior:
+    - initial assignment
+    - cross-origin reassignment
+    - expected/stale exit classification
+    - restart plan/replay data
+    - budget exhaustion and shutdown/closed-tab behavior.
+
+### 6.16 Process-Isolation Reliability Tranche ISO-3 (2026-02-20)
+
+- `ProcessIsolation/RendererIpc.cs`
+  - Added bounded disconnected-session outbound buffer for critical IPC envelopes.
+  - Prevents startup race where navigation/control messages were dropped before pipe connection.
+  - Explicitly excludes high-rate frame/input envelopes from buffering to avoid stale replay.
+
+- `ProcessIsolation/BrokeredProcessIsolationCoordinator.cs`
+  - Added runtime knobs for restart/quarantine policy:
+    - `FEN_RENDERER_STABLE_RESET_MS`
+    - `FEN_RENDERER_CRASH_WINDOW_MS`
+    - `FEN_RENDERER_MAX_CRASHES_IN_WINDOW`
+    - `FEN_RENDERER_CRASH_QUARANTINE_MS`
+  - Coordinator now gates child-process startup through policy registry (`CanStartSession`) and logs deny/retry state.
+  - Exit-path logging now carries retry-after metadata when policy suppresses restart.
+
+- `Core/ProcessIsolation/RendererIsolationPolicies.cs`
+  - Expanded assignment mapping beyond network origins (`file/about/opaque` classes) to avoid accidental renderer reuse on scheme boundary transitions.
+  - Added crash-loop quarantine and stable-runtime restart-attempt reset policy logic.
+
+- `Tests/Core/RendererIsolationPoliciesTests.cs`
+  - Added ISO-3 regressions:
+    - opaque/local assignment derivation
+    - stable-run restart reset
+    - crash-loop quarantine decision + retryAfter semantics
+    - user-input navigation quarantine release.
+
+### 6.17 Navigation Lifecycle Tranche NL-1 (2026-02-20)
+
+- `FenEngine/Rendering/BrowserApi.cs`
+  - BrowserHost navigation now emits deterministic lifecycle transitions using core tracker:
+    - `Requested -> Fetching -> ResponseReceived -> Committing -> Interactive -> Complete`
+    - terminal `Failed` / `Cancelled`.
+  - Stale navigation suppression added via navigation-id guard to avoid old in-flight completion clobbering newer navigations.
+  - Removed timing/forced-event correctness hacks from the top-level navigation path:
+    - removed forced `window.dispatchEvent(new Event('load'))`
+    - removed delayed repaint fallback (`Task.Delay(1500)`).
+
+- `BrowserIntegration.cs`
+  - Host structured navigation events are now wired to lifecycle transitions:
+    - `OnNavigationStarted`
+    - `OnNavigationCompleted`
+    - `OnNavigationFailed`.
+  - This replaces passive placeholder events with deterministic runtime-fed signals.
+
+- `Tests/Core/NavigationLifecycleTrackerTests.cs`
+  - Added lifecycle state-machine regressions used by host lifecycle consumers.
+
+### 6.18 Navigation Lifecycle Tranche NL-2 (2026-02-20)
+
+- `FenEngine/Rendering/BrowserApi.cs`
+  - Wired redirect-aware lifecycle metadata from `FetchResult` into `ResponseReceived` transitions.
+  - Wired commit-source classification into `Committing` transitions.
+  - Added bounded subresource/event-loop settle gate before `Complete` transition emission.
+
+- `FenEngine/Rendering/ImageLoader.cs`
+  - Added authoritative in-flight image-load accounting (`PendingLoadCount`) and pending-count change signal (`PendingLoadCountChanged`) used by host lifecycle completion gating.
+  - Fixed pending-load removal to occur on all load exit paths (success/failure/early return), preventing stale completion blockers.
+
+- `BrowserIntegration.cs`
+  - Structured host navigation events now preserve lifecycle redirect classification (`IsRedirect`) for start/complete envelopes.
+
+- `Tests/Core/NavigationLifecycleTrackerTests.cs`
+  - Added regression case for redirect + commit-source metadata persistence.
+
+### 6.19 Host Loading/Invalidation Reliability Tranche (2026-02-20)
+
+- `BrowserIntegration.cs`
+  - `LoadingChanged` now always marks repaint-needed, wakes the engine thread, and emits host repaint signal so loading/placeholder state cannot depend on incidental UI hover invalidations.
+  - Engine wait strategy now avoids indefinite sleep while a tab is loading with no committed frame (`50ms` bounded wake path), preventing "stuck loading placeholder until input event" behavior.
+
+- `ChromeManager.cs`
+  - Active-tab wiring now subscribes to `LoadingChanged` and `TitleChanged` with explicit unsubscribe on tab switch.
+  - Status bar loading state is now updated from active-tab loading transitions; window title now tracks active-tab title transitions without waiting for tab switch.
+
+- `Widgets/TabWidget.cs`
+  - Tab chrome now subscribes to tab state changes (`TitleChanged`, `LoadingChanged`, `NeedsRepaint`) instead of title-only invalidation.
+  - Loading spinner now uses monotonic tick time and self-invalidates at bounded cadence while loading so animation is independent of mouse movement/hover.
+
+- `Widgets/TabBarWidget.cs`
+  - Added deterministic tab-widget event detachment on tab removal.
+  - Removed extra `canvas.Restore()` call in tab-bar paint path to keep paint stack discipline strict.
+
 _End of Volume IV_

@@ -1,6 +1,6 @@
 # FenBrowser Codex - Volume III: The Engine Room
 
-**State as of:** 2026-02-18
+**State as of:** 2026-02-20
 **Codex Version:** 1.0
 
 ## 1. Overview
@@ -46,6 +46,23 @@ flowchart TD
 - `BoxModel.cs`: The data structure holding the 4 boxes (Content, Padding, Border, Margin).
 - `FloatingExclusion`: Manages "floats" (elements taken out of normal flow).
 
+### 2.3 Recent Layout Hardening (2026-02-20, L-8 -> L-10)
+
+- `GridLayoutComputer.Arrange(...)` no longer double-applies content alignment offsets when placing grid items; track starts now remain the single source of aligned origin (`FenBrowser.FenEngine/Layout/GridLayoutComputer.cs`).
+- `LayoutHelpers.GetChildrenWithPseudos(...)` fallback behavior for non-element roots now enumerates child nodes instead of returning the fallback node itself, preventing recursive non-element traversal artifacts (`FenBrowser.FenEngine/Layout/Algorithms/LayoutHelpers.cs`).
+- `MinimalLayoutComputer.ShouldHide(...)` now keeps `Document` nodes visible to layout traversal so document-root measure/arrange passes can produce descendant box geometry (`FenBrowser.FenEngine/Layout/MinimalLayoutComputer.cs`).
+- `TableLayoutComputer.MeasureColumns(...)` now enforces a minimum positive width for participating columns when measurement collapses to zero, preventing invisible/zero-width painted table cells under auto layout (`FenBrowser.FenEngine/Layout/TableLayoutComputer.cs`).
+- `TableLayoutComputer` table slot sizing now maps column contributions by `TableCellSlot.ColumnIndex` and distributes rowspan-required height across spanned rows, preventing rowspan edge cases from polluting unrelated column widths or collapsing span height (`FenBrowser.FenEngine/Layout/TableLayoutComputer.cs`).
+- `MinimalLayoutComputer.ShouldHide(...)` now keeps core table semantic elements visible and evaluates `ChildNodes` for content presence, preventing text-only table-cell content from being dropped during intrinsic sizing (`FenBrowser.FenEngine/Layout/MinimalLayoutComputer.cs`).
+- `InlineLayoutComputer.Compute(...)` now traverses `ChildNodes` (not element-only `Children`) in recursive/default inline flow paths, and `MinimalLayoutComputer` inline measure/re-layout entrypoints now pass pseudo-aware sources; this restores intrinsic sizing for text-only inline/table-cell content (`FenBrowser.FenEngine/Layout/InlineLayoutComputer.cs`, `FenBrowser.FenEngine/Layout/MinimalLayoutComputer.cs`).
+- `GridFormattingContext` now delegates box-tree grid layout to `GridLayoutComputer`, removing the legacy simplified explicit-column path and aligning typed computed-style grid behavior (`FenBrowser.FenEngine/Layout/Contexts/GridFormattingContext.cs`), with integration coverage in `FenBrowser.Tests/Layout/GridFormattingContextIntegrationTests.cs`.
+- Layout integration regressions were hardened against parser tree-shape variability by using robust descendant discovery and stable `GetBox(...)` lookups in:
+  - `FenBrowser.Tests/Layout/Acid2LayoutTests.cs`
+  - `FenBrowser.Tests/Layout/TableLayoutIntegrationTests.cs`.
+- Owner verification for the layout tranche on 2026-02-20 confirmed:
+  - `GridFormattingContextIntegrationTests`: 2/2 pass
+  - `FenBrowser.Tests.Layout`: 90/90 pass.
+
 ---
 
 ## 3. The Rendering Pipeline (`FenBrowser.FenEngine.Rendering`)
@@ -90,7 +107,26 @@ Unlike the Layout Tree (which is about geometry), the Paint Tree is about **Z-Or
 - Input placeholders honor `::placeholder` computed color/opacity when rendering (`NewPaintTreeBuilder.cs:2290-2335`).
 - Animated GIFs are decoded frame-by-frame with `SKCodec` (including `RequiredFrame` compositing) and cached in `ImageLoader` (`FenBrowser.FenEngine/Rendering/ImageLoader.cs:650-870`). A 50 ms timer calls `RequestRepaint` directly, and `SkiaDomRenderer.Render` forces paint-dirty whenever `HasActiveAnimatedImages` is true (`SkiaDomRenderer.cs:280-302`), enabling in-paint GIF animation without re-layout.
 - Engine targets `net8.0` (solution unified via global.json).
-- UA safety net: anchors with `aria-label="Sign in"` get a fallback inline-block button style (blue background, white text, padding, radius) to guarantee visibility when author CSS is skipped (`Rendering/UserAgent/UAStyleProvider.cs`).
+- Web-compat guardrail: site/domain/class-specific styling hooks are prohibited in UA/layout/cascade paths; fixes must land as generic standards behavior with regression coverage (`Rendering/Css/CssLoader.cs`, `Rendering/UserAgent/UAStyleProvider.cs`, `Layout/MinimalLayoutComputer.cs`).
+- Paint/Compositing tranche PC-1 (2026-02-20):
+  - `RenderPipeline` now enforces strict transition invariants (`Idle -> Layout -> LayoutFrozen -> Paint -> Composite -> Present -> Idle`) and records frame-budget telemetry.
+  - `SkiaDomRenderer` now explicitly enters `Present` phase before frame close and integrates invalidation-burst stabilization for paint-tree rebuild decisions.
+  - `PaintDamageTracker` computes viewport-clamped damage regions from paint-tree deltas with bounded region-collapse policy.
+  - Regression suites added:
+    - `FenBrowser.Tests/Rendering/RenderPipelineInvariantTests.cs`
+    - `FenBrowser.Tests/Rendering/PaintCompositingStabilityControllerTests.cs`
+    - `FenBrowser.Tests/Rendering/PaintDamageTrackerTests.cs`.
+- Paint/Compositing tranche PC-1.1 regression hardening (2026-02-20):
+  - `FontRegistry` now evaluates full `@font-face` source fallback chains (`local(...)` entries first, then `url(...)` entries in order), stabilizing local-font resolution in rendering paths.
+  - Pseudo generated-content flow now keeps pseudo text content synchronized when pseudo instances are reused (`Layout/MinimalLayoutComputer.cs`, `Core/Dom/V2/PseudoElement.cs`).
+  - CSS loader UA fallback now searches both `Assets/ua.css` and `Resources/ua.css` paths and includes `mark` fallback defaults to prevent style regressions when runtime asset lookup differs (`Rendering/Css/CssLoader.cs`).
+- Paint/Compositing tranche PC-1.2 font-load determinism (2026-02-20):
+  - `FontRegistry.RegisterFontFace(...)` now starts `LoadFontFaceAsync(...)` directly (removes additional `Task.Run` scheduling race around pending-load tracking).
+  - Local font probing now attempts style-specific family resolution with plain-family fallback to reduce false negatives on host font backends.
+- Paint/Compositing tranche PC-2 damage-region consumption (2026-02-20):
+  - Added `DamageRasterizationPolicy` gate for safe partial-raster usage (base-frame required + bounded damage area/region count).
+  - Added `SkiaRenderer.RenderDamaged(...)` clip-based damage redraw path.
+  - Host recording path now seeds from previous frame before engine render so partial-raster updates can be applied without stale background clears (`FenBrowser.Host/BrowserIntegration.cs`).
 
 ### 3.3 Backend (`SkiaRenderer`)
 
@@ -119,6 +155,26 @@ The high-level controller used by the UI.
 - Handles **Resource Loading** coordination.
 - TLS handling: `BrowserHost` records certificate details and respects `NetworkConfiguration.IgnoreCertificateErrors` (default: strict/false) so production builds remain secure-by-default; explicit opt-in is required to bypass.
 - Provides **WebDriver** hooks for automation.
+- Navigation interactive lifecycle detail now carries parser-stage telemetry:
+  - `tokenizing`, `parsing`, `parse`, `tokens`,
+  - `tokenizeCheckpoints`, `parseCheckpoints`, `domParseCheckpoints`, `docReadyToken`, `parseRepaints`,
+  - `streamPreparse`, `streamCheckpoints`, `streamRepaints`,
+  - `interleaved`, `interleavedBatch`, `interleavedChunks`, `interleavedFallback`.
+
+### 4.3 Parse Pipeline Telemetry (2026-02-20)
+
+- `CustomHtmlEngine.RunDomParseAsync(...)` now runs parser via:
+  - `HtmlTreeBuilder.BuildWithPipelineStages(PipelineContext.Current)`.
+- `RenderTelemetrySnapshot` now includes parse internals:
+  - `TokenizingMs`, `ParsingMs`, `TokenizingAndParsingMs`, `ParseTokenCount`,
+  - `TokenizingCheckpointCount`, `ParsingCheckpointCount`, `ParsingDocumentCheckpointCount`, `DocumentReadyTokenCount`, `ParseIncrementalRepaintCount`,
+  - `StreamingPreparseMs`, `StreamingPreparseCheckpointCount`, `StreamingPreparseRepaintCount`,
+  - `InterleavedParseUsed`, `InterleavedTokenBatchSize`, `InterleavedBatchCount`, `InterleavedFallbackUsed`.
+- Parse performance log lines now expose staged parse timing and checkpoint counts, improving diagnosis of token-heavy pages.
+- Incremental parse repaint path now emits bounded partial repaint checkpoints from parse callbacks using cloned DOM snapshots to avoid concurrent mutable-tree rendering.
+- Streaming preparse path is now integrated for large documents as a controlled pre-commit assist phase (bounded checkpoints + repaints), while final DOM correctness remains anchored to the production tree builder parse.
+- Production parser now supports interleaved tokenize/parse batches for large documents through `HtmlTreeBuilder.InterleavedTokenBatchSize`, and runtime parse policy chooses tiered batch sizes without introducing site-specific behavior.
+- Runtime parser integration now retries with interleaving disabled if an interleaved parse attempt fails, preserving production parser correctness and surfacing the event via `interleavedFallback` telemetry.
 
 ---
 
@@ -178,30 +234,50 @@ Inline Formatting Context (Text & Inline-Block).
 - **Lines 31-940**: **`Compute`**: Handles line breaking, bidi reordering, and float exclusions.
 - **Lines 100-220, 240-360**: `FlushLine` now applies `text-overflow: ellipsis` by trimming overflowing runs and appending an ellipsis glyph within the available band, honoring container fonts.
 
-#### `FlexFormattingContext.cs` (Lines 1-1605)
+#### `FlexFormattingContext.cs` (Lines 1-1640)
 
 Flex formatting context (row/column).
 
 - **Lines 40-476**: Measurement, intrinsic probing, and main-axis grow/shrink resolution for flex items.
 - **Lines 436-463, 1254-1420**: Collapsed flex-item recovery now handles near-zero widths and uses deep descendant extents to restore control/icon clusters that would otherwise collapse in intrinsic probe passes.
 - **Lines 493-852**: Wrap logic splits items into flex lines, supports `flex-wrap: wrap` and `flex-wrap: wrap-reverse`, and positions lines in cross-axis order. Per-line `justify-content` and auto margins are applied; align-items `stretch` reflows children to the line's cross size.
-- **Lines 881-1157**: `ResolveContainerDimensions` covers explicit/percent/expression sizing, min/max constraints, and intrinsic fallbacks for controls/replaced elements under flex sizing.
+- **Lines 881-1165**: `ResolveContainerDimensions` covers explicit/percent/expression sizing, min/max constraints, and intrinsic fallbacks for controls/replaced elements under flex sizing.
+- **Lines 1124-1143**: Replaced-element fallback sizing in flex containers is normalized through shared `ReplacedElementSizing` logic.
 
-#### `Contexts/InlineFormattingContext.cs` (Lines 1-960)
+#### `Contexts/InlineFormattingContext.cs` (Lines 1-948)
 
 Inline formatting context for text runs and atomic inline boxes.
 
 - **Lines 322-385**: Final atomic placement now re-layouts controls/replaced inline candidates with final size inputs and enforces monotonic line-item ordering to prevent post-measure overlap.
 - **Lines 427-463**: `TryLayoutReplacedInlineBox` applies intrinsic replaced-element sizing with proper box-model sync.
+- **Lines 740-763**: Replaced inline tags (`img`, `svg`, `canvas`, `video`, `iframe`, `embed`, `object`) now resolve via shared `ReplacedElementSizing` policy.
 - **Lines 598-626**: `ShouldRelayoutAtomicInline` identifies intrinsic/replaced inline candidates (`input`, `button`, `img`, `svg`, etc.) for final stabilization.
 - **Lines 897-929**: `ResolveContextWidth` now prefers containing-block width for unconstrained probes and subtracts non-content spacing before final content width assignment.
 
-#### `Contexts/BlockFormattingContext.cs` (Lines 1-592)
+#### `Contexts/BlockFormattingContext.cs` (Lines 1-600)
 
 Block formatting context implementation for vertical flow and floats.
 
+- **Lines 114-183**: Float placement now iterates float-exclusion bands (`GetAvailableSpace`) so multiple `float:left`/`float:right` siblings pack into the same row correctly instead of anchoring at identical X positions.
+- **Lines 114-121, 548-551**: Auto-width floated blocks now probe with unconstrained child measurement while keeping a finite initial content width, enabling shrink-to-fit text measurement instead of zero-width/full-width mis-sizing.
+- **Lines 216-245**: In-flow block placement now consults active float exclusions; explicit-width blocks are advanced below floats when the current band is too narrow.
 - **Lines 109-131**: Right-float placement now clamps unresolved/probe widths to avoid negative-X placement during shrink-to-fit passes.
 - **Lines 224-253**: Shrink-to-fit auto-width pass computes widest in-flow child width while ignoring out-of-flow descendants.
+
+#### `Contexts/FloatManager.cs` (Lines 1-86)
+
+Maintains float occupancy bands for BFC placement and clearance.
+
+- **Lines 15, 75-84**: Added `HasFloats` and `GetNextVerticalPosition(...)` to drive exclusion-aware placement loops in `BlockFormattingContext` without ad-hoc Y stepping.
+
+#### `ReplacedElementSizing.cs` (Lines 1-229)
+
+Shared replaced-element sizing policy used by minimal/block/inline/flex/positioned paths.
+
+- **Lines 14-33**: Defines supported replaced tags and spec-aligned fallback sizes (300x150 family defaults).
+- **Lines 35-88**: Provides reusable length-attribute parsing and SVG `viewBox` intrinsic size extraction.
+- **Lines 90-157**: Resolves used size from CSS specified dimensions, attributes, intrinsic dimensions, and optional auto-width constraint.
+- **Lines 159-229**: Encodes aspect-ratio precedence (`aspect-ratio` property, then intrinsic ratio, then attribute ratio, then fallback ratio).
 
 #### `LayoutEngine.cs` (Lines 1-383)
 
@@ -216,6 +292,7 @@ The public facade for the layout system.
 
 - **Lines 80-150**: **`BuildBox`**: Determines if a node needs a box (`display != none`).
 - **Lines 200-250**: **`CreateAnonymousBlocks`**: Fixes malformed block/inline hierarchies.
+- **Lines 210-221**: Custom elements (tag names containing `-`) now default to inline display in the absence of author CSS, matching UA default behavior used by major engines.
 
 #### `BoxModel.cs` (Lines 1-120)
 
@@ -255,7 +332,28 @@ Implements the primary CSS parser path with broad CSS Syntax support. Some Level
 
 Builds computed style objects from cascaded declarations and applies compatibility overrides used by the layout pipeline.
 
-- Includes targeted Google surface compatibility guards, including search/homepage alignment normalization.
+- Enforces standards-first compatibility: no domain/class-specific style rewrites in computed-style generation.
+- Cascade-stage compatibility interventions now flow through a centralized behavior-class registry (no site/domain keys), with kill-switch and metrics support (`Compatibility/WebCompatibilityInterventions.cs`).
+
+#### `SelectorMatcher.cs` (Lines 1-1100+)
+
+Runtime selector matcher used by cascade matching and selector specificity selection.
+
+- Selectors-4 tranche CSS-1 (2026-02-20):
+  - `:nth-child(...)` and `:nth-last-child(...)` now support `of <selector-list>` filtering in match evaluation.
+  - `:has(...)` now evaluates full relative selector chains (`>`, `+`, `~`, descendant) using combinator-aware traversal from the anchor element.
+  - `:empty` now follows selector semantics (comments ignored; text/element children disqualify).
+  - Attribute selector parser now uses quote-aware bracket/operator scanning with robust value/flag extraction (`i` / `s` parsing support; `i` applied as case-insensitive comparison).
+
+#### `Compatibility/WebCompatibilityInterventions.cs` (Lines 1-290)
+
+Central compatibility intervention subsystem.
+
+- Provides behavior-class keyed intervention registration (`WebCompatibilityBehaviorClass`) and pipeline stage routing (`WebCompatibilityPipelineStage`).
+- Enforces centralized execution via `WebCompatibilityInterventionRegistry` with:
+- global enable/disable switch (`FEN_COMPAT_INTERVENTIONS` environment variable),
+- per-intervention evaluation/application/skip metrics,
+- expiry gating for auto-retirement workflow.
 
 ### 6.3 Rendering Subsystem (`FenBrowser.FenEngine.Rendering`)
 
@@ -266,6 +364,24 @@ The monolithic Interface Layer between Host and Engine.
 - **Lines 187-2440**: **`BrowserHost`**: Manages the `EngineLoop`, Navigation, and DOM connectivity.
 - **Lines 597-883**: **`NavigateAsync`**: The central navigation controller.
 - **Lines 1110-1119**: **`Pulse`**: Drives the Event Loop (Tasks and Microtasks).
+- Navigation hardening tranche NL-1 (2026-02-20):
+  - integrated deterministic lifecycle transitions through `NavigationLifecycleTracker`
+  - removed forced `window.load` fallback dispatch from top-level navigation correctness path
+  - removed delayed repaint (`Task.Delay(1500)`) correctness fallback and replaced with lifecycle-driven progression.
+- Navigation hardening tranche NL-2 (2026-02-20):
+  - response lifecycle transitions now carry redirect metadata from fetch pipeline (`Redirected`, `RedirectCount`)
+  - commit lifecycle transitions now carry commit-source classification (`network-document`, `error-document`, `synthetic-history`)
+  - interactive lifecycle detail now includes staged render telemetry (parse/css/visual/script/total timings)
+  - complete lifecycle is no longer immediate post-render; it waits for bounded subresource/event-loop settle signals.
+- Navigation hardening tranche NL-3 (2026-02-20):
+  - `FontRegistry` now exposes deterministic pending-load state (`PendingLoadCount`, `PendingLoadCountChanged`)
+  - lifecycle completion settle-gate now includes pending webfont loads in addition to image/event-loop state.
+- Navigation hardening tranche NL-4 (2026-02-20):
+  - `BrowserApi` now wraps render-phase CSS/image fetch delegates with navigation-scoped subresource accounting.
+  - completion settle gate now includes navigation-local render subresource pending count (`renderSubresourcesPending`) to avoid cross-navigation bleed.
+- Navigation hardening tranche NL-5 (2026-02-20):
+  - `BrowserApi` now marks active render navigation scope and tracks external script/module fetches in the same navigation-scoped subresource counter used by completion settle gating.
+  - top-level `Complete` transition now closes only after render-time script/module/CSS/image/font dependency classes are settled (or timeout-annotated).
 
 #### `SkiaRenderer.cs` (Lines 1-839)
 
@@ -286,10 +402,11 @@ The Display List command definitions.
 Alternative legacy/wrapper engine for specialized environments.
 
 - **Lines 1065-1283**: **`RenderAsync`**: Direct HTML-to-Visual pipeline.
+- `RenderTelemetrySnapshot` now captures staged render timings (`TokenizingAndParsingMs`, `CssAndStyleMs`, `InitialVisualTreeMs`, `ScriptExecutionMs`, `PostScriptVisualTreeMs`, `TotalRenderMs`) for navigation lifecycle telemetry wiring.
 
 ### 6.3 Scripting Subsystem (`FenBrowser.FenEngine.Scripting`)
 
-#### `JavaScriptEngine.cs` (Lines 1-3087)
+#### `JavaScriptEngine.cs` (Lines 1-3570)
 
 The custom logic runtime and bridge.
 
@@ -326,7 +443,18 @@ The custom logic runtime and bridge.
 - `Contexts.InlineFormattingContext` now re-layouts atomic inline/replaced controls before final line placement and applies a monotonic post-pass to prevent overlap when intrinsic widths expand after probe measurement.
 - `Contexts.FlexFormattingContext` now recovers near-zero row-item widths using deep descendant extents (not only direct children), fixing collapsed control clusters and footer link groups under intrinsic probe passes.
 - `Contexts.BlockFormattingContext` now clamps right-float placement when probe-time container width is unresolved, preventing transient negative-X anchor placement in header action rows.
-- `Rendering.Css.CssLoader` no longer forces `.FPdoLc`/`.lJ9FBc` to `display:inline-block`; those Google search-action wrappers are now kept block-level with `text-align:center`, restoring centered placement of the `Google Search` / `I'm Feeling Lucky` controls.
+- `Contexts.BlockFormattingContext` now performs exclusion-band float placement for both left and right floats, applies float intrusion constraints to in-flow blocks, and advances explicit-width blocks below floats when required inline space is unavailable.
+- `Layout.ReplacedElementSizing` now centralizes replaced-element used-size resolution (CSS width/height and `aspect-ratio`, HTML attributes, intrinsic dimensions, and 300x150-family fallbacks), and `MinimalLayoutComputer`, `InlineFormattingContext`, `FlexFormattingContext`, and `LayoutPositioningLogic` now consume this shared policy to avoid cross-context sizing drift.
+- `Contexts.FloatManager` now exposes `HasFloats` and `GetNextVerticalPosition(...)` to support deterministic float band stepping and avoid overlap loops.
+- `Rendering.Css.CssLoader` removed domain/class-specific compatibility rewrites (Google/WhatIsMyBrowser style injections); compatibility fixes must come from standards-compliant parser/cascade/layout behavior.
+- `Compatibility.WebCompatibilityInterventionRegistry` added as the single intervention execution point (behavior-class keyed, metrics-backed, kill-switchable, and expiry-aware), and is wired into `CssLoader.ResolveStyle(...)` for cascade-stage compatibility controls.
+- `Scripting.JavaScriptEngine` removed the deprecated blocking `SetDomAsync(...).Wait()` bridge and now uses a non-blocking compatibility wrapper (`SetDom(...)`) with fault logging.
+- `Scripting.JavaScriptEngine` added async module-graph prefetch + in-memory module-source cache so module resolution avoids sync network bridging in the module loader callback path.
+- `Tests/Engine/JavaScriptEngineModuleLoadingTests.cs` adds regression coverage for:
+  - non-blocking deprecated `SetDom(...)` bridge behavior
+  - static module dependency prefetch execution (`main.js` -> `dep.js`) without sync fetch bridging.
+- `Workers.WorkerRuntime` now prefetches static literal `importScripts(...)` dependency graphs during worker script load and executes imports from prefetched cache, removing sync async-bridging from `importScripts` execution path.
+- `Tests/Workers/WorkerTests.cs` adds `WorkerRuntime_ImportScripts_ReusesPrefetchedSourceAcrossRepeatedImports` to lock cache reuse behavior (single fetch, repeated execution).
 
 #### `JavaScriptEngine.Dom.cs` (Lines 1-1203)
 
@@ -765,3 +893,135 @@ So you want to add `border-radius`? Follow these steps:
 
 - `Scripting/JavaScriptRuntime.cs`
   - Replaced placeholder wrapper with concrete forwarding runtime over `JavaScriptEngine`.
+
+### 6.22 Pipeline Stage Coverage Hardening (2026-02-20)
+
+- `Rendering/SkiaDomRenderer.cs`
+  - Replaced manual `BeginFrame`/`EndFrame` and `BeginStage`/`EndStage` pairs with scoped guards from `PipelineContext`.
+  - Added explicit stage coverage for:
+    - `PipelineStage.Rasterizing` around `SkiaRenderer.Render(...)`
+    - `PipelineStage.Presenting` for overlay/layout callback handoff and frame close.
+  - Result: stage closure is exception-safe and runtime stage sequencing now maps to the full render tail (`paint -> rasterize -> present`) instead of stopping at paint.
+
+- `Tests/Engine/PipelineContextTests.cs`
+  - Added regression coverage for:
+    - frame scope idle closure
+    - per-stage timing capture
+    - stage closure on exception paths.
+
+### 6.23 CSS/Cascade/Selector Conformance Tranche CSS-1 (2026-02-20)
+
+- `Rendering/Css/SelectorMatcher.cs`
+  - Added `nth-child(... of ...)` and `nth-last-child(... of ...)` selector-list filtering support.
+  - Reworked `:has(...)` evaluation to combinator-aware relative-chain traversal instead of candidate-only shortcut matching.
+  - Corrected `:empty` semantics and improved attribute parsing robustness for quoted values and flags.
+
+- `Tests/Engine/SelectorMatcherConformanceTests.cs` (new)
+  - Added regression coverage for:
+    - `nth-child(... of ...)` matching
+    - attribute flags (`i` / `s`) and quoted `]` handling
+    - `:empty` semantics
+    - relational `:has(...)` combinator behavior
+    - cascade application correctness for `nth-child(... of ...)`.
+
+### 6.24 Layout Auto-Repeat Hardening Tranche L-1 (2026-02-20)
+
+- `Layout/GridLayoutComputer.Parsing.cs`
+  - Replaced placeholder `repeat(auto-fill/auto-fit, ...)` expansion path with deterministic auto-repeat count calculation.
+  - Auto-repeat count now accounts for:
+    - multi-track pattern total breadth,
+    - inter-track/internal gap contribution,
+    - bounded fallback when track minima are intrinsic/unresolved.
+  - Added parser guardrails for delimiter-only tokens (`,` / `)`) to reduce malformed token fallback into implicit auto tracks.
+
+- `Tests/Layout/GridTrackSizingTests.cs`
+  - Added layout regressions for:
+    - multi-track auto-fill repeat sizing with gaps,
+    - unresolved intrinsic auto-repeat fallback behavior.
+
+### 6.25 Layout Row-Sizing Consistency Tranche L-2 (2026-02-20)
+
+- `Layout/GridLayoutComputer.cs`
+  - Grid row intrinsic sizing now executes in both measure and arrange paths (row-side `MeasureTracksIntrinsic(..., isColumn: false)`).
+  - Arrange path now applies `MeasureAutoRowHeights(...)` before row flex/stretch resolution to preserve content-derived row minima and stable item row offsets.
+
+- `Tests/Layout/GridContentSizingTests.cs`
+  - Added regression:
+    - `AutoRows_ArrangePreservesContentContributionBeforeStretch`
+  - Verifies that arrange pass keeps content-derived auto-row offsets aligned with measured row heights.
+
+### 6.26 Layout Auto-Fit Collapse Tranche L-3 (2026-02-20)
+
+- `Layout/GridLayoutComputer.cs`
+  - Added track-level auto-repeat mode metadata (`AutoRepeatMode`).
+  - Measure/arrange now collapse unused trailing explicit `auto-fit` repeat tracks based on occupied track extent before track-size distribution.
+  - Implicit-track fill now uses occupied-track required count after collapse, preventing collapse rollback.
+
+- `Layout/GridLayoutComputer.Parsing.cs`
+  - `repeat(auto-fill/auto-fit, ...)` expansion now tags generated tracks by repeat mode (`Fill` vs `Fit`) for downstream sizing policy.
+
+- `Tests/Layout/GridTrackSizingTests.cs`
+  - Added regression:
+    - `AutoFit_CollapsesUnusedTrailingTracks_BeforeJustifyContentDistribution`
+  - Confirms `auto-fit` behavior diverges from `auto-fill` by collapsing unused trailing repeat tracks before `justify-content` distribution.
+
+### 6.27 Layout Margin Helper Hardening Tranche L-4 (2026-02-20)
+
+- `Layout/MarginCollapseComputer.cs`
+  - Removed placeholder implementation in `MarginPair.FromStyle(...)`.
+  - Added writing-mode-aware block-axis mapping for margin pairing:
+    - `horizontal-tb` -> `top/bottom`
+    - `vertical-rl`/`sideways-rl` -> `right/left`
+    - `vertical-lr`/`sideways-lr` -> `left/right`.
+
+- `Tests/Layout/MarginCollapseTests.cs`
+  - Added regressions:
+    - `MarginPair_FromStyle_HorizontalTb_UsesTopAndBottom`
+    - `MarginPair_FromStyle_VerticalRl_UsesRightAndLeft`
+    - `MarginPair_FromStyle_VerticalLr_UsesLeftAndRight`.
+
+### 6.28 Layout Auto-Repeat Definite-Max Breadth Tranche L-5 (2026-02-20)
+
+- `Layout/GridLayoutComputer.Parsing.cs`
+  - Auto-repeat breadth resolution now accepts definite max-track sizing as fallback when min-track breadth is unresolved.
+  - Enables deterministic repeat counts for patterns like `repeat(auto-fill, minmax(auto, 120px))` instead of conservative single-repeat fallback.
+  - Added helper `TryResolveDefiniteBreadth(...)` for `px`, `%`, and `fit-content(...)` definite breadth extraction.
+
+- `Tests/Layout/GridTrackSizingTests.cs`
+  - Added regression:
+    - `AutoFill_MinMaxAutoDefiniteMax_UsesDefiniteMaxForRepeatCount`.
+
+### 6.29 Layout Fit-Content Percent Resolution Tranche L-6 (2026-02-20)
+
+- `Layout/GridLayoutComputer.cs`
+  - `GridTrackSize` now carries `FitContentIsPercent` to preserve whether `fit-content(...)` originated from percentage tokens.
+
+- `Layout/GridLayoutComputer.Parsing.cs`
+  - `fit-content(%)` limits are now resolved against container inline size before sizing/clamp logic consumes them.
+  - Prevents percentage limits from being treated as raw unit values in track-limit behavior.
+
+- `Tests/Layout/GridContentSizingTests.cs`
+  - Added regression:
+    - `FitContent_Percent_ResolvesAgainstContainerWidth`.
+
+### 6.30 Flex Baseline Alignment Tranche L-7 (2026-02-20)
+
+- `Layout/Contexts/FlexFormattingContext.cs`
+  - Row cross-axis placement no longer maps `baseline` to `flex-start`.
+  - Added per-line baseline synthesis for baseline-participating flex items.
+  - Added `ResolveBaselineOffsetFromMarginTop(...)`:
+    - uses measured baseline/ascent only for text-backed items,
+    - falls back to lower border-edge baseline synthesis for non-text/replaced-like items.
+  - Text-baseline eligibility is restricted to direct `TextLayoutBox` / `Text` nodes; element-backed flex items always use synthesized border-edge baseline.
+  - Cross-axis auto margins remain higher priority than baseline alignment.
+
+- `Tests/Layout/FlexLayoutTests.cs`
+  - Added regressions:
+    - `AlignItems_Baseline_UsesItemBaselinesInsteadOfFlexStart`
+    - `AlignSelf_Baseline_OverridesContainerCrossAlignment`.
+
+- `Rendering/Css/CssFlexLayout.cs`
+  - Legacy/shared flex arrangement path now resolves baseline offsets through `ResolveFlexItemBaselineOffset(...)` for both:
+    - line baseline aggregation,
+    - per-item baseline placement.
+  - Eliminates inconsistent `0.8 * height` heuristic-only alignment for element-backed flex items.

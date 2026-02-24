@@ -1200,3 +1200,42 @@ Validation snapshot:
 
 Residual status:
 - No open audit findings remain in the previously tracked phase residual set (22/25 closure set).
+
+## 23) Pipeline Production Hardening Pass (2026-02-20)
+
+Implemented now:
+
+1. **Exception-safe pipeline lifecycle scopes (core invariant hardening)**
+- `FenBrowser.Core/Engine/PipelineContext.cs`
+  - Added scoped lifecycle APIs:
+    - `BeginScopedFrame()`
+    - `BeginScopedStage(PipelineStage stage)`
+  - Added disposable guards:
+    - `PipelineFrameScope`
+    - `PipelineStageScope`
+  - Stage timing now records actual stage duration from stage-entry timestamp (instead of cumulative frame elapsed).
+
+2. **Render-stage completion to full tail (`paint -> raster -> present`)**
+- `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`
+  - Replaced manual stage/frame begin/end pairs with scoped lifecycle guards.
+  - Added explicit `PipelineStage.Rasterizing` around final Skia draw call.
+  - Added explicit `PipelineStage.Presenting` around overlay/layout callback handoff and frame completion.
+
+3. **Regression coverage for pipeline lifecycle**
+- `FenBrowser.Tests/Engine/PipelineContextTests.cs` (new)
+  - Added tests for:
+    - frame scope idle closure
+    - per-stage timing capture
+    - stage closure under exception paths.
+
+4. **Documentation synchronization**
+- `docs/PIPELINE_PRODUCTION_BLUEPRINT_2026_02_20.md` (new)
+- `docs/INDEX.md`
+- `docs/VOLUME_II_CORE.md`
+- `docs/VOLUME_III_FENENGINE.md`
+
+Validation snapshot:
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Debug -clp:ErrorsOnly` succeeded.
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug -clp:ErrorsOnly` succeeded.
+- `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug -clp:ErrorsOnly` succeeded.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter FullyQualifiedName~PipelineContextTests` passed (`3/3`).
