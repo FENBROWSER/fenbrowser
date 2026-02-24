@@ -6,6 +6,7 @@ using FenBrowser.FenEngine.Rendering.Backends;
 using FenBrowser.FenEngine.Rendering.Css;
 using System;
 using System.IO;
+using System.Collections.Generic;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -97,6 +98,57 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 FenLogger.Debug($"[SkiaRenderer] Drawing Root Node {root.GetType().Name} Bounds={root.Bounds} Z={((root as OpacityGroupPaintNode)?.Opacity ?? 1)}");
                 DrawNodeSafe(backend, root, viewport);
+            }
+        }
+
+        /// <summary>
+        /// Partial raster path for damage-only redraw. Caller must pre-populate canvas with previous frame.
+        /// </summary>
+        public void RenderDamaged(SKCanvas canvas, ImmutablePaintTree tree, SKRect viewport, SKColor backgroundColor, IReadOnlyList<SKRect> damageRegions)
+        {
+            if (canvas == null || tree == null)
+            {
+                return;
+            }
+
+            if (damageRegions == null || damageRegions.Count == 0)
+            {
+                Render(canvas, tree, viewport, backgroundColor);
+                return;
+            }
+
+            var normalizedRegions = new DamageRegionNormalizationPolicy().Normalize(damageRegions, viewport);
+            if (normalizedRegions.Count == 0)
+            {
+                Render(canvas, tree, viewport, backgroundColor);
+                return;
+            }
+
+            var backend = new SkiaRenderBackend(canvas);
+            using var bgPaint = new SKPaint
+            {
+                Color = backgroundColor,
+                Style = SKPaintStyle.Fill,
+                IsAntialias = false
+            };
+
+            for (var i = 0; i < normalizedRegions.Count; i++)
+            {
+                if (!TryIntersect(normalizedRegions[i], viewport, out var clipped))
+                {
+                    continue;
+                }
+
+                canvas.Save();
+                canvas.ClipRect(clipped, SKClipOperation.Intersect, true);
+                canvas.DrawRect(clipped, bgPaint);
+
+                foreach (var root in tree.Roots)
+                {
+                    DrawNodeSafe(backend, root, viewport);
+                }
+
+                canvas.Restore();
             }
         }
         
@@ -938,6 +990,23 @@ namespace FenBrowser.FenEngine.Rendering
             rrect.SetRectRadii(bounds, radius);
             path.AddRoundRect(rrect);
             return path;
+        }
+
+        private static bool TryIntersect(SKRect a, SKRect b, out SKRect intersection)
+        {
+            var left = Math.Max(a.Left, b.Left);
+            var top = Math.Max(a.Top, b.Top);
+            var right = Math.Min(a.Right, b.Right);
+            var bottom = Math.Min(a.Bottom, b.Bottom);
+
+            if (right <= left || bottom <= top)
+            {
+                intersection = SKRect.Empty;
+                return false;
+            }
+
+            intersection = new SKRect(left, top, right, bottom);
+            return true;
         }
     }
 }

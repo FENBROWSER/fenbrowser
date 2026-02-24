@@ -702,52 +702,42 @@ namespace FenBrowser.FenEngine.Rendering
             LastCssSources = null;
             try
             {
-                FenLogger.Debug("[CustomHtmlEngine] BuildVisualTree: Using CSS Engine...", LogCategory.Rendering);
-                
-                // Use the configured CSS engine
-                var cssEngine = CssEngineFactory.GetEngine();
-                FenLogger.Debug($"[CustomHtmlEngine] BuildVisualTree: Engine={cssEngine.EngineName}", LogCategory.Rendering);
-                
-                LastComputedStyles = await cssEngine.ComputeStylesAsync(dom, baseUri, cssFetcher, viewportWidth, viewportHeight);
-                FenLogger.Debug($"[PERF] CSS ComputeStyles: {_buildTreeStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
-
-                // CRITICAL FIX: Assign computed styles to nodes so Layout Engine can see them!
-                if (LastComputedStyles != null)
+                // PERF: LoadCssAsync() in RenderAsync already ran CascadeIntoComputedStyles()
+                // and assigned n.ComputedStyle to every node. Reuse those styles instead of
+                // running the full O(elements × rules) cascade a second time.
+                if (LastComputedStyles != null && LastComputedStyles.Count > 0)
                 {
-                    foreach (var kvp in LastComputedStyles)
+                    FenLogger.Debug($"[BuildVisualTree] Reusing {LastComputedStyles.Count} pre-computed styles (skipping duplicate cascade)", LogCategory.Rendering);
+                    FenBrowser.Core.Verification.ContentVerifier.RegisterCssState(false, LastComputedStyles.Count);
+                }
+                else
+                {
+                    FenLogger.Debug("[CustomHtmlEngine] BuildVisualTree: Using CSS Engine (no pre-computed styles)...", LogCategory.Rendering);
+
+                    var cssEngine = CssEngineFactory.GetEngine();
+                    FenLogger.Debug($"[CustomHtmlEngine] BuildVisualTree: Engine={cssEngine.EngineName}", LogCategory.Rendering);
+
+                    LastComputedStyles = await cssEngine.ComputeStylesAsync(dom, baseUri, cssFetcher, viewportWidth, viewportHeight);
+                    FenLogger.Debug($"[PERF] CSS ComputeStyles: {_buildTreeStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
+
+                    // Assign computed styles to nodes so Layout Engine can see them
+                    if (LastComputedStyles != null)
                     {
-                        if (kvp.Key != null)
+                        foreach (var kvp in LastComputedStyles)
                         {
-                            kvp.Key.ComputedStyle = kvp.Value;
+                            if (kvp.Key != null)
+                                kvp.Key.ComputedStyle = kvp.Value;
                         }
                     }
-                }
-                
-                // [Verification] Register success
-                FenBrowser.Core.Verification.ContentVerifier.RegisterCssState(false, LastComputedStyles.Count);
-                
-                // Get CSS sources from engine for DevTools
-                try
-                {
-                    if (cssEngine is Css.CustomCssEngine customEngine)
-                    {
-                        LastCssSources = customEngine.LastSources;
-                    }
-                }
-                catch (Exception srcEx)
-                {
-                    FenLogger.Error($"[CustomHtmlEngine] CSS Sources retrieval error: {srcEx.Message}", LogCategory.Rendering);
-                    LastCssSources = null;
+
+                    FenBrowser.Core.Verification.ContentVerifier.RegisterCssState(false, LastComputedStyles?.Count ?? 0);
                 }
                 FenLogger.Debug($"[PERF] BuildVisualTree Complete: {_buildTreeStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
-                
                 FenLogger.Debug($"[CustomHtmlEngine] BuildVisualTree: CSS Success. Styles Count={LastComputedStyles?.Count}", LogCategory.Rendering);
             }
             catch (Exception ex)
             {
                 FenLogger.Error($"[CustomHtmlEngine] CssLoader CRASH: {ex}", LogCategory.Rendering);
-                // Continue to ensure RepaintReady fires even if CSS fails? 
-                // Better to have partial render than white screen if possible
                 LastComputedStyles = new Dictionary<Node, CssComputed>();
             }
 
@@ -995,8 +985,58 @@ namespace FenBrowser.FenEngine.Rendering
              }
         }
 
+        // --- Dynamic re-cascade (hover/focus/DOM mutations) ---
+
+        // Holds the in-flight re-cascade task so we don't stack them up.
+        private volatile Task _pendingRecascade = null;
+
+        /// <summary>
+        /// Schedule a CSS re-cascade on the current DOM using cached render parameters.
+        /// Safe to call from any thread (e.g. ElementStateManager.OnStateChanged).
+        /// If a re-cascade is already in-flight, the call is a no-op; the next
+        /// RepaintReady that fires after the in-flight task completes will carry the
+        /// freshest styles.
+        /// </summary>
+        public void ScheduleRecascade()
+        {
+            if (_activeDom == null || _activeBaseUri == null || _activeFetchCss == null)
+                return;
+
+            // Only one re-cascade in flight at a time.
+            var pending = _pendingRecascade;
+            if (pending != null && !pending.IsCompleted)
+                return;
+
+            _pendingRecascade = Task.Run(async () =>
+            {
+                try { await RecascadeAsync().ConfigureAwait(false); }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn(
+                        $"[CustomHtmlEngine] RecascadeAsync failed: {ex.Message}",
+                        LogCategory.Rendering);
+                }
+            });
+        }
+
+        /// <summary>
+        /// Re-runs the CSS cascade on the currently active DOM using cached parameters.
+        /// Updates LastComputedStyles and fires RepaintReady so the engine loop redraws.
+        /// </summary>
+        public async Task RecascadeAsync()
+        {
+            if (_activeDom == null || _activeBaseUri == null || _activeFetchCss == null)
+                return;
+
+            var domEl = (_activeDom as FenBrowser.Core.Dom.V2.Element)
+                     ?? (_activeDom as FenBrowser.Core.Dom.V2.Document)?.DocumentElement;
+            if (domEl == null) return;
+
+            await LoadCssAsync(domEl, _activeBaseUri, _activeFetchCss).ConfigureAwait(false);
+        }
+
         private JavaScriptEngine SetupJavaScriptEngine(
-             Uri baseUri, 
+             Uri baseUri,
              Action<Uri> onNavigate, 
              bool allowJs, 
              Func<Uri, Task<string>> fetchExternalCssAsync)

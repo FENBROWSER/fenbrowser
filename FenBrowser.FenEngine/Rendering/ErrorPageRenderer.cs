@@ -82,103 +82,123 @@ namespace FenBrowser.FenEngine.Rendering
 
         // ================= SSL ERROR PAGE =================
 
-public static string RenderSslError(string url, string details)
+public static string RenderSslError(string url, string details, FenBrowser.Core.CertificateInfo cert = null)
 {
     bool isDark = IsDarkTheme();
 
-    string safeUrl = WebUtility.HtmlEncode(url);
-    string safeDetails = WebUtility.HtmlEncode(
-        details ?? "CERT_COMMON_NAME_INVALID"
-    );
+    string safeUrl     = WebUtility.HtmlEncode(url);
+    string safeDetails = WebUtility.HtmlEncode(details ?? "Unknown TLS error");
+
+    // Derive a specific, user-friendly headline from the SslPolicyErrors flags
+    var errors = cert?.PolicyErrors ?? System.Net.Security.SslPolicyErrors.None;
+    string headline, errorLabel;
+    if (errors == System.Net.Security.SslPolicyErrors.None)
+    {
+        // Validation callback returned false for another reason
+        headline   = "This connection isn't secure";
+        errorLabel = "TLS handshake failed";
+    }
+    else if ((errors & System.Net.Security.SslPolicyErrors.RemoteCertificateNotAvailable) != 0)
+    {
+        headline   = "No security certificate";
+        errorLabel = "Site did not provide a certificate";
+    }
+    else if ((errors & System.Net.Security.SslPolicyErrors.RemoteCertificateNameMismatch) != 0)
+    {
+        headline   = "Certificate name mismatch";
+        errorLabel = "Certificate name does not match the site's address";
+    }
+    else // RemoteCertificateChainErrors
+    {
+        // Distinguish expired vs untrusted using the cert dates
+        if (cert != null && cert.NotAfter < DateTime.Now)
+        {
+            headline   = "Certificate has expired";
+            errorLabel = $"Certificate expired on {cert.NotAfter:yyyy-MM-dd}";
+        }
+        else if (cert != null && cert.NotBefore > DateTime.Now)
+        {
+            headline   = "Certificate not yet valid";
+            errorLabel = $"Certificate is not valid until {cert.NotBefore:yyyy-MM-dd}";
+        }
+        else
+        {
+            headline   = "Certificate not trusted";
+            errorLabel = "Certificate was not issued by a trusted authority";
+        }
+    }
+
+    // Build optional cert detail rows
+    string certRows = "";
+    if (cert != null)
+    {
+        if (!string.IsNullOrEmpty(cert.Subject))
+            certRows += $"<tr><td style='color:#6b7280;padding-right:12px'>Issued to</td><td>{WebUtility.HtmlEncode(cert.Subject)}</td></tr>";
+        if (!string.IsNullOrEmpty(cert.Issuer))
+            certRows += $"<tr><td style='color:#6b7280;padding-right:12px'>Issued by</td><td>{WebUtility.HtmlEncode(cert.Issuer)}</td></tr>";
+        if (cert.NotAfter != DateTime.MaxValue)
+            certRows += $"<tr><td style='color:#6b7280;padding-right:12px'>Expires</td><td>{cert.NotAfter:yyyy-MM-dd} ({cert.ExpiryStatus})</td></tr>";
+        if (!string.IsNullOrEmpty(cert.Thumbprint))
+            certRows += $"<tr><td style='color:#6b7280;padding-right:12px'>Fingerprint</td><td style='font-family:monospace;font-size:11px'>{WebUtility.HtmlEncode(cert.Thumbprint)}</td></tr>";
+    }
+    string certTable = certRows.Length > 0
+        ? $"<table style='border-collapse:collapse;font-size:12px;margin-top:8px'>{certRows}</table>"
+        : "";
 
     return $@"
 <html>
 <body style=""{GetPageStyle(isDark)}"">
   <div style=""{GetContainerStyle(isDark)} max-width:560px;"">
 
-    <!-- Header: Icon + Title (ANCHOR) -->
     <div style=""display:flex;align-items:center;gap:16px;margin-bottom:20px;"">
       {SslWarningIcon}
-      <div style=""{GetTitleStyle(isDark)}"">
-        This connection isn't secure
-      </div>
+      <div style=""{GetTitleStyle(isDark)}"">{WebUtility.HtmlEncode(headline)}</div>
     </div>
 
-    <!-- Primary Explanation -->
     <div style=""{GetMsgStyle(isDark)} margin-bottom:12px;"">
-      Fen Browser couldn't verify the identity of this website.
-      The security certificate doesn't match the site's address.
+      Fen Browser couldn't establish a secure connection to this site.
     </div>
 
-    <!-- Secondary Explanation (Muted) -->
     <div style=""font-size:14px;color:{(isDark ? "#9ca3af" : "#6b7280")};
                 line-height:1.6;margin-bottom:20px;"">
-      This may happen if the site is misconfigured or if your connection
-      is being intercepted. Proceeding could expose sensitive information.
+      This may mean the site is misconfigured or your connection is being
+      intercepted. Proceeding could expose sensitive information.
     </div>
 
-    <!-- Context Box (Trust Builder) -->
     <div style=""background:{(isDark ? "#111827" : "#f9fafb")};
                 border:1px solid {(isDark ? "#374151" : "#e5e7eb")};
-                border-radius:10px;
-                padding:12px;
-                font-size:13px;
-                margin-bottom:24px;"">
+                border-radius:10px;padding:12px;font-size:13px;margin-bottom:24px;"">
       <strong>Website:</strong> {safeUrl}<br>
-      <strong>Error:</strong> Certificate name mismatch
+      <strong>Error:</strong> {WebUtility.HtmlEncode(errorLabel)}
     </div>
 
-    <!-- Primary Actions -->
     <div style=""display:flex;gap:12px;margin-bottom:20px;"">
-      <a href=""about:blank"" style=""{PrimaryBtnStyle}"">
-        <- Go back to safety
-      </a>
-      <a href=""#"" style=""{SecondaryBtnStyle(isDark)}"">
-        Retry
-      </a>
+      <a href=""about:blank"" style=""{PrimaryBtnStyle}"">← Go back to safety</a>
+      <a href=""#"" style=""{SecondaryBtnStyle(isDark)}"">Retry</a>
     </div>
 
-    <!-- Advanced (Progressive Disclosure) -->
     <details style=""margin-top:8px;"">
-      <summary style=""cursor:pointer;
-                      font-size:14px;
-                      color:#2563eb;
-                      user-select:none;"">
-        Advanced >
+      <summary style=""cursor:pointer;font-size:14px;color:#2563eb;user-select:none;"">
+        Advanced ›
       </summary>
-
       <div style=""margin-top:16px;font-size:13px;"">
-
-        <!-- Technical Details -->
         <div style=""{GetCodeStyle(isDark)} margin-bottom:16px;"">
           {safeDetails}
+          {certTable}
         </div>
-
-        <!-- Danger Zone (Earned, Not Immediate) -->
         <div style=""border:1px solid #dc2626;
                     background:{(isDark ? "#2a0f12" : "#fee2e2")};
-                    border-radius:10px;
-                    padding:14px;"">
-
+                    border-radius:10px;padding:14px;"">
           <strong>Proceed anyway (unsafe)</strong>
-
-          <div style=""margin-top:6px;
-                      font-size:13px;
-                      color:{(isDark ? "#fca5a5" : "#7f1d1d")};"">
+          <div style=""margin-top:6px;font-size:13px;color:{(isDark ? "#fca5a5" : "#7f1d1d")};"">
             Fen Browser will not protect you on this site.
           </div>
-
           <div style=""margin-top:10px;"">
-            <button style=""background:transparent;
-                           border:1px solid #dc2626;
-                           color:#dc2626;
-                           padding:8px 14px;
-                           border-radius:8px;
-                           font-size:13px;"">
+            <button style=""background:transparent;border:1px solid #dc2626;color:#dc2626;
+                           padding:8px 14px;border-radius:8px;font-size:13px;"">
               Continue
             </button>
           </div>
-
         </div>
       </div>
     </details>

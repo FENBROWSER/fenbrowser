@@ -572,10 +572,10 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     float maxAscent = 0;
                     foreach(var item in line.Items)
                     {
-                        // Use actual baseline from measurement if available, otherwise heuristic
-                        float ascent = item.IntrinsicMetrics.Baseline;
-                        if (ascent <= 0) ascent = item.IntrinsicMetrics.ContentHeight * 0.8f;
-                        
+                        float childCrossSize = isRow
+                            ? item.IntrinsicMetrics.ContentHeight
+                            : item.IntrinsicMetrics.MaxChildWidth;
+                        float ascent = ResolveFlexItemBaselineOffset(item, childCrossSize);
                         var m = item.Style?.Margin; 
                         if (m!=null) ascent += (float)(isRow ? m.Value.Top : m.Value.Left);
                         
@@ -668,27 +668,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                      else if (align == "flex-end") crossOffset = crossAvailable;
                      else if (align == "baseline")
                      {
-                         // Align to baseline
-                         // Item ascent (estimated)
-                         float ascent = item.IntrinsicMetrics.ContentHeight * 0.8f;
-                         if (margin != null) ascent += (float)margin.Top;
-                         
-                         // Distance from crossStart to baseline is line.Baseline
-                         // We want item baseline to be at line.Baseline relative to line top.
-                         // So item top = line.Baseline - item.Ascent
-                         // crossOffset is relative to line top (y is crossPos + crossOffset + mt)
-                         // Wait, y = crossPos + mt + crossOffset.
-                         // We want y + itemAscent = crossPos + line.Baseline
-                         // crossPos + mt + crossOffset + itemAscentBase = crossPos + line.Baseline
-                         // crossOffset = line.Baseline - itemAscentBase - mt
-                         
-                         // Let's simplified: 
-                         // position = Baseline - ascent
-                         // But we add margin top later in y calculation?
-                         // y = crossPos + mt + crossOffset
-                         // We want y to be such that text lines up.
-                         
-                         float itemAscent = item.IntrinsicMetrics.ContentHeight * 0.8f;
+                         float itemAscent = ResolveFlexItemBaselineOffset(item, childCrossSize);
                          crossOffset = line.Baseline - itemAscent - mt;
                      }
                      
@@ -791,6 +771,53 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 
                 crossPos += lineCrossSize + lineGap;
             }
+        }
+
+        private static float ResolveFlexItemBaselineOffset(FlexItem item, float childCrossSize)
+        {
+            float usedCross = float.IsFinite(childCrossSize) && childCrossSize > 0f ? childCrossSize : 0f;
+            if (usedCross <= 0f)
+            {
+                return 0f;
+            }
+
+            // Direct text nodes use measured baseline or text fallback.
+            if (item.Node is Text textNode)
+            {
+                if (!string.IsNullOrWhiteSpace(textNode.Data))
+                {
+                    float textBaseline = item.IntrinsicMetrics.Baseline;
+                    if (!float.IsFinite(textBaseline) || textBaseline <= 0f)
+                    {
+                        textBaseline = usedCross * 0.8f;
+                    }
+
+                    return Math.Clamp(textBaseline, 0f, usedCross);
+                }
+
+                return usedCross;
+            }
+
+            // For element-backed flex items, prefer measured baseline only for explicit inline-level formatting.
+            string display = item.Style?.Display?.Trim().ToLowerInvariant() ?? string.Empty;
+            bool inlineLevel =
+                display == "inline" ||
+                display == "inline-block" ||
+                display == "inline-flex" ||
+                display == "inline-grid" ||
+                display == "inline-table";
+
+            if (inlineLevel)
+            {
+                float measuredBaseline = item.IntrinsicMetrics.Baseline;
+                if (float.IsFinite(measuredBaseline) && measuredBaseline > 0f)
+                {
+                    return Math.Clamp(measuredBaseline, 0f, usedCross);
+                }
+            }
+
+            // Block/replaced element fallback: baseline at lower border edge.
+            return usedCross;
         }
 
     }

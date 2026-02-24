@@ -1402,15 +1402,15 @@ namespace FenBrowser.FenEngine.Rendering
                     string tag = e.TagName?.ToUpperInvariant();
                     string type = e.GetAttribute("type")?.ToLowerInvariant();
                     
-                    if ((tag == "INPUT" && type != "hidden") || tag == "TEXTAREA")
-                    {
-                        // Default Inputs and Textareas to White
-                         bgColor = SKColors.White;
-                    }
-                    else if (tag == "BUTTON" || (tag == "INPUT" && (type == "button" || type == "submit" || type == "reset")))
+                    if (tag == "BUTTON" || (tag == "INPUT" && (type == "button" || type == "submit" || type == "reset")))
                     {
                         // Default Buttons to Light Gray
                         bgColor = new SKColor(240, 240, 240);
+                    }
+                    else if ((tag == "INPUT" && type != "hidden") || tag == "TEXTAREA")
+                    {
+                        // Default Inputs and Textareas to White
+                         bgColor = SKColors.White;
                     }
                     else if (tag == "SELECT")
                     {
@@ -1502,6 +1502,12 @@ namespace FenBrowser.FenEngine.Rendering
                 trimmed.StartsWith("repeating-radial-gradient", StringComparison.OrdinalIgnoreCase))
             {
                 return CreateRadialGradientShader(trimmed, bounds);
+            }
+
+            if (trimmed.StartsWith("conic-gradient", StringComparison.OrdinalIgnoreCase) ||
+                trimmed.StartsWith("repeating-conic-gradient", StringComparison.OrdinalIgnoreCase))
+            {
+                return CreateConicGradientShader(trimmed, bounds);
             }
 
             return null;
@@ -1622,6 +1628,77 @@ namespace FenBrowser.FenEngine.Rendering
             float[] posArr = positions.Count == colors.Count ? positions.ToArray() : null;
 
             return SKShader.CreateRadialGradient(center, radius, colors.ToArray(), posArr, SKShaderTileMode.Clamp);
+        }
+
+        private SKShader CreateConicGradientShader(string css, SKRect bounds)
+        {
+            // conic-gradient([from <angle>] [at <position>,] <color-stop-list>)
+            // We map this to SKShader.CreateSweepGradient which sweeps 0→360° around a center.
+            int pStart = css.IndexOf('(');
+            int pEnd = css.LastIndexOf(')');
+            if (pStart < 0 || pEnd <= pStart) return null;
+
+            var inner = css.Substring(pStart + 1, pEnd - pStart - 1);
+            var parts = SplitTopLevelComma(inner);
+            if (parts.Count < 2) return null;
+
+            float startAngleDeg = 0f;
+            var center = new SKPoint(bounds.MidX, bounds.MidY);
+            int colorStartIndex = 0;
+
+            // Check for "from <angle>" or "at <position>" preamble in first segment
+            string first = parts[0].Trim();
+            if (first.StartsWith("from ", StringComparison.OrdinalIgnoreCase))
+            {
+                var anglePart = first.Substring(5).Trim();
+                if (anglePart.EndsWith("deg", StringComparison.OrdinalIgnoreCase) &&
+                    float.TryParse(anglePart.Substring(0, anglePart.Length - 3).Trim(), out var deg))
+                {
+                    startAngleDeg = deg;
+                }
+                colorStartIndex = 1;
+            }
+            else if (first.StartsWith("at ", StringComparison.OrdinalIgnoreCase))
+            {
+                // skip position specifier — use default center
+                colorStartIndex = 1;
+            }
+
+            var colors = new List<SKColor>();
+            var positions = new List<float>();
+
+            for (int i = colorStartIndex; i < parts.Count; i++)
+            {
+                var stop = parts[i].Trim();
+                if (string.IsNullOrEmpty(stop)) continue;
+
+                string colorPart = stop;
+                float? pos = null;
+                int split = FindLastTopLevelSpace(stop);
+                if (split > 0 && split < stop.Length - 1)
+                {
+                    var posStr = stop.Substring(split + 1).Trim();
+                    colorPart = stop.Substring(0, split).Trim();
+                    if (posStr.EndsWith("%") && float.TryParse(posStr.TrimEnd('%'), out var pct))
+                        pos = Math.Clamp(pct / 100f, 0f, 1f);
+                    else if (posStr.EndsWith("deg", StringComparison.OrdinalIgnoreCase) &&
+                             float.TryParse(posStr.Substring(0, posStr.Length - 3).Trim(), out var degPos))
+                        pos = Math.Clamp(degPos / 360f, 0f, 1f);
+                }
+
+                if (SKColor.TryParse(colorPart, out var color))
+                {
+                    colors.Add(color);
+                    if (pos.HasValue) positions.Add(pos.Value);
+                }
+            }
+
+            if (colors.Count == 0) return null;
+            float[] posArr = positions.Count == colors.Count ? positions.ToArray() : null;
+
+            // SKShader.CreateSweepGradient sweeps from startAngle to startAngle+360 around center.
+            return SKShader.CreateSweepGradient(center, colors.ToArray(), posArr,
+                SKShaderTileMode.Repeat, startAngleDeg, startAngleDeg + 360f);
         }
 
         private static double DirectionToAngle(string dir)
@@ -2296,8 +2373,43 @@ namespace FenBrowser.FenEngine.Rendering
             
             if (tag == "IMG")
             {
-                url = elem.GetAttribute("src");
-                
+                // <picture> source selection: if this <img> is inside a <picture>,
+                // walk sibling <source> elements and pick the first with a matching
+                // type/media. Use the first srcset URL (ignoring descriptors for now).
+                var pictureParent = elem.ParentElement;
+                if (pictureParent != null &&
+                    string.Equals(pictureParent.NodeName, "picture", StringComparison.OrdinalIgnoreCase))
+                {
+                    foreach (var sibling in pictureParent.ChildNodes.OfType<Element>())
+                    {
+                        if (!string.Equals(sibling.NodeName, "source", StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        // Skip sources whose type is not an image we can handle
+                        var mime = sibling.GetAttribute("type");
+                        if (!string.IsNullOrEmpty(mime) &&
+                            !mime.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        // Skip sources with media queries we don't evaluate (just use first one)
+                        var srcset = sibling.GetAttribute("srcset");
+                        if (!string.IsNullOrEmpty(srcset))
+                        {
+                            // Take the first URL from srcset (ignore width/density descriptors)
+                            var firstCandidate = srcset.Split(',')[0].Trim().Split(' ')[0].Trim();
+                            if (!string.IsNullOrEmpty(firstCandidate))
+                            {
+                                url = firstCandidate;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Fall back to img.src if no <source> matched
+                if (string.IsNullOrEmpty(url))
+                    url = elem.GetAttribute("src");
+
                 // Resolve Relative URLs
                 if (!string.IsNullOrEmpty(url) && 
                     !url.StartsWith("http", StringComparison.OrdinalIgnoreCase) && 

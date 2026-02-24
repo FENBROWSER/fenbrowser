@@ -18,57 +18,82 @@ namespace FenBrowser.FenEngine.Rendering
     {
         [ThreadStatic]
         private static RenderPhase _currentPhase = RenderPhase.Idle;
-        
+        [ThreadStatic]
+        private static long _frameSequence;
+        [ThreadStatic]
+        private static DateTime _frameStartedUtc;
+        [ThreadStatic]
+        private static TimeSpan _lastFrameDuration;
+
+        public static bool StrictInvariants { get; set; } = true;
+        public static TimeSpan FrameBudget { get; set; } = TimeSpan.FromMilliseconds(16.67);
+
         public static RenderPhase CurrentPhase => _currentPhase;
+        public static long FrameSequence => _frameSequence;
+        public static TimeSpan LastFrameDuration => _lastFrameDuration;
+        public static bool LastFrameExceededBudget => _lastFrameDuration > FrameBudget;
 
         public static void Reset()
         {
             _currentPhase = RenderPhase.Idle;
+            _frameStartedUtc = default;
+            _lastFrameDuration = TimeSpan.Zero;
         }
 
         public static void EnterLayout()
         {
-            if (_currentPhase != RenderPhase.Idle && _currentPhase != RenderPhase.Present)
-            {
-                 // Soft Assert
-                 if (_currentPhase == RenderPhase.Paint || _currentPhase == RenderPhase.Composite)
-                 {
-                     FenLogger.Warn($"[PIPELINE RECOVERY] Forced Layout entry from {_currentPhase}.");
-                 }
-            }
+            RequirePhase(RenderPhase.Idle, nameof(EnterLayout));
+            _frameSequence++;
+            _frameStartedUtc = DateTime.UtcNow;
             _currentPhase = RenderPhase.Layout;
         }
 
         public static void EndLayout()
         {
-            AssertPhase(RenderPhase.Layout);
+            RequirePhase(RenderPhase.Layout, nameof(EndLayout));
             _currentPhase = RenderPhase.LayoutFrozen;
         }
 
         public static void EnterPaint()
         {
-            if (_currentPhase != RenderPhase.LayoutFrozen)
-                 FenLogger.Warn($"[PIPELINE RECOVERY] EnterPaint called from {_currentPhase} (Expected LayoutFrozen).");
-            
+            RequirePhase(RenderPhase.LayoutFrozen, nameof(EnterPaint));
             _currentPhase = RenderPhase.Paint;
         }
 
         public static void EndPaint()
         {
-            AssertPhase(RenderPhase.Paint);
-            // Move to Composite (Overlay/Debug)
-            _currentPhase = RenderPhase.Composite; 
+            RequirePhase(RenderPhase.Paint, nameof(EndPaint));
+            _currentPhase = RenderPhase.Composite;
+        }
+
+        public static void EnterPresent()
+        {
+            RequirePhase(RenderPhase.Composite, nameof(EnterPresent));
+            _currentPhase = RenderPhase.Present;
         }
 
         public static void EndFrame()
         {
+            RequirePhase(RenderPhase.Present, nameof(EndFrame));
+            if (_frameStartedUtc != default)
+            {
+                _lastFrameDuration = DateTime.UtcNow - _frameStartedUtc;
+                if (LastFrameExceededBudget)
+                {
+                    FenLogger.Warn($"[PIPELINE] Frame {FrameSequence} exceeded budget: {_lastFrameDuration.TotalMilliseconds:F2}ms > {FrameBudget.TotalMilliseconds:F2}ms", LogCategory.Performance);
+                }
+            }
+
             _currentPhase = RenderPhase.Idle;
+            _frameStartedUtc = default;
         }
 
         public static void AssertPhase(RenderPhase expected)
         {
             if (_currentPhase != expected)
-                FenLogger.Warn($"[PIPELINE WARNING] Expected phase {expected}, but was {_currentPhase}");
+            {
+                HandleViolation($"AssertPhase failed. Expected {expected}, actual {_currentPhase}", null);
+            }
         }
 
         /// <summary>
@@ -77,7 +102,9 @@ namespace FenBrowser.FenEngine.Rendering
         public static void AssertNotPhase(RenderPhase forbidden)
         {
             if (_currentPhase == forbidden)
-                FenLogger.Warn($"[PIPELINE WARNING] Forbidden phase {forbidden} is active!");
+            {
+                HandleViolation($"AssertNotPhase failed. Forbidden phase {forbidden} is active.", null);
+            }
         }
         
         /// <summary>
@@ -85,13 +112,39 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public static void AssertLayerSeparation(bool isDebugOrOverlay)
         {
-             // If debugging/overlay, we should be in Composite phase.
-             if (isDebugOrOverlay && _currentPhase != RenderPhase.Composite)
-             {
-                 // Allowed exception: if we are painting PaintTree debug visualizations INSIDE EnterPaint? 
-                 // No, debug overlays should be strictly post-paint.
-                 // throw new InvalidOperationException($"[PIPELINE VIOLATION] Debug/Overlay drawing must happen in COMPOSITE phase. Current: {_currentPhase}");
-             }
+            if (isDebugOrOverlay && _currentPhase != RenderPhase.Composite && _currentPhase != RenderPhase.Present)
+            {
+                HandleViolation($"Debug/overlay drawing must happen in Composite/Present. Actual: {_currentPhase}", null);
+            }
+        }
+
+        private static void RequirePhase(RenderPhase expected, string operation)
+        {
+            if (_currentPhase != expected)
+            {
+                HandleViolation($"{operation} requires phase {expected}, actual {_currentPhase}", expected);
+            }
+        }
+
+        private static void HandleViolation(string message, RenderPhase? recoverTo)
+        {
+            if (StrictInvariants)
+            {
+                throw new RenderPipelineInvariantException(message);
+            }
+
+            FenLogger.Warn($"[PIPELINE RECOVERY] {message}", LogCategory.Rendering);
+            if (recoverTo.HasValue)
+            {
+                _currentPhase = recoverTo.Value;
+            }
+        }
+    }
+
+    public sealed class RenderPipelineInvariantException : InvalidOperationException
+    {
+        public RenderPipelineInvariantException(string message) : base(message)
+        {
         }
     }
 }

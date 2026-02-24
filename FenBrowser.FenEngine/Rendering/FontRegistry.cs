@@ -31,6 +31,27 @@ namespace FenBrowser.FenEngine.Rendering
         private static readonly object _lock = new object();
 
         public static event Action<string> FontLoaded;
+        public static event Action<int> PendingLoadCountChanged;
+
+        public static int PendingLoadCount
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    var count = 0;
+                    foreach (var task in _loadingTasks.Values)
+                    {
+                        if (task != null && !task.IsCompleted)
+                        {
+                            count++;
+                        }
+                    }
+
+                    return count;
+                }
+            }
+        }
 
         /// <summary>
         /// Represents a parsed @font-face rule
@@ -85,8 +106,9 @@ namespace FenBrowser.FenEngine.Rendering
             if (!string.IsNullOrEmpty(descriptor.Source))
             {
                 FenLogger.Debug($"[FontRegistry] Registering font: {descriptor.Family}", LogCategory.Rendering);
-                // Offload to background to avoid blocking parser thread with synchronous init/DNS
-                _ = Task.Run(() => LoadFontFaceAsync(descriptor));
+                // Start loading immediately so LoadPendingFontsAsync sees deterministic state.
+                // Network operations remain async inside LoadFontFaceAsync.
+                _ = LoadFontFaceAsync(descriptor);
             }
         }
 
@@ -130,43 +152,49 @@ namespace FenBrowser.FenEngine.Rendering
 
             var tcs = new TaskCompletionSource<SKTypeface>();
             lock (_lock) _loadingTasks[cacheKey] = tcs.Task;
+            NotifyPendingLoadCountChanged();
 
             try
             {
                 SKTypeface typeface = null;
 
-                // local() check
-                var localMatch = Regex.Match(src, @"local\s*\(\s*([""']?)([^)""']+)\1\s*\)", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(500));
-                if (localMatch.Success)
+                // Try all local(...) candidates in order.
+                foreach (var localName in ExtractLocalSources(src))
                 {
-                    string localName = localMatch.Groups[2].Value;
-                    typeface = SKTypeface.FromFamilyName(localName, 
-                        (SKFontStyleWeight)descriptor.Weight, 
-                        SKFontStyleWidth.Normal, 
-                        descriptor.Style);
-                }
-                else
-                {
-                    // url() check - assumed if not local
-                    // Sanitize url(...) wrapper if present (CssLoader might pass raw src string)
-                    string url = src;
-                    var urlMatch = Regex.Match(src, @"url\s*\(\s*([""']?)([^)""']+)\1\s*\)", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(500));
-                    if (urlMatch.Success) url = urlMatch.Groups[2].Value;
-
-                    Uri uri;
-                    // Try exact absolute
-                    if (!Uri.TryCreate(url, UriKind.Absolute, out uri))
+                    if (string.IsNullOrWhiteSpace(localName))
                     {
-                        // Try relative to BaseUri
-                        if (descriptor.BaseUri != null)
-                        {
-                            Uri.TryCreate(descriptor.BaseUri, url, out uri);
-                        }
+                        continue;
                     }
 
-                    if (uri != null)
+                    typeface = TryCreateLocalTypeface(localName, descriptor.Weight, descriptor.Style);
+
+                    if (typeface != null)
                     {
-                        // Only download from HTTP/HTTPS - skip unsupported schemes like file://
+                        break;
+                    }
+                }
+
+                // If no local candidate worked, try url(...) candidates in order.
+                if (typeface == null)
+                {
+                    foreach (var sourceUrl in ExtractUrlSources(src))
+                    {
+                        if (string.IsNullOrWhiteSpace(sourceUrl))
+                        {
+                            continue;
+                        }
+
+                        Uri uri;
+                        if (!Uri.TryCreate(sourceUrl, UriKind.Absolute, out uri) && descriptor.BaseUri != null)
+                        {
+                            Uri.TryCreate(descriptor.BaseUri, sourceUrl, out uri);
+                        }
+
+                        if (uri == null)
+                        {
+                            continue;
+                        }
+
                         if (uri.Scheme == "http" || uri.Scheme == "https")
                         {
                             var httpClient = HttpClientFactory.GetSharedClient();
@@ -180,7 +208,6 @@ namespace FenBrowser.FenEngine.Rendering
                         }
                         else if (uri.Scheme == "file")
                         {
-                            // Try to load from local file path
                             try
                             {
                                 typeface = SKTypeface.FromFile(uri.LocalPath);
@@ -193,6 +220,11 @@ namespace FenBrowser.FenEngine.Rendering
                         else
                         {
                             FenLogger.Debug($"[FontRegistry] Unsupported scheme '{uri.Scheme}' for font: {descriptor.Family}", LogCategory.Rendering);
+                        }
+
+                        if (typeface != null)
+                        {
+                            break;
                         }
                     }
                 }
@@ -216,9 +248,102 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 FenLogger.Error($"[FontRegistry] Failed to load font {descriptor.Family}: {ex.Message}", LogCategory.Rendering, ex);
             }
+            finally
+            {
+                lock (_lock)
+                {
+                    _loadingTasks.Remove(cacheKey);
+                }
+                NotifyPendingLoadCountChanged();
+            }
 
             tcs.SetResult(null);
             return null;
+        }
+
+        private static IEnumerable<string> ExtractLocalSources(string source)
+        {
+            if (string.IsNullOrWhiteSpace(source))
+            {
+                yield break;
+            }
+
+            var matches = Regex.Matches(
+                source,
+                @"local\s*\(\s*([""']?)([^)""']+)\1\s*\)",
+                RegexOptions.IgnoreCase,
+                TimeSpan.FromMilliseconds(500));
+
+            foreach (Match match in matches)
+            {
+                if (match.Success)
+                {
+                    yield return match.Groups[2].Value.Trim();
+                }
+            }
+        }
+
+        private static IEnumerable<string> ExtractUrlSources(string source)
+        {
+            if (string.IsNullOrWhiteSpace(source))
+            {
+                yield break;
+            }
+
+            var yielded = false;
+            var matches = Regex.Matches(
+                source,
+                @"url\s*\(\s*([""']?)([^)""']+)\1\s*\)",
+                RegexOptions.IgnoreCase,
+                TimeSpan.FromMilliseconds(500));
+
+            foreach (Match match in matches)
+            {
+                if (match.Success)
+                {
+                    yielded = true;
+                    yield return match.Groups[2].Value.Trim();
+                }
+            }
+
+            // Support direct bare URL/path syntax when url(...) wrapper is omitted.
+            if (!yielded)
+            {
+                yield return source.Trim();
+            }
+        }
+
+        private static SKTypeface TryCreateLocalTypeface(string localName, int weight, SKFontStyleSlant style)
+        {
+            if (string.IsNullOrWhiteSpace(localName))
+            {
+                return null;
+            }
+
+            try
+            {
+                var styled = SKTypeface.FromFamilyName(
+                    localName,
+                    (SKFontStyleWeight)weight,
+                    SKFontStyleWidth.Normal,
+                    style);
+                if (styled != null)
+                {
+                    return styled;
+                }
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                return SKTypeface.FromFamilyName(localName);
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         /// <summary>
@@ -371,6 +496,37 @@ namespace FenBrowser.FenEngine.Rendering
                 _fontFaces.Clear();
                 _loadedFonts.Clear();
                 _loadingTasks.Clear();
+            }
+            NotifyPendingLoadCountChanged();
+        }
+
+        private static void NotifyPendingLoadCountChanged()
+        {
+            var handler = PendingLoadCountChanged;
+            if (handler == null)
+            {
+                return;
+            }
+
+            int count;
+            lock (_lock)
+            {
+                count = 0;
+                foreach (var task in _loadingTasks.Values)
+                {
+                    if (task != null && !task.IsCompleted)
+                    {
+                        count++;
+                    }
+                }
+            }
+
+            try
+            {
+                handler(count);
+            }
+            catch
+            {
             }
         }
     }

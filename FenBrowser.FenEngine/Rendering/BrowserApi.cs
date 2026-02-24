@@ -4,9 +4,11 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Text.Json;
 using FenBrowser.Core;
+using FenBrowser.Core.Engine;
 using FenBrowser.Core.Network;
 using FenBrowser.Core.Security;
 using FenBrowser.FenEngine.Security; // Added
@@ -190,9 +192,13 @@ namespace FenBrowser.FenEngine.Rendering
         private readonly CustomHtmlEngine _engine = new CustomHtmlEngine();
         private readonly ResourceManager _resources;
         private readonly NavigationManager _navManager;
+        private readonly NavigationLifecycleTracker _navigationLifecycle = new NavigationLifecycleTracker();
+        private readonly NavigationSubresourceTracker _navigationSubresources = new NavigationSubresourceTracker();
         private readonly FenBrowser.FenEngine.Core.EngineLoop _engineLoop; // Phase 5: Engine Loop
         private readonly InputManager _inputManager = new InputManager();
         private Uri _current;
+        private long _latestNavigationId;
+        private long _activeRenderNavigationId;
         private bool _disposed;
         
         private readonly List<HistoryEntry> _history = new List<HistoryEntry>();
@@ -217,6 +223,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         public event EventHandler<Uri> Navigated;
         public event EventHandler<string> NavigationFailed;
+        public event EventHandler<NavigationLifecycleTransition> NavigationLifecycleChanged;
         public event EventHandler<bool> LoadingChanged;
         public event EventHandler<string> TitleChanged;
         public event EventHandler<object> RepaintReady;
@@ -238,6 +245,7 @@ namespace FenBrowser.FenEngine.Rendering
         public CspPolicy CurrentPolicy { get; private set; }
         public Dictionary<Node, CssComputed> ComputedStyles => _engine.LastComputedStyles;
         public CustomHtmlEngine Engine => _engine;
+        public NavigationLifecycleSnapshot NavigationLifecycleState => _navigationLifecycle.GetSnapshot();
 
         public SKBitmap Favicon { get; private set; }
         public event EventHandler<SKBitmap> FaviconChanged;
@@ -264,6 +272,11 @@ namespace FenBrowser.FenEngine.Rendering
             // Initialize FontResolver for @font-face support
             // This allows Core.Css.CssComputed to use the Engine's FontRegistry
             FenBrowser.Core.Css.CssComputed.FontResolver = FenBrowser.FenEngine.Rendering.FontRegistry.TryResolve;
+
+            // Wire ElementStateManager to CSS pseudo-class state provider
+            // This allows :hover, :focus, :active etc. to query actual element state
+            FenBrowser.Core.Dom.V2.Selectors.StatePseudoClassSelector.StateProvider =
+                (el, pseudo) => FenBrowser.FenEngine.Rendering.ElementStateManager.Instance.MatchesPseudoClassState(el, pseudo);
             
             // Get HTTP/2 and Brotli enabled handler from factory
             var config = NetworkConfiguration.Instance;
@@ -274,14 +287,34 @@ namespace FenBrowser.FenEngine.Rendering
                 handler,
                 (msg, cert, chain, errors) =>
                 {
+                    // Extract Subject Alternative Names from the certificate extension
+                    var sanList = new List<string>();
+                    try
+                    {
+                        var sanExt = cert?.Extensions["2.5.29.17"]; // OID for SAN
+                        if (sanExt != null)
+                        {
+                            // Format: "DNS Name=example.com, DNS Name=www.example.com"
+                            foreach (var part in sanExt.Format(false).Split(','))
+                            {
+                                var trimmed = part.Trim();
+                                var eqIdx = trimmed.IndexOf('=');
+                                if (eqIdx >= 0) sanList.Add(trimmed.Substring(eqIdx + 1).Trim());
+                            }
+                        }
+                    }
+                    catch { }
+
                     var info = new CertificateInfo
                     {
-                        Subject   = cert?.Subject ?? string.Empty,
-                        Issuer    = cert?.Issuer ?? string.Empty,
-                        NotBefore = cert?.NotBefore ?? DateTime.MinValue,
-                        NotAfter  = cert?.NotAfter ?? DateTime.MaxValue,
-                        IsValid   = errors == System.Net.Security.SslPolicyErrors.None,
-                        Thumbprint = cert?.GetCertHashString() ?? string.Empty
+                        Subject                = cert?.Subject ?? string.Empty,
+                        Issuer                 = cert?.Issuer ?? string.Empty,
+                        NotBefore              = cert?.NotBefore ?? DateTime.MinValue,
+                        NotAfter               = cert?.NotAfter ?? DateTime.MaxValue,
+                        IsValid                = errors == System.Net.Security.SslPolicyErrors.None,
+                        Thumbprint             = cert?.GetCertHashString() ?? string.Empty,
+                        PolicyErrors           = errors,
+                        SubjectAlternativeNames = sanList
                     };
 
                     _lastCertificate = info;
@@ -416,6 +449,16 @@ namespace FenBrowser.FenEngine.Rendering
                 catch { }
             };
 
+            // Wire ElementStateManager.OnStateChanged → CSS re-cascade.
+            // Hover/focus/active state changes require re-running the selector cascade so that
+            // rules like  a:hover { color: red }  are applied.  We schedule a single re-cascade
+            // per state-change burst; ScheduleRecascade() ignores overlapping calls.
+            ElementStateManager.Instance.OnStateChanged += _ => _engine.ScheduleRecascade();
+
+            // Wire DOM attribute mutations (class/id/style changes from JS or DOM manipulation)
+            // → CSS re-cascade.  e.g. element.classList.add('active') must reflect in selectors.
+            FenBrowser.Core.Dom.V2.Element.StyleAttributeChanged += () => _engine.ScheduleRecascade();
+
             _engine.DomReady += (s, dom) =>
             {
                 try 
@@ -470,7 +513,7 @@ namespace FenBrowser.FenEngine.Rendering
                 try { FenLogger.Debug(msg, LogCategory.Network); } catch { }
                 try { ConsoleMessage?.Invoke(msg); } catch { }
             };
-            _engine.ScriptFetcher = (u) => 
+            _engine.ScriptFetcher = async (u) => 
             {
                 // DEBUG: Log strict fetcher
                 Console.WriteLine($"[ScriptFetcher] Request: {u}");
@@ -478,7 +521,7 @@ namespace FenBrowser.FenEngine.Rendering
                 if (u.ToString().IndexOf("testharnessreport.js", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     Console.WriteLine("[ScriptFetcher] INJECTING BRIDGE for testharnessreport.js");
-                    return Task.FromResult(@"
+                    return @"
                         console.log('[Bridge] Injected Bridge Loaded');
                         console.log('[Bridge] typeof add_result_callback: ' + typeof window.add_result_callback);
 
@@ -509,14 +552,34 @@ namespace FenBrowser.FenEngine.Rendering
                         if (window.add_completion_callback) {
                             window.add_completion_callback(window.completion_callback);
                         }
-                    ");
+                    ";
 
                 }
 
                 u = RemapWptUri(u);
-                return _resources.FetchTextAsync(u, referer: _current, accept: null, secFetchDest: "script");
+                var trackedNavigationId = Interlocked.Read(ref _activeRenderNavigationId);
+                if (trackedNavigationId > 0)
+                {
+                    _navigationSubresources.MarkLoadStarted(trackedNavigationId);
+                }
+
+                try
+                {
+                    return await _resources.FetchTextAsync(u, referer: _current, accept: null, secFetchDest: "script").ConfigureAwait(false);
+                }
+                finally
+                {
+                    if (trackedNavigationId > 0)
+                    {
+                        _navigationSubresources.MarkLoadCompleted(trackedNavigationId);
+                    }
+                }
             };
             _navManager = new NavigationManager(_resources);
+            _navigationLifecycle.Transitioned += transition =>
+            {
+                try { NavigationLifecycleChanged?.Invoke(this, transition); } catch { }
+            };
             
             ImageLoader.FetchBytesAsync = async (uri) =>
             {
@@ -682,10 +745,20 @@ namespace FenBrowser.FenEngine.Rendering
 
         private async Task<bool> NavigateAsync(string url, NavigationRequestKind requestKind)
         {
+            long navigationId = 0;
             try { FenLogger.Debug($"[BrowserHost] NavigateAsync called for: '{url}'", LogCategory.Navigation); } catch {}
 
             if (_disposed) return false;
                 if (string.IsNullOrWhiteSpace(url)) return false;
+
+                navigationId = _navigationLifecycle.BeginNavigation(url, requestKind == NavigationRequestKind.UserInput);
+                var previousNavigationId = Interlocked.Exchange(ref _latestNavigationId, navigationId);
+                if (previousNavigationId > 0 && previousNavigationId != navigationId)
+                {
+                    _navigationSubresources.AbandonNavigation(previousNavigationId);
+                }
+                _navigationSubresources.ResetNavigation(navigationId);
+                _navigationLifecycle.MarkFetching(navigationId, url);
 
                 // Log raw navigation input for diagnostics
                 try { FenLogger.Info($"[BrowserHost] Nav raw='{url}'", LogCategory.Navigation); } catch {}
@@ -710,10 +783,37 @@ namespace FenBrowser.FenEngine.Rendering
                     sb.Append("</ul></body></html>");
 
                     _current = new Uri("fen://history");
+                    _navigationLifecycle.MarkResponseReceived(
+                        navigationId,
+                        "Synthetic",
+                        _current.AbsoluteUri,
+                        isRedirect: false,
+                        redirectCount: 0,
+                        detail: "source=history-synthetic");
+                    _navigationLifecycle.MarkCommitting(navigationId, _current.AbsoluteUri, "synthetic-history");
                     
                     // Render the generated HTML
-                    var elem = await _engine.RenderAsync(sb.ToString(), _current, u => _resources.FetchCssAsync(u), u => _resources.FetchImageAsync(u), u => { _ = NavigateAsync(u.AbsoluteUri); });
+                    var trackedCssFetcher = CreateTrackedCssFetcher(navigationId);
+                    var trackedImageFetcher = CreateTrackedImageFetcher(navigationId);
+                    SetActiveRenderNavigation(navigationId);
+                    object elem = null;
+                    try
+                    {
+                        elem = await _engine.RenderAsync(sb.ToString(), _current, trackedCssFetcher, trackedImageFetcher, u => { _ = NavigateAsync(u.AbsoluteUri); });
+                    }
+                    finally
+                    {
+                        ClearActiveRenderNavigation(navigationId);
+                    }
+                    if (!IsLatestNavigation(navigationId))
+                    {
+                        _navigationSubresources.AbandonNavigation(navigationId);
+                        _navigationLifecycle.MarkCancelled(navigationId, "superseded-by-new-navigation");
+                        return false;
+                    }
                     try { RepaintReady?.Invoke(this, elem); } catch { }
+                    _navigationLifecycle.MarkInteractive(navigationId, "history-dom-ready");
+                    await MarkNavigationCompleteWhenSettledAsync(navigationId, "history-document-complete").ConfigureAwait(false);
 
                     // Add to history if not navigating backwards/forwards
                     if (!_isNavigatingHistory)
@@ -761,6 +861,7 @@ namespace FenBrowser.FenEngine.Rendering
                         url = parsed.AbsoluteUri; // canonicalize
                     }
 
+                _navigationLifecycle.MarkFetching(navigationId, url);
                 Console.WriteLine($"[NavigateAsync] Start: {url}");
 
                 _resources.ResetBlockedCount();
@@ -773,6 +874,12 @@ namespace FenBrowser.FenEngine.Rendering
                 for (int attempt = 1; attempt <= maxTransientNavAttempts; attempt++)
                 {
                     result = await _navManager.NavigateAsync(url, requestKind);
+                    if (!IsLatestNavigation(navigationId))
+                    {
+                        _navigationSubresources.AbandonNavigation(navigationId);
+                        _navigationLifecycle.MarkCancelled(navigationId, "superseded-by-new-navigation");
+                        return false;
+                    }
                     if (!ShouldRetryTopLevelNavigation(result, url, attempt, maxTransientNavAttempts))
                         break;
 
@@ -782,20 +889,27 @@ namespace FenBrowser.FenEngine.Rendering
                         LogCategory.Network);
                     await Task.Delay(retryDelayMs);
                 }
+
+                // Populate certificate info captured by the TLS callback into the result
+                // so the error page and UI can display accurate cert details.
+                if (result != null && _lastCertificate != null)
+                {
+                    result.Certificate = _lastCertificate;
+                    result.SslErrors   = _lastSslErrors;
+                }
+
+                _navigationLifecycle.MarkResponseReceived(
+                    navigationId,
+                    result?.Status.ToString() ?? "Unknown",
+                    result?.FinalUri?.AbsoluteUri ?? url,
+                    isRedirect: result?.Redirected == true,
+                    redirectCount: result != null ? result.RedirectCount : 0,
+                    detail: BuildResponseLifecycleDetail(result));
                 
                 // Parse CSP
                 if (result.Headers != null && result.Headers.TryGetValues("Content-Security-Policy", out var cspValues))
                 {
-                    var cspHeader = string.Join(";", cspValues); // Multiple headers are concatenated with comma usually, but CSP allows multiple policies. 
-                    // For simplicity, we parse the first or combined? 
-                    // Standard says multiple policies are enforced intersection. 
-                    // Our parser handles one string. Let's take the first one dependent or join with semicolon? 
-                    // CspPolicy.Parse expects semicolon separated directives. 
-                    // Use comma if multiple headers? 
-                    // Let's just use the first one for now or join.
-                    // Actually, if multiple headers, they restrict further. 
-                    // CspPolicy doesn't support multiple separate policies yet.
-                    // We will parse the combined string.
+                    // Multiple CSP headers are joined here until multi-policy intersection support is added.
                     CurrentPolicy = CspPolicy.Parse(string.Join(";", cspValues));
                     _resources.ActivePolicy = CurrentPolicy;
                     _engine.ActivePolicy = CurrentPolicy; // Set on engine for inline script/style CSP checks
@@ -851,7 +965,7 @@ pre {{
                             SecurityState = SecurityState.NotSecure;
                             break;
                         case FetchStatus.SslError:
-                            htmlToRender = ErrorPageRenderer.RenderSslError(url, result.ErrorDetail);
+                            htmlToRender = ErrorPageRenderer.RenderSslError(url, result.ErrorDetail, result.Certificate);
                             SecurityState = SecurityState.Warning;
                             break;
                         case FetchStatus.Timeout:
@@ -887,6 +1001,8 @@ pre {{
 
                 // FIX: Set _current BEFORE rendering so UI has access to correct BaseUrl during render events
                 _current = uri;
+                var commitSource = result.Status == FetchStatus.Success ? "network-document" : "error-document";
+                _navigationLifecycle.MarkCommitting(navigationId, _current.AbsoluteUri, commitSource);
                 try { FenLogger.Debug($"[BrowserApi] _current updated early to: {_current?.AbsoluteUri}", LogCategory.General); } catch {}
                 
                 // Dump raw HTML source for debugging (CURL level)
@@ -899,7 +1015,24 @@ pre {{
                     }
                 } catch { }
 
-                var elem = await _engine.RenderAsync(htmlToRender, uri, u => _resources.FetchCssAsync(u), u => _resources.FetchImageAsync(u), u => { _ = NavigateAsync(u.AbsoluteUri); });
+                var trackedCssFetcher = CreateTrackedCssFetcher(navigationId);
+                var trackedImageFetcher = CreateTrackedImageFetcher(navigationId);
+                SetActiveRenderNavigation(navigationId);
+                object elem = null;
+                try
+                {
+                    elem = await _engine.RenderAsync(htmlToRender, uri, trackedCssFetcher, trackedImageFetcher, u => { _ = NavigateAsync(u.AbsoluteUri); });
+                }
+                finally
+                {
+                    ClearActiveRenderNavigation(navigationId);
+                }
+                if (!IsLatestNavigation(navigationId))
+                {
+                    _navigationSubresources.AbandonNavigation(navigationId);
+                    _navigationLifecycle.MarkCancelled(navigationId, "superseded-by-new-navigation");
+                    return false;
+                }
 
                 // Dump Engine Source (Processed DOM level)
                 try
@@ -917,22 +1050,10 @@ pre {{
                 }
                 catch { }
                 
-                // _current already set above
-                
-                // CRITICAL: WPT testharness.js waits for window.load event to start tests.
-                // Since our engine might not fire it automatically in all cases, force it here.
-                try { 
-                    FenLogger.Debug("[BrowserApi] Force-dispatching 'load' event for WPT...", LogCategory.JavaScript);
-                    await _engine.ExecuteScriptAsync("window.dispatchEvent(new Event('load'));");
-                } catch (Exception ex) { FenLogger.Error($"[BrowserApi] Failed to dispatch load: {ex.Message}", LogCategory.JavaScript); }
-
-                // Debug: Log that _current is now set
-                try { FenLogger.Debug($"[BrowserApi] RenderAsync finished. Firing RepaintReady...", LogCategory.General); } catch {}
-                
-                // Debug: Log that _current is now set
-                try { FenLogger.Debug($"[BrowserApi] _current now set to: {_current?.AbsoluteUri}. Firing RepaintReady...", LogCategory.General); } catch {}
+                try { FenLogger.Debug($"[BrowserApi] RenderAsync finished for {_current?.AbsoluteUri}. Firing RepaintReady...", LogCategory.General); } catch {}
                 
                 try { RepaintReady?.Invoke(this, elem); } catch { }
+                _navigationLifecycle.MarkInteractive(navigationId, BuildInteractiveLifecycleDetail(result));
 
                 // Dump Rendered Text for side-by-side comparison (Phase 11)
                 try
@@ -952,26 +1073,6 @@ pre {{
                 }
                 catch { }
 
-                // FIX: Force re-layout after delay to catch async JS DOM updates (Google blank screen fix)
-                // Increased delay to 1500ms to allow CSS stylesheets to fully load and settle,
-                // reducing visible layout jitter from premature re-renders.
-                Task.Run(async () => 
-                {
-                    try
-                    {
-                        await Task.Delay(1500);
-                        if (_disposed) return;
-
-                        var dom = _engine.GetActiveDom();
-                        if (dom != null) RepaintReady?.Invoke(this, dom);
-                    }
-                    catch (Exception ex)
-                    {
-                        // Prevent background crash
-                        try { FenLogger.Error($"[BrowserHost] Delayed repaint error: {ex.Message}", LogCategory.Rendering); } catch {}
-                    }
-                });
-
                 if (!_isNavigatingHistory)
                 {
                     if (_historyIndex < _history.Count - 1)
@@ -983,6 +1084,7 @@ pre {{
                 }
 
                 try { Navigated?.Invoke(this, uri); } catch { }
+                await MarkNavigationCompleteWhenSettledAsync(navigationId, "document-complete").ConfigureAwait(false);
                 
                 // Fetch Favicon
                 _ = FetchFaviconAsync(uri);
@@ -994,6 +1096,11 @@ pre {{
                 try { System.Diagnostics.Debug.WriteLine("[NavigateAsync] Exception: " + ex.ToString()); } catch { }
                 var details = ex.ToString();
                 if (details != null && details.Length > 2000) details = details.Substring(0, 2000) + "...";
+                if (navigationId > 0)
+                {
+                    _navigationSubresources.AbandonNavigation(navigationId);
+                    _navigationLifecycle.MarkFailed(navigationId, details);
+                }
                 RaiseNavigationFailed(details);
                 return false;
             }
@@ -1210,6 +1317,193 @@ pre {{
 
         // OLD CaptureScreenshotAsync removed - new one with string return is in NEW WEBDRIVER METHODS section
 
+        private bool IsLatestNavigation(long navigationId)
+        {
+            return Interlocked.Read(ref _latestNavigationId) == navigationId;
+        }
+
+        private static string BuildResponseLifecycleDetail(FetchResult result)
+        {
+            if (result == null)
+            {
+                return "response=missing";
+            }
+
+            var statusCode = result.StatusCode > 0 ? result.StatusCode.ToString() : "n/a";
+            var redirectCount = Math.Max(0, result.RedirectCount);
+            var finalUri = result.FinalUri?.AbsoluteUri ?? "about:blank";
+            var error = string.IsNullOrWhiteSpace(result.ErrorDetail) ? "none" : result.ErrorDetail;
+            if (error.Length > 160)
+            {
+                error = error.Substring(0, 160) + "...";
+            }
+
+            return $"status={result.Status};statusCode={statusCode};redirects={redirectCount};final={finalUri};error={error}";
+        }
+
+        private string BuildInteractiveLifecycleDetail(FetchResult result)
+        {
+            var telemetry = _engine.LastRenderTelemetry;
+            if (telemetry == null)
+            {
+                return "interactive=dom-rendered;telemetry=unavailable";
+            }
+
+            return
+                "interactive=dom-rendered;" +
+                $"tokenizing={telemetry.TokenizingMs}ms;" +
+                $"parsing={telemetry.ParsingMs}ms;" +
+                $"parse={telemetry.TokenizingAndParsingMs}ms;" +
+                $"tokens={telemetry.ParseTokenCount};" +
+                $"tokenizeCheckpoints={telemetry.TokenizingCheckpointCount};" +
+                $"parseCheckpoints={telemetry.ParsingCheckpointCount};" +
+                $"domParseCheckpoints={telemetry.ParsingDocumentCheckpointCount};" +
+                $"docReadyToken={telemetry.DocumentReadyTokenCount};" +
+                $"parseRepaints={telemetry.ParseIncrementalRepaintCount};" +
+                $"streamPreparse={telemetry.StreamingPreparseMs}ms;" +
+                $"streamCheckpoints={telemetry.StreamingPreparseCheckpointCount};" +
+                $"streamRepaints={telemetry.StreamingPreparseRepaintCount};" +
+                $"interleaved={(telemetry.InterleavedParseUsed ? 1 : 0)};" +
+                $"interleavedBatch={telemetry.InterleavedTokenBatchSize};" +
+                $"interleavedChunks={telemetry.InterleavedBatchCount};" +
+                $"interleavedFallback={(telemetry.InterleavedFallbackUsed ? 1 : 0)};" +
+                $"css={telemetry.CssAndStyleMs}ms;" +
+                $"visual1={telemetry.InitialVisualTreeMs}ms;" +
+                $"script={telemetry.ScriptExecutionMs}ms;" +
+                $"visual2={telemetry.PostScriptVisualTreeMs}ms;" +
+                $"total={telemetry.TotalRenderMs}ms;" +
+                $"js={(telemetry.JavaScriptExecuted ? 1 : 0)};" +
+                $"redirects={Math.Max(0, result?.RedirectCount ?? 0)}";
+        }
+
+        private Func<Uri, Task<string>> CreateTrackedCssFetcher(long navigationId)
+        {
+            return async uri =>
+            {
+                _navigationSubresources.MarkLoadStarted(navigationId);
+                try
+                {
+                    return await _resources.FetchCssAsync(uri).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _navigationSubresources.MarkLoadCompleted(navigationId);
+                }
+            };
+        }
+
+        private Func<Uri, Task<System.IO.Stream>> CreateTrackedImageFetcher(long navigationId)
+        {
+            return async uri =>
+            {
+                _navigationSubresources.MarkLoadStarted(navigationId);
+                try
+                {
+                    return await _resources.FetchImageAsync(uri).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _navigationSubresources.MarkLoadCompleted(navigationId);
+                }
+            };
+        }
+
+        private void SetActiveRenderNavigation(long navigationId)
+        {
+            Interlocked.Exchange(ref _activeRenderNavigationId, navigationId);
+        }
+
+        private void ClearActiveRenderNavigation(long navigationId)
+        {
+            if (Interlocked.Read(ref _activeRenderNavigationId) == navigationId)
+            {
+                Interlocked.Exchange(ref _activeRenderNavigationId, 0);
+            }
+        }
+
+        private async Task MarkNavigationCompleteWhenSettledAsync(long navigationId, string baseDetail)
+        {
+            if (!IsLatestNavigation(navigationId))
+            {
+                _navigationSubresources.AbandonNavigation(navigationId);
+                _navigationLifecycle.MarkCancelled(navigationId, "superseded-by-new-navigation");
+                return;
+            }
+
+            var settleDetail = await WaitForSubresourceSettleDetailAsync(navigationId).ConfigureAwait(false);
+            if (!IsLatestNavigation(navigationId))
+            {
+                _navigationSubresources.AbandonNavigation(navigationId);
+                _navigationLifecycle.MarkCancelled(navigationId, "superseded-by-new-navigation");
+                return;
+            }
+
+            var detail = string.IsNullOrWhiteSpace(baseDetail)
+                ? settleDetail
+                : $"{baseDetail};{settleDetail}";
+            _navigationLifecycle.MarkComplete(navigationId, detail);
+            _navigationSubresources.AbandonNavigation(navigationId);
+        }
+
+        private async Task<string> WaitForSubresourceSettleDetailAsync(long navigationId)
+        {
+            const int settleTimeoutMs = 1500;
+            const string settledState = "subresources=settled;renderSubresourcesPending=0;imagesPending=0;fontsPending=0;tasksPending=0;microtasksPending=0";
+            var loop = FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance;
+
+            bool IsSettledNow()
+            {
+                return _navigationSubresources.GetPendingCount(navigationId) == 0 &&
+                       ImageLoader.PendingLoadCount == 0 &&
+                       FontRegistry.PendingLoadCount == 0 &&
+                       !loop.HasPendingTasks &&
+                       !loop.HasPendingMicrotasks;
+            }
+
+            if (IsSettledNow())
+            {
+                return settledState;
+            }
+
+            var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            void PendingLoadsHandler(int _) { if (IsSettledNow()) completion.TrySetResult(true); }
+            void PendingFontsHandler(int _) { if (IsSettledNow()) completion.TrySetResult(true); }
+            void PendingRenderSubresourcesHandler(long navId, int _) { if (navId == navigationId && IsSettledNow()) completion.TrySetResult(true); }
+
+            ImageLoader.PendingLoadCountChanged += PendingLoadsHandler;
+            FontRegistry.PendingLoadCountChanged += PendingFontsHandler;
+            _navigationSubresources.PendingCountChanged += PendingRenderSubresourcesHandler;
+            try
+            {
+                if (!IsSettledNow())
+                {
+                    var timeoutTask = Task.Delay(settleTimeoutMs);
+                    await Task.WhenAny(completion.Task, timeoutTask).ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                ImageLoader.PendingLoadCountChanged -= PendingLoadsHandler;
+                FontRegistry.PendingLoadCountChanged -= PendingFontsHandler;
+                _navigationSubresources.PendingCountChanged -= PendingRenderSubresourcesHandler;
+            }
+
+            if (IsSettledNow())
+            {
+                return settledState;
+            }
+
+            return
+                "subresources=partial;" +
+                $"renderSubresourcesPending={_navigationSubresources.GetPendingCount(navigationId)};" +
+                $"imagesPending={ImageLoader.PendingLoadCount};" +
+                $"fontsPending={FontRegistry.PendingLoadCount};" +
+                $"tasksPending={(loop.HasPendingTasks ? 1 : 0)};" +
+                $"microtasksPending={(loop.HasPendingMicrotasks ? 1 : 0)};" +
+                $"timeoutMs={settleTimeoutMs};" +
+                $"navId={navigationId}";
+        }
+
         private void RaiseNavigationFailed(string msg) => NavigationFailed?.Invoke(this, msg);
 
         public void HighlightElement(Element element)
@@ -1334,8 +1628,13 @@ pre {{
 
         public void OnMouseMove(float x, float y)
         {
-             // TODO: Throttle mousemove?
-             QueueInputTask("mousemove", x, y, 0);
+            // Throttle to ~60 fps (16 ms) to avoid flooding the input queue on high-frequency devices
+            long now = System.Diagnostics.Stopwatch.GetTimestamp();
+            long ticksPer16ms = System.Diagnostics.Stopwatch.Frequency / 60;
+            if (now - _lastMouseMoveTick < ticksPer16ms)
+                return;
+            _lastMouseMoveTick = now;
+            QueueInputTask("mousemove", x, y, 0);
         }
 
         private static bool ShouldRetryTopLevelNavigation(FetchResult result, string url, int attempt, int maxAttempts)
@@ -1722,6 +2021,9 @@ pre {{
             
             return rawResult;
         }
+
+        // Mousemove throttle: skip events closer than 16 ms (~60 fps)
+        private long _lastMouseMoveTick = 0;
 
         // Storage for async script callback result
         private object _asyncScriptResult = null;
@@ -2419,6 +2721,40 @@ pre {{
                 }
             }
             
+            // Handle summary clicks — toggle parent details[open]
+            if (tag == "summary")
+            {
+                var detailsEl = element.ParentElement;
+                while (detailsEl != null &&
+                       !string.Equals(detailsEl.NodeName, "details", StringComparison.OrdinalIgnoreCase))
+                    detailsEl = detailsEl.ParentElement;
+
+                if (detailsEl != null && allowDefaultActivation)
+                {
+                    bool nowOpen = !detailsEl.HasAttribute("open");
+                    if (nowOpen)
+                        detailsEl.SetAttribute("open", "");
+                    else
+                        detailsEl.RemoveAttribute("open");
+
+                    // Directly patch ComputedStyle.Display on non-summary children so the next
+                    // RecordFrame sees the change without waiting for a full re-cascade.
+                    var styles = _engine.LastComputedStyles;
+                    if (styles != null)
+                    {
+                        foreach (var child in detailsEl.ChildNodes.OfType<Element>())
+                        {
+                            if (string.Equals(child.NodeName, "summary", StringComparison.OrdinalIgnoreCase))
+                                continue;
+                            if (styles.TryGetValue(child, out var cs) && cs != null)
+                                cs.Display = nowOpen ? "block" : "none";
+                        }
+                    }
+
+                    try { RepaintReady?.Invoke(this, _engine.GetActiveDom()); } catch { }
+                }
+                return;
+            }
             // Handle anchor clicks
             if (tag == "a")
             {
@@ -3194,19 +3530,26 @@ pre {{
                     else if (delta == 1) await GoForwardAsync();
                     else
                     {
-                        // TODO: Implement multi-step logic correctly regarding popped states
-                         _historyIndex = targetIndex;
-                         var entry = _history[_historyIndex];
-                         if (entry.IsPushState)
-                         {
-                             _current = entry.Url;
-                             _engine.NotifyPopState(entry.State);
-                             try { Navigated?.Invoke(this, _current); } catch { }
-                         }
-                         else
-                         {
-                            await NavigateAsync(_history[_historyIndex].Url.AbsoluteUri);
-                         }
+                        // Walk step-by-step through intermediate history entries,
+                        // firing popstate for pushState entries and navigating for real entries.
+                        int step = delta > 0 ? 1 : -1;
+                        while (_historyIndex != targetIndex)
+                        {
+                            _historyIndex += step;
+                            var entry = _history[_historyIndex];
+                            if (entry.IsPushState)
+                            {
+                                _current = entry.Url;
+                                _engine.NotifyPopState(entry.State);
+                                try { Navigated?.Invoke(this, _current); } catch { }
+                            }
+                            else
+                            {
+                                await NavigateAsync(entry.Url.AbsoluteUri);
+                                // After a real navigation, stop traversing — the page reloaded
+                                break;
+                            }
+                        }
                     }
                 }
             });

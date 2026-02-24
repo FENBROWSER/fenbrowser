@@ -13,6 +13,7 @@ dir, hr, menu, pre { display: block; unicode-bidi: embed }
 
 li              { display: list-item }
 head            { display: none }
+script, style, link, meta, title, noscript { display: none }
 table           { display: table }
 tr              { display: table-row }
 thead           { display: table-header-group }
@@ -78,3 +79,25 @@ hgroup, main, nav, section { display: block; }
 mark { background: yellow; color: black; }
 template { display: none; }
 [hidden] { display: none !important; }
+
+/* dialog element */
+dialog:not([open]) { display: none; }
+dialog[open] { display: block; background: white; border: solid; padding: 1em; }
+dialog[open][data-top-layer="modal"] {
+    position: fixed;
+    inset: 0;
+    width: fit-content;
+    height: fit-content;
+    margin: auto;
+    z-index: 2147483647;
+}
+
+/* details / summary — collapsible disclosure widget */
+details { display: block; }
+summary { display: list-item; cursor: pointer; }
+details > *:not(summary) { display: none; }
+details[open] > *:not(summary) { display: revert; }
+
+/* picture / source — only img is rendered; source elements are hidden */
+picture { display: inline; }
+source  { display: none; }
