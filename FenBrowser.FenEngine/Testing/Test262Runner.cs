@@ -235,8 +235,7 @@ namespace FenBrowser.FenEngine.Testing
                 // In the future for perf we might reuse it but clean the global scope
                 var runtime = new FenBrowser.FenEngine.Core.FenRuntime();
                 // Suppress JS console output during benchmark runs
-                // Suppress JS console output during benchmark runs
-                // runtime.OnConsoleMessage = (msg) => Console.WriteLine($"[JS-CONSOLE] {msg}");
+                runtime.OnConsoleMessage = (msg) => Console.WriteLine($"[JS-CONSOLE] {msg}");
 
                 if (isModuleGoal &&
                     metadata.Negative &&
