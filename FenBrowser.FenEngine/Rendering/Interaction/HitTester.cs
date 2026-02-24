@@ -189,6 +189,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
                         bool isFocusable = isClickable || tagLow == "textarea" || tagLow == "select";
                         bool isEditable = tagLow == "input" || tagLow == "textarea";
 
+                        string imageSrc = tagLow == "img" ? element.GetAttribute("src") : null;
                         result = new global::FenBrowser.FenEngine.Interaction.HitTestResult(
                             TagName: tagLow ?? "",
                             Href: href,
@@ -198,7 +199,8 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
                             IsEditable: isEditable,
                             ElementId: elementId,
                             NativeElement: element,
-                            BoundingBox: node.Bounds
+                            BoundingBox: node.Bounds,
+                            ImageSrc: imageSrc
                         );
                         return true;
                     }

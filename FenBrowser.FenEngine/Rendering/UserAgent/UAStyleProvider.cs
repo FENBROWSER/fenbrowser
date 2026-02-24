@@ -30,16 +30,9 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
             if (tag == "HTML" || tag == "BODY")
             {
                 if (style == null) style = new CssComputed();
-                
-                // Root elements fill viewport (critical for modern layouts)
-                if (!style.Height.HasValue && !style.HeightPercent.HasValue)
-                {
-                    style.HeightPercent = 100;
-                }
-                // FIXED: Do not force Flexbox on Root/Body.
-                if (string.IsNullOrEmpty(style.Display)) style.Display = "block";
 
-                // DEFENSIVE: Force LTR and Left Align to prevent global shifting
+                if (string.IsNullOrEmpty(style.Display)) style.Display = "block";
+                
                 if (string.IsNullOrEmpty(style.Direction)) style.Direction = "ltr";
                 if (!style.TextAlign.HasValue) style.TextAlign = SKTextAlign.Left;
             }
@@ -47,11 +40,11 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
             if (tag == "BODY")
             {
                 if (style == null) style = new CssComputed();
-                // Reset default margin to 0 for debugging/cleanliness (Modern browsers use 8px, but 0 helps verify layout)
+                // Browser UA default.
                 if (style.Margin.Left == 0 && style.Margin.Top == 0 && 
                     style.Margin.Right == 0 && style.Margin.Bottom == 0)
                 {
-                    style.Margin = new Thickness(0); 
+                    style.Margin = new Thickness(8);
                 }
             }
 
@@ -194,37 +187,6 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
                 {
                     style.Margin = new Thickness(0, 16, 0, 16); // 1em default
                 }
-            }
-
-            // Generic "Sign in" CTA (commonly used on Google header)
-            if (tag == "A" && string.Equals(node.GetAttribute("aria-label"), "Sign in", StringComparison.OrdinalIgnoreCase))
-            {
-                style ??= new CssComputed();
-
-                if (string.IsNullOrEmpty(style.Display) || style.Display == "none")
-                    style.Display = "inline-block";
-
-                if (!style.BackgroundColor.HasValue)
-                    style.BackgroundColor = new SKColor(0x1a, 0x73, 0xe8); // Google blue
-                if (!style.ForegroundColor.HasValue)
-                    style.ForegroundColor = SKColors.White;
-
-                // Padding: top/bottom = 9px, left/right = 15px (approx. Google sign-in button)
-                if (style.Padding.Left == 0 && style.Padding.Right == 0 && style.Padding.Top == 0 && style.Padding.Bottom == 0)
-                    style.Padding = new Thickness(15, 9, 15, 9);
-
-                // Rounded corners
-                var br = style.BorderRadius;
-                bool radiusUnset = br.Equals(default(CssCornerRadius)) ||
-                                   (br.TopLeft.Value == 0 && br.TopRight.Value == 0 &&
-                                    br.BottomLeft.Value == 0 && br.BottomRight.Value == 0);
-                if (radiusUnset)
-                {
-                    style.BorderRadius = new CssCornerRadius(4, 4, 4, 4);
-                }
-
-                if (!style.FontWeight.HasValue) style.FontWeight = 500;
-                if (!style.TextAlign.HasValue) style.TextAlign = SKTextAlign.Center;
             }
 
             // Lists

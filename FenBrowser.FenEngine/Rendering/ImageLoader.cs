@@ -113,6 +113,9 @@ namespace FenBrowser.FenEngine.Rendering
         // Callback to request a full re-layout when image dimensions are resolved
         public static Action RequestRelayout { get; set; }
 
+        // Emits authoritative pending network-image load count changes.
+        public static event Action<int> PendingLoadCountChanged;
+
         // ========== Memory Management Properties ==========
         
         /// <summary>
@@ -124,6 +127,20 @@ namespace FenBrowser.FenEngine.Rendering
         /// Number of images currently cached
         /// </summary>
         public static int CacheCount => _memoryCache.Count + _legacyCache.Count;
+
+        /// <summary>
+        /// Number of in-flight image fetch/decode operations.
+        /// </summary>
+        public static int PendingLoadCount
+        {
+            get
+            {
+                lock (_pendingLock)
+                {
+                    return _pendingLoads.Count;
+                }
+            }
+        }
         
         /// <summary>
         /// Number of images registered for lazy loading
@@ -178,7 +195,10 @@ namespace FenBrowser.FenEngine.Rendering
                 if (expandedViewport.IntersectsWith(kvp.Value.ElementBounds))
                 {
                     kvp.Value.LoadStarted = true;
-                    LoadImageAsync(kvp.Key, isLazy: true);
+                    if (TryRegisterPendingLoad(kvp.Key))
+                    {
+                        LoadImageAsync(kvp.Key, isLazy: true);
+                    }
                 }
             }
         }
@@ -201,6 +221,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 _pendingLoads.Clear();
             }
+            NotifyPendingLoadCountChanged();
         }
 
         // ========== Memory Management API ==========
@@ -561,14 +582,10 @@ namespace FenBrowser.FenEngine.Rendering
 
             // Either not lazy, or in viewport - load immediately
             FenLogger.Debug($"[ImageLoader] Queueing load for: {url}", LogCategory.Rendering);
-            lock (_pendingLock)
+            if (!TryRegisterPendingLoad(url))
             {
-                if (_pendingLoads.Contains(url)) 
-                {
-                     FenLogger.Debug($"[ImageLoader] Already pending: {url}", LogCategory.Rendering);
-                    return null; // Already loading
-                }
-                _pendingLoads.Add(url);
+                FenLogger.Debug($"[ImageLoader] Already pending: {url}", LogCategory.Rendering);
+                return null; // Already loading
             }
             
             FenLogger.Debug($"[ImageLoader] Starting LoadImageAsync: {url}", LogCategory.Rendering);
@@ -767,12 +784,6 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                     EvictIfNeeded();
                     
-                    // Remove from pending
-                    lock (_pendingLock)
-                    {
-                        _pendingLoads.Remove(url);
-                    }
-                    
                     // Remove from lazy registry if present
                     _lazyRegistry.TryRemove(url, out _);
                     
@@ -788,6 +799,79 @@ namespace FenBrowser.FenEngine.Rendering
             catch (Exception ex)
             {
                 FenLogger.Error($"[ImageLoader] Error loading {url}: {ex.Message}", LogCategory.Rendering);
+            }
+            finally
+            {
+                CompletePendingLoad(url);
+            }
+        }
+
+        private static bool TryRegisterPendingLoad(string url)
+        {
+            if (string.IsNullOrEmpty(url))
+            {
+                return false;
+            }
+
+            var registered = false;
+            lock (_pendingLock)
+            {
+                if (_pendingLoads.Contains(url))
+                {
+                    return false;
+                }
+
+                _pendingLoads.Add(url);
+                registered = true;
+            }
+
+            if (registered)
+            {
+                NotifyPendingLoadCountChanged();
+            }
+
+            return registered;
+        }
+
+        private static void CompletePendingLoad(string url)
+        {
+            if (string.IsNullOrEmpty(url))
+            {
+                return;
+            }
+
+            var changed = false;
+            lock (_pendingLock)
+            {
+                changed = _pendingLoads.Remove(url);
+            }
+
+            if (changed)
+            {
+                NotifyPendingLoadCountChanged();
+            }
+        }
+
+        private static void NotifyPendingLoadCountChanged()
+        {
+            var handler = PendingLoadCountChanged;
+            if (handler == null)
+            {
+                return;
+            }
+
+            int count;
+            lock (_pendingLock)
+            {
+                count = _pendingLoads.Count;
+            }
+
+            try
+            {
+                handler(count);
+            }
+            catch
+            {
             }
         }
 

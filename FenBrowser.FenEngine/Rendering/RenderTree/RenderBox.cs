@@ -127,7 +127,11 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (isFlex)
             {
-                contentHeight = LayoutFlexChildren(contentWidth);
+                double knownContentHeight = Style.Height.HasValue
+                    ? Style.Height.Value - (Style.Padding.Top + Style.Padding.Bottom + Style.BorderThickness.Top + Style.BorderThickness.Bottom)
+                    : double.PositiveInfinity;
+                if (knownContentHeight < 0) knownContentHeight = 0;
+                contentHeight = LayoutFlexChildren(contentWidth, knownContentHeight);
             }
             else
             {
@@ -228,7 +232,11 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     double resolvedContentWidth = targetWidth - padding.Left - padding.Right - border.Left - border.Right;
                     if (resolvedContentWidth < 0) resolvedContentWidth = 0;
-                    LayoutFlexChildren(resolvedContentWidth);
+                    double knownContentHeight2 = Style.Height.HasValue
+                        ? Style.Height.Value - (Style.Padding.Top + Style.Padding.Bottom + Style.BorderThickness.Top + Style.BorderThickness.Bottom)
+                        : double.PositiveInfinity;
+                    if (knownContentHeight2 < 0) knownContentHeight2 = 0;
+                    LayoutFlexChildren(resolvedContentWidth, knownContentHeight2);
                 }
             }
 
@@ -314,7 +322,7 @@ namespace FenBrowser.FenEngine.Rendering
             return (currentY + currentRowHeight) - startY;
         }
 
-        private double LayoutFlexChildren(double contentWidth)
+        private double LayoutFlexChildren(double contentWidth, double contentHeight = double.PositiveInfinity)
         {
             // Basic Flexbox Implementation
             var dir = Style.FlexDirection?.ToLowerInvariant() ?? "row";
@@ -399,13 +407,13 @@ namespace FenBrowser.FenEngine.Rendering
                     totalGrow += child.Style?.FlexGrow ?? 0;
                 }
 
-                // 2. Apply Flex Grow
-                // Only apply if we have a finite constraint on the main axis
-                double constraint = isRow ? contentWidth : double.PositiveInfinity; // TODO: Pass contentHeight for column
+                // 2. Apply Flex Grow / Flex Shrink
+                double constraint = isRow ? contentWidth : contentHeight;
                 double freeSpace = constraint - lineMainSize;
 
                 if (freeSpace > 0 && totalGrow > 0 && !double.IsInfinity(freeSpace))
                 {
+                    // Flex Grow: distribute extra space proportionally to flex-grow values
                     foreach (var child in line)
                     {
                         double grow = child.Style?.FlexGrow ?? 0;
@@ -415,25 +423,63 @@ namespace FenBrowser.FenEngine.Rendering
                             if (isRow)
                             {
                                 double newWidth = child.Bounds.Width + extra;
-                                
-                                // Override width style to force layout to the new flex width
                                 var oldWidth = child.Style.Width;
                                 child.Style.Width = newWidth;
-
-                                // Re-layout with fixed width
                                 child.Layout(new SKSize((float)newWidth, float.PositiveInfinity));
-
-                                // Restore width style
                                 child.Style.Width = oldWidth;
                             }
                             else
                             {
-                                // For column, we would adjust height, but we need to know width constraint
-                                // child.Layout(new Size(child.Bounds.Width, child.Bounds.Height + extra));
+                                double newHeight = child.Bounds.Height + extra;
+                                var oldHeight = child.Style.Height;
+                                child.Style.Height = newHeight;
+                                child.Layout(new SKSize((float)contentWidth, (float)newHeight));
+                                child.Style.Height = oldHeight;
                             }
                         }
                     }
                     lineMainSize = constraint;
+                }
+                else if (freeSpace < 0 && !double.IsInfinity(constraint))
+                {
+                    // Flex Shrink: reduce oversized items proportionally to flex-shrink * base-size
+                    double totalWeightedShrink = 0;
+                    foreach (var child in line)
+                    {
+                        double shrink = child.Style?.FlexShrink ?? 1.0;
+                        double childMain = isRow ? child.Bounds.Width : child.Bounds.Height;
+                        totalWeightedShrink += shrink * childMain;
+                    }
+
+                    if (totalWeightedShrink > 0)
+                    {
+                        foreach (var child in line)
+                        {
+                            double shrink = child.Style?.FlexShrink ?? 1.0;
+                            if (shrink > 0)
+                            {
+                                double childMain = isRow ? child.Bounds.Width : child.Bounds.Height;
+                                double shrinkRatio = (shrink * childMain) / totalWeightedShrink;
+                                double reduction = Math.Abs(freeSpace) * shrinkRatio;
+                                if (isRow)
+                                {
+                                    double newWidth = Math.Max(0, child.Bounds.Width - reduction);
+                                    var oldWidth = child.Style.Width;
+                                    child.Style.Width = newWidth;
+                                    child.Layout(new SKSize((float)newWidth, float.PositiveInfinity));
+                                    child.Style.Width = oldWidth;
+                                }
+                                else
+                                {
+                                    double newHeight = Math.Max(0, child.Bounds.Height - reduction);
+                                    var oldHeight = child.Style.Height;
+                                    child.Style.Height = newHeight;
+                                    child.Layout(new SKSize((float)contentWidth, (float)newHeight));
+                                    child.Style.Height = oldHeight;
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // 3. Calculate Cross Size (after potential resize)
@@ -448,17 +494,17 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 // Distribute main axis space (Justify Content)
-                double remainingMain = (isRow ? contentWidth : 0) - lineMainSize; // Only for row? Column usually doesn't justify unless height is fixed.
+                double mainConstraint = isRow ? contentWidth : contentHeight;
+                double remainingMain = !double.IsInfinity(mainConstraint) ? mainConstraint - lineMainSize : 0;
                 if (remainingMain < 0) remainingMain = 0;
-                
+
                 double startMain = isRow ? startX : startY;
                 double gapMain = 0;
 
-                // If contentWidth is infinite (measuring phase), we CANNOT justify (it would push items to infinity).
-                // Force flex-start behavior.
-                bool performJustify = isRow ? !double.IsInfinity(contentWidth) : true; // TODO: Column height support
+                // Only justify if we have a finite constraint on the main axis
+                bool performJustify = !double.IsInfinity(mainConstraint);
 
-                if (isRow && performJustify) // Justify applies to main axis
+                if (performJustify) // Justify applies to main axis (row or column)
                 {
                     if (justify == "center") startMain += remainingMain / 2;
                     else if (justify == "flex-end") startMain += remainingMain;
