@@ -259,16 +259,24 @@ namespace FenBrowser.FenEngine.Core
                     {
                         try
                         {
-                            string packageJson = File.ReadAllText(packageJsonPath);
-                            // Simple JSON parse for "main" field (avoiding full JSON parser dependency)
-                            var mainMatch = System.Text.RegularExpressions.Regex.Match(packageJson, "\"main\"\\s*:\\s*\"([^\"]+)\"");
-                            if (mainMatch.Success)
+                            // SECURITY: Reject oversized package.json to prevent memory DoS
+                            var packageJsonInfo = new FileInfo(packageJsonPath);
+                            if (packageJsonInfo.Length <= 10 * 1024 * 1024) // 10 MB limit
                             {
-                                string mainFile = mainMatch.Groups[1].Value;
-                                string fullPath = Path.Combine(nodeModulesPath, mainFile);
-                                if (File.Exists(fullPath))
+                                string packageJson = File.ReadAllText(packageJsonPath);
+                                // Simple JSON parse for "main" field (avoiding full JSON parser dependency)
+                                var mainMatch = System.Text.RegularExpressions.Regex.Match(packageJson, "\"main\"\\s*:\\s*\"([^\"]+)\"");
+                                if (mainMatch.Success)
                                 {
-                                    return Path.GetFullPath(fullPath);
+                                    string mainFile = mainMatch.Groups[1].Value;
+                                    // SECURITY: Resolve to absolute path then verify it stays within the
+                                    // package directory to prevent path traversal (e.g. "main": "../../../../etc/passwd")
+                                    string fullPath = Path.GetFullPath(Path.Combine(nodeModulesPath, mainFile));
+                                    string safeRoot = Path.GetFullPath(nodeModulesPath) + Path.DirectorySeparatorChar;
+                                    if (fullPath.StartsWith(safeRoot, StringComparison.OrdinalIgnoreCase) && File.Exists(fullPath))
+                                    {
+                                        return fullPath;
+                                    }
                                 }
                             }
                         }
