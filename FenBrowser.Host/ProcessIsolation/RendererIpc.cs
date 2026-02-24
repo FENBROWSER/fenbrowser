@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
 using System.Text;
@@ -27,7 +28,7 @@ namespace FenBrowser.Host.ProcessIsolation
         Pong
     }
 
-    internal sealed class RendererIpcEnvelope
+    public sealed class RendererIpcEnvelope
     {
         public string Type { get; set; }
         public int TabId { get; set; }
@@ -37,22 +38,26 @@ namespace FenBrowser.Host.ProcessIsolation
         public long TimestampUnixMs { get; set; } = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     }
 
-    internal sealed class RendererNavigatePayload
+    public sealed class RendererNavigatePayload
     {
         public string Url { get; set; }
         public bool IsUserInput { get; set; }
     }
 
-    internal sealed class RendererFrameRequestPayload
+    public sealed class RendererFrameRequestPayload
     {
         public float ViewportWidth { get; set; }
         public float ViewportHeight { get; set; }
     }
 
-    internal sealed class RendererFrameReadyPayload
+    public sealed class RendererFrameReadyPayload
     {
         public string Url { get; set; }
         public long FrameTimestampUnixMs { get; set; }
+        public float SurfaceWidth { get; set; }
+        public float SurfaceHeight { get; set; }
+        public int DirtyRegionCount { get; set; }
+        public bool HasDamage { get; set; }
     }
 
     internal static class RendererIpc
@@ -115,10 +120,14 @@ namespace FenBrowser.Host.ProcessIsolation
         private readonly NamedPipeServerStream _pipe;
         private readonly object _writeLock = new();
         private readonly CancellationTokenSource _cts = new();
+        private readonly Queue<RendererIpcEnvelope> _pendingOutbound = new();
         private StreamReader _reader;
         private StreamWriter _writer;
         private Task _readLoop;
         private DateTime _lastFrameRequestUtc = DateTime.MinValue;
+        private const int MaxPendingOutboundMessages = 128;
+
+        public event Action<int, RendererFrameReadyPayload> FrameReceived;
 
         public int TabId { get; }
         public string PipeName { get; }
@@ -247,6 +256,7 @@ namespace FenBrowser.Host.ProcessIsolation
                     CorrelationId = Guid.NewGuid().ToString("N"),
                     Token = AuthToken
                 });
+                FlushPendingOutbound();
 
                 _readLoop = Task.Run(ReadLoopAsync);
                 FenLogger.Info($"[ProcessIsolation] IPC connected for tab {TabId} via pipe '{PipeName}'.", LogCategory.General);
@@ -285,7 +295,15 @@ namespace FenBrowser.Host.ProcessIsolation
                     {
                         var payload = RendererIpc.DeserializePayload<RendererFrameReadyPayload>(envelope);
                         var url = payload?.Url ?? "<unknown>";
-                        FenLogger.Debug($"[ProcessIsolation] FrameReady tab={TabId} url={url}", LogCategory.Rendering);
+                        var width = payload?.SurfaceWidth ?? 0f;
+                        var height = payload?.SurfaceHeight ?? 0f;
+                        var dirtyCount = payload?.DirtyRegionCount ?? 0;
+                        FenLogger.Debug($"[ProcessIsolation] FrameReady tab={TabId} url={url} surface={width}x{height} dirtyRegions={dirtyCount}", LogCategory.Rendering);
+
+                        if (payload != null)
+                        {
+                            FrameReceived?.Invoke(TabId, payload);
+                        }
                     }
                     else if (string.Equals(envelope.Type, RendererIpcMessageType.Error.ToString(), StringComparison.OrdinalIgnoreCase))
                     {
@@ -309,24 +327,82 @@ namespace FenBrowser.Host.ProcessIsolation
                 return;
             }
 
-            if (!IsConnected)
-            {
-                return;
-            }
-
             try
             {
-                var line = RendererIpc.SerializeEnvelope(envelope);
                 lock (_writeLock)
                 {
-                    _writer.WriteLine(line);
-                    _writer.Flush();
+                    if (!IsConnected)
+                    {
+                        BufferPendingOutbound(envelope);
+                        return;
+                    }
+
+                    WriteEnvelope(envelope);
                 }
             }
             catch (Exception ex)
             {
                 FenLogger.Warn($"[ProcessIsolation] Failed to send IPC message for tab {TabId}: {ex.Message}", LogCategory.General);
             }
+        }
+
+        private void BufferPendingOutbound(RendererIpcEnvelope envelope)
+        {
+            if (!ShouldBufferWhileDisconnected(envelope))
+            {
+                return;
+            }
+
+            if (_pendingOutbound.Count >= MaxPendingOutboundMessages)
+            {
+                _pendingOutbound.Dequeue();
+            }
+
+            _pendingOutbound.Enqueue(envelope);
+        }
+
+        private void FlushPendingOutbound()
+        {
+            lock (_writeLock)
+            {
+                if (!IsConnected || _pendingOutbound.Count == 0)
+                {
+                    return;
+                }
+
+                while (_pendingOutbound.Count > 0)
+                {
+                    var envelope = _pendingOutbound.Dequeue();
+                    WriteEnvelope(envelope);
+                }
+            }
+        }
+
+        private void WriteEnvelope(RendererIpcEnvelope envelope)
+        {
+            var line = RendererIpc.SerializeEnvelope(envelope);
+            _writer.WriteLine(line);
+            _writer.Flush();
+        }
+
+        private static bool ShouldBufferWhileDisconnected(RendererIpcEnvelope envelope)
+        {
+            if (envelope == null || string.IsNullOrWhiteSpace(envelope.Type))
+            {
+                return false;
+            }
+
+            if (string.Equals(envelope.Type, RendererIpcMessageType.FrameRequest.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (string.Equals(envelope.Type, RendererIpcMessageType.Input.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return true;
         }
 
         public void Dispose()

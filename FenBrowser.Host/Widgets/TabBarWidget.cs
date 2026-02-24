@@ -128,6 +128,7 @@ public class TabBarWidget : Widget
         var widget = _tabWidgets.Find(w => w.Tab == tab);
         if (widget != null)
         {
+            widget.Detach();
             _tabWidgets.Remove(widget);
             Children.Remove(widget);
             InvalidateLayout();
@@ -224,8 +225,6 @@ public class TabBarWidget : Widget
         {
             widget.PaintAll(canvas);
         }
-        
-        canvas.Restore();
         
         canvas.Restore();
         

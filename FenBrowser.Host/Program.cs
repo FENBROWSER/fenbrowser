@@ -466,8 +466,11 @@ namespace FenBrowser.Host
             _ = int.TryParse(Environment.GetEnvironmentVariable("FEN_RENDERER_PARENT_PID"), out parentPid);
             var pipeName = Environment.GetEnvironmentVariable("FEN_RENDERER_PIPE_NAME");
             var authToken = Environment.GetEnvironmentVariable("FEN_RENDERER_AUTH_TOKEN");
+            var sandboxProfile = Environment.GetEnvironmentVariable("FEN_RENDERER_SANDBOX_PROFILE");
+            var capabilitySet = Environment.GetEnvironmentVariable("FEN_RENDERER_CAPABILITIES");
+            var assignmentKey = Environment.GetEnvironmentVariable("FEN_RENDERER_ASSIGNMENT_KEY");
 
-            FenLogger.Info($"[RendererChild] Started for tab={tabId}, parentPid={parentPid}, pipe={pipeName}", LogCategory.General);
+            FenLogger.Info($"[RendererChild] Started for tab={tabId}, parentPid={parentPid}, pipe={pipeName}, assignment={assignmentKey}", LogCategory.General);
 
             if (string.IsNullOrWhiteSpace(pipeName) || string.IsNullOrWhiteSpace(authToken))
             {
@@ -481,6 +484,15 @@ namespace FenBrowser.Host
                     Thread.Sleep(500);
                 }
                 FenLogger.Info($"[RendererChild] Exiting for tab={tabId}", LogCategory.General);
+                return;
+            }
+
+            if (!string.Equals(sandboxProfile, "renderer_minimal", StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(capabilitySet, "navigate,input,frame", StringComparison.OrdinalIgnoreCase))
+            {
+                FenLogger.Warn(
+                    $"[RendererChild] Startup policy assertion failed for tab={tabId}. sandboxProfile={sandboxProfile}, capabilities={capabilitySet}.",
+                    LogCategory.General);
                 return;
             }
 
@@ -627,10 +639,15 @@ namespace FenBrowser.Host
 
                     if (string.Equals(envelope.Type, RendererIpcMessageType.FrameRequest.ToString(), StringComparison.OrdinalIgnoreCase))
                     {
+                        var frameRequest = RendererIpc.DeserializePayload<RendererFrameRequestPayload>(envelope);
                         var payload = new RendererFrameReadyPayload
                         {
                             Url = browser.CurrentUri?.AbsoluteUri ?? "about:blank",
-                            FrameTimestampUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                            FrameTimestampUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                            SurfaceWidth = frameRequest?.ViewportWidth ?? 0f,
+                            SurfaceHeight = frameRequest?.ViewportHeight ?? 0f,
+                            DirtyRegionCount = 1,
+                            HasDamage = true
                         };
 
                         SendRendererEnvelope(writer, new RendererIpcEnvelope

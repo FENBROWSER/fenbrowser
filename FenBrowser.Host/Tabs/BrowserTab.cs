@@ -38,6 +38,16 @@ public class BrowserTab
     public bool IsLoading => Browser.IsLoading;
     
     /// <summary>
+    /// Indicates if the background renderer process for this tab has crashed.
+    /// </summary>
+    public bool IsCrashed { get; private set; }
+    
+    /// <summary>
+    /// Reason for the crash, if available.
+    /// </summary>
+    public string CrashReason { get; private set; }
+    
+    /// <summary>
     /// Current URL of this tab.
     /// </summary>
     public string Url => Browser.CurrentUrl;
@@ -57,10 +67,15 @@ public class BrowserTab
     /// </summary>
     public event Action<BrowserTab> NeedsRepaint;
     
+    /// <summary>
+    /// Event when the renderer process for this tab crashes.
+    /// </summary>
+    public event Action<BrowserTab, string> Crashed;
+    
     public BrowserTab()
     {
         Id = _nextId++;
-        Browser = new BrowserIntegration();
+        Browser = new BrowserIntegration(this);
         
         // Wire browser events to tab events
         Browser.TitleChanged += title =>
@@ -104,6 +119,7 @@ public class BrowserTab
     /// </summary>
     public async Task NavigateAsync(string url)
     {
+        IsCrashed = false; // Reset crash state on new navigation
         ProcessIsolationRuntime.Current?.OnNavigationRequested(this, url, isUserInput: true);
         await Browser.NavigateAsync(url);
     }
@@ -113,8 +129,20 @@ public class BrowserTab
     /// </summary>
     public async Task NavigateProgrammaticAsync(string url)
     {
+        IsCrashed = false; // Reset crash state on new navigation
         ProcessIsolationRuntime.Current?.OnNavigationRequested(this, url, isUserInput: false);
         await Browser.NavigateProgrammaticAsync(url);
+    }
+    
+    /// <summary>
+    /// Called by TabManager when the OOP coordinator reports a crash.
+    /// </summary>
+    public void NotifyCrashed(string reason)
+    {
+        IsCrashed = true;
+        CrashReason = reason;
+        Crashed?.Invoke(this, reason);
+        NeedsRepaint?.Invoke(this);
     }
     
     /// <summary>
@@ -122,6 +150,62 @@ public class BrowserTab
     /// </summary>
     public void Render(SKCanvas canvas, SKRect viewport)
     {
+        if (IsCrashed)
+        {
+            RenderCrashScreen(canvas, viewport);
+            return;
+        }
+
         Browser.Render(canvas, viewport);
+    }
+    
+    private void RenderCrashScreen(SKCanvas canvas, SKRect viewport)
+    {
+        canvas.Clear(SKColor.Parse("#202124")); // Dark gray Chrome-like background
+
+        using var iconPaint = new SKPaint
+        {
+            Color = SKColor.Parse("#8AB4F8"),
+            IsAntialias = true,
+            TextSize = 64,
+            Typeface = SKTypeface.FromFamilyName("Segoe UI Emoji") ?? SKTypeface.Default
+        };
+
+        using var titlePaint = new SKPaint
+        {
+            Color = SKColors.White,
+            IsAntialias = true,
+            TextSize = 32,
+            Typeface = SKTypeface.FromFamilyName("Segoe UI", SKFontStyleWeight.Bold, SKFontStyleWidth.Normal, SKFontStyleSlant.Upright) ?? SKTypeface.Default
+        };
+        
+        using var descPaint = new SKPaint
+        {
+            Color = SKColor.Parse("#9AA0A6"),
+            IsAntialias = true,
+            TextSize = 16,
+            Typeface = SKTypeface.FromFamilyName("Segoe UI") ?? SKTypeface.Default
+        };
+
+        float centerY = viewport.Height / 2 - 50;
+        float centerX = viewport.Width / 2;
+
+        // "Sad face" icon
+        canvas.DrawText(":(", centerX - iconPaint.MeasureText(":(") / 2, centerY - 60, iconPaint);
+
+        // Title
+        string titleText = "Aw, Snap!";
+        canvas.DrawText(titleText, centerX - titlePaint.MeasureText(titleText) / 2, centerY, titlePaint);
+
+        // Description
+        string primaryDesc = "Something went wrong while displaying this webpage.";
+        canvas.DrawText(primaryDesc, centerX - descPaint.MeasureText(primaryDesc) / 2, centerY + 40, descPaint);
+
+        // Crash reason details
+        if (!string.IsNullOrEmpty(CrashReason))
+        {
+            string reasonText = $"Error code: {CrashReason}";
+            canvas.DrawText(reasonText, centerX - descPaint.MeasureText(reasonText) / 2, centerY + 70, descPaint);
+        }
     }
 }

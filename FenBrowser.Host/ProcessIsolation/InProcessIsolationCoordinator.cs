@@ -44,5 +44,8 @@ namespace FenBrowser.Host.ProcessIsolation
         public void Shutdown()
         {
         }
+
+        public event Action<int, RendererFrameReadyPayload> FrameReceived;
+        public event Action<int, string> RendererCrashed;
     }
 }

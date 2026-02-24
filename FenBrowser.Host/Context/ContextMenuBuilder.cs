@@ -43,18 +43,19 @@ namespace FenBrowser.Host.Context
             // Image Actions
             if (hit.TagName?.ToLowerInvariant() == "img")
             {
-                items.Add(ContextMenuItem.Create("Open Image in New Tab", () => 
+                items.Add(ContextMenuItem.Create("Open Image in New Tab", () =>
                 {
-                    // TODO: Get image src from hit result
-                    FenBrowser.Core.FenLogger.Info("[ContextMenu] Open Image in New Tab requested", FenBrowser.Core.Logging.LogCategory.General);
+                    if (!string.IsNullOrEmpty(hit.ImageSrc))
+                        onOpenInNewTab?.Invoke(hit.ImageSrc);
                 }));
-                items.Add(ContextMenuItem.Create("Save Image As...", () => 
+                items.Add(ContextMenuItem.Create("Save Image As...", () =>
                 {
-                    FenBrowser.Core.FenLogger.Info("[ContextMenu] Save Image As... requested", FenBrowser.Core.Logging.LogCategory.General);
+                    FenBrowser.Core.FenLogger.Info($"[ContextMenu] Save Image As... requested: {hit.ImageSrc}", FenBrowser.Core.Logging.LogCategory.General);
                 }));
-                items.Add(ContextMenuItem.Create("Copy Image", () => 
+                items.Add(ContextMenuItem.Create("Copy Image Address", () =>
                 {
-                    FenBrowser.Core.FenLogger.Info("[ContextMenu] Copy Image requested", FenBrowser.Core.Logging.LogCategory.General);
+                    if (!string.IsNullOrEmpty(hit.ImageSrc))
+                        onCopyLink?.Invoke(hit.ImageSrc);
                 }));
                 items.Add(ContextMenuItem.Separator());
             }
