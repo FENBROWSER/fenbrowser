@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
@@ -30,6 +31,11 @@ namespace FenBrowser.FenEngine.Workers
         private readonly string _origin;
         private readonly string _name;
         private readonly Dictionary<string, List<FenValue>> _eventListeners = new(StringComparer.OrdinalIgnoreCase);
+
+        // Timer management: monotonically increasing ID, cancellation per timer
+        private int _nextTimerId = 1;
+        private readonly Dictionary<int, CancellationTokenSource> _pendingTimers = new();
+        private readonly object _timerLock = new();
 
         public WorkerGlobalScope(WorkerRuntime runtime, string origin, string name = "")
         {
@@ -129,7 +135,7 @@ namespace FenBrowser.FenEngine.Workers
                 return FenValue.Undefined;
             })));
 
-            // importScripts(urls...) - fetch and execute additional worker scripts synchronously.
+            // importScripts(urls...) - execute additional worker scripts from prefetched source.
             Set("importScripts", FenValue.FromFunction(new FenFunction("importScripts", (args, thisVal) =>
             {
                 if (args.Length == 0)
@@ -147,29 +153,138 @@ namespace FenBrowser.FenEngine.Workers
                 return FenValue.Undefined;
             })));
 
-            // setTimeout
+            // setTimeout — Per HTML spec, timer callbacks are tasks, not microtasks.
             Set("setTimeout", FenValue.FromFunction(new FenFunction("setTimeout", (args, thisVal) =>
             {
-                if (args.Length > 0 && args[0].IsFunction)
+                if (args.Length == 0 || !args[0].IsFunction)
+                    return FenValue.FromNumber(0);
+
+                var callback = args[0];
+                // Collect extra arguments to pass to callback (args[2..])
+                var callbackArgs = args.Length > 2
+                    ? args[2..]
+                    : Array.Empty<FenValue>();
+                var delay = Math.Max(0, args.Length > 1 ? (int)args[1].ToNumber() : 0);
+
+                int timerId;
+                var cts = new CancellationTokenSource();
+                lock (_timerLock)
                 {
-                    var callback = args[0].AsFunction();
-                    var delay = args.Length > 1 ? (int)args[1].ToNumber() : 0;
-                    
-                    var timerId = Guid.NewGuid().GetHashCode();
-                    
-                    _ = System.Threading.Tasks.Task.Run(async () =>
-                    {
-                        await System.Threading.Tasks.Task.Delay(delay);
-                        _runtime.QueueMicrotask(() =>
-                        {
-                            if (callback.IsNative && callback.NativeImplementation != null)
-                                callback.NativeImplementation(new FenValue[0], FenValue.Undefined);
-                        });
-                    });
-                    
-                    return FenValue.FromNumber(timerId);
+                    timerId = _nextTimerId++;
+                    _pendingTimers[timerId] = cts;
                 }
-                return FenValue.FromNumber(0);
+
+                var capturedId = timerId;
+                _ = System.Threading.Tasks.Task.Run(async () =>
+                {
+                    try
+                    {
+                        await System.Threading.Tasks.Task.Delay(delay, cts.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return; // clearTimeout was called
+                    }
+
+                    lock (_timerLock) { _pendingTimers.Remove(capturedId); }
+
+                    _runtime.QueueTask(() =>
+                    {
+                        if (callback.IsFunction)
+                        {
+                            try { callback.AsFunction().Invoke(callbackArgs, Runtime.Context); }
+                            catch (Exception ex)
+                            { FenLogger.Debug($"[WorkerGlobalScope] setTimeout callback error: {ex.Message}", LogCategory.JavaScript); }
+                        }
+                    }, $"setTimeout({capturedId})");
+                });
+
+                return FenValue.FromNumber(timerId);
+            })));
+
+            // clearTimeout
+            Set("clearTimeout", FenValue.FromFunction(new FenFunction("clearTimeout", (args, thisVal) =>
+            {
+                if (args.Length > 0 && args[0].IsNumber)
+                {
+                    var id = (int)args[0].ToNumber();
+                    CancellationTokenSource cts;
+                    lock (_timerLock)
+                    {
+                        if (_pendingTimers.TryGetValue(id, out cts))
+                            _pendingTimers.Remove(id);
+                    }
+                    cts?.Cancel();
+                    cts?.Dispose();
+                }
+                return FenValue.Undefined;
+            })));
+
+            // setInterval — repeatedly fires callback at given interval as tasks
+            Set("setInterval", FenValue.FromFunction(new FenFunction("setInterval", (args, thisVal) =>
+            {
+                if (args.Length == 0 || !args[0].IsFunction)
+                    return FenValue.FromNumber(0);
+
+                var callback = args[0];
+                var callbackArgs = args.Length > 2 ? args[2..] : Array.Empty<FenValue>();
+                var interval = Math.Max(4, args.Length > 1 ? (int)args[1].ToNumber() : 0);
+
+                int timerId;
+                var cts = new CancellationTokenSource();
+                lock (_timerLock)
+                {
+                    timerId = _nextTimerId++;
+                    _pendingTimers[timerId] = cts;
+                }
+
+                var capturedId = timerId;
+                _ = System.Threading.Tasks.Task.Run(async () =>
+                {
+                    while (!cts.Token.IsCancellationRequested)
+                    {
+                        try
+                        {
+                            await System.Threading.Tasks.Task.Delay(interval, cts.Token);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            return;
+                        }
+
+                        if (cts.Token.IsCancellationRequested) return;
+
+                        _runtime.QueueTask(() =>
+                        {
+                            if (callback.IsFunction)
+                            {
+                                try { callback.AsFunction().Invoke(callbackArgs, Runtime.Context); }
+                                catch (Exception ex)
+                                { FenLogger.Debug($"[WorkerGlobalScope] setInterval callback error: {ex.Message}", LogCategory.JavaScript); }
+                            }
+                        }, $"setInterval({capturedId})");
+                    }
+                });
+
+                return FenValue.FromNumber(timerId);
+            })));
+
+            // clearInterval
+            Set("clearInterval", FenValue.FromFunction(new FenFunction("clearInterval", (args, thisVal) =>
+            {
+                if (args.Length > 0 && args[0].IsNumber)
+                {
+                    var id = (int)args[0].ToNumber();
+                    CancellationTokenSource cts;
+                    lock (_timerLock)
+                    {
+                        if (_pendingTimers.TryGetValue(id, out cts))
+                            _pendingTimers.Remove(id);
+                    }
+                    cts?.Cancel();
+                    cts?.Dispose();
+                }
+                return FenValue.Undefined;
             })));
 
             // console (basic)
