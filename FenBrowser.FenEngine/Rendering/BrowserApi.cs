@@ -243,6 +243,12 @@ namespace FenBrowser.FenEngine.Rendering
 
         public SecurityState SecurityState { get; private set; } = SecurityState.None;
         public CspPolicy CurrentPolicy { get; private set; }
+        /// <summary>
+        /// X-Frame-Options policy returned by the current page's HTTP response.
+        /// DENY means this page asked not to be embedded in any frame.
+        /// SAMEORIGIN means only same-origin frames may embed it.
+        /// </summary>
+        public FenBrowser.Core.XFrameOptionsPolicy CurrentXFrameOptions { get; private set; }
         public Dictionary<Node, CssComputed> ComputedStyles => _engine.LastComputedStyles;
         public CustomHtmlEngine Engine => _engine;
         public NavigationLifecycleSnapshot NavigationLifecycleState => _navigationLifecycle.GetSnapshot();
@@ -868,6 +874,7 @@ namespace FenBrowser.FenEngine.Rendering
                 _resources.ActivePolicy = null; // Reset CSP for new page
                 _engine.ActivePolicy = null;
                 CurrentPolicy = null;
+                CurrentXFrameOptions = FenBrowser.Core.XFrameOptionsPolicy.None;
 
                 const int maxTransientNavAttempts = 2;
                 FetchResult result = null;
@@ -915,6 +922,14 @@ namespace FenBrowser.FenEngine.Rendering
                     _engine.ActivePolicy = CurrentPolicy; // Set on engine for inline script/style CSP checks
                     Console.WriteLine($"[CSP] Policy Applied: {string.Join(";", cspValues)}");
                 }
+
+                // Store X-Frame-Options policy for the current page.
+                // DENY / SAMEORIGIN means this page asked not to be framed; this will be
+                // enforced when iframe content loading is implemented in BuildIframePlaceholder.
+                CurrentXFrameOptions = result.XFrameOptions;
+                if (CurrentXFrameOptions != FenBrowser.Core.XFrameOptionsPolicy.None)
+                    Console.WriteLine($"[XFO] X-Frame-Options: {CurrentXFrameOptions}{(result.XFrameAllowFromUri != null ? " " + result.XFrameAllowFromUri : "")}");
+
                 string htmlToRender = result.Content;
                 Uri uri = result.FinalUri ?? new Uri("about:blank");
 
