@@ -433,6 +433,16 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 Emit(OpCode.Call);
                 EmitInt32(callExpr.Arguments.Count);
             }
+            else if (node is NewExpression newExpr)
+            {
+                Visit(newExpr.Constructor);
+                foreach (var arg in newExpr.Arguments)
+                {
+                    Visit(arg);
+                }
+                Emit(OpCode.Construct);
+                EmitInt32(newExpr.Arguments.Count);
+            }
             else
             {
                 throw new NotImplementedException($"Compiler: Node type {node.GetType().Name} not supported in Bytecode Phase.");

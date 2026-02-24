@@ -109,5 +109,53 @@ namespace FenBrowser.Tests.Engine
 
             File.WriteAllText(resultsPath, sb.ToString());
         }
+
+        [Fact]
+        public void CompareInterpreterAndBytecode()
+        {
+            string scriptPath = @"C:\Users\udayk\Videos\FENBROWSER\compare_engines.js";
+            string script = File.ReadAllText(scriptPath);
+
+            var host = new JsHostAdapter(
+                navigate: _ => { },
+                post: (_, __) => { },
+                status: _ => { },
+                log: msg => { }
+            );
+            var interpreterEngine = new JavaScriptEngine(host);
+
+            // Warmup
+            interpreterEngine.Evaluate(script);
+
+            var sw1 = System.Diagnostics.Stopwatch.StartNew();
+            object resultInterpreter = interpreterEngine.Evaluate(script);
+            sw1.Stop();
+
+            var lexer = new FenBrowser.FenEngine.Core.Lexer(script);
+            var parser = new FenBrowser.FenEngine.Core.Parser(lexer, false);
+            var ast = parser.ParseProgram();
+            var compiler = new FenBrowser.FenEngine.Core.Bytecode.Compiler.BytecodeCompiler();
+            var codeBlock = compiler.Compile(ast);
+            var vm = new FenBrowser.FenEngine.Core.Bytecode.VM.VirtualMachine();
+
+            // Warmup
+            var env1 = new FenBrowser.FenEngine.Core.FenEnvironment();
+            vm.Execute(codeBlock, env1);
+
+            var sw2 = System.Diagnostics.Stopwatch.StartNew();
+            var env2 = new FenBrowser.FenEngine.Core.FenEnvironment();
+            var resultBytecode = vm.Execute(codeBlock, env2);
+            sw2.Stop();
+
+            var sb = new StringBuilder();
+            sb.AppendLine("# Engines Comparison Result");
+            sb.AppendLine($"Interpreter Result: {resultInterpreter}");
+            sb.AppendLine($"Interpreter Time: {sw1.ElapsedMilliseconds} ms");
+            sb.AppendLine($"Bytecode Result: {resultBytecode.ToString()}");
+            sb.AppendLine($"Bytecode Time: {sw2.ElapsedMilliseconds} ms");
+
+            File.WriteAllText(@"C:\Users\udayk\Videos\FENBROWSER\engine_comparison_results.md", sb.ToString());
+            Assert.True(true);
+        }
     }
 }

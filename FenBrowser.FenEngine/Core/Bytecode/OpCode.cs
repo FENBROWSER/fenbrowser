@@ -42,10 +42,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode
         JumpIfFalse = 0x41,
         JumpIfTrue = 0x42,
 
-        // 0x50 - 0x5F: Functions
+        // 0x50 - 0x5F: Functions & Constructors
         Call = 0x50,
         Return = 0x51,
         MakeClosure = 0x52,
+        Construct = 0x53,
 
         // 0x60 - 0x6F: Objects & Arrays
         MakeArray = 0x60,
