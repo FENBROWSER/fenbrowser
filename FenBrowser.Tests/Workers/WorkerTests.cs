@@ -263,6 +263,59 @@ namespace FenBrowser.Tests.Workers
         }
 
         [Fact]
+        public void WorkerRuntime_ImportScripts_ReusesPrefetchedSourceAcrossRepeatedImports()
+        {
+            var messageEvent = new ManualResetEventSlim(false);
+            object payload = null;
+            var fetchCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+            string Fetcher(Uri uri)
+            {
+                var key = uri.AbsoluteUri;
+                fetchCounts[key] = fetchCounts.TryGetValue(key, out var count) ? count + 1 : 1;
+
+                if (key.EndsWith("/main.js", StringComparison.OrdinalIgnoreCase))
+                    return "importScripts('dep.js'); importScripts('dep.js'); postMessage(globalThis.__depCount);";
+                if (key.EndsWith("/dep.js", StringComparison.OrdinalIgnoreCase))
+                    return "globalThis.__depCount = (globalThis.__depCount || 0) + 1;";
+                return string.Empty;
+            }
+
+            var runtime = new WorkerRuntime(
+                "https://example.com/main.js",
+                "https://example.com",
+                new InMemoryStorageBackend(),
+                uri => Task.FromResult(Fetcher(uri)),
+                _ => true);
+
+            try
+            {
+                runtime.OnMessage += data =>
+                {
+                    payload = data;
+                    messageEvent.Set();
+                };
+
+                var deadline = DateTime.UtcNow.AddSeconds(3);
+                while (!messageEvent.IsSet && DateTime.UtcNow < deadline)
+                {
+                    EventLoopCoordinator.Instance.ProcessNextTask();
+                    Thread.Sleep(10);
+                }
+
+                Assert.True(messageEvent.IsSet, "Expected worker to post dependency count.");
+                Assert.Equal("2", payload?.ToString());
+                Assert.Equal(1, fetchCounts["https://example.com/main.js"]);
+                Assert.Equal(1, fetchCounts["https://example.com/dep.js"]);
+            }
+            finally
+            {
+                runtime.Terminate();
+                runtime.Dispose();
+            }
+        }
+
+        [Fact]
         public void WorkerGlobalScope_HasRequiredProperties()
         {
             var runtime = new WorkerRuntime("test.js", "https://example.com");

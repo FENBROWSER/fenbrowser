@@ -1,5 +1,6 @@
 using Xunit;
 using FenBrowser.FenEngine.Layout;
+using FenBrowser.Core;
 
 namespace FenBrowser.Tests.Layout
 {
@@ -120,6 +121,33 @@ namespace FenBrowser.Tests.Layout
             Assert.Equal(20f, start);
             Assert.Equal(30f, end);
             Assert.True(tracker.HasContent);
+        }
+
+        [Fact]
+        public void MarginPair_FromStyle_HorizontalTb_UsesTopAndBottom()
+        {
+            var pair = MarginPair.FromStyle(new Thickness(1, 10, 2, -4), "horizontal-tb");
+            Assert.Equal(10f, pair.Positive);
+            Assert.Equal(-4f, pair.Negative);
+            Assert.Equal(6f, pair.Collapsed);
+        }
+
+        [Fact]
+        public void MarginPair_FromStyle_VerticalRl_UsesRightAndLeft()
+        {
+            var pair = MarginPair.FromStyle(new Thickness(-6, 1, 8, 2), "vertical-rl");
+            Assert.Equal(8f, pair.Positive);
+            Assert.Equal(-6f, pair.Negative);
+            Assert.Equal(2f, pair.Collapsed);
+        }
+
+        [Fact]
+        public void MarginPair_FromStyle_VerticalLr_UsesLeftAndRight()
+        {
+            var pair = MarginPair.FromStyle(new Thickness(7, 1, -3, 2), "vertical-lr");
+            Assert.Equal(7f, pair.Positive);
+            Assert.Equal(-3f, pair.Negative);
+            Assert.Equal(4f, pair.Collapsed);
         }
     }
 }
