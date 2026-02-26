@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using FenBrowser.Core.Engine;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Core.EventLoop;
 
@@ -158,6 +159,14 @@ namespace FenBrowser.FenEngine.Core.Types
                 EventLoopCoordinator.Instance.ScheduleMicrotask(() => ExecuteReaction(reaction));
             }
             _reactions.Clear();
+
+            // If resolution happens outside JS execution (for example in async host callbacks),
+            // drain microtasks so promise continuations can progress without a separate task tick.
+            if (EngineContext.Current.CurrentPhase == EnginePhase.Idle &&
+                EventLoopCoordinator.Instance.HasPendingMicrotasks)
+            {
+                EventLoopCoordinator.Instance.PerformMicrotaskCheckpoint();
+            }
         }
 
         private void ExecuteReaction(Reaction reaction)
@@ -223,10 +232,6 @@ namespace FenBrowser.FenEngine.Core.Types
         private FenValue Finally(FenValue[] args, FenValue thisVal)
         {
             var onFinally = args.Length > 0 && args[0].IsFunction ? args[0].AsFunction() : null;
-            
-            // .finally(f) returns a promise that executes f then passes through the previous result/error
-            // .finally(f) returns a promise that executes f then passes through the previous result/error
-            var P = this.Get("constructor") is FenValue fn && fn.IsFunction ? fn.AsFunction() as FenFunction : null;
 
             var onFulfilled = new FenFunction("finallyFulfilled", (a, t) =>
             {
@@ -239,7 +244,8 @@ namespace FenBrowser.FenEngine.Core.Types
             {
                 var reason = a.Length > 0 ? a[0] : FenValue.Undefined;
                 if (onFinally != null) onFinally.Invoke(new FenValue[0], _context);
-                throw new JsPromiseException(reason); // Rethrow to propagate rejection
+                // Preserve rejection through finally by returning an already-rejected promise.
+                return FenValue.FromObject(Reject(reason, _context));
             });
 
             return Then(new FenValue[] { FenValue.FromFunction(onFulfilled), FenValue.FromFunction(onRejected) }, thisVal);

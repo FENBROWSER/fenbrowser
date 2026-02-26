@@ -50,7 +50,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
             else if (node is InfixExpression binExpr)
             {
-                if (binExpr.Operator == "&&")
+                if ((binExpr.Operator == "++" || binExpr.Operator == "--") && binExpr.Right == null)
+                {
+                    EmitPostfixUpdate(binExpr.Left, binExpr.Operator);
+                }
+                else if (binExpr.Operator == "&&")
                 {
                     Visit(binExpr.Left);
                     Emit(OpCode.Dup);
@@ -81,10 +85,15 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     case "*": Emit(OpCode.Multiply); break;
                     case "/": Emit(OpCode.Divide); break;
                     case "%": Emit(OpCode.Modulo); break;
+                    case "**": Emit(OpCode.Exponent); break;
                     case "==": Emit(OpCode.Equal); break;
                     case "===": Emit(OpCode.StrictEqual); break;
+                    case "!=": Emit(OpCode.NotEqual); break;
+                    case "!==": Emit(OpCode.StrictNotEqual); break;
                     case "<": Emit(OpCode.LessThan); break;
                     case ">": Emit(OpCode.GreaterThan); break;
+                    case "<=": Emit(OpCode.LessThanOrEqual); break;
+                    case ">=": Emit(OpCode.GreaterThanOrEqual); break;
                     case "&": Emit(OpCode.BitwiseAnd); break;
                     case "|": Emit(OpCode.BitwiseOr); break;
                     case "^": Emit(OpCode.BitwiseXor); break;
@@ -102,6 +111,12 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 Emit(OpCode.LoadConst);
                 EmitInt32(idx);
             }
+            else if (node is DoubleLiteral doubleLit)
+            {
+                int idx = AddConstant(FenValue.FromNumber(doubleLit.Value));
+                Emit(OpCode.LoadConst);
+                EmitInt32(idx);
+            }
             else if (node is StringLiteral strLit)
             {
                 int idx = AddConstant(FenValue.FromString(strLit.Value));
@@ -112,6 +127,59 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             {
                 if (boolLit.Value) Emit(OpCode.LoadTrue);
                 else Emit(OpCode.LoadFalse);
+            }
+            else if (node is NullLiteral)
+            {
+                Emit(OpCode.LoadNull);
+            }
+            else if (node is UndefinedLiteral)
+            {
+                Emit(OpCode.LoadUndefined);
+            }
+            else if (node is ExponentiationExpression expExpr)
+            {
+                Visit(expExpr.Left);
+                Visit(expExpr.Right);
+                Emit(OpCode.Exponent);
+            }
+            else if (node is ConditionalExpression condExpr)
+            {
+                Visit(condExpr.Condition);
+                int jumpIfFalseOffset = EmitJump(OpCode.JumpIfFalse);
+
+                Visit(condExpr.Consequent);
+                int jumpOverAltOffset = EmitJump(OpCode.Jump);
+
+                PatchJump(jumpIfFalseOffset);
+                if (condExpr.Alternate != null)
+                {
+                    Visit(condExpr.Alternate);
+                }
+                else
+                {
+                    Emit(OpCode.LoadUndefined);
+                }
+                PatchJump(jumpOverAltOffset);
+            }
+            else if (node is NullishCoalescingExpression nullishExpr)
+            {
+                // left ?? right
+                // Stack flow:
+                //   [left] -> [left,left] -> [left, left==null]
+                //   if false => keep original left
+                //   if true  => pop original left, evaluate right
+                Visit(nullishExpr.Left);
+                Emit(OpCode.Dup);
+                Emit(OpCode.LoadNull);
+                Emit(OpCode.Equal);
+                int jumpKeepLeft = EmitJump(OpCode.JumpIfFalse);
+
+                Emit(OpCode.Pop);
+                Visit(nullishExpr.Right);
+                int jumpEnd = EmitJump(OpCode.Jump);
+
+                PatchJump(jumpKeepLeft);
+                PatchJump(jumpEnd);
             }
             else if (node is Identifier identifier)
             {
@@ -157,16 +225,27 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
             else if (node is PrefixExpression prefixExpr)
             {
-                Visit(prefixExpr.Right);
-                switch (prefixExpr.Operator)
+                if (prefixExpr.Operator == "++" || prefixExpr.Operator == "--")
                 {
-                    case "-": Emit(OpCode.Negate); break;
-                    case "!": Emit(OpCode.LogicalNot); break;
-                    case "~": Emit(OpCode.BitwiseNot); break;
-                    case "typeof": Emit(OpCode.Typeof); break;
-                    default:
-                        throw new NotImplementedException($"Compiler: Prefix operator '{prefixExpr.Operator}' not supported.");
+                    EmitPrefixUpdate(prefixExpr.Right, prefixExpr.Operator);
                 }
+                else
+                {
+                    Visit(prefixExpr.Right);
+                    switch (prefixExpr.Operator)
+                    {
+                        case "-": Emit(OpCode.Negate); break;
+                        case "!": Emit(OpCode.LogicalNot); break;
+                        case "~": Emit(OpCode.BitwiseNot); break;
+                        case "typeof": Emit(OpCode.Typeof); break;
+                        default:
+                            throw new NotImplementedException($"Compiler: Prefix operator '{prefixExpr.Operator}' not supported.");
+                    }
+                }
+            }
+            else if (node is LogicalAssignmentExpression logicalAssignExpr)
+            {
+                VisitLogicalAssignment(logicalAssignExpr);
             }
             else if (node is AssignmentExpression assign)
             {
@@ -211,6 +290,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     }
                 }
             }
+            else if (node is EmptyExpression)
+            {
+                Emit(OpCode.LoadUndefined);
+            }
             else if (node is BlockStatement blockStmt)
             {
                 foreach (var stmt in blockStmt.Statements)
@@ -249,6 +332,14 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 EmitInt32(loopStart);
                 
                 PatchJump(jumpIfFalseOffset);
+            }
+            else if (node is DoWhileStatement doWhileStmt)
+            {
+                int loopStart = _instructions.Count;
+                Visit(doWhileStmt.Body);
+                Visit(doWhileStmt.Condition);
+                Emit(OpCode.JumpIfTrue);
+                EmitInt32(loopStart);
             }
             else if (node is ForStatement forStmt)
             {
@@ -381,6 +472,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 Visit(throwExpr.Value);
                 Emit(OpCode.Throw);
             }
+            else if (node is BitwiseNotExpression bitwiseNotExpr)
+            {
+                Visit(bitwiseNotExpr.Operand);
+                Emit(OpCode.BitwiseNot);
+            }
             else if (node is TryStatement tryStmt)
             {
                 Emit(OpCode.PushExceptionHandler);
@@ -480,6 +576,68 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             {
                 _instructions[offset + i] = bytes[i];
             }
+        }
+
+        private void EmitPrefixUpdate(Expression target, string updateOperator)
+        {
+            Visit(CreateUpdateAssignment(target, updateOperator));
+        }
+
+        private void EmitPostfixUpdate(Expression target, string updateOperator)
+        {
+            Visit(target);
+            Visit(CreateUpdateAssignment(target, updateOperator));
+            Emit(OpCode.Pop);
+        }
+
+        private AssignmentExpression CreateUpdateAssignment(Expression target, string updateOperator)
+        {
+            string arithmeticOp = updateOperator == "++" ? "+" : "-";
+            return new AssignmentExpression
+            {
+                Left = target,
+                Right = new InfixExpression
+                {
+                    Left = target,
+                    Operator = arithmeticOp,
+                    Right = new IntegerLiteral { Value = 1 }
+                }
+            };
+        }
+
+        private void VisitLogicalAssignment(LogicalAssignmentExpression logicalAssignExpr)
+        {
+            Visit(logicalAssignExpr.Left);
+
+            int jumpKeepLeftOffset;
+            switch (logicalAssignExpr.Operator)
+            {
+                case "||=":
+                    Emit(OpCode.Dup);
+                    jumpKeepLeftOffset = EmitJump(OpCode.JumpIfTrue);
+                    break;
+                case "&&=":
+                    Emit(OpCode.Dup);
+                    jumpKeepLeftOffset = EmitJump(OpCode.JumpIfFalse);
+                    break;
+                case "??=":
+                    Emit(OpCode.Dup);
+                    Emit(OpCode.LoadNull);
+                    Emit(OpCode.Equal);
+                    jumpKeepLeftOffset = EmitJump(OpCode.JumpIfFalse);
+                    break;
+                default:
+                    throw new NotImplementedException($"Compiler: Logical assignment operator '{logicalAssignExpr.Operator}' not supported.");
+            }
+
+            Emit(OpCode.Pop);
+            Visit(new AssignmentExpression
+            {
+                Left = logicalAssignExpr.Left,
+                Right = logicalAssignExpr.Right
+            });
+
+            PatchJump(jumpKeepLeftOffset);
         }
     }
 }

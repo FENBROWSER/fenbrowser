@@ -16,6 +16,8 @@ using System.Net.Http;
 using System.Net.WebSockets;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Collections;
+using System.Reflection;
 using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType;
 using FenBrowser.FenEngine.Storage;
 using FenBrowser.Core.Network.Handlers;
@@ -4456,8 +4458,12 @@ namespace FenBrowser.FenEngine.Core
                     var obj = thisVal.AsObject() as FenObject;
                     if (obj != null)
                     {
-                        var toStringTagKey = JsSymbol.ToStringTag.ToPropertyKey();
-                        var tag = obj.Get(toStringTagKey, null);
+                        var tag = obj.Get("[Symbol.toStringTag]", null);
+                        if (tag.IsUndefined)
+                        {
+                            var toStringTagKey = JsSymbol.ToStringTag.ToPropertyKey();
+                            tag = obj.Get(toStringTagKey, null);
+                        }
                         if (!tag.IsUndefined && tag.IsString)
                             return FenValue.FromString($"[object {tag.ToString()}]");
                     }
@@ -7719,17 +7725,23 @@ namespace FenBrowser.FenEngine.Core
             /* [PERF-REMOVED] */
 
             /* [PERF-REMOVED] */
-            // SYMBOL - Create as FenObject with callable NativeObject so we can attach static properties
-            var symbolFunc = new FenFunction("Symbol", (args, thisVal) =>
-            {
-                var desc = args.Length > 0 ? args[0].ToString() : null;
-                // JsSymbol implements IValue directly, do not wrap in FenValue.FromObject
-                return FenValue.FromSymbol(new FenBrowser.FenEngine.Core.Types.JsSymbol(desc));
-            });
+            // SYMBOL - preserve existing callable Symbol function registration.
+            // Some code paths run this enrichment pass later; avoid replacing Symbol with a plain object.
+            var symbolStaticValue = GetGlobal("Symbol");
+            FenObject symbolStatic = null;
+            if (symbolStaticValue.IsFunction || symbolStaticValue.IsObject)
+                symbolStatic = symbolStaticValue.AsObject() as FenObject;
 
-            // Use FenObject wrapper to allow property attachment (functions are objects in JS)
-            var symbolStatic = new FenObject();
-            symbolStatic.NativeObject = symbolFunc; // Make it callable
+            if (symbolStatic == null)
+            {
+                var fallbackSymbol = new FenFunction("Symbol", (args, thisVal) =>
+                {
+                    var desc = args.Length > 0 ? args[0].ToString() : null;
+                    return FenValue.FromSymbol(new FenBrowser.FenEngine.Core.Types.JsSymbol(desc));
+                });
+                SetGlobal("Symbol", FenValue.FromFunction(fallbackSymbol));
+                symbolStatic = fallbackSymbol;
+            }
 
             /* [PERF-REMOVED] */
 
@@ -7764,7 +7776,6 @@ namespace FenBrowser.FenEngine.Core
             })));
 
             /* [PERF-REMOVED] */
-            SetGlobal("Symbol", FenValue.FromObject(symbolStatic));
 
             /* [PERF-REMOVED] */
             // OBJECT STATIC METHODS
@@ -8317,7 +8328,7 @@ namespace FenBrowser.FenEngine.Core
             SetGlobal("indexedDB", FenValue.FromObject(CreateIndexedDB()));
 
             // Promise - Full Promise implementation with static methods
-            SetGlobal("Promise", FenValue.FromObject(CreatePromiseConstructor()));
+            SetGlobal("Promise", FenValue.FromFunction(CreatePromiseConstructorModern()));
 
             // ============================================
             // TIER-2: WeakRef / FinalizationRegistry
@@ -9981,7 +9992,24 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(iterator);
             })), null);
 
-            // String already registered at top
+            // String was already registered earlier in initialization.
+            // Merge the newer ES2015+ static methods into the active global constructor.
+            var existingString = GetGlobal("String");
+            if (existingString.IsFunction || existingString.IsObject)
+            {
+                var stringTarget = existingString.AsObject() as FenObject;
+                if (stringTarget != null)
+                {
+                    foreach (var key in stringConstructor.Keys())
+                    {
+                        stringTarget.Set(key, stringConstructor.Get(key, null), null);
+                    }
+                }
+            }
+            else
+            {
+                SetGlobal("String", FenValue.FromObject(stringConstructor));
+            }
         }
 
         private FenObject CreateEmptyIterator()
@@ -10364,7 +10392,8 @@ namespace FenBrowser.FenEngine.Core
         }
 
         /// <summary>
-        /// Execute JavaScript code using the FenEngine Parser and Interpreter
+        /// Execute JavaScript code using the FenEngine parser with bytecode-first execution
+        /// and interpreter fallback for compile-unsupported programs.
         /// </summary>
         public IValue ExecuteSimple(string code, System.Threading.CancellationToken cancellationToken)
         {
@@ -10452,12 +10481,68 @@ namespace FenBrowser.FenEngine.Core
                         return FenValue.FromError(errMsg);
                     }
 
+                    DevToolsCore.Instance.RegisterSource(url, code);
+
+                    // Bytecode-first execution path (conservative guardrails).
+                    if (ShouldAttemptCoreBytecode(program))
+                    {
+                        if (TryCompileCoreBytecode(program, out var compiledBlock, out var compileFallbackReason))
+                        {
+                            try
+                            {
+                                var vm = new FenBrowser.FenEngine.Core.Bytecode.VM.VirtualMachine();
+                                var bytecodeResult = vm.Execute(compiledBlock, _globalEnv);
+                                sw.Stop();
+                                try
+                                {
+                                    System.IO.File.AppendAllText(logPath,
+                                        $"[SUCCESS-BYTECODE] {url} (len={codeLen}, {sw.ElapsedMilliseconds}ms)\n");
+                                }
+                                catch
+                                {
+                                }
+
+                                return bytecodeResult;
+                            }
+                            catch (Exception vmEx)
+                            {
+                                // Do not re-run in interpreter after VM runtime error to avoid double side effects.
+                                sw.Stop();
+                                try
+                                {
+                                    System.IO.File.AppendAllText(logPath,
+                                        $"[BYTECODE-RUNTIME-ERROR] {url} (len={codeLen}, {sw.ElapsedMilliseconds}ms)\n" +
+                                        $"  Exception: {vmEx.GetType().Name}\n" +
+                                        $"  Message: {vmEx.Message}\n" +
+                                        $"  Stack:\n  " + vmEx.StackTrace?.Replace("\n", "\n  ") + "\n\n");
+                                }
+                                catch
+                                {
+                                }
+
+                                FenLogger.Error($"[FenRuntime] Bytecode runtime error: {vmEx.Message}", LogCategory.JavaScript, vmEx);
+                                return FenValue.FromError($"[[DEBUG_TRACE]] {vmEx.GetType().Name}: {vmEx.Message}\n{vmEx.StackTrace}");
+                            }
+                        }
+                        else
+                        {
+                            try
+                            {
+                                System.IO.File.AppendAllText(logPath,
+                                    $"[BYTECODE-FALLBACK] {url} (len={codeLen})\n" +
+                                    $"  Reason: {compileFallbackReason}\n");
+                            }
+                            catch
+                            {
+                            }
+                        }
+                    }
+
                     var interpreter = new Interpreter();
                     interpreter.CancellationToken = cancellationToken;
 
                     // Register with DevTools
                     DevToolsCore.Instance.SetInterpreter(interpreter);
-                    DevToolsCore.Instance.RegisterSource(url, code);
 
                     var result = interpreter.Eval(program, _globalEnv, _context);
 
@@ -10500,6 +10585,168 @@ namespace FenBrowser.FenEngine.Core
                 FenLogger.Error($"[FenRuntime] Runtime error: {ex.Message}", LogCategory.JavaScript, ex);
                 return FenValue.FromError($"[[DEBUG_TRACE]] {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
             }
+        }
+
+        private static bool IsCoreBytecodeEnabled()
+        {
+            var raw = Environment.GetEnvironmentVariable("FEN_USE_CORE_BYTECODE");
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return true;
+            }
+
+            return !string.Equals(raw, "0", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(raw, "false", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(raw, "off", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool ShouldAttemptCoreBytecode(Program program)
+        {
+            if (!IsCoreBytecodeEnabled() || program == null)
+            {
+                return false;
+            }
+
+            // If global scope already contains interpreter-only JS functions, avoid running
+            // call-heavy scripts in bytecode mode (VM cannot execute AST-only function bodies).
+            if (HasInterpreterOnlyGlobalFunctions() &&
+                (AstContainsNodeType<CallExpression>(program) || AstContainsNodeType<NewExpression>(program)))
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private bool HasInterpreterOnlyGlobalFunctions()
+        {
+            foreach (var kvp in _globalEnv.InspectVariables())
+            {
+                var value = kvp.Value;
+                if (!value.IsFunction)
+                {
+                    continue;
+                }
+
+                var fn = value.AsFunction();
+                if (fn != null && !fn.IsNative && fn.BytecodeBlock == null)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool TryCompileCoreBytecode(Program program, out FenBrowser.FenEngine.Core.Bytecode.CodeBlock compiledBlock, out string fallbackReason)
+        {
+            compiledBlock = null;
+            fallbackReason = null;
+
+            try
+            {
+                var compiler = new FenBrowser.FenEngine.Core.Bytecode.Compiler.BytecodeCompiler();
+                compiledBlock = compiler.Compile(program);
+                return true;
+            }
+            catch (NotImplementedException ex)
+            {
+                fallbackReason = ex.Message;
+                return false;
+            }
+            catch (Exception ex) when (IsLikelyBytecodeCompileUnsupported(ex))
+            {
+                fallbackReason = ex.Message;
+                return false;
+            }
+        }
+
+        private static bool IsLikelyBytecodeCompileUnsupported(Exception ex)
+        {
+            var message = ex?.Message ?? string.Empty;
+            return message.IndexOf("Compiler:", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("not supported", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("Node type", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool AstContainsNodeType<TNode>(AstNode root) where TNode : AstNode
+        {
+            if (root == null)
+            {
+                return false;
+            }
+
+            var stack = new Stack<object>();
+            stack.Push(root);
+
+            while (stack.Count > 0)
+            {
+                var current = stack.Pop();
+                if (current == null)
+                {
+                    continue;
+                }
+
+                if (current is TNode)
+                {
+                    return true;
+                }
+
+                if (current is AstNode astNode)
+                {
+                    var props = astNode.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance);
+                    foreach (var prop in props)
+                    {
+                        if (!prop.CanRead || prop.GetIndexParameters().Length != 0)
+                        {
+                            continue;
+                        }
+
+                        object value;
+                        try
+                        {
+                            value = prop.GetValue(astNode);
+                        }
+                        catch
+                        {
+                            continue;
+                        }
+
+                        if (value == null || value is string)
+                        {
+                            continue;
+                        }
+
+                        if (value is IDictionary dictionary)
+                        {
+                            foreach (var dictValue in dictionary.Values)
+                            {
+                                if (dictValue != null)
+                                {
+                                    stack.Push(dictValue);
+                                }
+                            }
+                            continue;
+                        }
+
+                        if (value is IEnumerable enumerable)
+                        {
+                            foreach (var item in enumerable)
+                            {
+                                if (item != null)
+                                {
+                                    stack.Push(item);
+                                }
+                            }
+                            continue;
+                        }
+
+                        stack.Push(value);
+                    }
+                }
+            }
+
+            return false;
         }
 
 
@@ -11339,6 +11586,108 @@ namespace FenBrowser.FenEngine.Core
         #endregion
 
         #region Promise API Helpers
+
+        /// <summary>
+        /// Promise constructor wired to JsPromise (microtask-driven semantics).
+        /// This is used for global Promise registration.
+        /// </summary>
+        private FenFunction CreatePromiseConstructorModern()
+        {
+            FenValue GetIterableOrEmpty(FenValue[] args)
+            {
+                if (args.Length > 0 && (args[0].IsObject || args[0].IsFunction))
+                    return args[0];
+
+                var empty = FenObject.CreateArray();
+                empty.Set("length", FenValue.FromNumber(0));
+                return FenValue.FromObject(empty);
+            }
+
+            var promiseCtor = new FenFunction("Promise", (args, thisVal) =>
+            {
+                if (args.Length == 0 || !args[0].IsFunction)
+                    return FenValue.FromError("TypeError: Promise resolver is not a function");
+
+                return FenValue.FromObject(new JsPromise(args[0], _context));
+            });
+
+            promiseCtor.Set("resolve", FenValue.FromFunction(new FenFunction("resolve", (args, thisVal) =>
+            {
+                var value = args.Length > 0 ? args[0] : FenValue.Undefined;
+                return FenValue.FromObject(JsPromise.Resolve(value, _context));
+            })));
+
+            promiseCtor.Set("reject", FenValue.FromFunction(new FenFunction("reject", (args, thisVal) =>
+            {
+                var reason = args.Length > 0 ? args[0] : FenValue.Undefined;
+                return FenValue.FromObject(JsPromise.Reject(reason, _context));
+            })));
+
+            promiseCtor.Set("all", FenValue.FromFunction(new FenFunction("all", (args, thisVal) =>
+            {
+                return FenValue.FromObject(JsPromise.All(GetIterableOrEmpty(args), _context));
+            })));
+
+            promiseCtor.Set("race", FenValue.FromFunction(new FenFunction("race", (args, thisVal) =>
+            {
+                return FenValue.FromObject(JsPromise.Race(GetIterableOrEmpty(args), _context));
+            })));
+
+            promiseCtor.Set("allSettled", FenValue.FromFunction(new FenFunction("allSettled", (args, thisVal) =>
+            {
+                return FenValue.FromObject(JsPromise.AllSettled(GetIterableOrEmpty(args), _context));
+            })));
+
+            promiseCtor.Set("any", FenValue.FromFunction(new FenFunction("any", (args, thisVal) =>
+            {
+                return FenValue.FromObject(JsPromise.Any(GetIterableOrEmpty(args), _context));
+            })));
+
+            promiseCtor.Set("withResolvers", FenValue.FromFunction(new FenFunction("withResolvers", (args, thisVal) =>
+            {
+                FenFunction resolveFn = null;
+                FenFunction rejectFn = null;
+
+                var executor = new FenFunction("withResolversExecutor", (exArgs, _) =>
+                {
+                    resolveFn = exArgs.Length > 0 && exArgs[0].IsFunction ? exArgs[0].AsFunction() : null;
+                    rejectFn = exArgs.Length > 1 && exArgs[1].IsFunction ? exArgs[1].AsFunction() : null;
+                    return FenValue.Undefined;
+                });
+
+                var result = new FenObject();
+                result.Set("promise", FenValue.FromObject(new JsPromise(FenValue.FromFunction(executor), _context)));
+                result.Set("resolve", resolveFn != null ? FenValue.FromFunction(resolveFn) : FenValue.Undefined);
+                result.Set("reject", rejectFn != null ? FenValue.FromFunction(rejectFn) : FenValue.Undefined);
+                return FenValue.FromObject(result);
+            })));
+
+            promiseCtor.Set("try", FenValue.FromFunction(new FenFunction("try", (args, thisVal) =>
+            {
+                if (args.Length == 0 || !args[0].IsFunction)
+                {
+                    return FenValue.FromObject(JsPromise.Reject(
+                        FenValue.FromString("TypeError: Promise.try requires a callable"), _context));
+                }
+
+                var fn = args[0].AsFunction();
+                var fnArgs = args.Skip(1).ToArray();
+                try
+                {
+                    var result = fn.Invoke(fnArgs, _context);
+                    if (result.IsObject && result.AsObject() is JsPromise promiseResult)
+                        return FenValue.FromObject(promiseResult);
+
+                    return FenValue.FromObject(JsPromise.Resolve(result, _context));
+                }
+                catch (Exception ex)
+                {
+                    return FenValue.FromObject(JsPromise.Reject(FenValue.FromString(ex.Message), _context));
+                }
+            })));
+
+            return promiseCtor;
+        }
 
         /// <summary>
         /// Creates the Promise constructor object with static methods

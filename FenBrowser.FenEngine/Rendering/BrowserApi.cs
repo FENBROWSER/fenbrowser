@@ -2598,6 +2598,15 @@ pre {{
             return hit;
         }
 
+        /// <summary>
+        /// Resolve a DOM element at viewport coordinates.
+        /// Coordinates are interpreted in viewport space (scroll offset is applied internally).
+        /// </summary>
+        public Element HitTestElementAtViewportPoint(float x, float y)
+        {
+            return FindElementAtPoint(x, y);
+        }
+
         private Element _focusedElement;
 
         private int _cursorIndex = 0;
@@ -2767,6 +2776,16 @@ pre {{
                 }
             }
             
+            // Keep native control activation resilient even when page scripts call
+            // preventDefault() on wrapper click handlers.
+            if (tag == "input" ||
+                tag == "textarea" ||
+                tag == "button" ||
+                tag == "select" ||
+                string.Equals(element.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase))
+            {
+                allowDefaultActivation = true;
+            }
             // Handle summary clicks — toggle parent details[open]
             if (tag == "summary")
             {
