@@ -134,6 +134,26 @@ namespace FenBrowser.FenEngine.Testing
         {
             var result = new TestExecutionResult { TestFile = testFile };
             var sw = System.Diagnostics.Stopwatch.StartNew();
+
+            if (string.IsNullOrWhiteSpace(testFile) || !File.Exists(testFile))
+            {
+                result.Success = false;
+                result.Error = $"Test file not found: {testFile}";
+                result.CompletionSignal = "invalid-test-file";
+                sw.Stop();
+                result.Duration = sw.Elapsed;
+                return result;
+            }
+
+            if (_navigator == null)
+            {
+                result.Success = false;
+                result.Error = "Navigator delegate is required to execute WPT tests.";
+                result.CompletionSignal = "no-navigator";
+                sw.Stop();
+                result.Duration = sw.Elapsed;
+                return result;
+            }
             
             try
             {
@@ -141,7 +161,7 @@ namespace FenBrowser.FenEngine.Testing
                 WebAPIs.TestHarnessAPI.EnableTestMode(_timeoutMs);
                 WebAPIs.TestConsoleCapture.StartCapture();
                 
-                // TODO: Load and execute the test file in headless mode
+                // Navigate and wait for a structured completion signal from the test harness.
                 var execution = await ExecuteTestAsync(testFile, verbose);
                 result.HarnessCompleted = execution.HarnessCompleted;
                 result.TimedOut = execution.TimedOut;
@@ -230,15 +250,7 @@ namespace FenBrowser.FenEngine.Testing
             
             // 1. Navigate
             if (verbose) Console.WriteLine($"[WPT] Navigating to {uri}");
-            
-            if (_navigator != null)
-            {
-                await _navigator(uri);
-            }
-            else
-            {
-               if (verbose) Console.WriteLine("[WPT] Warning: No Navigator delegate provided.");
-            }
+            await _navigator(uri);
 
             // 2. Wait for structured completion signals from testharness / testRunner bridge.
             var timeoutAt = DateTime.UtcNow.AddMilliseconds(_timeoutMs);
