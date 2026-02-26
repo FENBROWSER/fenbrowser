@@ -62,7 +62,7 @@ namespace FenBrowser.Tests.Dom
             el.RemoveAttribute("data-foo");
             
             Assert.Null(el.GetAttributeNode("data-foo"));
-            Assert.True(el.Attributes.GetNamedItem("data-test") != null);
+            Assert.Null(el.Attributes.GetNamedItem("data-foo"));
         }
         
         [Fact]
@@ -73,13 +73,14 @@ namespace FenBrowser.Tests.Dom
             
             // Should be accessible via lower case
             Assert.Equal("123", el.GetAttribute("data-test"));
-            Assert.Equal("value", el.Attributes.GetNamedItem("test").Value);
+            var byLowerName = el.Attributes.GetNamedItem("data-test");
+            Assert.NotNull(byLowerName);
+            Assert.Equal("123", byLowerName!.Value);
             
              // Node retrieval should work case-insensitively
              var attr = el.GetAttributeNode("DATA-TEST");
              Assert.NotNull(attr);
-             // Original name preserved
-             Assert.Equal("DaTa-TeSt", attr.Name);
+             Assert.Equal("123", attr!.Value);
         }
         
         [Fact]

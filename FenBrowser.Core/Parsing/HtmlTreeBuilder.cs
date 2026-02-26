@@ -470,6 +470,7 @@ namespace FenBrowser.Core.Parsing
             // Anything else?
             // "If the document is not an iframe srcdoc document..." -> Parse error, set quarks mode.
             // Switch to BeforeHtml and Reprocess
+            _document.Mode = QuirksMode.Quirks;
             SwitchTo(InsertionMode.BeforeHtml);
             return false; // Reprocess
         }

@@ -177,7 +177,7 @@ namespace FenBrowser.Tests.Html5lib
             var doc = Parse("<p>&lt;script&gt;</p>");
             var p = doc.Descendants().OfType<Element>().FirstOrDefault(e => e.TagName == "P");
             Assert.NotNull(p);
-            var text = p!.Children!.OfType<Text>().FirstOrDefault();
+            var text = p!.ChildNodes.OfType<Text>().FirstOrDefault();
             Assert.NotNull(text);
             Assert.Contains("<script>", text!.Data);
         }

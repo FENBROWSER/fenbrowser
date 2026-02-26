@@ -775,9 +775,9 @@ namespace FenBrowser.Core.Dom.V2
         {
             var clone = new Element(LocalName, _ownerDocument, NamespaceUri);
 
-            // Copy attributes
+            // Clone is an internal DOM copy operation; preserve parser-produced names verbatim.
             foreach (var attr in _attributes)
-                clone.SetAttribute(attr.Name, attr.Value);
+                clone.SetAttributeUnsafe(attr.Name, attr.Value);
 
             if (deep)
             {
