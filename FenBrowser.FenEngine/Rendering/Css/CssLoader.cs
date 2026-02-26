@@ -65,6 +65,17 @@ namespace FenBrowser.FenEngine.Rendering
             _keyframes.Clear();
             FontRegistry.Clear();
         }
+
+        private static string BuildParsedRuleCacheKey(string css, double? viewportWidth, double? viewportHeight)
+        {
+            string widthKey = viewportWidth.HasValue
+                ? viewportWidth.Value.ToString("R", CultureInfo.InvariantCulture)
+                : "null";
+            string heightKey = viewportHeight.HasValue
+                ? viewportHeight.Value.ToString("R", CultureInfo.InvariantCulture)
+                : "null";
+            return $"vw={widthKey};vh={heightKey};css={css}";
+        }
         // -------------------------------------------------------------------------
 
         public static List<MatchedRule> GetMatchedRules(Element element, List<CssSource> sources)
@@ -77,12 +88,13 @@ namespace FenBrowser.FenEngine.Rendering
                  try
                  {
                      List<NewCss.CssRule> rules;
+                     string parseCacheKey = BuildParsedRuleCacheKey(source.CssText, null, null);
                      lock (_parsedRulesCache)
                      {
-                         if (!_parsedRulesCache.TryGetValue(source.CssText, out rules))
+                         if (!_parsedRulesCache.TryGetValue(parseCacheKey, out rules))
                          {
-                             rules = ParseRules(source.CssText, source.SourceOrder, source.BaseUri, null, null, MapToNewCssOrigin(source.Origin));
-                             _parsedRulesCache[source.CssText] = rules;
+                             rules = ParseRules(source.CssText, source.SourceOrder, source.BaseUri, null, null, null, MapToNewCssOrigin(source.Origin));
+                             _parsedRulesCache[parseCacheKey] = rules;
                          }
                      }
 
@@ -432,19 +444,20 @@ namespace FenBrowser.FenEngine.Rendering
                         List<NewCss.CssRule> parsed = null;
                         bool cacheHit = false;
                         
+                        string parseCacheKey = BuildParsedRuleCacheKey(processedCss, viewportWidth, viewportHeight);
                         lock (_parsedRulesCache)
                         {
-                            cacheHit = _parsedRulesCache.TryGetValue(processedCss, out parsed);
+                            cacheHit = _parsedRulesCache.TryGetValue(parseCacheKey, out parsed);
                         }
                         
                         if (!cacheHit)
                         {
-                            parsed = ParseRules(processedCss, blob.SourceOrder, blob.BaseUri, viewportWidth, log, MapToNewCssOrigin(blob.Origin));
+                            parsed = ParseRules(processedCss, blob.SourceOrder, blob.BaseUri, viewportWidth, viewportHeight, log, MapToNewCssOrigin(blob.Origin));
                             lock (_parsedRulesCache)
                             {
-                                if (!_parsedRulesCache.ContainsKey(processedCss))
+                                if (!_parsedRulesCache.ContainsKey(parseCacheKey))
                                 {
-                                    _parsedRulesCache[processedCss] = parsed;
+                                    _parsedRulesCache[parseCacheKey] = parsed;
                                 }
                             }
                         }
@@ -1151,10 +1164,10 @@ namespace FenBrowser.FenEngine.Rendering
         }
         
         /// <summary>
-        /// Handle @container queries - conditional styles based on container size
-        /// For now, we use viewport width as the container size (simplified implementation)
+        /// Handle @container queries by keeping/removing blocks based on container dimensions.
+        /// Currently we use viewport dimensions as container fallback for global stylesheet evaluation.
         /// </summary>
-        private static string FlattenContainerQueries(string text, float viewportWidth, Action<string> log)
+        private static string FlattenContainerQueries(string text, float containerWidth, float containerHeight, Action<string> log)
         {
             if (string.IsNullOrEmpty(text)) return text;
             if (text.IndexOf("@container", StringComparison.OrdinalIgnoreCase) < 0) return text;
@@ -1181,12 +1194,10 @@ namespace FenBrowser.FenEngine.Rendering
                 int braceClose = FindMatchingBrace(text, braceOpen);
                 if (braceClose < 0) { i = braceOpen + 1; continue; }
 
-                // Parse the condition (between @container and {)
                 string condition = text.Substring(contPos + 10, braceOpen - contPos - 10).Trim();
                 string body = text.Substring(braceOpen + 1, braceClose - braceOpen - 1);
 
-                // Check if condition is met using viewport as container size
-                if (IsContainerConditionMet(condition, viewportWidth))
+                if (IsContainerConditionMet(condition, containerWidth, containerHeight))
                 {
                     result.Append(body);
                     log?.Invoke($"[CSS] @container condition met: {condition}");
@@ -1203,52 +1214,307 @@ namespace FenBrowser.FenEngine.Rendering
         }
         
         /// <summary>
-        /// Evaluate a @container condition against container (viewport) width
+        /// Evaluate a @container condition against container dimensions.
+        /// Supports min/max features, range syntax, and top-level and/or/not.
         /// </summary>
-        private static bool IsContainerConditionMet(string condition, float containerWidth)
+        private static bool IsContainerConditionMet(string condition, float containerWidth, float containerHeight)
         {
-            if (string.IsNullOrWhiteSpace(condition)) return true;
-            condition = condition.Trim().ToLowerInvariant();
-            
-            // Skip container name if present (e.g., "container-name (min-width: 400px)")
-            int parenIndex = condition.IndexOf('(');
-            if (parenIndex > 0 && !condition.StartsWith("("))
+            if (string.IsNullOrWhiteSpace(condition))
+                return true;
+
+            var normalized = Regex.Replace(condition.Trim().ToLowerInvariant(), @"\s+", " ");
+
+            // Strip optional container name: "@container card (min-width: 400px)".
+            // Do not strip logical operators like "not (...)"
+            int firstParen = normalized.IndexOf('(');
+            if (!normalized.StartsWith("(") && firstParen > 0)
             {
-                condition = condition.Substring(parenIndex);
+                var prefix = normalized.Substring(0, firstParen).Trim();
+                bool looksLikeContainerName =
+                    prefix.Length > 0 &&
+                    prefix.IndexOf(' ') < 0 &&
+                    !string.Equals(prefix, "not", StringComparison.Ordinal);
+
+                if (looksLikeContainerName)
+                {
+                    normalized = normalized.Substring(firstParen).Trim();
+                }
             }
-            
-            // Handle min-width: 400px
-            var minMatch = Regex.Match(condition, @"\(\s*min-width\s*:\s*([\d.]+)(px|em|rem|%)?\s*\)");
-            if (minMatch.Success)
+
+            if (string.IsNullOrWhiteSpace(normalized))
+                return true;
+
+            return EvaluateContainerExpression(normalized, containerWidth, containerHeight);
+        }
+
+        private static bool EvaluateContainerExpression(string expr, float containerWidth, float containerHeight)
+        {
+            expr = StripOuterParens(expr.Trim());
+            if (string.IsNullOrWhiteSpace(expr))
+                return false;
+
+            if (expr.StartsWith("not ", StringComparison.Ordinal))
             {
-                float minWidth = float.Parse(minMatch.Groups[1].Value);
-                string unit = minMatch.Groups[2].Value;
-                if (unit == "em" || unit == "rem") minWidth *= 16; // Approximate
-                return containerWidth >= minWidth;
+                return !EvaluateContainerExpression(expr.Substring(4).Trim(), containerWidth, containerHeight);
             }
-            
-            // Handle max-width: 400px
-            var maxMatch = Regex.Match(condition, @"\(\s*max-width\s*:\s*([\d.]+)(px|em|rem|%)?\s*\)");
-            if (maxMatch.Success)
+
+            var orParts = SplitTopLevel(expr, " or ");
+            if (orParts.Count > 1)
             {
-                float maxWidth = float.Parse(maxMatch.Groups[1].Value);
-                string unit = maxMatch.Groups[2].Value;
-                if (unit == "em" || unit == "rem") maxWidth *= 16;
-                return containerWidth <= maxWidth;
+                foreach (var part in orParts)
+                {
+                    if (EvaluateContainerExpression(part, containerWidth, containerHeight))
+                        return true;
+                }
+                return false;
             }
-            
-            // Handle width: 400px (exact)
-            var widthMatch = Regex.Match(condition, @"\(\s*width\s*:\s*([\d.]+)(px|em|rem|%)?\s*\)");
-            if (widthMatch.Success)
+
+            var andParts = SplitTopLevel(expr, " and ");
+            if (andParts.Count > 1)
             {
-                float width = float.Parse(widthMatch.Groups[1].Value);
-                string unit = widthMatch.Groups[2].Value;
-                if (unit == "em" || unit == "rem") width *= 16;
-                return Math.Abs(containerWidth - width) < 1;
+                foreach (var part in andParts)
+                {
+                    if (!EvaluateContainerExpression(part, containerWidth, containerHeight))
+                        return false;
+                }
+                return true;
             }
-            
-            // Default: include content if no recognizable condition
-            return true;
+
+            return EvaluateContainerFeature(expr, containerWidth, containerHeight);
+        }
+
+        private static bool EvaluateContainerFeature(string expr, float containerWidth, float containerHeight)
+        {
+            expr = StripOuterParens(expr.Trim());
+            if (string.IsNullOrWhiteSpace(expr))
+                return false;
+
+            // Chained range syntax: 400px <= width <= 900px
+            var chain = Regex.Match(expr, @"^(?<left>[^\s]+)\s*(?<op1><=|<|>=|>)\s*(?<feature>width|height|inline-size|block-size)\s*(?<op2><=|<|>=|>)\s*(?<right>[^\s]+)$");
+            if (chain.Success &&
+                TryGetContainerAxisValue(chain.Groups["feature"].Value, containerWidth, containerHeight, out var featureValue, out var referenceDimension) &&
+                TryParseContainerLength(chain.Groups["left"].Value, referenceDimension, out var leftValue) &&
+                TryParseContainerLength(chain.Groups["right"].Value, referenceDimension, out var rightValue))
+            {
+                bool leftOk = CompareContainerValues(leftValue, featureValue, chain.Groups["op1"].Value);
+                bool rightOk = CompareContainerValues(featureValue, rightValue, chain.Groups["op2"].Value);
+                return leftOk && rightOk;
+            }
+
+            // Min/max/property syntax: min-width: 500px, width: 640px
+            int colon = expr.IndexOf(':');
+            if (colon > 0)
+            {
+                var rawFeature = expr.Substring(0, colon).Trim();
+                var rawValue = expr.Substring(colon + 1).Trim();
+                string op = "=";
+
+                if (rawFeature.StartsWith("min-", StringComparison.Ordinal))
+                {
+                    rawFeature = rawFeature.Substring(4);
+                    op = ">=";
+                }
+                else if (rawFeature.StartsWith("max-", StringComparison.Ordinal))
+                {
+                    rawFeature = rawFeature.Substring(4);
+                    op = "<=";
+                }
+
+                if (TryGetContainerAxisValue(rawFeature, containerWidth, containerHeight, out var axisValue, out var axisReference) &&
+                    TryParseContainerLength(rawValue, axisReference, out var target))
+                {
+                    return CompareContainerValues(axisValue, target, op);
+                }
+
+                return false;
+            }
+
+            // Binary comparison syntax: width >= 600px, 1200px > width
+            var binary = Regex.Match(expr, @"^(?<left>[^\s]+)\s*(?<op>>=|<=|>|<|=)\s*(?<right>[^\s]+)$");
+            if (binary.Success)
+            {
+                var left = binary.Groups["left"].Value;
+                var right = binary.Groups["right"].Value;
+                var op = binary.Groups["op"].Value;
+
+                if (TryGetContainerAxisValue(left, containerWidth, containerHeight, out var leftAxis, out var leftReference) &&
+                    TryParseContainerLength(right, leftReference, out var rightCompareValue))
+                {
+                    return CompareContainerValues(leftAxis, rightCompareValue, op);
+                }
+
+                if (TryGetContainerAxisValue(right, containerWidth, containerHeight, out var rightAxis, out var rightReference) &&
+                    TryParseContainerLength(left, rightReference, out var leftCompareValue))
+                {
+                    return CompareContainerValues(leftCompareValue, rightAxis, op);
+                }
+            }
+
+            // Unknown/unsupported feature should not be treated as a match.
+            return false;
+        }
+
+        private static bool TryGetContainerAxisValue(string feature, float containerWidth, float containerHeight, out float value, out float referenceDimension)
+        {
+            value = 0;
+            referenceDimension = 0;
+            if (string.IsNullOrWhiteSpace(feature))
+                return false;
+
+            switch (feature.Trim().ToLowerInvariant())
+            {
+                case "width":
+                case "inline-size":
+                    value = containerWidth;
+                    referenceDimension = containerWidth;
+                    return true;
+                case "height":
+                case "block-size":
+                    value = containerHeight;
+                    referenceDimension = containerHeight;
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private static bool TryParseContainerLength(string token, float referenceDimension, out float value)
+        {
+            value = 0;
+            if (string.IsNullOrWhiteSpace(token))
+                return false;
+
+            token = token.Trim().ToLowerInvariant();
+
+            if (token.EndsWith("px", StringComparison.Ordinal))
+            {
+                return float.TryParse(token.Substring(0, token.Length - 2), NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+            }
+
+            if (token.EndsWith("rem", StringComparison.Ordinal))
+            {
+                if (float.TryParse(token.Substring(0, token.Length - 3), NumberStyles.Float, CultureInfo.InvariantCulture, out var rem))
+                {
+                    value = rem * 16f;
+                    return true;
+                }
+                return false;
+            }
+
+            if (token.EndsWith("em", StringComparison.Ordinal))
+            {
+                if (float.TryParse(token.Substring(0, token.Length - 2), NumberStyles.Float, CultureInfo.InvariantCulture, out var em))
+                {
+                    value = em * 16f;
+                    return true;
+                }
+                return false;
+            }
+
+            if (token.EndsWith("%", StringComparison.Ordinal))
+            {
+                if (float.TryParse(token.Substring(0, token.Length - 1), NumberStyles.Float, CultureInfo.InvariantCulture, out var pct))
+                {
+                    value = referenceDimension * (pct / 100f);
+                    return true;
+                }
+                return false;
+            }
+
+            return float.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+        }
+
+        private static bool CompareContainerValues(float left, float right, string op)
+        {
+            const float epsilon = 0.5f;
+            return op switch
+            {
+                ">" => left > right,
+                "<" => left < right,
+                ">=" => left >= right,
+                "<=" => left <= right,
+                "=" => Math.Abs(left - right) <= epsilon,
+                _ => false
+            };
+        }
+
+        private static string StripOuterParens(string expr)
+        {
+            if (string.IsNullOrWhiteSpace(expr))
+                return expr;
+
+            expr = expr.Trim();
+            bool changed = true;
+            while (changed && expr.Length >= 2 && expr[0] == '(' && expr[expr.Length - 1] == ')')
+            {
+                changed = false;
+                int depth = 0;
+                bool wrapsAll = true;
+                for (int i = 0; i < expr.Length; i++)
+                {
+                    char c = expr[i];
+                    if (c == '(') depth++;
+                    else if (c == ')') depth--;
+
+                    if (depth == 0 && i < expr.Length - 1)
+                    {
+                        wrapsAll = false;
+                        break;
+                    }
+                }
+
+                if (wrapsAll)
+                {
+                    expr = expr.Substring(1, expr.Length - 2).Trim();
+                    changed = true;
+                }
+            }
+
+            return expr;
+        }
+
+        private static List<string> SplitTopLevel(string expr, string separator)
+        {
+            var parts = new List<string>();
+            int depth = 0;
+            int start = 0;
+
+            for (int i = 0; i <= expr.Length - separator.Length;)
+            {
+                char c = expr[i];
+                if (c == '(')
+                {
+                    depth++;
+                    i++;
+                    continue;
+                }
+
+                if (c == ')')
+                {
+                    if (depth > 0) depth--;
+                    i++;
+                    continue;
+                }
+
+                if (depth == 0 && expr.AsSpan(i, separator.Length).Equals(separator.AsSpan(), StringComparison.Ordinal))
+                {
+                    parts.Add(expr.Substring(start, i - start).Trim());
+                    i += separator.Length;
+                    start = i;
+                    continue;
+                }
+
+                i++;
+            }
+
+            if (start == 0)
+            {
+                parts.Add(expr.Trim());
+                return parts;
+            }
+
+            parts.Add(expr.Substring(start).Trim());
+            return parts.Where(p => !string.IsNullOrWhiteSpace(p)).ToList();
         }
 
         /// <summary>
@@ -1444,7 +1710,14 @@ namespace FenBrowser.FenEngine.Rendering
         // Stage 2: Parsing rules
         // ===========================
 
-        private static List<NewCss.CssRule> ParseRules(string css, int sourceOrder, Uri baseForUrls, double? viewportWidth, Action<string> log, NewCss.CssOrigin origin = NewCss.CssOrigin.Author)
+        private static List<NewCss.CssRule> ParseRules(
+            string css,
+            int sourceOrder,
+            Uri baseForUrls,
+            double? viewportWidth,
+            double? viewportHeight,
+            Action<string> log,
+            NewCss.CssOrigin origin = NewCss.CssOrigin.Author)
         {
             var rules = new List<NewCss.CssRule>();
             if (string.IsNullOrWhiteSpace(css)) return rules;
@@ -1473,7 +1746,11 @@ namespace FenBrowser.FenEngine.Rendering
 
             // text = ExtractLayers(text, log); // REMOVED: Now handled by proper parsing
             
-            text = FlattenContainerQueries(text, (float)(viewportWidth ?? 1024), log);
+            text = FlattenContainerQueries(
+                text,
+                (float)(viewportWidth ?? 1024),
+                (float)(viewportHeight ?? (CssParser.MediaViewportHeight ?? 768)),
+                log);
              FenLogger.Debug($"[PERF-CSS] FlattenContainerQueries: {sw.ElapsedMilliseconds}ms", LogCategory.Rendering); sw.Restart();
 
              try { if (DEBUG_FILE_LOGGING) DebugLog(@"debug_full_css.txt", "\n--- PROCESSED CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch {}
@@ -1931,65 +2208,70 @@ private static bool EvaluateMediaQueryInternal(string query, double? viewportWid
 /// </summary>
 private static bool EvaluateRangeSyntax(string query, string feature, double value)
 {
-    // Look for range syntax patterns
-    // Pattern: (feature > value), (feature < value), (feature >= value), (feature <= value)
-    // Pattern: (value < feature < value), (value <= feature <= value)
+    if (string.IsNullOrWhiteSpace(query)) return true;
 
-    // Simple comparison: (width > 600px)
-    var simpleMatch = Regex.Match(query, $@"\(\s*{feature}\s*([<>=]+)\s*(\d+(?:\.\d+)?)\s*(px|em|rem)?\s*\)", RegexOptions.IgnoreCase);
-    if (simpleMatch.Success)
+    // Avoid matching inside names like "min-width"/"max-width".
+    string featureToken = $@"(?<![-\w]){Regex.Escape(feature)}(?![-\w])";
+    const string numberToken = @"(\d+(?:\.\d+)?)";
+    const string unitToken = @"(px|em|rem)?";
+
+    // Form: (width >= 600px)
+    var featureFirst = Regex.Matches(
+        query,
+        $@"\(?\s*{featureToken}\s*(<=|>=|<|>|=)\s*{numberToken}\s*{unitToken}\s*\)?",
+        RegexOptions.IgnoreCase);
+    foreach (Match match in featureFirst)
     {
-        string op = simpleMatch.Groups[1].Value;
-        if (double.TryParse(simpleMatch.Groups[2].Value, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double compareVal))
-        {
-            string unit = simpleMatch.Groups[3].Value.ToLowerInvariant();
-            if (unit == "em" || unit == "rem") compareVal *= 16;
-
-            return op switch
-            {
-                ">" => value > compareVal,
-                ">=" => value >= compareVal,
-                "<" => value < compareVal,
-                "<=" => value <= compareVal,
-                "=" => Math.Abs(value - compareVal) < 0.001,
-                _ => true
-            };
-        }
+        if (!TryParseRangeLength(match.Groups[2].Value, match.Groups[3].Value, out var compareVal))
+            return false;
+        if (!EvaluateRangeComparison(value, match.Groups[1].Value, compareVal))
+            return false;
     }
 
-    // Range: (600px <= width <= 1200px)
-    var rangeMatch = Regex.Match(query, $@"\(\s*(\d+(?:\.\d+)?)\s*(px|em|rem)?\s*([<>=]+)\s*{feature}\s*([<>=]+)\s*(\d+(?:\.\d+)?)\s*(px|em|rem)?\s*\)", RegexOptions.IgnoreCase);
-    if (rangeMatch.Success)
+    // Form: (600px <= width)
+    var valueFirst = Regex.Matches(
+        query,
+        $@"\(?\s*{numberToken}\s*{unitToken}\s*(<=|>=|<|>|=)\s*{featureToken}\s*\)?",
+        RegexOptions.IgnoreCase);
+    foreach (Match match in valueFirst)
     {
-        if (double.TryParse(rangeMatch.Groups[1].Value, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double minVal) &&
-            double.TryParse(rangeMatch.Groups[5].Value, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double maxVal))
-        {
-            string minUnit = rangeMatch.Groups[2].Value.ToLowerInvariant();
-            string maxUnit = rangeMatch.Groups[6].Value.ToLowerInvariant();
-            if (minUnit == "em" || minUnit == "rem") minVal *= 16;
-            if (maxUnit == "em" || maxUnit == "rem") maxVal *= 16;
-
-            string leftOp = rangeMatch.Groups[3].Value;
-            string rightOp = rangeMatch.Groups[4].Value;
-
-            bool leftOk = leftOp switch
-            {
-                "<" => minVal < value,
-                "<=" => minVal <= value,
-                _ => true
-            };
-            bool rightOk = rightOp switch
-            {
-                "<" => value < maxVal,
-                "<=" => value <= maxVal,
-                _ => true
-            };
-
-            return leftOk && rightOk;
-        }
+        if (!TryParseRangeLength(match.Groups[1].Value, match.Groups[2].Value, out var compareVal))
+            return false;
+        if (!EvaluateRangeComparison(compareVal, match.Groups[3].Value, value))
+            return false;
     }
 
-    return true; // No range syntax found for this feature
+    return true; // No range syntax found for this feature, or all matched predicates passed.
+}
+
+private static bool TryParseRangeLength(string numericPart, string unitPart, out double px)
+{
+    px = 0;
+    if (!double.TryParse(numericPart, NumberStyles.Any, CultureInfo.InvariantCulture, out var numeric))
+    {
+        return false;
+    }
+
+    var unit = (unitPart ?? string.Empty).ToLowerInvariant();
+    px = unit switch
+    {
+        "em" or "rem" => numeric * 16.0,
+        _ => numeric
+    };
+    return true;
+}
+
+private static bool EvaluateRangeComparison(double left, string op, double right)
+{
+    return op switch
+    {
+        ">" => left > right,
+        ">=" => left >= right,
+        "<" => left < right,
+        "<=" => left <= right,
+        "=" => Math.Abs(left - right) < 0.001,
+        _ => true
+    };
 }
 
 /// <summary>
@@ -2751,20 +3033,11 @@ private static double? ExtractPx(string text, string prop)
                     }
                     else
                     {
-                        // Extract color from complex shorthand (e.g. "url(...) no-repeat red").
-                        // Skip url() tokens, non-position/size keywords, and use the LAST color found
-                        // (per spec, background-color is always the last value in the last layer).
-                        var tokens = SplitTokens(bgShorthand);
-                        SKColor? lastColor = null;
-                        bool inUrl = false;
-                        foreach (var t in tokens)
-                        {
-                            if (t.StartsWith("url(", StringComparison.OrdinalIgnoreCase)) { inUrl = true; }
-                            if (inUrl) { if (t.EndsWith(")")) inUrl = false; continue; }
-                            var c = TryColor(t);
-                            if (c.HasValue) lastColor = c;
-                        }
-                        if (lastColor.HasValue) css.BackgroundColor = lastColor;
+                        // Extract color from complex shorthand (e.g. gradients/position-size/url + color).
+                        // Use only the last background layer per spec.
+                        var extractedColor = ExtractBackgroundColorFromShorthand(bgShorthand);
+                        if (extractedColor.HasValue)
+                            css.BackgroundColor = extractedColor;
                     }
                 }
             }
@@ -4775,6 +5048,116 @@ private static double? ExtractPx(string text, string prop)
             var parts = s.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
             for (int i = 0; i < parts.Length; i++)
                 yield return parts[i].Trim();
+        }
+
+        /// <summary>
+        /// Extract background-color from a complex background shorthand.
+        /// Uses last-layer semantics and keeps function tokens intact (rgb()/oklab()/etc).
+        /// </summary>
+        private static SKColor? ExtractBackgroundColorFromShorthand(string shorthand)
+        {
+            if (string.IsNullOrWhiteSpace(shorthand)) return null;
+
+            // Fast path: entire shorthand is a color.
+            var direct = TryColor(shorthand);
+            if (direct.HasValue) return direct;
+
+            var layers = SplitByComma(shorthand);
+            var lastLayer = layers.Count > 0 ? layers[layers.Count - 1] : shorthand;
+            var tokens = SplitTokensOutsideFunctions(lastLayer);
+
+            SKColor? lastColor = null;
+            foreach (var rawToken in tokens)
+            {
+                var token = rawToken?.Trim();
+                if (string.IsNullOrWhiteSpace(token)) continue;
+                if (token == "/") continue;
+                if (token.StartsWith("url(", StringComparison.OrdinalIgnoreCase)) continue;
+
+                var c = TryColor(token);
+                if (c.HasValue)
+                {
+                    lastColor = c;
+                }
+            }
+
+            return lastColor;
+        }
+
+        /// <summary>
+        /// Split by whitespace while preserving function arguments, e.g. rgb(1 2 3 / 50%).
+        /// </summary>
+        private static List<string> SplitTokensOutsideFunctions(string text)
+        {
+            var result = new List<string>();
+            if (string.IsNullOrWhiteSpace(text)) return result;
+
+            var sb = new StringBuilder();
+            int parenDepth = 0;
+            bool inSingleQuote = false;
+            bool inDoubleQuote = false;
+
+            void FlushToken()
+            {
+                if (sb.Length == 0) return;
+                result.Add(sb.ToString());
+                sb.Clear();
+            }
+
+            for (int i = 0; i < text.Length; i++)
+            {
+                char c = text[i];
+
+                if (inSingleQuote)
+                {
+                    sb.Append(c);
+                    if (c == '\'') inSingleQuote = false;
+                    continue;
+                }
+                if (inDoubleQuote)
+                {
+                    sb.Append(c);
+                    if (c == '"') inDoubleQuote = false;
+                    continue;
+                }
+
+                if (c == '\'')
+                {
+                    inSingleQuote = true;
+                    sb.Append(c);
+                    continue;
+                }
+                if (c == '"')
+                {
+                    inDoubleQuote = true;
+                    sb.Append(c);
+                    continue;
+                }
+
+                if (c == '(')
+                {
+                    parenDepth++;
+                    sb.Append(c);
+                    continue;
+                }
+                if (c == ')')
+                {
+                    if (parenDepth > 0) parenDepth--;
+                    sb.Append(c);
+                    continue;
+                }
+
+                if (char.IsWhiteSpace(c) && parenDepth == 0)
+                {
+                    FlushToken();
+                    continue;
+                }
+
+                sb.Append(c);
+            }
+
+            FlushToken();
+            return result;
         }
 
         private static bool ContainsToken(string list, string token)

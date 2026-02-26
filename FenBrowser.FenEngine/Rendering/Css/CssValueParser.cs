@@ -63,13 +63,18 @@ namespace FenBrowser.FenEngine.Rendering.Css
             if (i < value.Length && (value[i] == '-' || value[i] == '+')) i++;
             while (i < value.Length && (char.IsDigit(value[i]) || value[i] == '.')) i++;
 
-            // Handle scientific notation (e.g., 1e-10)
+            // Handle scientific notation (e.g., 1e-10) only when exponent digits are present.
+            // This avoids mis-parsing unit suffixes like "em" as an exponent marker.
             if (i < value.Length && (value[i] == 'e' || value[i] == 'E'))
             {
                 int j = i + 1;
                 if (j < value.Length && (value[j] == '-' || value[j] == '+')) j++;
+                int digitStart = j;
                 while (j < value.Length && char.IsDigit(value[j])) j++;
-                i = j;
+                if (j > digitStart)
+                {
+                    i = j;
+                }
             }
 
             if (i == 0) return new CssString(value);
