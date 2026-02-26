@@ -2701,11 +2701,11 @@ namespace FenBrowser.FenEngine.Layout
 
             if (tag == "SVG")
             {
-                if (ReplacedElementSizing.TryParseSvgViewBoxSize(elem, out float vbW, out float vbH))
+                if (ReplacedElementSizing.TryResolveIntrinsicSizeFromElement(tag, elem, out float svgW, out float svgH))
                 {
-                    intrinsicW = vbW;
-                    intrinsicH = vbH;
-                    FenLogger.Debug($"[SVG-VIEWBOX] Parsed viewBox => {intrinsicW}x{intrinsicH}");
+                    intrinsicW = svgW;
+                    intrinsicH = svgH;
+                    FenLogger.Debug($"[SVG-INTRINSIC] Resolved SVG intrinsic => {intrinsicW}x{intrinsicH}");
                 }
             }
             else if (tag == "IMG" && TryResolveImageIntrinsicSize(elem, out float bmpW, out float bmpH))

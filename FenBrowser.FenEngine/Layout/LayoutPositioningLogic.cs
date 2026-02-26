@@ -87,12 +87,21 @@ namespace FenBrowser.FenEngine.Layout
                 ReplacedElementSizing.TryGetLengthAttribute(element, "width", out attrW);
                 ReplacedElementSizing.TryGetLengthAttribute(element, "height", out attrH);
 
+                float intrinsicW = width;
+                float intrinsicH = height;
+                if ((intrinsicW <= 0f || intrinsicH <= 0f) &&
+                    ReplacedElementSizing.TryResolveIntrinsicSizeFromElement(tag, element, out float parsedIntrinsicW, out float parsedIntrinsicH))
+                {
+                    if (intrinsicW <= 0f) intrinsicW = parsedIntrinsicW;
+                    if (intrinsicH <= 0f) intrinsicH = parsedIntrinsicH;
+                }
+
                 var resolved = ReplacedElementSizing.ResolveReplacedSize(
                     tag,
                     style,
                     new SKSize(float.PositiveInfinity, float.PositiveInfinity),
-                    width,
-                    height,
+                    intrinsicW,
+                    intrinsicH,
                     attrW,
                     attrH,
                     constrainAutoToAvailableWidth: false);

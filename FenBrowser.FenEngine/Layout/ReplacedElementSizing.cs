@@ -82,6 +82,91 @@ namespace FenBrowser.FenEngine.Layout
             return width > 0f && height > 0f;
         }
 
+        /// <summary>
+        /// Resolve intrinsic content size from element metadata when available.
+        /// Used by layout fallback paths that run before image decode is available.
+        /// </summary>
+        public static bool TryResolveIntrinsicSizeFromElement(string tagUpper, Element element, out float width, out float height)
+        {
+            width = 0f;
+            height = 0f;
+            if (element == null || string.IsNullOrEmpty(tagUpper)) return false;
+
+            if (string.Equals(tagUpper, "SVG", StringComparison.Ordinal))
+            {
+                bool hasAttrW = TryGetLengthAttribute(element, "width", out float attrW);
+                bool hasAttrH = TryGetLengthAttribute(element, "height", out float attrH);
+
+                if (hasAttrW && hasAttrH && attrW > 0f && attrH > 0f)
+                {
+                    width = attrW;
+                    height = attrH;
+                    return true;
+                }
+
+                if (TryParseSvgViewBoxSize(element, out float vbW, out float vbH))
+                {
+                    if (hasAttrW && attrW > 0f)
+                    {
+                        width = attrW;
+                        height = vbW > 0f ? (attrW * (vbH / vbW)) : 0f;
+                        return width > 0f && height > 0f;
+                    }
+
+                    if (hasAttrH && attrH > 0f)
+                    {
+                        height = attrH;
+                        width = vbH > 0f ? (attrH * (vbW / vbH)) : 0f;
+                        return width > 0f && height > 0f;
+                    }
+
+                    // Material-style inline SVG icons use a large coordinate-space viewBox
+                    // (e.g. "0 -960 960 960") and rely on CSS sizing. If CSS is delayed or
+                    // missing, treating viewBox units as CSS pixels creates huge click-capturing
+                    // overlays. Use a safe icon fallback when this pattern is detected.
+                    if (IsLikelyMaterialIconViewBox(element, vbW, vbH))
+                    {
+                        width = 24f;
+                        height = vbW > 0f ? (24f * (vbH / vbW)) : 24f;
+                        return true;
+                    }
+
+                    width = vbW;
+                    height = vbH;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsLikelyMaterialIconViewBox(Element element, float viewBoxWidth, float viewBoxHeight)
+        {
+            if (element == null || viewBoxWidth <= 0f || viewBoxHeight <= 0f)
+            {
+                return false;
+            }
+
+            float ratio = viewBoxWidth / viewBoxHeight;
+            if (ratio < 0.5f || ratio > 2.0f)
+            {
+                return false;
+            }
+
+            if (viewBoxWidth < 256f || viewBoxHeight < 256f)
+            {
+                return false;
+            }
+
+            string ariaHidden = element.GetAttribute("aria-hidden");
+            string focusable = element.GetAttribute("focusable");
+            bool hiddenDecorative = string.Equals(ariaHidden, "true", StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(focusable, "false", StringComparison.OrdinalIgnoreCase);
+
+            // Coordinate-space icons are frequently decorative glyphs under interactive wrappers.
+            return hiddenDecorative;
+        }
+
         public static SKSize ResolveReplacedSize(
             string tagUpper,
             CssComputed style,

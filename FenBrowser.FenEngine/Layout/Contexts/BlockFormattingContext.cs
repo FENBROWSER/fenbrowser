@@ -280,13 +280,16 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         float attrH = 0f;
                         ReplacedElementSizing.TryGetLengthAttribute(replacedElement, "width", out attrW);
                         ReplacedElementSizing.TryGetLengthAttribute(replacedElement, "height", out attrH);
+                        float intrinsicW = 0f;
+                        float intrinsicH = 0f;
+                        ReplacedElementSizing.TryResolveIntrinsicSizeFromElement(t, replacedElement, out intrinsicW, out intrinsicH);
 
                         var resolved = ReplacedElementSizing.ResolveReplacedSize(
                             t,
                             blockBox.ComputedStyle,
                             state.AvailableSize,
-                            0f,
-                            0f,
+                            intrinsicW,
+                            intrinsicH,
                             attrW,
                             attrH,
                             constrainAutoToAvailableWidth: false);
