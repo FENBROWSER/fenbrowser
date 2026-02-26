@@ -327,9 +327,18 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         /// </summary>
         public void RunUntilEmpty()
         {
-            while (_taskQueue.HasPendingTasks || _animationFrameCallbacks.Count > 0)
+            while (_taskQueue.HasPendingTasks ||
+                   _animationFrameCallbacks.Count > 0 ||
+                   _microtaskQueue.HasPendingMicrotasks)
             {
-                ProcessNextTask();
+                if (_taskQueue.HasPendingTasks || _animationFrameCallbacks.Count > 0)
+                {
+                    ProcessNextTask();
+                    continue;
+                }
+
+                // No macro tasks left, but pending microtasks still need to run.
+                PerformMicrotaskCheckpoint();
             }
         }
 

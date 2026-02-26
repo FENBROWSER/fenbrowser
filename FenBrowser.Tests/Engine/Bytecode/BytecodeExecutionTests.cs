@@ -142,6 +142,80 @@ namespace FenBrowser.Tests.Engine.Bytecode
         }
 
         [Fact]
+        public void Bytecode_DivideModuloExponent_ShouldWork()
+        {
+            var result = Evaluate("var x = 20 / 5; var y = 20 % 6; var z = 2 ** 4; x + y + z;");
+            Assert.Equal(22, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_ComparisonVariants_ShouldWork()
+        {
+            var notEqual = Evaluate("1 != 2;");
+            Assert.True(notEqual.ToBoolean());
+
+            var strictNotEqual = Evaluate("1 !== '1';");
+            Assert.True(strictNotEqual.ToBoolean());
+
+            var lessOrEqual = Evaluate("2 <= 2;");
+            Assert.True(lessOrEqual.ToBoolean());
+
+            var greaterOrEqual = Evaluate("3 >= 2;");
+            Assert.True(greaterOrEqual.ToBoolean());
+        }
+
+        [Fact]
+        public void Bytecode_NullAndUndefinedLiterals_ShouldWork()
+        {
+            var result = Evaluate("var a = null; var b = undefined; typeof a + ',' + typeof b;");
+            Assert.Equal("object,undefined", result.AsString());
+        }
+
+        [Fact]
+        public void Bytecode_DoubleLiteral_AndConditionalExpression_ShouldWork()
+        {
+            var result = Evaluate("var x = 1.5; var y = (x > 2) ? 10 : 20; y;");
+            Assert.Equal(20, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_NullishCoalescingExpression_ShouldWork()
+        {
+            var result = Evaluate("var a = null ?? 7; var b = undefined ?? 9; var c = 0 ?? 5; a + b + c;");
+            Assert.Equal(16, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_UpdateExpressions_ShouldWork()
+        {
+            var result = Evaluate("var i = 1; var a = i++; var b = ++i; var c = i--; var d = --i; a + b + c + d + i;");
+            Assert.Equal(9, result.AsNumber());
+
+            var forLoopResult = Evaluate("var sum = 0; for (var i = 0; i < 4; i++) { sum = sum + i; } sum;");
+            Assert.Equal(6, forLoopResult.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_LogicalAssignment_ShouldWork()
+        {
+            var assignResult = Evaluate("var a = 0; a ||= 5; var b = 2; b &&= 7; var c = null; c ??= 9; a + b + c;");
+            Assert.Equal(21, assignResult.AsNumber());
+
+            var shortCircuitResult = Evaluate("var d = 4; d ||= 8; var e = 0; e &&= 10; var f = 11; f ??= 12; d + e + f;");
+            Assert.Equal(15, shortCircuitResult.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_BitwiseNot_AndDoWhile_ShouldWork()
+        {
+            var bitwiseNot = Evaluate("~5;");
+            Assert.Equal(-6, bitwiseNot.AsNumber());
+
+            var doWhile = Evaluate("var n = 0; do { n = n + 1; } while (n < 3); n;");
+            Assert.Equal(3, doWhile.AsNumber());
+        }
+
+        [Fact]
         public void Bytecode_FunctionDeclaration_ShouldCall()
         {
             var result = Evaluate("function add(a, b) { return a + b; } add(10, 20);");

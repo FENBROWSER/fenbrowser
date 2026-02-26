@@ -175,6 +175,8 @@ namespace FenBrowser.FenEngine.Core
                     case FunctionDeclarationStatement funcDeclStmt:
                         // Create function
                         var funcObj = new FenFunction(funcDeclStmt.Function.Parameters, funcDeclStmt.Function.Body, env);
+                        if (!string.IsNullOrEmpty(funcDeclStmt.Function.Name))
+                            funcObj.Name = funcDeclStmt.Function.Name;
                         funcObj.IsGenerator = funcDeclStmt.Function.IsGenerator;
                         funcObj.IsAsync = funcDeclStmt.Function.IsAsync;
                         if (!string.IsNullOrEmpty(funcDeclStmt.Function.Source))
@@ -228,6 +230,8 @@ namespace FenBrowser.FenEngine.Core
 
                     case FunctionLiteral funcLit:
                         var fenFunc = new FenFunction(funcLit.Parameters, funcLit.Body, env);
+                        if (!string.IsNullOrEmpty(funcLit.Name))
+                            fenFunc.Name = funcLit.Name;
                         fenFunc.IsGenerator = funcLit.IsGenerator;
                         // ES2019: Propagate source code
                         if (!string.IsNullOrEmpty(funcLit.Source))
@@ -2993,6 +2997,8 @@ namespace FenBrowser.FenEngine.Core
                     if (funcDecl.Function.Name == null) continue;
                     
                     var funcObj = new FenFunction(funcDecl.Function.Parameters, funcDecl.Function.Body, env);
+                    if (!string.IsNullOrEmpty(funcDecl.Function.Name))
+                        funcObj.Name = funcDecl.Function.Name;
                     funcObj.IsGenerator = funcDecl.Function.IsGenerator;
                     funcObj.IsAsync = funcDecl.Function.IsAsync;
                     if (!string.IsNullOrEmpty(funcDecl.Function.Source))
@@ -3067,9 +3073,11 @@ namespace FenBrowser.FenEngine.Core
                     // In Strict Mode, block-level functions are hoisted to block top.
                     // In Sloppy Mode, they are hoisted to function scope (Annex B).
                     
-                    if (context.StrictMode)
-                    {
-                         var funcObj = new FenFunction(funcDecl.Function.Parameters, funcDecl.Function.Body, env);
+                     if (context.StrictMode)
+                     {
+                          var funcObj = new FenFunction(funcDecl.Function.Parameters, funcDecl.Function.Body, env);
+                         if (!string.IsNullOrEmpty(funcDecl.Function.Name))
+                             funcObj.Name = funcDecl.Function.Name;
                          funcObj.IsGenerator = funcDecl.Function.IsGenerator;
                          funcObj.IsAsync = funcDecl.Function.IsAsync;
                          if (!string.IsNullOrEmpty(funcDecl.Function.Source)) funcObj.Source = funcDecl.Function.Source;
@@ -3077,9 +3085,11 @@ namespace FenBrowser.FenEngine.Core
 
                          env.Set(funcDecl.Function.Name, FenValue.FromFunction(funcObj));
                     }
-                    else
-                    {
-                         var funcObj = new FenFunction(funcDecl.Function.Parameters, funcDecl.Function.Body, env);
+                     else
+                     {
+                          var funcObj = new FenFunction(funcDecl.Function.Parameters, funcDecl.Function.Body, env);
+                         if (!string.IsNullOrEmpty(funcDecl.Function.Name))
+                             funcObj.Name = funcDecl.Function.Name;
                          funcObj.IsGenerator = funcDecl.Function.IsGenerator;
                          funcObj.IsAsync = funcDecl.Function.IsAsync;
                          if (!string.IsNullOrEmpty(funcDecl.Function.Source)) funcObj.Source = funcDecl.Function.Source;
@@ -3857,6 +3867,10 @@ namespace FenBrowser.FenEngine.Core
         {
             var env = new FenEnvironment(fn.Env);
             if (fn.LocalMap != null) env.InitializeFastStore(fn.LocalMap.Count);
+
+            bool functionDeclaresStrict =
+                fn.Body is BlockStatement fnBlock && HasUseStrictDirective(fnBlock.Statements);
+            bool strictThisBinding = context.StrictMode || functionDeclaresStrict;
             
             // Bind 'this'
             if (thisContext != null && !thisContext.IsNull && !thisContext.IsUndefined)
@@ -3867,7 +3881,7 @@ namespace FenBrowser.FenEngine.Core
             {
                 // In strict mode, 'this' is undefined if not provided
                 // In non-strict mode, 'this' is the global object
-                if (context.StrictMode)
+                if (strictThisBinding)
                 {
                     env.Set("this", FenValue.Undefined);
                 }

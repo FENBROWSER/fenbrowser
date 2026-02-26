@@ -116,6 +116,27 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 _stack[_sp++] = FenValue.FromNumber(left * right);
                                 break;
                             }
+                            case OpCode.Divide:
+                            {
+                                var right = _stack[--_sp].ToNumber();
+                                var left = _stack[--_sp].ToNumber();
+                                _stack[_sp++] = FenValue.FromNumber(left / right);
+                                break;
+                            }
+                            case OpCode.Modulo:
+                            {
+                                var right = _stack[--_sp].ToNumber();
+                                var left = _stack[--_sp].ToNumber();
+                                _stack[_sp++] = FenValue.FromNumber(left % right);
+                                break;
+                            }
+                            case OpCode.Exponent:
+                            {
+                                var right = _stack[--_sp].ToNumber();
+                                var left = _stack[--_sp].ToNumber();
+                                _stack[_sp++] = FenValue.FromNumber(Math.Pow(left, right));
+                                break;
+                            }
                             case OpCode.Equal:
                             {
                                 var right = _stack[--_sp];
@@ -128,6 +149,20 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 var right = _stack[--_sp];
                                 var left = _stack[--_sp];
                                 _stack[_sp++] = FenValue.FromBoolean(left.StrictEquals(right));
+                                break;
+                            }
+                            case OpCode.NotEqual:
+                            {
+                                var right = _stack[--_sp];
+                                var left = _stack[--_sp];
+                                _stack[_sp++] = FenValue.FromBoolean(!left.LooseEquals(right));
+                                break;
+                            }
+                            case OpCode.StrictNotEqual:
+                            {
+                                var right = _stack[--_sp];
+                                var left = _stack[--_sp];
+                                _stack[_sp++] = FenValue.FromBoolean(!left.StrictEquals(right));
                                 break;
                             }
                             case OpCode.LessThan:
@@ -144,6 +179,22 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 var left = _stack[--_sp];
                                 var result = FenValue.AbstractRelationalComparison(right, left, null, false);
                                 _stack[_sp++] = FenValue.FromBoolean(result.ToBoolean());
+                                break;
+                            }
+                            case OpCode.LessThanOrEqual:
+                            {
+                                var right = _stack[--_sp];
+                                var left = _stack[--_sp];
+                                var result = FenValue.AbstractRelationalComparison(right, left, null, false);
+                                _stack[_sp++] = FenValue.FromBoolean(!result.ToBoolean());
+                                break;
+                            }
+                            case OpCode.GreaterThanOrEqual:
+                            {
+                                var right = _stack[--_sp];
+                                var left = _stack[--_sp];
+                                var result = FenValue.AbstractRelationalComparison(left, right, null, true);
+                                _stack[_sp++] = FenValue.FromBoolean(!result.ToBoolean());
                                 break;
                             }
                             case OpCode.BitwiseAnd:
