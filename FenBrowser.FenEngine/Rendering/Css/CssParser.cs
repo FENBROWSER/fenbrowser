@@ -382,35 +382,43 @@ namespace FenBrowser.FenEngine.Rendering
                 if (open > 0 && close > open)
                 {
                     var inner = s.Substring(open + 1, close - open - 1);
-                    var parts = inner.Split(',');
-                    if (parts.Length >= 3)
+                    byte a = 255;
+
+                    // Legacy comma-separated syntax: rgb(10, 20, 30), rgba(10, 20, 30, 0.5)
+                    if (inner.Contains(","))
                     {
+                        var parts = inner.Split(',');
+                        if (parts.Length < 3) return null;
+
                         int r = ParseComponent(parts[0]);
                         int g = ParseComponent(parts[1]);
                         int b = ParseComponent(parts[2]);
-                        byte a = 255;
                         if (parts.Length >= 4)
                         {
-                            var aRaw = parts[3].Trim();
-                            if (aRaw.EndsWith("%"))
-                            {
-                                double pct;
-                                if (double.TryParse(aRaw.TrimEnd('%'), NumberStyles.Float, CultureInfo.InvariantCulture, out pct))
-                                {
-                                    pct = Math.Max(0, Math.Min(100, pct));
-                                    a = (byte)(pct / 100.0 * 255);
-                                }
-                            }
-                            else
-                            {
-                                double alpha;
-                                if (double.TryParse(aRaw, NumberStyles.Float, CultureInfo.InvariantCulture, out alpha))
-                                {
-                                    alpha = Math.Max(0, Math.Min(1, alpha));
-                                    a = (byte)(alpha * 255);
-                                }
-                            }
+                            a = ParseAlpha(parts[3].Trim());
                         }
+                        return new SKColor((byte)r, (byte)g, (byte)b, a);
+                    }
+
+                    // Modern space/slash syntax: rgb(10 20 30 / 50%)
+                    var normalized = inner.Replace("/", " / ");
+                    var tokens = normalized.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (tokens.Length >= 3)
+                    {
+                        int r = ParseComponent(tokens[0]);
+                        int g = ParseComponent(tokens[1]);
+                        int b = ParseComponent(tokens[2]);
+
+                        if (tokens.Length >= 5 && tokens[3] == "/")
+                        {
+                            a = ParseAlpha(tokens[4]);
+                        }
+                        else if (tokens.Length >= 4 && tokens[3] != "/")
+                        {
+                            // Lenient fallback for rgba-like 4th token without slash.
+                            a = ParseAlpha(tokens[3]);
+                        }
+
                         return new SKColor((byte)r, (byte)g, (byte)b, a);
                     }
                 }
