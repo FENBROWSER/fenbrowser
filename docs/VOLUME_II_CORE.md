@@ -303,6 +303,7 @@ The syntactic analyzer (DOM Construction).
 - **Template Mode Handling**: `InTemplate` now maps start tags to appropriate insertion modes (`InTable`, `InColumnGroup`, `InTableBody`, `InRow`, `InBody`) and reprocesses tokens using the template insertion-mode stack.
 - **Template Close/Reset**: Closing `</template>` now uses a shared close path that pops template scope, clears active-formatting markers, updates template mode stack, and resets insertion mode from stack state.
 - **Attribute Consistency**: Parsed HTML attributes are now assigned through `SetAttributeUnsafe` in tree-construction code so Core and Engine parser paths preserve equivalent raw attribute values (including inline handler/source text).
+- **Initial Mode Quirks Default**: When parsing starts without a doctype token, `HandleInitial(...)` now sets `Document.Mode = Quirks` before reprocessing in `BeforeHtml`, aligning with HTML5 initial-mode error-recovery expectations for missing-doctype documents.
 
 #### `StreamingHtmlParser.cs` (Lines 1-493)
 

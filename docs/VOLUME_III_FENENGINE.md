@@ -56,12 +56,28 @@ flowchart TD
 - `MinimalLayoutComputer.ShouldHide(...)` now keeps core table semantic elements visible and evaluates `ChildNodes` for content presence, preventing text-only table-cell content from being dropped during intrinsic sizing (`FenBrowser.FenEngine/Layout/MinimalLayoutComputer.cs`).
 - `InlineLayoutComputer.Compute(...)` now traverses `ChildNodes` (not element-only `Children`) in recursive/default inline flow paths, and `MinimalLayoutComputer` inline measure/re-layout entrypoints now pass pseudo-aware sources; this restores intrinsic sizing for text-only inline/table-cell content (`FenBrowser.FenEngine/Layout/InlineLayoutComputer.cs`, `FenBrowser.FenEngine/Layout/MinimalLayoutComputer.cs`).
 - `GridFormattingContext` now delegates box-tree grid layout to `GridLayoutComputer`, removing the legacy simplified explicit-column path and aligning typed computed-style grid behavior (`FenBrowser.FenEngine/Layout/Contexts/GridFormattingContext.cs`), with integration coverage in `FenBrowser.Tests/Layout/GridFormattingContextIntegrationTests.cs`.
+- Replaced-element fallback sizing now propagates SVG `viewBox` intrinsic dimensions through inline/block/flex/positioning fallback paths, preventing icon-style SVG controls from inflating to 300x150 when explicit CSS size is missing (`FenBrowser.FenEngine/Layout/ReplacedElementSizing.cs`, `LayoutPositioningLogic.cs`, `Contexts/InlineFormattingContext.cs`, `Contexts/BlockFormattingContext.cs`, `Contexts/FlexFormattingContext.cs`).
+- Inline SVG sizing now treats material-icon coordinate viewBoxes (e.g. `0 -960 960 960`) as icon-scale fallback when no explicit dimensions are present, preventing 960x960 hit-target inflation that caused accidental navigations on Google-like pages (`FenBrowser.FenEngine/Layout/ReplacedElementSizing.cs`, `Layout/MinimalLayoutComputer.cs`).
 - Layout integration regressions were hardened against parser tree-shape variability by using robust descendant discovery and stable `GetBox(...)` lookups in:
   - `FenBrowser.Tests/Layout/Acid2LayoutTests.cs`
   - `FenBrowser.Tests/Layout/TableLayoutIntegrationTests.cs`.
 - Owner verification for the layout tranche on 2026-02-20 confirmed:
   - `GridFormattingContextIntegrationTests`: 2/2 pass
   - `FenBrowser.Tests.Layout`: 90/90 pass.
+
+### 2.4 Standards Hardening (2026-02-25)
+
+- `WPTTestRunner.RunSingleTestAsync(...)` now fails fast when no navigator delegate is configured, returning deterministic `CompletionSignal="no-navigator"` and avoiding false timeout-based failures in verification pipelines (`FenBrowser.FenEngine/Testing/WPTTestRunner.cs`).
+- `CssLoader` container-query flatten/evaluation now supports width+height axes, top-level logical operators (`and` / `or` / `not`), range comparisons (`width >= 640px`, `1200px > width`), and chained range syntax (`400px <= width <= 900px`) with `px`/`em`/`rem`/`%` units (`FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`).
+- Container-query condition pre-processing now preserves logical-negation forms (`not (...)`) while still stripping optional container names, preventing false negatives in negated condition evaluation (`FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`).
+- `ParseRules(...)` now threads viewport height through container-query evaluation so height-based container conditions can affect cascade outcomes (`FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`).
+- `CssLoader` parsed-rule caching now keys by CSS text + viewport dimensions, preventing viewport-specific `@container`/media flatten results from being reused across incompatible viewport runs (`FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`).
+- Html5lib tree-builder entity-content regression now validates text nodes via `ChildNodes` (DOM-standard node list) rather than `Children` (element-only list), aligning verification with DOM V2 node-model semantics (`FenBrowser.Tests/Html5lib/Html5libTreeBuilderTests.cs`).
+- `CssValueParser.ParseNumeric(...)` now distinguishes scientific notation from unit suffixes by requiring exponent digits after `e/E`; values like `1.5em` no longer mis-parse as invalid exponent tokens and now produce typed length values (`FenBrowser.FenEngine/Rendering/Css/CssValueParser.cs`).
+- Benchmark regression tests now resolve fixture scripts from multiple workspace-relative candidates and treat absent benchmark fixtures as optional (early return), removing machine-specific hard failures from non-benchmark CI/local runs (`FenBrowser.Tests/Engine/BenchmarkTests.cs`).
+- Added regression coverage:
+  - `FenBrowser.Tests/Engine/CssContainerQueryTests.cs`
+  - `FenBrowser.Tests/Engine/WptTestRunnerTests.cs`
 
 ---
 
@@ -172,6 +188,7 @@ The high-level controller used by the UI.
   - `InterleavedParseUsed`, `InterleavedTokenBatchSize`, `InterleavedBatchCount`, `InterleavedFallbackUsed`.
 - Parse performance log lines now expose staged parse timing and checkpoint counts, improving diagnosis of token-heavy pages.
 - Incremental parse repaint path now emits bounded partial repaint checkpoints from parse callbacks using cloned DOM snapshots to avoid concurrent mutable-tree rendering.
+- DOM `Element.CloneNode(...)` now copies attributes via `SetAttributeUnsafe(...)` during internal clone operations so parser-produced non-XML attribute names do not throw and destabilize incremental parse repaint snapshots (`FenBrowser.Core/Dom/V2/Element.cs`).
 - Streaming preparse path is now integrated for large documents as a controlled pre-commit assist phase (bounded checkpoints + repaints), while final DOM correctness remains anchored to the production tree builder parse.
 - Production parser now supports interleaved tokenize/parse batches for large documents through `HtmlTreeBuilder.InterleavedTokenBatchSize`, and runtime parse policy chooses tiered batch sizes without introducing site-specific behavior.
 - Runtime parser integration now retries with interleaving disabled if an interleaved parse attempt fails, preserving production parser correctness and surfacing the event via `interleavedFallback` telemetry.
@@ -190,6 +207,9 @@ The engine supports a "Reverse Pipeline" to detect which element is under the mo
 ### 5.2 Scroll Management
 
 - `Rendering/Interaction/ScrollManager` honors CSS `scroll-snap-type` on both axes and `scroll-snap-align` on children, choosing the nearest snap target and animating via smooth scrolling.
+- Snap target selection now keeps X/Y candidate sets separate, applies container `scroll-padding-*` and child `scroll-margin-*` offsets, and uses recent input direction/velocity as a tie-breaker before snapping.
+- `NewPaintTreeBuilder` now wires scroll-state bounds from live descendant geometry and invokes snap resolution during scrollable paint-tree construction, so snap behavior is active in the renderer path instead of remaining helper-only.
+- Paint-tree snap invocation now requires recent (time-bounded) scroll input hints, preventing stale deltas/velocities from triggering late snaps after unrelated frames.
 
 ### 5.3 Input Overlays
 
@@ -202,6 +222,8 @@ Because drawing text inputs via Skia is complex (cursor, selection, IME), the en
 - Cursor initialization and typing now handle `contenteditable="true"` elements using `TextContent`, in addition to `<input>/<textarea>`, reducing "click but cannot type" regressions on modern DOM structures.
 - Pointer input dispatch now executes immediately (instead of being queued), and `mousemove` updates `ElementStateManager` hover chain with repaint trigger, restoring `:hover` visual feedback and interactive responsiveness.
 - `Rendering/Interaction/ScrollManager` now guards null element access in scroll-state APIs, preventing `ArgumentNullException (Parameter 'key')` during paint-tree build when scroll queries receive a transient null element.
+- `Rendering/BrowserApi.HandleElementClick(...)` now forces native control default activation (`input`, `textarea`, `button`, `select`, and `contenteditable`) even when wrapper-level script handlers call `preventDefault()`, restoring reliable focus/typing and form submit behavior on modern script-heavy pages.
+- `Rendering/BrowserApi` now exposes viewport-space DOM fallback hit testing (`HitTestElementAtViewportPoint(...)`) so host integration can recover click targets when paint-tree `NativeElement` is transiently unavailable.
 
 ---
 
@@ -322,7 +344,9 @@ Handles text measurement, shaping (via Skia), and line height calculations.
 
 #### `CssParser.cs` (Lines 1-500)
 
-Implements the primary CSS parser path with broad CSS Syntax support. Some Level 4 constructs (e.g. range context syntax in media features) are tracked as follow-up work.
+Implements the primary CSS parser path with broad CSS Syntax support, including Media Queries Level 4 range-context forms used in responsive stylesheets.
+- `CssLoader` background shorthand extraction is now function-aware for complex color tokens (e.g. `oklab(...)`, modern `rgb(... / ...)`) and honors last-layer color semantics in multi-layer backgrounds.
+- `CssParser.ParseColor(...)` now accepts modern CSS Color 4 space/slash `rgb()/rgba()` syntax (for example `rgb(10 20 30 / 50%)`) in addition to legacy comma syntax.
 
 - **Lines 50-120**: **`ParseStylesheet`**: Top-level entry point.
 - **Lines 200-300**: **`ParseRule`**: Handles selectors and declarations.
@@ -1025,3 +1049,83 @@ So you want to add `border-radius`? Follow these steps:
     - line baseline aggregation,
     - per-item baseline placement.
   - Eliminates inconsistent `0.8 * height` heuristic-only alignment for element-backed flex items.
+
+### 6.31 JavaScript Bytecode Core Parity Tranche JS-BC-1 (2026-02-26)
+
+- `Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Extended binary operator lowering to emit bytecode for:
+    - `**`, `!=`, `!==`, `<=`, `>=`.
+  - Added literal/expression lowering for:
+    - `NullLiteral`
+    - `UndefinedLiteral`
+    - `ExponentiationExpression`.
+
+- `Core/Bytecode/VM/VirtualMachine.cs`
+  - Added execution handlers for missing arithmetic/comparison opcodes:
+    - `Divide`
+    - `Modulo`
+    - `Exponent`
+    - `NotEqual`
+    - `StrictNotEqual`
+    - `LessThanOrEqual`
+    - `GreaterThanOrEqual`.
+  - This closes a core compiler/VM parity gap where opcodes existed in enum/emit paths but had no VM execution branch.
+
+- `Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Added regressions:
+    - `Bytecode_DivideModuloExponent_ShouldWork`
+    - `Bytecode_ComparisonVariants_ShouldWork`
+    - `Bytecode_NullAndUndefinedLiterals_ShouldWork`.
+
+### 6.32 JavaScript Runtime Bytecode-First Wiring Tranche JS-BC-2 (2026-02-26)
+
+- `Core/FenRuntime.cs`
+  - `ExecuteSimple(...)` now prefers `Core/Bytecode` VM execution before interpreter execution.
+  - Added compile-time fallback behavior:
+    - if bytecode compilation is unsupported for a script, runtime falls back to interpreter path.
+  - Added runtime safety guard:
+    - when global scope contains interpreter-only function bindings (non-native functions with `BytecodeBlock == null`), call-heavy scripts (`CallExpression`/`NewExpression`) skip bytecode path to avoid VM attempts to execute AST-only function bodies.
+  - Added environment toggle:
+    - `FEN_USE_CORE_BYTECODE=0|false|off` disables bytecode-first path.
+  - Added bytecode path diagnostics to script execution artifact:
+    - `[SUCCESS-BYTECODE]`
+    - `[BYTECODE-FALLBACK]`
+    - `[BYTECODE-RUNTIME-ERROR]`.
+
+- `Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+  - Added runtime integration regressions:
+    - `ExecuteSimple_BytecodeFirst_FunctionDeclarationProducesBytecodeFunction`
+    - `ExecuteSimple_CompileUnsupported_UsesInterpreterFallback`
+    - `ExecuteSimple_WithInterpreterOnlyGlobals_CallHeavyScriptAvoidsVmPath`.
+
+### 6.33 JavaScript Bytecode Expression Coverage Tranche JS-BC-3 (2026-02-26)
+
+- `Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Added lowering support for `DoubleLiteral` (numeric constant emission).
+  - Added lowering support for ternary `ConditionalExpression` (`condition ? consequent : alternate`) using branch opcodes and value-preserving expression flow.
+  - Added lowering support for `NullishCoalescingExpression` (`left ?? right`) via stack-dup + loose-null check (`left == null`) + branch selection.
+
+- `Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Added regressions:
+    - `Bytecode_DoubleLiteral_AndConditionalExpression_ShouldWork`
+    - `Bytecode_NullishCoalescingExpression_ShouldWork`.
+
+### 6.34 JavaScript Bytecode Control/Assignment Coverage Tranche JS-BC-4 (2026-02-26)
+
+- `Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Added lowering for update operators:
+    - postfix `++` / `--` (`InfixExpression` with null right operand)
+    - prefix `++` / `--` (`PrefixExpression`).
+  - Added lowering for logical assignment:
+    - `LogicalAssignmentExpression` (`||=`, `&&=`, `??=`) with short-circuit branch flow.
+  - Added lowering for additional AST nodes:
+    - `DoWhileStatement`
+    - `BitwiseNotExpression`
+    - `EmptyExpression`.
+
+- `Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Added regressions:
+    - `Bytecode_UpdateExpressions_ShouldWork`
+    - `Bytecode_LogicalAssignment_ShouldWork`
+    - `Bytecode_BitwiseNot_AndDoWhile_ShouldWork`.
+
