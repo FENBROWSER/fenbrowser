@@ -2,6 +2,7 @@ using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using SkiaSharp;
@@ -46,13 +47,37 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// <summary>
         /// Update scroll position for an element.
         /// </summary>
-        public void SetScrollPosition(Element element, float scrollX, float scrollY)
+        public void SetScrollPosition(Element element, float scrollX, float scrollY, bool fromUserInput = false)
         {
             if (element == null) return;
 
             var state = GetScrollState(element);
-            state.ScrollX = Math.Max(0, Math.Min(scrollX, state.MaxScrollX));
-            state.ScrollY = Math.Max(0, Math.Min(scrollY, state.MaxScrollY));
+            float previousX = state.ScrollX;
+            float previousY = state.ScrollY;
+            var now = DateTime.UtcNow;
+
+            state.ScrollX = ClampToKnownBounds(scrollX, state.MaxScrollX);
+            state.ScrollY = ClampToKnownBounds(scrollY, state.MaxScrollY);
+
+            var dtSeconds = (now - state.LastScrollUpdateUtc).TotalSeconds;
+            if (dtSeconds > 0.0001 && dtSeconds < 0.5)
+            {
+                state.LastVelocityX = (state.ScrollX - previousX) / (float)dtSeconds;
+                state.LastVelocityY = (state.ScrollY - previousY) / (float)dtSeconds;
+            }
+            else if (fromUserInput)
+            {
+                state.LastVelocityX = 0;
+                state.LastVelocityY = 0;
+            }
+
+            if (fromUserInput)
+            {
+                state.LastInputDeltaX = state.ScrollX - previousX;
+                state.LastInputDeltaY = state.ScrollY - previousY;
+            }
+
+            state.LastScrollUpdateUtc = now;
 
             FenLogger.Debug($"[ScrollManager] {element.TagName} scroll: ({state.ScrollX}, {state.ScrollY})", LogCategory.Rendering);
         }
@@ -85,7 +110,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             if (element == null) return;
 
             var state = GetScrollState(element);
-            SetScrollPosition(element, state.ScrollX + deltaX, state.ScrollY + deltaY);
+            SetScrollPosition(element, state.ScrollX + deltaX, state.ScrollY + deltaY, fromUserInput: true);
         }
 
         /// <summary>
@@ -173,6 +198,14 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         public void SmoothScrollTo(Element element, float targetX, float targetY, int durationMs = 300)
         {
             var state = GetScrollState(element);
+            targetX = ClampToKnownBounds(targetX, state.MaxScrollX);
+            targetY = ClampToKnownBounds(targetY, state.MaxScrollY);
+
+            if (Math.Abs(targetX - state.ScrollX) < 0.5f && Math.Abs(targetY - state.ScrollY) < 0.5f)
+            {
+                return;
+            }
+
             state.SmoothScrollTarget = (targetX, targetY);
             state.SmoothScrollStartTime = DateTime.UtcNow;
             state.SmoothScrollDurationMs = durationMs;
@@ -196,8 +229,8 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             var (startX, startY) = state.SmoothScrollStart;
             var (targetX, targetY) = state.SmoothScrollTarget;
 
-            state.ScrollX = (float)(startX + (targetX - startX) * eased);
-            state.ScrollY = (float)(startY + (targetY - startY) * eased);
+            state.ScrollX = ClampToKnownBounds((float)(startX + (targetX - startX) * eased), state.MaxScrollX);
+            state.ScrollY = ClampToKnownBounds((float)(startY + (targetY - startY) * eased), state.MaxScrollY);
 
             if (progress >= 1.0)
             {
@@ -234,55 +267,62 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
 
         public void ApplyScrollSnap(Element element, CssComputed style, List<float> snapPoints)
         {
-            if (style?.ScrollSnapType == null || snapPoints == null || snapPoints.Count == 0)
+            ApplyScrollSnap(element, style, snapPoints, snapPoints);
+        }
+
+        public void ApplyScrollSnap(Element element, CssComputed style, IReadOnlyList<float> snapPointsX, IReadOnlyList<float> snapPointsY)
+        {
+            if (style?.ScrollSnapType == null)
                 return;
 
             var state = GetScrollState(element);
             var snapType = style.ScrollSnapType.ToLowerInvariant();
+            bool mandatory = snapType.Contains("mandatory", StringComparison.Ordinal);
+            bool snapped = false;
 
-            // Simple Y-axis snap for now
-            if (snapType.Contains("y") || snapType.Contains("both") || snapType.Contains("block"))
+            float targetX = state.ScrollX;
+            float targetY = state.ScrollY;
+
+            if ((snapType.Contains("y", StringComparison.Ordinal) || snapType.Contains("both", StringComparison.Ordinal) || snapType.Contains("block", StringComparison.Ordinal)) &&
+                snapPointsY != null && snapPointsY.Count > 0)
             {
-                // Find nearest snap point
-                float nearestY = snapPoints[0];
-                float minDist = Math.Abs(state.ScrollY - nearestY);
+                float directionHintY = ResolveDirectionHint(state.LastInputDeltaY, state.LastVelocityY);
+                float nearestY = FindBestSnapPoint(state.ScrollY, snapPointsY, directionHintY);
+                float clampedY = ClampToKnownBounds(nearestY, state.MaxScrollY);
+                float minDist = Math.Abs(state.ScrollY - clampedY);
+                float thresholdY = Math.Max(24f, Math.Min(96f, state.ViewportHeight > 0 ? state.ViewportHeight * 0.08f : 50f));
 
-                foreach (var point in snapPoints)
+                if (mandatory || minDist < thresholdY)
                 {
-                    var dist = Math.Abs(state.ScrollY - point);
-                    if (dist < minDist)
-                    {
-                        minDist = dist;
-                        nearestY = point;
-                    }
-                }
-
-                // Snap if mandatory or close enough (proximity)
-                // Default threshold for proximity can be e.g. 50px
-                if (snapType.Contains("mandatory") || minDist < 50)
-                {
-                    // Trigger smooth scroll
-                    SmoothScrollTo(element, state.ScrollX, nearestY);
+                    targetY = clampedY;
+                    snapped = true;
                 }
             }
-            if (snapType.Contains("x") || snapType.Contains("both") || snapType.Contains("inline"))
-            {
-                float nearestX = state.ScrollX;
-                float minDistX = float.MaxValue;
-                foreach (var point in snapPoints)
-                {
-                    var dist = Math.Abs(state.ScrollX - point);
-                    if (dist < minDistX)
-                    {
-                        minDistX = dist;
-                        nearestX = point;
-                    }
-                }
 
-                if (snapType.Contains("mandatory") || minDistX < 50)
+            if ((snapType.Contains("x", StringComparison.Ordinal) || snapType.Contains("both", StringComparison.Ordinal) || snapType.Contains("inline", StringComparison.Ordinal)) &&
+                snapPointsX != null && snapPointsX.Count > 0)
+            {
+                float directionHintX = ResolveDirectionHint(state.LastInputDeltaX, state.LastVelocityX);
+                float nearestX = FindBestSnapPoint(state.ScrollX, snapPointsX, directionHintX);
+                float clampedX = ClampToKnownBounds(nearestX, state.MaxScrollX);
+                float minDistX = Math.Abs(state.ScrollX - clampedX);
+                float thresholdX = Math.Max(24f, Math.Min(96f, state.ViewportWidth > 0 ? state.ViewportWidth * 0.08f : 50f));
+
+                if (mandatory || minDistX < thresholdX)
                 {
-                    SmoothScrollTo(element, nearestX, state.ScrollY);
+                    targetX = clampedX;
+                    snapped = true;
                 }
+            }
+
+            if (snapped)
+            {
+                SmoothScrollTo(element, targetX, targetY);
+                // Consume user-input hint once snap has been scheduled.
+                state.LastInputDeltaX = 0;
+                state.LastInputDeltaY = 0;
+                state.LastVelocityX = 0;
+                state.LastVelocityY = 0;
             }
         }
 
@@ -301,24 +341,29 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         
         public void PerformSnap(Element element, CssComputed style, Func<Element, SKRect> getBox, Func<Element, CssComputed> getStyle = null)
         {
-            if (style == null || style.ScrollSnapType == null || style.ScrollSnapType == "none") return;
+            if (style == null || string.IsNullOrWhiteSpace(style.ScrollSnapType) || style.ScrollSnapType.Equals("none", StringComparison.OrdinalIgnoreCase)) return;
+            if (element == null || getBox == null) return;
+
+            var state = GetScrollState(element);
+            if (state == null || state.IsAnimating) return;
             
             var snapPoints = CalculateSnapPoints(element, style, getBox, getStyle);
-            ApplyScrollSnap(element, style, snapPoints);
+            ApplyScrollSnap(element, style, snapPoints.Horizontal, snapPoints.Vertical);
         }
 
-        private List<float> CalculateSnapPoints(Element container, CssComputed containerStyle, Func<Element, SKRect> getBox, Func<Element, CssComputed> getStyle)
+        private (List<float> Horizontal, List<float> Vertical) CalculateSnapPoints(Element container, CssComputed containerStyle, Func<Element, SKRect> getBox, Func<Element, CssComputed> getStyle)
         {
-            var points = new List<float>();
-            if (container.Children == null) return points;
+            var pointsX = new List<float>();
+            var pointsY = new List<float>();
+            if (container.Children == null) return (pointsX, pointsY);
             
             var containerBox = getBox(container);
-            if (containerBox.IsEmpty) return points;
+            if (containerBox.IsEmpty) return (pointsX, pointsY);
 
-            bool vertical = containerStyle.ScrollSnapType.Contains("y") || containerStyle.ScrollSnapType.Contains("block") || containerStyle.ScrollSnapType.Contains("both");
-            bool horizontal = containerStyle.ScrollSnapType.Contains("x") || containerStyle.ScrollSnapType.Contains("inline") || containerStyle.ScrollSnapType.Contains("both");
-            float padTop = (float)(containerStyle.Padding.Top);
-            float padLeft = (float)(containerStyle.Padding.Left);
+            var snapType = containerStyle.ScrollSnapType?.ToLowerInvariant() ?? string.Empty;
+            bool vertical = snapType.Contains("y", StringComparison.Ordinal) || snapType.Contains("block", StringComparison.Ordinal) || snapType.Contains("both", StringComparison.Ordinal);
+            bool horizontal = snapType.Contains("x", StringComparison.Ordinal) || snapType.Contains("inline", StringComparison.Ordinal) || snapType.Contains("both", StringComparison.Ordinal);
+            var (padTop, padRight, padBottom, padLeft) = ResolveScrollPadding(containerStyle);
             
             foreach (var child in container.Children) 
             {
@@ -328,30 +373,222 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
                     if (childBox.IsEmpty) continue;
 
                     var childStyle = getStyle?.Invoke(childEl);
-                    string align = childStyle?.ScrollSnapAlign ?? "start";
+                    string align = (childStyle?.ScrollSnapAlign ?? "start").ToLowerInvariant();
+                    var (marginTop, marginRight, marginBottom, marginLeft) = ResolveScrollMargin(childStyle);
 
                     if (vertical)
                     {
-                        float snapPos = childBox.Top - containerBox.Top - padTop; // start
-                        if (align.Contains("center"))
-                            snapPos = childBox.Top - containerBox.Top - ((containerBox.Height - childBox.Height) / 2f);
-                        else if (align.Contains("end"))
-                            snapPos = childBox.Bottom - containerBox.Bottom + padTop;
-                        points.Add(snapPos);
+                        float snapPos = childBox.Top - containerBox.Top - padTop - marginTop; // start
+                        if (align.Contains("center", StringComparison.Ordinal))
+                        {
+                            float centerBias = (marginBottom - marginTop) * 0.5f;
+                            snapPos = childBox.Top - containerBox.Top - ((containerBox.Height - childBox.Height) / 2f) + centerBias;
+                        }
+                        else if (align.Contains("end", StringComparison.Ordinal))
+                        {
+                            snapPos = childBox.Bottom - containerBox.Bottom + padBottom + marginBottom;
+                        }
+                        pointsY.Add(snapPos);
                     }
 
                     if (horizontal)
                     {
-                        float snapPosX = childBox.Left - containerBox.Left - padLeft; // start
-                        if (align.Contains("center"))
-                            snapPosX = childBox.Left - containerBox.Left - ((containerBox.Width - childBox.Width) / 2f);
-                        else if (align.Contains("end"))
-                            snapPosX = childBox.Right - containerBox.Right + padLeft;
-                        points.Add(snapPosX);
+                        float snapPosX = childBox.Left - containerBox.Left - padLeft - marginLeft; // start
+                        if (align.Contains("center", StringComparison.Ordinal))
+                        {
+                            float centerBiasX = (marginRight - marginLeft) * 0.5f;
+                            snapPosX = childBox.Left - containerBox.Left - ((containerBox.Width - childBox.Width) / 2f) + centerBiasX;
+                        }
+                        else if (align.Contains("end", StringComparison.Ordinal))
+                        {
+                            snapPosX = childBox.Right - containerBox.Right + padRight + marginRight;
+                        }
+                        pointsX.Add(snapPosX);
                     }
                 }
             }
-            return points;
+            return (pointsX, pointsY);
+        }
+
+        private static float ClampToKnownBounds(float value, float max)
+        {
+            if (max > 0.001f)
+            {
+                return Math.Max(0, Math.Min(value, max));
+            }
+            return Math.Max(0, value);
+        }
+
+        private static float ResolveDirectionHint(float lastInputDelta, float lastVelocity)
+        {
+            if (Math.Abs(lastInputDelta) > 0.001f) return lastInputDelta;
+            if (Math.Abs(lastVelocity) > 0.001f) return lastVelocity;
+            return 0f;
+        }
+
+        private static float FindBestSnapPoint(float current, IReadOnlyList<float> points, float directionHint)
+        {
+            if (points == null || points.Count == 0) return current;
+
+            float nearest = points[0];
+            float nearestDist = Math.Abs(current - nearest);
+
+            for (int i = 1; i < points.Count; i++)
+            {
+                float dist = Math.Abs(current - points[i]);
+                if (dist < nearestDist)
+                {
+                    nearestDist = dist;
+                    nearest = points[i];
+                }
+            }
+
+            if (directionHint > 0.001f)
+            {
+                float forward = float.MaxValue;
+                bool foundForward = false;
+                for (int i = 0; i < points.Count; i++)
+                {
+                    float p = points[i];
+                    if (p >= current + 0.5f && p < forward)
+                    {
+                        forward = p;
+                        foundForward = true;
+                    }
+                }
+                if (foundForward) return forward;
+            }
+            else if (directionHint < -0.001f)
+            {
+                float backward = float.MinValue;
+                bool foundBackward = false;
+                for (int i = 0; i < points.Count; i++)
+                {
+                    float p = points[i];
+                    if (p <= current - 0.5f && p > backward)
+                    {
+                        backward = p;
+                        foundBackward = true;
+                    }
+                }
+                if (foundBackward) return backward;
+            }
+
+            return nearest;
+        }
+
+        private static (float Top, float Right, float Bottom, float Left) ResolveScrollPadding(CssComputed style)
+        {
+            if (style == null) return (0, 0, 0, 0);
+
+            bool hasTop = TryGetLengthPx(style, "scroll-padding-top", out float top);
+            bool hasRight = TryGetLengthPx(style, "scroll-padding-right", out float right);
+            bool hasBottom = TryGetLengthPx(style, "scroll-padding-bottom", out float bottom);
+            bool hasLeft = TryGetLengthPx(style, "scroll-padding-left", out float left);
+
+            if (TryGetShorthandInsets(style, "scroll-padding", out var shorthand))
+            {
+                if (!hasTop) top = shorthand.Top;
+                if (!hasRight) right = shorthand.Right;
+                if (!hasBottom) bottom = shorthand.Bottom;
+                if (!hasLeft) left = shorthand.Left;
+            }
+
+            return (top, right, bottom, left);
+        }
+
+        private static (float Top, float Right, float Bottom, float Left) ResolveScrollMargin(CssComputed style)
+        {
+            if (style == null) return (0, 0, 0, 0);
+
+            bool hasTop = TryGetLengthPx(style, "scroll-margin-top", out float top);
+            bool hasRight = TryGetLengthPx(style, "scroll-margin-right", out float right);
+            bool hasBottom = TryGetLengthPx(style, "scroll-margin-bottom", out float bottom);
+            bool hasLeft = TryGetLengthPx(style, "scroll-margin-left", out float left);
+
+            if (TryGetShorthandInsets(style, "scroll-margin", out var shorthand))
+            {
+                if (!hasTop) top = shorthand.Top;
+                if (!hasRight) right = shorthand.Right;
+                if (!hasBottom) bottom = shorthand.Bottom;
+                if (!hasLeft) left = shorthand.Left;
+            }
+
+            return (top, right, bottom, left);
+        }
+
+        private static bool TryGetLengthPx(CssComputed style, string key, out float value)
+        {
+            value = 0;
+            if (style?.Map == null) return false;
+            if (!style.Map.TryGetValue(key, out var raw) || string.IsNullOrWhiteSpace(raw)) return false;
+            return TryParseLengthPx(raw, out value);
+        }
+
+        private static bool TryGetShorthandInsets(CssComputed style, string key, out (float Top, float Right, float Bottom, float Left) insets)
+        {
+            insets = (0, 0, 0, 0);
+            if (style?.Map == null) return false;
+            if (!style.Map.TryGetValue(key, out var raw) || string.IsNullOrWhiteSpace(raw)) return false;
+
+            var parts = raw.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0 || parts.Length > 4) return false;
+
+            var values = new float[4];
+            for (int i = 0; i < parts.Length; i++)
+            {
+                if (!TryParseLengthPx(parts[i], out values[i])) return false;
+            }
+
+            switch (parts.Length)
+            {
+                case 1:
+                    insets = (values[0], values[0], values[0], values[0]);
+                    break;
+                case 2:
+                    insets = (values[0], values[1], values[0], values[1]);
+                    break;
+                case 3:
+                    insets = (values[0], values[1], values[2], values[1]);
+                    break;
+                default:
+                    insets = (values[0], values[1], values[2], values[3]);
+                    break;
+            }
+
+            return true;
+        }
+
+        private static bool TryParseLengthPx(string raw, out float value)
+        {
+            value = 0;
+            if (string.IsNullOrWhiteSpace(raw)) return false;
+            string text = raw.Trim().ToLowerInvariant();
+            if (string.Equals(text, "auto", StringComparison.Ordinal)) return false;
+
+            float multiplier = 1f;
+            if (text.EndsWith("px", StringComparison.Ordinal))
+            {
+                text = text.Substring(0, text.Length - 2);
+            }
+            else if (text.EndsWith("rem", StringComparison.Ordinal) || text.EndsWith("em", StringComparison.Ordinal))
+            {
+                text = text.Substring(0, text.Length - 2);
+                multiplier = 16f;
+            }
+            else if (text.EndsWith("%", StringComparison.Ordinal))
+            {
+                // Percent insets are currently unsupported in snap offset math.
+                return false;
+            }
+
+            if (!float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
+            {
+                return false;
+            }
+
+            value = parsed * multiplier;
+            return true;
         }
 
         #endregion
@@ -492,6 +729,11 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         public int SmoothScrollDurationMs { get; set; }
         public (float x, float y) SmoothScrollStart { get; set; }
         public (float x, float y) SmoothScrollTarget { get; set; }
+        public DateTime LastScrollUpdateUtc { get; set; } = DateTime.UtcNow;
+        public float LastVelocityX { get; set; }
+        public float LastVelocityY { get; set; }
+        public float LastInputDeltaX { get; set; }
+        public float LastInputDeltaY { get; set; }
 
         /// <summary>
         /// Check if currently animating.
