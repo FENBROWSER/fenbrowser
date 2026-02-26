@@ -170,8 +170,19 @@ namespace FenBrowser.Tests.Dom
             var elem = new Element("div");
             elem.SetAttribute("id", "main");
             elem.RemoveAttribute("id");
-            
+             
             Assert.False(elem.Attributes.Contains("id"));
+        }
+
+        [Fact]
+        public void Element_CloneNode_PreservesUnsafeAttributeNames()
+        {
+            var elem = new Element("div");
+            elem.SetAttributeUnsafe("0;c", "x");
+
+            var clone = (Element)elem.CloneNode();
+
+            Assert.Equal("x", clone.GetAttribute("0;c"));
         }
     }
 }

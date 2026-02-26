@@ -48,7 +48,7 @@ namespace FenBrowser.Tests.Core.Parsing
             var body = GetBody(doc);
             Assert.NotNull(body);
             
-            var bodyChildren = body.Children.ToList();
+            var bodyChildren = body.ChildNodes.ToList();
             var tableIndex = bodyChildren.FindIndex(c => (c as Element)?.TagName == "TABLE");
             
             Assert.True(tableIndex > 0, "Table should not be first child (index: " + tableIndex + ")");
