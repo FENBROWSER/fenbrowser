@@ -54,7 +54,7 @@ Reference snapshot artifact:
 | CSS/Cascade/Selectors            |    90 | Production grade (CSS-1 verified)                                    |
 | Layout System                    |    90 | Production grade (L-10 verified)                                     |
 | Paint/Compositing                |    90 | Production grade (PC-5 verified)                                     |
-| JavaScript Engine                |    85 | Strong (JS-2/3/4/5: fromAsync, Iterator.prototype, DisposableStack, Array.from iterable) |
+| JavaScript Engine                |    85 | Strong (JS-2/3/4/5 + JS-BC-1/2/3/4: fromAsync, Iterator.prototype, DisposableStack, Array.from iterable, bytecode parity + runtime bytecode-first wiring + expression/control coverage expansion) |
 | Web APIs + Workers/SW            |    67 | Partial (API-2/3/4: timers, Promise stubs, CacheStorage landed)      |
 | Storage + Cookies                |    73 | Partial (Storage-1: full cookie attribute parsing landed)            |
 | Event Loop + Runtime Invariants  |    67 | Partial                                                              |
@@ -72,6 +72,34 @@ Score update basis:
    - JS-4: `Array.from()` iterable protocol support — now checks `[Symbol.iterator]` before array-like fallback, enabling `Array.from(set)`, `Array.from(map)`, `Array.from(generator)`. Fixed the late `arrayObj.Set("from", ...)` override that was dropping the iterable-protocol version.
    - JS-5: 16 new regression tests passing in `BuiltinCompletenessTests` (Array_FromAsync_ReturnsPromise, Array_FromAsync_SyncIterable_Resolves, Array_FromAsync_WithMapFn, Iterator_Prototype_HasMapMethod, Iterator_Prototype_IsSharedAcrossInstances, Array_Iterator_HasIteratorPrototype, Symbol_Dispose_IsWellKnownSymbol, DisposableStack_Use_CallsSymbolDispose, DisposableStack_Adopt_CallsOnDispose, DisposableStack_Defer_CallsFn, DisposableStack_Disposes_InLIFO_Order, DisposableStack_Throws_After_Second_Dispose, Array_From_MapIterable_Works, Array_From_SetIterable_Works, Array_From_GeneratorIterable_Works, JsMap_SymbolIterator_ReturnsEntries). Total: 36/39 pass (3 pre-existing failures unrelated to JS-2/3/4/5).
    - Full Test262 benchmark (53-chunk protocol) pending; score set to 85 pending confirmation. If target-profile pass rate ≥ 90%, score upgrades to 90.
+0.1 **JavaScript Engine bytecode tranche JS-BC-1 landed (2026-02-26)**:
+   - `Core/Bytecode/Compiler/BytecodeCompiler.cs`: added emit coverage for `**`, `!=`, `!==`, `<=`, `>=`, plus AST node coverage for `NullLiteral`, `UndefinedLiteral`, and `ExponentiationExpression`.
+   - `Core/Bytecode/VM/VirtualMachine.cs`: added opcode execution paths for `Divide`, `Modulo`, `Exponent`, `NotEqual`, `StrictNotEqual`, `LessThanOrEqual`, and `GreaterThanOrEqual`.
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`: added regressions `Bytecode_DivideModuloExponent_ShouldWork`, `Bytecode_ComparisonVariants_ShouldWork`, `Bytecode_NullAndUndefinedLiterals_ShouldWork`.
+   - Verification: `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests --logger "console;verbosity=minimal"` -> Passed 22/22.
+   - Score remains **85** (no gate change yet); this tranche reduces bytecode execution gaps and prepares bytecode-first runtime wiring.
+0.2 **JavaScript Engine bytecode tranche JS-BC-2 landed (2026-02-26)**:
+   - `Core/FenRuntime.cs`: `ExecuteSimple(...)` now attempts core-bytecode execution first and falls back to interpreter when bytecode compilation is unsupported.
+   - Added runtime guardrail: when global scope contains interpreter-only functions (`!IsNative && BytecodeBlock == null`), call-heavy scripts (`CallExpression`/`NewExpression`) stay on interpreter path to avoid VM AST-body execution faults.
+   - Added execution-mode controls/diagnostics:
+     - env toggle `FEN_USE_CORE_BYTECODE=0|false|off` to disable bytecode-first.
+     - execution log markers: `[SUCCESS-BYTECODE]`, `[BYTECODE-FALLBACK]`, `[BYTECODE-RUNTIME-ERROR]`.
+   - Added integration tests `FenRuntimeBytecodeExecutionTests`:
+     - `ExecuteSimple_BytecodeFirst_FunctionDeclarationProducesBytecodeFunction`
+     - `ExecuteSimple_CompileUnsupported_UsesInterpreterFallback`
+     - `ExecuteSimple_WithInterpreterOnlyGlobals_CallHeavyScriptAvoidsVmPath`.
+   - Verification: `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests --logger "console;verbosity=minimal"` -> Passed 3/3.
+   - Score remains **85** (no gate change yet); this tranche moves default runtime flow toward bytecode while preserving safety fallbacks.
+0.3 **JavaScript Engine bytecode tranche JS-BC-3 landed (2026-02-26)**:
+   - `Core/Bytecode/Compiler/BytecodeCompiler.cs`: added lowering for `DoubleLiteral`, ternary `ConditionalExpression`, and `NullishCoalescingExpression`.
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`: added `Bytecode_DoubleLiteral_AndConditionalExpression_ShouldWork` and `Bytecode_NullishCoalescingExpression_ShouldWork`.
+   - Verification: `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests --logger "console;verbosity=minimal"` -> Passed 24/24.
+   - Score remains **85** (no gate change yet); this tranche reduces compile-fallback frequency for common expression forms.
+0.4 **JavaScript Engine bytecode tranche JS-BC-4 landed (2026-02-26)**:
+   - `Core/Bytecode/Compiler/BytecodeCompiler.cs`: added lowering for update operators (`++`/`--`), `LogicalAssignmentExpression` (`||=`, `&&=`, `??=`), `DoWhileStatement`, `BitwiseNotExpression`, and `EmptyExpression`.
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`: added `Bytecode_UpdateExpressions_ShouldWork`, `Bytecode_LogicalAssignment_ShouldWork`, and `Bytecode_BitwiseNot_AndDoWhile_ShouldWork`.
+   - Verification: `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests --logger "console;verbosity=minimal"` -> Passed 27/27.
+   - Score remains **85** (no gate change yet); this tranche expands bytecode coverage for common control-flow and assignment forms that previously fell back to interpreter.
 
 1. JS-1 verified (`JavaScriptEngineModuleLoadingTests`: 2/2 pass on 2026-02-20).
 2. Worker import path upgraded from sync fetch bridge to prefetched-cache execution path (tranche API-1) and owner-run verification passed (section 5.9).
@@ -1641,6 +1669,97 @@ Manual verification (owner-run):
 Score note:
 
 1. JS-1 tranche verification is complete (tests passing) and reflected in the rolling scoreboard.
+
+### Implementation Delta (2026-02-26, Tranche JS-BC-1: Core Bytecode Opcode Parity)
+
+Scope completed in this tranche:
+
+1. Extended core bytecode compiler operator coverage:
+   - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+   - Added support for `**`, `!=`, `!==`, `<=`, `>=`.
+   - Added AST lowering for `NullLiteral`, `UndefinedLiteral`, and `ExponentiationExpression`.
+2. Extended VM opcode execution coverage to match emitted operators:
+   - `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+   - Added runtime handlers for `Divide`, `Modulo`, `Exponent`, `NotEqual`, `StrictNotEqual`, `LessThanOrEqual`, `GreaterThanOrEqual`.
+3. Added regression coverage:
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+   - `Bytecode_DivideModuloExponent_ShouldWork`
+   - `Bytecode_ComparisonVariants_ShouldWork`
+   - `Bytecode_NullAndUndefinedLiterals_ShouldWork`
+
+Manual verification (owner-run):
+
+1. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests --logger "console;verbosity=minimal"`
+2. **Confirmed on 2026-02-26**:
+   - `Passed!  - Failed: 0, Passed: 22, Skipped: 0, Total: 22`
+
+Score note:
+
+1. JavaScript Engine remains **85/100**.
+2. This tranche is a bytecode-foundation hardening step and does not yet switch runtime default from interpreter to bytecode.
+
+### Implementation Delta (2026-02-26, Tranche JS-BC-2: ExecuteSimple Bytecode-First Wiring)
+
+Scope completed in this tranche:
+
+1. Wired runtime execution entrypoint to bytecode-first:
+   - `FenBrowser.FenEngine/Core/FenRuntime.cs`
+   - `ExecuteSimple(...)` now attempts core bytecode VM execution before interpreter evaluation.
+2. Added compile-fallback semantics:
+   - Compiler-unsupported programs now fall back to interpreter path without changing script behavior.
+3. Added runtime safety guard:
+   - If global scope contains interpreter-only functions (`!IsNative && BytecodeBlock == null`), scripts containing `CallExpression` or `NewExpression` bypass bytecode execution to prevent VM attempts to invoke AST-only bodies.
+4. Added execution controls and diagnostics:
+   - env toggle `FEN_USE_CORE_BYTECODE=0|false|off` disables bytecode-first mode.
+   - script execution log markers:
+     - `[SUCCESS-BYTECODE]`
+     - `[BYTECODE-FALLBACK]`
+     - `[BYTECODE-RUNTIME-ERROR]`.
+5. Added runtime integration tests:
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+   - `ExecuteSimple_BytecodeFirst_FunctionDeclarationProducesBytecodeFunction`
+   - `ExecuteSimple_CompileUnsupported_UsesInterpreterFallback`
+   - `ExecuteSimple_WithInterpreterOnlyGlobals_CallHeavyScriptAvoidsVmPath`.
+
+Manual verification (owner-run):
+
+1. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests --logger "console;verbosity=minimal"`
+2. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests|FullyQualifiedName~FenRuntimeBytecodeExecutionTests" --logger "console;verbosity=minimal"`
+3. **Confirmed on 2026-02-26**:
+   - `FenRuntimeBytecodeExecutionTests`: `Passed 3/3`
+   - Combined bytecode suites: `Passed 25/25`
+
+Score note:
+
+1. JavaScript Engine remains **85/100** pending broader runtime coverage and target-profile Test262 verification.
+2. Runtime default now prefers bytecode for eligible scripts, which is a prerequisite for eventual interpreter removal.
+
+### Implementation Delta (2026-02-26, Tranche JS-BC-4: Bytecode Control/Assignment Coverage)
+
+Scope completed in this tranche:
+
+1. Extended compiler lowering coverage for update/logical-assignment/control nodes:
+   - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+   - Added update-expression lowering for postfix and prefix `++`/`--`.
+   - Added `LogicalAssignmentExpression` lowering for `||=`, `&&=`, and `??=` with short-circuit branch behavior.
+   - Added lowering for `DoWhileStatement`, `BitwiseNotExpression`, and `EmptyExpression`.
+2. Added regression coverage:
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+   - `Bytecode_UpdateExpressions_ShouldWork`
+   - `Bytecode_LogicalAssignment_ShouldWork`
+   - `Bytecode_BitwiseNot_AndDoWhile_ShouldWork`
+
+Manual verification (owner-run):
+
+1. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests --logger "console;verbosity=minimal"`
+2. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~FenRuntimeBytecodeExecutionTests|FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests" --logger "console;verbosity=minimal"`
+3. **Confirmed on 2026-02-26**:
+   - `BytecodeExecutionTests`: `Passed 27/27`
+   - Combined bytecode suites: `Passed 30/30`
+
+Score note:
+
+1. JavaScript Engine remains **85/100** pending broader runtime bytecode coverage and target-profile Test262 verification.
 
 ---
 
