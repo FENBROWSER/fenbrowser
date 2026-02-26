@@ -304,7 +304,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             float ratio = Math.Max(0, Math.Min(1, relativeY / draggableRange));
             float newScrollY = ratio * scrollState.MaxScrollY;
             
-            _scrollManager.SetScrollPosition(element, scrollState.ScrollX, newScrollY);
+            _scrollManager.SetScrollPosition(element, scrollState.ScrollX, newScrollY, fromUserInput: true);
         }
         
         /// <summary>
@@ -325,7 +325,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             float ratio = Math.Max(0, Math.Min(1, relativeX / draggableRange));
             float newScrollX = ratio * scrollState.MaxScrollX;
             
-            _scrollManager.SetScrollPosition(element, newScrollX, scrollState.ScrollY);
+            _scrollManager.SetScrollPosition(element, newScrollX, scrollState.ScrollY, fromUserInput: true);
         }
     }
 }

@@ -401,11 +401,30 @@ namespace FenBrowser.FenEngine.Rendering
 
                 if (isScrollable && _scrollManager != null)
                 {
-                    // Get current scroll offset from manager
-                    var scrollState = _scrollManager.GetScrollState(node as Element);
-                    if (scrollState != null)
+                    var scrollElement = node as Element;
+                    if (scrollElement != null)
                     {
-                        childContext.ScrollOffset = new SKPoint(scrollState.ScrollX, scrollState.ScrollY);
+                        var viewportW = Math.Max(0f, box.PaddingBox.Width);
+                        var viewportH = Math.Max(0f, box.PaddingBox.Height);
+                        var (contentW, contentH) = EstimateScrollableContentSize(scrollElement, box.PaddingBox);
+                        _scrollManager.SetScrollBounds(scrollElement, contentW, contentH, viewportW, viewportH);
+
+                        // Execute scroll snap from live paint/layout geometry when there is recent user input.
+                        if (!string.IsNullOrWhiteSpace(style?.ScrollSnapType) &&
+                            !style.ScrollSnapType.Equals("none", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var state = _scrollManager.GetScrollState(scrollElement);
+                            if (HasRecentScrollInputHint(state))
+                            {
+                                _scrollManager.PerformSnap(scrollElement, style, ResolveElementRectForSnap, ResolveElementStyleForSnap);
+                            }
+                        }
+
+                        var scrollState = _scrollManager.GetScrollState(scrollElement);
+                        if (scrollState != null)
+                        {
+                            childContext.ScrollOffset = new SKPoint(scrollState.ScrollX, scrollState.ScrollY);
+                        }
                     }
                 }
                 
@@ -768,6 +787,80 @@ namespace FenBrowser.FenEngine.Rendering
                 curr = curr.ParentElement;
             }
             return null; // Viewport
+        }
+
+        private SKRect ResolveElementRectForSnap(Element element)
+        {
+            if (element == null) return SKRect.Empty;
+            if (_boxes.TryGetValue(element, out var box) && box != null)
+            {
+                return box.BorderBox;
+            }
+            return SKRect.Empty;
+        }
+
+        private CssComputed ResolveElementStyleForSnap(Element element)
+        {
+            if (element == null) return null;
+            if (_styles.TryGetValue(element, out var style))
+            {
+                return style;
+            }
+            return null;
+        }
+
+        private (float ContentWidth, float ContentHeight) EstimateScrollableContentSize(Element container, SKRect paddingBox)
+        {
+            float maxRight = Math.Max(0f, paddingBox.Width);
+            float maxBottom = Math.Max(0f, paddingBox.Height);
+
+            if (container?.ChildNodes == null || container.ChildNodes.Length == 0)
+            {
+                return (maxRight, maxBottom);
+            }
+
+            var stack = new Stack<Node>();
+            for (int i = 0; i < container.ChildNodes.Length; i++)
+            {
+                stack.Push(container.ChildNodes[i]);
+            }
+
+            while (stack.Count > 0)
+            {
+                var current = stack.Pop();
+                if (current == null) continue;
+
+                if (_boxes.TryGetValue(current, out var childBox) && childBox != null)
+                {
+                    float right = childBox.MarginBox.Right - paddingBox.Left;
+                    float bottom = childBox.MarginBox.Bottom - paddingBox.Top;
+                    maxRight = Math.Max(maxRight, right);
+                    maxBottom = Math.Max(maxBottom, bottom);
+                }
+
+                if (current.ChildNodes != null)
+                {
+                    for (int i = 0; i < current.ChildNodes.Length; i++)
+                    {
+                        stack.Push(current.ChildNodes[i]);
+                    }
+                }
+            }
+
+            return (Math.Max(maxRight, paddingBox.Width), Math.Max(maxBottom, paddingBox.Height));
+        }
+
+        private static bool HasRecentScrollInputHint(Interaction.ScrollState state)
+        {
+            if (state == null) return false;
+            bool hasMagnitude = Math.Abs(state.LastInputDeltaX) > 0.01f ||
+                                Math.Abs(state.LastInputDeltaY) > 0.01f ||
+                                Math.Abs(state.LastVelocityX) > 0.01f ||
+                                Math.Abs(state.LastVelocityY) > 0.01f;
+            if (!hasMagnitude) return false;
+
+            var age = DateTime.UtcNow - state.LastScrollUpdateUtc;
+            return age <= TimeSpan.FromMilliseconds(600);
         }
         
         private void ProcessChildren(Node node, BuilderStackingContext context, int depth, BuilderStackingContext escapeContext = null)

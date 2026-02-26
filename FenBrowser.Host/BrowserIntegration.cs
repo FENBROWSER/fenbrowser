@@ -1041,6 +1041,25 @@ public class BrowserIntegration
         return (uiX, uiY + _scrollY);
     }
 
+    private (float X, float Y) TranslateWindowToViewport(float windowX, float windowY, float viewportOffsetX, float viewportOffsetY)
+    {
+        float uiX = (windowX - viewportOffsetX) / Math.Max(_dpiScale, 0.1f);
+        float uiY = (windowY - viewportOffsetY) / Math.Max(_dpiScale, 0.1f);
+        return (uiX, uiY);
+    }
+
+    private Element ResolveActivationTarget(HitTestResult result, float windowX, float windowY, float viewportOffsetX, float viewportOffsetY)
+    {
+        var target = result.NativeElement as Element ?? _lastHitTest.NativeElement as Element;
+        if (target != null)
+        {
+            return target;
+        }
+
+        var (viewportX, viewportY) = TranslateWindowToViewport(windowX, windowY, viewportOffsetX, viewportOffsetY);
+        return _browser.HitTestElementAtViewportPoint(viewportX, viewportY);
+    }
+
     /// <summary>
     /// Handle mouse move for cursor updates and status bar.
     /// </summary>
@@ -1181,7 +1200,7 @@ public class BrowserIntegration
         _browser.OnMouseUp(docX, docY, button);
         if (emitClick && button == 0)
         {
-            var activationTarget = result.NativeElement as Element ?? _lastHitTest.NativeElement as Element;
+            var activationTarget = ResolveActivationTarget(result, windowX, windowY, viewportOffsetX, viewportOffsetY);
             var effectiveHref = result.Href;
             if (string.IsNullOrEmpty(effectiveHref) && _lastHitTest.IsLink)
             {
