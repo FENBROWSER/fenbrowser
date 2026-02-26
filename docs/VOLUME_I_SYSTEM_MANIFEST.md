@@ -135,6 +135,9 @@ The executable wrapper.
     - spec-correct `:empty` handling
     - robust attribute selector parsing/flags.
   - Core selector path parity improved for `nth-child(... of ...)` and attribute `i/s` flags.
+  - CSS-1.1 extension hardens Media Queries Level 4 range-context parsing in `Rendering/Css/CssLoader.cs`, including `width OP value` and `value OP width` forms used by responsive breakpoints.
+  - CSS-1.2 extension hardens `background` shorthand color extraction for function-heavy modern syntax (`oklab/oklch`, modern `rgb/hsl` forms with slash-alpha), preserving last-layer color semantics in multi-layer backgrounds.
+  - CSS-1.3 extension adds modern space/slash `rgb()/rgba()` color parsing in `Rendering/Css/CssParser.cs`, aligning parser behavior with CSS Color 4 tokens consumed by shorthand extraction.
   - New regression packs:
     - `Tests/Engine/SelectorMatcherConformanceTests.cs`
     - `Tests/DOM/SelectorEngineConformanceTests.cs`.
@@ -153,6 +156,7 @@ The executable wrapper.
   - L-8 extension fixes grid content-alignment double-offset during arrange, corrects document-root fallback traversal in block layout helpers, keeps `Document` nodes layout-visible so document-root layout flows produce descendant boxes, and adds a table auto-layout participating-column non-zero guard to prevent zero-width cell collapse (`GridLayoutComputer.cs`, `LayoutHelpers.cs`, `MinimalLayoutComputer.cs`, `TableLayoutComputer.cs`) with integration hardening in `Tests/Layout/Acid2LayoutTests.cs` and `Tests/Layout/TableLayoutIntegrationTests.cs`.
   - L-9 extension hardens table slot attribution and rowspan sizing semantics: column contributions now map via `TableCellSlot.ColumnIndex` for rowspan/colspan correctness, row heights now distribute rowspan-required height across spanned rows, table row/cell extraction is case-insensitive in the table core (`TableLayoutComputer.cs`), `MinimalLayoutComputer.ShouldHide(...)` preserves table semantics/text-only cell content during measurement, and inline traversal now uses `ChildNodes` + pseudo-aware sources so text-only inline/table-cell content contributes intrinsic width (`InlineLayoutComputer.cs`, `MinimalLayoutComputer.cs`), with regressions in `Tests/Layout/TableLayoutIntegrationTests.cs`.
   - L-10 extension removes the legacy simplified `GridFormattingContext` algorithm by delegating box-tree grid layout to `GridLayoutComputer` (typed computed-style semantics + shared placement/sizing behavior), with integration regressions in `Tests/Layout/GridFormattingContextIntegrationTests.cs`; owner verification on 2026-02-20 confirmed `GridFormattingContextIntegrationTests` 2/2 and `FenBrowser.Tests.Layout` 90/90.
+  - L-11 extension propagates SVG `viewBox` intrinsic sizing through replaced-element fallback paths in inline/block/flex positioning contexts (`LayoutPositioningLogic.cs`, `Contexts/InlineFormattingContext.cs`, `Contexts/BlockFormattingContext.cs`, `Contexts/FlexFormattingContext.cs`) so icon-only SVG controls do not regress to 300x150 fallback geometry when explicit CSS sizing is absent.
 
 - **Paint/Compositing Baseline (PC-1, 2026-02-20)**:
   - `RenderPipeline` now enforces strict phase invariants (warning-only recovery removed from production path), with explicit `Composite -> Present -> Idle` lifecycle and frame-budget telemetry (`FrameSequence`, `LastFrameDuration`).
@@ -175,6 +179,10 @@ The executable wrapper.
     - `Rendering/Compositing/DamageRasterizationPolicy.cs` introduces strict partial-raster gating.
     - `Rendering/SkiaRenderer.cs` adds `RenderDamaged(...)` clip-based damage redraw.
     - `Host/BrowserIntegration.cs` now seeds recording from previous frame to enable safe damage-only redraws.
+  - Interaction hardening extension:
+    - `Rendering/Interaction/ScrollManager.cs` now computes axis-specific snap targets, applies `scroll-padding`/`scroll-margin` offsets, and biases target selection with recent scroll direction to reduce carousel snap jitter.
+    - `Rendering/PaintTree/NewPaintTreeBuilder.cs` now seeds scroll bounds from descendant geometry and triggers snap resolution during scrollable paint-tree construction so runtime snap behavior is exercised in the renderer path.
+    - Scroll-snap triggering in paint-tree construction now requires recent (time-bounded) user input hints, preventing stale deltas from causing delayed or surprise snap jumps.
 
 - **Build Resolver Stabilization Notes**:
   - Repository includes `Directory.Build.props` restore/resolver safety overrides to improve determinism on machines exhibiting silent project-graph failures.

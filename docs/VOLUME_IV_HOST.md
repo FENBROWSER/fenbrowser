@@ -50,6 +50,7 @@ This class acts as the "Glue" between the Host and the Engine.
 - **Input Resilience (2026-02-07)**:
   - Click activation/link handling fallback is executed in the authoritative `HandleMouseUp(... emitClick)` path using the same hit-test result (`result.NativeElement`), so web-content pointer routing remains correct even when `HandleClick(...)` is bypassed by widget-level down/up flow.
   - `HandleMouseUp(... emitClick)` now falls back to the last stable hover hit when release-time hit test is transiently null, so links/controls still activate during pointer-target flicker.
+  - `HandleMouseUp(... emitClick)` now also resolves activation targets through engine-layout fallback hit testing (`BrowserHost.HitTestElementAtViewportPoint(...)`) when paint-tree hit results do not carry `NativeElement`, restoring click/focus reliability for controls.
   - Host pointer routing now uses explicit `HandleMouseDown(...)` + `HandleMouseUp(... emitClick)` for web content, with click emitted on mouse-up.
   - Mouse-move routing for web content is centralized in `ChromeManager` to avoid duplicate move dispatch paths.
 
