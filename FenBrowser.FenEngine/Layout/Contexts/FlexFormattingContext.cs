@@ -1161,13 +1161,16 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     float attrH = 0f;
                     ReplacedElementSizing.TryGetLengthAttribute(el, "width", out attrW);
                     ReplacedElementSizing.TryGetLengthAttribute(el, "height", out attrH);
+                    float intrinsicW = 0f;
+                    float intrinsicH = 0f;
+                    ReplacedElementSizing.TryResolveIntrinsicSizeFromElement(tag, el, out intrinsicW, out intrinsicH);
 
                     var resolved = ReplacedElementSizing.ResolveReplacedSize(
                         tag,
                         box.ComputedStyle,
                         new SKSize(box.Geometry.ContentBox.Width, box.Geometry.ContentBox.Height),
-                        0f,
-                        0f,
+                        intrinsicW,
+                        intrinsicH,
                         attrW,
                         attrH,
                         constrainAutoToAvailableWidth: false);
