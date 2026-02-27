@@ -1,5 +1,5 @@
 # Engines Comparison Result
-Interpreter Result: 10800120
-Interpreter Time: 4226 ms
-Bytecode Result: 10800120
-Bytecode Time: 4109 ms
+Interpreter Result: 1000000
+Interpreter Time: 2950 ms
+Bytecode Result: 1000000
+Bytecode Time: 2971 ms
