@@ -69,7 +69,7 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
-        public async Task RunInterpreterBenchmarks()
+        public async Task RunRuntimeBenchmarks()
         {
             // Arrange
             var host = new JsHostAdapter(
@@ -101,11 +101,11 @@ namespace FenBrowser.Tests.Engine
 
             Assert.NotEmpty(_benchmarkLogs);
             
-            // Write results to results_interpreter.md
-            string resultsPath = @"C:\Users\udayk\Videos\FENBROWSER\results_interpreter.md";
+            // Write results to results_runtime.md
+            string resultsPath = @"C:\Users\udayk\Videos\FENBROWSER\results_runtime.md";
             
             StringBuilder sb = new StringBuilder();
-            sb.AppendLine("# Interpreter Performance Baseline Results");
+            sb.AppendLine("# Runtime Performance Baseline Results");
             sb.AppendLine($"Date: {DateTime.Now}");
             if (result != null) sb.AppendLine($"Final Result: {result}");
             sb.AppendLine();
@@ -141,7 +141,7 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
-        public void CompareInterpreterAndBytecode()
+        public void CompareRuntimeAndBytecode()
         {
             if (!TryReadScript("compare_engines.js", out var script, out _))
             {
@@ -155,13 +155,13 @@ namespace FenBrowser.Tests.Engine
                 status: _ => { },
                 log: msg => { }
             );
-            var interpreterEngine = new JavaScriptEngine(host);
+            var runtimeEngine = new JavaScriptEngine(host);
 
             // Warmup
-            interpreterEngine.Evaluate(script);
+            runtimeEngine.Evaluate(script);
 
             var sw1 = System.Diagnostics.Stopwatch.StartNew();
-            object resultInterpreter = interpreterEngine.Evaluate(script);
+            object resultRuntime = runtimeEngine.Evaluate(script);
             sw1.Stop();
 
             var lexer = new FenBrowser.FenEngine.Core.Lexer(script);
@@ -182,14 +182,14 @@ namespace FenBrowser.Tests.Engine
 
             var sb = new StringBuilder();
             sb.AppendLine("# Engines Comparison Result");
-            sb.AppendLine($"Interpreter Result: {resultInterpreter}");
-            sb.AppendLine($"Interpreter Time: {sw1.ElapsedMilliseconds} ms");
+            sb.AppendLine($"Runtime Result: {resultRuntime}");
+            sb.AppendLine($"Runtime Time: {sw1.ElapsedMilliseconds} ms");
             sb.AppendLine($"Bytecode Result: {resultBytecode.ToString()}");
             sb.AppendLine($"Bytecode Time: {sw2.ElapsedMilliseconds} ms");
 
             File.WriteAllText(@"C:\Users\udayk\Videos\FENBROWSER\engine_comparison_results.md", sb.ToString());
-            Assert.NotNull(resultInterpreter);
-            Assert.Equal(resultInterpreter?.ToString(), resultBytecode.ToString());
+            Assert.NotNull(resultRuntime);
+            Assert.Equal(resultRuntime?.ToString(), resultBytecode.ToString());
         }
     }
 }
