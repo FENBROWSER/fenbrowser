@@ -66,7 +66,7 @@ The logic center. It consumes the Core and produces pixels.
 - **Style Engine**: Resolves CSS rules against DOM nodes.
 - **Layout**: Calculates geometry (x, y, width, height) for render trees.
 - **Paint**: Issues draw commands to a Skia canvas.
-- **Scripting**: Executes JavaScript (via a custom interpreter).
+- **Scripting**: Executes JavaScript via FenEngine bytecode compiler + VM.
 
 #### Layer 2: FenBrowser.Host
 

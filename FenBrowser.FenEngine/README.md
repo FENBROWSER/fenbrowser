@@ -10,7 +10,7 @@ FenEngine is a standalone JavaScript engine designed with security and modularit
 
 ### 🛡️ Security First
 
-- **No JIT compilation** - Interpretation only, eliminates JIT-related CVEs
+- **No JIT compilation** - Bytecode VM execution only, eliminates JIT-related CVEs
 - **Deny by default** - Explicit permissions required for all operations
 - **Resource limits** - Hard limits on stack depth, memory, execution time
 - **Safe errors** - No information leakage in error messages

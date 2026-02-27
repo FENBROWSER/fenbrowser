@@ -1,7 +1,14 @@
 # JavaScript Engine: Gap Analysis & In-Depth Engine Comparison
 
 **Status**: ✅ 100% Complete (All Core Features Implemented)
-**Last Updated**: 2026-02-23 (Final)
+**Last Updated**: 2026-02-27
+
+## Runtime Execution Update (2026-02-27)
+
+- FenRuntime.ExecuteSimple(...) now runs in bytecode-only mode.
+- VM AST-backed call/construct fallback has been removed from active execution.
+- Module loading and DevTools expression evaluation now execute through bytecode.
+- The legacy interpreter implementation has been removed from the codebase.
 
 ## 1. ✅ Completed Implementations (Feb 9, 2026)
 
@@ -28,16 +35,16 @@ This section presents a line-by-line and component-by-component architectural te
 | :------------- | :----------------------------------------------------- | :---------------------------------- | :--------------------------- | :--------------------------- |
 | **Parsing**    | Top-down recursive descent (`Parser.cs` ~5.5k lines)   | Highly optimized concurrent parsing | Syntax parser -> full parser | Recursive descent AST parser |
 | **AST**        | Emits heavy C# object graph (`Ast.cs` ~37k bytes)      | Minimal AST -> bytecode             | Minimal AST -> bytecode      | AST -> Bytecode Generation   |
-| **Execution**  | **Tree-Walk Interpreter** (`Interpreter.cs` ~6k lines) | Ignition (Bytecode Interpreter)     | Baseline Interpreter         | Bytecode Interpreter         |
+| **Execution**  | **Bytecode VM** (`VirtualMachine.cs`)                  | Ignition (Bytecode Interpreter)     | Baseline Interpreter         | Bytecode Interpreter         |
 | **Tier 1 JIT** | None                                                   | Sparkplug (Baseline JIT)            | Baseline Compiler            | Experimental JIT             |
 | **Tier 2 JIT** | None                                                   | Maglev (Mid-tier JIT)               | WarpBuilder (IonMonkey)      | None                         |
 | **Tier 3 JIT** | None                                                   | TurboFan (Optimizing JIT)           | IonMonkey                    | None                         |
 
 **Analysis:**
-FenEngine is fundamentally a **Tree-Walk AST Interpreter**. It directly traverses the `AstNode` tree via the massive `Interpreter.Eval(AstNode)` method (which spans over 6,000 lines). Every execution of a loop or function requires walking the object graph in memory.
+FenEngine now executes JavaScript through a **bytecode VM mainline** (`BytecodeCompiler` + `VirtualMachine`) with no interpreter fallback in normal runtime paths.
 
 - **Reference Engines**: V8, SpiderMonkey, and LibJS compile their ASTs down to a linear **bytecode** format. A bytecode loop (`switch` statement over compact opcodes) is heavily cache-friendly and fundamentally an order of magnitude faster than chasing AST pointers.
-- **Gap**: FenEngine pays a high penalty for CPU cache misses during execution and lacks linear code execution optimization.
+- **Gap**: Remaining work is now optimization-focused (inline caches, shape stability, allocation reduction, and dispatch throughput), not interpreter-to-bytecode migration.
 
 ### 2.2 Memory Management & Data Structures
 
@@ -62,11 +69,11 @@ FenEngine is fundamentally a **Tree-Walk AST Interpreter**. It directly traverse
 - **Strengths**: Strict mode adherence is rigidly applied (e.g., detecting `012` legacy octal errors). High degree of syntactic safety.
 - **Weaknesses**: The file is a mega-class. V8 splits parsing into Pre-parser (for lazy function compiling) and Full-parser. FenEngine eagerly parses EVERYTHING.
 
-#### `Interpreter.cs` (6,013 Lines)
+#### `VirtualMachine.cs` (Bytecode Mainline)
 
-- Home to `public FenValue Eval(AstNode node)`, a massive switch/dispatch engine handling over 500+ AST node types.
-- **Strengths**: Correctness. Variables are appropriately handled via `FenEnvironment.cs` (closure scoping works flawlessly).
-- **Weaknesses**: Deep recursion. A deep JS call stack maps directly to a deep C# call stack. A StackOverflow in JS will trigger a fatal `StackOverflowException` in .NET, bringing down the process. V8 manages its own execution stack to prevent native crashes.
+- Executes compiled opcode streams with heap-managed call frames.
+- **Strengths**: Linear dispatch model, explicit frame control, and bytecode-oriented optimization hooks.
+- **Weaknesses**: Further optimization is required to match mature engines on highly dynamic property-heavy workloads.
 
 #### `FenRuntime.cs` (~12,616 Lines)
 
@@ -76,7 +83,7 @@ FenEngine is fundamentally a **Tree-Walk AST Interpreter**. It directly traverse
 
 ### 2.4 Test262 / Spec Conformance
 
-FenBrowser currently evaluates Test262 test files using its synchronous interpreter loops.
+FenBrowser currently evaluates Test262 test files through bytecode execution paths.
 
 - **LibJS Benchmark**: LibJS famously passes >95% of Test262 due to its spec-driven development (reading the spec and implementing it 1:1).
 - **FenBrowser Benchmark**: At ~85-90% for the targeted profile. Failures mostly involve highly nuanced type-coercion edge cases ("call requires a function" bounds) and strict mode edge semantics.
@@ -121,9 +128,9 @@ Object.freeze(Function.prototype);
 
 To realistically approach the performance of SpiderMonkey/V8 or even modern LibJS, FenEngine needs:
 
-1. **Bytecode Compilation (High Priority)**: Convert `AstNode` structures into an Intermediate Representation (IR) Bytecode array. Write a linear `switch` dispatch loop.
-2. **Hidden Classes (Shapes)**: Replace `Dictionary<string, FenValue>` with a Transition Tree and inline caching for property accesses.
-3. **Mega-File Refactoring**: Split `FenRuntime.cs` and `Interpreter.cs` into `<Component>.cs` parts to alleviate technical debt and build bottlenecks.
+1. **Bytecode Optimization (High Priority)**: Continue VM and compiler hot-path improvements for call/property/closure-heavy workloads.
+2. **Hidden Classes (Shapes)**: Expand shape stability and inline cache effectiveness across more property access patterns.
+3. **Runtime Refactoring**: Further split large runtime surfaces (`FenRuntime.cs`) to reduce coupling and improve maintainability.
 
 ## 6. ✅ Conclusion
 
@@ -132,15 +139,16 @@ To realistically approach the performance of SpiderMonkey/V8 or even modern LibJ
 - All ES2015-ES2025 features implemented
 - Competitive Test262 compliance
 
-However, from an **Architectural** standpoint compared to V8/Firefox/Ladybird, the AST-walking nature constraints its performance ceiling.
+However, from an **Architectural** standpoint compared to V8/Firefox/Ladybird, FenEngine still needs additional VM/runtime optimization to close performance gaps.
 
 **Next Steps:**
 
-- Begin migrating AST Walker to a Bytecode Engine.
+- Continue bytecode VM optimization and spec-conformance hardening.
 - Apply security hardening based on threat model.
 
 ---
 
 **Build Status:** ✅ 0 errors, 332 warnings (all non-critical)
-**Verification Date:** February 23, 2026
+**Verification Date:** February 27, 2026
 **Compliance:** ES2015-ES2025 Feature Complete
+

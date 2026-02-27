@@ -1,6 +1,6 @@
 # FenBrowser Codex - Volume III: The Engine Room
 
-**State as of:** 2026-02-20
+**State as of:** 2026-02-27
 **Codex Version:** 1.0
 
 ## 1. Overview
@@ -217,6 +217,26 @@ The high-level controller used by the UI.
 - Streaming preparse path is now integrated for large documents as a controlled pre-commit assist phase (bounded checkpoints + repaints), while final DOM correctness remains anchored to the production tree builder parse.
 - Production parser now supports interleaved tokenize/parse batches for large documents through `HtmlTreeBuilder.InterleavedTokenBatchSize`, and runtime parse policy chooses tiered batch sizes without introducing site-specific behavior.
 - Runtime parser integration now retries with interleaving disabled if an interleaved parse attempt fails, preserving production parser correctness and surfacing the event via `interleavedFallback` telemetry.
+
+### 4.4 JavaScript Runtime Bytecode-Only Mainline (2026-02-27)
+
+- `Core/FenRuntime.cs`
+  - `ExecuteSimple(...)` now enforces bytecode-only execution.
+  - compile-unsupported scripts now return explicit bytecode-only errors (no AST interpreter fallback).
+  - prototype hardening script execution routes through bytecode path.
+- `Core/FenFunction.cs`
+  - AST-backed user function invocation is rejected in bytecode-only mode.
+  - user-defined function invocation uses VM thunk (`CallFromArray`) for bytecode-backed closures.
+- `Core/ModuleLoader.cs`
+  - module execution path now compiles and runs modules via bytecode VM.
+  - module dependency binding/import namespace setup and export extraction are performed in bytecode flow.
+- `Scripting/JavaScriptEngine.cs`
+  - `ExecuteFunction` delegate now invokes through `FenFunction.Invoke(...)` bytecode path.
+- `Core/Bytecode/VM/VirtualMachine.cs`
+  - AST-backed call/construct fallback helpers were removed from call/construct opcodes.
+  - call/construct on AST-backed functions now fail with explicit bytecode-only errors.
+- `DevTools/DevToolsCore.cs`
+  - console/debug expression evaluation now compiles and executes via bytecode VM against paused/global scope.
 
 ---
 
@@ -554,7 +574,7 @@ Implementation of JS Proxy/Reflect built-ins.
 
 #### Generic Utilities
 
-- **`MiniJs.cs`**: Minimal JS interpreter fallback (when Jint is disabled).
+- **`MiniJs.cs`**: Removed (2026-02-27) during bytecode-only runtime consolidation.
 - **`JsRuntimeAbstraction.cs`**: Interface for swapping JS engines (V8/Jint).
 
 _End of Volume III_
@@ -615,7 +635,7 @@ So you want to add `border-radius`? Follow these steps:
 - `Core/Lexer.cs`
   - Added strict validation for escaped identifier code points; invalid escaped punctuator forms are now tokenized as `Illegal`.
 
-- `Core/Interpreter.cs`
+- `Core/ModuleLoader.cs`
   - Added missing-export checks for module named imports and named re-exports.
 
 - `Core/ModuleLoader.cs`
@@ -1901,4 +1921,50 @@ So you want to add `border-radius`? Follow these steps:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests` -> Passed `90/90`.
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.FenRuntimeBytecodeExecutionTests` -> Passed `22/22`.
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.BenchmarkTests.CompareInterpreterAndBytecode` -> Passed `1/1`.
+
+### 6.59 JavaScript Bytecode-Only Enforcement Tranche JS-BC-29 (2026-02-27)
+
+- `Core/Bytecode/VM/VirtualMachine.cs`
+  - removed AST-backed fallback execution from:
+    - `Call`,
+    - `CallFromArray`,
+    - `Construct`,
+    - `ConstructFromArray`.
+  - removed helper methods:
+    - `CollectStackArguments(...)`,
+    - `CollectArrayLikeArguments(...)`,
+    - `ExecuteAstFunctionFallback(...)`,
+    - `ExecuteAstConstructorFallback(...)`.
+  - native call path now respects proxied native functions by routing proxied call sites through `FenFunction.Invoke(...)`.
+
+- `Core/FenRuntime.cs`
+  - removed interpreter fallback from `ExecuteSimple(...)`.
+  - compile-unsupported scripts now return `Bytecode-only mode: compilation unsupported...`.
+  - bytecode-disabled path now returns explicit bytecode-only mode error.
+
+- `Core/FenFunction.cs`
+  - removed interpreter-backed invocation for user-defined functions.
+  - bytecode-backed invoke path now uses VM thunk call for non-native functions.
+
+- `Core/ModuleLoader.cs`
+  - replaced interpreter module execution with bytecode compile/execute and export projection.
+
+- `DevTools/DevToolsCore.cs`
+  - removed interpreter dependency for conditional breakpoints and expression evaluation.
+  - expression eval now parses program text and runs bytecode in paused/global scope.
+
+- `Scripting/JavaScriptEngine.cs`
+  - function execution delegate no longer instantiates interpreter; delegates to `FenFunction.Invoke(...)`.
+
+- `Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - AST-backed call/construct fallback tests were converted to bytecode-only failure expectations.
+
+- `Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+  - runtime tests updated to assert explicit bytecode-only error behavior where interpreter fallback previously executed.
+
+- `Tests/Engine/ProxyTests.cs`
+  - execution switched from direct interpreter eval to runtime bytecode execution path.
+
+- Verification
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~FenBrowser.Tests.Engine.ProxyTests|FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests|FullyQualifiedName~FenBrowser.Tests.Engine.FenRuntimeBytecodeExecutionTests|FullyQualifiedName~FenBrowser.Tests.Engine.ModuleLoaderTests" -v minimal` -> Passed `121/121`.
 
