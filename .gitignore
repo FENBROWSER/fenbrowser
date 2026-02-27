@@ -46,7 +46,9 @@ build.binlog
 nul
 .claude/
 test262/
+wpt/
 html5lib-tests/
+Results/
 .config/
 
 # Test Results
