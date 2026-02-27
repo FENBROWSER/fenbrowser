@@ -267,7 +267,11 @@ public sealed class Html5LibTestRunner
 
     private static void SerializeNode(Node node, StringBuilder sb, int depth)
     {
-        var indent = new string(' ', depth * 2);
+        // html5lib format: "| " followed by (depth * 2) spaces, then content
+        // depth 0: "| <html>"
+        // depth 1: "|   <head>"  (2 spaces)
+        // depth 2: "|     \"text\""  (4 spaces)
+        var indent = "| " + new string(' ', depth * 2);
 
         switch (node)
         {
@@ -284,11 +288,12 @@ public sealed class Html5LibTestRunner
             case Element el:
                 // Format: | <tagname>
                 var tagName = el.TagName?.ToLowerInvariant() ?? "";
-                sb.AppendLine($"{indent}| <{tagName}>");
+                sb.AppendLine($"{indent}<{tagName}>");
 
                 // Attributes in alphabetical order (el.Attributes is NamedNodeMap of Attr)
                 if (el.HasAttributes())
                 {
+                    var attrIndent = "| " + new string(' ', (depth + 1) * 2);
                     var sortedAttrs = new List<(string Name, string Value)>();
                     foreach (var attr in el.Attributes)
                     {
@@ -299,7 +304,7 @@ public sealed class Html5LibTestRunner
 
                     foreach (var (name, value) in sortedAttrs)
                     {
-                        sb.AppendLine($"{indent}|   {name}=\"{value}\"");
+                        sb.AppendLine($"{attrIndent}{name}=\"{value}\"");
                     }
                 }
 
@@ -320,7 +325,7 @@ public sealed class Html5LibTestRunner
                     // Check if this is a comment (node type check)
                     if (node.NodeType == NodeType.Comment)
                     {
-                        sb.AppendLine($"{indent}| <!-- {text} -->");
+                        sb.AppendLine($"{indent}<!-- {text} -->");
                     }
                     else if (node.NodeType == NodeType.DocumentType)
                     {
@@ -333,11 +338,11 @@ public sealed class Html5LibTestRunner
                         {
                         }
 
-                        sb.AppendLine($"{indent}| <!DOCTYPE {dtName}>");
+                        sb.AppendLine($"{indent}<!DOCTYPE {dtName}>");
                     }
                     else // Text
                     {
-                        sb.AppendLine($"{indent}| \"{text}\"");
+                        sb.AppendLine($"{indent}\"{text}\"");
                     }
                 }
 
