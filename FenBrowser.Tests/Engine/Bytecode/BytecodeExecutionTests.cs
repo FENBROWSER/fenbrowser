@@ -37,6 +37,39 @@ namespace FenBrowser.Tests.Engine.Bytecode
             return _vm.Execute(codeBlock, scope);
         }
 
+        private static Program ParseProgram(string js)
+        {
+            var lexer = new Lexer(js);
+            var parser = new Parser(lexer, false);
+            return parser.ParseProgram();
+        }
+
+        private static FenFunction CreateAstBackedFunction(
+            FenEnvironment env,
+            string declarationSource,
+            string expectedName)
+        {
+            var program = ParseProgram(declarationSource);
+            var declaration = Assert.IsType<FunctionDeclarationStatement>(program.Statements[0]);
+
+            var function = new FenFunction(declaration.Function.Parameters, declaration.Function.Body, env)
+            {
+                Name = declaration.Function.Name,
+                IsAsync = declaration.Function.IsAsync,
+                IsGenerator = declaration.Function.IsGenerator
+            };
+
+            Assert.Equal(expectedName, function.Name);
+
+            // VM constructor path expects ordinary functions to expose a prototype object.
+            var prototype = new FenObject();
+            prototype.Set("constructor", FenValue.FromFunction(function));
+            function.Prototype = prototype;
+            function.Set("prototype", FenValue.FromObject(prototype));
+
+            return function;
+        }
+
         [Fact]
         public void Bytecode_BasicArithmetic_ShouldMatchInterpreter()
         {
@@ -295,6 +328,50 @@ namespace FenBrowser.Tests.Engine.Bytecode
         }
 
         [Fact]
+        public void Bytecode_CallOpcode_ShouldFallbackToAstBackedFunction()
+        {
+            var env = new FenEnvironment();
+            var inc = CreateAstBackedFunction(env, "function inc(x) { return x + 1; }", "inc");
+            env.Set("inc", FenValue.FromFunction(inc));
+
+            var result = Evaluate(ParseProgram("function run(v) { return inc(v); } run(41);"), env);
+            Assert.Equal(42, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_CallFromArrayOpcode_ShouldFallbackToAstBackedFunction()
+        {
+            var env = new FenEnvironment();
+            var inc = CreateAstBackedFunction(env, "function inc(x) { return x + 1; }", "inc");
+            env.Set("inc", FenValue.FromFunction(inc));
+
+            var result = Evaluate(ParseProgram("function run(v) { return inc(...[v]); } run(41);"), env);
+            Assert.Equal(42, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_ConstructOpcode_ShouldFallbackToAstBackedConstructor()
+        {
+            var env = new FenEnvironment();
+            var pair = CreateAstBackedFunction(env, "function Pair(a, b) { this.sum = a + b; }", "Pair");
+            env.Set("Pair", FenValue.FromFunction(pair));
+
+            var result = Evaluate(ParseProgram("function run(a, b) { var p = new Pair(a, b); return p.sum; } run(5, 7);"), env);
+            Assert.Equal(12, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_ConstructFromArrayOpcode_ShouldFallbackToAstBackedConstructor()
+        {
+            var env = new FenEnvironment();
+            var pair = CreateAstBackedFunction(env, "function Pair(a, b) { this.sum = a + b; }", "Pair");
+            env.Set("Pair", FenValue.FromFunction(pair));
+
+            var result = Evaluate(ParseProgram("function run(a, b) { var p = new Pair(...[a, b]); return p.sum; } run(5, 7);"), env);
+            Assert.Equal(12, result.AsNumber());
+        }
+
+        [Fact]
         public void Bytecode_LogicalShortCircuit_ShouldWork()
         {
             var result = Evaluate("var x = 0; true || (x = 1); x;");
@@ -343,6 +420,20 @@ namespace FenBrowser.Tests.Engine.Bytecode
         {
             var result = Evaluate("function f(a) { return arguments[0] + arguments.length; } f(5, 6);");
             Assert.Equal(7, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_FunctionLocals_ShouldExecuteWithLocalSlots()
+        {
+            var result = Evaluate("function sum(a, b) { var x = a + b; return x + 1; } sum(2, 3);");
+            Assert.Equal(6, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_ArrayDelete_ShouldCreateHoleAndPreserveLength()
+        {
+            var result = Evaluate("var a = [1, 2, 3]; delete a[1]; var has = 1 in a; var len = a.length; (has ? 100 : 0) + len;");
+            Assert.Equal(3, result.AsNumber());
         }
 
         [Fact]
@@ -476,6 +567,20 @@ namespace FenBrowser.Tests.Engine.Bytecode
         {
             var result = Evaluate("var x = 1; delete x;");
             Assert.False(result.ToBoolean());
+        }
+
+        [Fact]
+        public void Bytecode_DeleteNonReferenceExpression_ShouldReturnTrue()
+        {
+            var result = Evaluate("delete (1 + 2);");
+            Assert.True(result.ToBoolean());
+        }
+
+        [Fact]
+        public void Bytecode_DeleteNonReferenceExpression_ShouldPreserveOperandSideEffects()
+        {
+            var result = Evaluate("var x = 0; var ok = delete (x = 1); (ok ? 10 : 0) + x;");
+            Assert.Equal(11, result.AsNumber());
         }
 
         [Fact]
