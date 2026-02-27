@@ -10,12 +10,14 @@ namespace FenBrowser.Core.Parsing
 
         private readonly Uri _baseUri;
         private readonly Network.ResourcePrefetcher _prefetcher;
+        private readonly ParserSecurityPolicy _securityPolicy;
 
-        public HtmlParser(string html, Uri baseUri = null, Network.ResourcePrefetcher prefetcher = null)
+        public HtmlParser(string html, Uri baseUri = null, Network.ResourcePrefetcher prefetcher = null, ParserSecurityPolicy securityPolicy = null)
         {
             _html = html;
             _baseUri = baseUri ?? new Uri("about:blank");
             _prefetcher = prefetcher;
+            _securityPolicy = securityPolicy ?? ParserSecurityPolicy.Default;
         }
 
         public Document Parse()
@@ -33,7 +35,11 @@ namespace FenBrowser.Core.Parsing
                 scanner.ScanAsync();
             }
 
-            var builder = new HtmlTreeBuilder(html);
+            var builder = new HtmlTreeBuilder(html)
+            {
+                MaxTokenizerEmissions = _securityPolicy.HtmlMaxTokenEmissions,
+                MaxOpenElementsDepth = _securityPolicy.HtmlMaxOpenElementsDepth
+            };
             var doc = builder.Build();
             doc.BaseURI = _baseUri.AbsoluteUri; // Ensure doc knows its base
             return doc;

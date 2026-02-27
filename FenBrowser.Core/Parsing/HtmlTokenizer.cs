@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Net;
 using System.Text;
 
 namespace FenBrowser.Core.Parsing
@@ -13,6 +14,8 @@ namespace FenBrowser.Core.Parsing
         private readonly string _input;
         private int _position;
         private readonly int _length;
+        private int _emittedTokenCount;
+        private bool _emissionLimitReached;
         
         // Current state
         private TokenizerState _state = TokenizerState.Data;
@@ -28,12 +31,153 @@ namespace FenBrowser.Core.Parsing
         
         private TokenizerState _returnState;
         private uint _charRefValue;
+        private bool _charRefInAttributeValue;
+        private char _charRefHexMarker;
+
+        private static readonly Dictionary<string, string> NamedCharacterReferences = new(StringComparer.Ordinal)
+        {
+            ["amp"] = "&",
+            ["lt"] = "<",
+            ["gt"] = ">",
+            ["quot"] = "\"",
+            ["apos"] = "'",
+            ["nbsp"] = "\u00A0",
+            ["copy"] = "\u00A9",
+            ["reg"] = "\u00AE",
+            ["trade"] = "\u2122",
+            ["euro"] = "\u20AC",
+            ["cent"] = "\u00A2",
+            ["pound"] = "\u00A3",
+            ["yen"] = "\u00A5",
+            ["sect"] = "\u00A7",
+            ["para"] = "\u00B6",
+            ["middot"] = "\u00B7",
+            ["deg"] = "\u00B0",
+            ["plusmn"] = "\u00B1",
+            ["sup2"] = "\u00B2",
+            ["sup3"] = "\u00B3",
+            ["frac14"] = "\u00BC",
+            ["frac12"] = "\u00BD",
+            ["frac34"] = "\u00BE",
+            ["times"] = "\u00D7",
+            ["divide"] = "\u00F7",
+            ["micro"] = "\u00B5",
+            ["ndash"] = "\u2013",
+            ["mdash"] = "\u2014",
+            ["hellip"] = "\u2026",
+            ["lsquo"] = "\u2018",
+            ["rsquo"] = "\u2019",
+            ["ldquo"] = "\u201C",
+            ["rdquo"] = "\u201D",
+            ["laquo"] = "\u00AB",
+            ["raquo"] = "\u00BB",
+            ["bull"] = "\u2022",
+            ["iexcl"] = "\u00A1",
+            ["iquest"] = "\u00BF",
+            ["Agrave"] = "\u00C0",
+            ["Aacute"] = "\u00C1",
+            ["Acirc"] = "\u00C2",
+            ["Atilde"] = "\u00C3",
+            ["Auml"] = "\u00C4",
+            ["Aring"] = "\u00C5",
+            ["AElig"] = "\u00C6",
+            ["Ccedil"] = "\u00C7",
+            ["Egrave"] = "\u00C8",
+            ["Eacute"] = "\u00C9",
+            ["Ecirc"] = "\u00CA",
+            ["Euml"] = "\u00CB",
+            ["Igrave"] = "\u00CC",
+            ["Iacute"] = "\u00CD",
+            ["Icirc"] = "\u00CE",
+            ["Iuml"] = "\u00CF",
+            ["Ntilde"] = "\u00D1",
+            ["Ograve"] = "\u00D2",
+            ["Oacute"] = "\u00D3",
+            ["Ocirc"] = "\u00D4",
+            ["Otilde"] = "\u00D5",
+            ["Ouml"] = "\u00D6",
+            ["Oslash"] = "\u00D8",
+            ["Ugrave"] = "\u00D9",
+            ["Uacute"] = "\u00DA",
+            ["Ucirc"] = "\u00DB",
+            ["Uuml"] = "\u00DC",
+            ["Yacute"] = "\u00DD",
+            ["agrave"] = "\u00E0",
+            ["aacute"] = "\u00E1",
+            ["acirc"] = "\u00E2",
+            ["atilde"] = "\u00E3",
+            ["auml"] = "\u00E4",
+            ["aring"] = "\u00E5",
+            ["aelig"] = "\u00E6",
+            ["ccedil"] = "\u00E7",
+            ["egrave"] = "\u00E8",
+            ["eacute"] = "\u00E9",
+            ["ecirc"] = "\u00EA",
+            ["euml"] = "\u00EB",
+            ["igrave"] = "\u00EC",
+            ["iacute"] = "\u00ED",
+            ["icirc"] = "\u00EE",
+            ["iuml"] = "\u00EF",
+            ["ntilde"] = "\u00F1",
+            ["ograve"] = "\u00F2",
+            ["oacute"] = "\u00F3",
+            ["ocirc"] = "\u00F4",
+            ["otilde"] = "\u00F5",
+            ["ouml"] = "\u00F6",
+            ["oslash"] = "\u00F8",
+            ["ugrave"] = "\u00F9",
+            ["uacute"] = "\u00FA",
+            ["ucirc"] = "\u00FB",
+            ["uuml"] = "\u00FC",
+            ["yacute"] = "\u00FD",
+            ["yuml"] = "\u00FF"
+        };
+
+        private static readonly Dictionary<int, int> NumericCharacterReferenceReplacements = new()
+        {
+            [0x80] = 0x20AC,
+            [0x82] = 0x201A,
+            [0x83] = 0x0192,
+            [0x84] = 0x201E,
+            [0x85] = 0x2026,
+            [0x86] = 0x2020,
+            [0x87] = 0x2021,
+            [0x88] = 0x02C6,
+            [0x89] = 0x2030,
+            [0x8A] = 0x0160,
+            [0x8B] = 0x2039,
+            [0x8C] = 0x0152,
+            [0x8E] = 0x017D,
+            [0x91] = 0x2018,
+            [0x92] = 0x2019,
+            [0x93] = 0x201C,
+            [0x94] = 0x201D,
+            [0x95] = 0x2022,
+            [0x96] = 0x2013,
+            [0x97] = 0x2014,
+            [0x98] = 0x02DC,
+            [0x99] = 0x2122,
+            [0x9A] = 0x0161,
+            [0x9B] = 0x203A,
+            [0x9C] = 0x0153,
+            [0x9E] = 0x017E,
+            [0x9F] = 0x0178
+        };
+
+        private static readonly Dictionary<string, string?> NamedCharacterReferenceDecodeCache = new(StringComparer.Ordinal);
+        private static readonly object NamedCharacterReferenceDecodeCacheLock = new();
 
         // Queue for characters that need to be emitted before continuing state machine
         private readonly Queue<char> _pendingChars = new Queue<char>();
 
         // Temporary buffer for script data escape end-tag matching
         private StringBuilder _scriptEscapeBuffer = new StringBuilder();
+
+        /// <summary>
+        /// Hard safety cap for non-EOF token emissions to prevent pathological inputs
+        /// from producing unbounded token streams.
+        /// </summary>
+        public int MaxTokenEmissions { get; set; } = 2_000_000;
 
         public HtmlTokenizer(string input)
         {
@@ -129,6 +273,21 @@ namespace FenBrowser.Core.Parsing
             {
                 var token = NextToken();
                 if (token == null) continue; // Internal state transition produced no token yet
+
+                if (!_emissionLimitReached &&
+                    token.Type != HtmlTokenType.EndOfFile &&
+                    _emittedTokenCount >= MaxTokenEmissions)
+                {
+                    _emissionLimitReached = true;
+                    EmitError($"Tokenizer emission limit reached ({MaxTokenEmissions}). Aborting stream.");
+                    yield return new EofToken();
+                    break;
+                }
+
+                if (token.Type != HtmlTokenType.EndOfFile)
+                {
+                    _emittedTokenCount++;
+                }
                 
                 yield return token;
                 
@@ -182,17 +341,28 @@ namespace FenBrowser.Core.Parsing
                         }
                         else
                         {
-                            // Named reference or just literal &
-                            // Simplified for now: treat as literal & if not numeric
+                            if (TryConsumeNamedCharacterReference(out var namedValue))
+                            {
+                                SwitchTo(_returnState);
+                                var namedToken = EmitCharacterReferenceResult(namedValue);
+                                if (namedToken != null) return namedToken;
+                                continue;
+                            }
+
+                            // Not a recognized reference, emit literal '&' and continue from return state.
                             SwitchTo(_returnState);
-                            return EmitCharacter('&');
+                            var literalAmp = EmitCharacterReferenceResult("&");
+                            if (literalAmp != null) return literalAmp;
+                            continue;
                         }
                         break;
 
                     case TokenizerState.NumericCharacterReference:
                         _charRefValue = 0;
+                        _charRefHexMarker = '\0';
                         if (c == 'x' || c == 'X')
                         {
+                            _charRefHexMarker = c;
                             Consume();
                             SwitchTo(TokenizerState.HexadecimalCharacterReferenceStart);
                         }
@@ -205,7 +375,9 @@ namespace FenBrowser.Core.Parsing
                         {
                             EmitError("Invalid Numeric Character Reference");
                             SwitchTo(_returnState);
-                            return EmitCharacter('&'); // and # ?
+                            var invalidNumeric = EmitCharacterReferenceResult("&#");
+                            if (invalidNumeric != null) return invalidNumeric;
+                            continue;
                         }
                         break;
 
@@ -236,7 +408,10 @@ namespace FenBrowser.Core.Parsing
                         {
                             EmitError("Invalid Hex Character Reference");
                             SwitchTo(_returnState);
-                            return EmitCharacter('&');
+                            var invalidHexPrefix = _charRefHexMarker == 'X' ? "&#X" : "&#x";
+                            var invalidHex = EmitCharacterReferenceResult(invalidHexPrefix);
+                            if (invalidHex != null) return invalidHex;
+                            continue;
                         }
                         break;
 
@@ -258,11 +433,11 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                     case TokenizerState.NumericCharacterReferenceEnd:
-                        // Convert value to char
-                        char resolved;
-                        try { resolved = (char)_charRefValue; } catch { resolved = ' '; }
+                        var resolved = ResolveNumericCharacterReference(_charRefValue);
                         SwitchTo(_returnState);
-                        return EmitCharacter(resolved);
+                        var numericToken = EmitCharacterReferenceResult(resolved);
+                        if (numericToken != null) return numericToken;
+                        continue;
 
                     case TokenizerState.TagOpen:
                         if (c == '!')
@@ -1147,7 +1322,15 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                     case TokenizerState.AttributeValueDoubleQuoted:
-                        if (c == '"')
+                        if (c == '&')
+                        {
+                            Consume();
+                            _returnState = TokenizerState.AttributeValueDoubleQuoted;
+                            _charRefInAttributeValue = true;
+                            SwitchTo(TokenizerState.CharacterReference);
+                            continue;
+                        }
+                        else if (c == '"')
                         {
                             Consume();
                             SetAttributeValue();
@@ -1166,7 +1349,15 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                     case TokenizerState.AttributeValueSingleQuoted:
-                        if (c == '\'')
+                        if (c == '&')
+                        {
+                            Consume();
+                            _returnState = TokenizerState.AttributeValueSingleQuoted;
+                            _charRefInAttributeValue = true;
+                            SwitchTo(TokenizerState.CharacterReference);
+                            continue;
+                        }
+                        else if (c == '\'')
                         {
                             Consume();
                             SetAttributeValue();
@@ -1185,7 +1376,15 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                     case TokenizerState.AttributeValueUnquoted:
-                        if (char.IsWhiteSpace(c))
+                        if (c == '&')
+                        {
+                            Consume();
+                            _returnState = TokenizerState.AttributeValueUnquoted;
+                            _charRefInAttributeValue = true;
+                            SwitchTo(TokenizerState.CharacterReference);
+                            continue;
+                        }
+                        else if (char.IsWhiteSpace(c))
                         {
                             Consume();
                             SetAttributeValue();
@@ -1597,6 +1796,150 @@ namespace FenBrowser.Core.Parsing
         private bool IsHexDigit(char c)
         {
             return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        }
+
+        private bool TryConsumeNamedCharacterReference(out string value)
+        {
+            value = string.Empty;
+            if (IsEof())
+            {
+                return false;
+            }
+
+            int start = _position;
+            int i = _position;
+            while (i < _length && IsAsciiAlphaNumeric(_input[i]))
+            {
+                i++;
+            }
+
+            int nameLength = i - start;
+            if (nameLength <= 0)
+            {
+                return false;
+            }
+
+            for (int candidateLength = nameLength; candidateLength >= 1; candidateLength--)
+            {
+                var name = _input.Substring(start, candidateLength);
+                if (!TryResolveNamedCharacterReference(name, out value))
+                {
+                    continue;
+                }
+
+                int end = start + candidateLength;
+                bool hasSemicolon = end < _length && _input[end] == ';';
+
+                if (!hasSemicolon && _charRefInAttributeValue)
+                {
+                    char next = end < _length ? _input[end] : '\0';
+                    if (IsAsciiAlphaNumeric(next) || next == '=')
+                    {
+                        continue;
+                    }
+                }
+
+                _position = end + (hasSemicolon ? 1 : 0);
+                return true;
+            }
+
+            value = string.Empty;
+            return false;
+        }
+
+        private static bool TryResolveNamedCharacterReference(string name, out string value)
+        {
+            if (NamedCharacterReferences.TryGetValue(name, out value))
+            {
+                return true;
+            }
+
+            lock (NamedCharacterReferenceDecodeCacheLock)
+            {
+                if (NamedCharacterReferenceDecodeCache.TryGetValue(name, out var cached))
+                {
+                    if (cached is not null)
+                    {
+                        value = cached;
+                        return true;
+                    }
+
+                    value = string.Empty;
+                    return false;
+                }
+            }
+
+            var entity = "&" + name + ";";
+            var decoded = WebUtility.HtmlDecode(entity);
+            bool success = !string.Equals(decoded, entity, StringComparison.Ordinal);
+
+            lock (NamedCharacterReferenceDecodeCacheLock)
+            {
+                NamedCharacterReferenceDecodeCache[name] = success ? decoded : null;
+            }
+
+            if (success)
+            {
+                value = decoded;
+                return true;
+            }
+
+            value = string.Empty;
+            return false;
+        }
+
+        private string ResolveNumericCharacterReference(uint codePoint)
+        {
+            if (NumericCharacterReferenceReplacements.TryGetValue((int)codePoint, out var replacement))
+            {
+                codePoint = (uint)replacement;
+            }
+
+            if (codePoint == 0 || codePoint > 0x10FFFF || (codePoint >= 0xD800 && codePoint <= 0xDFFF))
+            {
+                return "\uFFFD";
+            }
+
+            try
+            {
+                return char.ConvertFromUtf32((int)codePoint);
+            }
+            catch
+            {
+                return "\uFFFD";
+            }
+        }
+
+        private HtmlToken EmitCharacterReferenceResult(string resolved)
+        {
+            if (_charRefInAttributeValue)
+            {
+                _attrValueBuffer.Append(resolved);
+                _charRefInAttributeValue = false;
+                return null;
+            }
+
+            if (string.IsNullOrEmpty(resolved))
+            {
+                return null;
+            }
+
+            if (resolved.Length > 1)
+            {
+                for (int i = 1; i < resolved.Length; i++)
+                {
+                    _pendingChars.Enqueue(resolved[i]);
+                }
+            }
+
+            return EmitCharacter(resolved[0]);
+        }
+
+        private static bool IsAsciiAlphaNumeric(char c)
+        {
+            return (c >= 'a' && c <= 'z')
+                || (c >= 'A' && c <= 'Z')
+                || (c >= '0' && c <= '9');
         }
 
         private int GetHexValue(char c)
