@@ -6,7 +6,7 @@ namespace FenBrowser.FenEngine.Scripting
 {
     /// <summary>
     /// Minimal runtime abstraction so we can swap the tiny JS-0 engine
-    /// for a full interpreter (e.g., NiL.JS) without refactoring callers.
+    /// for a full engine implementation (e.g., NiL.JS) without refactoring callers.
     /// First slice: only the members we already use widely.
     /// </summary>
     public interface IJsRuntime

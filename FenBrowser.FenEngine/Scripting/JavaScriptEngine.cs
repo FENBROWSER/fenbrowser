@@ -50,7 +50,7 @@ namespace FenBrowser.FenEngine.Scripting
 #endif
         private readonly IJsHost _host;
         private readonly FenBrowser.FenEngine.Storage.IStorageBackend _storageBackend;
-        // private MiniJs.Engine _mini;      // MiniJS interpreter instance - DISABLED
+        // Legacy mini runtime instance removed.
         public IExecutionContext GlobalContext => _fenRuntime?.Context;
         private JsContext _ctx;
 
@@ -70,7 +70,7 @@ namespace FenBrowser.FenEngine.Scripting
             DocumentWrapper.CookieWriteBridge = (scope, cookieString) => SetCookieString(scope, cookieString);
             try { FenLogger.Debug("[JavaScriptEngine] Constructor: InitRuntime Done", LogCategory.JavaScript); } catch { }
             SetupMutationObserver();
-            // _mini = new MiniJs.Engine();
+            // Legacy mini runtime removed.
         }
 
         public Func<System.Net.Http.HttpRequestMessage, System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage>> FetchHandler { get; set; }
@@ -118,8 +118,18 @@ namespace FenBrowser.FenEngine.Scripting
             // Configure function execution delegate
             context.ExecuteFunction = (fn, args) => 
             {
-                var interpreter = new FenBrowser.FenEngine.Core.Interpreter();
-                return interpreter.ApplyFunction(fn, new System.Collections.Generic.List<FenBrowser.FenEngine.Core.FenValue>(args), context);
+                if (!fn.IsFunction)
+                {
+                    return FenBrowser.FenEngine.Core.FenValue.FromError("Bytecode-only mode: attempted to execute non-function.");
+                }
+
+                var function = fn.AsFunction();
+                if (function == null)
+                {
+                    return FenBrowser.FenEngine.Core.FenValue.FromError("Bytecode-only mode: function handle is invalid.");
+                }
+
+                return function.Invoke(args, context);
             };
             
             // Configure callbacks to run via EventLoop
@@ -339,7 +349,7 @@ namespace FenBrowser.FenEngine.Scripting
                 {
                     thisContext = new JsDomElement(this, domEl);
                 }
-                // If 'thisContext' is not IValue/FenObject/JsObject, the interpreter might complain.
+                // If 'thisContext' is not IValue/FenObject/JsObject, function invocation can fail.
                 // JsDomElement implements IObject.
 
                 var args = new FenValue[] {
@@ -1021,10 +1031,7 @@ namespace FenBrowser.FenEngine.Scripting
         // ---- Phase 1/2/3 state ----
         private readonly Dictionary<string, List<string>> _evtDoc = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, List<string>> _evtWin = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-        // Mini interpreter event listeners - DISABLED
-        // private readonly System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<MiniJs.JsFunction>> _miniEvtDoc = new System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<MiniJs.JsFunction>>(System.StringComparer.OrdinalIgnoreCase);
-        // private readonly System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<MiniJs.JsFunction>> _miniEvtWin = new System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<MiniJs.JsFunction>>(System.StringComparer.OrdinalIgnoreCase);
-        // private readonly System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<MiniJs.JsFunction>>> _miniEvtEl = new System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<MiniJs.JsFunction>>>(System.StringComparer.Ordinal);
+        // Legacy mini runtime event listeners removed.
 
     // Track stopPropagation requests inside a single handler execution (JS-0 allowlist)
     private volatile bool _stopPropagationRequested;
@@ -1059,20 +1066,6 @@ namespace FenBrowser.FenEngine.Scripting
             }
             catch { }
 
-            // MiniJs event support - DISABLED
-            /*
-            try
-            {
-                System.Collections.Generic.List<MiniJs.JsFunction> mlist; if (_miniEvtDoc.TryGetValue(evt, out mlist) && mlist != null)
-                {
-                    foreach (var fn in mlist.ToArray())
-                    {
-                        try { var args = new System.Collections.Generic.List<MiniJs.JsValue>(); var ev = MiniEvent("document", evt); args.Add(ev); _mini?.Invoke(fn, args); } catch { }
-                    }
-                }
-            }
-            catch { }
-            */
         }
 
         private void FireWindowEvent(string evt)
@@ -1089,20 +1082,6 @@ namespace FenBrowser.FenEngine.Scripting
             }
             catch { }
 
-            // MiniJs event support - DISABLED
-            /*
-            try
-            {
-                System.Collections.Generic.List<MiniJs.JsFunction> mlist; if (_miniEvtWin.TryGetValue(evt, out mlist) && mlist != null)
-                {
-                    foreach (var fn in mlist.ToArray())
-                    {
-                        try { var args = new System.Collections.Generic.List<MiniJs.JsValue>(); var ev = MiniEvent("window", evt); args.Add(ev); _mini?.Invoke(fn, args); } catch { }
-                    }
-                }
-            }
-            catch { }
-            */
         }
 
         // intervals & rAF
@@ -1174,43 +1153,6 @@ namespace FenBrowser.FenEngine.Scripting
             }
         }
 
-
-        // MiniJs listener methods - DISABLED
-        /*
-        public void AddMiniDocumentListener(string evt, MiniJs.JsFunction fn)
-        {
-            if (string.IsNullOrEmpty(evt) || fn  == null) return;
-            System.Collections.Generic.List<MiniJs.JsFunction> list; if (!_miniEvtDoc.TryGetValue(evt, out list) || list  == null) { list = new System.Collections.Generic.List<MiniJs.JsFunction>(); _miniEvtDoc[evt] = list; }
-            if (!list.Contains(fn)) list.Add(fn);
-        }
-        public void RemoveMiniDocumentListener(string evt, MiniJs.JsFunction fn)
-        {
-            System.Collections.Generic.List<MiniJs.JsFunction> list; if (!_miniEvtDoc.TryGetValue(evt, out list) || list  == null) return; list.Remove(fn);
-        }
-        public void AddMiniWindowListener(string evt, MiniJs.JsFunction fn)
-        {
-            if (string.IsNullOrEmpty(evt) || fn  == null) return;
-            System.Collections.Generic.List<MiniJs.JsFunction> list; if (!_miniEvtWin.TryGetValue(evt, out list) || list  == null) { list = new System.Collections.Generic.List<MiniJs.JsFunction>(); _miniEvtWin[evt] = list; }
-            if (!list.Contains(fn)) list.Add(fn);
-        }
-        public void RemoveMiniWindowListener(string evt, MiniJs.JsFunction fn)
-        {
-            System.Collections.Generic.List<MiniJs.JsFunction> list; if (!_miniEvtWin.TryGetValue(evt, out list) || list  == null) return; list.Remove(fn);
-        }
-        public void AddMiniElementListener(string id, string evt, MiniJs.JsFunction fn)
-        {
-            if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(evt) || fn  == null) return;
-            System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<MiniJs.JsFunction>> byEvt; if (!_miniEvtEl.TryGetValue(id, out byEvt) || byEvt  == null) { byEvt = new System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<MiniJs.JsFunction>>(System.StringComparer.OrdinalIgnoreCase); _miniEvtEl[id] = byEvt; }
-            System.Collections.Generic.List<MiniJs.JsFunction> list; if (!byEvt.TryGetValue(evt, out list) || list  == null) { list = new System.Collections.Generic.List<MiniJs.JsFunction>(); byEvt[evt] = list; }
-            if (!list.Contains(fn)) list.Add(fn);
-        }
-        public void RemoveMiniElementListener(string id, string evt, MiniJs.JsFunction fn)
-        {
-            System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<MiniJs.JsFunction>> byEvt; if (!_miniEvtEl.TryGetValue(id, out byEvt) || byEvt  == null) return;
-            System.Collections.Generic.List<MiniJs.JsFunction> list; if (!byEvt.TryGetValue(evt, out list) || list  == null) return; list.Remove(fn);
-        }
-        */
-
         /// <summary>
         /// Raise an event on an element (asynchronous, DOM-triggered).
         /// Supports optional value and checked state for form controls.
@@ -1260,33 +1202,6 @@ namespace FenBrowser.FenEngine.Scripting
                     /* [PERF-REMOVED] */
                 }
             }
-
-            // MiniJs event support - DISABLED
-            /*
-            try
-            {
-                System.Collections.Generic.List<MiniJs.JsFunction> list; if (_miniEvtEl.TryGetValue(id, out var byEvt) && byEvt != null && byEvt.TryGetValue(evt, out list) && list != null)
-                {
-                    foreach (var fn in list.ToArray())
-                    {
-                        try
-                        {
-                            var args = new System.Collections.Generic.List<MiniJs.JsValue>();
-                            var ev = MiniEvent(id, evt);
-                            if (evt == "change" || evt == "input")
-                            {
-                                if (!string == nullOrEmpty(value)) ev.Obj["value"] = MiniJs.JsValue.From(value);
-                                if (isChecked.HasValue) ev.Obj["checked"] = MiniJs.JsValue.From(isChecked.Value);
-                            }
-                            args.Add(ev);
-                            _mini?.Invoke(fn, args);
-                        }
-                        catch { }
-                    }
-                }
-            }
-            catch { }
-            */
         }
 
         /// <summary>
@@ -1325,22 +1240,6 @@ namespace FenBrowser.FenEngine.Scripting
         {
             RaiseElementEvent(id, evt);
         }
-
-        // MiniJs.JsValue MiniEvent method - DISABLED
-        /*
-        private MiniJs.JsValue MiniEvent(string target, string type)
-        {
-            var e = MiniJs.JsValue.ObjLit();
-            e.Obj["target"] = MiniJs.JsValue.From(target ?? "");
-            e.Obj["type"] = MiniJs.JsValue.From(type ?? "");
-            bool canceled = false; bool stopped = false;
-            e.Obj["preventDefault"] = MiniJs.JsValue.Func(new MiniJs.JsFunction { Native = _ => { canceled = true; return MiniJs.JsValue.Undefined(); } });
-            e.Obj["stopPropagation"] = MiniJs.JsValue.Func(new MiniJs.JsFunction { Native = _ => { stopped = true; return MiniJs.JsValue.Undefined(); } });
-            return e;
-        }
-        */
-
-
         // ---------------- Intervals ----------------
         private int ScheduleInterval(string codeOrFn, int ms, bool isFnName)
         {
@@ -2117,83 +2016,8 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             
             InitRuntime();
 
-            // Recreate MiniJS and (re)bootstrap the environment - DISABLED
-            /*
-            try
-            {
-                _mini = new MiniJs.Engine();
-            }
-            catch { _mini = null; }
-            */
-
-            // try { EnsureMiniEnvironment(); } catch { }
         }
-        
-        // MiniJs environment setup - DISABLED
-        /*
-        private void EnsureMiniEnvironment()
-        {
-            try
-            {
-                if (_mini  == null) return;
 
-                // Wire standard environment & bridges
-                MiniJs.Bootstrap.InitEnvironment(
-                    _mini,
-                    _host,
-                    FetchTextSync,
-                    // setTimeout
-                    (code, ms) =>
-                    {
-                        try
-                        {
-                            int id = Interlocked.Increment(ref _nextTimerId);
-                            System.Threading.Timer t = null;
-                            System.Threading.TimerCallback fire = _ =>
-                            {
-                                try
-                                {
-                                    if (_mini != null) _mini.Execute(code ?? "");
-                                }
-                                catch { }
-                                finally
-                                {
-                                    lock (_timers)
-                                    {
-                                        try { if (_timers.ContainsKey(id)) _timers[id].Dispose(); } catch { }
-                                        _timers.Remove(id);
-                                    }
-                                }
-                            };
-                            t = new System.Threading.Timer(fire, null, ms, Timeout.Infinite);
-                            lock (_timers) _timers[id] = t;
-                            return id;
-                        }
-                        catch { }
-                        return -1;
-                    },
-                    // clearTimeout
-                    (id) =>
-                    {
-                        try
-                        {
-                            lock (_timers)
-                            {
-                                System.Threading.Timer t;
-                                if (_timers.TryGetValue(id, out t))
-                                {
-                                    try { t.Dispose(); } catch { }
-                                    _timers.Remove(id);
-                                }
-                            }
-                        }
-                        catch { }
-                    }
-                );
-            }
-            catch { }
-        }
-        */
         private void ResetPrefetchedModuleSource()
         {
             lock (_prefetchedModuleSourceLock)
