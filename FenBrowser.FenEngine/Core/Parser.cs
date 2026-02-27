@@ -1003,7 +1003,8 @@ namespace FenBrowser.FenEngine.Core
                         _arrowFunctionDepth++;
                         if (CurTokenIs(TokenType.LBrace))
                         {
-                            arrow.Body = ParseBlockStatement();
+                            // Keep call/member delimiters (',' ')' etc.) for the outer parser.
+                            arrow.Body = ParseBlockStatement(consumeTerminator: false);
                         }
                         else
                         {
