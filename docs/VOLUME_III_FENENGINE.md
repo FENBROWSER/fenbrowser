@@ -1968,3 +1968,36 @@ So you want to add `border-radius`? Follow these steps:
 - Verification
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~FenBrowser.Tests.Engine.ProxyTests|FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests|FullyQualifiedName~FenBrowser.Tests.Engine.FenRuntimeBytecodeExecutionTests|FullyQualifiedName~FenBrowser.Tests.Engine.ModuleLoaderTests" -v minimal` -> Passed `121/121`.
 
+### 6.60 WPT Headless Harness Reliability Tranche JS-BC-30 (2026-02-27)
+
+- `Core/Parser.cs`
+  - fixed empty-parameter arrow parsing (`() => { ... }`) inside argument lists by preserving outer call delimiters:
+    - `ParseGroupedExpression` now calls `ParseBlockStatement(consumeTerminator: false)` for empty-params arrow bodies.
+  - removed false `expected ... RParen` parse failures around callback patterns such as `setTimeout(() => { ... }, 0)` and `test(() => { ... }, "name")`.
+
+- `FenBrowser.WPT/HeadlessNavigator.cs`
+  - added robust external-script resolution for:
+    - root-absolute WPT paths (`/resources/...`),
+    - test-relative paths,
+    - WPT-root fallback paths.
+  - wired runtime console output into `TestConsoleCapture` so runner output and fallback parsing have real signal.
+  - added script-level diagnostics labels in error capture (`inline-script-N`, harness bridge, shims).
+  - introduced minimal WPT harness shims for:
+    - `/resources/testharness.js`,
+    - `/resources/testharnessreport.js` (intentional no-op shim),
+    - with `test`, `promise_test`, `async_test`, and core assert helpers bridged to `testRunner.reportResult(...)`/`notifyDone()`.
+
+- `FenBrowser.Conformance/HeadlessNavigator.cs`
+  - synchronized with WPT CLI headless navigator behavior so conformance WPT runs use the same harness/script-resolution path.
+
+- `FenBrowser.Conformance/Program.cs`
+  - WPT suite execution now passes a non-null headless navigator delegate into `WPTTestRunner` (removes prior `no-navigator` failure mode).
+
+- Verification
+  - `dotnet run --project FenBrowser.WPT -- run_single dom/attributes-are-nodes.html --timeout 8000 --verbose`
+    - now reports structured completion and assertions (`Signal=testRunner.notifyDone`, `Asserts=4`) instead of zero-assertion/no-navigator failure.
+  - `dotnet run --project FenBrowser.WPT -- run_category dom --max 50 --timeout 8000 --format json -o wpt_dom50_after_fix.json`
+    - completed with assertion accounting (`Assertions=126`) and no harness-bootstrap failure.
+  - `dotnet run --project FenBrowser.Conformance -- run wpt dom --max 50 -o conformance_wpt50.md`
+    - completed with same assertion accounting path as WPT CLI.
+
