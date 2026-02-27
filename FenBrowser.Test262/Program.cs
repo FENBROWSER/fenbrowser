@@ -1,0 +1,408 @@
+// =============================================================================
+// Program.cs
+// FenBrowser Test262 Conformance Benchmark CLI
+//
+// PURPOSE: Standalone CLI for running ECMAScript Test262 tests against
+//          FenBrowser's JavaScript engine with chunked execution,
+//          memory safety guards, and multi-format reporting.
+//
+// USAGE:
+//   FenBrowser.Test262 get_chunk_count [--root <path>]
+//   FenBrowser.Test262 run_chunk <N> [--root <path>] [--format md|json|tap]
+//   FenBrowser.Test262 run_category <name> [--max <N>] [--root <path>]
+//   FenBrowser.Test262 run_single <path> [--root <path>]
+//   FenBrowser.Test262 summary [--root <path>]
+// =============================================================================
+
+using System.Diagnostics;
+using FenBrowser.FenEngine.Testing;
+
+namespace FenBrowser.Test262;
+
+public static class Program
+{
+    public static async Task<int> Main(string[] args)
+    {
+        if (args.Length == 0)
+        {
+            PrintUsage();
+            return 1;
+        }
+
+        var config = Test262Config.AutoDiscover();
+
+        // Parse global flags
+        for (int i = 1; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--root" when i + 1 < args.Length:
+                    config.Test262RootPath = args[++i];
+                    break;
+                case "--format" when i + 1 < args.Length:
+                    config.Format = args[++i].ToLowerInvariant() switch
+                    {
+                        "json" => OutputFormat.Json,
+                        "tap" => OutputFormat.Tap,
+                        _ => OutputFormat.Markdown
+                    };
+                    break;
+                case "--output" or "-o" when i + 1 < args.Length:
+                    config.OutputPath = args[++i];
+                    break;
+                case "--timeout" when i + 1 < args.Length:
+                    if (int.TryParse(args[++i], out int timeout))
+                        config.PerTestTimeoutMs = timeout;
+                    break;
+                case "--chunk-size" when i + 1 < args.Length:
+                    if (int.TryParse(args[++i], out int cs))
+                        config.ChunkSize = cs;
+                    break;
+                case "--verbose" or "-v":
+                    config.Verbose = true;
+                    break;
+            }
+        }
+
+        if (string.IsNullOrEmpty(config.Test262RootPath))
+        {
+            Console.Error.WriteLine("[FATAL] test262 root path not found. Use --root <path> or set TEST262_ROOT.");
+            return 1;
+        }
+
+        var command = args[0].ToLowerInvariant();
+
+        try
+        {
+            return command switch
+            {
+                "get_chunk_count" => RunGetChunkCount(config),
+                "run_chunk" => await RunChunkAsync(config, args),
+                "run_category" => await RunCategoryAsync(config, args),
+                "run_single" => await RunSingleAsync(config, args),
+                "summary" => RunSummary(config),
+                "--help" or "-h" or "help" => PrintUsage(),
+                _ => PrintUsage()
+            };
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[FATAL] {ex.GetType().Name}: {ex.Message}");
+            if (config.Verbose)
+                Console.Error.WriteLine(ex.StackTrace);
+            return 1;
+        }
+    }
+
+    // =========================================================================
+    // Commands
+    // =========================================================================
+
+    /// <summary>
+    /// Discover total test count and print the number of chunks.
+    /// </summary>
+    private static int RunGetChunkCount(Test262Config config)
+    {
+        var runner = new Test262Runner(config.Test262RootPath, config.PerTestTimeoutMs);
+        var tests = runner.DiscoverTests();
+        int chunkCount = (int)Math.Ceiling((double)tests.Count / config.ChunkSize);
+
+        Console.WriteLine($"Total tests: {tests.Count}");
+        Console.WriteLine($"Chunk size:  {config.ChunkSize}");
+        Console.WriteLine($"Chunks:      {chunkCount}");
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Run a specific chunk of tests with memory safety guards.
+    /// </summary>
+    private static async Task<int> RunChunkAsync(Test262Config config, string[] args)
+    {
+        if (args.Length < 2 || !int.TryParse(args[1], out int chunkNumber) || chunkNumber < 1)
+        {
+            Console.Error.WriteLine("Usage: run_chunk <N> where N >= 1");
+            return 1;
+        }
+
+        var runner = new Test262Runner(config.Test262RootPath, config.PerTestTimeoutMs);
+        runner.MemoryThresholdBytes = config.MaxMemoryMB * 1_000_000L;
+
+        // Discover and slice
+        var allTests = runner.DiscoverTests();
+        int skip = (chunkNumber - 1) * config.ChunkSize;
+        int take = config.ChunkSize;
+
+        if (skip >= allTests.Count)
+        {
+            Console.Error.WriteLine($"[ERROR] Chunk {chunkNumber} exceeds total tests ({allTests.Count}). Max chunk: {(int)Math.Ceiling((double)allTests.Count / config.ChunkSize)}");
+            return 1;
+        }
+
+        var chunkTests = allTests.Skip(skip).Take(take).ToList();
+        Console.WriteLine($"[Test262] Chunk {chunkNumber}: tests {skip + 1}-{skip + chunkTests.Count} of {allTests.Count}");
+
+        // Memory check before starting
+        long freeMemKB = GetFreeMemoryKB();
+        if (freeMemKB > 0 && freeMemKB < 10_000_000) // <10GB free
+        {
+            Console.Error.WriteLine($"[WARNING] Low system memory: {freeMemKB / 1_048_576.0:F1}GB free. Consider waiting.");
+        }
+
+        var sw = Stopwatch.StartNew();
+        int completed = 0;
+
+        var results = await runner.RunSpecificTestsAsync(chunkTests, (name, count) =>
+        {
+            completed = count;
+            if (config.Verbose || count % 100 == 0)
+            {
+                long mem = GC.GetTotalMemory(false) / 1_000_000;
+                Console.Write($"\r  [{count}/{chunkTests.Count}] {name} ({mem}MB)    ");
+            }
+        });
+
+        sw.Stop();
+        Console.WriteLine();
+
+        // Output results
+        int passed = results.Count(r => r.Passed);
+        int failed = results.Count(r => !r.Passed);
+        double passRate = results.Count > 0 ? (double)passed / results.Count * 100 : 0;
+
+        Console.WriteLine($"{(long)sw.Elapsed.TotalMilliseconds}ms | Pass: {passed} | Fail: {failed} ({passRate:F1}%)");
+
+        // Export
+        var output = ResultsExporter.Export(results, config.Format, chunkNumber, sw.Elapsed);
+        WriteOutput(output, config);
+
+        return failed > 0 ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Run all tests in a specific category.
+    /// </summary>
+    private static async Task<int> RunCategoryAsync(Test262Config config, string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("Usage: run_category <name> [--max <N>]");
+            return 1;
+        }
+
+        string category = args[1];
+        int maxTests = int.MaxValue;
+
+        for (int i = 2; i < args.Length; i++)
+        {
+            if (args[i] == "--max" && i + 1 < args.Length && int.TryParse(args[i + 1], out int m))
+            {
+                maxTests = m;
+                i++;
+            }
+        }
+
+        var runner = new Test262Runner(config.Test262RootPath, config.PerTestTimeoutMs);
+        runner.MemoryThresholdBytes = config.MaxMemoryMB * 1_000_000L;
+
+        Console.WriteLine($"[Test262] Running category: {category}");
+        var sw = Stopwatch.StartNew();
+
+        var results = await runner.RunCategoryAsync(category, (name, count) =>
+        {
+            if (config.Verbose || count % 50 == 0)
+                Console.Write($"\r  [{count}] {name}    ");
+        }, maxTests);
+
+        sw.Stop();
+        Console.WriteLine();
+        Console.WriteLine(runner.GenerateSummary());
+
+        var output = ResultsExporter.Export(results, config.Format, totalDuration: sw.Elapsed);
+        WriteOutput(output, config);
+
+        return results.Any(r => !r.Passed) ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Run a single test file.
+    /// </summary>
+    private static async Task<int> RunSingleAsync(Test262Config config, string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("Usage: run_single <path>");
+            return 1;
+        }
+
+        string testPath = args[1];
+        if (!Path.IsPathRooted(testPath))
+        {
+            testPath = Path.Combine(config.Test262RootPath, "test", testPath);
+        }
+
+        if (!File.Exists(testPath))
+        {
+            Console.Error.WriteLine($"[ERROR] Test file not found: {testPath}");
+            return 1;
+        }
+
+        var runner = new Test262Runner(config.Test262RootPath, config.PerTestTimeoutMs);
+        var sw = Stopwatch.StartNew();
+        var result = await runner.RunSingleTestAsync(testPath);
+        sw.Stop();
+
+        Console.WriteLine($"Test:     {Path.GetFileName(testPath)}");
+        Console.WriteLine($"Result:   {(result.Passed ? "PASS" : "FAIL")}");
+        Console.WriteLine($"Duration: {result.Duration.TotalMilliseconds:F1}ms");
+
+        if (!string.IsNullOrEmpty(result.Expected))
+            Console.WriteLine($"Expected: {result.Expected}");
+        if (!string.IsNullOrEmpty(result.Actual))
+            Console.WriteLine($"Actual:   {result.Actual}");
+        if (!string.IsNullOrEmpty(result.Error))
+            Console.WriteLine($"Error:    {result.Error}");
+        if (result.Metadata?.Features.Count > 0)
+            Console.WriteLine($"Features: {string.Join(", ", result.Metadata.Features)}");
+
+        return result.Passed ? 0 : 1;
+    }
+
+    /// <summary>
+    /// Print summary info about the test262 suite.
+    /// </summary>
+    private static int RunSummary(Test262Config config)
+    {
+        var runner = new Test262Runner(config.Test262RootPath, config.PerTestTimeoutMs);
+        var tests = runner.DiscoverTests();
+
+        // Categorize
+        var categories = tests
+            .GroupBy(t =>
+            {
+                var rel = Path.GetRelativePath(Path.Combine(config.Test262RootPath, "test"), t);
+                var parts = rel.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                return parts.Length >= 2 ? $"{parts[0]}/{parts[1]}" : parts[0];
+            })
+            .OrderByDescending(g => g.Count())
+            .ToList();
+
+        Console.WriteLine($"Test262 Suite Summary");
+        Console.WriteLine($"Root: {config.Test262RootPath}");
+        Console.WriteLine($"Total tests: {tests.Count}");
+        Console.WriteLine($"Categories: {categories.Count}");
+        Console.WriteLine();
+        Console.WriteLine("Top categories:");
+        Console.WriteLine($"  {"Category",-45} {"Count",8}");
+        Console.WriteLine($"  {new string('-', 45),-45} {new string('-', 8),8}");
+
+        foreach (var cat in categories.Take(25))
+        {
+            Console.WriteLine($"  {cat.Key,-45} {cat.Count(),8}");
+        }
+
+        if (categories.Count > 25)
+            Console.WriteLine($"  ... and {categories.Count - 25} more categories");
+
+        return 0;
+    }
+
+    // =========================================================================
+    // Helpers
+    // =========================================================================
+
+    private static void WriteOutput(string content, Test262Config config)
+    {
+        if (!string.IsNullOrEmpty(config.OutputPath))
+        {
+            var dir = Path.GetDirectoryName(config.OutputPath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
+
+            File.AppendAllText(config.OutputPath, content);
+            Console.WriteLine($"[Test262] Results written to {config.OutputPath}");
+        }
+        else if (!config.Verbose)
+        {
+            // Only print to stdout if not already printing verbose per-test output
+            // to avoid mixing progress and results
+        }
+    }
+
+    /// <summary>
+    /// Get free physical memory in KB. Returns 0 if unavailable.
+    /// </summary>
+    private static long GetFreeMemoryKB()
+    {
+        try
+        {
+            // Windows-specific: PerformanceCounter or WMI
+            if (OperatingSystem.IsWindows())
+            {
+                var output = RunProcess("powershell", "-Command \"(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory\"");
+                if (long.TryParse(output?.Trim(), out long kb))
+                    return kb;
+            }
+        }
+        catch { /* Ignore — not critical */ }
+        return 0;
+    }
+
+    private static string? RunProcess(string fileName, string arguments)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = fileName,
+                Arguments = arguments,
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var proc = System.Diagnostics.Process.Start(psi);
+            if (proc == null) return null;
+            var result = proc.StandardOutput.ReadToEnd();
+            proc.WaitForExit(5000);
+            return result;
+        }
+        catch { return null; }
+    }
+
+    private static int PrintUsage()
+    {
+        Console.WriteLine(@"
+FenBrowser Test262 Conformance Benchmark
+========================================
+
+USAGE:
+  FenBrowser.Test262 <command> [options]
+
+COMMANDS:
+  get_chunk_count              Show total test count and chunk count
+  run_chunk <N>                Run chunk N (1-indexed, 1000 tests per chunk)
+  run_category <name>          Run a category (e.g., language/expressions)
+  run_single <path>            Run a single .js test file
+  summary                      Show test suite summary with categories
+  help                         Show this help message
+
+OPTIONS:
+  --root <path>                Path to test262 root directory
+  --format md|json|tap         Output format (default: md)
+  --output|-o <path>           Write results to file
+  --timeout <ms>               Per-test timeout (default: 10000)
+  --chunk-size <N>             Tests per chunk (default: 1000)
+  --verbose|-v                 Verbose output
+
+ENVIRONMENT:
+  TEST262_ROOT                 Alternative to --root flag
+
+EXAMPLES:
+  FenBrowser.Test262 get_chunk_count
+  FenBrowser.Test262 run_chunk 1 --format json -o results.json
+  FenBrowser.Test262 run_category language/expressions --max 100
+  FenBrowser.Test262 run_single language/expressions/addition/S11.6.1_A1.js
+");
+        return 0;
+    }
+}
