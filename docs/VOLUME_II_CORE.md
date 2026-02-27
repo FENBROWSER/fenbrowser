@@ -70,8 +70,8 @@ The browser employs a **Sharded 2-Level Cache**:
     - `TrackingPreventionHandler`
     - `AdBlockHandler`
     - `HstsHandler`
-    - **TLS policy**: `NetworkConfiguration.IgnoreCertificateErrors` (default: `false`) — production-safe; only set to `true` for deliberate lab diagnostics.
-    - **Proxy policy**: `NetworkConfiguration.UseSystemProxy` (default: `true`) — respects OS-managed proxies for compliant corporate networks.
+    - **TLS policy**: `NetworkConfiguration.IgnoreCertificateErrors` (default: `false`) â€” production-safe; only set to `true` for deliberate lab diagnostics.
+    - **Proxy policy**: `NetworkConfiguration.UseSystemProxy` (default: `true`) â€” respects OS-managed proxies for compliant corporate networks.
 4.  **Processing**:
     - MIME Sniffing (`MimeSniffer.cs`) if the server sends generic types.
     - Encoding Detection using BOM or headers.
@@ -86,6 +86,19 @@ Based strictly on the **HTML5 Parsing Specification**.
 
 - Converts a stream of characters into `HtmlToken` objects (StartTag, EndTag, Character, Comment).
 - **State Machine**: Handles intricacies like "RAWTEXT" (inside `<script>`) and "RCDATA" (inside `<textarea>`).
+- **Character Reference Hardening (2026-02-26)**:
+  - numeric references now resolve via code-point-safe conversion (`&#...;`, `&#x...;`).
+  - common named references (`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`, `&nbsp;`) now resolve in both text and attribute-value tokenizer states.
+  - unknown named references remain literal text (no destructive consumption).
+  - named-reference decoding now uses longest-match parsing and supports semicolon omission in text-safe boundaries (e.g. `&copy 2026`).
+  - attribute-value semicolon-omission guard now preserves literal text when the next character is alphanumeric or `=` (e.g. `&copy=1`).
+  - numeric reference Windows-1252 remap table is now applied for compatibility code points (`&#128;` -> `\u20AC`).
+  - tokenizer now uses cached platform entity decode fallback for broader named-reference coverage (e.g. `&larr;`, `&sum;`) beyond the local hot-path map.
+  - invalid numeric-reference starts now preserve literal consumed prefixes instead of dropping markers (`&#;` and `&#x;` remain literal in both text and attribute contexts).
+  - legacy prefix behavior is preserved for compatibility (`&notanentity;` -> `Â¬anentity;`).
+- **Tokenizer Safety Limits (2026-02-26)**:
+  - `HtmlTokenizer` now exposes `MaxTokenEmissions` (default `2,000,000`) and force-emits EOF when the cap is reached to prevent pathological unbounded token streams.
+  - `HtmlParser` now accepts centralized `ParserSecurityPolicy` and applies tokenizer/open-elements limits at parser entrypoints.
 
 ### 4.2 HtmlTreeBuilder
 
@@ -96,6 +109,9 @@ Based strictly on the **HTML5 Parsing Specification**.
   - `HandleInBody` (The most common state)
   - `HandleInTable` (Special "foster parenting" rules for misnested tables)
 - **Error Handling**: Implements "quirks mode" behavior for malformed HTML (e.g., missing closing tags).
+- **Structural Hardening (2026-02-26)**:
+  - open-elements stack pops now route through guarded underflow-safe logic for malformed-token recovery paths.
+  - `MaxOpenElementsDepth` (default `4096`) now auto-closes overflow stack entries after token processing to bound pathological deep nesting.
 - **Stage Telemetry (2026-02-20)**:
   - `HtmlParseBuildMetrics` now exposes per-build parse timings and volume:
     - `TokenizingMs`, `ParsingMs`, `TokenCount`.

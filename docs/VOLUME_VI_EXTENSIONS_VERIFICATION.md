@@ -197,7 +197,7 @@ To implement a new command (e.g., `GET /session/{id}/print`):
 
 - `scripts/ci/verify-verification-guards.ps1`
   - Fails CI on placeholder assertions.
-  - Fails CI on stale `WptRunner.cs` doc references.
+  - Fails CI on stale legacy WPT runner filename doc references.
   - Fails CI when `docs/VERIFICATION_BASELINES.md` drifts from `test262_results.md` metrics.
 
 ### 4.6 Phase-5 WebDriver Coverage Guard (2026-02-18)
@@ -311,4 +311,74 @@ To implement a new command (e.g., `GET /session/{id}/print`):
   - Process-isolation IPC transport was validated through host compilation and runtime wiring paths in this tranche.
   - Dedicated end-to-end process-isolation integration tests are a follow-up verification expansion item.
 
+### 4.13 Volume Reference Integrity Guard (2026-02-26)
+
+- Added:
+  - `test_parser/Program.cs`
+- Purpose:
+  - Parses `docs/VOLUME_*.md` and extracts source references (`*.cs`, with optional `Lines X-Y` or `:X-Y` claims).
+  - Resolves each reference to concrete source files in the repository.
+  - Verifies line-range claims against actual file line counts.
+  - Fails on:
+    - missing files
+    - ambiguous filename-only matches
+    - invalid line ranges
+    - out-of-range line claims.
+
+- CI wiring:
+  - Added dedicated runner:
+    - `scripts/ci/verify-volume-doc-references.ps1`
+  - Updated `scripts/ci/verify-verification-guards.ps1` to run:
+    - `dotnet run --project test_parser/test_parser.csproj -- --repo . --docs docs`
+  - The verification guard now blocks merges when Volume documentation references drift from actual source topology.
+
+### 4.14 HTML/CSS Parser Regression Additions (2026-02-26)
+
+- Added:
+  - `FenBrowser.Tests/Engine/CssSyntaxParserTests.cs`
+  - `FenBrowser.Tests/Engine/CssCustomPropertyEdgeCaseTests.cs`
+  - `FenBrowser.Tests/Core/Parsing/HtmlCharacterReferenceTests.cs`
+  - `FenBrowser.Tests/Core/Parsing/ParserHardeningGuardTests.cs`
+  - `FenBrowser.Tests/Core/RendererViewportHardeningTests.cs`
+- Coverage in new tests:
+  - `@font-face` at-rule parsing produces `CssFontFaceRule` with descriptor declarations (`font-family`, `src`, `font-weight`).
+  - malformed declaration recovery path keeps parser progress and preserves parsing of following valid declarations in the same rule block.
+  - custom-property declaration names preserve authored case through stylesheet and inline-style parsing (`--MyVar` vs `--myvar` remain distinct keys).
+  - inline style parsing now respects top-level declaration boundaries, so semicolons inside function values (for example `url(data:image/svg+xml;...)`) do not truncate declarations.
+  - HTML tokenizer character references decode in both text and attribute values for numeric and common named references.
+  - unknown named references remain literal text for compatibility-safe recovery.
+  - named references decode with semicolon omission in text-safe boundaries (`&copy 2026`), while attribute `&name=` forms stay literal.
+  - numeric reference compatibility remap is validated (`&#128;` -> `\u20AC`).
+  - malformed numeric reference prefixes are preserved (`&#;`, `&#x;`) in both text and attributes.
+  - HTML tokenizer emission limiter is validated (`MaxTokenEmissions` guard).
+  - HTML tree-builder deep-nesting clamp is validated (`MaxOpenElementsDepth` guard behavior under pathological nesting).
+  - CSS parser rule/declaration caps are validated (`MaxRules`, `MaxDeclarationsPerBlock`).
+  - renderer viewport sanitization is validated for invalid dimensions (`Infinity`/non-positive inputs).
+  - broader named-reference coverage is validated through fallback-decoded entities (`&larr;`, `&sum;`) in both text and attributes.
+  - legacy partial-decoding compatibility is locked (`&notanentity;` -> `\u00ACanentity;`).
+
+### 4.15 System-Wide Parser/Renderer Hardening Tranche (2026-02-26)
+
+- Added:
+  - `FenBrowser.Core/Parsing/ParserSecurityPolicy.cs`
+  - `FenBrowser.FenEngine/Rendering/RendererSafetyPolicy.cs`
+  - `FenBrowser.Tests/Engine/ParserSecurityPolicyIntegrationTests.cs`
+  - `FenBrowser.Tests/Rendering/RenderWatchdogTests.cs`
+  - `FenBrowser.Tests/Engine/ParserFuzzRegressionTests.cs`
+  - `scripts/ci/run-parser-fuzz-regressions.ps1`
+- Policy wiring coverage:
+  - `HtmlParser` applies centralized `ParserSecurityPolicy` (`HtmlMaxTokenEmissions`, `HtmlMaxOpenElementsDepth`) to tokenizer/tree-builder entrypoints.
+  - `CssLoader` applies centralized `ActiveParserSecurityPolicy` (`CssMaxRules`, `CssMaxDeclarationsPerBlock`) to CSS syntax parsing entrypoints.
+  - `SelectorMatcher` applies malformed-selector hardening guards:
+    - chain-level forward-progress enforcement for invalid tokens,
+    - selector recursion-depth and selector-length caps for functional pseudo-class argument parsing.
+  - `SkiaDomRenderer` applies `RendererSafetyPolicy` to stage-level render watchdog checks.
+- Watchdog/fail-safe coverage:
+  - paint/raster/frame timing budget checks are asserted.
+  - pre-raster over-budget fail-safe path is asserted (`SkipRasterWhenOverBudget`).
+- CI wiring:
+  - `verify-verification-guards.ps1` now runs parser/renderer hostile-corpus regressions via:
+    - `scripts/ci/run-parser-fuzz-regressions.ps1`
+  - fuzz regressions execute deterministic hostile corpus + mutation coverage and fail CI on parser/renderer crashes.
 _End of Volume VI_
+

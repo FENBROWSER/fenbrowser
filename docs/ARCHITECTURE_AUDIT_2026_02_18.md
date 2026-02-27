@@ -276,7 +276,7 @@ Motto alignment: **Architecture is Destiny**
 - Problem: documentation currently overstates readiness and contains inconsistent metrics/file references.
 - Fix:
   1. Re-baseline pass rates from latest reproducible run.
-  2. Align file names (`WPTTestRunner.cs` vs `WptRunner.cs`).
+  2. Align file names (`WPTTestRunner.cs` vs legacy typo form).
   3. Add doc update checks in CI for key benchmark tables.
 
 ## 5) Quantitative Risk Signals
@@ -792,7 +792,7 @@ Implemented now:
   - `.github/workflows/build-fenbrowser-exe.yml`
 - Guards now fail CI on:
   - placeholder assertions in `FenBrowser.Tests`
-  - stale WPT runner filename references (`WptRunner.cs`)
+  - stale WPT runner filename references (legacy typo form)
   - baseline metric drift between `docs/VERIFICATION_BASELINES.md` and `test262_results.md`.
 
 4. **Benchmark baseline canonicalization**
