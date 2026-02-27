@@ -16,8 +16,6 @@ using System.Net.Http;
 using System.Net.WebSockets;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Collections;
-using System.Reflection;
 using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType;
 using FenBrowser.FenEngine.Storage;
 using FenBrowser.Core.Network.Handlers;
@@ -10607,35 +10605,7 @@ namespace FenBrowser.FenEngine.Core
                 return false;
             }
 
-            // If global scope already contains interpreter-only JS functions, avoid running
-            // call-heavy scripts in bytecode mode (VM cannot execute AST-only function bodies).
-            if (HasInterpreterOnlyGlobalFunctions() &&
-                (AstContainsNodeType<CallExpression>(program) || AstContainsNodeType<NewExpression>(program)))
-            {
-                return false;
-            }
-
             return true;
-        }
-
-        private bool HasInterpreterOnlyGlobalFunctions()
-        {
-            foreach (var kvp in _globalEnv.InspectVariables())
-            {
-                var value = kvp.Value;
-                if (!value.IsFunction)
-                {
-                    continue;
-                }
-
-                var fn = value.AsFunction();
-                if (fn != null && !fn.IsNative && fn.BytecodeBlock == null)
-                {
-                    return true;
-                }
-            }
-
-            return false;
         }
 
         private static bool TryCompileCoreBytecode(Program program, out FenBrowser.FenEngine.Core.Bytecode.CodeBlock compiledBlock, out string fallbackReason)
@@ -10668,87 +10638,6 @@ namespace FenBrowser.FenEngine.Core
                    message.IndexOf("not supported", StringComparison.OrdinalIgnoreCase) >= 0 ||
                    message.IndexOf("Node type", StringComparison.OrdinalIgnoreCase) >= 0;
         }
-
-        private static bool AstContainsNodeType<TNode>(AstNode root) where TNode : AstNode
-        {
-            if (root == null)
-            {
-                return false;
-            }
-
-            var stack = new Stack<object>();
-            stack.Push(root);
-
-            while (stack.Count > 0)
-            {
-                var current = stack.Pop();
-                if (current == null)
-                {
-                    continue;
-                }
-
-                if (current is TNode)
-                {
-                    return true;
-                }
-
-                if (current is AstNode astNode)
-                {
-                    var props = astNode.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance);
-                    foreach (var prop in props)
-                    {
-                        if (!prop.CanRead || prop.GetIndexParameters().Length != 0)
-                        {
-                            continue;
-                        }
-
-                        object value;
-                        try
-                        {
-                            value = prop.GetValue(astNode);
-                        }
-                        catch
-                        {
-                            continue;
-                        }
-
-                        if (value == null || value is string)
-                        {
-                            continue;
-                        }
-
-                        if (value is IDictionary dictionary)
-                        {
-                            foreach (var dictValue in dictionary.Values)
-                            {
-                                if (dictValue != null)
-                                {
-                                    stack.Push(dictValue);
-                                }
-                            }
-                            continue;
-                        }
-
-                        if (value is IEnumerable enumerable)
-                        {
-                            foreach (var item in enumerable)
-                            {
-                                if (item != null)
-                                {
-                                    stack.Push(item);
-                                }
-                            }
-                            continue;
-                        }
-
-                        stack.Push(value);
-                    }
-                }
-            }
-
-            return false;
-        }
-
 
         #region Helper Methods for Browser APIs
 

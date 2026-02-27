@@ -29,6 +29,62 @@ namespace FenBrowser.Tests.Engine
 
         private static FenRuntime CreateRuntime() => new FenRuntime();
 
+        private static FenValue ExecuteAndReadGlobal(string script, string globalName, bool bytecodeEnabled)
+        {
+            var previous = Environment.GetEnvironmentVariable(BytecodeEnvKey);
+            try
+            {
+                Environment.SetEnvironmentVariable(BytecodeEnvKey, bytecodeEnabled ? "1" : "0");
+                EngineContext.Reset();
+                EventLoopCoordinator.ResetInstance();
+
+                var runtime = new FenRuntime();
+                runtime.ExecuteSimple(script);
+                return (FenValue)runtime.GetGlobal(globalName);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable(BytecodeEnvKey, previous);
+            }
+        }
+
+        private static void AssertFenValueEquivalent(FenValue expected, FenValue actual, string script)
+        {
+            Assert.True(
+                expected.Type == actual.Type,
+                $"Script mismatch type:\n{script}\nExpected={expected.Type}, Actual={actual.Type}, ExpectedValue={expected}, ActualValue={actual}");
+
+            switch (expected.Type)
+            {
+                case FenBrowser.FenEngine.Core.Interfaces.ValueType.Number:
+                {
+                    var expectedNumber = expected.AsNumber();
+                    var actualNumber = actual.AsNumber();
+                    if (double.IsNaN(expectedNumber))
+                    {
+                        Assert.True(double.IsNaN(actualNumber), $"Script: {script}");
+                    }
+                    else
+                    {
+                        Assert.Equal(expectedNumber, actualNumber);
+                    }
+                    break;
+                }
+                case FenBrowser.FenEngine.Core.Interfaces.ValueType.String:
+                    Assert.Equal(expected.AsString(), actual.AsString());
+                    break;
+                case FenBrowser.FenEngine.Core.Interfaces.ValueType.Boolean:
+                    Assert.Equal(expected.ToBoolean(), actual.ToBoolean());
+                    break;
+                case FenBrowser.FenEngine.Core.Interfaces.ValueType.Null:
+                case FenBrowser.FenEngine.Core.Interfaces.ValueType.Undefined:
+                    break;
+                default:
+                    Assert.Equal(expected.ToString(), actual.ToString());
+                    break;
+            }
+        }
+
         [Fact]
         public void ExecuteSimple_BytecodeFirst_FunctionDeclarationProducesBytecodeFunction()
         {
@@ -287,6 +343,24 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void ExecuteSimple_BytecodeFirst_FunctionUsesLocalSlotOpcodes()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple("function calc(a, b) { var x = a + b; return x; }");
+
+            var calcVal = rt.GetGlobal("calc");
+            Assert.True(calcVal.IsFunction);
+            var calcFn = calcVal.AsFunction();
+            Assert.NotNull(calcFn);
+            Assert.NotNull(calcFn.BytecodeBlock);
+            Assert.Contains((byte)OpCode.LoadLocal, calcFn.BytecodeBlock.Instructions);
+            Assert.Contains((byte)OpCode.StoreLocal, calcFn.BytecodeBlock.Instructions);
+
+            rt.ExecuteSimple("var calcOut = calc(10, 5);");
+            Assert.Equal(15, ((FenValue)rt.GetGlobal("calcOut")).AsNumber());
+        }
+
+        [Fact]
         public void ExecuteSimple_BytecodeFirst_DestructuringParameterFunctionProducesBytecodeFunction()
         {
             var rt = CreateRuntime();
@@ -333,7 +407,7 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
-        public void ExecuteSimple_WithInterpreterOnlyGlobals_CallHeavyScriptAvoidsVmPath()
+        public void ExecuteSimple_WithInterpreterOnlyGlobals_CallHeavyScriptUsesBytecodeMainline()
         {
             var rt = CreateRuntime();
 
@@ -343,8 +417,13 @@ namespace FenBrowser.Tests.Engine
             Assert.True(incVal.IsFunction);
             Assert.Null(incVal.AsFunction().BytecodeBlock);
 
-            rt.ExecuteSimple("var answer = inc(41);");
+            // Bytecode-compiled function should still be able to call AST-backed globals.
+            rt.ExecuteSimple("function run(v) { return inc(v); }");
+            var runVal = rt.GetGlobal("run");
+            Assert.True(runVal.IsFunction);
+            Assert.NotNull(runVal.AsFunction().BytecodeBlock);
 
+            rt.ExecuteSimple("var answer = run(41);");
             Assert.Equal(42, ((FenValue)rt.GetGlobal("answer")).AsNumber());
         }
 
@@ -366,6 +445,28 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal(3, cVal.AsObject().Get("v").AsNumber());
             Assert.Equal(4, ((FenValue)rt.GetGlobal("C")).AsObject().Get("a").AsNumber());
             Assert.Equal(7, ((FenValue)rt.GetGlobal("classOut")).AsNumber());
+        }
+
+        [Fact]
+        public void ExecuteSimple_BytecodeAndInterpreter_ShouldMatchOnEdgeCaseCorpus()
+        {
+            var corpus = new[]
+            {
+                "var out = delete (1 + 2);",
+                "var x = 0; var out = (delete (x = 1)) && (x === 1);",
+                "var out = (function({ value, ...rest }) { return value + rest.b; })({ value: 3, b: 4 });",
+                "var out = (function(key, obj) { var t = 0; ({ [key]: t } = obj); return t; })('z', { z: 9 });",
+                "var out = (function(){ var s = 0; for (const { v } of ({ a:{v:1}, b:{v:2}, c:{v:3} })) { s = s + v; } return s; })();",
+                "var out = (function(){ var x = 0; try { throw { a: 5 }; } catch (e) { x = e.a; } return x; })();",
+                "var out = (function(){ var hits = 0; outer: for (var i = 0; i < 3; i = i + 1) { for (var j = 0; j < 3; j = j + 1) { if (j === 1) continue outer; hits = hits + 1; } } return hits; })();"
+            };
+
+            foreach (var script in corpus)
+            {
+                var bytecodeResult = ExecuteAndReadGlobal(script, "out", bytecodeEnabled: true);
+                var interpreterResult = ExecuteAndReadGlobal(script, "out", bytecodeEnabled: false);
+                AssertFenValueEquivalent(interpreterResult, bytecodeResult, script);
+            }
         }
     }
 }

@@ -1,5 +1,8 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Runtime.CompilerServices;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.EventLoop;
 using FenBrowser.FenEngine.Core.Types;
@@ -14,6 +17,351 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
     /// </summary>
     public class VirtualMachine
     {
+        private const int CachedIndexKeyCount = 2048;
+        private static readonly string[] s_cachedIndexKeys = BuildCachedIndexKeys();
+        private static readonly ConditionalWeakTable<CodeBlock, string[]> s_stringConstantCache = new ConditionalWeakTable<CodeBlock, string[]>();
+        private static readonly ConditionalWeakTable<CodeBlock, Dictionary<int, PropertyInlineCacheEntry>> s_loadPropertyInlineCaches = new ConditionalWeakTable<CodeBlock, Dictionary<int, PropertyInlineCacheEntry>>();
+        private static readonly ConditionalWeakTable<CodeBlock, Dictionary<int, PropertyInlineCacheEntry>> s_storePropertyInlineCaches = new ConditionalWeakTable<CodeBlock, Dictionary<int, PropertyInlineCacheEntry>>();
+
+        private sealed class PropertyInlineCacheEntry
+        {
+            public string Key;
+            public Shape Shape;
+            public int SlotIndex;
+        }
+
+        private sealed class BytecodeArrayObject : FenObject
+        {
+            private FenValue[] _elements = new FenValue[8];
+            private bool[] _present = new bool[8];
+            private int _length;
+
+            public BytecodeArrayObject()
+            {
+                InternalClass = "Array";
+                if (DefaultArrayPrototype != null && !ReferenceEquals(DefaultArrayPrototype, this))
+                {
+                    SetPrototype(DefaultArrayPrototype);
+                }
+            }
+
+            public int Length => _length;
+
+            public void Append(FenValue value)
+            {
+                SetElement(_length, value);
+            }
+
+            public void SetElement(int index, FenValue value)
+            {
+                if (index < 0)
+                {
+                    return;
+                }
+
+                EnsureCapacity(index + 1);
+                _elements[index] = value;
+                _present[index] = true;
+                if (index >= _length)
+                {
+                    _length = index + 1;
+                }
+            }
+
+            public bool TryGetElement(int index, out FenValue value)
+            {
+                if ((uint)index < (uint)_length && _present[index])
+                {
+                    value = _elements[index];
+                    return true;
+                }
+
+                value = FenValue.Undefined;
+                return false;
+            }
+
+            private void SetLength(int newLength)
+            {
+                if (newLength < 0)
+                {
+                    newLength = 0;
+                }
+
+                if (newLength < _length)
+                {
+                    for (int i = newLength; i < _length; i++)
+                    {
+                        _present[i] = false;
+                        _elements[i] = FenValue.Undefined;
+                    }
+                }
+                else if (newLength > _elements.Length)
+                {
+                    EnsureCapacity(newLength);
+                }
+
+                _length = newLength;
+            }
+
+            public override FenValue Get(string key, FenBrowser.FenEngine.Core.Interfaces.IExecutionContext context = null)
+            {
+                if (string.Equals(key, "length", StringComparison.Ordinal))
+                {
+                    return FenValue.FromNumber(_length);
+                }
+
+                if (TryParseArrayIndex(key, out int index))
+                {
+                    return TryGetElement(index, out var value) ? value : FenValue.Undefined;
+                }
+
+                return base.Get(key, context);
+            }
+
+            public override void Set(string key, FenValue value, FenBrowser.FenEngine.Core.Interfaces.IExecutionContext context = null)
+            {
+                if (string.Equals(key, "length", StringComparison.Ordinal))
+                {
+                    SetLength((int)value.ToNumber());
+                    return;
+                }
+
+                if (TryParseArrayIndex(key, out int index))
+                {
+                    SetElement(index, value);
+                    return;
+                }
+
+                base.Set(key, value, context);
+            }
+
+            public override bool Has(string key, FenBrowser.FenEngine.Core.Interfaces.IExecutionContext context = null)
+            {
+                if (string.Equals(key, "length", StringComparison.Ordinal))
+                {
+                    return true;
+                }
+
+                if (TryParseArrayIndex(key, out int index))
+                {
+                    return (uint)index < (uint)_length && _present[index];
+                }
+
+                return base.Has(key, context);
+            }
+
+            public override bool Delete(string key, FenBrowser.FenEngine.Core.Interfaces.IExecutionContext context = null)
+            {
+                if (string.Equals(key, "length", StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                if (TryParseArrayIndex(key, out int index))
+                {
+                    if ((uint)index < (uint)_length)
+                    {
+                        _present[index] = false;
+                        _elements[index] = FenValue.Undefined;
+                    }
+
+                    return true;
+                }
+
+                return base.Delete(key, context);
+            }
+
+            public override IEnumerable<string> Keys(FenBrowser.FenEngine.Core.Interfaces.IExecutionContext context = null)
+            {
+                for (int i = 0; i < _length; i++)
+                {
+                    if (_present[i])
+                    {
+                        yield return IndexKey(i);
+                    }
+                }
+
+                foreach (var key in base.Keys(context))
+                {
+                    if (!TryParseArrayIndex(key, out _) && !string.Equals(key, "length", StringComparison.Ordinal))
+                    {
+                        yield return key;
+                    }
+                }
+            }
+
+            public override IEnumerable<string> GetOwnPropertyNames()
+            {
+                for (int i = 0; i < _length; i++)
+                {
+                    if (_present[i])
+                    {
+                        yield return IndexKey(i);
+                    }
+                }
+
+                yield return "length";
+
+                foreach (var key in base.GetOwnPropertyNames())
+                {
+                    if (!TryParseArrayIndex(key, out _) && !string.Equals(key, "length", StringComparison.Ordinal))
+                    {
+                        yield return key;
+                    }
+                }
+            }
+
+            private void EnsureCapacity(int size)
+            {
+                if (size <= _elements.Length)
+                {
+                    return;
+                }
+
+                int newSize = _elements.Length;
+                while (newSize < size)
+                {
+                    newSize *= 2;
+                }
+
+                Array.Resize(ref _elements, newSize);
+                Array.Resize(ref _present, newSize);
+            }
+
+            private static bool TryParseArrayIndex(string key, out int index)
+            {
+                index = -1;
+                if (string.IsNullOrEmpty(key))
+                {
+                    return false;
+                }
+
+                int value = 0;
+                for (int i = 0; i < key.Length; i++)
+                {
+                    char c = key[i];
+                    if (c < '0' || c > '9')
+                    {
+                        return false;
+                    }
+
+                    int digit = c - '0';
+                    if (value > (int.MaxValue - digit) / 10)
+                    {
+                        return false;
+                    }
+
+                    value = (value * 10) + digit;
+                }
+
+                index = value;
+                return true;
+            }
+        }
+
+        private sealed class EmptyFenValueEnumerator : IEnumerator<FenValue>
+        {
+            public static readonly EmptyFenValueEnumerator Instance = new EmptyFenValueEnumerator();
+
+            public FenValue Current => FenValue.Undefined;
+            object IEnumerator.Current => Current;
+
+            public bool MoveNext() => false;
+            public void Reset() { }
+            public void Dispose() { }
+        }
+
+        private sealed class KeyIteratorEnumerator : IEnumerator<FenValue>
+        {
+            private readonly IEnumerator<string> _keys;
+
+            public KeyIteratorEnumerator(IEnumerator<string> keys)
+            {
+                _keys = keys;
+            }
+
+            public FenValue Current { get; private set; }
+            object IEnumerator.Current => Current;
+
+            public bool MoveNext()
+            {
+                if (!_keys.MoveNext())
+                {
+                    return false;
+                }
+
+                Current = FenValue.FromString(_keys.Current);
+                return true;
+            }
+
+            public void Reset() => _keys.Reset();
+            public void Dispose() => _keys.Dispose();
+        }
+
+        private sealed class ValueIteratorEnumerator : IEnumerator<FenValue>
+        {
+            private readonly FenBrowser.FenEngine.Core.Interfaces.IObject _source;
+            private readonly IEnumerator<string> _keys;
+
+            public ValueIteratorEnumerator(FenBrowser.FenEngine.Core.Interfaces.IObject source)
+            {
+                _source = source;
+                _keys = source?.Keys().GetEnumerator();
+            }
+
+            public FenValue Current { get; private set; }
+            object IEnumerator.Current => Current;
+
+            public bool MoveNext()
+            {
+                if (_keys == null || !_keys.MoveNext())
+                {
+                    return false;
+                }
+
+                Current = _source.Get(_keys.Current);
+                return true;
+            }
+
+            public void Reset() => _keys?.Reset();
+            public void Dispose() => _keys?.Dispose();
+        }
+
+        private sealed class StringIteratorEnumerator : IEnumerator<FenValue>
+        {
+            private readonly string _source;
+            private int _index = -1;
+
+            public StringIteratorEnumerator(string source)
+            {
+                _source = source ?? string.Empty;
+            }
+
+            public FenValue Current { get; private set; }
+            object IEnumerator.Current => Current;
+
+            public bool MoveNext()
+            {
+                int nextIndex = _index + 1;
+                if (nextIndex >= _source.Length)
+                {
+                    return false;
+                }
+
+                _index = nextIndex;
+                Current = FenValue.FromString(_source[_index].ToString());
+                return true;
+            }
+
+            public void Reset()
+            {
+                _index = -1;
+                Current = FenValue.Undefined;
+            }
+
+            public void Dispose() { }
+        }
+
         // Fixed-size fast heap for operands (prevents boxing and allocation in hot loop)
         private const int STACK_SIZE = 16384;
         private readonly FenValue[] _stack = new FenValue[STACK_SIZE];
@@ -27,6 +375,224 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
         public VirtualMachine()
         {
+        }
+
+        private static string[] BuildCachedIndexKeys()
+        {
+            var keys = new string[CachedIndexKeyCount];
+            for (int i = 0; i < keys.Length; i++)
+            {
+                keys[i] = i.ToString(CultureInfo.InvariantCulture);
+            }
+
+            return keys;
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        private static string IndexKey(int index)
+        {
+            if ((uint)index < CachedIndexKeyCount)
+            {
+                return s_cachedIndexKeys[index];
+            }
+
+            return index.ToString(CultureInfo.InvariantCulture);
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        private static string PropertyKey(in FenValue value)
+        {
+            if (value.Type == JsValueType.String)
+            {
+                return value.AsString();
+            }
+
+            if (value.Type == JsValueType.Number)
+            {
+                double number = value._numberValue;
+                if (number >= 0 && number <= int.MaxValue && number == Math.Truncate(number))
+                {
+                    return IndexKey((int)number);
+                }
+            }
+
+            if (value.Type == JsValueType.Symbol)
+            {
+                var symbol = value.AsSymbol();
+                if (symbol != null)
+                {
+                    return symbol.IsWellKnownSymbol
+                        ? $"[{symbol.Description}]"
+                        : symbol.ToPropertyKey();
+                }
+            }
+
+            return value.AsString();
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        private static bool CanUseBindingCache(CallFrame frame)
+        {
+            return !frame.HasWithEnvironments;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static string GetStringConstant(CodeBlock block, List<FenValue> constants, int constantIndex)
+        {
+            if (!s_stringConstantCache.TryGetValue(block, out var cache))
+            {
+                cache = BuildStringConstantCache(constants);
+                s_stringConstantCache.Add(block, cache);
+            }
+
+            if ((uint)constantIndex < (uint)cache.Length)
+            {
+                var value = cache[constantIndex];
+                if (value != null)
+                {
+                    return value;
+                }
+            }
+
+            return constants[constantIndex].AsString();
+        }
+
+        private static string[] BuildStringConstantCache(List<FenValue> constants)
+        {
+            if (constants == null || constants.Count == 0)
+            {
+                return Array.Empty<string>();
+            }
+
+            var cache = new string[constants.Count];
+            for (int i = 0; i < constants.Count; i++)
+            {
+                var value = constants[i];
+                if (value.Type == JsValueType.String)
+                {
+                    cache[i] = value.AsString();
+                }
+            }
+
+            return cache;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static Dictionary<int, PropertyInlineCacheEntry> GetLoadPropertyInlineCache(CodeBlock block)
+        {
+            return s_loadPropertyInlineCaches.GetOrCreateValue(block);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static Dictionary<int, PropertyInlineCacheEntry> GetStorePropertyInlineCache(CodeBlock block)
+        {
+            return s_storePropertyInlineCaches.GetOrCreateValue(block);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool TryLoadPropertyInlineCache(
+            Dictionary<int, PropertyInlineCacheEntry> cache,
+            int instructionOffset,
+            FenObject obj,
+            string key,
+            out FenValue value)
+        {
+            value = FenValue.Undefined;
+            if (!cache.TryGetValue(instructionOffset, out var entry))
+            {
+                return false;
+            }
+
+            if (!string.Equals(entry.Key, key, StringComparison.Ordinal) || entry.Shape != obj.GetShape())
+            {
+                return false;
+            }
+
+            var storage = obj.GetPropertyStorage();
+            if ((uint)entry.SlotIndex >= (uint)storage.Length)
+            {
+                return false;
+            }
+
+            var descriptor = storage[entry.SlotIndex];
+            if (descriptor.IsAccessor || !descriptor.Value.HasValue)
+            {
+                return false;
+            }
+
+            value = descriptor.Value.Value;
+            return true;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void PopulatePropertyInlineCache(
+            Dictionary<int, PropertyInlineCacheEntry> cache,
+            int instructionOffset,
+            FenObject obj,
+            string key,
+            bool writableRequired)
+        {
+            var shape = obj.GetShape();
+            if (!shape.TryGetPropertyOffset(key, out int slotIndex))
+            {
+                cache.Remove(instructionOffset);
+                return;
+            }
+
+            var storage = obj.GetPropertyStorage();
+            if ((uint)slotIndex >= (uint)storage.Length)
+            {
+                cache.Remove(instructionOffset);
+                return;
+            }
+
+            var descriptor = storage[slotIndex];
+            if (descriptor.IsAccessor || !descriptor.Value.HasValue)
+            {
+                cache.Remove(instructionOffset);
+                return;
+            }
+
+            if (writableRequired && descriptor.Writable == false)
+            {
+                cache.Remove(instructionOffset);
+                return;
+            }
+
+            cache[instructionOffset] = new PropertyInlineCacheEntry
+            {
+                Key = key,
+                Shape = shape,
+                SlotIndex = slotIndex
+            };
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        private static FenValue ResolveVariable(CallFrame frame, string varName)
+        {
+            if (CanUseBindingCache(frame) &&
+                frame.TryGetCachedBindingEnvironment(varName, out var cachedEnvironment))
+            {
+                if (cachedEnvironment != null && cachedEnvironment.TryGetLocal(varName, out var cachedValue))
+                {
+                    return cachedValue;
+                }
+
+                frame.RemoveCachedBindingEnvironment(varName);
+            }
+
+            var bindingEnvironment = frame.Environment.ResolveBindingEnvironment(varName);
+            if (bindingEnvironment != null && bindingEnvironment.TryGetLocal(varName, out var value))
+            {
+                if (CanUseBindingCache(frame))
+                {
+                    frame.CacheBindingEnvironment(varName, bindingEnvironment);
+                }
+
+                return value;
+            }
+
+            return FenValue.Undefined;
         }
 
         public FenValue Execute(CodeBlock initialBlock, FenEnvironment initialEnv)
@@ -46,6 +612,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         {
             if (_frameCount >= MAX_FRAMES)
                 throw new Exception("VM Error: Call stack exceeded maximum depth.");
+
+            if (block != null && block.LocalSlotCount > 0)
+            {
+                env.InitializeFastStore(block.LocalSlotCount);
+            }
                 
             var frame = _callFrames[_frameCount];
             if (frame == null)
@@ -75,6 +646,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                     while (frame.IP < instructions.Length)
                     {
                         OpCode op = (OpCode)instructions[frame.IP++];
+                        int instructionOffset = frame.IP - 1;
                         
                         switch (op)
                         {
@@ -204,7 +776,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 var left = _stack[--_sp];
                                 if (right.IsObject)
                                 {
-                                    _stack[_sp++] = FenValue.FromBoolean(right.AsObject().Has(left.AsString()));
+                                    _stack[_sp++] = FenValue.FromBoolean(right.AsObject().Has(PropertyKey(left)));
                                 }
                                 else
                                 {
@@ -327,18 +899,46 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                             case OpCode.LoadVar:
                             {
                                 int nameIndex = ReadInt32(instructions, ref frame);
-                                string varName = constants[nameIndex].AsString();
-                                var value = frame.Environment.Get(varName);
+                                string varName = GetStringConstant(frame.Block, constants, nameIndex);
+                                var value = ResolveVariable(frame, varName);
                                 _stack[_sp++] = value;
                                 break;
                             }
                             case OpCode.StoreVar:
                             {
                                 int nameIndex = ReadInt32(instructions, ref frame);
-                                string varName = constants[nameIndex].AsString();
+                                string varName = GetStringConstant(frame.Block, constants, nameIndex);
                                 var value = _stack[--_sp];
                                 frame.Environment.Set(varName, value);
+                                if (CanUseBindingCache(frame))
+                                {
+                                    frame.CacheBindingEnvironment(varName, frame.Environment);
+                                }
                                 // Assignment leaves value on stack
+                                _stack[_sp++] = value;
+                                break;
+                            }
+                            case OpCode.LoadLocal:
+                            {
+                                int localSlot = ReadInt32(instructions, ref frame);
+                                _stack[_sp++] = frame.Environment.GetFast(localSlot);
+                                break;
+                            }
+                            case OpCode.StoreLocal:
+                            {
+                                int localSlot = ReadInt32(instructions, ref frame);
+                                var value = _stack[--_sp];
+                                frame.Environment.SetFast(localSlot, value);
+                                string localName = frame.Block.GetLocalSlotName(localSlot);
+                                if (!string.IsNullOrEmpty(localName))
+                                {
+                                    frame.Environment.Set(localName, value);
+                                    if (CanUseBindingCache(frame))
+                                    {
+                                        frame.CacheBindingEnvironment(localName, frame.Environment);
+                                    }
+                                }
+
                                 _stack[_sp++] = value;
                                 break;
                             }
@@ -367,6 +967,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 newFunc.IsArrowFunction = templateFunc.IsArrowFunction;
                                 newFunc.IsAsync = templateFunc.IsAsync;
                                 newFunc.IsGenerator = templateFunc.IsGenerator;
+                                newFunc.NeedsArgumentsObject = templateFunc.NeedsArgumentsObject;
+                                newFunc.LocalMap = templateFunc.LocalMap;
 
                                 if (!newFunc.IsArrowFunction)
                                 {
@@ -382,24 +984,35 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                             case OpCode.Call:
                             {
                                 int argCount = ReadInt32(instructions, ref frame);
-                                var callee = _stack[_sp - argCount - 1];
+                                int argStart = _sp - argCount;
+                                var callee = _stack[argStart - 1];
                                 
                                 if (!callee.IsFunction) throw new Exception("VM Error: Attempted to call non-function.");
                                 var func = callee.AsObject() as FenFunction;
-                                
-                                var args = new FenValue[argCount];
-                                for (int i = 0; i < argCount; i++) args[argCount - 1 - i] = _stack[--_sp];
-                                _sp--; // Pop callee
 
                                 if (func.IsNative)
                                 {
+                                    var args = new FenValue[argCount];
+                                    if (argCount > 0)
+                                    {
+                                        Array.Copy(_stack, argStart, args, 0, argCount);
+                                    }
+
+                                    _sp = argStart - 1; // Pop callee + args
                                     _stack[_sp++] = func.NativeImplementation(args, FenValue.Undefined); // Phase 1: no 'this' ctx
                                 }
                                 else if (func.BytecodeBlock != null)
                                 {
                                     var newEnv = new FenEnvironment(func.Env);
-                                    BindFunctionArguments(func, newEnv, args);
-                                    
+                                    InitializeFunctionFastStore(func, newEnv);
+                                    if (func.LocalMap != null && !string.IsNullOrEmpty(func.Name) && func.LocalMap.ContainsKey(func.Name))
+                                    {
+                                        SetFunctionBinding(func, newEnv, func.Name, FenValue.FromFunction(func));
+                                    }
+                                    BindFunctionArgumentsFromStack(func, newEnv, argCount, argStart);
+
+                                    _sp = argStart - 1; // Pop callee + args
+                                     
                                     var newFrame = PushFrame(func.BytecodeBlock, newEnv, _sp);
                                     newFrame.NewTarget = FenValue.Undefined;
                                     newFrame.IsAsyncFunction = func.IsAsync;
@@ -407,7 +1020,14 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
                                 else
                                 {
-                                    throw new Exception("VM Error: AST execution inside Bytecode VM not fully supported yet.");
+                                    var args = CollectStackArguments(argStart, argCount);
+                                    _sp = argStart - 1; // Pop callee + args
+                                    _stack[_sp++] = ExecuteAstFunctionFallback(
+                                        func,
+                                        args,
+                                        FenValue.Undefined,
+                                        frame.Environment,
+                                        FenValue.Undefined);
                                 }
                                 break;
                             }
@@ -418,16 +1038,23 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
                                 if (!callee.IsFunction) throw new Exception("VM Error: Attempted to call non-function.");
                                 var func = callee.AsObject() as FenFunction;
-                                var args = ExtractArrayLikeValues(argsArrayVal);
+                                var argsObject = argsArrayVal.IsObject ? argsArrayVal.AsObject() : null;
+                                int argCount = GetArrayLikeLength(argsObject);
 
                                 if (func.IsNative)
                                 {
+                                    var args = ExtractArrayLikeValues(argsArrayVal);
                                     _stack[_sp++] = func.NativeImplementation(args, FenValue.Undefined);
                                 }
                                 else if (func.BytecodeBlock != null)
                                 {
                                     var newEnv = new FenEnvironment(func.Env);
-                                    BindFunctionArguments(func, newEnv, args);
+                                    InitializeFunctionFastStore(func, newEnv);
+                                    if (func.LocalMap != null && !string.IsNullOrEmpty(func.Name) && func.LocalMap.ContainsKey(func.Name))
+                                    {
+                                        SetFunctionBinding(func, newEnv, func.Name, FenValue.FromFunction(func));
+                                    }
+                                    BindFunctionArgumentsFromArrayLike(func, newEnv, argsObject, argCount);
 
                                     var newFrame = PushFrame(func.BytecodeBlock, newEnv, _sp);
                                     newFrame.NewTarget = FenValue.Undefined;
@@ -436,14 +1063,21 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
                                 else
                                 {
-                                    throw new Exception("VM Error: AST execution inside Bytecode VM not fully supported yet.");
+                                    var args = CollectArrayLikeArguments(argsObject, argCount);
+                                    _stack[_sp++] = ExecuteAstFunctionFallback(
+                                        func,
+                                        args,
+                                        FenValue.Undefined,
+                                        frame.Environment,
+                                        FenValue.Undefined);
                                 }
                                 break;
                             }
                             case OpCode.Construct:
                             {
                                 int argCount = ReadInt32(instructions, ref frame);
-                                var constructorVal = _stack[_sp - argCount - 1];
+                                int argStart = _sp - argCount;
+                                var constructorVal = _stack[argStart - 1];
                                 
                                 if (!constructorVal.IsFunction) throw new Exception("VM Error: Attempted to construct non-function.");
                                 var func = constructorVal.AsObject() as FenFunction;
@@ -466,12 +1100,16 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                     newObj.SetPrototype(frame.Environment.Get("Object").AsObject().Get("prototype").AsObject());
                                 }
                                 
-                                var args = new FenValue[argCount];
-                                for (int i = 0; i < argCount; i++) args[argCount - 1 - i] = _stack[--_sp];
-                                _sp--; // Pop constructor
-                                
                                 if (func.IsNative)
                                 {
+                                    var args = new FenValue[argCount];
+                                    if (argCount > 0)
+                                    {
+                                        Array.Copy(_stack, argStart, args, 0, argCount);
+                                    }
+
+                                    _sp = argStart - 1; // Pop constructor + args
+
                                     // Native constructors usually ignore 'this' passed in and return their own newly created object,
                                     // or we pass newObj as 'this' depending on FenRuntime design.
                                     var result = func.NativeImplementation(args, FenValue.FromObject(newObj));
@@ -481,11 +1119,18 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 else if (func.BytecodeBlock != null)
                                 {
                                     var newEnv = new FenEnvironment(func.Env);
-                                    
+                                     
                                     // Bind 'this' to newObj
-                                    newEnv.Set("this", FenValue.FromObject(newObj));
-                                    BindFunctionArguments(func, newEnv, args);
-                                    
+                                    InitializeFunctionFastStore(func, newEnv);
+                                    if (func.LocalMap != null && !string.IsNullOrEmpty(func.Name) && func.LocalMap.ContainsKey(func.Name))
+                                    {
+                                        SetFunctionBinding(func, newEnv, func.Name, FenValue.FromFunction(func));
+                                    }
+                                    SetFunctionBinding(func, newEnv, "this", FenValue.FromObject(newObj));
+                                    BindFunctionArgumentsFromStack(func, newEnv, argCount, argStart);
+
+                                    _sp = argStart - 1; // Pop constructor + args
+                                     
                                     var newFrame = PushFrame(func.BytecodeBlock, newEnv, _sp);
                                     newFrame.IsConstruct = true;
                                     newFrame.ConstructedObject = newObj;
@@ -495,7 +1140,14 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
                                 else
                                 {
-                                    throw new Exception("VM Error: AST constructor execution inside Bytecode VM not fully supported yet.");
+                                    var args = CollectStackArguments(argStart, argCount);
+                                    _sp = argStart - 1; // Pop constructor + args
+                                    _stack[_sp++] = ExecuteAstConstructorFallback(
+                                        func,
+                                        args,
+                                        constructorVal,
+                                        newObj,
+                                        frame.Environment);
                                 }
                                 break;
                             }
@@ -522,10 +1174,12 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                     newObj.SetPrototype(frame.Environment.Get("Object").AsObject().Get("prototype").AsObject());
                                 }
 
-                                var args = ExtractArrayLikeValues(argsArrayVal);
+                                var argsObject = argsArrayVal.IsObject ? argsArrayVal.AsObject() : null;
+                                int argCount = GetArrayLikeLength(argsObject);
 
                                 if (func.IsNative)
                                 {
+                                    var args = ExtractArrayLikeValues(argsArrayVal);
                                     var result = func.NativeImplementation(args, FenValue.FromObject(newObj));
                                     if (result.IsObject) _stack[_sp++] = result;
                                     else _stack[_sp++] = FenValue.FromObject(newObj);
@@ -533,8 +1187,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 else if (func.BytecodeBlock != null)
                                 {
                                     var newEnv = new FenEnvironment(func.Env);
-                                    newEnv.Set("this", FenValue.FromObject(newObj));
-                                    BindFunctionArguments(func, newEnv, args);
+                                    InitializeFunctionFastStore(func, newEnv);
+                                    if (func.LocalMap != null && !string.IsNullOrEmpty(func.Name) && func.LocalMap.ContainsKey(func.Name))
+                                    {
+                                        SetFunctionBinding(func, newEnv, func.Name, FenValue.FromFunction(func));
+                                    }
+                                    SetFunctionBinding(func, newEnv, "this", FenValue.FromObject(newObj));
+                                    BindFunctionArgumentsFromArrayLike(func, newEnv, argsObject, argCount);
 
                                     var newFrame = PushFrame(func.BytecodeBlock, newEnv, _sp);
                                     newFrame.IsConstruct = true;
@@ -545,17 +1204,23 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
                                 else
                                 {
-                                    throw new Exception("VM Error: AST constructor execution inside Bytecode VM not fully supported yet.");
+                                    var args = CollectArrayLikeArguments(argsObject, argCount);
+                                    _stack[_sp++] = ExecuteAstConstructorFallback(
+                                        func,
+                                        args,
+                                        constructorVal,
+                                        newObj,
+                                        frame.Environment);
                                 }
                                 break;
                             }
                             case OpCode.MakeArray:
                             {
                                 int count = ReadInt32(instructions, ref frame);
-                                var arr = FenObject.CreateArray();
+                                var arr = new BytecodeArrayObject();
                                 for (int i = 0; i < count; i++)
                                 {
-                                    arr.Set(i.ToString(), _stack[_sp - count + i]);
+                                    arr.SetElement(i, _stack[_sp - count + i]);
                                 }
                                 _sp -= count;
                                 _stack[_sp++] = FenValue.FromObject(arr);
@@ -568,7 +1233,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 int numValues = propCount * 2;
                                 for (int i = 0; i < numValues; i += 2)
                                 {
-                                    var key = _stack[_sp - numValues + i].AsString();
+                                    var key = PropertyKey(_stack[_sp - numValues + i]);
                                     var value = _stack[_sp - numValues + i + 1];
                                     obj.Set(key, value);
                                 }
@@ -583,7 +1248,24 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 var objectRef = obj.AsObject();
                                 if (objectRef != null)
                                 {
-                                    _stack[_sp++] = objectRef.Get(prop.AsString());
+                                    var key = PropertyKey(prop);
+                                    if (objectRef is FenObject fenObj)
+                                    {
+                                        var cache = GetLoadPropertyInlineCache(frame.Block);
+                                        if (TryLoadPropertyInlineCache(cache, instructionOffset, fenObj, key, out var cachedValue))
+                                        {
+                                            _stack[_sp++] = cachedValue;
+                                            break;
+                                        }
+
+                                        var value = fenObj.Get(key);
+                                        _stack[_sp++] = value;
+                                        PopulatePropertyInlineCache(cache, instructionOffset, fenObj, key, writableRequired: false);
+                                    }
+                                    else
+                                    {
+                                        _stack[_sp++] = objectRef.Get(key);
+                                    }
                                 }
                                 else
                                 {
@@ -599,7 +1281,34 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 var objectRef = obj.AsObject();
                                 if (objectRef != null)
                                 {
-                                    objectRef.Set(prop.AsString(), value);
+                                    var key = PropertyKey(prop);
+                                    if (objectRef is FenObject fenObj && !string.Equals(key, "__proto__", StringComparison.Ordinal))
+                                    {
+                                        var cache = GetStorePropertyInlineCache(frame.Block);
+                                        if (TryLoadPropertyInlineCache(cache, instructionOffset, fenObj, key, out _))
+                                        {
+                                            var cacheEntry = cache[instructionOffset];
+                                            var storage = fenObj.GetPropertyStorage();
+                                            if ((uint)cacheEntry.SlotIndex < (uint)storage.Length)
+                                            {
+                                                var descriptor = storage[cacheEntry.SlotIndex];
+                                                if (!descriptor.IsAccessor && descriptor.Writable != false)
+                                                {
+                                                    descriptor.Value = value;
+                                                    storage[cacheEntry.SlotIndex] = descriptor;
+                                                    _stack[_sp++] = value;
+                                                    break;
+                                                }
+                                            }
+                                        }
+
+                                        fenObj.Set(key, value);
+                                        PopulatePropertyInlineCache(cache, instructionOffset, fenObj, key, writableRequired: true);
+                                    }
+                                    else
+                                    {
+                                        objectRef.Set(key, value);
+                                    }
                                 }
                                 _stack[_sp++] = value;
                                 break;
@@ -612,9 +1321,16 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 if (arrayValue.IsObject)
                                 {
                                     var arrayObj = arrayValue.AsObject();
-                                    int length = GetArrayLikeLength(arrayObj);
-                                    arrayObj.Set(length.ToString(), value);
-                                    arrayObj.Set("length", FenValue.FromNumber(length + 1));
+                                    if (arrayObj is BytecodeArrayObject denseArray)
+                                    {
+                                        denseArray.Append(value);
+                                    }
+                                    else
+                                    {
+                                        int length = GetArrayLikeLength(arrayObj);
+                                        arrayObj.Set(IndexKey(length), value);
+                                        arrayObj.Set("length", FenValue.FromNumber(length + 1));
+                                    }
                                 }
 
                                 _stack[_sp++] = arrayValue;
@@ -628,35 +1344,76 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 if (arrayValue.IsObject)
                                 {
                                     var arrayObj = arrayValue.AsObject();
-                                    int length = GetArrayLikeLength(arrayObj);
-
-                                    bool expanded = false;
-                                    if (spreadValue.IsObject)
+                                    if (arrayObj is BytecodeArrayObject denseTarget)
                                     {
-                                        var spreadObj = spreadValue.AsObject();
-                                        if (spreadObj != null && spreadObj.Has("length"))
+                                        bool expanded = false;
+                                        if (spreadValue.IsObject && spreadValue.AsObject() is BytecodeArrayObject denseSource)
                                         {
-                                            var spreadLenVal = spreadObj.Get("length");
-                                            if (spreadLenVal.IsNumber)
+                                            for (int i = 0; i < denseSource.Length; i++)
                                             {
-                                                int spreadLength = (int)spreadLenVal.ToNumber();
+                                                if (denseSource.TryGetElement(i, out var spreadElement))
+                                                {
+                                                    denseTarget.Append(spreadElement);
+                                                }
+                                                else
+                                                {
+                                                    denseTarget.Append(FenValue.Undefined);
+                                                }
+                                            }
+
+                                            expanded = true;
+                                        }
+                                        else if (spreadValue.IsObject)
+                                        {
+                                            var spreadObj = spreadValue.AsObject();
+                                            int spreadLength = GetArrayLikeLength(spreadObj);
+                                            if (spreadLength > 0)
+                                            {
                                                 for (int i = 0; i < spreadLength; i++)
                                                 {
-                                                    arrayObj.Set((length + i).ToString(), spreadObj.Get(i.ToString()));
+                                                    denseTarget.Append(spreadObj.Get(IndexKey(i)));
                                                 }
-                                                length += spreadLength;
+
                                                 expanded = true;
                                             }
                                         }
-                                    }
 
-                                    if (!expanded)
+                                        if (!expanded)
+                                        {
+                                            denseTarget.Append(spreadValue);
+                                        }
+                                    }
+                                    else
                                     {
-                                        arrayObj.Set(length.ToString(), spreadValue);
-                                        length += 1;
-                                    }
+                                        int length = GetArrayLikeLength(arrayObj);
+                                        bool expanded = false;
+                                        if (spreadValue.IsObject)
+                                        {
+                                            var spreadObj = spreadValue.AsObject();
+                                            if (spreadObj != null && spreadObj.Has("length"))
+                                            {
+                                                var spreadLenVal = spreadObj.Get("length");
+                                                if (spreadLenVal.IsNumber)
+                                                {
+                                                    int spreadLength = (int)spreadLenVal.ToNumber();
+                                                    for (int i = 0; i < spreadLength; i++)
+                                                    {
+                                                        arrayObj.Set(IndexKey(length + i), spreadObj.Get(IndexKey(i)));
+                                                    }
+                                                    length += spreadLength;
+                                                    expanded = true;
+                                                }
+                                            }
+                                        }
 
-                                    arrayObj.Set("length", FenValue.FromNumber(length));
+                                        if (!expanded)
+                                        {
+                                            arrayObj.Set(IndexKey(length), spreadValue);
+                                            length += 1;
+                                        }
+
+                                        arrayObj.Set("length", FenValue.FromNumber(length));
+                                    }
                                 }
 
                                 _stack[_sp++] = arrayValue;
@@ -688,7 +1445,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 var objectRef = obj.AsObject();
                                 if (objectRef != null)
                                 {
-                                    deleted = objectRef.Delete(prop.AsString());
+                                    deleted = objectRef.Delete(PropertyKey(prop));
                                 }
 
                                 _stack[_sp++] = FenValue.FromBoolean(deleted);
@@ -700,11 +1457,14 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 var iterObj = new FenObject();
                                 if (objVal.IsObject)
                                 {
-                                    iterObj.NativeObject = System.Linq.Enumerable.Select(objVal.AsObject().Keys(), k => FenValue.FromString(k)).GetEnumerator();
+                                    var obj = objVal.AsObject();
+                                    iterObj.NativeObject = obj != null
+                                        ? new KeyIteratorEnumerator(obj.Keys().GetEnumerator())
+                                        : (IEnumerator<FenValue>)EmptyFenValueEnumerator.Instance;
                                 }
                                 else
                                 {
-                                    iterObj.NativeObject = new List<FenValue>().GetEnumerator();
+                                    iterObj.NativeObject = EmptyFenValueEnumerator.Instance;
                                 }
                                 _stack[_sp++] = FenValue.FromObject(iterObj);
                                 break;
@@ -713,14 +1473,20 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                             {
                                 var objVal = _stack[--_sp];
                                 var iterObj = new FenObject();
-                                if (objVal.IsObject)
+                                if (objVal.IsString)
+                                {
+                                    iterObj.NativeObject = new StringIteratorEnumerator(objVal.AsString());
+                                }
+                                else if (objVal.IsObject)
                                 {
                                     var obj = objVal.AsObject();
-                                    iterObj.NativeObject = System.Linq.Enumerable.Select(obj.Keys(), k => obj.Get(k)).GetEnumerator();
+                                    iterObj.NativeObject = obj != null
+                                        ? new ValueIteratorEnumerator(obj)
+                                        : (IEnumerator<FenValue>)EmptyFenValueEnumerator.Instance;
                                 }
                                 else
                                 {
-                                    iterObj.NativeObject = new List<FenValue>().GetEnumerator();
+                                    iterObj.NativeObject = EmptyFenValueEnumerator.Instance;
                                 }
                                 _stack[_sp++] = FenValue.FromObject(iterObj);
                                 break;
@@ -1015,6 +1781,106 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             return val;
         }
 
+        private List<FenValue> CollectStackArguments(int firstArgStackIndex, int argCount)
+        {
+            if (argCount <= 0)
+            {
+                return new List<FenValue>();
+            }
+
+            var args = new List<FenValue>(argCount);
+            for (int i = 0; i < argCount; i++)
+            {
+                args.Add(_stack[firstArgStackIndex + i]);
+            }
+
+            return args;
+        }
+
+        private static List<FenValue> CollectArrayLikeArguments(
+            FenBrowser.FenEngine.Core.Interfaces.IObject argsObject,
+            int argCount)
+        {
+            if (argCount <= 0 || argsObject == null)
+            {
+                return new List<FenValue>();
+            }
+
+            var args = new List<FenValue>(argCount);
+            if (argsObject is BytecodeArrayObject denseArgs)
+            {
+                for (int i = 0; i < argCount; i++)
+                {
+                    args.Add(denseArgs.TryGetElement(i, out var value) ? value : FenValue.Undefined);
+                }
+            }
+            else
+            {
+                for (int i = 0; i < argCount; i++)
+                {
+                    args.Add(argsObject.Get(IndexKey(i)));
+                }
+            }
+
+            return args;
+        }
+
+        private static FenValue ExecuteAstFunctionFallback(
+            FenFunction func,
+            List<FenValue> args,
+            FenValue thisBinding,
+            FenEnvironment currentEnvironment,
+            FenValue newTarget)
+        {
+            var interpreter = new Interpreter();
+            var context = new ExecutionContext
+            {
+                Environment = currentEnvironment ?? func?.Env,
+                ThisBinding = thisBinding,
+                NewTarget = newTarget
+            };
+
+            return interpreter.ApplyFunction(
+                FenValue.FromFunction(func),
+                args ?? new List<FenValue>(),
+                context,
+                thisBinding);
+        }
+
+        private static FenValue ExecuteAstConstructorFallback(
+            FenFunction func,
+            List<FenValue> args,
+            FenValue constructorValue,
+            FenObject newObject,
+            FenEnvironment currentEnvironment)
+        {
+            var result = ExecuteAstFunctionFallback(
+                func,
+                args,
+                FenValue.FromObject(newObject),
+                currentEnvironment,
+                constructorValue);
+
+            return result.IsObject ? result : FenValue.FromObject(newObject);
+        }
+
+        private static void InitializeFunctionFastStore(FenFunction func, FenEnvironment env)
+        {
+            if (func?.LocalMap != null && func.LocalMap.Count > 0)
+            {
+                env.InitializeFastStore(func.LocalMap.Count);
+            }
+        }
+
+        private static void SetFunctionBinding(FenFunction func, FenEnvironment env, string name, FenValue value)
+        {
+            env.Set(name, value);
+            if (func?.LocalMap != null && func.LocalMap.TryGetValue(name, out int localSlot))
+            {
+                env.SetFast(localSlot, value);
+            }
+        }
+
         private static void BindFunctionArguments(FenFunction func, FenEnvironment env, FenValue[] args)
         {
             if (func == null || env == null)
@@ -1022,9 +1888,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 return;
             }
 
+            InitializeFunctionFastStore(func, env);
+
             var effectiveArgs = args ?? Array.Empty<FenValue>();
 
-            if (!func.IsArrowFunction)
+            if (!func.IsArrowFunction && func.NeedsArgumentsObject)
             {
                 var argumentsObj = new FenObject
                 {
@@ -1033,7 +1901,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
                 for (int i = 0; i < effectiveArgs.Length; i++)
                 {
-                    argumentsObj.Set(i.ToString(), effectiveArgs[i]);
+                    argumentsObj.Set(IndexKey(i), effectiveArgs[i]);
                 }
 
                 argumentsObj.Set("length", FenValue.FromNumber(effectiveArgs.Length));
@@ -1055,7 +1923,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 }
 
                 argumentsObj.Set("__paramNames__", FenValue.FromObject(paramNames));
-                env.Set("arguments", FenValue.FromObject(argumentsObj));
+                SetFunctionBinding(func, env, "arguments", FenValue.FromObject(argumentsObj));
             }
 
             if (func.Parameters == null)
@@ -1073,21 +1941,171 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
                 if (parameter.IsRest)
                 {
-                    var restArray = FenObject.CreateArray();
-                    int restIndex = 0;
+                    var restArray = new BytecodeArrayObject();
                     for (int j = i; j < effectiveArgs.Length; j++)
                     {
-                        restArray.Set(restIndex.ToString(), effectiveArgs[j]);
-                        restIndex++;
+                        restArray.Append(effectiveArgs[j]);
                     }
 
-                    restArray.Set("length", FenValue.FromNumber(restIndex));
-                    env.Set(parameter.Value, FenValue.FromObject(restArray));
+                    SetFunctionBinding(func, env, parameter.Value, FenValue.FromObject(restArray));
                     break;
                 }
 
                 var argValue = i < effectiveArgs.Length ? effectiveArgs[i] : FenValue.Undefined;
-                env.Set(parameter.Value, argValue);
+                SetFunctionBinding(func, env, parameter.Value, argValue);
+            }
+        }
+
+        private void BindFunctionArgumentsFromStack(FenFunction func, FenEnvironment env, int argCount, int firstArgStackIndex)
+        {
+            if (func == null || env == null)
+            {
+                return;
+            }
+
+            InitializeFunctionFastStore(func, env);
+
+            if (!func.IsArrowFunction && func.NeedsArgumentsObject)
+            {
+                var argumentsObj = new FenObject
+                {
+                    InternalClass = "Arguments"
+                };
+
+                for (int i = 0; i < argCount; i++)
+                {
+                    argumentsObj.Set(IndexKey(i), _stack[firstArgStackIndex + i]);
+                }
+
+                argumentsObj.Set("length", FenValue.FromNumber(argCount));
+                argumentsObj.Set("callee", FenValue.FromFunction(func));
+
+                var paramNames = new FenObject();
+                if (func.Parameters != null)
+                {
+                    for (int i = 0; i < func.Parameters.Count && i < argCount; i++)
+                    {
+                        var parameter = func.Parameters[i];
+                        if (parameter == null || parameter.IsRest || string.IsNullOrEmpty(parameter.Value))
+                        {
+                            continue;
+                        }
+
+                        paramNames.Set(IndexKey(i), FenValue.FromString(parameter.Value));
+                    }
+                }
+
+                argumentsObj.Set("__paramNames__", FenValue.FromObject(paramNames));
+                SetFunctionBinding(func, env, "arguments", FenValue.FromObject(argumentsObj));
+            }
+
+            if (func.Parameters == null)
+            {
+                return;
+            }
+
+            for (int i = 0; i < func.Parameters.Count; i++)
+            {
+                var parameter = func.Parameters[i];
+                if (parameter == null || string.IsNullOrEmpty(parameter.Value))
+                {
+                    continue;
+                }
+
+                if (parameter.IsRest)
+                {
+                    var restArray = new BytecodeArrayObject();
+                    for (int j = i; j < argCount; j++)
+                    {
+                        restArray.Append(_stack[firstArgStackIndex + j]);
+                    }
+
+                    SetFunctionBinding(func, env, parameter.Value, FenValue.FromObject(restArray));
+                    break;
+                }
+
+                var argValue = i < argCount ? _stack[firstArgStackIndex + i] : FenValue.Undefined;
+                SetFunctionBinding(func, env, parameter.Value, argValue);
+            }
+        }
+
+        private static void BindFunctionArgumentsFromArrayLike(
+            FenFunction func,
+            FenEnvironment env,
+            FenBrowser.FenEngine.Core.Interfaces.IObject argsObject,
+            int argCount)
+        {
+            if (func == null || env == null)
+            {
+                return;
+            }
+
+            InitializeFunctionFastStore(func, env);
+
+            if (!func.IsArrowFunction && func.NeedsArgumentsObject)
+            {
+                var argumentsObj = new FenObject
+                {
+                    InternalClass = "Arguments"
+                };
+
+                for (int i = 0; i < argCount; i++)
+                {
+                    argumentsObj.Set(IndexKey(i), argsObject?.Get(IndexKey(i)) ?? FenValue.Undefined);
+                }
+
+                argumentsObj.Set("length", FenValue.FromNumber(argCount));
+                argumentsObj.Set("callee", FenValue.FromFunction(func));
+
+                var paramNames = new FenObject();
+                if (func.Parameters != null)
+                {
+                    for (int i = 0; i < func.Parameters.Count && i < argCount; i++)
+                    {
+                        var parameter = func.Parameters[i];
+                        if (parameter == null || parameter.IsRest || string.IsNullOrEmpty(parameter.Value))
+                        {
+                            continue;
+                        }
+
+                        paramNames.Set(IndexKey(i), FenValue.FromString(parameter.Value));
+                    }
+                }
+
+                argumentsObj.Set("__paramNames__", FenValue.FromObject(paramNames));
+                SetFunctionBinding(func, env, "arguments", FenValue.FromObject(argumentsObj));
+            }
+
+            if (func.Parameters == null)
+            {
+                return;
+            }
+
+            for (int i = 0; i < func.Parameters.Count; i++)
+            {
+                var parameter = func.Parameters[i];
+                if (parameter == null || string.IsNullOrEmpty(parameter.Value))
+                {
+                    continue;
+                }
+
+                if (parameter.IsRest)
+                {
+                    var restArray = new BytecodeArrayObject();
+                    for (int j = i; j < argCount; j++)
+                    {
+                        restArray.Append(argsObject?.Get(IndexKey(j)) ?? FenValue.Undefined);
+                    }
+
+                    SetFunctionBinding(func, env, parameter.Value, FenValue.FromObject(restArray));
+                    break;
+                }
+
+                var argValue = i < argCount
+                    ? (argsObject?.Get(IndexKey(i)) ?? FenValue.Undefined)
+                    : FenValue.Undefined;
+
+                SetFunctionBinding(func, env, parameter.Value, argValue);
             }
         }
 
@@ -1099,6 +2117,24 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             }
 
             var argsObject = argsArrayValue.AsObject();
+            if (argsObject is BytecodeArrayObject denseArgs)
+            {
+                if (denseArgs.Length <= 0)
+                {
+                    return Array.Empty<FenValue>();
+                }
+
+                var denseValues = new FenValue[denseArgs.Length];
+                for (int i = 0; i < denseArgs.Length; i++)
+                {
+                    denseValues[i] = denseArgs.TryGetElement(i, out var value)
+                        ? value
+                        : FenValue.Undefined;
+                }
+
+                return denseValues;
+            }
+
             int length = GetArrayLikeLength(argsObject);
             if (length <= 0)
             {
@@ -1108,7 +2144,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             var args = new FenValue[length];
             for (int i = 0; i < length; i++)
             {
-                args[i] = argsObject.Get(i.ToString());
+                args[i] = argsObject.Get(IndexKey(i));
             }
 
             return args;
@@ -1119,6 +2155,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             if (obj == null)
             {
                 return 0;
+            }
+
+            if (obj is BytecodeArrayObject dense)
+            {
+                return dense.Length;
             }
 
             var lengthValue = obj.Get("length");
@@ -1231,3 +2272,4 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         }
     }
 }
+
