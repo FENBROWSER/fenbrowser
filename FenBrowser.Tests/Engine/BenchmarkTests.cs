@@ -188,7 +188,8 @@ namespace FenBrowser.Tests.Engine
             sb.AppendLine($"Bytecode Time: {sw2.ElapsedMilliseconds} ms");
 
             File.WriteAllText(@"C:\Users\udayk\Videos\FENBROWSER\engine_comparison_results.md", sb.ToString());
-            Assert.True(true);
+            Assert.NotNull(resultInterpreter);
+            Assert.Equal(resultInterpreter?.ToString(), resultBytecode.ToString());
         }
     }
 }
