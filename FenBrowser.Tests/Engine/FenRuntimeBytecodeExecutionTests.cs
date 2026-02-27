@@ -48,41 +48,26 @@ namespace FenBrowser.Tests.Engine
             }
         }
 
-        private static void AssertFenValueEquivalent(FenValue expected, FenValue actual, string script)
+        private static FenFunction CreateAstBackedFunction(string declarationSource, string expectedName)
         {
-            Assert.True(
-                expected.Type == actual.Type,
-                $"Script mismatch type:\n{script}\nExpected={expected.Type}, Actual={actual.Type}, ExpectedValue={expected}, ActualValue={actual}");
-
-            switch (expected.Type)
+            var lexer = new Lexer(declarationSource);
+            var parser = new Parser(lexer, false);
+            var program = parser.ParseProgram();
+            var declaration = Assert.IsType<FunctionDeclarationStatement>(program.Statements[0]);
+            var function = new FenFunction(
+                declaration.Function.Parameters,
+                declaration.Function.Body,
+                new FenEnvironment())
             {
-                case FenBrowser.FenEngine.Core.Interfaces.ValueType.Number:
-                {
-                    var expectedNumber = expected.AsNumber();
-                    var actualNumber = actual.AsNumber();
-                    if (double.IsNaN(expectedNumber))
-                    {
-                        Assert.True(double.IsNaN(actualNumber), $"Script: {script}");
-                    }
-                    else
-                    {
-                        Assert.Equal(expectedNumber, actualNumber);
-                    }
-                    break;
-                }
-                case FenBrowser.FenEngine.Core.Interfaces.ValueType.String:
-                    Assert.Equal(expected.AsString(), actual.AsString());
-                    break;
-                case FenBrowser.FenEngine.Core.Interfaces.ValueType.Boolean:
-                    Assert.Equal(expected.ToBoolean(), actual.ToBoolean());
-                    break;
-                case FenBrowser.FenEngine.Core.Interfaces.ValueType.Null:
-                case FenBrowser.FenEngine.Core.Interfaces.ValueType.Undefined:
-                    break;
-                default:
-                    Assert.Equal(expected.ToString(), actual.ToString());
-                    break;
-            }
+                Name = declaration.Function.Name
+            };
+
+            Assert.Equal(expectedName, function.Name);
+            var prototype = new FenObject();
+            prototype.Set("constructor", FenValue.FromFunction(function));
+            function.Prototype = prototype;
+            function.Set("prototype", FenValue.FromObject(prototype));
+            return function;
         }
 
         [Fact]
@@ -394,37 +379,29 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
-        public void ExecuteSimple_CompileUnsupported_UsesInterpreterFallback()
+        public void ExecuteSimple_CompileUnsupported_ReturnsBytecodeOnlyError()
         {
             var rt = CreateRuntime();
-            rt.ExecuteSimple("function keep(x) { if (false) { break; } return x; }");
-
-            var keepVal = rt.GetGlobal("keep");
-            Assert.True(keepVal.IsFunction);
-            var keepFn = keepVal.AsFunction();
-            Assert.NotNull(keepFn);
-            Assert.Null(keepFn.BytecodeBlock);
+            var result = rt.ExecuteSimple("function keep(x) { if (false) { break; } return x; }");
+            Assert.Equal(FenBrowser.FenEngine.Core.Interfaces.ValueType.Error, result.Type);
+            Assert.Contains("Bytecode-only mode", result.ToString(), StringComparison.OrdinalIgnoreCase);
         }
 
         [Fact]
-        public void ExecuteSimple_WithInterpreterOnlyGlobals_CallHeavyScriptUsesBytecodeMainline()
+        public void ExecuteSimple_WithAstBackedGlobal_CallHeavyScriptFailsInBytecodeOnlyMode()
         {
             var rt = CreateRuntime();
+            var inc = CreateAstBackedFunction("function inc(x) { return x + 1; }", "inc");
+            rt.SetGlobal("inc", FenValue.FromFunction(inc));
 
-            // Force interpreter fallback so this function remains AST-backed.
-            rt.ExecuteSimple("function inc(x) { if (false) { break; } return x + 1; }");
-            var incVal = rt.GetGlobal("inc");
-            Assert.True(incVal.IsFunction);
-            Assert.Null(incVal.AsFunction().BytecodeBlock);
-
-            // Bytecode-compiled function should still be able to call AST-backed globals.
-            rt.ExecuteSimple("function run(v) { return inc(v); }");
+            var compileResult = rt.ExecuteSimple("function run(v) { return inc(v); }");
+            Assert.NotEqual(FenBrowser.FenEngine.Core.Interfaces.ValueType.Error, compileResult.Type);
             var runVal = rt.GetGlobal("run");
             Assert.True(runVal.IsFunction);
             Assert.NotNull(runVal.AsFunction().BytecodeBlock);
 
-            rt.ExecuteSimple("var answer = run(41);");
-            Assert.Equal(42, ((FenValue)rt.GetGlobal("answer")).AsNumber());
+            var result = rt.ExecuteSimple("var answer = run(41);");
+            Assert.Equal(FenBrowser.FenEngine.Core.Interfaces.ValueType.Error, result.Type);
         }
 
         [Fact]
@@ -448,24 +425,20 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
-        public void ExecuteSimple_BytecodeAndInterpreter_ShouldMatchOnEdgeCaseCorpus()
+        public void ExecuteSimple_BytecodeDisabled_ReturnsBytecodeOnlyModeError()
         {
-            var corpus = new[]
+            var previous = Environment.GetEnvironmentVariable(BytecodeEnvKey);
+            try
             {
-                "var out = delete (1 + 2);",
-                "var x = 0; var out = (delete (x = 1)) && (x === 1);",
-                "var out = (function({ value, ...rest }) { return value + rest.b; })({ value: 3, b: 4 });",
-                "var out = (function(key, obj) { var t = 0; ({ [key]: t } = obj); return t; })('z', { z: 9 });",
-                "var out = (function(){ var s = 0; for (const { v } of ({ a:{v:1}, b:{v:2}, c:{v:3} })) { s = s + v; } return s; })();",
-                "var out = (function(){ var x = 0; try { throw { a: 5 }; } catch (e) { x = e.a; } return x; })();",
-                "var out = (function(){ var hits = 0; outer: for (var i = 0; i < 3; i = i + 1) { for (var j = 0; j < 3; j = j + 1) { if (j === 1) continue outer; hits = hits + 1; } } return hits; })();"
-            };
-
-            foreach (var script in corpus)
+                Environment.SetEnvironmentVariable(BytecodeEnvKey, "0");
+                var rt = CreateRuntime();
+                var result = rt.ExecuteSimple("var out = 1 + 2;");
+                Assert.Equal(FenBrowser.FenEngine.Core.Interfaces.ValueType.Error, result.Type);
+                Assert.Contains("Bytecode-only mode", result.ToString(), StringComparison.OrdinalIgnoreCase);
+            }
+            finally
             {
-                var bytecodeResult = ExecuteAndReadGlobal(script, "out", bytecodeEnabled: true);
-                var interpreterResult = ExecuteAndReadGlobal(script, "out", bytecodeEnabled: false);
-                AssertFenValueEquivalent(interpreterResult, bytecodeResult, script);
+                Environment.SetEnvironmentVariable(BytecodeEnvKey, previous);
             }
         }
     }

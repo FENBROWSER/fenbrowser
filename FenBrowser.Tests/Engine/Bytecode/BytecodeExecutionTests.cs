@@ -71,7 +71,7 @@ namespace FenBrowser.Tests.Engine.Bytecode
         }
 
         [Fact]
-        public void Bytecode_BasicArithmetic_ShouldMatchInterpreter()
+        public void Bytecode_BasicArithmetic_ShouldMatchRuntime()
         {
             var result = Evaluate("1 + 2 * 3;");
             
@@ -328,47 +328,43 @@ namespace FenBrowser.Tests.Engine.Bytecode
         }
 
         [Fact]
-        public void Bytecode_CallOpcode_ShouldFallbackToAstBackedFunction()
+        public void Bytecode_CallOpcode_WithAstBackedFunction_ShouldFailInBytecodeOnlyMode()
         {
             var env = new FenEnvironment();
             var inc = CreateAstBackedFunction(env, "function inc(x) { return x + 1; }", "inc");
             env.Set("inc", FenValue.FromFunction(inc));
 
-            var result = Evaluate(ParseProgram("function run(v) { return inc(v); } run(41);"), env);
-            Assert.Equal(42, result.AsNumber());
+            Assert.Throws<Exception>(() => Evaluate(ParseProgram("function run(v) { return inc(v); } run(41);"), env));
         }
 
         [Fact]
-        public void Bytecode_CallFromArrayOpcode_ShouldFallbackToAstBackedFunction()
+        public void Bytecode_CallFromArrayOpcode_WithAstBackedFunction_ShouldFailInBytecodeOnlyMode()
         {
             var env = new FenEnvironment();
             var inc = CreateAstBackedFunction(env, "function inc(x) { return x + 1; }", "inc");
             env.Set("inc", FenValue.FromFunction(inc));
 
-            var result = Evaluate(ParseProgram("function run(v) { return inc(...[v]); } run(41);"), env);
-            Assert.Equal(42, result.AsNumber());
+            Assert.Throws<Exception>(() => Evaluate(ParseProgram("function run(v) { return inc(...[v]); } run(41);"), env));
         }
 
         [Fact]
-        public void Bytecode_ConstructOpcode_ShouldFallbackToAstBackedConstructor()
+        public void Bytecode_ConstructOpcode_WithAstBackedConstructor_ShouldFailInBytecodeOnlyMode()
         {
             var env = new FenEnvironment();
             var pair = CreateAstBackedFunction(env, "function Pair(a, b) { this.sum = a + b; }", "Pair");
             env.Set("Pair", FenValue.FromFunction(pair));
 
-            var result = Evaluate(ParseProgram("function run(a, b) { var p = new Pair(a, b); return p.sum; } run(5, 7);"), env);
-            Assert.Equal(12, result.AsNumber());
+            Assert.Throws<Exception>(() => Evaluate(ParseProgram("function run(a, b) { var p = new Pair(a, b); return p.sum; } run(5, 7);"), env));
         }
 
         [Fact]
-        public void Bytecode_ConstructFromArrayOpcode_ShouldFallbackToAstBackedConstructor()
+        public void Bytecode_ConstructFromArrayOpcode_WithAstBackedConstructor_ShouldFailInBytecodeOnlyMode()
         {
             var env = new FenEnvironment();
             var pair = CreateAstBackedFunction(env, "function Pair(a, b) { this.sum = a + b; }", "Pair");
             env.Set("Pair", FenValue.FromFunction(pair));
 
-            var result = Evaluate(ParseProgram("function run(a, b) { var p = new Pair(...[a, b]); return p.sum; } run(5, 7);"), env);
-            Assert.Equal(12, result.AsNumber());
+            Assert.Throws<Exception>(() => Evaluate(ParseProgram("function run(a, b) { var p = new Pair(...[a, b]); return p.sum; } run(5, 7);"), env));
         }
 
         [Fact]
@@ -556,7 +552,7 @@ namespace FenBrowser.Tests.Engine.Bytecode
         }
 
         [Fact]
-        public void Bytecode_RegexLiteral_ShouldCreateRegexObjectLikeInterpreter()
+        public void Bytecode_RegexLiteral_ShouldCreateRegexObjectLikeRuntime()
         {
             var result = Evaluate("var r = /ab/i; r.source + ':' + r.flags;");
             Assert.Equal("ab:i", result.AsString());
