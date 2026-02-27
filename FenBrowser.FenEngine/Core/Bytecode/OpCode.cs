@@ -36,6 +36,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode
         LessThanOrEqual = 0x36,
         GreaterThanOrEqual = 0x37,
         LogicalNot = 0x38,
+        InOperator = 0x39,
+        InstanceOf = 0x3A,
 
         // 0x40 - 0x4F: Flow Control
         Jump = 0x40,
@@ -47,12 +49,18 @@ namespace FenBrowser.FenEngine.Core.Bytecode
         Return = 0x51,
         MakeClosure = 0x52,
         Construct = 0x53,
+        CallFromArray = 0x54,
+        ConstructFromArray = 0x55,
 
         // 0x60 - 0x6F: Objects & Arrays
         MakeArray = 0x60,
         MakeObject = 0x61,
         LoadProp = 0x62,
         StoreProp = 0x63,
+        DeleteProp = 0x64,
+        ArrayAppend = 0x65,
+        ArrayAppendSpread = 0x66,
+        ObjectSpread = 0x67,
 
         // 0x6A - 0x6F: Iteration
         MakeKeysIterator = 0x6A,
@@ -75,6 +83,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode
         BitwiseNot = 0x76,
         Negate = 0x77,
         Typeof = 0x78,
+        ToNumber = 0x79,
+        LoadNewTarget = 0x7A,
+        Await = 0x7B,
+        EnterWith = 0x7C,
+        ExitWith = 0x7D,
 
         // 0xFF: End of program
         Halt = 0xFF

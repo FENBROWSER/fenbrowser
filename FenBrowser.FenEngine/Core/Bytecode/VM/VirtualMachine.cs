@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using FenBrowser.FenEngine.Core;
+using FenBrowser.FenEngine.Core.EventLoop;
 using FenBrowser.FenEngine.Core.Types;
 using FenValue = FenBrowser.FenEngine.Core.FenValue;
 using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType;
@@ -197,6 +198,64 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 _stack[_sp++] = FenValue.FromBoolean(!result.ToBoolean());
                                 break;
                             }
+                            case OpCode.InOperator:
+                            {
+                                var right = _stack[--_sp];
+                                var left = _stack[--_sp];
+                                if (right.IsObject)
+                                {
+                                    _stack[_sp++] = FenValue.FromBoolean(right.AsObject().Has(left.AsString()));
+                                }
+                                else
+                                {
+                                    _stack[_sp++] = FenValue.FromBoolean(false);
+                                }
+                                break;
+                            }
+                            case OpCode.InstanceOf:
+                            {
+                                var right = _stack[--_sp];
+                                var left = _stack[--_sp];
+
+                                if (!right.IsFunction || !left.IsObject)
+                                {
+                                    _stack[_sp++] = FenValue.FromBoolean(false);
+                                    break;
+                                }
+
+                                var constructor = right.AsFunction() as FenFunction;
+                                if (constructor == null)
+                                {
+                                    _stack[_sp++] = FenValue.FromBoolean(false);
+                                    break;
+                                }
+
+                                var prototypeVal = constructor.Get("prototype");
+                                var expectedPrototype = prototypeVal.IsObject
+                                    ? prototypeVal.AsObject()
+                                    : (constructor.Prototype as FenObject);
+                                if (expectedPrototype == null)
+                                {
+                                    _stack[_sp++] = FenValue.FromBoolean(false);
+                                    break;
+                                }
+
+                                var currentPrototype = left.AsObject().GetPrototype();
+                                bool isMatch = false;
+                                while (currentPrototype != null)
+                                {
+                                    if (ReferenceEquals(currentPrototype, expectedPrototype))
+                                    {
+                                        isMatch = true;
+                                        break;
+                                    }
+
+                                    currentPrototype = currentPrototype.GetPrototype();
+                                }
+
+                                _stack[_sp++] = FenValue.FromBoolean(isMatch);
+                                break;
+                            }
                             case OpCode.BitwiseAnd:
                             {
                                 var right = (int)_stack[--_sp].ToNumber();
@@ -305,6 +364,18 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 var templateFunc = constants[idx].AsObject() as FenFunction;
                                 var newFunc = new FenFunction(templateFunc.Parameters, templateFunc.BytecodeBlock, frame.Environment);
                                 newFunc.Name = templateFunc.Name;
+                                newFunc.IsArrowFunction = templateFunc.IsArrowFunction;
+                                newFunc.IsAsync = templateFunc.IsAsync;
+                                newFunc.IsGenerator = templateFunc.IsGenerator;
+
+                                if (!newFunc.IsArrowFunction)
+                                {
+                                    var fnPrototype = new FenObject();
+                                    fnPrototype.Set("constructor", FenValue.FromFunction(newFunc));
+                                    newFunc.Prototype = fnPrototype;
+                                    newFunc.Set("prototype", FenValue.FromObject(fnPrototype));
+                                }
+
                                 _stack[_sp++] = FenValue.FromFunction(newFunc);
                                 break;
                             }
@@ -327,17 +398,41 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 else if (func.BytecodeBlock != null)
                                 {
                                     var newEnv = new FenEnvironment(func.Env);
-                                    if (func.Parameters != null)
-                                    {
-                                        for (int i = 0; i < func.Parameters.Count; i++)
-                                        {
-                                            var argVal = i < args.Length ? args[i] : FenValue.Undefined;
-                                            newEnv.Set(func.Parameters[i].Value, argVal);
-                                        }
-                                    }
+                                    BindFunctionArguments(func, newEnv, args);
                                     
-                                    PushFrame(func.BytecodeBlock, newEnv, _sp);
+                                    var newFrame = PushFrame(func.BytecodeBlock, newEnv, _sp);
+                                    newFrame.NewTarget = FenValue.Undefined;
+                                    newFrame.IsAsyncFunction = func.IsAsync;
                                     goto fetch_frame; // Break out of inner loop to process new frame
+                                }
+                                else
+                                {
+                                    throw new Exception("VM Error: AST execution inside Bytecode VM not fully supported yet.");
+                                }
+                                break;
+                            }
+                            case OpCode.CallFromArray:
+                            {
+                                var argsArrayVal = _stack[--_sp];
+                                var callee = _stack[--_sp];
+
+                                if (!callee.IsFunction) throw new Exception("VM Error: Attempted to call non-function.");
+                                var func = callee.AsObject() as FenFunction;
+                                var args = ExtractArrayLikeValues(argsArrayVal);
+
+                                if (func.IsNative)
+                                {
+                                    _stack[_sp++] = func.NativeImplementation(args, FenValue.Undefined);
+                                }
+                                else if (func.BytecodeBlock != null)
+                                {
+                                    var newEnv = new FenEnvironment(func.Env);
+                                    BindFunctionArguments(func, newEnv, args);
+
+                                    var newFrame = PushFrame(func.BytecodeBlock, newEnv, _sp);
+                                    newFrame.NewTarget = FenValue.Undefined;
+                                    newFrame.IsAsyncFunction = func.IsAsync;
+                                    goto fetch_frame;
                                 }
                                 else
                                 {
@@ -352,6 +447,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 
                                 if (!constructorVal.IsFunction) throw new Exception("VM Error: Attempted to construct non-function.");
                                 var func = constructorVal.AsObject() as FenFunction;
+                                if (func.IsArrowFunction)
+                                {
+                                    throw new Exception("TypeError: Arrow function is not a constructor");
+                                }
                                 
                                 // Create new empty object
                                 var newObj = new FenObject();
@@ -385,20 +484,63 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                     
                                     // Bind 'this' to newObj
                                     newEnv.Set("this", FenValue.FromObject(newObj));
-                                    
-                                    if (func.Parameters != null)
-                                    {
-                                        for (int i = 0; i < func.Parameters.Count; i++)
-                                        {
-                                            var argVal = i < args.Length ? args[i] : FenValue.Undefined;
-                                            newEnv.Set(func.Parameters[i].Value, argVal);
-                                        }
-                                    }
+                                    BindFunctionArguments(func, newEnv, args);
                                     
                                     var newFrame = PushFrame(func.BytecodeBlock, newEnv, _sp);
                                     newFrame.IsConstruct = true;
                                     newFrame.ConstructedObject = newObj;
+                                    newFrame.NewTarget = constructorVal;
                                     
+                                    goto fetch_frame;
+                                }
+                                else
+                                {
+                                    throw new Exception("VM Error: AST constructor execution inside Bytecode VM not fully supported yet.");
+                                }
+                                break;
+                            }
+                            case OpCode.ConstructFromArray:
+                            {
+                                var argsArrayVal = _stack[--_sp];
+                                var constructorVal = _stack[--_sp];
+
+                                if (!constructorVal.IsFunction) throw new Exception("VM Error: Attempted to construct non-function.");
+                                var func = constructorVal.AsObject() as FenFunction;
+                                if (func.IsArrowFunction)
+                                {
+                                    throw new Exception("TypeError: Arrow function is not a constructor");
+                                }
+
+                                var newObj = new FenObject();
+                                var prototypeVal = func.Get("prototype");
+                                if (prototypeVal.IsObject)
+                                {
+                                    newObj.SetPrototype(prototypeVal.AsObject());
+                                }
+                                else
+                                {
+                                    newObj.SetPrototype(frame.Environment.Get("Object").AsObject().Get("prototype").AsObject());
+                                }
+
+                                var args = ExtractArrayLikeValues(argsArrayVal);
+
+                                if (func.IsNative)
+                                {
+                                    var result = func.NativeImplementation(args, FenValue.FromObject(newObj));
+                                    if (result.IsObject) _stack[_sp++] = result;
+                                    else _stack[_sp++] = FenValue.FromObject(newObj);
+                                }
+                                else if (func.BytecodeBlock != null)
+                                {
+                                    var newEnv = new FenEnvironment(func.Env);
+                                    newEnv.Set("this", FenValue.FromObject(newObj));
+                                    BindFunctionArguments(func, newEnv, args);
+
+                                    var newFrame = PushFrame(func.BytecodeBlock, newEnv, _sp);
+                                    newFrame.IsConstruct = true;
+                                    newFrame.ConstructedObject = newObj;
+                                    newFrame.NewTarget = constructorVal;
+
                                     goto fetch_frame;
                                 }
                                 else
@@ -438,9 +580,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                             {
                                 var prop = _stack[--_sp];
                                 var obj = _stack[--_sp];
-                                if (obj.IsObject)
+                                var objectRef = obj.AsObject();
+                                if (objectRef != null)
                                 {
-                                    _stack[_sp++] = obj.AsObject().Get(prop.AsString());
+                                    _stack[_sp++] = objectRef.Get(prop.AsString());
                                 }
                                 else
                                 {
@@ -453,11 +596,102 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 var value = _stack[--_sp];
                                 var prop = _stack[--_sp];
                                 var obj = _stack[--_sp];
-                                if (obj.IsObject)
+                                var objectRef = obj.AsObject();
+                                if (objectRef != null)
                                 {
-                                    obj.AsObject().Set(prop.AsString(), value);
+                                    objectRef.Set(prop.AsString(), value);
                                 }
                                 _stack[_sp++] = value;
+                                break;
+                            }
+                            case OpCode.ArrayAppend:
+                            {
+                                var value = _stack[--_sp];
+                                var arrayValue = _stack[--_sp];
+
+                                if (arrayValue.IsObject)
+                                {
+                                    var arrayObj = arrayValue.AsObject();
+                                    int length = GetArrayLikeLength(arrayObj);
+                                    arrayObj.Set(length.ToString(), value);
+                                    arrayObj.Set("length", FenValue.FromNumber(length + 1));
+                                }
+
+                                _stack[_sp++] = arrayValue;
+                                break;
+                            }
+                            case OpCode.ArrayAppendSpread:
+                            {
+                                var spreadValue = _stack[--_sp];
+                                var arrayValue = _stack[--_sp];
+
+                                if (arrayValue.IsObject)
+                                {
+                                    var arrayObj = arrayValue.AsObject();
+                                    int length = GetArrayLikeLength(arrayObj);
+
+                                    bool expanded = false;
+                                    if (spreadValue.IsObject)
+                                    {
+                                        var spreadObj = spreadValue.AsObject();
+                                        if (spreadObj != null && spreadObj.Has("length"))
+                                        {
+                                            var spreadLenVal = spreadObj.Get("length");
+                                            if (spreadLenVal.IsNumber)
+                                            {
+                                                int spreadLength = (int)spreadLenVal.ToNumber();
+                                                for (int i = 0; i < spreadLength; i++)
+                                                {
+                                                    arrayObj.Set((length + i).ToString(), spreadObj.Get(i.ToString()));
+                                                }
+                                                length += spreadLength;
+                                                expanded = true;
+                                            }
+                                        }
+                                    }
+
+                                    if (!expanded)
+                                    {
+                                        arrayObj.Set(length.ToString(), spreadValue);
+                                        length += 1;
+                                    }
+
+                                    arrayObj.Set("length", FenValue.FromNumber(length));
+                                }
+
+                                _stack[_sp++] = arrayValue;
+                                break;
+                            }
+                            case OpCode.ObjectSpread:
+                            {
+                                var sourceValue = _stack[--_sp];
+                                var targetValue = _stack[--_sp];
+
+                                if (targetValue.IsObject && sourceValue.IsObject)
+                                {
+                                    var targetObj = targetValue.AsObject();
+                                    var sourceObj = sourceValue.AsObject();
+                                    foreach (var key in sourceObj.Keys())
+                                    {
+                                        targetObj.Set(key, sourceObj.Get(key));
+                                    }
+                                }
+
+                                _stack[_sp++] = targetValue;
+                                break;
+                            }
+                            case OpCode.DeleteProp:
+                            {
+                                var prop = _stack[--_sp];
+                                var obj = _stack[--_sp];
+                                bool deleted = true;
+                                var objectRef = obj.AsObject();
+                                if (objectRef != null)
+                                {
+                                    deleted = objectRef.Delete(prop.AsString());
+                                }
+
+                                _stack[_sp++] = FenValue.FromBoolean(deleted);
                                 break;
                             }
                             case OpCode.MakeKeysIterator:
@@ -542,6 +776,54 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 _stack[_sp++] = FenValue.FromString(typeStr);
                                 break;
                             }
+                            case OpCode.ToNumber:
+                            {
+                                var val = _stack[--_sp];
+                                _stack[_sp++] = FenValue.FromNumber(val.ToNumber());
+                                break;
+                            }
+                            case OpCode.LoadNewTarget:
+                            {
+                                _stack[_sp++] = frame.NewTarget;
+                                break;
+                            }
+                            case OpCode.Await:
+                            {
+                                var awaitValue = _stack[--_sp];
+                                _stack[_sp++] = ResolveAwaitValue(awaitValue);
+                                break;
+                            }
+                            case OpCode.EnterWith:
+                            {
+                                var withObjectValue = _stack[--_sp];
+                                if (!withObjectValue.IsObject)
+                                {
+                                    // Keep bytecode path stable for unsupported non-object with operands.
+                                    break;
+                                }
+
+                                var withEnv = new FenEnvironment(frame.Environment);
+                                var withObject = withObjectValue.AsObject();
+                                if (withObject != null)
+                                {
+                                    foreach (var key in withObject.Keys())
+                                    {
+                                        withEnv.Set(key, withObject.Get(key));
+                                    }
+                                }
+
+                                frame.WithEnvironments.Push(frame.Environment);
+                                frame.SetEnvironment(withEnv);
+                                break;
+                            }
+                            case OpCode.ExitWith:
+                            {
+                                if (frame.HasWithEnvironments)
+                                {
+                                    frame.SetEnvironment(frame.WithEnvironments.Pop());
+                                }
+                                break;
+                            }
                             case OpCode.Return:
                             {
                                 var result = _stack[--_sp];
@@ -553,6 +835,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 if (frame.IsConstruct && !result.IsObject)
                                 {
                                     result = FenValue.FromObject(frame.ConstructedObject);
+                                }
+                                if (frame.IsAsyncFunction)
+                                {
+                                    result = WrapAsyncReturnValue(result);
                                 }
                                 
                                 // Push result back for caller, or return if top level
@@ -582,11 +868,32 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                             {
                                 var exceptionValue = _stack[--_sp];
                                 HandleException(exceptionValue, ref frame);
-                                break;
+                                goto fetch_frame;
                             }
                             case OpCode.Halt:
                             {
-                                // Return the completion value rather than top of stack, unless there's a return value pending (which Returns handle)
+                                // Halt marks the end of the current frame's code block.
+                                // Top-level frame returns script completion value; nested frames
+                                // fall through as implicit undefined (or constructed object).
+                                if (_frameCount > 1)
+                                {
+                                    var result = FenValue.Undefined;
+                                    _frameCount--;
+                                    _sp = frame.StackBase;
+
+                                    if (frame.IsConstruct)
+                                    {
+                                        result = FenValue.FromObject(frame.ConstructedObject);
+                                    }
+                                    if (frame.IsAsyncFunction)
+                                    {
+                                        result = WrapAsyncReturnValue(result);
+                                    }
+
+                                    _stack[_sp++] = result;
+                                    goto fetch_frame;
+                                }
+
                                 return _completionValue;
                             }    
                             default:
@@ -604,6 +911,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                         if (frame.IsConstruct)
                         {
                             result = FenValue.FromObject(frame.ConstructedObject);
+                        }
+                        if (frame.IsAsyncFunction)
+                        {
+                            result = WrapAsyncReturnValue(result);
                         }
 
                         if (_frameCount > 0)
@@ -624,6 +935,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 {
                     var topFrame = _callFrames[_frameCount - 1];
                     HandleException(errorObj, ref topFrame);
+                    // Resume execution at the installed JS catch/finally handler.
+                    return RunLoop();
                 }
                 else
                 {
@@ -660,6 +973,25 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                         return; // Resume execution in RunLoop
                     }
                 }
+
+                // Async functions capture uncaught exceptions as rejected promise results,
+                // rather than propagating host exceptions through callers.
+                if (frame.IsAsyncFunction)
+                {
+                    var rejection = WrapAsyncReturnValue(FenValue.FromError(exceptionValue.AsString()));
+                    _frameCount--;
+                    _sp = frame.StackBase;
+
+                    if (_frameCount > 0)
+                    {
+                        _stack[_sp++] = rejection;
+                    }
+                    else
+                    {
+                        _completionValue = rejection;
+                    }
+                    return;
+                }
                 
                 // No handler in this frame, unwind call stack!
                 _frameCount--;
@@ -681,6 +1013,210 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             int val = instructions[ip] | (instructions[ip + 1] << 8) | (instructions[ip + 2] << 16) | (instructions[ip + 3] << 24);
             frame.IP = ip + 4;
             return val;
+        }
+
+        private static void BindFunctionArguments(FenFunction func, FenEnvironment env, FenValue[] args)
+        {
+            if (func == null || env == null)
+            {
+                return;
+            }
+
+            var effectiveArgs = args ?? Array.Empty<FenValue>();
+
+            if (!func.IsArrowFunction)
+            {
+                var argumentsObj = new FenObject
+                {
+                    InternalClass = "Arguments"
+                };
+
+                for (int i = 0; i < effectiveArgs.Length; i++)
+                {
+                    argumentsObj.Set(i.ToString(), effectiveArgs[i]);
+                }
+
+                argumentsObj.Set("length", FenValue.FromNumber(effectiveArgs.Length));
+                argumentsObj.Set("callee", FenValue.FromFunction(func));
+
+                var paramNames = new FenObject();
+                if (func.Parameters != null)
+                {
+                    for (int i = 0; i < func.Parameters.Count && i < effectiveArgs.Length; i++)
+                    {
+                        var parameter = func.Parameters[i];
+                        if (parameter == null || parameter.IsRest || string.IsNullOrEmpty(parameter.Value))
+                        {
+                            continue;
+                        }
+
+                        paramNames.Set(i.ToString(), FenValue.FromString(parameter.Value));
+                    }
+                }
+
+                argumentsObj.Set("__paramNames__", FenValue.FromObject(paramNames));
+                env.Set("arguments", FenValue.FromObject(argumentsObj));
+            }
+
+            if (func.Parameters == null)
+            {
+                return;
+            }
+
+            for (int i = 0; i < func.Parameters.Count; i++)
+            {
+                var parameter = func.Parameters[i];
+                if (parameter == null || string.IsNullOrEmpty(parameter.Value))
+                {
+                    continue;
+                }
+
+                if (parameter.IsRest)
+                {
+                    var restArray = FenObject.CreateArray();
+                    int restIndex = 0;
+                    for (int j = i; j < effectiveArgs.Length; j++)
+                    {
+                        restArray.Set(restIndex.ToString(), effectiveArgs[j]);
+                        restIndex++;
+                    }
+
+                    restArray.Set("length", FenValue.FromNumber(restIndex));
+                    env.Set(parameter.Value, FenValue.FromObject(restArray));
+                    break;
+                }
+
+                var argValue = i < effectiveArgs.Length ? effectiveArgs[i] : FenValue.Undefined;
+                env.Set(parameter.Value, argValue);
+            }
+        }
+
+        private FenValue[] ExtractArrayLikeValues(FenValue argsArrayValue)
+        {
+            if (!argsArrayValue.IsObject)
+            {
+                return Array.Empty<FenValue>();
+            }
+
+            var argsObject = argsArrayValue.AsObject();
+            int length = GetArrayLikeLength(argsObject);
+            if (length <= 0)
+            {
+                return Array.Empty<FenValue>();
+            }
+
+            var args = new FenValue[length];
+            for (int i = 0; i < length; i++)
+            {
+                args[i] = argsObject.Get(i.ToString());
+            }
+
+            return args;
+        }
+
+        private static int GetArrayLikeLength(FenBrowser.FenEngine.Core.Interfaces.IObject obj)
+        {
+            if (obj == null)
+            {
+                return 0;
+            }
+
+            var lengthValue = obj.Get("length");
+            if (!lengthValue.IsNumber)
+            {
+                return 0;
+            }
+
+            int length = (int)lengthValue.ToNumber();
+            return length < 0 ? 0 : length;
+        }
+
+        private static FenValue WrapAsyncReturnValue(FenValue result)
+        {
+            if (result.Type == JsValueType.Error)
+            {
+                return FenValue.FromObject(JsPromise.Reject(result, null));
+            }
+
+            if (result.IsObject && result.AsObject() is JsPromise)
+            {
+                return result;
+            }
+
+            return FenValue.FromObject(JsPromise.Resolve(result, null));
+        }
+
+        private static FenValue ResolveAwaitValue(FenValue value)
+        {
+            JsPromise promise = null;
+            if (value.IsObject && value.AsObject() is JsPromise existingPromise)
+            {
+                promise = existingPromise;
+            }
+            else if (value.IsObject)
+            {
+                var obj = value.AsObject();
+                var thenVal = obj?.Get("then");
+                if (thenVal.HasValue && thenVal.Value.IsFunction)
+                {
+                    promise = JsPromise.Resolve(value, null);
+                }
+                else
+                {
+                    return value;
+                }
+            }
+            else
+            {
+                return value;
+            }
+
+            if (promise.IsSettled)
+            {
+                return promise.IsFulfilled ? promise.Result : FenValue.FromError(promise.Result.ToString());
+            }
+
+            const int maxPumps = 5000;
+            for (int i = 0; i < maxPumps; i++)
+            {
+                try
+                {
+                    EventLoopCoordinator.Instance.PerformMicrotaskCheckpoint();
+                }
+                catch (InvalidOperationException)
+                {
+                    break;
+                }
+
+                if (promise.IsSettled)
+                {
+                    break;
+                }
+
+                if (EventLoopCoordinator.Instance.HasPendingTasks)
+                {
+                    try
+                    {
+                        EventLoopCoordinator.Instance.ProcessNextTask();
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        break;
+                    }
+                }
+
+                if (promise.IsSettled)
+                {
+                    break;
+                }
+            }
+
+            if (promise.IsSettled)
+            {
+                return promise.IsFulfilled ? promise.Result : FenValue.FromError(promise.Result.ToString());
+            }
+
+            return FenValue.Undefined;
         }
         
         private FenValue ExecuteAdd(FenValue left, FenValue right)

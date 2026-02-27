@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using FenBrowser.FenEngine.Core.Types;
+using FenValue = FenBrowser.FenEngine.Core.FenValue;
 
 namespace FenBrowser.FenEngine.Core.Bytecode.VM
 {
@@ -41,6 +43,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         public int StackBase { get; private set; }
 
         private Stack<ExceptionHandler> _exceptionHandlers;
+        private Stack<FenEnvironment> _withEnvironments;
         public Stack<ExceptionHandler> ExceptionHandlers
         {
             get
@@ -52,9 +55,22 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         }
         
         public bool HasExceptionHandlers => _exceptionHandlers != null && _exceptionHandlers.Count > 0;
+        public Stack<FenEnvironment> WithEnvironments
+        {
+            get
+            {
+                if (_withEnvironments == null)
+                    _withEnvironments = new Stack<FenEnvironment>();
+                return _withEnvironments;
+            }
+        }
+
+        public bool HasWithEnvironments => _withEnvironments != null && _withEnvironments.Count > 0;
 
         public bool IsConstruct { get; set; }
         public FenObject ConstructedObject { get; set; }
+        public FenValue NewTarget { get; set; }
+        public bool IsAsyncFunction { get; set; }
 
         public CallFrame(CodeBlock block, FenEnvironment env, int stackBase)
         {
@@ -69,10 +85,21 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             IP = 0;
             IsConstruct = false;
             ConstructedObject = null;
+            NewTarget = FenValue.Undefined;
+            IsAsyncFunction = false;
             if (_exceptionHandlers != null)
             {
                 _exceptionHandlers.Clear();
             }
+            if (_withEnvironments != null)
+            {
+                _withEnvironments.Clear();
+            }
+        }
+
+        public void SetEnvironment(FenEnvironment environment)
+        {
+            Environment = environment;
         }
     }
 }
