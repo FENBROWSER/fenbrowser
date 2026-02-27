@@ -30,6 +30,13 @@ namespace FenBrowser.Tests.Engine.Bytecode
             return _vm.Execute(codeBlock, env);
         }
 
+        private FenValue Evaluate(AstNode ast, FenEnvironment? env = null)
+        {
+            var scope = env ?? new FenEnvironment();
+            var codeBlock = _compiler.Compile(ast);
+            return _vm.Execute(codeBlock, scope);
+        }
+
         [Fact]
         public void Bytecode_BasicArithmetic_ShouldMatchInterpreter()
         {
@@ -139,6 +146,57 @@ namespace FenBrowser.Tests.Engine.Bytecode
             
             var shiftResult = Evaluate("1 << 3;");
             Assert.Equal(8, shiftResult.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_BitwiseExpressionNode_ShouldCompileAndExecute()
+        {
+            var program = new Program();
+            program.Statements.Add(new ExpressionStatement
+            {
+                Expression = new BitwiseExpression
+                {
+                    Left = new IntegerLiteral { Value = 6 },
+                    Operator = "^",
+                    Right = new IntegerLiteral { Value = 3 }
+                }
+            });
+
+            var result = Evaluate(program);
+            Assert.Equal(5, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_CompoundAssignmentExpressionNode_ShouldCompileAndExecute()
+        {
+            var program = new Program();
+            var varToken = new Token(TokenType.Var, "var", 1, 1);
+            var identToken = new Token(TokenType.Identifier, "x", 1, 5);
+
+            program.Statements.Add(new LetStatement
+            {
+                Token = varToken,
+                Name = new Identifier(identToken, "x"),
+                Value = new IntegerLiteral { Value = 4 }
+            });
+
+            program.Statements.Add(new ExpressionStatement
+            {
+                Expression = new CompoundAssignmentExpression
+                {
+                    Left = new Identifier(identToken, "x"),
+                    Operator = "<<=",
+                    Right = new IntegerLiteral { Value = 2 }
+                }
+            });
+
+            program.Statements.Add(new ExpressionStatement
+            {
+                Expression = new Identifier(identToken, "x")
+            });
+
+            var result = Evaluate(program);
+            Assert.Equal(16, result.AsNumber());
         }
 
         [Fact]
@@ -253,6 +311,325 @@ namespace FenBrowser.Tests.Engine.Bytecode
         }
 
         [Fact]
+        public void Bytecode_CommaOperator_ShouldEvaluateLeftAndReturnRight()
+        {
+            var result = Evaluate("var x = 0; var y = (x = 1, x + 2); x + y;");
+            Assert.Equal(4, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_ArrowFunctionExpression_ShouldCall()
+        {
+            var result = Evaluate("var inc = (x) => x + 1; inc(41);");
+            Assert.Equal(42, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_DefaultParameters_ShouldApplyWhenArgumentIsUndefined()
+        {
+            var result = Evaluate("function inc(x = 41) { return x + 1; } var a = inc(); var b = inc(9); a + b;");
+            Assert.Equal(52, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_RestParameters_ShouldCollectExtraArguments()
+        {
+            var result = Evaluate("function count(head, ...tail) { return head + tail.length; } count(2, 9, 8);");
+            Assert.Equal(4, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_FunctionArgumentsObject_ShouldExposeLengthAndIndexedValues()
+        {
+            var result = Evaluate("function f(a) { return arguments[0] + arguments.length; } f(5, 6);");
+            Assert.Equal(7, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_DestructuringParameter_ShouldBindObjectPattern()
+        {
+            var result = Evaluate("function pick({ x, y = 2 }) { return x + y; } pick({ x: 5 });");
+            Assert.Equal(7, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_DestructuringAssignment_ShouldUpdateTargets()
+        {
+            var result = Evaluate("var a = 0; var b = 0; ({ a, b } = { a: 6, b: 9 }); a + b;");
+            Assert.Equal(15, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_DestructuringDeclaration_ShouldBindFromExpressionSource()
+        {
+            var result = Evaluate("let { x, y = 2 } = { x: 5 }; x + y;");
+            Assert.Equal(7, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_DestructuringObjectRest_ShouldCollectRemainingProperties()
+        {
+            var result = Evaluate("let { a, ...rest } = { a: 1, b: 2, c: 3 }; a + rest.b + rest.c;");
+            Assert.Equal(6, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_DestructuringArrayRest_ShouldCollectRemainingElements()
+        {
+            var result = Evaluate("let [head, ...tail] = [1, 2, 3, 4]; head + tail.length + tail[2];");
+            Assert.Equal(8, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_DestructuringComputedKey_ShouldResolveRuntimeKey()
+        {
+            var result = Evaluate("var key = 'z'; let { [key]: out } = { z: 9 }; out;");
+            Assert.Equal(9, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_CatchDestructuring_ShouldBindPattern()
+        {
+            var result = Evaluate("var out = 0; try { throw { x: 8 }; } catch ({ x }) { out = x; } out;");
+            Assert.Equal(8, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_ForOfDestructuring_ShouldBindPatternPerIteration()
+        {
+            var result = Evaluate("var s = 0; for (const { v } of ({ a: { v: 1 }, b: { v: 2 }, c: { v: 3 } })) { s = s + v; } s;");
+            Assert.Equal(6, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_ArrowFunction_ConstructShouldThrowTypeError()
+        {
+            var result = Evaluate("var f = (x) => x + 1; var ok = 0; try { new f(); } catch (e) { ok = 1; } ok;");
+            Assert.Equal(1, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_OptionalChain_PropertyAndComputed_ShouldWork()
+        {
+            var result = Evaluate("var obj = { a: 5 }; var x = obj?.a; var y = obj?.['a']; x + y;");
+            Assert.Equal(10, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_OptionalChain_NullishShortCircuit_ShouldReturnUndefined()
+        {
+            var result = Evaluate("var obj = undefined; var x = obj?.a; typeof x;");
+            Assert.Equal("undefined", result.AsString());
+        }
+
+        [Fact]
+        public void Bytecode_OptionalChain_OptionalCall_ShouldWork()
+        {
+            var result = Evaluate("var fn = function(x) { return x + 1; }; var a = fn?.(41); var b = 3?.(); typeof b + ':' + a;");
+            Assert.Equal("undefined:42", result.AsString());
+        }
+
+        [Fact]
+        public void Bytecode_InAndInstanceofOperators_ShouldWork()
+        {
+            var result = Evaluate("function C() {} C.prototype.p = 1; var o = new C(); var hasP = 'p' in o; var inst = o instanceof C; hasP && inst;");
+            Assert.True(result.ToBoolean());
+        }
+
+        [Fact]
+        public void Bytecode_VoidDeleteAndUnaryPlus_ShouldWork()
+        {
+            var result = Evaluate("var obj = { a: 1 }; var deleted = delete obj.a; var v = void (obj.a = 2); var isUndefined = typeof v == 'undefined'; var n = +'41'; (deleted ? 1000 : 0) + (isUndefined ? 10 : 0) + n;");
+            Assert.Equal(1051, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_TemplateLiteral_ShouldWork()
+        {
+            var result = Evaluate("var x = 2; `sum=${x + 1}`;");
+            Assert.Equal("sum=3", result.AsString());
+        }
+
+        [Fact]
+        public void Bytecode_SwitchStatement_WithFallthroughAndBreak_ShouldWork()
+        {
+            var result = Evaluate("var x = 0; switch (2) { case 1: x = 10; break; case 2: x = 20; case 3: x = x + 1; break; default: x = 99; } x;");
+            Assert.Equal(21, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_BreakAndContinue_InForLoop_ShouldWork()
+        {
+            var result = Evaluate("var sum = 0; for (var i = 0; i < 5; i = i + 1) { if (i == 2) { continue; } if (i == 4) { break; } sum = sum + i; } sum;");
+            Assert.Equal(4, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_RegexLiteral_ShouldCreateRegexObjectLikeInterpreter()
+        {
+            var result = Evaluate("var r = /ab/i; r.source + ':' + r.flags;");
+            Assert.Equal("ab:i", result.AsString());
+        }
+
+        [Fact]
+        public void Bytecode_DeleteIdentifier_ShouldReturnFalse()
+        {
+            var result = Evaluate("var x = 1; delete x;");
+            Assert.False(result.ToBoolean());
+        }
+
+        [Fact]
+        public void Bytecode_ArrayLiteral_WithSpread_ShouldWork()
+        {
+            var result = Evaluate("var a = [1, ...[2, 3], 4]; a[0] + a[1] + a[2] + a[3];");
+            Assert.Equal(10, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_Call_WithSpread_ShouldWork()
+        {
+            var result = Evaluate("function add3(a, b, c) { return a + b + c; } add3(1, ...[2, 3]);");
+            Assert.Equal(6, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_New_WithSpread_ShouldWork()
+        {
+            var result = Evaluate("function Pair(a, b) { this.sum = a + b; } var p = new Pair(...[5, 7]); p.sum;");
+            Assert.Equal(12, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_ObjectLiteral_WithSpread_ShouldWork()
+        {
+            var result = Evaluate("var a = { x: 1 }; var b = { ...a, y: 2 }; b.x + b.y;");
+            Assert.Equal(3, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_NewTarget_InNormalCall_ShouldBeUndefined()
+        {
+            var result = Evaluate("function F() { return typeof new.target; } F();");
+            Assert.Equal("undefined", result.AsString());
+        }
+
+        [Fact]
+        public void Bytecode_NewTarget_InConstructor_ShouldReferenceConstructor()
+        {
+            var result = Evaluate("function F() { this.ok = (new.target === F); } var i = new F(); i.ok;");
+            Assert.True(result.ToBoolean());
+        }
+
+        [Fact]
+        public void Bytecode_ImportMeta_ShouldExposeUrl()
+        {
+            var result = Evaluate("var m = import.meta; m.url;");
+            Assert.Equal("file:///local/script.js", result.AsString());
+        }
+
+        [Fact]
+        public void Bytecode_IfExpression_ShouldEvaluateToBranchValue()
+        {
+            var result = Evaluate("var a = if (true) { 1; } else { 2; }; var b = if (false) { 10; } else { 3; }; a + b;");
+            Assert.Equal(4, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_IfExpression_WithoutElse_ShouldReturnNull()
+        {
+            var result = Evaluate("var x = if (false) { 1; }; x === null;");
+            Assert.True(result.ToBoolean());
+        }
+
+        [Fact]
+        public void Bytecode_AsyncFunctionDeclaration_ShouldReturnResolvedPromise()
+        {
+            var result = Evaluate("async function f() { return 7; } f();");
+            Assert.True(result.IsObject);
+
+            var promise = result.AsObject() as JsPromise;
+            Assert.NotNull(promise);
+            Assert.True(promise.IsFulfilled);
+            Assert.Equal(7, promise.Result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_AsyncFunctionExpression_ShouldReturnResolvedPromise()
+        {
+            var result = Evaluate("var g = async function(x) { return x + 1; }; g(5);");
+            Assert.True(result.IsObject);
+
+            var promise = result.AsObject() as JsPromise;
+            Assert.NotNull(promise);
+            Assert.True(promise.IsFulfilled);
+            Assert.Equal(6, promise.Result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_AwaitExpression_OnPlainValue_ShouldReturnValue()
+        {
+            var result = Evaluate("async function f() { return await 5; } f();");
+            Assert.True(result.IsObject);
+
+            var promise = result.AsObject() as JsPromise;
+            Assert.NotNull(promise);
+            Assert.True(promise.IsFulfilled);
+            Assert.Equal(5, promise.Result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_AwaitExpression_OnPromiseValue_ShouldUnwrapResult()
+        {
+            var result = Evaluate("async function g() { return 3; } async function f() { return await g(); } f();");
+            Assert.True(result.IsObject);
+
+            var promise = result.AsObject() as JsPromise;
+            Assert.NotNull(promise);
+            Assert.True(promise.IsFulfilled);
+            Assert.Equal(3, promise.Result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_AsyncThrow_ShouldReturnRejectedPromise()
+        {
+            var result = Evaluate("async function boom() { throw 'boom'; } boom();");
+            Assert.True(result.IsObject);
+
+            var promise = result.AsObject() as JsPromise;
+            Assert.NotNull(promise);
+            Assert.True(promise.IsRejected);
+            Assert.Equal("boom", promise.Result.AsString());
+        }
+
+        [Fact]
+        public void Bytecode_LabeledBreak_OnBlock_ShouldWork()
+        {
+            var result = Evaluate("var x = 0; mark: { x = 1; break mark; x = 2; } x;");
+            Assert.Equal(1, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_LabeledContinue_ToOuterLoop_ShouldWork()
+        {
+            var result = Evaluate("var hits = 0; outer: for (var i = 0; i < 3; i = i + 1) { for (var j = 0; j < 3; j = j + 1) { if (j == 1) { continue outer; } hits = hits + 1; } } hits;");
+            Assert.Equal(3, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_LabeledBreak_FromSwitchToOuterLoop_ShouldWork()
+        {
+            var result = Evaluate("var n = 0; outer: for (var i = 0; i < 5; i = i + 1) { switch (i) { case 2: break outer; default: n = n + 1; } } n;");
+            Assert.Equal(2, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_BigIntLiteral_SimplifiedNumberBehavior_ShouldWork()
+        {
+            var result = Evaluate("123n + 1;");
+            Assert.Equal(124, result.AsNumber());
+        }
+
+        [Fact]
         public void Bytecode_ForIn_ShouldIterateKeys()
         {
             var result = Evaluate("var obj = {a: 1, b: 2}; var keys = ''; for (var k in obj) { keys = keys + k; } keys;");
@@ -281,6 +658,228 @@ namespace FenBrowser.Tests.Engine.Bytecode
             ";
             var result = Evaluate(code);
             Assert.Equal(42, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_ClassStatement_WithFieldsStaticBlockAndMethods_ShouldWork()
+        {
+            var result = Evaluate("class C { v = 2; m() { return 9; } } var c = new C(); c.v;");
+            Assert.Equal(2, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_ClassExpression_ShouldReturnConstructableFunction()
+        {
+            var result = Evaluate("var C = class { q = 5; }; var c = new C(); c.q;");
+            Assert.Equal(5, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_ClassStatement_StaticField_ShouldBindOnConstructor()
+        {
+            var source = "class C { static a = 4; v = 3; } C.a;";
+            var lexer = new Lexer(source);
+            var parser = new Parser(lexer, false);
+            var ast = parser.ParseProgram();
+
+            var classStmt = Assert.IsType<ClassStatement>(ast.Statements[0]);
+            Assert.Contains(classStmt.Properties, p => p.Static && p.Key?.Value == "a");
+
+            var result = Evaluate(source);
+            Assert.Equal(4, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_PrivateIdentifierNode_ShouldReadPrivatePrefixedFieldFromThis()
+        {
+            var env = new FenEnvironment();
+            var thisObj = new FenObject();
+            thisObj.Set("#secret", FenValue.FromNumber(42));
+            env.Set("this", FenValue.FromObject(thisObj));
+
+            var node = new PrivateIdentifier(new Token(TokenType.PrivateIdentifier, "#secret", 1, 1), "secret");
+            var program = new Program();
+            program.Statements.Add(new ExpressionStatement { Expression = node });
+
+            var result = Evaluate(program, env);
+            Assert.Equal(42, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_YieldExpressionNode_ShouldEvaluateYieldValue()
+        {
+            var program = new Program();
+            program.Statements.Add(new ExpressionStatement
+            {
+                Expression = new YieldExpression
+                {
+                    Value = new IntegerLiteral { Value = 7 },
+                    Delegate = false
+                }
+            });
+
+            var result = Evaluate(program);
+            Assert.Equal(7, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_WithStatement_ShouldResolveObjectBackedNames()
+        {
+            var result = Evaluate("with ({ x: 9 }) { x; }");
+            Assert.Equal(9, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_ImportDeclarationNode_ShouldBindFromSyntheticModuleSlot()
+        {
+            var env = new FenEnvironment();
+            var moduleObj = new FenObject();
+            moduleObj.Set("x", FenValue.FromNumber(11));
+            env.Set("__fen_module_mod", FenValue.FromObject(moduleObj));
+
+            var token = new Token(TokenType.Identifier, "x", 1, 1);
+            var program = new Program();
+            program.Statements.Add(new ImportDeclaration
+            {
+                Source = "mod",
+                Specifiers = new System.Collections.Generic.List<ImportSpecifier>
+                {
+                    new ImportSpecifier
+                    {
+                        Imported = new Identifier(token, "x"),
+                        Local = new Identifier(token, "lx")
+                    }
+                }
+            });
+            program.Statements.Add(new ExpressionStatement
+            {
+                Expression = new Identifier(token, "lx")
+            });
+
+            var result = Evaluate(program, env);
+            Assert.Equal(11, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_ExportDeclarationNode_ShouldWriteSyntheticExportSlot()
+        {
+            var token = new Token(TokenType.Identifier, "a", 1, 1);
+            var varToken = new Token(TokenType.Var, "var", 1, 1);
+            var program = new Program();
+
+            program.Statements.Add(new LetStatement
+            {
+                Token = varToken,
+                Name = new Identifier(token, "a"),
+                Value = new IntegerLiteral { Value = 13 }
+            });
+
+            program.Statements.Add(new ExportDeclaration
+            {
+                Specifiers = new System.Collections.Generic.List<ExportSpecifier>
+                {
+                    new ExportSpecifier
+                    {
+                        Local = new Identifier(token, "a"),
+                        Exported = new Identifier(token, "b")
+                    }
+                }
+            });
+
+            program.Statements.Add(new ExpressionStatement
+            {
+                Expression = new Identifier(token, "__fen_export_b")
+            });
+
+            var result = Evaluate(program);
+            Assert.Equal(13, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_MethodDefinitionNode_ShouldCompileWithoutFallback()
+        {
+            var token = new Token(TokenType.Identifier, "m", 1, 1);
+            var method = new MethodDefinition
+            {
+                Key = new Identifier(token, "m"),
+                Kind = "method",
+                Static = false,
+                Value = new FunctionLiteral
+                {
+                    Token = token,
+                    Body = new BlockStatement
+                    {
+                        Statements = new System.Collections.Generic.List<Statement>
+                        {
+                            new ReturnStatement
+                            {
+                                ReturnValue = new IntegerLiteral { Value = 1 }
+                            }
+                        }
+                    }
+                }
+            };
+
+            var program = new Program();
+            program.Statements.Add(method);
+            var result = Evaluate(program);
+            Assert.True(result.IsUndefined);
+        }
+
+        [Fact]
+        public void Bytecode_ClassPropertyNode_ShouldEvaluateInitializer()
+        {
+            var token = new Token(TokenType.Identifier, "p", 1, 1);
+            var assign = new AssignmentExpression
+            {
+                Left = new Identifier(token, "z"),
+                Right = new IntegerLiteral { Value = 21 }
+            };
+
+            var program = new Program();
+            program.Statements.Add(new ClassProperty
+            {
+                Key = new Identifier(token, "p"),
+                Value = assign
+            });
+            program.Statements.Add(new ExpressionStatement
+            {
+                Expression = new Identifier(token, "z")
+            });
+
+            var result = Evaluate(program);
+            Assert.Equal(21, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_StaticBlockNode_ShouldExecuteBody()
+        {
+            var token = new Token(TokenType.Var, "var", 1, 1);
+            var idToken = new Token(TokenType.Identifier, "s", 1, 1);
+            var program = new Program();
+
+            program.Statements.Add(new StaticBlock
+            {
+                Body = new BlockStatement
+                {
+                    Statements = new System.Collections.Generic.List<Statement>
+                    {
+                        new LetStatement
+                        {
+                            Token = token,
+                            Name = new Identifier(idToken, "s"),
+                            Value = new IntegerLiteral { Value = 8 }
+                        }
+                    }
+                }
+            });
+            program.Statements.Add(new ExpressionStatement
+            {
+                Expression = new Identifier(idToken, "s")
+            });
+
+            var result = Evaluate(program);
+            Assert.Equal(8, result.AsNumber());
         }
     }
 }
