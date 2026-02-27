@@ -19,7 +19,7 @@ public class AddressBarWidget : Widget
     private float _scrollOffset = 0;
     private DateTime _lastBlink = DateTime.Now;
     private bool _caretVisible = true;
-    
+
     public string Text
     {
         get => _text;
@@ -34,39 +34,40 @@ public class AddressBarWidget : Widget
             }
         }
     }
-    
+
     public string Placeholder { get; set; } = "Enter URL...";
-    
+
     public event Action<string> NavigateRequested;
     public event Action BookmarkToggled;
     public event Action SecurityIconClicked;
-    
+
     public bool IsBookmarked { get; set; }
-    
+
     // --- NEW: Security and Loading State (10/10) ---
-    
+
     /// <summary>
     /// Current security state of the page (HTTPS status).
     /// </summary>
     public SecurityState CurrentSecurity { get; set; } = SecurityState.Unknown;
-    
+
     /// <summary>
     /// Loading progress (0.0 to 1.0), or -1 if not loading.
     /// </summary>
     public float LoadingProgress { get; set; } = -1;
-    
+
     /// <summary>
     /// Event when autocomplete suggestions are requested.
     /// </summary>
     public event Action<string, Action<List<string>>> AutocompleteRequested;
-    
+
     /// <summary>
     /// Current autocomplete suggestions.
     /// </summary>
     private List<string> _suggestions = new();
+
     private int _selectedSuggestionIndex = -1;
     private bool _showSuggestions = false;
-    
+
     // Styling
     // Styling (optional overrides)
     public SKColor? BackgroundColor { get; set; }
@@ -79,30 +80,36 @@ public class AddressBarWidget : Widget
     public float FontSize { get; set; } = 14;
     public float IconPadding { get; set; } = 34; // Extra left padding for Shield Icon
     public float IconPaddingRight { get; set; } = 34; // Extra right padding for Star Icon
-    
+
     // Icons
-    private SKPath _shieldPath = SKPath.ParseSvgPathData("M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"); // Material/Fluent Shield
-    private SKPath _starOutlinePath = SKPath.ParseSvgPathData("M22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24zM12 15.4l-3.76 2.27 1-4.28-3.32-2.88 4.38-.38L12 6.1l1.71 4.04 4.38.38-3.32 2.88 1 4.28L12 15.4z");
-    private SKPath _starFilledPath = SKPath.ParseSvgPathData("M12 17.27L18.18 21l-1.63-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z");
+    private SKPath _shieldPath = SKPath.ParseSvgPathData(
+        "M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"); // Material/Fluent Shield
+
+    private SKPath _starOutlinePath = SKPath.ParseSvgPathData(
+        "M22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24zM12 15.4l-3.76 2.27 1-4.28-3.32-2.88 4.38-.38L12 6.1l1.71 4.04 4.38.38-3.32 2.88 1 4.28L12 15.4z");
+
+    private SKPath _starFilledPath =
+        SKPath.ParseSvgPathData(
+            "M12 17.27L18.18 21l-1.63-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z");
 
     private TextBlock _textBlock;
     private bool _isTextLayoutDirty = true;
     private Style _textStyle;
     private Style _placeholderStyle;
-    
+
     public AddressBarWidget()
     {
         Role = WidgetRole.Edit;
         Name = "Address Bar";
         HelpText = "Enter URL to navigate";
-        
+
         _textStyle = new Style()
         {
             FontFamily = "Segoe UI",
             FontSize = FontSize,
             TextColor = SKColors.Black,
         };
-        
+
         _placeholderStyle = new Style()
         {
             FontFamily = "Segoe UI",
@@ -110,37 +117,37 @@ public class AddressBarWidget : Widget
             TextColor = SKColors.Gray,
         };
     }
-    
+
     private void InvalidateTextLayout()
     {
         _isTextLayoutDirty = true;
         Invalidate();
     }
-    
+
     protected override SKSize OnMeasure(SKSize availableSpace)
     {
         return new SKSize(availableSpace.Width, 32);
     }
-    
+
     protected override void OnArrange(SKRect finalRect)
     {
         // Leaf widget
     }
-    
+
     public override void Paint(SkiaSharp.SKCanvas canvas)
     {
         EnsureTextBlock();
         var theme = ThemeManager.Current;
-        
+
         var localBounds = new SKRect(0, 0, Bounds.Width, Bounds.Height);
-        
+
         canvas.Save();
         canvas.Translate(Bounds.Left, Bounds.Top);
-        
+
         // Background
         using var bgPaint = new SKPaint { Color = BackgroundColor ?? theme.Background, IsAntialias = true };
         canvas.DrawRoundRect(localBounds, 8, 8, bgPaint);
-        
+
         // Focus Glow (Glassmorphism effect)
         if (IsFocused)
         {
@@ -154,7 +161,7 @@ public class AddressBarWidget : Widget
             glowRect.Inflate(2, 2);
             canvas.DrawRoundRect(glowRect, 10, 10, glowPaint);
         }
-        
+
         // Border
         using var borderPaint = new SKPaint
         {
@@ -164,89 +171,87 @@ public class AddressBarWidget : Widget
             StrokeWidth = IsFocused ? 1.5f : 1
         };
         canvas.DrawRoundRect(localBounds, 8, 8, borderPaint);
-        
+
         // Content Area Clip
         canvas.Save();
         // Left padding includes space for Icon
         // Left padding includes space for Icon, Right includes Star
         canvas.ClipRect(new SKRect(IconPadding, 0, localBounds.Width - IconPaddingRight, localBounds.Height));
-        
+
         // Vertical center the text block
         float textY = (localBounds.Height - _textBlock.MeasuredHeight) / 2;
         canvas.Translate(IconPadding - _scrollOffset, textY);
-        
+
         // Selection
         if (HasSelection())
         {
             int start = Math.Min(_selectionStart, _selectionEnd);
             int end = Math.Max(_selectionStart, _selectionEnd);
-            
+
             var caretStart = _textBlock.GetCaretInfo(new CaretPosition(start));
             var caretEnd = _textBlock.GetCaretInfo(new CaretPosition(end));
-            
+
             float x1 = caretStart.CaretRectangle.Left;
             float x2 = caretEnd.CaretRectangle.Left;
-            
+
             using var selPaint = new SKPaint { Color = SelectionColor ?? theme.AccentMuted };
             canvas.DrawRect(x1, 0, x2 - x1, _textBlock.MeasuredHeight, selPaint);
         }
-        
+
         // Paint Text
         _textBlock.Paint(canvas);
-        
+
         // Caret
         if (IsFocused && _caretVisible)
         {
             var caretInfo = _textBlock.GetCaretInfo(new CaretPosition(_caretPosition));
             var caretRect = caretInfo.CaretRectangle;
-            
+
             using var caretPaint = new SKPaint { Color = CaretColor ?? theme.Accent, StrokeWidth = 2f };
             canvas.DrawLine(caretRect.Left, caretRect.Top, caretRect.Left, caretRect.Bottom, caretPaint);
         }
-        
+
         canvas.Restore();
         canvas.Restore();
-        
+
         // Draw Shield Icon (Left)
         // Position: Left aligned, vertically centered
         canvas.Save();
         float iconSize = 16;
         float iconX = 10;
         float iconY = (Bounds.Height - iconSize) / 2;
-        
+
         canvas.Translate(Bounds.Left + iconX, Bounds.Top + iconY);
         float scale = iconSize / 24f; // Assuming 24x24 viewbox
         canvas.Scale(scale);
-        
-        using var iconPaint = new SKPaint 
-        { 
-            Color = theme.Text, // Or Accent if secure? Let's use generic Text for now, or Green if HTTPS?
-            IsAntialias = true, 
-            Style = SKPaintStyle.Fill 
+
+        using var iconPaint = new SKPaint
+        {
+            Color = GetSecurityIconColor(),
+            IsAntialias = true,
+            Style = SKPaintStyle.Fill
         };
-        // If text starts with https, maybe color it green?
-        if (_text.StartsWith("https://")) iconPaint.Color = SKColors.ForestGreen;
-        
+
         canvas.DrawPath(_shieldPath, iconPaint);
         canvas.Restore();
-        
+
         // Draw Star Icon (Right)
         canvas.Save();
         float starX = Bounds.Width - 30;
         float starY = (Bounds.Height - iconSize) / 2;
         canvas.Translate(Bounds.Left + starX, Bounds.Top + starY);
         canvas.Scale(scale);
-        
+
         using var starPaint = new SKPaint
         {
             Color = IsBookmarked ? theme.Accent : theme.TextMuted,
             IsAntialias = true,
             Style = SKPaintStyle.Fill
         };
-        
+
         canvas.DrawPath(IsBookmarked ? _starFilledPath : _starOutlinePath, starPaint);
         canvas.Restore();
-        
+
         // Blink
         if (IsFocused && (DateTime.Now - _lastBlink).TotalMilliseconds > 500)
         {
@@ -255,46 +260,41 @@ public class AddressBarWidget : Widget
             Invalidate();
         }
     }
-    
+
     private void EnsureTextBlock()
     {
         if (!_isTextLayoutDirty && _textBlock != null) return;
-        
+
         _textBlock = new TextBlock();
         _textBlock.MaxWidth = float.PositiveInfinity;
-        
+
         _textStyle.FontSize = FontSize;
         _textStyle.TextColor = TextColor ?? ThemeManager.Current.Text;
-        
+
         _placeholderStyle.FontSize = FontSize;
         _placeholderStyle.TextColor = PlaceholderColor ?? ThemeManager.Current.TextMuted;
-        
+
         string display = string.IsNullOrEmpty(_text) && !IsFocused ? Placeholder : _text;
         var style = string.IsNullOrEmpty(_text) && !IsFocused ? _placeholderStyle : _textStyle;
-        
+
         _textBlock.AddText(display, style);
         _textBlock.Layout();
-        
+
         _isTextLayoutDirty = false;
     }
-    
-    private float MeasureText(string text)
-    {
-        // Old method, use Paragraph instead
-        return 0;
-    }
-    
+
+
     private bool HasSelection()
     {
         return _selectionStart >= 0 && _selectionEnd >= 0 && _selectionStart != _selectionEnd;
     }
-    
+
     private void ClearSelection()
     {
         _selectionStart = -1;
         _selectionEnd = -1;
     }
-    
+
     private string GetSelectedText()
     {
         if (!HasSelection()) return "";
@@ -302,7 +302,7 @@ public class AddressBarWidget : Widget
         int end = Math.Max(_selectionStart, _selectionEnd);
         return _text.Substring(start, end - start);
     }
-    
+
     private void DeleteSelection()
     {
         if (!HasSelection()) return;
@@ -315,7 +315,7 @@ public class AddressBarWidget : Widget
         _isTextLayoutDirty = true;
         EnsureTextBlock();
     }
-    
+
     public override void OnMouseDown(float x, float y, MouseButton button)
     {
         if (button == MouseButton.Left)
@@ -328,7 +328,7 @@ public class AddressBarWidget : Widget
                 BookmarkToggled?.Invoke();
                 return;
             }
-            
+
             // Check if shield was clicked (Left icon)
             // Bounds.Left is global/parent relative. x is global/parent relative.
             // Increase hit target slightly (+6px) for usability
@@ -341,17 +341,17 @@ public class AddressBarWidget : Widget
                     _caretVisible = false;
                     FenBrowser.Host.Input.InputManager.Instance.ClearFocus();
                 }
-                
+
                 SecurityIconClicked?.Invoke();
                 return;
             }
 
             RequestFocus();
             EnsureTextBlock();
-            
+
             // Calculate caret position from click (relative to paragraph start)
             float clickOffset = x - (Bounds.Left + IconPadding - _scrollOffset);
-            
+
 
             // Fix: If text is empty (showing placeholder), caret must be at 0.
             // If we calculate index from Placeholder text (because IsFocused is false yet), 
@@ -371,7 +371,7 @@ public class AddressBarWidget : Widget
             Invalidate();
         }
     }
-    
+
     public override void OnMouseMove(float x, float y)
     {
         var mouse = FenBrowser.Host.Input.InputManager.Instance.Mouse;
@@ -382,7 +382,8 @@ public class AddressBarWidget : Widget
         if (x >= Bounds.Left && x < Bounds.Left + IconPadding + 6)
         {
             HelpText = "View site information";
-            FenBrowser.Host.Input.CursorManager.UpdateCursor(mouse, FenBrowser.FenEngine.Interaction.CursorType.Pointer);
+            FenBrowser.Host.Input.CursorManager.UpdateCursor(mouse,
+                FenBrowser.FenEngine.Interaction.CursorType.Pointer);
         }
         else
         {
@@ -393,41 +394,41 @@ public class AddressBarWidget : Widget
         // Extend selection if dragging
         // (Left button held - would need mouse state tracking)
     }
-    
+
     private int GetCharIndexAtX(float x)
     {
         if (_textBlock == null) return 0;
         var hit = _textBlock.HitTest(x, 0);
         return hit.ClosestCodePointIndex;
     }
-    
+
     public override void OnKeyDown(Key key, bool ctrl, bool shift, bool alt)
     {
         _caretVisible = true;
         _lastBlink = DateTime.Now;
-        
+
         switch (key)
         {
             case Key.Left:
                 if (_caretPosition > 0) _caretPosition--;
                 ClearSelection();
                 break;
-                
+
             case Key.Right:
                 if (_caretPosition < _text.Length) _caretPosition++;
                 ClearSelection();
                 break;
-                
+
             case Key.Home:
                 _caretPosition = 0;
                 ClearSelection();
                 break;
-                
+
             case Key.End:
                 _caretPosition = _text.Length;
                 ClearSelection();
                 break;
-                
+
             case Key.Backspace:
                 if (HasSelection())
                 {
@@ -438,12 +439,11 @@ public class AddressBarWidget : Widget
                 {
                     _text = _text.Remove(_caretPosition - 1, 1);
                     _caretPosition--;
-                    // Force update
-                    _isTextLayoutDirty = true;
-                    EnsureTextBlock();
+                    InvalidateTextLayout();
                 }
+
                 break;
-                
+
             case Key.Delete:
                 if (HasSelection())
                 {
@@ -453,25 +453,25 @@ public class AddressBarWidget : Widget
                 else if (_caretPosition < _text.Length)
                 {
                     _text = _text.Remove(_caretPosition, 1);
-                    // Force update
-                    _isTextLayoutDirty = true;
-                    EnsureTextBlock();
+                    InvalidateTextLayout();
                 }
+
                 break;
-                
+
             case Key.Enter:
             case Key.KeypadEnter:
                 NavigateRequested?.Invoke(_text);
                 break;
-                
+
             case Key.A:
                 // Ctrl+A - Select All
                 if (ctrl)
                 {
                     SelectAll();
                 }
+
                 break;
-                
+
             case Key.C:
                 // Ctrl+C - Copy
                 if (ctrl && HasSelection())
@@ -482,8 +482,9 @@ public class AddressBarWidget : Widget
                         ClipboardHelper.SetText(selectedText);
                     }
                 }
+
                 break;
-                
+
             case Key.X:
                 // Ctrl+X - Cut
                 if (ctrl && HasSelection())
@@ -496,8 +497,9 @@ public class AddressBarWidget : Widget
                         InvalidateTextLayout();
                     }
                 }
+
                 break;
-                
+
             case Key.V:
                 // Ctrl+V - Paste
                 if (ctrl)
@@ -507,74 +509,75 @@ public class AddressBarWidget : Widget
                     {
                         // Remove any newlines from pasted text
                         clipboardText = clipboardText.Replace("\r\n", "").Replace("\n", "").Replace("\r", "");
-                        
+
                         if (HasSelection())
                         {
                             DeleteSelection();
                         }
-                        
+
                         _text = _text.Insert(_caretPosition, clipboardText);
                         _caretPosition += clipboardText.Length;
-                        
+
                         _isTextLayoutDirty = true;
                         EnsureTextBlock();
                         EnsureCaretVisible();
                     }
                 }
+
                 break;
         }
-        
+
         EnsureCaretVisible();
         Invalidate();
     }
 
-    
+
     public override void OnTextInput(char c, bool ctrl)
     {
         // 1 = SOH (Start of Heading), commonly sent by Ctrl+A
         // 127 = Delete
         // < 32 = Control characters
         if (char.IsControl(c) || c == 1 || ctrl) return;
-        
+
         _caretVisible = true;
         _lastBlink = DateTime.Now;
-        
+
         if (HasSelection())
         {
             DeleteSelection();
         }
-        
+
         // Safety check
         if (_caretPosition > _text.Length) _caretPosition = _text.Length;
         if (_caretPosition < 0) _caretPosition = 0;
-        
+
         _text = _text.Insert(_caretPosition, c.ToString());
         _caretPosition++;
-        
+
         // Force synchronous update to prevent caret crash
         _isTextLayoutDirty = true;
         EnsureTextBlock();
-        
+
         EnsureCaretVisible();
         Invalidate();
     }
-    
+
     private void EnsureCaretVisible()
     {
         EnsureTextBlock();
-        
+
         // Safety check
-        if (_caretPosition > _text.Length || (_textBlock.MeasuredHeight == 0 && _text.Length == 0)) 
+        if (_caretPosition > _text.Length || (_textBlock.MeasuredHeight == 0 && _text.Length == 0))
         {
-             // If mismatch or empty
-             if (_caretPosition > _text.Length) _caretPosition = _text.Length;
+            // If mismatch or empty
+            if (_caretPosition > _text.Length) _caretPosition = _text.Length;
         }
 
         var caretInfo = _textBlock.GetCaretInfo(new CaretPosition(_caretPosition));
         float caretX = caretInfo.CaretRectangle.Left;
-        
+
         float visibleWidth = Bounds.Width - IconPadding - IconPaddingRight;
-        
+
         if (caretX - _scrollOffset > visibleWidth)
         {
             _scrollOffset = caretX - visibleWidth + 20;
@@ -584,24 +587,19 @@ public class AddressBarWidget : Widget
             _scrollOffset = Math.Max(0, caretX - 20);
         }
     }
-    
+
     public void SelectAll()
     {
         _selectionStart = 0;
         _selectionEnd = _text.Length;
-        _selectionStart = 0;
-        _selectionEnd = _text.Length;
         _caretPosition = _text.Length;
-        // Force synchronous update
-        _isTextLayoutDirty = true;
-        EnsureTextBlock();
         Invalidate();
     }
 
     public override bool CanFocus => true;
-    
+
     // --- Autocomplete (10/10) ---
-    
+
     /// <summary>
     /// Request autocomplete suggestions for the current text.
     /// </summary>
@@ -613,7 +611,7 @@ public class AddressBarWidget : Widget
             _showSuggestions = false;
             return;
         }
-        
+
         AutocompleteRequested?.Invoke(_text, suggestions =>
         {
             _suggestions = suggestions ?? new List<string>();
@@ -622,7 +620,7 @@ public class AddressBarWidget : Widget
             Invalidate();
         });
     }
-    
+
     /// <summary>
     /// Apply the selected autocomplete suggestion.
     /// </summary>
@@ -636,7 +634,7 @@ public class AddressBarWidget : Widget
             Invalidate();
         }
     }
-    
+
     /// <summary>
     /// Hide the autocomplete dropdown.
     /// </summary>
@@ -646,7 +644,7 @@ public class AddressBarWidget : Widget
         _suggestions.Clear();
         Invalidate();
     }
-    
+
     /// <summary>
     /// Get security icon color based on current state.
     /// </summary>
@@ -668,7 +666,7 @@ public class AddressBarWidget : Widget
 public enum SecurityState
 {
     Unknown,
-    Secure,     // Valid HTTPS
-    Insecure,   // HTTP or invalid cert
-    Mixed       // HTTPS with mixed content
+    Secure, // Valid HTTPS
+    Insecure, // HTTP or invalid cert
+    Mixed // HTTPS with mixed content
 }
