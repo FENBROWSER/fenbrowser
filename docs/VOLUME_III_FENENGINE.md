@@ -78,6 +78,31 @@ flowchart TD
 - Added regression coverage:
   - `FenBrowser.Tests/Engine/CssContainerQueryTests.cs`
   - `FenBrowser.Tests/Engine/WptTestRunnerTests.cs`
+- CSS syntax parser hardening (2026-02-26):
+  - `CssSyntaxParser` now parses `@font-face { ... }` into `CssFontFaceRule` with descriptor declarations.
+  - malformed declaration recovery at the declaration parser now explicitly consumes invalid declaration remainder to keep parser progress deterministic.
+  - custom-property declaration names now preserve authored case (`--MyVar` remains `--MyVar`) while standard property names stay normalized to lowercase.
+  - parser safety caps now bound stylesheet expansion under hostile inputs:
+    - `MaxRules` (default `200000`) caps emitted rules per parse.
+    - `MaxDeclarationsPerBlock` (default `8192`) caps declaration count per block and skips remaining malformed/overflow declarations safely.
+  - `CssLoader` now exposes centralized `ActiveParserSecurityPolicy` and applies CSS parser limits at all stylesheet parse entrypoints.
+  - inline style declaration parsing (`CssLoader.ParseDeclarations`) now uses top-level-aware scanning, so semicolons/colons inside functions and quoted values (for example `url(data:image/svg+xml;...)`) no longer break declaration boundaries.
+  - global custom-property storage in `CssLoader` is now case-sensitive (`StringComparer.Ordinal`) to match CSS variable semantics.
+  - `SelectorMatcher` parsing now enforces malformed-selector progress guarantees and parse-complexity caps:
+    - hard forward-progress guard in selector-chain parsing to prevent zero-advance loops on hostile tokens,
+    - selector recursion-depth and selector-length caps for nested functional pseudo-class arguments.
+- Renderer hardening (2026-02-26):
+  - `SkiaDomRenderer` now sanitizes viewport dimensions before layout (`NaN`, `Infinity`, non-positive values fallback to defaults; extreme values clamp to safe maximum), preventing invalid geometry propagation into layout/paint paths.
+  - `SkiaDomRenderer` now exposes `RendererSafetyPolicy` and a render-thread watchdog that:
+    - measures paint/raster/frame timing against policy budgets,
+    - logs over-budget stages with explicit reasons,
+    - optionally skips raster work when budget is already exceeded before raster begins (fail-safe path).
+  - regression coverage:
+    - `FenBrowser.Tests/Engine/CssSyntaxParserTests.cs`
+    - `FenBrowser.Tests/Engine/CssCustomPropertyEdgeCaseTests.cs`
+    - `FenBrowser.Tests/Core/RendererViewportHardeningTests.cs`
+    - `FenBrowser.Tests/Rendering/RenderWatchdogTests.cs`
+    - `FenBrowser.Tests/Engine/ParserSecurityPolicyIntegrationTests.cs`
 
 ---
 
@@ -368,6 +393,9 @@ Runtime selector matcher used by cascade matching and selector specificity selec
   - `:has(...)` now evaluates full relative selector chains (`>`, `+`, `~`, descendant) using combinator-aware traversal from the anchor element.
   - `:empty` now follows selector semantics (comments ignored; text/element children disqualify).
   - Attribute selector parser now uses quote-aware bracket/operator scanning with robust value/flag extraction (`i` / `s` parsing support; `i` applied as case-insensitive comparison).
+- Parser hardening tranche CSS-2 (2026-02-26):
+  - selector-chain parser now force-advances on malformed tokens to guarantee progress under random/hostile selector input.
+  - selector parsing now applies recursion-depth, selector-list, and selector-length caps to prevent runaway nested pseudo-selector parsing.
 
 #### `Compatibility/WebCompatibilityInterventions.cs` (Lines 1-290)
 
@@ -1128,4 +1156,479 @@ So you want to add `border-radius`? Follow these steps:
     - `Bytecode_UpdateExpressions_ShouldWork`
     - `Bytecode_LogicalAssignment_ShouldWork`
     - `Bytecode_BitwiseNot_AndDoWhile_ShouldWork`.
+
+### 6.35 JavaScript Bytecode Mainline Expansion Tranche JS-BC-5 (2026-02-27)
+
+- `Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Added comma-operator lowering for `InfixExpression` with `,`:
+    - left side is evaluated for side effects,
+    - right side value is preserved as expression result.
+  - Added `ArrowFunctionExpression` lowering:
+    - emits bytecode closures for simple parameter lists,
+    - supports expression-bodied arrows via synthetic implicit-return body.
+  - Added explicit compile-time guardrails for unsupported complex parameters:
+    - rest/default/destructuring parameters intentionally remain fallback-only in bytecode phase.
+  - Added callable-body normalization helper used by function/arrow lowering for consistent return semantics.
+
+- `Core/Bytecode/VM/VirtualMachine.cs`
+  - `MakeClosure` now preserves function metadata from template to instantiated closure:
+    - `IsArrowFunction`, `IsAsync`, `IsGenerator`.
+  - `Construct` now rejects arrow functions with TypeError semantics (`Arrow function is not a constructor`).
+  - Host-exception translation path now resumes VM execution through installed JS exception handlers (`catch`/`finally`) instead of returning early.
+
+- `Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Added regressions:
+    - `Bytecode_CommaOperator_ShouldEvaluateLeftAndReturnRight`
+    - `Bytecode_ArrowFunctionExpression_ShouldCall`
+    - `Bytecode_ArrowFunction_ConstructShouldThrowTypeError`.
+
+- `Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+  - Added runtime integration regression:
+    - `ExecuteSimple_BytecodeFirst_ArrowFunctionProducesBytecodeFunction`.
+  - Updated fallback/guardrail coverage to keep interpreter-only global-function path validated using compile-unsupported class syntax:
+    - `ExecuteSimple_CompileUnsupported_UsesInterpreterFallback`
+    - `ExecuteSimple_WithInterpreterOnlyGlobals_CallHeavyScriptAvoidsVmPath`.
+
+### 6.36 JavaScript Bytecode Optional Chaining Tranche JS-BC-6 (2026-02-27)
+
+- `Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Added lowering for `OptionalChainExpression`:
+    - `obj?.prop`
+    - `obj?.[expr]`
+    - `obj?.(args)`.
+  - Added explicit nullish short-circuit bytecode flow:
+    - if base evaluates to `null` or `undefined`, expression result is `undefined` without evaluating access/call target.
+  - Added branch-target patch helper used for optional-chain control-flow wiring.
+  - Optional-call path now checks callability and returns `undefined` for non-function targets (behavior parity with interpreter path).
+
+- `Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Added regressions:
+    - `Bytecode_OptionalChain_PropertyAndComputed_ShouldWork`
+    - `Bytecode_OptionalChain_NullishShortCircuit_ShouldReturnUndefined`
+    - `Bytecode_OptionalChain_OptionalCall_ShouldWork`.
+
+### 6.37 JavaScript Bytecode Operator/Template Coverage Tranche JS-BC-7 (2026-02-27)
+
+- `Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Added operator lowering for:
+    - `in`
+    - `instanceof`
+  - Added prefix lowering for:
+    - unary `+` (numeric conversion),
+    - `void`,
+    - `delete` (member/index targets).
+  - Added lowering for `TemplateLiteral` to explicit concatenation bytecode flow.
+  - Function template emission now preserves async/generator metadata (`IsAsync`, `IsGenerator`) for function/function-declaration bytecode closures.
+
+- `Core/Bytecode/OpCode.cs`
+  - Added opcodes:
+    - `InOperator`
+    - `InstanceOf`
+    - `DeleteProp`
+    - `ToNumber`.
+
+- `Core/Bytecode/VM/VirtualMachine.cs`
+  - Added execution handling for new operator opcodes.
+  - `MakeClosure` now initializes non-arrow function prototype objects (`fn.prototype.constructor = fn`) so bytecode `new` and `instanceof` paths remain consistent.
+
+- `Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Added regressions:
+    - `Bytecode_InAndInstanceofOperators_ShouldWork`
+    - `Bytecode_VoidDeleteAndUnaryPlus_ShouldWork`
+    - `Bytecode_TemplateLiteral_ShouldWork`.
+
+- `Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+  - Added runtime integration regression:
+    - `ExecuteSimple_BytecodeFirst_TemplateLiteralFunctionProducesBytecodeFunction`.
+
+### 6.38 JavaScript Bytecode Switch/Loop Control Tranche JS-BC-8 (2026-02-27)
+
+- `Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Added lowering for `SwitchStatement` with:
+    - strict-equality case matching (`===`) in dispatch checks,
+    - default dispatch handling,
+    - fallthrough-preserving case body emission,
+    - explicit discriminant stack cleanup on matched and unmatched paths.
+  - Added lowering for `BreakStatement` and `ContinueStatement` using structured jump-patching contexts.
+  - Loop lowering updated to wire continue/break targets consistently across:
+    - `WhileStatement`
+    - `DoWhileStatement`
+    - `ForStatement`
+    - `ForInStatement`
+    - `ForOfStatement`.
+  - Maintained explicit guardrails:
+    - labeled `break` / `continue` remain compile-unsupported in bytecode phase,
+    - invalid-context `break` / `continue` remain compile-unsupported in bytecode phase (safe fallback path preserved).
+
+- `Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Added regressions:
+    - `Bytecode_SwitchStatement_WithFallthroughAndBreak_ShouldWork`
+    - `Bytecode_BreakAndContinue_InForLoop_ShouldWork`.
+
+- `Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+  - Added runtime integration regression:
+    - `ExecuteSimple_BytecodeFirst_SwitchControlFunctionProducesBytecodeFunction`.
+
+### 6.39 JavaScript Bytecode Regex/Delete Parity Tranche JS-BC-9 (2026-02-27)
+
+- `Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Added lowering for `RegexLiteral`:
+    - compiles to interpreter-parity regex objects containing `source`, `flags`, and `lastIndex` fields,
+    - carries native regex payload on `NativeObject` for downstream API compatibility.
+  - Extended `delete` lowering to support identifier operands with current engine-parity behavior (`delete identifier` => `false`).
+
+- `Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Added regressions:
+    - `Bytecode_RegexLiteral_ShouldCreateRegexObjectLikeInterpreter`
+    - `Bytecode_DeleteIdentifier_ShouldReturnFalse`.
+
+- `Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+  - Added runtime integration regression:
+    - `ExecuteSimple_BytecodeFirst_RegexLiteralFunctionProducesBytecodeFunction`.
+
+### 6.40 JavaScript Bytecode Spread Mainline Tranche JS-BC-10 (2026-02-27)
+
+- `Core/Bytecode/OpCode.cs`
+  - Added spread-mainline opcodes:
+    - `CallFromArray`
+    - `ConstructFromArray`
+    - `ArrayAppend`
+    - `ArrayAppendSpread`
+    - `ObjectSpread`.
+
+- `Core/Bytecode/VM/VirtualMachine.cs`
+  - Added execution handlers for all new spread opcodes.
+  - `CallFromArray` / `ConstructFromArray` now execute bytecode/native call sites using array-like argument packs.
+  - `ArrayAppendSpread` expands array-like sources by `length`; non-array-like values follow interpreter-compatible fallback append behavior.
+  - `ObjectSpread` copies enumerable keys from source object into target object.
+
+- `Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Added spread-aware lowering for:
+    - `ArrayLiteral` (`[1, ...arr, 4]`)
+    - `CallExpression` (`fn(...args)`)
+    - `NewExpression` (`new C(...args)`)
+    - `ObjectLiteral` spread (`{ ...obj, k: v }`).
+  - Added explicit `SpreadElement` handling path to keep parser-emitted spread nodes from triggering hard compile failure in standalone contexts.
+
+- `Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Added regressions:
+    - `Bytecode_ArrayLiteral_WithSpread_ShouldWork`
+    - `Bytecode_Call_WithSpread_ShouldWork`
+    - `Bytecode_New_WithSpread_ShouldWork`
+    - `Bytecode_ObjectLiteral_WithSpread_ShouldWork`.
+
+- `Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+  - Added runtime integration regression:
+    - `ExecuteSimple_BytecodeFirst_SpreadFunctionProducesBytecodeFunction`.
+
+### 6.41 JavaScript Bytecode Labeled Control Tranche JS-BC-11 (2026-02-27)
+
+- `Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Added `LabeledStatement` lowering with explicit label-context stack tracking.
+  - Added labeled `break` lowering:
+    - resolves to the nearest matching label and emits patched jumps to that label scope end.
+  - Added labeled `continue` lowering:
+    - resolves to the nearest matching labeled loop and jumps to loop continue targets,
+    - guardrails remain explicit when label is missing or does not reference an iteration statement.
+  - Refactored loop lowering (`while`, `do-while`, `for`, `for-in`, `for-of`) into shared emit helpers so unlabeled + labeled control flows use deterministic patching paths.
+
+- `Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Added regressions:
+    - `Bytecode_LabeledBreak_OnBlock_ShouldWork`
+    - `Bytecode_LabeledContinue_ToOuterLoop_ShouldWork`
+    - `Bytecode_LabeledBreak_FromSwitchToOuterLoop_ShouldWork`.
+
+- `Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+  - Added runtime integration regression:
+    - `ExecuteSimple_BytecodeFirst_LabeledControlFunctionProducesBytecodeFunction`.
+
+### 6.42 JavaScript Bytecode NewTarget Tranche JS-BC-12 (2026-02-27)
+
+- `Core/Bytecode/OpCode.cs`
+  - Added constructor meta-property opcode:
+    - `LoadNewTarget`.
+
+- `Core/Bytecode/VM/CallFrame.cs`
+  - Added call-frame slot:
+    - `NewTarget` (`FenValue`), reset-safe per frame lifecycle.
+
+- `Core/Bytecode/VM/VirtualMachine.cs`
+  - Added `LoadNewTarget` execution behavior.
+  - Wired call-frame context routing:
+    - `Call` / `CallFromArray` frames set `NewTarget = undefined`.
+    - `Construct` / `ConstructFromArray` frames set `NewTarget = constructor function`.
+
+- `Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Added lowering for `NewTargetExpression`:
+    - emits `LoadNewTarget`.
+
+- `Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Added regressions:
+    - `Bytecode_NewTarget_InNormalCall_ShouldBeUndefined`
+    - `Bytecode_NewTarget_InConstructor_ShouldReferenceConstructor`.
+
+- `Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+  - Added runtime integration regression:
+    - `ExecuteSimple_BytecodeFirst_NewTargetFunctionProducesBytecodeFunction`
+      - verifies bytecode function emission and `LoadNewTarget` opcode presence under bytecode-first runtime flow.
+
+### 6.43 JavaScript Bytecode ImportMeta Tranche JS-BC-13 (2026-02-27)
+
+- `Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Added `ImportMetaExpression` lowering:
+    - dispatch now routes `import.meta` AST nodes to bytecode emitter.
+  - Added `EmitImportMetaExpression()` helper:
+    - emits object creation and stores `url` property as `file:///local/script.js` (parity with current interpreter behavior).
+
+- `Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Added regression:
+    - `Bytecode_ImportMeta_ShouldExposeUrl`.
+
+- `Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+  - Added runtime integration regression:
+    - `ExecuteSimple_BytecodeFirst_ImportMetaFunctionProducesBytecodeFunction`
+      - verifies function emitted as bytecode under bytecode-first runtime and validates `import.meta.url` execution result.
+
+### 6.44 JavaScript Bytecode IfExpression Tranche JS-BC-14 (2026-02-27)
+
+- `Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Added `IfExpression` lowering:
+    - dispatch now routes `IfExpression` AST nodes to bytecode emitter.
+    - new helper `EmitIfExpression(...)` emits branch control-flow and expression result routing.
+  - Added `EmitBlockAsExpression(...)` helper:
+    - branch blocks now produce expression values directly on stack for bytecode expression contexts.
+  - Added explicit safety guardrail:
+    - non-expression tail statements in branch blocks remain compile-unsupported in bytecode phase, preserving deterministic interpreter fallback.
+
+- `Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Added regressions:
+    - `Bytecode_IfExpression_ShouldEvaluateToBranchValue`
+    - `Bytecode_IfExpression_WithoutElse_ShouldReturnNull`.
+
+- `Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+  - Added runtime integration regression:
+    - `ExecuteSimple_BytecodeFirst_IfExpressionFunctionProducesBytecodeFunction`
+      - verifies bytecode function emission and branch-value execution in bytecode-first runtime path.
+
+### 6.45 JavaScript Bytecode Async Function Tranche JS-BC-15 (2026-02-27)
+
+- `Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Added `AsyncFunctionExpression` lowering:
+    - async function expressions now compile to bytecode closures with async metadata (`IsAsync = true`).
+
+- `Core/Bytecode/VM/CallFrame.cs`
+  - Added call-frame async slot:
+    - `IsAsyncFunction` (reset-safe per frame lifecycle).
+
+- `Core/Bytecode/VM/VirtualMachine.cs`
+  - Call and spread-call frame setup now propagates async metadata from callee functions.
+  - Return handling now preserves async function result shape:
+    - explicit and implicit bytecode returns from async frames are wrapped as resolved `JsPromise` values when needed.
+
+- `Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Added regressions:
+    - `Bytecode_AsyncFunctionDeclaration_ShouldReturnResolvedPromise`
+    - `Bytecode_AsyncFunctionExpression_ShouldReturnResolvedPromise`.
+
+- `Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+  - Added runtime integration regression:
+    - `ExecuteSimple_BytecodeFirst_AsyncFunctionExpressionProducesBytecodeFunction`
+      - verifies async bytecode function emission and Promise-shaped runtime completion on bytecode-first path.
+
+### 6.46 JavaScript Bytecode Await Tranche JS-BC-16 (2026-02-27)
+
+- `Core/Bytecode/OpCode.cs`
+  - Added async-await opcode:
+    - `Await`.
+
+- `Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Added `AwaitExpression` lowering:
+    - emits argument evaluation and `Await` opcode.
+
+- `Core/Bytecode/VM/VirtualMachine.cs`
+  - Added `Await` execution behavior:
+    - plain values pass through,
+    - promise values unwrap fulfilled result or produce error value on rejection,
+    - pending promises use bounded microtask/task pumping to settle before fallback to `undefined`.
+  - Hardened async return parity:
+    - async frame completion now rejects when returning `Error` values and resolves otherwise.
+
+- `Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Added regressions:
+    - `Bytecode_AwaitExpression_OnPlainValue_ShouldReturnValue`
+    - `Bytecode_AwaitExpression_OnPromiseValue_ShouldUnwrapResult`.
+
+- `Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+  - Added runtime integration regression:
+    - `ExecuteSimple_BytecodeFirst_AsyncAwaitFunctionProducesBytecodeFunction`
+      - verifies bytecode emission includes `Await` and validates Promise-shaped async result in bytecode-first runtime flow.
+
+### 6.47 JavaScript Bytecode Async Throw Hardening Tranche JS-BC-17 (2026-02-27)
+
+- `Core/Bytecode/VM/VirtualMachine.cs`
+  - Hardened throw-path frame routing:
+    - `Throw` handler now resumes execution using frame refetch after exception dispatch.
+  - Hardened async exception semantics:
+    - uncaught exceptions in async frames now produce rejected Promise results rather than bubbling as host-level uncaught exceptions.
+
+- `Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Added regression:
+    - `Bytecode_AsyncThrow_ShouldReturnRejectedPromise`.
+
+- `Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+  - Added runtime integration regression:
+    - `ExecuteSimple_BytecodeFirst_AsyncThrowFunctionProducesRejectedPromise`
+      - verifies bytecode-first async throw returns rejected Promise with expected reason payload.
+
+### 6.48 JavaScript Bytecode Node Dispatch Coverage Tranche JS-BC-18 (2026-02-27)
+
+- `Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Added direct dispatch support for:
+    - `BitwiseExpression` (lowered into existing infix/operator bytecode flow),
+    - `CompoundAssignmentExpression` (lowered into validated assignment + infix bytecode flow).
+  - Added `LowerCompoundAssignment(...)` validation guardrail:
+    - accepted operators: `+=`, `-=`, `*=`, `/=`, `%=`, `**=`, `<<=`, `>>=`, `>>>=`, `&=`, `|=`, `^=`,
+    - unsupported operators remain explicit compile-unsupported paths.
+
+- `Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Added regressions:
+    - `Bytecode_BitwiseExpressionNode_ShouldCompileAndExecute`
+    - `Bytecode_CompoundAssignmentExpressionNode_ShouldCompileAndExecute`.
+
+- Coverage snapshot (compiler dispatch over expression/statement AST node set)
+  - `AST_NODE_TOTAL=66`
+  - `BYTECODE_DISPATCH_SUPPORTED=56`
+  - `BYTECODE_DISPATCH_PERCENT=84.85`
+  - remaining missing nodes:
+    - `ClassExpression`, `ClassProperty`, `ClassStatement`, `ExportDeclaration`, `ImportDeclaration`, `MethodDefinition`, `PrivateIdentifier`, `StaticBlock`, `WithStatement`, `YieldExpression`.
+
+- Verification
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests -p:RunAnalyzers=false -v minimal` -> Passed `60/60`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests -p:RunAnalyzers=false -v minimal` -> Passed `15/15`.
+
+### 6.49 JavaScript Bytecode Class/Module/With/Yield Completion Tranche JS-BC-19 (2026-02-27)
+
+- `Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Added dispatch + emit coverage for previously missing parser-emitted nodes:
+    - `ClassExpression`, `ClassProperty`, `ClassStatement`,
+    - `ExportDeclaration`, `ImportDeclaration`,
+    - `MethodDefinition`, `PrivateIdentifier`,
+    - `StaticBlock`, `WithStatement`, `YieldExpression`.
+  - Added class lowering helpers for:
+    - constructor synthesis + instance field initialization,
+    - static field emission,
+    - static block execution,
+    - class method installation (prototype/static targets),
+    - class expression lowering through synthetic class statements.
+  - Added module-form lowering helpers for synthetic bindings:
+    - `__fen_module_*` import source slots,
+    - `__fen_export_*` export targets.
+  - Added with-statement lowering to dedicated VM opcodes.
+
+- `Core/Bytecode/OpCode.cs`
+  - Added `EnterWith` and `ExitWith`.
+
+- `Core/Bytecode/VM/CallFrame.cs`
+  - Added frame-scoped with-environment stack tracking.
+  - Added environment swap helper used by with opcode handling.
+
+- `Core/Bytecode/VM/VirtualMachine.cs`
+  - Implemented `EnterWith` / `ExitWith` opcode execution.
+  - Fixed nested-frame `Halt` behavior to unwind only current frame (implicit-return function/constructor safety).
+  - Updated property opcodes (`LoadProp`/`StoreProp`/`DeleteProp`) to resolve via `AsObject()` so function objects participate in property reads/writes (required for class static field/method semantics).
+
+- `Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Added/updated regressions covering class/module/with/yield/private/method/property/static-block paths, including:
+    - `Bytecode_ClassStatement_StaticField_ShouldBindOnConstructor`.
+
+- `Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+  - Added runtime bytecode-first integration regression:
+    - `ExecuteSimple_BytecodeFirst_ClassStatementProducesBytecodeConstructor`.
+
+- Coverage snapshot (compiler dispatch over expression/statement AST node set)
+  - `AST_NODE_TOTAL=66`
+  - `BYTECODE_DISPATCH_SUPPORTED=66`
+  - `BYTECODE_DISPATCH_PERCENT=100.00`
+  - remaining missing nodes: none.
+
+- Verification
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests -p:RunAnalyzers=false -v minimal` -> Passed `71/71`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests -p:RunAnalyzers=false -v minimal` -> Passed `16/16`.
+
+### 6.50 JavaScript Bytecode Rest Parameter + Arguments Parity Tranche JS-BC-20 (2026-02-27)
+
+- `Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Parameter validation now allows rest parameters for bytecode callables.
+  - Destructuring parameters remain compile-unsupported in bytecode phase (deterministic fallback path preserved).
+
+- `Core/Bytecode/VM/VirtualMachine.cs`
+  - Added shared function-argument binding used by `Call`, `CallFromArray`, `Construct`, and `ConstructFromArray`.
+  - Rest parameter binding now collects trailing call arguments into array-like objects on bytecode frames.
+  - Non-arrow bytecode callables now receive `arguments` object semantics (`length`, indexed values, `callee`, `__paramNames__`) aligned with interpreter behavior.
+
+- `Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Added regressions:
+    - `Bytecode_RestParameters_ShouldCollectExtraArguments`
+    - `Bytecode_FunctionArgumentsObject_ShouldExposeLengthAndIndexedValues`.
+
+- `Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+  - Added runtime bytecode-first integration regression:
+    - `ExecuteSimple_BytecodeFirst_RestParameterFunctionProducesBytecodeFunction`.
+  - Updated fallback guardrails to destructuring-parameter compile-unsupported paths:
+    - `ExecuteSimple_CompileUnsupported_UsesInterpreterFallback`
+    - `ExecuteSimple_WithInterpreterOnlyGlobals_CallHeavyScriptAvoidsVmPath`.
+
+- Coverage snapshot (compiler dispatch over expression/statement AST node set)
+  - `AST_NODE_TOTAL=66`
+  - `BYTECODE_DISPATCH_SUPPORTED=66`
+  - `BYTECODE_DISPATCH_PERCENT=100.00`
+  - remaining missing nodes: none.
+
+- Verification
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests` -> Passed `74/74`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests` -> Passed `18/18`.
+
+### 6.51 JavaScript Bytecode Destructuring Coverage Expansion Tranche JS-BC-21 (2026-02-27)
+
+- `Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Removed identifier-only guardrail for declaration destructuring sources (`let/const/var` now lower from general expressions).
+  - Added normalization for parser-recovery declaration shape where destructuring arrives as:
+    - `DestructuringPattern = AssignmentExpression(pattern, source)`,
+    - `Value = null`.
+  - Added bytecode lowering for object rest destructuring:
+    - rest object built via `MakeObject + ObjectSpread`,
+    - consumed keys removed via `DeleteProp`,
+    - rest target then bound through existing destructuring-target pipeline.
+  - Added bytecode lowering for array rest destructuring:
+    - loop over `[startIndex, length)` with `LessThan` and `ArrayAppend`,
+    - rest array bound through existing destructuring-target pipeline.
+  - Added computed object-key destructuring lowering in binding paths.
+  - Extended supported-pattern validator to allow:
+    - array/object rest targets,
+    - computed object destructuring keys (when computed-key AST mapping exists).
+
+- `Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Added regressions:
+    - `Bytecode_DestructuringDeclaration_ShouldBindFromExpressionSource`
+    - `Bytecode_DestructuringObjectRest_ShouldCollectRemainingProperties`
+    - `Bytecode_DestructuringArrayRest_ShouldCollectRemainingElements`
+    - `Bytecode_DestructuringComputedKey_ShouldResolveRuntimeKey`.
+
+- `Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+  - Added runtime bytecode-first regression:
+    - `ExecuteSimple_BytecodeFirst_DestructuringParameterWithObjectRestProducesBytecodeFunction`.
+  - Updated compile-fallback guardrail tests to a still-unsupported bytecode construct (`break` outside breakable context in function body), preserving explicit interpreter-fallback validation:
+    - `ExecuteSimple_CompileUnsupported_UsesInterpreterFallback`
+    - `ExecuteSimple_WithInterpreterOnlyGlobals_CallHeavyScriptAvoidsVmPath`.
+
+- Coverage snapshot (compiler dispatch over expression/statement AST node set)
+  - `AST_NODE_TOTAL=66`
+  - `BYTECODE_DISPATCH_SUPPORTED=66`
+  - `BYTECODE_DISPATCH_PERCENT=100.00`
+  - remaining missing nodes: none.
+
+- Verification
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests` -> Passed `82/82`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests` -> Passed `20/20`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.BenchmarkTests` -> Passed `3/3`.
 

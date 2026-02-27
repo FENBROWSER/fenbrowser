@@ -54,7 +54,7 @@ Reference snapshot artifact:
 | CSS/Cascade/Selectors            |    90 | Production grade (CSS-1 verified)                                    |
 | Layout System                    |    90 | Production grade (L-10 verified)                                     |
 | Paint/Compositing                |    90 | Production grade (PC-5 verified)                                     |
-| JavaScript Engine                |    85 | Strong (JS-2/3/4/5 + JS-BC-1/2/3/4: fromAsync, Iterator.prototype, DisposableStack, Array.from iterable, bytecode parity + runtime bytecode-first wiring + expression/control coverage expansion) |
+| JavaScript Engine                |    85 | Strong (JS-2/3/4/5 + JS-BC-1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20: fromAsync, Iterator.prototype, DisposableStack, Array.from iterable, bytecode parity + runtime bytecode-first wiring + expression/control coverage expansion including comma/arrow lowering, VM exception continuation, optional chaining lowering, operator/template coverage for `in`/`instanceof`/`void`/`delete`/template literals, structured `switch`/`break`/`continue` control-flow lowering, regex literal parity, spread lowering across array/call/new/object forms, labeled control-flow lowering, `new.target`, `import.meta`, `if`-expression support, async-function Promise return parity, `await` bytecode execution support, async-throw rejection parity, direct dispatch support for `BitwiseExpression` + `CompoundAssignmentExpression`, full parser-emitted bytecode dispatch coverage including class/module/yield/with-family nodes, and rest-parameter + `arguments` object parity on bytecode-mainline calls) |
 | Web APIs + Workers/SW            |    67 | Partial (API-2/3/4: timers, Promise stubs, CacheStorage landed)      |
 | Storage + Cookies                |    73 | Partial (Storage-1: full cookie attribute parsing landed)            |
 | Event Loop + Runtime Invariants  |    67 | Partial                                                              |
@@ -100,6 +100,318 @@ Score update basis:
    - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`: added `Bytecode_UpdateExpressions_ShouldWork`, `Bytecode_LogicalAssignment_ShouldWork`, and `Bytecode_BitwiseNot_AndDoWhile_ShouldWork`.
    - Verification: `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests --logger "console;verbosity=minimal"` -> Passed 27/27.
    - Score remains **85** (no gate change yet); this tranche expands bytecode coverage for common control-flow and assignment forms that previously fell back to interpreter.
+0.5 **JavaScript Engine bytecode tranche JS-BC-5 landed (2026-02-27)**:
+   - `Core/Bytecode/Compiler/BytecodeCompiler.cs`:
+     - added comma-operator lowering (`InfixExpression` with `,`) to preserve left side effects while returning right-hand value,
+     - added `ArrowFunctionExpression` lowering with bytecode closure emission for simple parameter lists and implicit-return expression bodies,
+     - added callable-body normalization for expression-bodied callables and explicit guardrails for unsupported complex parameters (rest/default/destructuring) to preserve fallback safety.
+   - `Core/Bytecode/VM/VirtualMachine.cs`:
+     - `MakeClosure` now preserves function metadata (`IsArrowFunction`, `IsAsync`, `IsGenerator`) on cloned closures,
+     - `Construct` now rejects arrow functions (`TypeError: Arrow function is not a constructor`),
+     - fixed VM exception flow to continue execution through installed JS catch/finally handlers after translating host exceptions into JS exceptions.
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`:
+     - added `Bytecode_CommaOperator_ShouldEvaluateLeftAndReturnRight`,
+     - added `Bytecode_ArrowFunctionExpression_ShouldCall`,
+     - added `Bytecode_ArrowFunction_ConstructShouldThrowTypeError`.
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`:
+     - added `ExecuteSimple_BytecodeFirst_ArrowFunctionProducesBytecodeFunction`,
+     - updated fallback/guardrail coverage to use class-syntax compile-unsupported path:
+       - `ExecuteSimple_CompileUnsupported_UsesInterpreterFallback`,
+       - `ExecuteSimple_WithInterpreterOnlyGlobals_CallHeavyScriptAvoidsVmPath`.
+   - Verification:
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests --logger "console;verbosity=minimal"` -> Passed 30/30.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests --logger "console;verbosity=minimal"` -> Passed 4/4.
+   - Score remains **85** (no gate change yet); this tranche reduces fallback frequency for common script forms and hardens VM semantics for bytecode-mainline execution.
+0.6 **JavaScript Engine bytecode tranche JS-BC-6 landed (2026-02-27)**:
+   - `Core/Bytecode/Compiler/BytecodeCompiler.cs`:
+     - added lowering for `OptionalChainExpression` (`obj?.prop`, `obj?.[expr]`, `obj?.(args)`),
+     - added nullish short-circuit lowering (`null` / `undefined` -> `undefined`) with branch patching helpers to keep control flow explicit and deterministic.
+   - Optional call semantics:
+     - non-callable optional targets now resolve to `undefined` instead of throwing, matching existing interpreter behavior.
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`:
+     - added `Bytecode_OptionalChain_PropertyAndComputed_ShouldWork`,
+     - added `Bytecode_OptionalChain_NullishShortCircuit_ShouldReturnUndefined`,
+     - added `Bytecode_OptionalChain_OptionalCall_ShouldWork`.
+   - Verification:
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests --logger "console;verbosity=minimal"` -> Passed 33/33.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests --logger "console;verbosity=minimal"` -> Passed 4/4.
+   - Score remains **85** (no gate change yet); this tranche removes another common bytecode fallback class while preserving strict fallback behavior for still-unsupported nodes.
+0.7 **JavaScript Engine bytecode tranche JS-BC-7 landed (2026-02-27)**:
+   - `Core/Bytecode/Compiler/BytecodeCompiler.cs`:
+     - added operator lowering for `in` and `instanceof`,
+     - added prefix lowering for unary `+` (`ToNumber`), `void`, and `delete` (member/index targets),
+     - added lowering for `TemplateLiteral`,
+     - propagated `IsAsync` / `IsGenerator` metadata for function and function-declaration bytecode templates.
+   - `Core/Bytecode/OpCode.cs` + `Core/Bytecode/VM/VirtualMachine.cs`:
+     - added VM opcodes/handlers for `InOperator`, `InstanceOf`, `DeleteProp`, and `ToNumber`,
+     - `MakeClosure` now initializes non-arrow function `.prototype` objects (`constructor` backlink) so constructor and `instanceof` semantics align on bytecode path.
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`:
+     - added `Bytecode_InAndInstanceofOperators_ShouldWork`,
+     - added `Bytecode_VoidDeleteAndUnaryPlus_ShouldWork`,
+     - added `Bytecode_TemplateLiteral_ShouldWork`.
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`:
+     - added `ExecuteSimple_BytecodeFirst_TemplateLiteralFunctionProducesBytecodeFunction`.
+   - Verification:
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests --logger "console;verbosity=minimal"` -> Passed 37/37.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests --logger "console;verbosity=minimal"` -> Passed 5/5.
+   - Score remains **85** (no gate change yet); this tranche reduces fallback on common operator and interpolation patterns while keeping strict fallback behavior for remaining unsupported syntax classes.
+0.8 **JavaScript Engine bytecode tranche JS-BC-8 landed (2026-02-27)**:
+   - `Core/Bytecode/Compiler/BytecodeCompiler.cs`:
+     - added lowering for `SwitchStatement` with strict-equality case matching, default dispatch, fallthrough behavior, and explicit discriminant-stack cleanup,
+     - added lowering for `BreakStatement` and `ContinueStatement` via structured jump patching contexts,
+     - upgraded loop lowering (`while`, `do-while`, `for`, `for-in`, `for-of`) to wire break/continue targets with deterministic patching.
+   - control-flow guardrails:
+     - labeled `break`/`continue` remain compile-unsupported in bytecode phase (safe fallback),
+     - `break` outside breakable contexts and `continue` outside loops remain compile-unsupported (safe fallback).
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`:
+     - added `Bytecode_SwitchStatement_WithFallthroughAndBreak_ShouldWork`,
+     - added `Bytecode_BreakAndContinue_InForLoop_ShouldWork`.
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`:
+     - added `ExecuteSimple_BytecodeFirst_SwitchControlFunctionProducesBytecodeFunction`.
+   - Verification:
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests --logger "console;verbosity=minimal"` -> Passed 39/39.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests --logger "console;verbosity=minimal"` -> Passed 6/6.
+   - Score remains **85** (no gate change yet); this tranche removes another high-frequency control-flow fallback class and pushes more real scripts through bytecode mainline.
+0.9 **JavaScript Engine bytecode tranche JS-BC-9 landed (2026-02-27)**:
+   - `Core/Bytecode/Compiler/BytecodeCompiler.cs`:
+     - added lowering for `RegexLiteral` with interpreter-parity object shape (`source`, `flags`, `lastIndex`, native regex payload),
+     - extended `delete` lowering to support identifier operands with current interpreter parity (`delete identifier` -> `false` on bytecode path).
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`:
+     - added `Bytecode_RegexLiteral_ShouldCreateRegexObjectLikeInterpreter`,
+     - added `Bytecode_DeleteIdentifier_ShouldReturnFalse`.
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`:
+     - added `ExecuteSimple_BytecodeFirst_RegexLiteralFunctionProducesBytecodeFunction`.
+   - Verification:
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests --logger "console;verbosity=minimal"` -> Passed 41/41.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests --logger "console;verbosity=minimal"` -> Passed 7/7.
+   - Score remains **85** (no gate change yet); this tranche reduces fallback on regex-heavy code and aligns delete-identifier behavior on bytecode mainline.
+0.10 **JavaScript Engine bytecode tranche JS-BC-10 landed (2026-02-27)**:
+   - `Core/Bytecode/OpCode.cs` + `Core/Bytecode/VM/VirtualMachine.cs`:
+     - added spread-enabling opcodes for bytecode mainline:
+       - `CallFromArray`, `ConstructFromArray`,
+       - `ArrayAppend`, `ArrayAppendSpread`,
+       - `ObjectSpread`.
+     - VM now executes spread expansion for array-like values (length-based), with non-array-like fallback matching current interpreter behavior.
+   - `Core/Bytecode/Compiler/BytecodeCompiler.cs`:
+     - added spread-aware lowering for:
+       - `ArrayLiteral` (`[a, ...b, c]`),
+       - `CallExpression` (`fn(...args)`),
+       - `NewExpression` (`new C(...args)`),
+       - `ObjectLiteral` spread (`{ ...obj, k: v }`),
+     - added explicit `SpreadElement` handling path for standalone best-effort evaluation to avoid compile hard-failure drift.
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`:
+     - added `Bytecode_ArrayLiteral_WithSpread_ShouldWork`,
+     - added `Bytecode_Call_WithSpread_ShouldWork`,
+     - added `Bytecode_New_WithSpread_ShouldWork`,
+     - added `Bytecode_ObjectLiteral_WithSpread_ShouldWork`.
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`:
+     - added `ExecuteSimple_BytecodeFirst_SpreadFunctionProducesBytecodeFunction`.
+   - Verification:
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests --logger "console;verbosity=minimal"` -> Passed 45/45.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests --logger "console;verbosity=minimal"` -> Passed 8/8.
+   - Score remains **85** (no gate change yet); this tranche removes a major modern-JS fallback class by keeping spread-heavy scripts on bytecode mainline.
+0.11 **JavaScript Engine bytecode tranche JS-BC-11 landed (2026-02-27)**:
+   - `Core/Bytecode/Compiler/BytecodeCompiler.cs`:
+     - added `LabeledStatement` lowering with scoped label context tracking,
+     - added labeled `break` lowering to patch directly to matching labeled-statement exit targets,
+     - added labeled `continue` lowering for labeled loop statements (with strict guardrail when label does not reference a loop),
+     - refactored loop lowering (`while`, `do-while`, `for`, `for-in`, `for-of`) into shared emit paths that preserve deterministic break/continue patching and safely compose with label routing.
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`:
+     - added `Bytecode_LabeledBreak_OnBlock_ShouldWork`,
+     - added `Bytecode_LabeledContinue_ToOuterLoop_ShouldWork`,
+     - added `Bytecode_LabeledBreak_FromSwitchToOuterLoop_ShouldWork`.
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`:
+     - added `ExecuteSimple_BytecodeFirst_LabeledControlFunctionProducesBytecodeFunction`.
+   - Verification:
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests --logger "console;verbosity=minimal"` -> Passed 48/48.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests --logger "console;verbosity=minimal"` -> Passed 9/9.
+   - Score remains **85** (no gate change yet); this tranche removes another structured-control fallback class by keeping label-heavy loop/control scripts on bytecode mainline.
+0.12 **JavaScript Engine bytecode tranche JS-BC-12 landed (2026-02-27)**:
+   - `Core/Bytecode/OpCode.cs` + `Core/Bytecode/VM/CallFrame.cs` + `Core/Bytecode/VM/VirtualMachine.cs`:
+     - added `LoadNewTarget` opcode,
+     - added per-frame `NewTarget` tracking in VM call frames,
+     - wired call/construct frame setup:
+       - regular function calls set `new.target` to `undefined`,
+       - constructor calls set `new.target` to the active constructor function value.
+   - `Core/Bytecode/Compiler/BytecodeCompiler.cs`:
+     - added lowering for `NewTargetExpression` to `LoadNewTarget`.
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`:
+     - added `Bytecode_NewTarget_InNormalCall_ShouldBeUndefined`,
+     - added `Bytecode_NewTarget_InConstructor_ShouldReferenceConstructor`.
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`:
+     - added `ExecuteSimple_BytecodeFirst_NewTargetFunctionProducesBytecodeFunction` (runtime bytecode-first integration; verifies bytecode function emission + `LoadNewTarget` opcode presence).
+    - Verification:
+      - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests --logger "console;verbosity=minimal"` -> Passed 50/50.
+      - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests --logger "console;verbosity=minimal"` -> Passed 10/10.
+    - Score remains **85** (no gate change yet); this tranche closes another parser-emitted fallback class in constructor meta-property flow.
+0.13 **JavaScript Engine bytecode tranche JS-BC-13 landed (2026-02-27)**:
+   - `Core/Bytecode/Compiler/BytecodeCompiler.cs`:
+     - added `ImportMetaExpression` lowering,
+     - added `EmitImportMetaExpression()` helper that emits an object with a `url` field set to `file:///local/script.js` (current interpreter parity).
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`:
+     - added `Bytecode_ImportMeta_ShouldExposeUrl`.
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`:
+     - added `ExecuteSimple_BytecodeFirst_ImportMetaFunctionProducesBytecodeFunction`.
+   - Verification:
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests` -> Passed 51/51.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests` -> Passed 11/11.
+   - Score remains **85** (no gate change yet); this tranche keeps `import.meta` on bytecode mainline and reduces another interpreter fallback class.
+0.14 **JavaScript Engine bytecode tranche JS-BC-14 landed (2026-02-27)**:
+   - `Core/Bytecode/Compiler/BytecodeCompiler.cs`:
+     - added `IfExpression` lowering via `EmitIfExpression(...)`,
+     - added expression-block lowering helper (`EmitBlockAsExpression(...)`) for expression-bodied branch blocks,
+     - added explicit guardrail: non-expression trailing statements in `if`-expression branches remain compile-unsupported (safe fallback).
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`:
+     - added `Bytecode_IfExpression_ShouldEvaluateToBranchValue`,
+     - added `Bytecode_IfExpression_WithoutElse_ShouldReturnNull`.
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`:
+     - added `ExecuteSimple_BytecodeFirst_IfExpressionFunctionProducesBytecodeFunction`.
+    - Verification:
+      - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests` -> Passed 53/53.
+      - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests` -> Passed 12/12.
+    - Score remains **85** (no gate change yet); this tranche keeps branch-expression scripts on bytecode mainline while preserving fallback safety for unsupported branch-tail forms.
+0.15 **JavaScript Engine bytecode tranche JS-BC-15 landed (2026-02-27)**:
+   - `Core/Bytecode/Compiler/BytecodeCompiler.cs`:
+     - added lowering for `AsyncFunctionExpression`,
+     - async function expressions now emit bytecode closures with `IsAsync = true`.
+   - `Core/Bytecode/VM/CallFrame.cs` + `Core/Bytecode/VM/VirtualMachine.cs`:
+     - added per-frame `IsAsyncFunction` flag,
+     - bytecode call frames now inherit async metadata from callee,
+     - VM return path wraps async function completion values in resolved `Promise` objects (current interpreter parity for non-throwing async bodies).
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`:
+     - added `Bytecode_AsyncFunctionDeclaration_ShouldReturnResolvedPromise`,
+     - added `Bytecode_AsyncFunctionExpression_ShouldReturnResolvedPromise`.
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`:
+     - added `ExecuteSimple_BytecodeFirst_AsyncFunctionExpressionProducesBytecodeFunction`.
+    - Verification:
+      - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests` -> Passed 55/55.
+      - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests` -> Passed 13/13.
+    - Score remains **85** (no gate change yet); this tranche keeps async-function expression forms on bytecode mainline and aligns bytecode async return shape with Promise semantics.
+0.16 **JavaScript Engine bytecode tranche JS-BC-16 landed (2026-02-27)**:
+   - `Core/Bytecode/OpCode.cs`:
+     - added `Await` opcode.
+   - `Core/Bytecode/Compiler/BytecodeCompiler.cs`:
+     - added lowering for `AwaitExpression` (argument evaluation + `Await` emit).
+   - `Core/Bytecode/VM/VirtualMachine.cs`:
+     - added `Await` execution path with promise-aware resolution:
+       - non-promise values return directly,
+       - promise values return fulfilled result or error value on rejection,
+       - pending promises pump microtask/task checkpoints with bounded loop (parity with interpreter await pumping model),
+       - unresolved pending promises return `undefined` after bounded pumps.
+     - hardened async return wrapping:
+       - async frame returns now reject when result is `Error` and resolve otherwise.
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`:
+     - added `Bytecode_AwaitExpression_OnPlainValue_ShouldReturnValue`,
+     - added `Bytecode_AwaitExpression_OnPromiseValue_ShouldUnwrapResult`.
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`:
+     - added `ExecuteSimple_BytecodeFirst_AsyncAwaitFunctionProducesBytecodeFunction`.
+   - Verification:
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests` -> Passed 57/57.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests` -> Passed 14/14.
+   - Score remains **85** (no gate change yet); this tranche keeps await-bearing async scripts on bytecode mainline and closes another async fallback class.
+0.17 **JavaScript Engine bytecode tranche JS-BC-17 landed (2026-02-27)**:
+   - `Core/Bytecode/VM/VirtualMachine.cs`:
+     - `Throw` opcode flow now resumes via frame refetch after exception handling (`goto fetch_frame`) to preserve correct caller/handler routing,
+     - `HandleException(...)` now captures uncaught exceptions in async frames as rejected Promise results instead of propagating host-level uncaught exceptions.
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`:
+     - added `Bytecode_AsyncThrow_ShouldReturnRejectedPromise`.
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`:
+     - added `ExecuteSimple_BytecodeFirst_AsyncThrowFunctionProducesRejectedPromise`.
+   - Verification:
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests` -> Passed 58/58.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests` -> Passed 15/15.
+    - Score remains **85** (no gate change yet); this tranche hardens async exception semantics on bytecode mainline and removes a correctness pitfall around async throw propagation.
+0.18 **JavaScript Engine bytecode tranche JS-BC-18 landed (2026-02-27)**:
+   - `Core/Bytecode/Compiler/BytecodeCompiler.cs`:
+     - added direct dispatch support for `BitwiseExpression` by lowering to existing infix/operator bytecode flow,
+     - added direct dispatch support for `CompoundAssignmentExpression` by lowering to validated assignment + infix bytecode flow,
+     - added explicit compound-operator validation guardrail before lowering (`+=`, `-=`, `*=`, `/=`, `%=`, `**=`, `<<=`, `>>=`, `>>>=`, `&=`, `|=`, `^=`).
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`:
+     - added `Bytecode_BitwiseExpressionNode_ShouldCompileAndExecute`,
+     - added `Bytecode_CompoundAssignmentExpressionNode_ShouldCompileAndExecute`.
+   - Coverage snapshot (compiler dispatch vs AST expression/statement node set):
+     - `AST_NODE_TOTAL=66`,
+     - `BYTECODE_DISPATCH_SUPPORTED=56`,
+     - `BYTECODE_DISPATCH_PERCENT=84.85`,
+     - remaining missing nodes: `ClassExpression`, `ClassProperty`, `ClassStatement`, `ExportDeclaration`, `ImportDeclaration`, `MethodDefinition`, `PrivateIdentifier`, `StaticBlock`, `WithStatement`, `YieldExpression`.
+   - Verification:
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests -p:RunAnalyzers=false -v minimal` -> Passed 60/60.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests -p:RunAnalyzers=false -v minimal` -> Passed 15/15.
+   - Score remains **85** (no gate change yet); this tranche removes two more AST-node compiler gaps and raises bytecode-mainline dispatch coverage.
+0.19 **JavaScript Engine bytecode tranche JS-BC-19 landed (2026-02-27)**:
+   - `Core/Bytecode/Compiler/BytecodeCompiler.cs`:
+     - added bytecode dispatch and emit paths for remaining parser-emitted nodes:
+       - `ClassExpression`, `ClassProperty`, `ClassStatement`, `ExportDeclaration`, `ImportDeclaration`, `MethodDefinition`, `PrivateIdentifier`, `StaticBlock`, `WithStatement`, `YieldExpression`,
+     - class lowering now emits constructor closures, installs methods, emits static fields/blocks, and preserves instance field initialization in constructor body,
+     - module-form lowering maps imports/exports through synthetic runtime bindings (`__fen_module_*`, `__fen_export_*`),
+     - added explicit `with` statement lowering with dedicated VM opcodes.
+   - `Core/Bytecode/OpCode.cs`, `Core/Bytecode/VM/CallFrame.cs`, `Core/Bytecode/VM/VirtualMachine.cs`:
+     - added `EnterWith` / `ExitWith` opcodes and frame-scoped with-environment stack handling,
+     - fixed `Halt` nested-frame unwinding semantics for implicit-return function/class-constructor paths,
+     - fixed property access opcodes to operate on function values (`AsObject()`), enabling class static property/method installation correctness.
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`:
+     - added/updated regressions for class/module/with/yield/private/method/property/static-block coverage, including:
+       - `Bytecode_ClassStatement_StaticField_ShouldBindOnConstructor`.
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`:
+     - added runtime integration regression:
+       - `ExecuteSimple_BytecodeFirst_ClassStatementProducesBytecodeConstructor`.
+   - Coverage snapshot (compiler dispatch vs AST expression/statement node set):
+     - `AST_NODE_TOTAL=66`,
+     - `BYTECODE_DISPATCH_SUPPORTED=66`,
+     - `BYTECODE_DISPATCH_PERCENT=100.00`,
+     - remaining missing nodes: none.
+   - Verification:
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests -p:RunAnalyzers=false -v minimal` -> Passed 71/71.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests -p:RunAnalyzers=false -v minimal` -> Passed 16/16.
+   - Score remains **85** (no gate change yet); this tranche closes the remaining parser-emitted compiler dispatch set and hardens class static semantics on bytecode mainline.
+0.20 **JavaScript Engine bytecode tranche JS-BC-20 landed (2026-02-27)**:
+   - `Core/Bytecode/Compiler/BytecodeCompiler.cs`:
+     - parameter guardrail updated to allow rest parameters in bytecode callables,
+     - destructuring parameters remain compile-unsupported (deterministic fallback retained).
+   - `Core/Bytecode/VM/VirtualMachine.cs`:
+     - added shared function-argument binder used by `Call`, `CallFromArray`, `Construct`, and `ConstructFromArray`,
+     - rest parameters now collect trailing arguments into an array-like object in bytecode frames,
+     - non-arrow bytecode callables now get an `arguments` object (`length`, indexed slots, `callee`, `__paramNames__`) aligned with current interpreter behavior.
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`:
+     - added `Bytecode_RestParameters_ShouldCollectExtraArguments`,
+     - added `Bytecode_FunctionArgumentsObject_ShouldExposeLengthAndIndexedValues`.
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`:
+     - added `ExecuteSimple_BytecodeFirst_RestParameterFunctionProducesBytecodeFunction`,
+     - updated compile-fallback guardrails to destructuring-parameter paths:
+       - `ExecuteSimple_CompileUnsupported_UsesInterpreterFallback`,
+       - `ExecuteSimple_WithInterpreterOnlyGlobals_CallHeavyScriptAvoidsVmPath`.
+   - Coverage snapshot:
+     - `AST_NODE_TOTAL=66`,
+     - `BYTECODE_DISPATCH_SUPPORTED=66`,
+     - `BYTECODE_DISPATCH_PERCENT=100.00`.
+   - Verification:
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests` -> Passed 74/74.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests` -> Passed 18/18.
+   - Score remains **85** (no gate change yet); this tranche removes another real-world fallback source (rest parameters) and improves runtime call semantics on bytecode mainline.
+0.21 **JavaScript Engine bytecode tranche JS-BC-21 landed (2026-02-27)**:
+   - `Core/Bytecode/Compiler/BytecodeCompiler.cs`:
+     - declaration destructuring now lowers from general expressions (identifier-only source guard removed),
+     - parser-recovery declaration shape (`DestructuringPattern = AssignmentExpression(pattern, source)`, `Value = null`) now normalizes to explicit pattern/source lowering,
+     - object rest destructuring now lowers via `ObjectSpread` + consumed-key `DeleteProp`,
+     - array rest destructuring now lowers via indexed loop + `ArrayAppend`,
+     - computed object-key destructuring lowering added in binding paths,
+     - destructuring pattern validator now allows supported rest/computed forms.
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`:
+     - added:
+       - `Bytecode_DestructuringDeclaration_ShouldBindFromExpressionSource`,
+       - `Bytecode_DestructuringObjectRest_ShouldCollectRemainingProperties`,
+       - `Bytecode_DestructuringArrayRest_ShouldCollectRemainingElements`,
+       - `Bytecode_DestructuringComputedKey_ShouldResolveRuntimeKey`.
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`:
+     - added `ExecuteSimple_BytecodeFirst_DestructuringParameterWithObjectRestProducesBytecodeFunction`,
+     - compile-fallback guardrails now validate against still-unsupported invalid-context `break` lowering:
+       - `ExecuteSimple_CompileUnsupported_UsesInterpreterFallback`,
+       - `ExecuteSimple_WithInterpreterOnlyGlobals_CallHeavyScriptAvoidsVmPath`.
+   - Verification:
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests` -> Passed 82/82.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests` -> Passed 20/20.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.BenchmarkTests` -> Passed 3/3.
+   - Score remains **85** (no gate change yet); this tranche removes additional bytecode fallback sources in destructuring-heavy scripts while keeping explicit unsupported-path fallback behavior.
 
 1. JS-1 verified (`JavaScriptEngineModuleLoadingTests`: 2/2 pass on 2026-02-20).
 2. Worker import path upgraded from sync fetch bridge to prefetched-cache execution path (tranche API-1) and owner-run verification passed (section 5.9).
@@ -1760,6 +2072,626 @@ Manual verification (owner-run):
 Score note:
 
 1. JavaScript Engine remains **85/100** pending broader runtime bytecode coverage and target-profile Test262 verification.
+
+### Implementation Delta (2026-02-27, Tranche JS-BC-5: Comma/Arrow Coverage + VM Exception Continuation)
+
+Scope completed in this tranche:
+
+1. Extended compiler lowering for high-frequency fallback constructs:
+   - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+   - Added comma operator lowering (`left, right`) that preserves left-side effects and returns right-side value.
+   - Added `ArrowFunctionExpression` lowering to bytecode closures for simple parameter lists.
+   - Added callable-body normalization so expression-bodied callables emit implicit return in bytecode.
+   - Added explicit compile guardrails for unsupported complex parameter forms (rest/default/destructuring) to keep fallback behavior deterministic and safe.
+2. Hardened VM semantic handling for bytecode-mainline execution:
+   - `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+   - `MakeClosure` now preserves function metadata (`IsArrowFunction`, `IsAsync`, `IsGenerator`) on instantiated closures.
+   - `Construct` now rejects arrow functions with TypeError semantics.
+   - VM host-exception translation now resumes execution at JS handlers (`catch`/`finally`) instead of prematurely terminating with `undefined`.
+3. Added and updated regression coverage:
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+     - `Bytecode_CommaOperator_ShouldEvaluateLeftAndReturnRight`
+     - `Bytecode_ArrowFunctionExpression_ShouldCall`
+     - `Bytecode_ArrowFunction_ConstructShouldThrowTypeError`
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+     - `ExecuteSimple_BytecodeFirst_ArrowFunctionProducesBytecodeFunction`
+     - updated fallback/guardrail tests to use compile-unsupported class syntax:
+       - `ExecuteSimple_CompileUnsupported_UsesInterpreterFallback`
+       - `ExecuteSimple_WithInterpreterOnlyGlobals_CallHeavyScriptAvoidsVmPath`.
+
+Manual verification (owner-run):
+
+1. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests --logger "console;verbosity=minimal"`
+2. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests --logger "console;verbosity=minimal"`
+3. **Confirmed on 2026-02-27**:
+   - `BytecodeExecutionTests`: `Passed 30/30`
+   - `FenRuntimeBytecodeExecutionTests`: `Passed 4/4`
+
+Score note:
+
+1. JavaScript Engine remains **85/100** pending broader bytecode node coverage and target-profile Test262 verification.
+2. This tranche meaningfully shifts hot-path execution toward bytecode while preserving explicit fallback safety for unsupported constructs.
+
+### Implementation Delta (2026-02-27, Tranche JS-BC-6: Optional Chaining Bytecode Lowering)
+
+Scope completed in this tranche:
+
+1. Extended compiler lowering for optional chaining forms:
+   - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+   - Added `OptionalChainExpression` lowering for:
+     - optional property access: `obj?.prop`
+     - optional computed access: `obj?.[expr]`
+     - optional call: `obj?.(args)`.
+2. Added explicit nullish short-circuit behavior in emitted bytecode:
+   - base value `null` / `undefined` now short-circuits to `undefined` without attempting property/call evaluation.
+3. Added non-callable optional-call behavior parity:
+   - optional call now returns `undefined` for non-function targets instead of raising a VM runtime exception.
+4. Added regression coverage:
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+     - `Bytecode_OptionalChain_PropertyAndComputed_ShouldWork`
+     - `Bytecode_OptionalChain_NullishShortCircuit_ShouldReturnUndefined`
+     - `Bytecode_OptionalChain_OptionalCall_ShouldWork`.
+
+Manual verification (owner-run):
+
+1. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests --logger "console;verbosity=minimal"`
+2. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests --logger "console;verbosity=minimal"`
+3. **Confirmed on 2026-02-27**:
+   - `BytecodeExecutionTests`: `Passed 33/33`
+   - `FenRuntimeBytecodeExecutionTests`: `Passed 4/4`
+
+Score note:
+
+1. JavaScript Engine remains **85/100** pending broader bytecode coverage and target-profile Test262 verification.
+2. This tranche reduces fallback rate for modern JS access/call patterns while keeping bytecode control-flow explicit and safety-first.
+
+### Implementation Delta (2026-02-27, Tranche JS-BC-7: Operator/Template Bytecode Coverage)
+
+Scope completed in this tranche:
+
+1. Extended compiler coverage for additional expression/operator forms:
+   - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+   - Added `in` and `instanceof` lowering to bytecode opcodes.
+   - Added prefix lowering for unary `+`, `void`, and `delete` (member/index operands).
+   - Added `TemplateLiteral` lowering to explicit bytecode string-concatenation flow.
+   - Preserved function metadata (`IsAsync`, `IsGenerator`) on bytecode templates for function and function-declaration nodes.
+2. Extended VM opcode surface and constructor semantics:
+   - `FenBrowser.FenEngine/Core/Bytecode/OpCode.cs`
+     - Added `InOperator`, `InstanceOf`, `DeleteProp`, `ToNumber`.
+   - `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+     - Added execution handlers for all new opcodes.
+     - `MakeClosure` now initializes non-arrow function `.prototype` with `constructor` backlink so bytecode `new` + `instanceof` behavior is structurally aligned.
+3. Added regression coverage:
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+     - `Bytecode_InAndInstanceofOperators_ShouldWork`
+     - `Bytecode_VoidDeleteAndUnaryPlus_ShouldWork`
+     - `Bytecode_TemplateLiteral_ShouldWork`.
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+     - `ExecuteSimple_BytecodeFirst_TemplateLiteralFunctionProducesBytecodeFunction`.
+
+Manual verification (owner-run):
+
+1. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests --logger "console;verbosity=minimal"`
+2. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests --logger "console;verbosity=minimal"`
+3. **Confirmed on 2026-02-27**:
+   - `BytecodeExecutionTests`: `Passed 37/37`
+   - `FenRuntimeBytecodeExecutionTests`: `Passed 5/5`
+
+Score note:
+
+1. JavaScript Engine remains **85/100** pending broader bytecode node coverage and target-profile Test262 verification.
+2. This tranche further reduces bytecode fallback on high-frequency operator/interpolation patterns while preserving explicit fallback boundaries for unsupported constructs.
+
+### Implementation Delta (2026-02-27, Tranche JS-BC-8: Switch/Break/Continue Control-Flow Lowering)
+
+Scope completed in this tranche:
+
+1. Extended compiler lowering for structured control flow:
+   - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+   - Added `SwitchStatement` lowering with:
+     - strict-equality case test dispatch,
+     - default-case jump routing,
+     - fallthrough-preserving body layout,
+     - explicit discriminant stack cleanup on matched and unmatched paths.
+   - Added `BreakStatement` and `ContinueStatement` lowering using context-aware jump patching.
+   - Refactored loop lowering (`while`, `do-while`, `for`, `for-in`, `for-of`) to register/publish break and continue targets consistently.
+2. Safety/compatibility guardrails retained:
+   - labeled `break` / `continue` intentionally remain compile-unsupported in bytecode phase,
+   - invalid-context `break` / `continue` remain compile-unsupported in bytecode phase,
+   - all above paths preserve deterministic interpreter fallback behavior.
+3. Added regression coverage:
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+     - `Bytecode_SwitchStatement_WithFallthroughAndBreak_ShouldWork`
+     - `Bytecode_BreakAndContinue_InForLoop_ShouldWork`
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+     - `ExecuteSimple_BytecodeFirst_SwitchControlFunctionProducesBytecodeFunction`.
+
+Manual verification (owner-run):
+
+1. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests --logger "console;verbosity=minimal"`
+2. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests --logger "console;verbosity=minimal"`
+3. **Confirmed on 2026-02-27**:
+   - `BytecodeExecutionTests`: `Passed 39/39`
+   - `FenRuntimeBytecodeExecutionTests`: `Passed 6/6`
+
+Score note:
+
+1. JavaScript Engine remains **85/100** pending broader bytecode node coverage and target-profile Test262 verification.
+2. This tranche removes another high-frequency fallback class in real-world scripts by keeping loop/switch control flow on bytecode path.
+
+### Implementation Delta (2026-02-27, Tranche JS-BC-9: Regex Literal + Delete Identifier Parity)
+
+Scope completed in this tranche:
+
+1. Extended compiler lowering for additional parser-emitted expression forms:
+   - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+   - Added `RegexLiteral` lowering with interpreter-parity object properties:
+     - `source`
+     - `flags`
+     - `lastIndex`
+     - native regex payload on `NativeObject`.
+   - Extended `delete` lowering to support identifier operands with parity to current interpreter behavior (`false`).
+2. Preserved deterministic failure behavior:
+   - invalid regex construction now lowers to an error value compatible with interpreter error-style surface.
+3. Added regression coverage:
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+     - `Bytecode_RegexLiteral_ShouldCreateRegexObjectLikeInterpreter`
+     - `Bytecode_DeleteIdentifier_ShouldReturnFalse`
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+     - `ExecuteSimple_BytecodeFirst_RegexLiteralFunctionProducesBytecodeFunction`.
+
+Manual verification (owner-run):
+
+1. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests --logger "console;verbosity=minimal"`
+2. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests --logger "console;verbosity=minimal"`
+3. **Confirmed on 2026-02-27**:
+   - `BytecodeExecutionTests`: `Passed 41/41`
+   - `FenRuntimeBytecodeExecutionTests`: `Passed 7/7`
+
+Score note:
+
+1. JavaScript Engine remains **85/100** pending broader bytecode node coverage and target-profile Test262 verification.
+2. This tranche reduces fallback for regex-heavy scripts and keeps delete-identifier semantics aligned on the bytecode path.
+
+### Implementation Delta (2026-02-27, Tranche JS-BC-10: Spread Mainline Lowering)
+
+Scope completed in this tranche:
+
+1. Extended bytecode opcode/VM surface for spread execution:
+   - `FenBrowser.FenEngine/Core/Bytecode/OpCode.cs`
+     - Added `CallFromArray`, `ConstructFromArray`, `ArrayAppend`, `ArrayAppendSpread`, `ObjectSpread`.
+   - `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+     - Added call/construct execution paths driven by array-like argument packs.
+     - Added array append/spread-append semantics with length-based expansion.
+     - Added object spread copy semantics for enumerable own keys.
+2. Extended compiler lowering to keep spread-heavy scripts on bytecode path:
+   - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+   - Added spread-aware lowering for:
+     - `ArrayLiteral` (`[...a]`),
+     - `CallExpression` (`fn(...args)`),
+     - `NewExpression` (`new C(...args)`),
+     - object spread in `ObjectLiteral` (`{ ...obj }`).
+   - Added explicit `SpreadElement` handling to avoid hard compile-failure drift when parsed in standalone contexts.
+3. Added regression coverage:
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+     - `Bytecode_ArrayLiteral_WithSpread_ShouldWork`
+     - `Bytecode_Call_WithSpread_ShouldWork`
+     - `Bytecode_New_WithSpread_ShouldWork`
+     - `Bytecode_ObjectLiteral_WithSpread_ShouldWork`
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+     - `ExecuteSimple_BytecodeFirst_SpreadFunctionProducesBytecodeFunction`.
+
+Manual verification (owner-run):
+
+1. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests --logger "console;verbosity=minimal"`
+2. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests --logger "console;verbosity=minimal"`
+3. **Confirmed on 2026-02-27**:
+   - `BytecodeExecutionTests`: `Passed 45/45`
+   - `FenRuntimeBytecodeExecutionTests`: `Passed 8/8`
+
+Score note:
+
+1. JavaScript Engine remains **85/100** pending broader bytecode node coverage and target-profile Test262 verification.
+2. This tranche removes a major modern-JS fallback source (spread in arrays/calls/object literals/constructors) and shifts additional hot-path execution to bytecode.
+
+### Implementation Delta (2026-02-27, Tranche JS-BC-11: Labeled Control-Flow Lowering)
+
+Scope completed in this tranche:
+
+1. Extended bytecode compiler control-flow lowering for labeled statements:
+   - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+   - Added `LabeledStatement` lowering with label-context stack tracking.
+   - Added labeled `break` lowering to explicit patched jump targets for the matching label.
+   - Added labeled `continue` lowering for labeled loop statements (`while`, `do-while`, `for`, `for-in`, `for-of`) with strict compile guardrail when target label is not a loop.
+2. Refactored loop lowering to share deterministic emit paths:
+   - while/do-while/for/for-in/for-of now flow through helper emitters with consistent break/continue patching and label composition.
+3. Added regression coverage:
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+     - `Bytecode_LabeledBreak_OnBlock_ShouldWork`
+     - `Bytecode_LabeledContinue_ToOuterLoop_ShouldWork`
+     - `Bytecode_LabeledBreak_FromSwitchToOuterLoop_ShouldWork`
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+     - `ExecuteSimple_BytecodeFirst_LabeledControlFunctionProducesBytecodeFunction`.
+
+Manual verification (owner-run):
+
+1. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests --logger "console;verbosity=minimal"`
+2. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests --logger "console;verbosity=minimal"`
+3. **Confirmed on 2026-02-27**:
+   - `BytecodeExecutionTests`: `Passed 48/48`
+   - `FenRuntimeBytecodeExecutionTests`: `Passed 9/9`
+
+Score note:
+
+1. JavaScript Engine remains **85/100** pending broader bytecode node coverage and target-profile Test262 verification.
+2. This tranche removes another labeled-control fallback source and keeps additional structured control-flow on bytecode mainline.
+
+### Implementation Delta (2026-02-27, Tranche JS-BC-12: NewTarget Bytecode Support)
+
+Scope completed in this tranche:
+
+1. Extended opcode + VM frame model for `new.target`:
+   - `FenBrowser.FenEngine/Core/Bytecode/OpCode.cs`
+     - Added `LoadNewTarget`.
+   - `FenBrowser.FenEngine/Core/Bytecode/VM/CallFrame.cs`
+     - Added `NewTarget` slot on call frames (reset-safe).
+   - `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+     - Added `LoadNewTarget` execution handler.
+     - Wired frame setup:
+       - `Call` / `CallFromArray` frames set `NewTarget = undefined`.
+       - `Construct` / `ConstructFromArray` frames set `NewTarget = constructor function`.
+2. Extended compiler lowering:
+   - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+   - Added `NewTargetExpression` lowering to `LoadNewTarget`.
+3. Added regression coverage:
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+     - `Bytecode_NewTarget_InNormalCall_ShouldBeUndefined`
+     - `Bytecode_NewTarget_InConstructor_ShouldReferenceConstructor`
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+     - `ExecuteSimple_BytecodeFirst_NewTargetFunctionProducesBytecodeFunction`
+       - verifies bytecode emission and `LoadNewTarget` opcode presence in runtime bytecode-first path.
+
+Manual verification (owner-run):
+
+1. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests --logger "console;verbosity=minimal"`
+2. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests --logger "console;verbosity=minimal"`
+3. **Confirmed on 2026-02-27**:
+   - `BytecodeExecutionTests`: `Passed 50/50`
+   - `FenRuntimeBytecodeExecutionTests`: `Passed 10/10`
+
+Score note:
+
+1. JavaScript Engine remains **85/100** pending broader bytecode node coverage and target-profile Test262 verification.
+2. This tranche closes `new.target` fallback in bytecode compilation and hardens constructor-context semantics in VM frame routing.
+
+### Implementation Delta (2026-02-27, Tranche JS-BC-13: ImportMeta Bytecode Support)
+
+Scope completed in this tranche:
+
+1. Extended compiler lowering for `import.meta`:
+   - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+   - Added `ImportMetaExpression` handling in node dispatch.
+   - Added `EmitImportMetaExpression()` helper:
+     - emits object creation on bytecode path,
+     - writes `url` property with `file:///local/script.js` to preserve current interpreter parity.
+2. Added regression coverage:
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+     - `Bytecode_ImportMeta_ShouldExposeUrl`
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+     - `ExecuteSimple_BytecodeFirst_ImportMetaFunctionProducesBytecodeFunction`
+       - verifies runtime bytecode-first function emission and bytecode execution result for `import.meta.url`.
+
+Manual verification (owner-run):
+
+1. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests`
+2. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests`
+3. **Confirmed on 2026-02-27**:
+   - `BytecodeExecutionTests`: `Passed 51/51`
+   - `FenRuntimeBytecodeExecutionTests`: `Passed 11/11`
+
+Score note:
+
+1. JavaScript Engine remains **85/100** pending broader bytecode node coverage and target-profile Test262 verification.
+2. This tranche closes `import.meta` compilation fallback and keeps module metadata access on bytecode mainline.
+
+### Implementation Delta (2026-02-27, Tranche JS-BC-14: IfExpression Bytecode Support)
+
+Scope completed in this tranche:
+
+1. Extended compiler lowering for `IfExpression`:
+   - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+   - Added `IfExpression` dispatch and lowering helper `EmitIfExpression(...)`.
+   - Added branch block expression helper `EmitBlockAsExpression(...)` to keep expression results on stack.
+   - Added explicit guardrail:
+     - if branch block tail is not an `ExpressionStatement`, bytecode compilation throws compile-unsupported and safely falls back to interpreter.
+2. Added regression coverage:
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+     - `Bytecode_IfExpression_ShouldEvaluateToBranchValue`
+     - `Bytecode_IfExpression_WithoutElse_ShouldReturnNull`
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+     - `ExecuteSimple_BytecodeFirst_IfExpressionFunctionProducesBytecodeFunction`
+       - verifies runtime bytecode-first emission plus branch result execution for `if` expressions.
+
+Manual verification (owner-run):
+
+1. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests`
+2. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests`
+3. **Confirmed on 2026-02-27**:
+   - `BytecodeExecutionTests`: `Passed 53/53`
+   - `FenRuntimeBytecodeExecutionTests`: `Passed 12/12`
+
+Score note:
+
+1. JavaScript Engine remains **85/100** pending broader bytecode node coverage and target-profile Test262 verification.
+2. This tranche closes a remaining branch-expression fallback class while preserving strict fallback boundaries for unsupported branch-tail statement forms.
+
+### Implementation Delta (2026-02-27, Tranche JS-BC-15: AsyncFunctionExpression + Async Promise Return Parity)
+
+Scope completed in this tranche:
+
+1. Extended compiler lowering for async function expressions:
+   - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+   - Added `AsyncFunctionExpression` dispatch and lowering:
+     - emits bytecode closures with `IsAsync = true`,
+     - preserves simple-parameter guardrails consistent with existing callable lowering.
+2. Extended VM frame model and async return behavior:
+   - `FenBrowser.FenEngine/Core/Bytecode/VM/CallFrame.cs`
+     - added `IsAsyncFunction` slot on call frames (reset-safe).
+   - `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+     - call/call-from-array frame setup now propagates async metadata from bytecode callee,
+     - return paths (explicit `return` and implicit end-of-frame) now wrap async results into resolved `JsPromise` objects when needed.
+3. Added regression coverage:
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+     - `Bytecode_AsyncFunctionDeclaration_ShouldReturnResolvedPromise`
+     - `Bytecode_AsyncFunctionExpression_ShouldReturnResolvedPromise`
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+     - `ExecuteSimple_BytecodeFirst_AsyncFunctionExpressionProducesBytecodeFunction`
+       - verifies bytecode function emission, async metadata, and Promise-shaped runtime result.
+
+Manual verification (owner-run):
+
+1. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests`
+2. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests`
+3. **Confirmed on 2026-02-27**:
+   - `BytecodeExecutionTests`: `Passed 55/55`
+   - `FenRuntimeBytecodeExecutionTests`: `Passed 13/13`
+
+Score note:
+
+1. JavaScript Engine remains **85/100** pending broader bytecode node coverage and target-profile Test262 verification.
+2. This tranche closes async-function-expression fallback and aligns bytecode async completion values with Promise return semantics.
+
+### Implementation Delta (2026-02-27, Tranche JS-BC-16: AwaitExpression Bytecode Support + Async Error-Reject Parity)
+
+Scope completed in this tranche:
+
+1. Extended opcode + compiler support for `await`:
+   - `FenBrowser.FenEngine/Core/Bytecode/OpCode.cs`
+     - added `Await`.
+   - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+     - added `AwaitExpression` lowering to evaluate argument and emit `Await`.
+2. Extended VM await execution semantics:
+   - `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+   - Added `Await` handler with interpreter-parity behavior:
+     - plain values pass through directly,
+     - settled promises resolve/reject immediately to value/error,
+     - pending promises use bounded microtask/task pumping (`PerformMicrotaskCheckpoint`, `ProcessNextTask`) before returning fallback `undefined` if still unsettled.
+3. Hardened async return wrapping semantics:
+   - async frame return wrapper now rejects `Promise` on `Error` values and resolves otherwise, improving parity with interpreter async rejection model.
+4. Added regression coverage:
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+     - `Bytecode_AwaitExpression_OnPlainValue_ShouldReturnValue`
+     - `Bytecode_AwaitExpression_OnPromiseValue_ShouldUnwrapResult`
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+     - `ExecuteSimple_BytecodeFirst_AsyncAwaitFunctionProducesBytecodeFunction`
+       - verifies bytecode function emission includes `Await` opcode and Promise-shaped async result.
+
+Manual verification (owner-run):
+
+1. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests`
+2. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests`
+3. **Confirmed on 2026-02-27**:
+   - `BytecodeExecutionTests`: `Passed 57/57`
+   - `FenRuntimeBytecodeExecutionTests`: `Passed 14/14`
+
+Score note:
+
+1. JavaScript Engine remains **85/100** pending broader bytecode node coverage and target-profile Test262 verification.
+2. This tranche closes `await` compilation fallback and improves async rejection parity on bytecode mainline.
+
+### Implementation Delta (2026-02-27, Tranche JS-BC-17: Async Throw-to-Rejected-Promise Hardening)
+
+Scope completed in this tranche:
+
+1. Hardened exception control-flow resumption:
+   - `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+   - `Throw` opcode handler now refetches active frame after exception dispatch (`goto fetch_frame`) so caller/handler transitions remain deterministic.
+2. Hardened async uncaught-exception semantics:
+   - `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+   - `HandleException(...)` now detects uncaught async frames and converts them into rejected Promise results instead of leaking host-level uncaught exceptions.
+3. Added regression coverage:
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+     - `Bytecode_AsyncThrow_ShouldReturnRejectedPromise`
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+     - `ExecuteSimple_BytecodeFirst_AsyncThrowFunctionProducesRejectedPromise`
+       - verifies bytecode-first async throw path returns a rejected Promise with expected reason payload.
+
+Manual verification (owner-run):
+
+1. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests`
+2. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests`
+3. **Confirmed on 2026-02-27**:
+   - `BytecodeExecutionTests`: `Passed 58/58`
+   - `FenRuntimeBytecodeExecutionTests`: `Passed 15/15`
+
+Score note:
+
+1. JavaScript Engine remains **85/100** pending broader bytecode node coverage and target-profile Test262 verification.
+2. This tranche closes an async exception propagation pitfall and aligns bytecode async throw behavior with Promise rejection expectations.
+
+### Implementation Delta (2026-02-27, Tranche JS-BC-18: Bitwise/Compound Node Dispatch Coverage)
+
+Scope completed in this tranche:
+
+1. Extended compiler dispatch coverage for missing AST nodes:
+   - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+   - Added direct visit handling for:
+     - `BitwiseExpression` (lowered to existing infix operator flow),
+     - `CompoundAssignmentExpression` (lowered to assignment + infix flow with operator validation).
+2. Added compile-time guardrails for compound assignment lowering:
+   - Unsupported/invalid compound operators now remain explicit compile-unsupported paths.
+3. Added regression coverage:
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+     - `Bytecode_BitwiseExpressionNode_ShouldCompileAndExecute`
+     - `Bytecode_CompoundAssignmentExpressionNode_ShouldCompileAndExecute`
+4. Recomputed bytecode dispatch coverage snapshot:
+   - `AST_NODE_TOTAL=66`
+   - `BYTECODE_DISPATCH_SUPPORTED=56`
+   - `BYTECODE_DISPATCH_PERCENT=84.85`
+   - remaining missing node set:
+     - `ClassExpression`, `ClassProperty`, `ClassStatement`, `ExportDeclaration`, `ImportDeclaration`, `MethodDefinition`, `PrivateIdentifier`, `StaticBlock`, `WithStatement`, `YieldExpression`.
+
+Manual verification (owner-run):
+
+1. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests -p:RunAnalyzers=false -v minimal`
+2. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests -p:RunAnalyzers=false -v minimal`
+3. **Confirmed on 2026-02-27**:
+   - `BytecodeExecutionTests`: `Passed 60/60`
+   - `FenRuntimeBytecodeExecutionTests`: `Passed 15/15`
+
+Score note:
+
+1. JavaScript Engine remains **85/100** pending remaining parser-emitted node coverage (`class`/module/yield/with-family) and target-profile Test262 verification.
+2. This tranche raises bytecode compiler dispatch coverage and keeps bytecode-mainline stability intact under existing runtime tests.
+
+### Implementation Delta (2026-02-27, Tranche JS-BC-19: Class/Module/With/Yield Dispatch Completion)
+
+Scope completed in this tranche:
+
+1. Closed remaining parser-emitted bytecode compiler dispatch gaps:
+   - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+   - Added dispatch + emit coverage for:
+     - `ClassExpression`, `ClassProperty`, `ClassStatement`,
+     - `ExportDeclaration`, `ImportDeclaration`,
+     - `MethodDefinition`, `PrivateIdentifier`,
+     - `StaticBlock`, `WithStatement`, `YieldExpression`.
+2. Added supporting VM/runtime semantics for new lowering paths:
+   - `FenBrowser.FenEngine/Core/Bytecode/OpCode.cs`
+     - added `EnterWith`, `ExitWith`.
+   - `FenBrowser.FenEngine/Core/Bytecode/VM/CallFrame.cs`
+     - added frame-scoped with-environment stack and environment swap helper.
+   - `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+     - implemented `EnterWith`/`ExitWith` execution flow,
+     - fixed nested-frame `Halt` unwinding so implicit-return bytecode functions/constructors do not terminate outer script execution,
+     - fixed `LoadProp`/`StoreProp`/`DeleteProp` object resolution to include function values via `AsObject()`, enabling class static field/method installation.
+3. Added/updated regression coverage:
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+     - class/module/with/yield/private/method/property/static-block regressions including
+       `Bytecode_ClassStatement_StaticField_ShouldBindOnConstructor`.
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+     - runtime bytecode-first class constructor/static field regression:
+       `ExecuteSimple_BytecodeFirst_ClassStatementProducesBytecodeConstructor`.
+4. Recomputed bytecode dispatch coverage snapshot:
+   - `AST_NODE_TOTAL=66`
+   - `BYTECODE_DISPATCH_SUPPORTED=66`
+   - `BYTECODE_DISPATCH_PERCENT=100.00`
+   - remaining missing node set:
+     - none.
+
+Manual verification (owner-run):
+
+1. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests -p:RunAnalyzers=false -v minimal`
+2. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests -p:RunAnalyzers=false -v minimal`
+3. **Confirmed on 2026-02-27**:
+   - `BytecodeExecutionTests`: `Passed 71/71`
+   - `FenRuntimeBytecodeExecutionTests`: `Passed 16/16`
+
+Score note:
+
+1. JavaScript Engine remains **85/100** pending target-profile Test262 verification and subsystem-wide production scoring gates.
+2. This tranche closes the remaining parser-emitted bytecode dispatch gaps and hardens class static semantics on bytecode mainline.
+
+### Implementation Delta (2026-02-27, Tranche JS-BC-20: Rest Parameters + Arguments Object Parity)
+
+Scope completed in this tranche:
+
+1. Extended bytecode callable parameter support:
+   - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+   - compiler parameter validation now allows rest parameters while keeping destructuring parameters as explicit compile-unsupported.
+2. Hardened bytecode frame argument binding semantics:
+   - `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+   - added shared `BindFunctionArguments(...)` path used by `Call`, `CallFromArray`, `Construct`, and `ConstructFromArray`,
+   - rest parameter binding now collects trailing args into array-like objects on bytecode frames,
+   - non-arrow callables now receive interpreter-parity `arguments` object fields (`length`, indexed values, `callee`, `__paramNames__`).
+3. Added/updated regression coverage:
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+     - `Bytecode_RestParameters_ShouldCollectExtraArguments`
+     - `Bytecode_FunctionArgumentsObject_ShouldExposeLengthAndIndexedValues`
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+     - `ExecuteSimple_BytecodeFirst_RestParameterFunctionProducesBytecodeFunction`
+     - fallback guardrails now validated through destructuring-parameter compile-unsupported paths:
+       - `ExecuteSimple_CompileUnsupported_UsesInterpreterFallback`
+       - `ExecuteSimple_WithInterpreterOnlyGlobals_CallHeavyScriptAvoidsVmPath`
+4. Dispatch coverage remains complete:
+   - `AST_NODE_TOTAL=66`
+   - `BYTECODE_DISPATCH_SUPPORTED=66`
+   - `BYTECODE_DISPATCH_PERCENT=100.00`
+
+Manual verification (owner-run):
+
+1. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests`
+2. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests`
+3. **Confirmed on 2026-02-27**:
+   - `BytecodeExecutionTests`: `Passed 74/74`
+   - `FenRuntimeBytecodeExecutionTests`: `Passed 18/18`
+
+Score note:
+
+1. JavaScript Engine remains **85/100** pending target-profile Test262 verification and subsystem-wide production scoring gates.
+2. This tranche removes a remaining bytecode fallback source (rest parameters) and aligns runtime `arguments` semantics for bytecode-mainline execution.
+
+### Implementation Delta (2026-02-27, Tranche JS-BC-21: Destructuring Coverage Expansion)
+
+Scope completed in this tranche:
+
+1. Expanded bytecode destructuring lowering support in compiler:
+   - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+   - removed identifier-only source guard for declaration destructuring,
+   - normalized parser-recovery declaration shape where pattern can arrive as root `AssignmentExpression` with `Value = null`,
+   - added object-rest destructuring lowering (`ObjectSpread` + consumed-key deletion),
+   - added array-rest destructuring lowering (index/length loop + `ArrayAppend`),
+   - added computed object-key destructuring lowering in binding paths,
+   - updated supported-pattern validation to allow rest/computed destructuring forms where AST metadata is present.
+2. Added/updated regression coverage:
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+     - `Bytecode_DestructuringDeclaration_ShouldBindFromExpressionSource`
+     - `Bytecode_DestructuringObjectRest_ShouldCollectRemainingProperties`
+     - `Bytecode_DestructuringArrayRest_ShouldCollectRemainingElements`
+     - `Bytecode_DestructuringComputedKey_ShouldResolveRuntimeKey`
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+     - added `ExecuteSimple_BytecodeFirst_DestructuringParameterWithObjectRestProducesBytecodeFunction`,
+     - fallback guardrail tests now use a still-unsupported bytecode construct (`break` outside breakable context in function body):
+       - `ExecuteSimple_CompileUnsupported_UsesInterpreterFallback`
+       - `ExecuteSimple_WithInterpreterOnlyGlobals_CallHeavyScriptAvoidsVmPath`.
+3. Dispatch coverage remains complete:
+   - `AST_NODE_TOTAL=66`
+   - `BYTECODE_DISPATCH_SUPPORTED=66`
+   - `BYTECODE_DISPATCH_PERCENT=100.00`
+
+Manual verification (owner-run):
+
+1. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests`
+2. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests`
+3. `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.BenchmarkTests`
+4. **Confirmed on 2026-02-27**:
+   - `BytecodeExecutionTests`: `Passed 82/82`
+   - `FenRuntimeBytecodeExecutionTests`: `Passed 20/20`
+   - `BenchmarkTests`: `Passed 3/3`
+
+Score note:
+
+1. JavaScript Engine remains **85/100** pending target-profile Test262 verification and subsystem-wide production scoring gates.
+2. This tranche removes additional destructuring fallback sources and keeps bytecode mainline coverage complete for parser-emitted node dispatch.
 
 ---
 
