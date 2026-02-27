@@ -9,6 +9,7 @@ using FenBrowser.FenEngine.Rendering.Core;
 using SkiaSharp;
 using FenBrowser.Core;
 using FenBrowser.Core.Engine;
+using System.Diagnostics;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -49,6 +50,12 @@ namespace FenBrowser.FenEngine.Rendering
         private float _lastViewportHeight;
         private float _lastScrollY;
         private Node _lastRoot;
+        private const float DefaultViewportWidth = 1920f;
+        private const float DefaultViewportHeight = 1080f;
+        private const float MaxSafeViewportDimension = 16384f;
+        public RendererSafetyPolicy SafetyPolicy { get; set; } = RendererSafetyPolicy.Default;
+        public bool LastFrameWatchdogTriggered { get; private set; }
+        public string LastFrameWatchdogReason { get; private set; }
         
         /// <summary>
         /// Current overlays for input elements.
@@ -110,6 +117,10 @@ namespace FenBrowser.FenEngine.Rendering
             
             _isRendering = true;
             var pipelineContext = PipelineContext.Current;
+            var frameWatchdog = Stopwatch.StartNew();
+            bool watchdogAbortBeforeRaster = false;
+            LastFrameWatchdogTriggered = false;
+            LastFrameWatchdogReason = null;
             try
             {
             using var _frameScope = pipelineContext.BeginScopedFrame();
@@ -133,11 +144,15 @@ namespace FenBrowser.FenEngine.Rendering
 
 
             
-            float layoutWidth = separateLayoutViewport?.Width ?? viewport.Width;
-            float layoutHeight = separateLayoutViewport?.Height ?? viewport.Height;
+            float layoutWidth = SanitizeViewportDimension(
+                separateLayoutViewport?.Width ?? viewport.Width,
+                DefaultViewportWidth);
+            float layoutHeight = SanitizeViewportDimension(
+                separateLayoutViewport?.Height ?? viewport.Height,
+                DefaultViewportHeight);
             
-            _viewportWidth = layoutWidth > 0 ? layoutWidth : 1920;
-            _viewportHeight = layoutHeight > 0 ? layoutHeight : 1080;
+            _viewportWidth = layoutWidth;
+            _viewportHeight = layoutHeight;
             
             // CRITICAL: Update global CSS parser context for viewport units (vh/vw) mechanism
             CssParser.MediaViewportWidth = _viewportWidth;
@@ -320,6 +335,7 @@ namespace FenBrowser.FenEngine.Rendering
                 // PHASE 2: Build Paint Tree
                 using (pipelineContext.BeginScopedStage(PipelineStage.Painting))
                 {
+                var paintStageWatchdog = Stopwatch.StartNew();
                 RenderPipeline.EnterPaint(); // Checks LayoutFrozen
                 bool paintInvalidationSignal = isLayoutDirty
                                                || root.PaintDirty
@@ -390,6 +406,34 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 _paintStabilityController.ObserveFrame(paintInvalidationSignal, rebuiltPaintTree);
                 pipelineContext.SetPaintSnapshot(_lastPaintTree);
+                paintStageWatchdog.Stop();
+
+                if (SafetyPolicy?.EnableWatchdog == true)
+                {
+                    var paintMs = paintStageWatchdog.Elapsed.TotalMilliseconds;
+                    if (paintMs > SafetyPolicy.MaxPaintStageMs)
+                    {
+                        LastFrameWatchdogTriggered = true;
+                        LastFrameWatchdogReason = $"Paint stage exceeded budget ({paintMs:F2}ms > {SafetyPolicy.MaxPaintStageMs:F2}ms)";
+                        FenLogger.Warn($"[SkiaDomRenderer] Watchdog: {LastFrameWatchdogReason}", LogCategory.Performance);
+                        if (SafetyPolicy.SkipRasterWhenOverBudget)
+                        {
+                            watchdogAbortBeforeRaster = true;
+                        }
+                    }
+
+                    var frameMsAfterPaint = frameWatchdog.Elapsed.TotalMilliseconds;
+                    if (frameMsAfterPaint > SafetyPolicy.MaxFrameBudgetMs)
+                    {
+                        LastFrameWatchdogTriggered = true;
+                        LastFrameWatchdogReason = $"Frame exceeded budget before raster ({frameMsAfterPaint:F2}ms > {SafetyPolicy.MaxFrameBudgetMs:F2}ms)";
+                        FenLogger.Warn($"[SkiaDomRenderer] Watchdog: {LastFrameWatchdogReason}", LogCategory.Performance);
+                        if (SafetyPolicy.SkipRasterWhenOverBudget)
+                        {
+                            watchdogAbortBeforeRaster = true;
+                        }
+                    }
+                }
                 }
 
 
@@ -442,6 +486,7 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 using (pipelineContext.BeginScopedStage(PipelineStage.Rasterizing))
                 {
+                    var rasterStageWatchdog = Stopwatch.StartNew();
                     bool useDamageRasterization = _damageRasterizationPolicy.ShouldUseDamageRasterization(
                         hasBaseFrame,
                         _lastDamageRegions,
@@ -451,7 +496,13 @@ namespace FenBrowser.FenEngine.Rendering
                     LastDamageAreaRatio = damageAreaRatio;
                     LastFrameUsedDamageRasterization = useDamageRasterization;
 
-                    if (useDamageRasterization)
+                    if (watchdogAbortBeforeRaster && SafetyPolicy?.SkipRasterWhenOverBudget == true)
+                    {
+                        // Fail-safe: avoid expensive raster work when frame budget is already blown.
+                        canvas.Clear(bgColor);
+                        LastFrameUsedDamageRasterization = false;
+                    }
+                    else if (useDamageRasterization)
                     {
                         _renderer.RenderDamaged(canvas, _lastPaintTree, viewport, bgColor, _lastDamageRegions);
                     }
@@ -460,6 +511,26 @@ namespace FenBrowser.FenEngine.Rendering
                         _renderer.Render(canvas, _lastPaintTree, viewport, bgColor);
                     }
                     RenderPipeline.EndPaint(); // State -> Composite
+                    rasterStageWatchdog.Stop();
+
+                    if (SafetyPolicy?.EnableWatchdog == true)
+                    {
+                        var rasterMs = rasterStageWatchdog.Elapsed.TotalMilliseconds;
+                        if (rasterMs > SafetyPolicy.MaxRasterStageMs)
+                        {
+                            LastFrameWatchdogTriggered = true;
+                            LastFrameWatchdogReason = $"Raster stage exceeded budget ({rasterMs:F2}ms > {SafetyPolicy.MaxRasterStageMs:F2}ms)";
+                            FenLogger.Warn($"[SkiaDomRenderer] Watchdog: {LastFrameWatchdogReason}", LogCategory.Performance);
+                        }
+
+                        var frameMs = frameWatchdog.Elapsed.TotalMilliseconds;
+                        if (frameMs > SafetyPolicy.MaxFrameBudgetMs)
+                        {
+                            LastFrameWatchdogTriggered = true;
+                            LastFrameWatchdogReason = $"Frame exceeded budget during raster ({frameMs:F2}ms > {SafetyPolicy.MaxFrameBudgetMs:F2}ms)";
+                            FenLogger.Warn($"[SkiaDomRenderer] Watchdog: {LastFrameWatchdogReason}", LogCategory.Performance);
+                        }
+                    }
                 }
 
                 using (pipelineContext.BeginScopedStage(PipelineStage.Presenting))
@@ -735,6 +806,21 @@ namespace FenBrowser.FenEngine.Rendering
             var state = _scrollManager.GetScrollState(scrollable);
             if (state != null) return state.ScrollY;
             return 0f;
+        }
+
+        private static float SanitizeViewportDimension(float value, float fallback)
+        {
+            if (float.IsNaN(value) || float.IsInfinity(value) || value <= 0f)
+            {
+                return fallback;
+            }
+
+            if (value > MaxSafeViewportDimension)
+            {
+                return MaxSafeViewportDimension;
+            }
+
+            return value;
         }
 
         private void CollectAllNodes(IReadOnlyList<PaintNodeBase> nodes, List<PaintNodeBase> result)

@@ -9,6 +9,12 @@ namespace FenBrowser.FenEngine.Rendering.Css
         private readonly CssTokenizer _tokenizer;
         private CssToken _currentToken;
         private int _ruleCount = 0; // For stable sorting
+        private int _emittedRuleCount;
+        private bool _ruleLimitLogged;
+        private bool _declarationLimitLogged;
+
+        public int MaxRules { get; set; } = 200000;
+        public int MaxDeclarationsPerBlock { get; set; } = 8192;
 
         public CssSyntaxParser(CssTokenizer tokenizer)
         {
@@ -39,16 +45,16 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 if (_currentToken.Type == CssTokenType.AtKeyword)
                 {
                     var rule = ConsumeAtRule();
-                    if (rule != null) sheet.Rules.Add(rule);
+                    if (!TryAddRule(sheet.Rules, rule)) break;
                     ConsumeWhitespace();
                     continue;
                 }
 
                 // Qualified Rule (Style Rule)
                 var qRule = ConsumeQualifiedRule();
-                if (qRule != null) 
+                if (qRule != null && !TryAddRule(sheet.Rules, qRule))
                 {
-                    sheet.Rules.Add(qRule);
+                    break;
                 }
                 ConsumeWhitespace();
             }
@@ -159,6 +165,32 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 return scopeRule;
             }
 
+            if (name.Equals("font-face", StringComparison.OrdinalIgnoreCase))
+            {
+                var fontFaceRule = new CssFontFaceRule();
+
+                // Consume any at-rule prelude tokens up to the declaration block.
+                while (_currentToken.Type != CssTokenType.LeftBrace &&
+                       _currentToken.Type != CssTokenType.Semicolon &&
+                       _currentToken.Type != CssTokenType.EOF)
+                {
+                    ConsumeToken();
+                }
+
+                if (_currentToken.Type == CssTokenType.LeftBrace)
+                {
+                    fontFaceRule.Declarations.AddRange(ConsumeDeclarationBlock());
+                    return fontFaceRule;
+                }
+
+                if (_currentToken.Type == CssTokenType.Semicolon)
+                {
+                    ConsumeToken();
+                }
+
+                return null;
+            }
+
             // Unknown @rule, consume until semicolon or block
             while (_currentToken.Type != CssTokenType.Semicolon && _currentToken.Type != CssTokenType.LeftBrace && _currentToken.Type != CssTokenType.EOF)
             {
@@ -192,12 +224,12 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 if (_currentToken.Type == CssTokenType.AtKeyword)
                 {
                     var subRule = ConsumeAtRule();
-                    if (subRule != null) rules.Add(subRule);
+                    if (!TryAddRule(rules, subRule)) return;
                 }
                 else
                 {
                     var subRule = ConsumeQualifiedRule();
-                    if (subRule != null) rules.Add(subRule);
+                    if (!TryAddRule(rules, subRule)) return;
                 }
             }
         }
@@ -238,9 +270,25 @@ namespace FenBrowser.FenEngine.Rendering.Css
         {
             var declarations = new List<CssDeclaration>();
             ConsumeToken(); // {
+            int declarationCount = 0;
 
             while (_currentToken.Type != CssTokenType.RightBrace && _currentToken.Type != CssTokenType.EOF)
             {
+                if (declarationCount >= MaxDeclarationsPerBlock)
+                {
+                    if (!_declarationLimitLogged)
+                    {
+                        _declarationLimitLogged = true;
+                        FenBrowser.Core.FenLogger.Warn($"[CssSyntaxParser] Declaration block limit reached ({MaxDeclarationsPerBlock}). Remaining declarations were skipped.", FenBrowser.Core.Logging.LogCategory.CSS);
+                    }
+
+                    while (_currentToken.Type != CssTokenType.RightBrace && _currentToken.Type != CssTokenType.EOF)
+                    {
+                        ConsumeComponentValue();
+                    }
+                    break;
+                }
+
                 if (_currentToken.Type == CssTokenType.Whitespace || _currentToken.Type == CssTokenType.Semicolon)
                 {
                     ConsumeToken();
@@ -248,7 +296,11 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 }
 
                 var decl = ConsumeDeclaration();
-                if (decl != null) declarations.Add(decl);
+                if (decl != null)
+                {
+                    declarations.Add(decl);
+                    declarationCount++;
+                }
             }
 
             if (_currentToken.Type == CssTokenType.RightBrace)
@@ -257,6 +309,28 @@ namespace FenBrowser.FenEngine.Rendering.Css
             }
 
             return declarations;
+        }
+
+        private bool TryAddRule(List<CssRule> target, CssRule rule)
+        {
+            if (rule == null)
+            {
+                return true;
+            }
+
+            if (_emittedRuleCount >= MaxRules)
+            {
+                if (!_ruleLimitLogged)
+                {
+                    _ruleLimitLogged = true;
+                    FenBrowser.Core.FenLogger.Warn($"[CssSyntaxParser] Rule limit reached ({MaxRules}). Remaining rules were skipped.", FenBrowser.Core.Logging.LogCategory.CSS);
+                }
+                return false;
+            }
+
+            target.Add(rule);
+            _emittedRuleCount++;
+            return true;
         }
 
         private CssDeclaration ConsumeDeclaration()
@@ -268,15 +342,16 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 return null;
             }
 
-            string property = _currentToken.Value.ToLowerInvariant();
+            string property = NormalizePropertyName(_currentToken.Value);
             ConsumeToken();
             
             while (_currentToken.Type == CssTokenType.Whitespace) ConsumeToken();
 
             if (_currentToken.Type != CssTokenType.Colon)
             {
-                // Parse error
-                return null; // TODO: proper recovery
+                // Parse error: recover until declaration boundary while preserving parser progress.
+                RecoverMalformedDeclaration();
+                return null;
             }
             ConsumeToken(); // :
 
@@ -330,6 +405,37 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 Value = valueStr.Trim(),
                 IsImportant = important
             };
+        }
+
+        private static string NormalizePropertyName(string property)
+        {
+            if (string.IsNullOrEmpty(property))
+            {
+                return property ?? string.Empty;
+            }
+
+            // Custom properties are case-sensitive and must preserve authored casing.
+            if (property.StartsWith("--", StringComparison.Ordinal))
+            {
+                return property;
+            }
+
+            return property.ToLowerInvariant();
+        }
+
+        private void RecoverMalformedDeclaration()
+        {
+            while (_currentToken.Type != CssTokenType.Semicolon &&
+                   _currentToken.Type != CssTokenType.RightBrace &&
+                   _currentToken.Type != CssTokenType.EOF)
+            {
+                ConsumeComponentValue();
+            }
+
+            if (_currentToken.Type == CssTokenType.Semicolon)
+            {
+                ConsumeToken();
+            }
         }
 
         private void ConsumeToken()

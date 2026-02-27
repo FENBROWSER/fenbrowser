@@ -13,6 +13,11 @@ namespace FenBrowser.FenEngine.Rendering.Css
     /// </summary>
     public static class SelectorMatcher
     {
+        private const int MaxSelectorLength = 16384;
+        private const int MaxSelectorParseDepth = 32;
+        private const int MaxSelectorChains = 2048;
+        private const int MaxSegmentsPerChain = 4096;
+
         #region Public API
 
         public static bool Matches(Element element, CssSelector selector, int depth = 0)
@@ -105,15 +110,27 @@ namespace FenBrowser.FenEngine.Rendering.Css
         /// </summary>
         public static List<SelectorChain> ParseSelectorList(string selector)
         {
+            return ParseSelectorListInternal(selector, 0);
+        }
+
+        private static List<SelectorChain> ParseSelectorListInternal(string selector, int depth)
+        {
             var result = new List<SelectorChain>();
             if (string.IsNullOrWhiteSpace(selector)) return result;
+            if (depth > MaxSelectorParseDepth) return result;
+            if (selector.Length > MaxSelectorLength) return result;
 
             // Split by comma (respecting parentheses)
             var parts = SplitByComma(selector.Trim());
             
             foreach (var part in parts)
             {
-                var chain = ParseChain(part.Trim());
+                if (result.Count >= MaxSelectorChains)
+                {
+                    break;
+                }
+
+                var chain = ParseChain(part.Trim(), depth);
                 if (chain != null && chain.Segments.Count > 0)
                 {
                     result.Add(chain);
@@ -126,16 +143,22 @@ namespace FenBrowser.FenEngine.Rendering.Css
         /// <summary>
         /// Parse a single selector chain (e.g., "div.class > span").
         /// </summary>
-        private static SelectorChain ParseChain(string selector)
+        private static SelectorChain ParseChain(string selector, int depth)
         {
             var chain = new SelectorChain();
             if (string.IsNullOrWhiteSpace(selector)) return chain;
 
             int i = 0;
             char combinator = ' ';
+            int safety = 0;
 
             while (i < selector.Length)
             {
+                if (safety++ > selector.Length * 4 + 64)
+                {
+                    break;
+                }
+
                 // Skip whitespace
                 while (i < selector.Length && char.IsWhiteSpace(selector[i])) i++;
                 if (i >= selector.Length) break;
@@ -149,15 +172,30 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     continue;
                 }
 
+                // Unexpected comma in a chain should not trap parser progress.
+                if (c == ',')
+                {
+                    i++;
+                    continue;
+                }
+
                 // Parse simple selector
-                var (segment, newPos) = ParseSimpleSelector(selector, i);
+                int before = i;
+                var (segment, newPos) = ParseSimpleSelector(selector, i, depth);
                 if (segment != null)
                 {
                     segment.Combinator = combinator;
                     chain.Segments.Add(segment);
                     combinator = ' '; // Reset to descendant
+
+                    if (chain.Segments.Count >= MaxSegmentsPerChain)
+                    {
+                        break;
+                    }
                 }
-                i = newPos;
+
+                // Hard progress guard for malformed selectors.
+                i = newPos <= before ? before + 1 : newPos;
             }
 
             return chain;
@@ -166,7 +204,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
         /// <summary>
         /// Parse a simple selector (tag, class, id, attributes, pseudo).
         /// </summary>
-        private static (SelectorSegment segment, int newPos) ParseSimpleSelector(string selector, int start)
+        private static (SelectorSegment segment, int newPos) ParseSimpleSelector(string selector, int start, int depth)
         {
             var segment = new SelectorSegment();
             int i = start;
@@ -219,12 +257,12 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     string args = null;
                     if (i < selector.Length && selector[i] == '(')
                     {
-                        int depth = 1;
+                        int parenDepth = 1;
                         int argStart = ++i;
-                        while (i < selector.Length && depth > 0)
+                        while (i < selector.Length && parenDepth > 0)
                         {
-                            if (selector[i] == '(') depth++;
-                            else if (selector[i] == ')') depth--;
+                            if (selector[i] == '(') parenDepth++;
+                            else if (selector[i] == ')') parenDepth--;
                             i++;
                         }
                         args = selector.Substring(argStart, i - argStart - 1);
@@ -236,14 +274,14 @@ namespace FenBrowser.FenEngine.Rendering.Css
                         var lowerName = name.ToLowerInvariant();
                         if (lowerName == "is" || lowerName == "not" || lowerName == "where" || lowerName == "has")
                         {
-                            pseudo.ParsedArgs = ParseSelectorList(args);
+                            pseudo.ParsedArgs = ParseSelectorListInternal(args, depth + 1);
                         }
                         else if (lowerName == "nth-child" || lowerName == "nth-last-child")
                         {
                             ParseNthArguments(args, out _, out var ofSelector);
                             if (!string.IsNullOrWhiteSpace(ofSelector))
                             {
-                                pseudo.ParsedArgs = ParseSelectorList(ofSelector);
+                                pseudo.ParsedArgs = ParseSelectorListInternal(ofSelector, depth + 1);
                             }
                         }
                     }

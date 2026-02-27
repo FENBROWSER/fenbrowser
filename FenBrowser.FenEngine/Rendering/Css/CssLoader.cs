@@ -13,6 +13,7 @@ using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Compatibility;
 using FenBrowser.FenEngine.Rendering.Css; // Direct using, will resolve ambiguity manually or by deleting inner classes
+using FenBrowser.Core.Parsing;
 using NewCss = FenBrowser.FenEngine.Rendering.Css;
 // using FenBrowser.Core.Math; // Namespace moved to Core
 namespace FenBrowser.FenEngine.Rendering
@@ -51,8 +52,15 @@ namespace FenBrowser.FenEngine.Rendering
         private static string _cachedUaCss;
 
         // CSS Custom Properties (CSS Variables) storage - keyed by property name (e.g., "--primary-color")
-        private static readonly Dictionary<string, string> _customProperties = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<string, string> _customProperties = new Dictionary<string, string>(StringComparer.Ordinal);
         private static double _rootFontSize = 16.0;
+        private static ParserSecurityPolicy _defaultParserSecurityPolicy = ParserSecurityPolicy.Default;
+        private static readonly System.Threading.AsyncLocal<ParserSecurityPolicy> _scopedParserSecurityPolicy = new System.Threading.AsyncLocal<ParserSecurityPolicy>();
+        public static ParserSecurityPolicy ActiveParserSecurityPolicy
+        {
+            get => _scopedParserSecurityPolicy.Value ?? _defaultParserSecurityPolicy;
+            set => _scopedParserSecurityPolicy.Value = value;
+        }
 
         public static void ClearCaches()
         {
@@ -1759,6 +1767,9 @@ namespace FenBrowser.FenEngine.Rendering
             FenLogger.Debug($"[DEBUG-CSS] Creating tokenizer for text length {text.Length}", LogCategory.Rendering);
             var tokenizer = new CssTokenizer(text);
             var parser = new CssSyntaxParser(tokenizer);
+            var policy = ActiveParserSecurityPolicy ?? ParserSecurityPolicy.Default;
+            parser.MaxRules = policy.CssMaxRules;
+            parser.MaxDeclarationsPerBlock = policy.CssMaxDeclarationsPerBlock;
             
             NewCss.CssStylesheet sheet = null;
             try 
@@ -2374,28 +2385,265 @@ private static double? ExtractPx(string text, string prop)
         private static List<NewCss.CssDeclaration> ParseDeclarations(string declText)
         {
             var list = new List<NewCss.CssDeclaration>();
-            // naive split by ';', then split by ':'
-            var parts = declText.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+            if (string.IsNullOrWhiteSpace(declText)) return list;
+
+            var parts = SplitTopLevelDeclarations(declText);
             foreach (var p in parts)
             {
-                var kv = p.Split(new[] { ':' }, 2);
-                if (kv.Length != 2) continue;
+                var decl = p.Trim();
+                if (decl.Length == 0) continue;
 
-                var name = kv[0].Trim().ToLowerInvariant();
-                var valRaw = kv[1].Trim();
+                int colonIndex = FindTopLevelDeclarationColon(decl);
+                if (colonIndex <= 0) continue;
+
+                var nameRaw = decl.Substring(0, colonIndex).Trim();
+                if (nameRaw.Length == 0) continue;
+
+                var valRaw = decl.Substring(colonIndex + 1).Trim();
+                var name = NormalizeDeclarationPropertyName(nameRaw);
 
                 bool important = false;
                 var val = valRaw;
-                var idx = valRaw.LastIndexOf("!important", StringComparison.OrdinalIgnoreCase);
-                if (idx >= 0)
+                if (TryStripTrailingImportant(valRaw, out var valueWithoutImportant))
                 {
                     important = true;
-                    val = valRaw.Substring(0, idx).Trim();
+                    val = valueWithoutImportant;
                 }
 
                 list.Add(new NewCss.CssDeclaration { Property = name, Value = val, IsImportant = important });
             }
             return list;
+        }
+
+        private static List<string> SplitTopLevelDeclarations(string declText)
+        {
+            var result = new List<string>();
+            var current = new StringBuilder();
+            int parenDepth = 0;
+            int bracketDepth = 0;
+            int braceDepth = 0;
+            bool inString = false;
+            char stringChar = '\0';
+            bool escaped = false;
+
+            for (int i = 0; i < declText.Length; i++)
+            {
+                char ch = declText[i];
+                current.Append(ch);
+
+                if (inString)
+                {
+                    if (escaped)
+                    {
+                        escaped = false;
+                        continue;
+                    }
+
+                    if (ch == '\\')
+                    {
+                        escaped = true;
+                        continue;
+                    }
+
+                    if (ch == stringChar)
+                    {
+                        inString = false;
+                    }
+
+                    continue;
+                }
+
+                if (ch == '"' || ch == '\'')
+                {
+                    inString = true;
+                    stringChar = ch;
+                    continue;
+                }
+
+                if (ch == '(') { parenDepth++; continue; }
+                if (ch == ')') { if (parenDepth > 0) parenDepth--; continue; }
+                if (ch == '[') { bracketDepth++; continue; }
+                if (ch == ']') { if (bracketDepth > 0) bracketDepth--; continue; }
+                if (ch == '{') { braceDepth++; continue; }
+                if (ch == '}') { if (braceDepth > 0) braceDepth--; continue; }
+
+                if (ch == ';' && parenDepth == 0 && bracketDepth == 0 && braceDepth == 0)
+                {
+                    current.Length--;
+                    var part = current.ToString().Trim();
+                    if (part.Length > 0)
+                    {
+                        result.Add(part);
+                    }
+                    current.Clear();
+                }
+            }
+
+            var tail = current.ToString().Trim();
+            if (tail.Length > 0)
+            {
+                result.Add(tail);
+            }
+
+            return result;
+        }
+
+        private static int FindTopLevelDeclarationColon(string declaration)
+        {
+            int parenDepth = 0;
+            int bracketDepth = 0;
+            int braceDepth = 0;
+            bool inString = false;
+            char stringChar = '\0';
+            bool escaped = false;
+
+            for (int i = 0; i < declaration.Length; i++)
+            {
+                char ch = declaration[i];
+
+                if (inString)
+                {
+                    if (escaped)
+                    {
+                        escaped = false;
+                        continue;
+                    }
+
+                    if (ch == '\\')
+                    {
+                        escaped = true;
+                        continue;
+                    }
+
+                    if (ch == stringChar)
+                    {
+                        inString = false;
+                    }
+
+                    continue;
+                }
+
+                if (ch == '"' || ch == '\'')
+                {
+                    inString = true;
+                    stringChar = ch;
+                    continue;
+                }
+
+                if (ch == '(') { parenDepth++; continue; }
+                if (ch == ')') { if (parenDepth > 0) parenDepth--; continue; }
+                if (ch == '[') { bracketDepth++; continue; }
+                if (ch == ']') { if (bracketDepth > 0) bracketDepth--; continue; }
+                if (ch == '{') { braceDepth++; continue; }
+                if (ch == '}') { if (braceDepth > 0) braceDepth--; continue; }
+
+                if (ch == ':' && parenDepth == 0 && bracketDepth == 0 && braceDepth == 0)
+                {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+
+        private static bool TryStripTrailingImportant(string value, out string stripped)
+        {
+            stripped = value?.TrimEnd() ?? string.Empty;
+            if (stripped.Length == 0) return false;
+
+            int parenDepth = 0;
+            int bracketDepth = 0;
+            int braceDepth = 0;
+            bool inString = false;
+            char stringChar = '\0';
+            bool escaped = false;
+            int importantStart = -1;
+
+            for (int i = 0; i < stripped.Length; i++)
+            {
+                char ch = stripped[i];
+
+                if (inString)
+                {
+                    if (escaped)
+                    {
+                        escaped = false;
+                        continue;
+                    }
+
+                    if (ch == '\\')
+                    {
+                        escaped = true;
+                        continue;
+                    }
+
+                    if (ch == stringChar)
+                    {
+                        inString = false;
+                    }
+
+                    continue;
+                }
+
+                if (ch == '"' || ch == '\'')
+                {
+                    inString = true;
+                    stringChar = ch;
+                    continue;
+                }
+
+                if (ch == '(') { parenDepth++; continue; }
+                if (ch == ')') { if (parenDepth > 0) parenDepth--; continue; }
+                if (ch == '[') { bracketDepth++; continue; }
+                if (ch == ']') { if (bracketDepth > 0) bracketDepth--; continue; }
+                if (ch == '{') { braceDepth++; continue; }
+                if (ch == '}') { if (braceDepth > 0) braceDepth--; continue; }
+
+                if (ch != '!' || parenDepth != 0 || bracketDepth != 0 || braceDepth != 0)
+                {
+                    continue;
+                }
+
+                int cursor = i + 1;
+                while (cursor < stripped.Length && char.IsWhiteSpace(stripped[cursor])) cursor++;
+
+                const string importantKeyword = "important";
+                if (cursor + importantKeyword.Length > stripped.Length) continue;
+                if (!stripped.AsSpan(cursor, importantKeyword.Length).Equals(importantKeyword.AsSpan(), StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                int end = cursor + importantKeyword.Length;
+                while (end < stripped.Length && char.IsWhiteSpace(stripped[end])) end++;
+                if (end == stripped.Length)
+                {
+                    importantStart = i;
+                }
+            }
+
+            if (importantStart < 0)
+            {
+                return false;
+            }
+
+            stripped = stripped.Substring(0, importantStart).TrimEnd();
+            return true;
+        }
+
+        private static string NormalizeDeclarationPropertyName(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+            {
+                return name ?? string.Empty;
+            }
+
+            if (name.StartsWith("--", StringComparison.Ordinal))
+            {
+                return name;
+            }
+
+            return name.ToLowerInvariant();
         }
 
         // ===========================
