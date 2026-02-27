@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom.V2;
+﻿using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Engine;
 using FenBrowser.Core.Logging;
 using System;
@@ -72,6 +72,10 @@ namespace FenBrowser.Core.Parsing
         public int InterleavedTokenBatchSize { get; set; }
         public Action<HtmlParseCheckpoint> ParseCheckpointCallback { get; set; }
         public Action<Document, HtmlParseCheckpoint> ParseDocumentCheckpointCallback { get; set; }
+        public int MaxTokenizerEmissions { get; set; } = 2_000_000;
+        public int MaxOpenElementsDepth { get; set; } = 4096;
+        private bool _openElementsDepthLimitLogged;
+        private bool _openElementUnderflowLogged;
 
         public HtmlTreeBuilder(string html)
         {
@@ -117,6 +121,8 @@ namespace FenBrowser.Core.Parsing
 
             try
             {
+                _tokenizer.MaxTokenEmissions = MaxTokenizerEmissions;
+
                 if (pipelineContext != null)
                 {
                     frameScope = pipelineContext.BeginScopedFrame();
@@ -241,6 +247,7 @@ namespace FenBrowser.Core.Parsing
             {
                 var parseStart = Stopwatch.GetTimestamp();
                 ProcessToken(token);
+                EnforceOpenElementDepthLimit();
                 parsingTicks += Stopwatch.GetTimestamp() - parseStart;
                 parsedTokenCount++;
                 if (documentReadyTokenCount == 0 && _document.DocumentElement != null)
@@ -552,7 +559,7 @@ namespace FenBrowser.Core.Parsing
         {
              if (token is EndTagToken et && et.TagName == "noscript")
              {
-                 _openElements.Pop();
+                 SafePopOpenElement();
                  SwitchTo(InsertionMode.InHead);
                  return true;
              }
@@ -565,7 +572,7 @@ namespace FenBrowser.Core.Parsing
                  return HandleInHead(token); 
              }
              // Anything else -> Error, pop noscript, reprocess
-             _openElements.Pop();
+             SafePopOpenElement();
              SwitchTo(InsertionMode.InHead);
              return false;
         }
@@ -669,14 +676,14 @@ namespace FenBrowser.Core.Parsing
                         }
                     }
                     InsertHtmlElement(st);
-                    _openElements.Pop(); // Immediately pop (void elements)
+                    SafePopOpenElement(); // Immediately pop (void elements)
                     return true;
                 }
                 
                 if (st.TagName == "meta")
                 {
                    InsertHtmlElement(st);
-                   _openElements.Pop();
+                   SafePopOpenElement();
                    ApplyMetaCharset(st);
                    return true;
                 }
@@ -738,14 +745,14 @@ namespace FenBrowser.Core.Parsing
 
                 if (et.TagName == "head")
                 {
-                    _openElements.Pop(); // Pop head
+                    SafePopOpenElement(); // Pop head
                     SwitchTo(InsertionMode.AfterHead);
                     return true;
                 }
                 if (et.TagName == "body" || et.TagName == "html" || et.TagName == "br")
                 {
                      // Act as if head closed
-                     _openElements.Pop();
+                     SafePopOpenElement();
                      SwitchTo(InsertionMode.AfterHead);
                      return false; // Reprocess
                 }
@@ -754,7 +761,7 @@ namespace FenBrowser.Core.Parsing
             }
             
             // Anything else? Pop head and reprocess
-             _openElements.Pop();
+             SafePopOpenElement();
              SwitchTo(InsertionMode.AfterHead);
              return false;
         }
@@ -868,7 +875,7 @@ namespace FenBrowser.Core.Parsing
                 
                 if (st.TagName == "li")
                 {
-                    // HTML5 spec §12.2.6.4.7: walk backwards through open elements
+                    // HTML5 spec Â§12.2.6.4.7: walk backwards through open elements
                     // looking for an open <li>. Pass through <div>, <address>, <p>
                     // (which are "special" but excluded from the stop condition).
                     // Stop at any other "special" element.
@@ -894,7 +901,7 @@ namespace FenBrowser.Core.Parsing
                 
                 if (st.TagName == "dd" || st.TagName == "dt")
                 {
-                     // HTML5 spec §12.2.6.4.7: walk backwards like <li>
+                     // HTML5 spec Â§12.2.6.4.7: walk backwards like <li>
                      for (int idx = 0; idx < _openElements.Count; idx++)
                      {
                          var node = _openElements.ElementAt(idx);
@@ -963,7 +970,7 @@ namespace FenBrowser.Core.Parsing
                      if (st.TagName == "hr" && (CurrentNode as Element)?.TagName == "p") ClosePElement();
                      
                      var el = InsertHtmlElement(st);
-                     _openElements.Pop(); // Immediately close
+                     SafePopOpenElement(); // Immediately close
                      return true;
                 }
                 
@@ -1210,7 +1217,7 @@ namespace FenBrowser.Core.Parsing
                     if (string.Equals(type, "hidden", StringComparison.OrdinalIgnoreCase))
                     {
                         InsertHtmlElement(st);
-                        _openElements.Pop();
+                        SafePopOpenElement();
                         return true;
                     }
                 }
@@ -1220,7 +1227,7 @@ namespace FenBrowser.Core.Parsing
                     // Parse error
                     if (_formElement != null) return true; // Ignore
                     _formElement = InsertHtmlElement(st);
-                    _openElements.Pop(); // Immediately pop
+                    SafePopOpenElement(); // Immediately pop
                     return true;
                 }
             }
@@ -1283,7 +1290,7 @@ namespace FenBrowser.Core.Parsing
                          return true; 
                      }
                      ClearStackBackToTableBodyContext();
-                     _openElements.Pop(); // Pop body
+                     SafePopOpenElement(); // Pop body
                      SwitchTo(InsertionMode.InTable);
                      return false; // Reprocess
                  }
@@ -1295,7 +1302,7 @@ namespace FenBrowser.Core.Parsing
                  {
                      if (!InTableScope(et.TagName)) return true; // Error
                      ClearStackBackToTableBodyContext();
-                     _openElements.Pop();
+                     SafePopOpenElement();
                      SwitchTo(InsertionMode.InTable);
                      return true;
                  }
@@ -1307,7 +1314,7 @@ namespace FenBrowser.Core.Parsing
                          return true; 
                      }
                      ClearStackBackToTableBodyContext();
-                     _openElements.Pop();
+                     SafePopOpenElement();
                      SwitchTo(InsertionMode.InTable);
                      return false; // Reprocess
                  }
@@ -1332,7 +1339,7 @@ namespace FenBrowser.Core.Parsing
                  {
                      if (!InTableScope("tr")) return true; // Error
                      ClearStackBackToTableRowContext();
-                     _openElements.Pop(); // Pop tr
+                     SafePopOpenElement(); // Pop tr
                      SwitchTo(InsertionMode.InTableBody);
                      return false; // Reprocess
                  }
@@ -1344,7 +1351,7 @@ namespace FenBrowser.Core.Parsing
                  {
                      if (!InTableScope("tr")) return true; // Ignore
                      ClearStackBackToTableRowContext();
-                     _openElements.Pop(); // Pop tr
+                     SafePopOpenElement(); // Pop tr
                      SwitchTo(InsertionMode.InTableBody);
                      return true;
                  }
@@ -1352,7 +1359,7 @@ namespace FenBrowser.Core.Parsing
                  {
                       if (!InTableScope("tr")) return true;
                       ClearStackBackToTableRowContext();
-                      _openElements.Pop(); // Pop tr
+                      SafePopOpenElement(); // Pop tr
                       SwitchTo(InsertionMode.InTableBody);
                       return false; // Reprocess
                  }
@@ -1361,7 +1368,7 @@ namespace FenBrowser.Core.Parsing
                       if (!InTableScope(et.TagName)) return true; // Error
                       if (!InTableScope("tr")) return true; // Error
                       ClearStackBackToTableRowContext();
-                      _openElements.Pop(); // Pop tr
+                      SafePopOpenElement(); // Pop tr
                       SwitchTo(InsertionMode.InTableBody);
                       return false; // Reprocess
                  }
@@ -1426,9 +1433,9 @@ namespace FenBrowser.Core.Parsing
             }
             while (CurrentTag != "td" && CurrentTag != "th" && _openElements.Count > 0)
             {
-                _openElements.Pop();
+                SafePopOpenElement();
             }
-             if (_openElements.Count > 0) _openElements.Pop();
+             if (_openElements.Count > 0) SafePopOpenElement();
              ClearActiveFormattingElementsMarker();
              SwitchTo(InsertionMode.InRow);
         }
@@ -1582,7 +1589,7 @@ namespace FenBrowser.Core.Parsing
                  if (st.TagName == "col")
                  {
                      InsertHtmlElement(st);
-                     _openElements.Pop(); // Col is void
+                     SafePopOpenElement(); // Col is void
                      // Attributes acknowledgment
                      return true;
                  }
@@ -1591,7 +1598,7 @@ namespace FenBrowser.Core.Parsing
              if (token is EndTagToken et && et.TagName == "colgroup")
              {
                  if ((CurrentNode as Element)?.TagName != "colgroup") { /* Parse error */ }
-                 _openElements.Pop();
+                 SafePopOpenElement();
                  SwitchTo(InsertionMode.InTable);
                  return true;
              }
@@ -1599,7 +1606,7 @@ namespace FenBrowser.Core.Parsing
              
              // Anything else: pop colgroup, reprocess
              if ((CurrentNode as Element)?.TagName != "colgroup") { /* Parse error */ }
-             _openElements.Pop();
+             SafePopOpenElement();
              SwitchTo(InsertionMode.InTable);
              return false;
         }
@@ -1653,7 +1660,7 @@ namespace FenBrowser.Core.Parsing
         {
             while (CurrentTag != "table" && CurrentTag != "template" && CurrentTag != "html" && _openElements.Count > 0)
             {
-                _openElements.Pop();
+                SafePopOpenElement();
             }
         }
         
@@ -1661,7 +1668,7 @@ namespace FenBrowser.Core.Parsing
         {
             while (CurrentTag != "tbody" && CurrentTag != "tfoot" && CurrentTag != "thead" && CurrentTag != "template" && CurrentTag != "html" && _openElements.Count > 0)
             {
-                _openElements.Pop();
+                SafePopOpenElement();
             }
         }
         
@@ -1669,7 +1676,7 @@ namespace FenBrowser.Core.Parsing
         {
             while (CurrentTag != "tr" && CurrentTag != "template" && CurrentTag != "html" && _openElements.Count > 0)
             {
-                _openElements.Pop();
+                SafePopOpenElement();
             }
         }
         
@@ -1700,14 +1707,14 @@ namespace FenBrowser.Core.Parsing
                 // If closing the element that put us in Text mode (CurrentNode), pop and switch back.
                 // Note: The Tokenizer ensures we only get this EndTag if it matches the start tag (for RCDATA/RAWTEXT).
                 // So we can blindly accept it.
-                _openElements.Pop();
+                SafePopOpenElement();
                 SwitchTo(_originalInsertionMode);
                 return true;
             }
             
-            // Per HTML spec: any other token in "text" mode → pop the current node,
+            // Per HTML spec: any other token in "text" mode â†’ pop the current node,
             // switch back to the original insertion mode, and reprocess.
-            _openElements.Pop();
+            SafePopOpenElement();
             SwitchTo(_originalInsertionMode);
             return false; // Reprocess in original mode
         }
@@ -1754,6 +1761,45 @@ namespace FenBrowser.Core.Parsing
         private void SwitchTo(InsertionMode mode)
         {
             _insertionMode = mode;
+        }
+
+        private Element SafePopOpenElement()
+        {
+            if (_openElements.Count == 0)
+            {
+                if (!_openElementUnderflowLogged)
+                {
+                    _openElementUnderflowLogged = true;
+                    FenLogger.Warn("[HtmlTreeBuilder] Open-elements stack underflow avoided during malformed token recovery.", LogCategory.HtmlParsing);
+                }
+                return null;
+            }
+
+            return _openElements.Pop();
+        }
+
+        private void EnforceOpenElementDepthLimit()
+        {
+            if (MaxOpenElementsDepth <= 0)
+            {
+                return;
+            }
+
+            if (_openElements.Count <= MaxOpenElementsDepth)
+            {
+                return;
+            }
+
+            if (!_openElementsDepthLimitLogged)
+            {
+                _openElementsDepthLimitLogged = true;
+                FenLogger.Warn($"[HtmlTreeBuilder] Open-elements depth exceeded limit ({MaxOpenElementsDepth}). Auto-closing overflow elements.", LogCategory.HtmlParsing);
+            }
+
+            while (_openElements.Count > MaxOpenElementsDepth)
+            {
+                SafePopOpenElement();
+            }
         }
         
         private Element CreateElement(StartTagToken token)
@@ -1899,7 +1945,7 @@ namespace FenBrowser.Core.Parsing
                  {
                     if (DebugConfig.LogHtmlParse)
                         FenLogger.Log($"[HTML] Implied end tag for <{currentTag}>", LogCategory.HtmlParsing);
-                    _openElements.Pop();
+                    SafePopOpenElement();
                  }
                  else
                  {
@@ -1967,7 +2013,7 @@ namespace FenBrowser.Core.Parsing
             {
                 while (_openElements.Count > 1)
                 {
-                    var popped = _openElements.Pop();
+                    var popped = SafePopOpenElement();
                     if (string.Equals(popped.TagName, tagName, StringComparison.OrdinalIgnoreCase)) break;
                 }
             }
@@ -2111,4 +2157,5 @@ namespace FenBrowser.Core.Parsing
         }
     }
 }
+
 
