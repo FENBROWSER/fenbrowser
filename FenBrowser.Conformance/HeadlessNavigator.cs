@@ -11,7 +11,7 @@ using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.HTML;
 using FenBrowser.FenEngine.WebAPIs;
 
-namespace FenBrowser.WPT;
+namespace FenBrowser.Conformance;
 
 public sealed class HeadlessNavigator
 {
@@ -454,3 +454,4 @@ setTimeout(__fenMiniHarnessMaybeDone, 0);
         }
     }
 }
+
