@@ -282,6 +282,7 @@ namespace FenBrowser.Host.WebDriver
                     using var data = image.Encode(SkiaSharp.SKEncodedImageFormat.Png, 100);
                     return Convert.ToBase64String(data.ToArray());
                 }
+
                 return "";
             });
         }
@@ -366,8 +367,19 @@ namespace FenBrowser.Host.WebDriver
         {
             await RunOnMainThread(() =>
             {
-                // Session-level handle switching is managed by WebDriver session state.
-                return Task.CompletedTask;
+                // Correlate WebDriver window handle to tab ID for physical tab switching
+                if (int.TryParse(windowHandle, out var tabId))
+                {
+                    var tabs = _tabs.Tabs;
+                    for (int i = 0; i < tabs.Count; i++)
+                    {
+                        if (tabs[i].Id == tabId)
+                        {
+                            _tabs.SwitchToTab(i);
+                            break;
+                        }
+                    }
+                }
             });
         }
 
@@ -579,6 +591,7 @@ namespace FenBrowser.Host.WebDriver
         private Task<T> RunOnMainThread<T>(Func<T> func) => WindowManager.Instance.RunOnMainThread(func);
         private Task RunOnMainThread(Action action) => WindowManager.Instance.RunOnMainThread(action);
         private Task RunOnMainThread(Func<Task> func) => WindowManager.Instance.RunOnMainThread(func);
+
         private async Task<T> RunOnMainThread<T>(Func<Task<T>> func)
         {
             var task = await WindowManager.Instance.RunOnMainThread(func);
