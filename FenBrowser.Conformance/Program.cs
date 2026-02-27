@@ -86,6 +86,21 @@ public static class Program
         var suite = args[0].ToLowerInvariant();
         var report = new ConformanceReport();
 
+        // Auto-default: save results to Results/<suite>_results.json
+        if (string.IsNullOrEmpty(_outputPath))
+        {
+            string fileName = suite switch
+            {
+                "all" => "conformance_results.json",
+                "test262" => "test262_results.json",
+                "wpt" => "wpt_results.json",
+                "acid" => "acid_results.json",
+                "html5lib" => "html5lib_results.json",
+                _ => $"{suite}_results.json"
+            };
+            _outputPath = Path.Combine(_repoRoot, "Results", fileName);
+        }
+
         switch (suite)
         {
             case "all":
@@ -121,17 +136,20 @@ public static class Program
                 return 1;
         }
 
-        // Generate report if output path specified
+        // Save results — clear content first (each run overwrites previous)
         if (!string.IsNullOrEmpty(_outputPath))
         {
+            var dir = Path.GetDirectoryName(_outputPath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
+
             report.SaveReport(_outputPath);
-            Console.WriteLine($"\n[Conformance] Report saved to {_outputPath}");
+            Console.WriteLine($"\n[Conformance] Results saved to {_outputPath}");
         }
-        else
-        {
-            Console.WriteLine();
-            Console.WriteLine(report.GenerateMarkdown());
-        }
+
+        // Always print to console
+        Console.WriteLine();
+        Console.WriteLine(report.GenerateMarkdown());
 
         return 0;
     }
@@ -293,14 +311,19 @@ public static class Program
         }
 
         string category = args.Length > 0 && !args[0].StartsWith("-") ? args[0] : "dom";
-        int maxTests = GetMaxTests(args, 50);
+        const int safeWptMax = 50;
+        int requestedMax = GetMaxTests(args, 50);
+        int maxTests = Math.Min(requestedMax, safeWptMax);
+        if (requestedMax > safeWptMax)
+        {
+            Console.WriteLine(
+                $"[WPT] Requested --max {requestedMax} exceeds safe limit {safeWptMax}; clamping to {safeWptMax} to avoid known VM recursion crash cases.");
+        }
 
         Console.WriteLine($"[WPT] Running category: {category} (max: {maxTests})...");
 
-        // WPT needs a navigator — use a minimal headless approach
-        // Note: In the full Conformance project, we'd use HeadlessNavigator from FenBrowser.WPT
-        // but since we can't directly reference that project (it's an exe), we create a minimal one
-        var runner = new WPTTestRunner(wptRoot, null, 30_000);
+        var navigator = new HeadlessNavigator(wptRoot, 30_000);
+        var runner = new WPTTestRunner(wptRoot, navigator.GetNavigatorDelegate(), 30_000);
         var sw = Stopwatch.StartNew();
 
         var results = await runner.RunCategoryAsync(category, ProgressCallback, maxTests);

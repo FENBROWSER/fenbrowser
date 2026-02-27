@@ -61,6 +61,15 @@ public static class Program
             }
         }
 
+        // Auto-default: save JSON results to Results/wpt_results.json
+        if (string.IsNullOrEmpty(config.OutputPath))
+        {
+            var repoRoot = Path.GetDirectoryName(config.WptRootPath ?? Directory.GetCurrentDirectory())
+                           ?? Directory.GetCurrentDirectory();
+            config.OutputPath = Path.Combine(repoRoot, "Results", "wpt_results.json");
+            config.Format = OutputFormat.Json;
+        }
+
         var command = args[0].ToLowerInvariant();
 
         try
@@ -106,7 +115,7 @@ public static class Program
             return 1;
         }
 
-        var navigator = new HeadlessNavigator(config.TimeoutMs);
+        var navigator = new HeadlessNavigator(config.WptRootPath, config.TimeoutMs);
         var runner = new WPTTestRunner(config.WptRootPath, navigator.GetNavigatorDelegate(), config.TimeoutMs);
 
         int maxTests = config.MaxTestsPerCategory > 0 ? config.MaxTestsPerCategory : int.MaxValue;
@@ -156,7 +165,7 @@ public static class Program
             return 1;
         }
 
-        var navigator = new HeadlessNavigator(config.TimeoutMs);
+        var navigator = new HeadlessNavigator(config.WptRootPath, config.TimeoutMs);
         var runner = new WPTTestRunner(
             config.WptRootPath ?? Path.GetDirectoryName(testPath) ?? ".",
             navigator.GetNavigatorDelegate(),
@@ -225,7 +234,10 @@ public static class Program
                     htmCount = Directory.GetFiles(dir.FullName, "*.htm", SearchOption.AllDirectories)
                         .Count(f => !Path.GetFileName(f).StartsWith("_"));
                 }
-                catch { /* Ignore access errors */ }
+                catch
+                {
+                    /* Ignore access errors */
+                }
 
                 if (htmlCount + htmCount > 0)
                     Console.WriteLine($"  {dir.Name,-30} {htmlCount,12} {htmCount,12}");
@@ -255,6 +267,7 @@ public static class Program
                 var rel = Path.GetRelativePath(config.WptRootPath, test);
                 Console.WriteLine($"  {rel}");
             }
+
             if (tests.Count > 100)
                 Console.WriteLine($"  ... and {tests.Count - 100} more");
         }
@@ -274,8 +287,9 @@ public static class Program
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                 Directory.CreateDirectory(dir);
 
-            File.AppendAllText(config.OutputPath, content);
-            Console.WriteLine($"[WPT] Results written to {config.OutputPath}");
+            // Clear content first — each run overwrites the previous results
+            File.WriteAllText(config.OutputPath, content);
+            Console.WriteLine($"[WPT] Results saved to {config.OutputPath}");
         }
     }
 
