@@ -70,6 +70,15 @@ public static class Program
             return 1;
         }
 
+        // Auto-default: save JSON results to Results/test262_results.json
+        if (string.IsNullOrEmpty(config.OutputPath))
+        {
+            var repoRoot = Path.GetDirectoryName(config.Test262RootPath)
+                           ?? Directory.GetCurrentDirectory();
+            config.OutputPath = Path.Combine(repoRoot, "Results", "test262_results.json");
+            config.Format = OutputFormat.Json;
+        }
+
         var command = args[0].ToLowerInvariant();
 
         try
@@ -135,18 +144,21 @@ public static class Program
 
         if (skip >= allTests.Count)
         {
-            Console.Error.WriteLine($"[ERROR] Chunk {chunkNumber} exceeds total tests ({allTests.Count}). Max chunk: {(int)Math.Ceiling((double)allTests.Count / config.ChunkSize)}");
+            Console.Error.WriteLine(
+                $"[ERROR] Chunk {chunkNumber} exceeds total tests ({allTests.Count}). Max chunk: {(int)Math.Ceiling((double)allTests.Count / config.ChunkSize)}");
             return 1;
         }
 
         var chunkTests = allTests.Skip(skip).Take(take).ToList();
-        Console.WriteLine($"[Test262] Chunk {chunkNumber}: tests {skip + 1}-{skip + chunkTests.Count} of {allTests.Count}");
+        Console.WriteLine(
+            $"[Test262] Chunk {chunkNumber}: tests {skip + 1}-{skip + chunkTests.Count} of {allTests.Count}");
 
         // Memory check before starting
         long freeMemKB = GetFreeMemoryKB();
         if (freeMemKB > 0 && freeMemKB < 10_000_000) // <10GB free
         {
-            Console.Error.WriteLine($"[WARNING] Low system memory: {freeMemKB / 1_048_576.0:F1}GB free. Consider waiting.");
+            Console.Error.WriteLine(
+                $"[WARNING] Low system memory: {freeMemKB / 1_048_576.0:F1}GB free. Consider waiting.");
         }
 
         var sw = Stopwatch.StartNew();
@@ -319,13 +331,9 @@ public static class Program
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                 Directory.CreateDirectory(dir);
 
-            File.AppendAllText(config.OutputPath, content);
-            Console.WriteLine($"[Test262] Results written to {config.OutputPath}");
-        }
-        else if (!config.Verbose)
-        {
-            // Only print to stdout if not already printing verbose per-test output
-            // to avoid mixing progress and results
+            // Clear content first — each run overwrites the previous results
+            File.WriteAllText(config.OutputPath, content);
+            Console.WriteLine($"[Test262] Results saved to {config.OutputPath}");
         }
     }
 
@@ -339,12 +347,17 @@ public static class Program
             // Windows-specific: PerformanceCounter or WMI
             if (OperatingSystem.IsWindows())
             {
-                var output = RunProcess("powershell", "-Command \"(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory\"");
+                var output = RunProcess("powershell",
+                    "-Command \"(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory\"");
                 if (long.TryParse(output?.Trim(), out long kb))
                     return kb;
             }
         }
-        catch { /* Ignore — not critical */ }
+        catch
+        {
+            /* Ignore — not critical */
+        }
+
         return 0;
     }
 
@@ -366,7 +379,10 @@ public static class Program
             proc.WaitForExit(5000);
             return result;
         }
-        catch { return null; }
+        catch
+        {
+            return null;
+        }
     }
 
     private static int PrintUsage()
