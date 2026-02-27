@@ -29,6 +29,8 @@ bld/
 *.html
 *.js
 *.ps1
+!scripts/ci/verify-volume-doc-references.ps1
+!scripts/ci/run-parser-fuzz-regressions.ps1
 *.py
 *.log
 *.png
