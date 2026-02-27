@@ -999,7 +999,14 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                     }
 
                                     _sp = argStart - 1; // Pop callee + args
-                                    _stack[_sp++] = func.NativeImplementation(args, FenValue.Undefined); // Phase 1: no 'this' ctx
+                                    if (!func.ProxyHandler.IsUndefined && func.ProxyHandler.IsObject)
+                                    {
+                                        _stack[_sp++] = func.Invoke(args, null, FenValue.Undefined);
+                                    }
+                                    else
+                                    {
+                                        _stack[_sp++] = func.NativeImplementation(args, FenValue.Undefined); // Phase 1: no 'this' ctx
+                                    }
                                 }
                                 else if (func.BytecodeBlock != null)
                                 {
@@ -1020,14 +1027,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
                                 else
                                 {
-                                    var args = CollectStackArguments(argStart, argCount);
-                                    _sp = argStart - 1; // Pop callee + args
-                                    _stack[_sp++] = ExecuteAstFunctionFallback(
-                                        func,
-                                        args,
-                                        FenValue.Undefined,
-                                        frame.Environment,
-                                        FenValue.Undefined);
+                                    throw new Exception("VM Error: Bytecode-only mode does not support AST-backed function calls.");
                                 }
                                 break;
                             }
@@ -1044,7 +1044,14 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 if (func.IsNative)
                                 {
                                     var args = ExtractArrayLikeValues(argsArrayVal);
-                                    _stack[_sp++] = func.NativeImplementation(args, FenValue.Undefined);
+                                    if (!func.ProxyHandler.IsUndefined && func.ProxyHandler.IsObject)
+                                    {
+                                        _stack[_sp++] = func.Invoke(args, null, FenValue.Undefined);
+                                    }
+                                    else
+                                    {
+                                        _stack[_sp++] = func.NativeImplementation(args, FenValue.Undefined);
+                                    }
                                 }
                                 else if (func.BytecodeBlock != null)
                                 {
@@ -1063,13 +1070,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
                                 else
                                 {
-                                    var args = CollectArrayLikeArguments(argsObject, argCount);
-                                    _stack[_sp++] = ExecuteAstFunctionFallback(
-                                        func,
-                                        args,
-                                        FenValue.Undefined,
-                                        frame.Environment,
-                                        FenValue.Undefined);
+                                    throw new Exception("VM Error: Bytecode-only mode does not support AST-backed function calls.");
                                 }
                                 break;
                             }
@@ -1140,14 +1141,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
                                 else
                                 {
-                                    var args = CollectStackArguments(argStart, argCount);
-                                    _sp = argStart - 1; // Pop constructor + args
-                                    _stack[_sp++] = ExecuteAstConstructorFallback(
-                                        func,
-                                        args,
-                                        constructorVal,
-                                        newObj,
-                                        frame.Environment);
+                                    throw new Exception("VM Error: Bytecode-only mode does not support AST-backed constructor calls.");
                                 }
                                 break;
                             }
@@ -1204,13 +1198,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
                                 else
                                 {
-                                    var args = CollectArrayLikeArguments(argsObject, argCount);
-                                    _stack[_sp++] = ExecuteAstConstructorFallback(
-                                        func,
-                                        args,
-                                        constructorVal,
-                                        newObj,
-                                        frame.Environment);
+                                    throw new Exception("VM Error: Bytecode-only mode does not support AST-backed constructor calls.");
                                 }
                                 break;
                             }
@@ -1779,89 +1767,6 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             int val = instructions[ip] | (instructions[ip + 1] << 8) | (instructions[ip + 2] << 16) | (instructions[ip + 3] << 24);
             frame.IP = ip + 4;
             return val;
-        }
-
-        private List<FenValue> CollectStackArguments(int firstArgStackIndex, int argCount)
-        {
-            if (argCount <= 0)
-            {
-                return new List<FenValue>();
-            }
-
-            var args = new List<FenValue>(argCount);
-            for (int i = 0; i < argCount; i++)
-            {
-                args.Add(_stack[firstArgStackIndex + i]);
-            }
-
-            return args;
-        }
-
-        private static List<FenValue> CollectArrayLikeArguments(
-            FenBrowser.FenEngine.Core.Interfaces.IObject argsObject,
-            int argCount)
-        {
-            if (argCount <= 0 || argsObject == null)
-            {
-                return new List<FenValue>();
-            }
-
-            var args = new List<FenValue>(argCount);
-            if (argsObject is BytecodeArrayObject denseArgs)
-            {
-                for (int i = 0; i < argCount; i++)
-                {
-                    args.Add(denseArgs.TryGetElement(i, out var value) ? value : FenValue.Undefined);
-                }
-            }
-            else
-            {
-                for (int i = 0; i < argCount; i++)
-                {
-                    args.Add(argsObject.Get(IndexKey(i)));
-                }
-            }
-
-            return args;
-        }
-
-        private static FenValue ExecuteAstFunctionFallback(
-            FenFunction func,
-            List<FenValue> args,
-            FenValue thisBinding,
-            FenEnvironment currentEnvironment,
-            FenValue newTarget)
-        {
-            var interpreter = new Interpreter();
-            var context = new ExecutionContext
-            {
-                Environment = currentEnvironment ?? func?.Env,
-                ThisBinding = thisBinding,
-                NewTarget = newTarget
-            };
-
-            return interpreter.ApplyFunction(
-                FenValue.FromFunction(func),
-                args ?? new List<FenValue>(),
-                context,
-                thisBinding);
-        }
-
-        private static FenValue ExecuteAstConstructorFallback(
-            FenFunction func,
-            List<FenValue> args,
-            FenValue constructorValue,
-            FenObject newObject,
-            FenEnvironment currentEnvironment)
-        {
-            var result = ExecuteAstFunctionFallback(
-                func,
-                args,
-                FenValue.FromObject(newObject),
-                currentEnvironment,
-                constructorValue);
-
-            return result.IsObject ? result : FenValue.FromObject(newObject);
         }
 
         private static void InitializeFunctionFastStore(FenFunction func, FenEnvironment env)

@@ -19,14 +19,14 @@ namespace FenBrowser.FenEngine.Core
         public static IObject DefaultPrototype { get; set; }
 
         /// <summary>
-        /// Default prototype for array instances. Set by Interpreter when GetArrayPrototype() is first called.
+        /// Default prototype for array instances. Set by runtime initialization.
         /// Used by FenRuntime to create properly-prototyped arrays.
         /// </summary>
         public static IObject DefaultArrayPrototype { get; set; }
 
         /// <summary>
         /// Default prototype for iterator instances (shared %IteratorPrototype%).
-        /// Set by FenRuntime during initialization; used by Interpreter array/string iterators.
+        /// Set by FenRuntime during initialization; used by runtime array/string iterators.
         /// </summary>
         public static FenObject DefaultIteratorPrototype { get; set; }
 

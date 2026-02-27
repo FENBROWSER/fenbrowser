@@ -17,6 +17,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode
         Dup = 0x12,
         Pop = 0x13,
         PopAccumulator = 0x14,
+        LoadLocal = 0x15,
+        StoreLocal = 0x16,
 
         // 0x20 - 0x2F: Math
         Add = 0x20,

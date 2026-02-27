@@ -44,6 +44,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
         private Stack<ExceptionHandler> _exceptionHandlers;
         private Stack<FenEnvironment> _withEnvironments;
+        private Dictionary<string, FenEnvironment> _bindingEnvironmentCache;
         public Stack<ExceptionHandler> ExceptionHandlers
         {
             get
@@ -95,11 +96,56 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             {
                 _withEnvironments.Clear();
             }
+            if (_bindingEnvironmentCache != null)
+            {
+                _bindingEnvironmentCache.Clear();
+            }
         }
 
         public void SetEnvironment(FenEnvironment environment)
         {
             Environment = environment;
+            if (_bindingEnvironmentCache != null)
+            {
+                _bindingEnvironmentCache.Clear();
+            }
+        }
+
+        public bool TryGetCachedBindingEnvironment(string name, out FenEnvironment environment)
+        {
+            if (_bindingEnvironmentCache != null)
+            {
+                return _bindingEnvironmentCache.TryGetValue(name, out environment);
+            }
+
+            environment = null;
+            return false;
+        }
+
+        public void CacheBindingEnvironment(string name, FenEnvironment environment)
+        {
+            if (_bindingEnvironmentCache == null)
+            {
+                _bindingEnvironmentCache = new Dictionary<string, FenEnvironment>();
+            }
+
+            _bindingEnvironmentCache[name] = environment;
+        }
+
+        public void RemoveCachedBindingEnvironment(string name)
+        {
+            if (_bindingEnvironmentCache != null)
+            {
+                _bindingEnvironmentCache.Remove(name);
+            }
+        }
+
+        public void ClearBindingEnvironmentCache()
+        {
+            if (_bindingEnvironmentCache != null)
+            {
+                _bindingEnvironmentCache.Clear();
+            }
         }
     }
 }

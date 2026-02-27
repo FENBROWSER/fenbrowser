@@ -17,10 +17,29 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private readonly Stack<BreakContext> _breakContexts = new Stack<BreakContext>();
         private readonly Stack<LoopContext> _loopContexts = new Stack<LoopContext>();
         private readonly Stack<LabelContext> _labelContexts = new Stack<LabelContext>();
+        private readonly bool _enableLocalSlots;
+        private readonly List<Identifier> _functionParameters;
+        private readonly string _functionName;
+        private readonly Dictionary<string, int> _localSlotByName = new Dictionary<string, int>(StringComparer.Ordinal);
+        private readonly List<string> _localSlotNames = new List<string>();
+        private readonly HashSet<string> _localBindings = new HashSet<string>(StringComparer.Ordinal);
         private int _syntheticNameCounter;
 
         public BytecodeCompiler()
+            : this(enableLocalSlots: false, functionParameters: null, functionName: null)
         {
+        }
+
+        private BytecodeCompiler(bool enableLocalSlots, List<Identifier> functionParameters, string functionName)
+        {
+            _enableLocalSlots = enableLocalSlots;
+            _functionParameters = functionParameters;
+            _functionName = functionName;
+        }
+
+        private static BytecodeCompiler CreateFunctionCompiler(List<Identifier> parameters, string functionName)
+        {
+            return new BytecodeCompiler(enableLocalSlots: true, functionParameters: parameters, functionName: functionName);
         }
 
         public CodeBlock Compile(AstNode root)
@@ -31,13 +50,22 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             _loopContexts.Clear();
             _labelContexts.Clear();
             _syntheticNameCounter = 0;
+            _localBindings.Clear();
+            _localSlotByName.Clear();
+            _localSlotNames.Clear();
+
+            if (_enableLocalSlots)
+            {
+                InitializeLocalBindings(root);
+            }
 
             Visit(root);
 
             // Ensure every block ends with a Halt
             Emit(OpCode.Halt);
 
-            return new CodeBlock(_instructions.ToArray(), new List<FenValue>(_constants));
+            var localSlots = _enableLocalSlots ? new List<string>(_localSlotNames) : null;
+            return new CodeBlock(_instructions.ToArray(), new List<FenValue>(_constants), localSlots);
         }
 
         private void Visit(AstNode node)
@@ -146,7 +174,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
             else if (node is BigIntLiteral bigIntLit)
             {
-                // Current interpreter behavior treats BigInt literals as number fallback.
+                // Current runtime behavior treats BigInt literals as number fallback.
                 // Keep bytecode semantics aligned until dedicated BigInt runtime representation lands.
                 double numericValue = 0;
                 if (!double.TryParse(bigIntLit.Value, System.Globalization.NumberStyles.Float,
@@ -322,9 +350,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
             else if (node is Identifier identifier)
             {
-                int idx = AddConstant(FenValue.FromString(identifier.Value));
-                Emit(OpCode.LoadVar);
-                EmitInt32(idx);
+                EmitLoadVarByName(identifier.Value);
             }
             else if (node is ArrayLiteral arrayLit)
             {
@@ -393,9 +419,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 if (assign.Left is Identifier idNode)
                 {
                     Visit(assign.Right);
-                    int idx = AddConstant(FenValue.FromString(idNode.Value));
-                    Emit(OpCode.StoreVar);
-                    EmitInt32(idx);
+                    EmitStoreVarByName(idNode.Value);
                 }
                 else if (assign.Left is MemberExpression assignMember)
                 {
@@ -451,9 +475,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     Visit(letStmt.Value);
                     if (letStmt.Name != null)
                     {
-                        int idx = AddConstant(FenValue.FromString(letStmt.Name.Value));
-                        Emit(OpCode.StoreVar);
-                        EmitInt32(idx);
+                        EmitStoreVarByName(letStmt.Name.Value);
                     }
                 }
             }
@@ -518,13 +540,16 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             else if (node is FunctionLiteral funcLit)
             {
                 ValidateSupportedParameterList(funcLit.Parameters, "FunctionLiteral");
-                var funcCompiler = new BytecodeCompiler();
+                var funcCompiler = CreateFunctionCompiler(funcLit.Parameters, funcLit.Name);
                 var compiledBlock = funcCompiler.Compile(BuildCallableBody(funcLit.Body, funcLit.Parameters));
+                var localMap = BuildFunctionLocalMap(compiledBlock);
 
                 var templateFunc = new FenFunction(funcLit.Parameters, compiledBlock, null)
                 {
                     IsAsync = funcLit.IsAsync,
-                    IsGenerator = funcLit.IsGenerator
+                    IsGenerator = funcLit.IsGenerator,
+                    NeedsArgumentsObject = BytecodeBlockMayReferenceArguments(compiledBlock, localMap),
+                    LocalMap = localMap
                 };
                 int idx = AddConstant(FenValue.FromFunction(templateFunc));
                 
@@ -534,13 +559,16 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             else if (node is AsyncFunctionExpression asyncFuncExpr)
             {
                 ValidateSupportedParameterList(asyncFuncExpr.Parameters, "AsyncFunctionExpression");
-                var funcCompiler = new BytecodeCompiler();
+                var funcCompiler = CreateFunctionCompiler(asyncFuncExpr.Parameters, asyncFuncExpr.Name?.Value);
                 var compiledBlock = funcCompiler.Compile(BuildCallableBody(asyncFuncExpr.Body, asyncFuncExpr.Parameters));
+                var localMap = BuildFunctionLocalMap(compiledBlock);
 
                 var templateFunc = new FenFunction(asyncFuncExpr.Parameters, compiledBlock, null)
                 {
                     Name = asyncFuncExpr.Name?.Value,
-                    IsAsync = true
+                    IsAsync = true,
+                    NeedsArgumentsObject = BytecodeBlockMayReferenceArguments(compiledBlock, localMap),
+                    LocalMap = localMap
                 };
                 int idx = AddConstant(FenValue.FromFunction(templateFunc));
 
@@ -550,13 +578,16 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             else if (node is ArrowFunctionExpression arrowExpr)
             {
                 ValidateSupportedParameterList(arrowExpr.Parameters, "ArrowFunctionExpression");
-                var funcCompiler = new BytecodeCompiler();
+                var funcCompiler = CreateFunctionCompiler(arrowExpr.Parameters, null);
                 var compiledBlock = funcCompiler.Compile(BuildCallableBody(arrowExpr.Body, arrowExpr.Parameters));
+                var localMap = BuildFunctionLocalMap(compiledBlock);
 
                 var templateFunc = new FenFunction(arrowExpr.Parameters, compiledBlock, null)
                 {
                     IsArrowFunction = true,
-                    IsAsync = arrowExpr.IsAsync
+                    IsAsync = arrowExpr.IsAsync,
+                    NeedsArgumentsObject = false,
+                    LocalMap = localMap
                 };
                 int idx = AddConstant(FenValue.FromFunction(templateFunc));
 
@@ -566,14 +597,17 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             else if (node is FunctionDeclarationStatement funcDecl)
             {
                 ValidateSupportedParameterList(funcDecl.Function.Parameters, "FunctionDeclarationStatement");
-                var funcCompiler = new BytecodeCompiler();
+                var funcCompiler = CreateFunctionCompiler(funcDecl.Function.Parameters, funcDecl.Function.Name);
                 var compiledBlock = funcCompiler.Compile(BuildCallableBody(funcDecl.Function.Body, funcDecl.Function.Parameters));
+                var localMap = BuildFunctionLocalMap(compiledBlock);
                 
                 var templateFunc = new FenFunction(funcDecl.Function.Parameters, compiledBlock, null)
                 {
                     Name = funcDecl.Function.Name,
                     IsAsync = funcDecl.Function.IsAsync,
-                    IsGenerator = funcDecl.Function.IsGenerator
+                    IsGenerator = funcDecl.Function.IsGenerator,
+                    NeedsArgumentsObject = BytecodeBlockMayReferenceArguments(compiledBlock, localMap),
+                    LocalMap = localMap
                 };
                 int funcIdx = AddConstant(FenValue.FromFunction(templateFunc));
                 
@@ -582,9 +616,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 
                 if (funcDecl.Function.Name != null)
                 {
-                    int nameIdx = AddConstant(FenValue.FromString(funcDecl.Function.Name));
-                    Emit(OpCode.StoreVar);
-                    EmitInt32(nameIdx);
+                    EmitStoreVarByName(funcDecl.Function.Name);
                 }
             }
             else if (node is ReturnStatement retStmt)
@@ -692,9 +724,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     
                     if (tryStmt.CatchParameter != null)
                     {
-                        int varIdx = AddConstant(FenValue.FromString(tryStmt.CatchParameter.Value));
-                        Emit(OpCode.StoreVar);
-                        EmitInt32(varIdx);
+                        EmitStoreVarByName(tryStmt.CatchParameter.Value);
                         Emit(OpCode.Pop); // pop stored exception value
 
                         if (tryStmt.CatchParameter.DestructuringPattern != null)
@@ -1004,7 +1034,18 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 return;
             }
 
-            throw new NotImplementedException("Compiler: delete currently supports member/index operands only.");
+            if (operand is OptionalChainExpression)
+            {
+                // Keep optional-chain delete on fallback path until optional-delete semantics
+                // are lowered explicitly (delete obj?.prop / delete obj?.[key]).
+                throw new NotImplementedException("Compiler: delete optional chaining is not supported in Bytecode Phase.");
+            }
+
+            // For non-reference operands, JavaScript delete returns true after evaluating
+            // operand side effects.
+            Visit(operand);
+            Emit(OpCode.Pop);
+            Emit(OpCode.LoadTrue);
         }
 
         private void EmitRegexLiteral(RegexLiteral regexLit)
@@ -1228,9 +1269,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
             if (forInStmt.Variable != null)
             {
-                int varIdx = AddConstant(FenValue.FromString(forInStmt.Variable.Value));
-                Emit(OpCode.StoreVar);
-                EmitInt32(varIdx);
+                EmitStoreVarByName(forInStmt.Variable.Value);
                 Emit(OpCode.Pop); // pop the assigned key value
             }
             else if (forInStmt.DestructuringPattern != null)
@@ -1283,9 +1322,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
             if (forOfStmt.Variable != null)
             {
-                int varIdx = AddConstant(FenValue.FromString(forOfStmt.Variable.Value));
-                Emit(OpCode.StoreVar);
-                EmitInt32(varIdx);
+                EmitStoreVarByName(forOfStmt.Variable.Value);
                 Emit(OpCode.Pop); // pop the assigned value
             }
             else if (forOfStmt.DestructuringPattern != null)
@@ -2167,6 +2204,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
         private void EmitLoadVarByName(string variableName)
         {
+            if (TryGetLocalSlot(variableName, out int slotIndex))
+            {
+                Emit(OpCode.LoadLocal);
+                EmitInt32(slotIndex);
+                return;
+            }
+
             int idx = AddConstant(FenValue.FromString(variableName ?? string.Empty));
             Emit(OpCode.LoadVar);
             EmitInt32(idx);
@@ -2174,9 +2218,222 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
         private void EmitStoreVarByName(string variableName)
         {
+            if (TryGetLocalSlot(variableName, out int slotIndex))
+            {
+                Emit(OpCode.StoreLocal);
+                EmitInt32(slotIndex);
+                return;
+            }
+
             int idx = AddConstant(FenValue.FromString(variableName ?? string.Empty));
             Emit(OpCode.StoreVar);
             EmitInt32(idx);
+        }
+
+        private bool TryGetLocalSlot(string variableName, out int slotIndex)
+        {
+            slotIndex = -1;
+            if (!_enableLocalSlots || string.IsNullOrEmpty(variableName) || !_localBindings.Contains(variableName))
+            {
+                return false;
+            }
+
+            if (_localSlotByName.TryGetValue(variableName, out slotIndex))
+            {
+                return true;
+            }
+
+            slotIndex = _localSlotNames.Count;
+            _localSlotByName[variableName] = slotIndex;
+            _localSlotNames.Add(variableName);
+            return true;
+        }
+
+        private void InitializeLocalBindings(AstNode root)
+        {
+            AddLocalBinding("this");
+            AddLocalBinding("arguments");
+
+            if (!string.IsNullOrEmpty(_functionName))
+            {
+                AddLocalBinding(_functionName);
+            }
+
+            if (_functionParameters != null)
+            {
+                foreach (var parameter in _functionParameters)
+                {
+                    if (parameter == null)
+                    {
+                        continue;
+                    }
+
+                    AddLocalBinding(parameter.Value);
+                    if (parameter.DestructuringPattern != null)
+                    {
+                        CollectBindingNamesFromPattern(parameter.DestructuringPattern);
+                    }
+                }
+            }
+
+            CollectLocalBindings(root);
+        }
+
+        private void CollectLocalBindings(AstNode node)
+        {
+            if (node == null)
+            {
+                return;
+            }
+
+            switch (node)
+            {
+                case Program program:
+                    foreach (var statement in program.Statements)
+                    {
+                        CollectLocalBindings(statement);
+                    }
+                    break;
+                case BlockStatement block:
+                    foreach (var statement in block.Statements)
+                    {
+                        CollectLocalBindings(statement);
+                    }
+                    break;
+                case LetStatement letStatement:
+                    AddLocalBinding(letStatement.Name?.Value);
+                    CollectBindingNamesFromPattern(letStatement.DestructuringPattern);
+                    break;
+                case FunctionDeclarationStatement functionDeclaration:
+                    AddLocalBinding(functionDeclaration.Function?.Name);
+                    break;
+                case ForStatement forStatement:
+                    CollectLocalBindings(forStatement.Init);
+                    CollectLocalBindings(forStatement.Body);
+                    break;
+                case ForInStatement forInStatement:
+                    AddLocalBinding(forInStatement.Variable?.Value);
+                    CollectBindingNamesFromPattern(forInStatement.DestructuringPattern);
+                    CollectLocalBindings(forInStatement.Body);
+                    break;
+                case ForOfStatement forOfStatement:
+                    AddLocalBinding(forOfStatement.Variable?.Value);
+                    CollectBindingNamesFromPattern(forOfStatement.DestructuringPattern);
+                    CollectLocalBindings(forOfStatement.Body);
+                    break;
+                case WhileStatement whileStatement:
+                    CollectLocalBindings(whileStatement.Body);
+                    break;
+                case DoWhileStatement doWhileStatement:
+                    CollectLocalBindings(doWhileStatement.Body);
+                    break;
+                case IfStatement ifStatement:
+                    CollectLocalBindings(ifStatement.Consequence);
+                    CollectLocalBindings(ifStatement.Alternative);
+                    break;
+                case LabeledStatement labeledStatement:
+                    CollectLocalBindings(labeledStatement.Body);
+                    break;
+                case SwitchStatement switchStatement:
+                    if (switchStatement.Cases != null)
+                    {
+                        foreach (var switchCase in switchStatement.Cases)
+                        {
+                            if (switchCase?.Consequent == null)
+                            {
+                                continue;
+                            }
+
+                            foreach (var statement in switchCase.Consequent)
+                            {
+                                CollectLocalBindings(statement);
+                            }
+                        }
+                    }
+                    break;
+                case TryStatement tryStatement:
+                    AddLocalBinding(tryStatement.CatchParameter?.Value);
+                    CollectBindingNamesFromPattern(tryStatement.CatchParameter?.DestructuringPattern);
+                    CollectLocalBindings(tryStatement.Block);
+                    CollectLocalBindings(tryStatement.CatchBlock);
+                    CollectLocalBindings(tryStatement.FinallyBlock);
+                    break;
+                case ImportDeclaration importDeclaration:
+                    if (importDeclaration.Specifiers != null)
+                    {
+                        foreach (var specifier in importDeclaration.Specifiers)
+                        {
+                            AddLocalBinding(specifier?.Local?.Value);
+                        }
+                    }
+                    break;
+                case ExportDeclaration exportDeclaration:
+                    CollectLocalBindings(exportDeclaration.Declaration);
+                    break;
+                case ClassStatement classStatement:
+                    AddLocalBinding(classStatement.Name?.Value);
+                    break;
+            }
+        }
+
+        private void CollectBindingNamesFromPattern(Expression pattern)
+        {
+            if (pattern == null)
+            {
+                return;
+            }
+
+            switch (pattern)
+            {
+                case Identifier identifier:
+                    AddLocalBinding(identifier.Value);
+                    break;
+                case AssignmentExpression assignmentExpression:
+                    CollectBindingNamesFromPattern(assignmentExpression.Left);
+                    break;
+                case ArrayLiteral arrayLiteral:
+                    if (arrayLiteral.Elements != null)
+                    {
+                        foreach (var element in arrayLiteral.Elements)
+                        {
+                            if (element is SpreadElement spreadElement)
+                            {
+                                CollectBindingNamesFromPattern(spreadElement.Argument);
+                            }
+                            else
+                            {
+                                CollectBindingNamesFromPattern(element);
+                            }
+                        }
+                    }
+                    break;
+                case ObjectLiteral objectLiteral:
+                    if (objectLiteral.Pairs != null)
+                    {
+                        foreach (var pair in objectLiteral.Pairs)
+                        {
+                            if (pair.Value is SpreadElement spreadElement)
+                            {
+                                CollectBindingNamesFromPattern(spreadElement.Argument);
+                            }
+                            else
+                            {
+                                CollectBindingNamesFromPattern(pair.Value);
+                            }
+                        }
+                    }
+                    break;
+            }
+        }
+
+        private void AddLocalBinding(string variableName)
+        {
+            if (!_enableLocalSlots || string.IsNullOrEmpty(variableName))
+            {
+                return;
+            }
+
+            _localBindings.Add(variableName);
         }
 
         private static string GetModuleBindingName(string source)
@@ -2192,7 +2449,9 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private string NextSyntheticName(string prefix)
         {
             string safePrefix = string.IsNullOrEmpty(prefix) ? "tmp" : prefix;
-            return "__fenbc_" + safePrefix + "_" + _syntheticNameCounter++;
+            string name = "__fenbc_" + safePrefix + "_" + _syntheticNameCounter++;
+            AddLocalBinding(name);
+            return name;
         }
 
         private void EmitDestructuringAssignmentExpression(Expression pattern, Expression sourceExpression)
@@ -2646,6 +2905,81 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
 
             return false;
+        }
+
+        private static bool BytecodeBlockMayReferenceArguments(CodeBlock block, Dictionary<string, int> localMap)
+        {
+            if (block == null)
+            {
+                return true;
+            }
+
+            if (localMap != null &&
+                localMap.TryGetValue("arguments", out int argumentsSlot) &&
+                BytecodeMayUseLocalSlot(block.Instructions, argumentsSlot))
+            {
+                return true;
+            }
+
+            if (block.Constants == null)
+            {
+                return true;
+            }
+
+            foreach (var constant in block.Constants)
+            {
+                if (constant.IsString && string.Equals(constant.AsString(), "arguments", StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool BytecodeMayUseLocalSlot(byte[] instructions, int slotIndex)
+        {
+            if (instructions == null || instructions.Length < 5)
+            {
+                return false;
+            }
+
+            for (int i = 0; i <= instructions.Length - 5; i++)
+            {
+                byte opcode = instructions[i];
+                if (opcode != (byte)OpCode.LoadLocal && opcode != (byte)OpCode.StoreLocal)
+                {
+                    continue;
+                }
+
+                int candidate = BitConverter.ToInt32(instructions, i + 1);
+                if (candidate == slotIndex)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static Dictionary<string, int> BuildFunctionLocalMap(CodeBlock block)
+        {
+            var map = new Dictionary<string, int>(StringComparer.Ordinal);
+            if (block?.LocalSlotNames == null)
+            {
+                return map;
+            }
+
+            for (int i = 0; i < block.LocalSlotNames.Count; i++)
+            {
+                var name = block.LocalSlotNames[i];
+                if (!string.IsNullOrEmpty(name))
+                {
+                    map[name] = i;
+                }
+            }
+
+            return map;
         }
 
         private static void AppendDefaultParameterInitializers(List<Identifier> parameters, List<Statement> destination)
