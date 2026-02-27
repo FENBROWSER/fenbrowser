@@ -54,7 +54,7 @@ Reference snapshot artifact:
 | CSS/Cascade/Selectors            |    90 | Production grade (CSS-1 verified)                                    |
 | Layout System                    |    90 | Production grade (L-10 verified)                                     |
 | Paint/Compositing                |    90 | Production grade (PC-5 verified)                                     |
-| JavaScript Engine                |    85 | Strong (JS-2/3/4/5 + JS-BC-1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20: fromAsync, Iterator.prototype, DisposableStack, Array.from iterable, bytecode parity + runtime bytecode-first wiring + expression/control coverage expansion including comma/arrow lowering, VM exception continuation, optional chaining lowering, operator/template coverage for `in`/`instanceof`/`void`/`delete`/template literals, structured `switch`/`break`/`continue` control-flow lowering, regex literal parity, spread lowering across array/call/new/object forms, labeled control-flow lowering, `new.target`, `import.meta`, `if`-expression support, async-function Promise return parity, `await` bytecode execution support, async-throw rejection parity, direct dispatch support for `BitwiseExpression` + `CompoundAssignmentExpression`, full parser-emitted bytecode dispatch coverage including class/module/yield/with-family nodes, and rest-parameter + `arguments` object parity on bytecode-mainline calls) |
+| JavaScript Engine                |    85 | Strong (JS-2/3/4/5 + JS-BC-1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28: fromAsync, Iterator.prototype, DisposableStack, Array.from iterable, bytecode parity + runtime bytecode-first wiring + expression/control coverage expansion including comma/arrow lowering, VM exception continuation, optional chaining lowering, operator/template coverage for `in`/`instanceof`/`void`/`delete`/template literals, structured `switch`/`break`/`continue` control-flow lowering, regex literal parity, spread lowering across array/call/new/object forms, labeled control-flow lowering, `new.target`, `import.meta`, `if`-expression support, async-function Promise return parity, `await` bytecode execution support, async-throw rejection parity, direct dispatch support for `BitwiseExpression` + `CompoundAssignmentExpression`, full parser-emitted bytecode dispatch coverage including class/module/yield/with-family nodes, rest-parameter + `arguments` object parity, local slots + property IC + dense arrays, and VM opcode fallback for AST-backed call/construct on bytecode mainline) |
 | Web APIs + Workers/SW            |    67 | Partial (API-2/3/4: timers, Promise stubs, CacheStorage landed)      |
 | Storage + Cookies                |    73 | Partial (Storage-1: full cookie attribute parsing landed)            |
 | Event Loop + Runtime Invariants  |    67 | Partial                                                              |
@@ -412,6 +412,121 @@ Score update basis:
      - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenRuntimeBytecodeExecutionTests` -> Passed 20/20.
      - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.BenchmarkTests` -> Passed 3/3.
    - Score remains **85** (no gate change yet); this tranche removes additional bytecode fallback sources in destructuring-heavy scripts while keeping explicit unsupported-path fallback behavior.
+0.22 **JavaScript Engine bytecode tranche JS-BC-22 landed (2026-02-27)**:
+   - `Core/Interpreter.cs`:
+     - computed object-key destructuring assignment parity hardened (`{ [k]: v } = src`),
+     - `for...of` plain-object fallback aligned with VM value-iterator behavior,
+     - catch-parameter destructuring now executes through destructuring assignment path,
+     - consumed `continue` loop-completion leakage normalized across loop families.
+   - `Core/Bytecode/Compiler/BytecodeCompiler.cs`:
+     - `delete` non-reference lowering now evaluates side effects and returns `true`.
+   - `Core/Bytecode/VM/VirtualMachine.cs`:
+     - iterator creation path moved off LINQ-based iterators to lightweight dedicated iterators for lower allocation overhead.
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`:
+     - added `ExecuteSimple_BytecodeAndInterpreter_ShouldMatchOnEdgeCaseCorpus`.
+   - Verification:
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.FenRuntimeBytecodeExecutionTests.ExecuteSimple_BytecodeAndInterpreter_ShouldMatchOnEdgeCaseCorpus -p:WarningLevel=0 -v minimal` -> Passed 1/1.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests -v minimal` -> Passed 84/84.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter FullyQualifiedName~FenBrowser.Tests.Engine.FenRuntimeBytecodeExecutionTests -v minimal` -> Passed 21/21.
+   - Score remains **85** (no gate change yet); this tranche tightened cross-mode parity and reduced iterator-path overhead.
+0.23 **JavaScript Engine bytecode tranche JS-BC-23 landed (2026-02-27)**:
+   - `Core/Bytecode/VM/VirtualMachine.cs`:
+     - bytecode call/construct paths now bind arguments directly from VM stack or array-like sources (no temporary argument arrays on bytecode path),
+     - numeric index-key caching (`0..2047`) added for array/arguments/rest hot paths.
+   - Verification:
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests -v minimal -p:WarningLevel=0` -> Passed 84/84.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter FullyQualifiedName~FenBrowser.Tests.Engine.FenRuntimeBytecodeExecutionTests -v minimal` -> Passed 21/21.
+   - Score remains **85** (no gate change yet); this tranche reduced allocation pressure on bytecode-mainline call sites.
+0.24 **JavaScript Engine bytecode tranche JS-BC-24 landed (2026-02-27)**:
+   - `Core/Bytecode/VM/VirtualMachine.cs`:
+     - added `PropertyKey(...)` fast-path normalization (string/integer/symbol),
+     - wired into `InOperator`, `MakeObject`, `LoadProp`, `StoreProp`, `DeleteProp`.
+   - Verification:
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests -v minimal -p:WarningLevel=0` -> Passed 84/84.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter FullyQualifiedName~FenBrowser.Tests.Engine.FenRuntimeBytecodeExecutionTests -v minimal` -> Passed 21/21.
+   - Score remains **85** (no gate change yet); this tranche reduced key-conversion overhead in property-heavy bytecode loops.
+0.25 **JavaScript Engine bytecode tranche JS-BC-25 landed (2026-02-27)**:
+   - `Core/Bytecode/VM/VirtualMachine.cs` + `Core/Bytecode/VM/CallFrame.cs` + `Core/FenEnvironment.cs`:
+     - added frame-scoped variable binding-environment cache for `LoadVar` hot paths,
+     - cache invalidation integrated with frame resets/environment swaps and disabled inside active `with` scopes.
+   - `Core/Bytecode/Compiler/BytecodeCompiler.cs` + `Core/FenFunction.cs` + `Core/Bytecode/VM/VirtualMachine.cs`:
+     - added lazy `arguments` object materialization metadata (`NeedsArgumentsObject`) and runtime gating so bytecode calls only materialize `arguments` when function body may reference it.
+   - Benchmark snapshot (`BenchmarkTests.CompareInterpreterAndBytecode`, function-call-heavy script):
+     - 5-run averages: interpreter `3296.8ms`, bytecode `3292.8ms` (bytecode faster by `~4ms` in sample).
+   - Verification:
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests -v minimal -p:WarningLevel=0` -> Passed 84/84.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter FullyQualifiedName~FenBrowser.Tests.Engine.FenRuntimeBytecodeExecutionTests -v minimal` -> Passed 21/21.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter FullyQualifiedName~FenBrowser.Tests.Engine.BenchmarkTests.CompareInterpreterAndBytecode -v minimal` -> Passed 1/1.
+   - Score remains **85** (no gate change yet); this tranche reduces repeated name-lookup and per-call allocation overhead while preserving bytecode-mainline semantics.
+0.26 **JavaScript Engine bytecode tranche JS-BC-26 landed (2026-02-27)**:
+   - `Core/Bytecode/VM/VirtualMachine.cs`:
+     - added per-`CodeBlock` string-constant cache (`ConditionalWeakTable<CodeBlock, string[]>`) for fast name-resolution on string constants,
+     - `LoadVar` / `StoreVar` now resolve identifiers through cached string constants instead of repeated generic constant conversion.
+   - Benchmark snapshot (`BenchmarkTests.CompareInterpreterAndBytecode`, function-call-heavy fixture):
+     - 5-run averages: interpreter `3443.2ms`, bytecode `3409.8ms`, average delta `+33.4ms` (bytecode faster in sample).
+   - Verification:
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests -v minimal -p:WarningLevel=0` -> Passed 84/84.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter FullyQualifiedName~FenBrowser.Tests.Engine.FenRuntimeBytecodeExecutionTests -v minimal` -> Passed 21/21.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter FullyQualifiedName~FenBrowser.Tests.Engine.BenchmarkTests.CompareInterpreterAndBytecode -v minimal` -> Passed 1/1.
+   - Score remains **85** (no gate change yet); this tranche tightens variable-op hot paths and improves bytecode throughput in call-heavy samples.
+0.27 **JavaScript Engine bytecode tranche JS-BC-27 landed (2026-02-27)**:
+   - `Core/Bytecode/OpCode.cs` + `Core/Bytecode/CodeBlock.cs`:
+     - added local-slot opcodes (`LoadLocal`, `StoreLocal`) and code-block local slot metadata (`LocalSlotNames`, `LocalSlotCount`).
+   - `Core/Bytecode/Compiler/BytecodeCompiler.cs`:
+     - added function-local binding analysis (parameters/declarations/catch/loop/synthetic temporaries),
+     - emits local-slot opcodes for local names while preserving global-name opcodes for non-local bindings,
+     - templates now carry `LocalMap`,
+     - `arguments` materialization detection hardened for local-slot mode (slot-use + constant fallback).
+   - `Core/Bytecode/VM/VirtualMachine.cs`:
+     - implemented local-slot execution (`LoadLocal`/`StoreLocal`) with environment synchronization,
+     - call/construct frame setup now seeds slot-backed bindings for parameters/rest/`arguments`/constructor `this` and named self-binding when available,
+     - added monomorphic shape-based property inline cache for `LoadProp`/`StoreProp` fast paths,
+     - added dense-array runtime object for bytecode-created arrays and integrated it into `MakeArray`/append/spread/rest extraction/array-like length paths.
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`:
+     - added:
+       - `Bytecode_FunctionLocals_ShouldExecuteWithLocalSlots`,
+       - `Bytecode_ArrayDelete_ShouldCreateHoleAndPreserveLength`.
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`:
+     - added:
+       - `ExecuteSimple_BytecodeFirst_FunctionUsesLocalSlotOpcodes`.
+   - Benchmark snapshot (`BenchmarkTests.CompareInterpreterAndBytecode`, call-heavy fixture):
+     - single run: interpreter `3240ms`, bytecode `3164ms` (bytecode faster by `68ms`),
+     - 5-run averages: interpreter `3332.4ms`, bytecode `3308.6ms`, average delta `+23.8ms` (bytecode faster in sample).
+   - Verification:
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests -v minimal -p:WarningLevel=0` -> Passed 86/86.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter FullyQualifiedName~FenBrowser.Tests.Engine.FenRuntimeBytecodeExecutionTests -v minimal` -> Passed 22/22.
+   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter FullyQualifiedName~FenBrowser.Tests.Engine.BenchmarkTests.CompareInterpreterAndBytecode -v minimal` -> Passed 1/1.
+   - Score remains **85** (no gate change yet); this tranche landed the requested local-slot + property-cache + dense-array foundations on bytecode mainline.
+
+0.28 **JavaScript Engine bytecode tranche JS-BC-28 landed (2026-02-27)**:
+   - `Core/Bytecode/VM/VirtualMachine.cs`:
+     - replaced hard-fail behavior for AST-backed user functions in VM call/construct opcodes with interpreter-backed fallback paths:
+       - `Call`,
+       - `CallFromArray`,
+       - `Construct`,
+       - `ConstructFromArray`,
+     - argument collection now supports stack-based and array-like sources for AST fallback dispatch,
+     - constructor fallback preserves JS semantics for object-return override vs constructed receiver.
+   - `Core/FenRuntime.cs`:
+     - removed runtime guardrail that disabled bytecode path for call/new-heavy scripts when interpreter-only globals were present.
+   - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`:
+     - added:
+       - `Bytecode_CallOpcode_ShouldFallbackToAstBackedFunction`,
+       - `Bytecode_CallFromArrayOpcode_ShouldFallbackToAstBackedFunction`,
+       - `Bytecode_ConstructOpcode_ShouldFallbackToAstBackedConstructor`,
+       - `Bytecode_ConstructFromArrayOpcode_ShouldFallbackToAstBackedConstructor`.
+   - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`:
+     - updated runtime integration regression:
+       - `ExecuteSimple_WithInterpreterOnlyGlobals_CallHeavyScriptUsesBytecodeMainline`.
+   - Benchmark snapshot (`BenchmarkTests.CompareInterpreterAndBytecode`, call-heavy fixture):
+     - Interpreter `2950ms`,
+     - Bytecode `2971ms`,
+     - Delta `-21ms` (bytecode slower in this run).
+   - Verification:
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests` -> Passed `90/90`.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.FenRuntimeBytecodeExecutionTests` -> Passed `22/22`.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Engine.BenchmarkTests.CompareInterpreterAndBytecode` -> Passed `1/1`.
+   - Score remains **85** (no gate change yet); this tranche closes VM runtime fallback correctness gaps for AST-backed functions while keeping bytecode as mainline.
 
 1. JS-1 verified (`JavaScriptEngineModuleLoadingTests`: 2/2 pass on 2026-02-20).
 2. Worker import path upgraded from sync fetch bridge to prefetched-cache execution path (tranche API-1) and owner-run verification passed (section 5.9).
