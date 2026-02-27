@@ -45,7 +45,8 @@ public sealed class ConformanceReport
     /// <summary>
     /// Add results from a generic pass/fail count.
     /// </summary>
-    public void AddResult(string suiteName, string category, int total, int passed, int failed, TimeSpan duration, string? notes = null)
+    public void AddResult(string suiteName, string category, int total, int passed, int failed, TimeSpan duration,
+        string? notes = null)
     {
         _suiteResults.Add(new SuiteResult
         {
@@ -112,7 +113,8 @@ public sealed class ConformanceReport
 
         foreach (var s in _suiteResults)
         {
-            sb.AppendLine($"| {s.Name} | {s.Category} | {s.Total:N0} | {s.Passed:N0} | {s.Failed:N0} | {s.PassRate:F1}% | {s.Duration.TotalSeconds:F1}s |");
+            sb.AppendLine(
+                $"| {s.Name} | {s.Category} | {s.Total:N0} | {s.Passed:N0} | {s.Failed:N0} | {s.PassRate:F1}% | {s.Duration.TotalSeconds:F1}s |");
         }
 
         sb.AppendLine();
@@ -139,6 +141,7 @@ public sealed class ConformanceReport
                 {
                     sb.AppendLine($"| {s.Category} | {s.Total:N0} | {s.Passed:N0} | {s.PassRate:F1}% |");
                 }
+
                 sb.AppendLine();
             }
 
@@ -167,14 +170,71 @@ public sealed class ConformanceReport
     }
 
     /// <summary>
-    /// Save the report to a file.
+    /// Save the report to a file. Outputs JSON for .json paths, Markdown otherwise.
     /// </summary>
     public void SaveReport(string outputPath, string? baselinePath = null)
     {
-        var markdown = GenerateMarkdown(baselinePath);
         var dir = Path.GetDirectoryName(outputPath);
         if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
             Directory.CreateDirectory(dir);
-        File.WriteAllText(outputPath, markdown);
+
+        if (outputPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+        {
+            var json = GenerateJson();
+            File.WriteAllText(outputPath, json);
+        }
+        else
+        {
+            var markdown = GenerateMarkdown(baselinePath);
+            File.WriteAllText(outputPath, markdown);
+        }
+    }
+
+    /// <summary>
+    /// Generate a JSON representation of the conformance results.
+    /// </summary>
+    public string GenerateJson()
+    {
+        var now = DateTime.Now;
+        int totalTests = _suiteResults.Sum(s => s.Total);
+        int totalPassed = _suiteResults.Sum(s => s.Passed);
+        int totalFailed = _suiteResults.Sum(s => s.Failed);
+        var totalDuration = TimeSpan.FromMilliseconds(_suiteResults.Sum(s => s.Duration.TotalMilliseconds));
+
+        var sb = new StringBuilder();
+        sb.AppendLine("{");
+        sb.AppendLine($"  \"date\": \"{now:yyyy-MM-dd HH:mm:ss}\",");
+        sb.AppendLine($"  \"engine\": \"FenBrowser FenEngine\",");
+        sb.AppendLine($"  \"overallPassRate\": {OverallPassRate:F1},");
+        sb.AppendLine($"  \"totalTests\": {totalTests},");
+        sb.AppendLine($"  \"totalPassed\": {totalPassed},");
+        sb.AppendLine($"  \"totalFailed\": {totalFailed},");
+        sb.AppendLine($"  \"totalDurationMs\": {totalDuration.TotalMilliseconds:F0},");
+        sb.AppendLine("  \"suites\": [");
+
+        for (int i = 0; i < _suiteResults.Count; i++)
+        {
+            var s = _suiteResults[i];
+            sb.AppendLine("    {");
+            sb.AppendLine($"      \"name\": \"{EscapeJson(s.Name)}\",");
+            sb.AppendLine($"      \"category\": \"{EscapeJson(s.Category)}\",");
+            sb.AppendLine($"      \"total\": {s.Total},");
+            sb.AppendLine($"      \"passed\": {s.Passed},");
+            sb.AppendLine($"      \"failed\": {s.Failed},");
+            sb.AppendLine($"      \"passRate\": {s.PassRate:F1},");
+            sb.AppendLine($"      \"durationMs\": {s.Duration.TotalMilliseconds:F0}");
+            sb.Append("    }");
+            if (i < _suiteResults.Count - 1) sb.Append(",");
+            sb.AppendLine();
+        }
+
+        sb.AppendLine("  ]");
+        sb.AppendLine("}");
+        return sb.ToString();
+    }
+
+    private static string EscapeJson(string s)
+    {
+        return s.Replace("\\", "\\\\").Replace("\"", "\\\"");
     }
 }
