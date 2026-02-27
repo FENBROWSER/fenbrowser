@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
 
@@ -7,17 +6,17 @@ namespace FenBrowser.FenEngine.Jit
 {
     public static class JitRuntime
     {
-        private static Interpreter _interpreter;
+        private static Func<FenValue, FenValue, FenValue[], IExecutionContext, FenValue> _callBridge;
 
-        public static void Initialize(Interpreter interpreter)
+        public static void Initialize(Func<FenValue, FenValue, FenValue[], IExecutionContext, FenValue> callBridge)
         {
-            _interpreter = interpreter;
+            _callBridge = callBridge;
         }
 
         public static FenValue Call(FenValue fn, FenValue thisCtx, FenValue[] args, IExecutionContext context)
         {
-            if (_interpreter == null) return FenValue.FromString("Error: JIT Runtime not initialized");
-            return _interpreter.ApplyFunction(fn, new List<FenValue>(args), context, thisCtx);
+            if (_callBridge == null) return FenValue.FromString("Error: JIT Runtime not initialized");
+            return _callBridge(fn, thisCtx, args, context);
         }
 
         public static FenValue GetProp(FenValue obj, string prop, IExecutionContext context)

@@ -160,22 +160,15 @@ namespace FenBrowser.FenEngine.Core
                     Object.freeze(Number.prototype);
                     Object.freeze(Boolean.prototype);
                 ";
-
-                var interpreter = new Interpreter();
-                var lexer = new Lexer(hardeningScript);
-                var parser = new Parser(lexer);
-                var program = parser.ParseProgram();
-
-                if (parser.Errors.Count == 0)
+                var result = ExecuteSimple(hardeningScript, "fen://prototype-hardening.js");
+                if (result.Type == Interfaces.ValueType.Error)
                 {
-                    interpreter.Eval(program, _globalEnv, _context);
-                    FenLogger.Info("[FenRuntime] Prototype hardening applied successfully", LogCategory.JavaScript);
-                }
-                else
-                {
-                    FenLogger.Error($"[FenRuntime] Prototype hardening parse error: {string.Join(", ", parser.Errors)}",
+                    FenLogger.Error($"[FenRuntime] Prototype hardening failed in bytecode-only mode: {result}",
                         LogCategory.JavaScript);
+                    return;
                 }
+
+                FenLogger.Info("[FenRuntime] Prototype hardening applied successfully", LogCategory.JavaScript);
             }
             catch (Exception ex)
             {
@@ -2186,7 +2179,7 @@ namespace FenBrowser.FenEngine.Core
             // Methods (map, filter, etc.) are attached after MakeIteratorObject is defined below (~line 3440).
             FenObject iteratorProto = new FenObject();
             iteratorProto.InternalClass = "Iterator";
-            // Share with Interpreter so its array/string iterators also get this prototype.
+            // Share with all runtime iterator paths.
             FenObject.DefaultIteratorPrototype = iteratorProto;
             // MakeIteratorObject delegate declared here; assigned after the iterator section.
             Func<IEnumerable<FenValue>, FenObject> MakeIteratorObject = null;
@@ -6985,7 +6978,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromBoolean(double.IsNaN(num));
             })));
 
-            // eval — global function; direct eval is intercepted in the Interpreter.
+            // eval — global function; direct eval is handled in runtime execution path.
             // This entry makes typeof eval === "function" and supports indirect eval.
             SetGlobal("eval", FenValue.FromFunction(new FenFunction("eval", (args, thisVal) =>
             {
@@ -8358,7 +8351,7 @@ namespace FenBrowser.FenEngine.Core
                     var callback = args[0].AsFunction();
 
                     var registry = new FenObject();
-                    // We mock the registry. Actual GC callbacks are hard in interpreted mode without hooks.
+                    // We mock the registry. Actual GC callbacks are hard without host/runtime GC hooks.
                     // We partially implement the API surface.
                     var registrations = new Dictionary<string, object>();
 
@@ -8501,7 +8494,7 @@ namespace FenBrowser.FenEngine.Core
             // Atomics.wait(typedArray, index, value[, timeout]) — blocks until notified or timeout
             atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal) =>
             {
-                // In a single-threaded interpreter, we cannot actually block
+                // In a single-threaded runtime, we cannot actually block
                 // Return "not-equal" immediately (spec-compliant for non-equal value check)
                 // Real implementation would block thread until Atomics.notify() is called
                 try
@@ -8528,7 +8521,7 @@ namespace FenBrowser.FenEngine.Core
             // ES2024: Atomics.waitAsync(typedArray, index, value[, timeout]) — async version of wait
             atomics.Set("waitAsync", FenValue.FromFunction(new FenFunction("waitAsync", (args, thisVal) =>
             {
-                // In a tree-walking interpreter without shared memory threads, return a resolved async value
+                // In the current single-threaded runtime without shared memory threads, return a resolved async value
                 var result = new FenObject();
                 result.Set("async", FenValue.FromBoolean(false));
                 result.Set("value", FenValue.FromString("not-equal")); // spec-defined string value
@@ -10390,8 +10383,7 @@ namespace FenBrowser.FenEngine.Core
         }
 
         /// <summary>
-        /// Execute JavaScript code using the FenEngine parser with bytecode-first execution
-        /// and interpreter fallback for compile-unsupported programs.
+        /// Execute JavaScript code using the FenEngine parser with bytecode-only execution.
         /// </summary>
         public IValue ExecuteSimple(string code, System.Threading.CancellationToken cancellationToken)
         {
@@ -10504,7 +10496,7 @@ namespace FenBrowser.FenEngine.Core
                             }
                             catch (Exception vmEx)
                             {
-                                // Do not re-run in interpreter after VM runtime error to avoid double side effects.
+                                // Do not re-run after VM runtime error to avoid double side effects.
                                 sw.Stop();
                                 try
                                 {
@@ -10533,28 +10525,14 @@ namespace FenBrowser.FenEngine.Core
                             catch
                             {
                             }
+
+                            sw.Stop();
+                            return FenValue.FromError(
+                                $"Bytecode-only mode: compilation unsupported for this script. {compileFallbackReason}");
                         }
                     }
-
-                    var interpreter = new Interpreter();
-                    interpreter.CancellationToken = cancellationToken;
-
-                    // Register with DevTools
-                    DevToolsCore.Instance.SetInterpreter(interpreter);
-
-                    var result = interpreter.Eval(program, _globalEnv, _context);
-
                     sw.Stop();
-                    try
-                    {
-                        System.IO.File.AppendAllText(logPath,
-                            $"[SUCCESS] {url} (len={codeLen}, {sw.ElapsedMilliseconds}ms)\n");
-                    }
-                    catch
-                    {
-                    }
-
-                    return result;
+                    return FenValue.FromError("Bytecode-only mode: core bytecode execution is disabled or unavailable.");
                 }
                 finally
                 {

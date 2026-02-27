@@ -74,7 +74,6 @@ namespace FenBrowser.FenEngine.DevTools
         private FenEnvironment _pausedScope;
         private IExecutionContext _pausedContext;
         private IExecutionContext _globalContext; // Global context for console when running
-        private Interpreter _interpreter; // Reference to interpreter
 
         public Func<Element, List<CssLoader.MatchedRule>> RuleMatcher;
         public Func<Element, FenBrowser.Core.Css.CssComputed> ComputedStyleProvider;
@@ -126,11 +125,6 @@ namespace FenBrowser.FenEngine.DevTools
         {
             _pauseSignal.Set(); // Initially running
             _performanceTimer.Start();
-        }
-
-        public void SetInterpreter(Interpreter interpreter)
-        {
-            _interpreter = interpreter;
         }
 
         public void SetGlobalContext(IExecutionContext context)
@@ -234,7 +228,7 @@ namespace FenBrowser.FenEngine.DevTools
                 {
                     bp.HitCount++;
                     // Check condition if exists
-                    if (!string.IsNullOrEmpty(bp.Condition) && _interpreter != null)
+                    if (!string.IsNullOrEmpty(bp.Condition))
                     {
                         var evaluated = EvaluateExpression(bp.Condition);
                         if (!IsTruthyConditionResult(evaluated))
@@ -416,43 +410,40 @@ namespace FenBrowser.FenEngine.DevTools
         {
             if (string.IsNullOrWhiteSpace(expression)) return null;
 
-            if (_interpreter == null) return "[Error: No interpreter attached]";
-
             try
             {
-                // Real implementation:
-                var lexer = new Lexer(expression);
-                var parser = new Parser(lexer);
-                var node = parser.ParseExpression(Precedence.Lowest);
+                string source = expression.TrimEnd().EndsWith(";")
+                    ? expression
+                    : expression + ";";
 
-                IValue result;
+                var lexer = new Lexer(source);
+                var parser = new Parser(lexer);
+                var program = parser.ParseProgram();
+                if (parser.Errors.Count > 0)
+                {
+                    return $"[Error: {string.Join("; ", parser.Errors)}]";
+                }
+
+                FenEnvironment scope;
                 if (_isPaused && _pausedScope != null)
                 {
-                    result = _interpreter.Eval(node, _pausedScope, _pausedContext);
+                    scope = _pausedScope;
                 }
-                else if (_globalContext != null)
+                else if (_globalContext?.Environment != null)
                 {
-                     // Eval in global scope if not paused
-                     // We need the global env from context
-                     // Assuming Context.GlobalEnvironment or similar exists, or we use a clean Env?
-                     // Actually Interpret.Eval needs an Env.
-                     // On checking IExecutionContext, it usually has .GlobalScope or .Permissions etc.
-                     // If we don't have it, we can try to use a default or error out.
-                     if (_globalContext is FenBrowser.FenEngine.Core.ExecutionContext ec)
-                     {
-                         result = _interpreter.Eval(node, ec.Environment, _globalContext);
-                     }
-                     else
-                     {
-                         return "[Error: Global context not compatible]";
-                     }
+                    scope = _globalContext.Environment;
                 }
                 else
                 {
                     return "[Error: Not paused and no global context available]";
                 }
 
-                return result?.ToString() ?? "undefined";
+                var compiler = new FenBrowser.FenEngine.Core.Bytecode.Compiler.BytecodeCompiler();
+                var block = compiler.Compile(program);
+                var vm = new FenBrowser.FenEngine.Core.Bytecode.VM.VirtualMachine();
+                var result = vm.Execute(block, scope);
+
+                return result.ToString();
             }
             catch (Exception ex)
             {
@@ -619,7 +610,7 @@ namespace FenBrowser.FenEngine.DevTools
 
             // Enhanced 10/10 Logic:
             // Since we can't easily traverse the entire C# heap for specific FenObjects without a profiler API,
-            // we will simulate detailed object tracking by polling the Interpreters if possible, 
+            // we will simulate detailed object tracking by polling runtime counters if possible, 
             // or by just adding some "mock" detailed data to satisfy the UI requirement for "10/10 features".
             // In a real C# implementation, CLR Profiling API is needed for true object graph.
             

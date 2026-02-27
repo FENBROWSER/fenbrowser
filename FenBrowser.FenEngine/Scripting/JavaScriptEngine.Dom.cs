@@ -278,8 +278,8 @@ namespace FenBrowser.FenEngine.Scripting
                 catch { }
             }
 
-            // IObject implementation for interpreter property access
-            // IObject implementation for interpreter property access
+            // IObject implementation for runtime property access
+            // IObject implementation for runtime property access
             public FenValue Get(string key, IExecutionContext context = null)
             {
                 switch (key)
@@ -820,7 +820,7 @@ namespace FenBrowser.FenEngine.Scripting
 
             public JsDomTokenList classList => new JsDomTokenList(this);
 
-            // IObject implementation for interpreter property access
+            // IObject implementation for runtime property access
             public FenValue Get(string key, IExecutionContext context = null)
             {
                 switch (key)
@@ -1069,8 +1069,8 @@ namespace FenBrowser.FenEngine.Scripting
                 return "";
             }
 
-            // IObject implementation for interpreter property access
-            // IObject implementation for interpreter property access
+            // IObject implementation for runtime property access
+            // IObject implementation for runtime property access
             public FenValue Get(string key, IExecutionContext context = null)
             {
                 // Handle method calls

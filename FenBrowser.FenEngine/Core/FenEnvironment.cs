@@ -43,6 +43,35 @@ namespace FenBrowser.FenEngine.Core
             return FenValue.Undefined;
         }
 
+        public bool HasLocalBinding(string name)
+        {
+            return _store.ContainsKey(name) || _tdz.Contains(name);
+        }
+
+        public bool TryGetLocal(string name, out FenValue value)
+        {
+            if (_tdz.Contains(name))
+            {
+                value = FenValue.FromError($"Cannot access '{name}' before initialization");
+                return true;
+            }
+
+            return _store.TryGetValue(name, out value);
+        }
+
+        public FenEnvironment ResolveBindingEnvironment(string name)
+        {
+            for (var env = this; env != null; env = env.Outer)
+            {
+                if (env._store.ContainsKey(name) || env._tdz.Contains(name))
+                {
+                    return env;
+                }
+            }
+
+            return null;
+        }
+
         public FenValue Set(string name, FenValue value)
         {
             _store[name] = value;

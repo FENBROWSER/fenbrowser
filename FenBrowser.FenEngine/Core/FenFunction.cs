@@ -18,6 +18,7 @@ namespace FenBrowser.FenEngine.Core
         public bool IsAsync { get; set; }
         public bool IsGenerator { get; set; }
         public bool IsArrowFunction { get; set; }
+        public bool NeedsArgumentsObject { get; set; } = true;
         
         // JIT Support
         public int CallCount { get; set; }
@@ -158,22 +159,78 @@ namespace FenBrowser.FenEngine.Core
                 }
             }
 
-            // User-defined functions: execute via a fresh Interpreter.
-            // This path is used by ToPrimitive (toString/valueOf), Proxy traps,
-            // and other C# code that needs to call JS functions without an existing Interpreter.
+            if (BytecodeBlock == null)
+            {
+                return FenValue.FromError("Bytecode-only mode: AST-backed function invocation is not supported.");
+            }
+
             try
             {
-                var interpreter = new Interpreter();
-                return interpreter.ApplyFunction(
-                    FenValue.FromFunction(this),
-                    new List<FenValue>(args),
-                    context,
-                    actualThis);
+                return InvokeViaBytecodeThunk(args, context, actualThis);
             }
             catch (Exception ex)
             {
                 return FenValue.FromError($"Error: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
             }
+        }
+
+        private FenValue InvokeViaBytecodeThunk(FenValue[] args, IExecutionContext context, FenValue thisBinding)
+        {
+            var constants = new List<FenValue>(2);
+            var instructionBytes = new List<byte>(32);
+
+            var baseEnv = Env ?? context?.Environment as FenEnvironment ?? new FenEnvironment();
+            FenFunction callable = this;
+
+            // Bytecode call opcodes currently resolve `this` through function lexical env.
+            // Rebind env for direct host-side invoke so callback paths still observe supplied `this`.
+            if (!IsArrowFunction)
+            {
+                var reboundEnv = new FenEnvironment(baseEnv);
+                reboundEnv.Set("this", thisBinding);
+
+                callable = new FenFunction(Parameters, BytecodeBlock, reboundEnv)
+                {
+                    Name = Name,
+                    IsArrowFunction = IsArrowFunction,
+                    IsAsync = IsAsync,
+                    IsGenerator = IsGenerator,
+                    NeedsArgumentsObject = NeedsArgumentsObject,
+                    LocalMap = LocalMap
+                };
+            }
+
+            constants.Add(FenValue.FromFunction(callable));
+            constants.Add(FenValue.FromObject(CreateArrayLikeArgumentsObject(args)));
+
+            AppendLoadConst(instructionBytes, 0);
+            AppendLoadConst(instructionBytes, 1);
+            instructionBytes.Add((byte)Bytecode.OpCode.CallFromArray);
+            instructionBytes.Add((byte)Bytecode.OpCode.Return);
+
+            var thunk = new Bytecode.CodeBlock(instructionBytes.ToArray(), constants);
+            var vm = new Bytecode.VM.VirtualMachine();
+            return vm.Execute(thunk, baseEnv);
+        }
+
+        private static FenObject CreateArrayLikeArgumentsObject(FenValue[] args)
+        {
+            var arr = new FenObject();
+            var effectiveArgs = args ?? Array.Empty<FenValue>();
+            for (int i = 0; i < effectiveArgs.Length; i++)
+            {
+                arr.Set(i.ToString(), effectiveArgs[i]);
+            }
+
+            arr.Set("length", FenValue.FromNumber(effectiveArgs.Length));
+            return arr;
+        }
+
+        private static void AppendLoadConst(List<byte> bytes, int index)
+        {
+            bytes.Add((byte)Bytecode.OpCode.LoadConst);
+            var raw = BitConverter.GetBytes(index);
+            bytes.AddRange(raw);
         }
     }
 }

@@ -366,19 +366,10 @@ namespace FenBrowser.FenEngine.Core
                 var previousModulePath = _context.CurrentModulePath;
                 _context.CurrentModulePath = path;
 
-                // Pass THIS loader to the interpreter so nested imports use it
-                var interpreter = new Interpreter();
-
                 try
                 {
-                    // Evaluate module
-                    var evalResult = interpreter.Eval(program, moduleEnv, _context);
-                    if (ThrowOnEvaluationError &&
-                        evalResult != null &&
-                        evalResult.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Error)
-                    {
-                        throw new Exception(evalResult.ToString());
-                    }
+                    PrepareModuleImports(program, moduleEnv, path);
+                    ExecuteModuleBytecode(program, moduleEnv);
                 }
                 finally
                 {
@@ -386,12 +377,7 @@ namespace FenBrowser.FenEngine.Core
                     _context.CurrentModulePath = previousModulePath;
                 }
 
-                // Extract exports into pre-cached object
-                var exports = interpreter.Exports;
-                foreach(var kvp in exports)
-                {
-                    exportObj.Set(kvp.Key, kvp.Value);
-                }
+                CopyModuleExports(moduleEnv, exportObj);
 
                 return exportObj;
             }
@@ -427,19 +413,10 @@ namespace FenBrowser.FenEngine.Core
                 var previousModulePath = _context.CurrentModulePath;
                 _context.CurrentModulePath = pseudoPath;
 
-                // Pass THIS loader to the interpreter so nested imports use it
-                var interpreter = new Interpreter();
-
                 try
                 {
-                    // Evaluate module
-                    var evalResult = interpreter.Eval(program, moduleEnv, _context);
-                    if (ThrowOnEvaluationError &&
-                        evalResult != null &&
-                        evalResult.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Error)
-                    {
-                        throw new Exception(evalResult.ToString());
-                    }
+                    PrepareModuleImports(program, moduleEnv, pseudoPath);
+                    ExecuteModuleBytecode(program, moduleEnv);
                 }
                 finally
                 {
@@ -447,12 +424,7 @@ namespace FenBrowser.FenEngine.Core
                     _context.CurrentModulePath = previousModulePath;
                 }
 
-                // Extract exports into pre-cached object
-                var exports = interpreter.Exports;
-                foreach(var kvp in exports)
-                {
-                    exportObj.Set(kvp.Key, kvp.Value);
-                }
+                CopyModuleExports(moduleEnv, exportObj);
 
                 return exportObj;
             }
@@ -461,6 +433,86 @@ namespace FenBrowser.FenEngine.Core
                 _cache.Remove(pseudoPath);
                 throw;
             }
+        }
+
+        private void PrepareModuleImports(Program program, FenEnvironment moduleEnv, string modulePath)
+        {
+            if (program?.Statements == null)
+            {
+                return;
+            }
+
+            foreach (var statement in program.Statements)
+            {
+                if (statement is ImportDeclaration importDecl)
+                {
+                    BindModuleNamespace(importDecl.Source, modulePath, moduleEnv);
+                    continue;
+                }
+
+                if (statement is ExportDeclaration exportDecl && !string.IsNullOrEmpty(exportDecl.Source))
+                {
+                    BindModuleNamespace(exportDecl.Source, modulePath, moduleEnv);
+                }
+            }
+        }
+
+        private void BindModuleNamespace(string source, string modulePath, FenEnvironment moduleEnv)
+        {
+            if (string.IsNullOrEmpty(source) || moduleEnv == null)
+            {
+                return;
+            }
+
+            string resolvedPath = Resolve(source, modulePath ?? string.Empty);
+            var exports = LoadModule(resolvedPath);
+            moduleEnv.Set(GetModuleBindingName(source), FenValue.FromObject(exports));
+        }
+
+        private void ExecuteModuleBytecode(Program program, FenEnvironment moduleEnv)
+        {
+            try
+            {
+                var compiler = new Bytecode.Compiler.BytecodeCompiler();
+                var codeBlock = compiler.Compile(program);
+                var vm = new Bytecode.VM.VirtualMachine();
+                var evalResult = vm.Execute(codeBlock, moduleEnv);
+
+                if (ThrowOnEvaluationError &&
+                    evalResult.Type == Interfaces.ValueType.Error)
+                {
+                    throw new Exception(evalResult.ToString());
+                }
+            }
+            catch (NotImplementedException ex)
+            {
+                throw new Exception($"Bytecode-only mode: module compilation unsupported. {ex.Message}", ex);
+            }
+        }
+
+        private static void CopyModuleExports(FenEnvironment moduleEnv, FenObject exportObj)
+        {
+            if (moduleEnv == null || exportObj == null)
+            {
+                return;
+            }
+
+            const string exportPrefix = "__fen_export_";
+            foreach (var kvp in moduleEnv.InspectVariables())
+            {
+                if (!kvp.Key.StartsWith(exportPrefix, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var exportName = kvp.Key.Substring(exportPrefix.Length);
+                exportObj.Set(exportName, kvp.Value);
+            }
+        }
+
+        private static string GetModuleBindingName(string source)
+        {
+            return "__fen_module_" + (source ?? string.Empty);
         }
     }
 }

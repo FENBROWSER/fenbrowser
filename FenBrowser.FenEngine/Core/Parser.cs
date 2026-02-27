@@ -368,7 +368,7 @@ namespace FenBrowser.FenEngine.Core
                 case TokenType.Function:
                     {
                         var funcExp = ParseFunctionLiteral() as FunctionLiteral;
-                        // Return FunctionDeclarationStatement to allow Annex B handling in Interpreter
+                        // Return FunctionDeclarationStatement to allow Annex B-compatible function-declaration handling.
                         return new FunctionDeclarationStatement 
                         { 
                             Token = funcExp?.Token ?? _curToken, 
@@ -2266,7 +2266,7 @@ namespace FenBrowser.FenEngine.Core
                 }
                  
                 // Return as CallExpression for now, or a specific DynamicImportExpression
-                // Using CallExpression with unique callee name for interpreter to handle
+                // Using CallExpression with unique callee name for runtime to handle
                 return new CallExpression 
                 { 
                     Token = token,
@@ -4036,7 +4036,7 @@ namespace FenBrowser.FenEngine.Core
             var token = _curToken;
             NextToken(); // Move past 'throw'
             var argument = ParseExpression(Precedence.Lowest);
-            // Return as a special expression - the interpreter handles it
+            // Return as a special expression handled by runtime execution.
             return new ThrowExpression { Token = token, Value = argument };
         }
 
