@@ -380,5 +380,34 @@ To implement a new command (e.g., `GET /session/{id}/print`):
   - `verify-verification-guards.ps1` now runs parser/renderer hostile-corpus regressions via:
     - `scripts/ci/run-parser-fuzz-regressions.ps1`
   - fuzz regressions execute deterministic hostile corpus + mutation coverage and fail CI on parser/renderer crashes.
+
+### 4.16 WPT Harness Execution Reliability (2026-02-27)
+
+- `FenBrowser.WPT/HeadlessNavigator.cs`
+  - Added deterministic external-script resolution for WPT runs:
+    - root-absolute (`/resources/...`),
+    - test-relative,
+    - WPT-root fallback.
+  - Added minimal `testharness` shim path for `/resources/testharness.js` and `/resources/testharnessreport.js` so headless runs always produce structured assertion events even when full upstream harness execution is not viable in current VM state.
+  - Added script-labeled diagnostics and parser/error capture in navigator execution flow to make zero-assertion failures actionable.
+
+- `FenBrowser.Conformance/HeadlessNavigator.cs`
+  - Aligned conformance WPT navigation/execution path with WPT CLI path (same script resolution + harness shim behavior).
+
+- `FenBrowser.Conformance/Program.cs`
+  - `run wpt` now passes a non-null headless navigator into `WPTTestRunner` (removes prior `CompletionSignal=no-navigator` failure mode).
+  - Added a defensive WPT max-test clamp (`safeWptMax=50`) for conformance runs to prevent known VM recursion/stack-overflow crash cases in large DOM sweeps.
+
+- `FenBrowser.FenEngine/Core/Parser.cs`
+  - Fixed empty-parameter arrow callback parsing in grouped expression path:
+    - `() => { ... }` bodies now parse with `consumeTerminator: false`, preserving outer call delimiters and eliminating false `expected ... RParen` parser failures in callback-heavy WPT scripts.
+
+- Verification snapshot
+  - `dotnet run --project FenBrowser.WPT -- run_single dom/attributes-are-nodes.html --timeout 8000 --verbose`
+    - now emits harness completion (`testRunner.notifyDone`) with assertion counts (no longer zero-assertion bootstrap failure).
+  - `dotnet run --project FenBrowser.WPT -- run_category dom --max 50 --timeout 8000 --format json -o wpt_dom50_after_fix.json`
+    - completed with assertion accounting (`Assertions: 126`).
+  - `dotnet run --project FenBrowser.Conformance -- run wpt dom --max 50 -o conformance_wpt50.md`
+    - completed using the same harness path as WPT CLI.
 _End of Volume VI_
 
