@@ -759,7 +759,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 var right = _stack[--_sp];
                                 var left = _stack[--_sp];
                                 var result = FenValue.AbstractRelationalComparison(right, left, null, false);
-                                _stack[_sp++] = FenValue.FromBoolean(!result.ToBoolean());
+                                // Per spec: a <= b = !(b < a), but if comparison is undefined (NaN), result is false
+                                _stack[_sp++] = FenValue.FromBoolean(!result.IsUndefined && !result.ToBoolean());
                                 break;
                             }
                             case OpCode.GreaterThanOrEqual:
@@ -767,7 +768,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 var right = _stack[--_sp];
                                 var left = _stack[--_sp];
                                 var result = FenValue.AbstractRelationalComparison(left, right, null, true);
-                                _stack[_sp++] = FenValue.FromBoolean(!result.ToBoolean());
+                                // Per spec: a >= b = !(a < b), but if comparison is undefined (NaN), result is false
+                                _stack[_sp++] = FenValue.FromBoolean(!result.IsUndefined && !result.ToBoolean());
                                 break;
                             }
                             case OpCode.InOperator:
