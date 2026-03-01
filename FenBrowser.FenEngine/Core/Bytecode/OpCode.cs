@@ -53,6 +53,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode
         Construct = 0x53,
         CallFromArray = 0x54,
         ConstructFromArray = 0x55,
+        CallMethod = 0x56,           // [receiver, callee, arg0..argN] -> result (passes receiver as 'this')
+        CallMethodFromArray = 0x57,  // [receiver, callee, argsArray] -> result (passes receiver as 'this')
 
         // 0x60 - 0x6F: Objects & Arrays
         MakeArray = 0x60,
