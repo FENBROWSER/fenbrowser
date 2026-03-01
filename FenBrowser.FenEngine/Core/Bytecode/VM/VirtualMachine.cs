@@ -1076,12 +1076,115 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
                                 break;
                             }
+                            case OpCode.CallMethod:
+                            {
+                                int argCount = ReadInt32(instructions, ref frame);
+                                int argStart = _sp - argCount;
+                                var callee = _stack[argStart - 1];
+                                var receiver = _stack[argStart - 2];
+
+                                if (!callee.IsFunction) throw new Exception("VM Error: Attempted to call non-function.");
+                                var func = callee.AsObject() as FenFunction;
+
+                                if (func.IsNative)
+                                {
+                                    var args = new FenValue[argCount];
+                                    if (argCount > 0)
+                                    {
+                                        Array.Copy(_stack, argStart, args, 0, argCount);
+                                    }
+
+                                    _sp = argStart - 2; // Pop receiver + callee + args
+                                    if (!func.ProxyHandler.IsUndefined && func.ProxyHandler.IsObject)
+                                    {
+                                        _stack[_sp++] = func.Invoke(args, null, receiver);
+                                    }
+                                    else
+                                    {
+                                        _stack[_sp++] = func.NativeImplementation(args, receiver);
+                                    }
+                                }
+                                else if (func.BytecodeBlock != null)
+                                {
+                                    var newEnv = new FenEnvironment(func.Env);
+                                    InitializeFunctionFastStore(func, newEnv);
+                                    if (func.LocalMap != null && !string.IsNullOrEmpty(func.Name) && func.LocalMap.ContainsKey(func.Name))
+                                    {
+                                        SetFunctionBinding(func, newEnv, func.Name, FenValue.FromFunction(func));
+                                    }
+                                    if (!func.IsArrowFunction)
+                                    {
+                                        SetFunctionBinding(func, newEnv, "this", receiver);
+                                    }
+                                    BindFunctionArgumentsFromStack(func, newEnv, argCount, argStart);
+
+                                    _sp = argStart - 2; // Pop receiver + callee + args
+
+                                    var newFrame = PushFrame(func.BytecodeBlock, newEnv, _sp);
+                                    newFrame.NewTarget = FenValue.Undefined;
+                                    newFrame.IsAsyncFunction = func.IsAsync;
+                                    goto fetch_frame;
+                                }
+                                else
+                                {
+                                    throw new Exception("VM Error: Bytecode-only mode does not support AST-backed function calls.");
+                                }
+                                break;
+                            }
+                            case OpCode.CallMethodFromArray:
+                            {
+                                var argsArrayVal = _stack[--_sp];
+                                var callee = _stack[--_sp];
+                                var receiver = _stack[--_sp];
+
+                                if (!callee.IsFunction) throw new Exception("VM Error: Attempted to call non-function.");
+                                var func = callee.AsObject() as FenFunction;
+                                var argsObject = argsArrayVal.IsObject ? argsArrayVal.AsObject() : null;
+                                int argCount = GetArrayLikeLength(argsObject);
+
+                                if (func.IsNative)
+                                {
+                                    var args = ExtractArrayLikeValues(argsArrayVal);
+                                    if (!func.ProxyHandler.IsUndefined && func.ProxyHandler.IsObject)
+                                    {
+                                        _stack[_sp++] = func.Invoke(args, null, receiver);
+                                    }
+                                    else
+                                    {
+                                        _stack[_sp++] = func.NativeImplementation(args, receiver);
+                                    }
+                                }
+                                else if (func.BytecodeBlock != null)
+                                {
+                                    var newEnv = new FenEnvironment(func.Env);
+                                    InitializeFunctionFastStore(func, newEnv);
+                                    if (func.LocalMap != null && !string.IsNullOrEmpty(func.Name) && func.LocalMap.ContainsKey(func.Name))
+                                    {
+                                        SetFunctionBinding(func, newEnv, func.Name, FenValue.FromFunction(func));
+                                    }
+                                    if (!func.IsArrowFunction)
+                                    {
+                                        SetFunctionBinding(func, newEnv, "this", receiver);
+                                    }
+                                    BindFunctionArgumentsFromArrayLike(func, newEnv, argsObject, argCount);
+
+                                    var newFrame = PushFrame(func.BytecodeBlock, newEnv, _sp);
+                                    newFrame.NewTarget = FenValue.Undefined;
+                                    newFrame.IsAsyncFunction = func.IsAsync;
+                                    goto fetch_frame;
+                                }
+                                else
+                                {
+                                    throw new Exception("VM Error: Bytecode-only mode does not support AST-backed function calls.");
+                                }
+                                break;
+                            }
                             case OpCode.Construct:
                             {
                                 int argCount = ReadInt32(instructions, ref frame);
                                 int argStart = _sp - argCount;
                                 var constructorVal = _stack[argStart - 1];
-                                
+
                                 if (!constructorVal.IsFunction) throw new Exception("VM Error: Attempted to construct non-function.");
                                 var func = constructorVal.AsObject() as FenFunction;
                                 if (func.IsArrowFunction)
