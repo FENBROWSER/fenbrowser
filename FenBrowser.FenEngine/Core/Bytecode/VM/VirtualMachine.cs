@@ -1603,7 +1603,18 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                             {
                                 var objVal = _stack[--_sp];
                                 var iterObj = new FenObject();
-                                if (objVal.IsObject)
+                                if (objVal.IsString)
+                                {
+                                    // for...in on a string yields "0", "1", "2", ... for each character index
+                                    var str = objVal.AsString();
+                                    var indexKeys = new string[str.Length];
+                                    for (int i = 0; i < str.Length; i++)
+                                    {
+                                        indexKeys[i] = IndexKey(i);
+                                    }
+                                    iterObj.NativeObject = new KeyIteratorEnumerator(((IEnumerable<string>)indexKeys).GetEnumerator());
+                                }
+                                else if (objVal.IsObject)
                                 {
                                     var obj = objVal.AsObject();
                                     iterObj.NativeObject = obj != null
