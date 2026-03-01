@@ -362,6 +362,9 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             public void Dispose() { }
         }
 
+        // Cached primitive prototype lookups (lazily resolved from the environment on first use)
+        private readonly Dictionary<string, FenObject> _primitivePrototypeCache = new Dictionary<string, FenObject>(StringComparer.Ordinal);
+
         // Fixed-size fast heap for operands (prevents boxing and allocation in hot loop)
         private const int STACK_SIZE = 16384;
         private readonly FenValue[] _stack = new FenValue[STACK_SIZE];
@@ -1360,6 +1363,37 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                         _stack[_sp++] = objectRef.Get(key);
                                     }
                                 }
+                                else if (obj.IsString)
+                                {
+                                    // Primitive string: handle length, index access, and String.prototype lookup
+                                    var str = obj.AsString();
+                                    var key = PropertyKey(prop);
+                                    if (string.Equals(key, "length", StringComparison.Ordinal))
+                                    {
+                                        _stack[_sp++] = FenValue.FromNumber(str.Length);
+                                    }
+                                    else if (TryParseNonNegativeInt(key, out int charIdx) && (uint)charIdx < (uint)str.Length)
+                                    {
+                                        _stack[_sp++] = FenValue.FromString(str[charIdx].ToString());
+                                    }
+                                    else
+                                    {
+                                        var proto = GetPrimitivePrototype(frame, "String");
+                                        _stack[_sp++] = proto != null ? proto.Get(key) : FenValue.Undefined;
+                                    }
+                                }
+                                else if (obj.IsNumber)
+                                {
+                                    var key = PropertyKey(prop);
+                                    var proto = GetPrimitivePrototype(frame, "Number");
+                                    _stack[_sp++] = proto != null ? proto.Get(key) : FenValue.Undefined;
+                                }
+                                else if (obj.IsBoolean)
+                                {
+                                    var key = PropertyKey(prop);
+                                    var proto = GetPrimitivePrototype(frame, "Boolean");
+                                    _stack[_sp++] = proto != null ? proto.Get(key) : FenValue.Undefined;
+                                }
                                 else
                                 {
                                     _stack[_sp++] = FenValue.Undefined;
@@ -2300,6 +2334,67 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             }
             // else numeric addition
             return FenValue.FromNumber(left.ToNumber() + right.ToNumber());
+        }
+
+        /// <summary>
+        /// Lazily resolves and caches the prototype object for a primitive constructor (String, Number, Boolean).
+        /// Used by LoadProp to implement property access on primitive values.
+        /// </summary>
+        private FenObject GetPrimitivePrototype(CallFrame frame, string constructorName)
+        {
+            if (_primitivePrototypeCache.TryGetValue(constructorName, out var cached))
+            {
+                return cached;
+            }
+
+            var ctor = ResolveVariable(frame, constructorName);
+            var ctorObj = ctor.AsObject();
+            if (ctorObj != null)
+            {
+                var proto = ctorObj.Get("prototype");
+                if (proto.IsObject)
+                {
+                    var protoObj = proto.AsObject() as FenObject;
+                    _primitivePrototypeCache[constructorName] = protoObj;
+                    return protoObj;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Parses a string key as a non-negative integer index. Used for string character access.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool TryParseNonNegativeInt(string key, out int index)
+        {
+            index = -1;
+            if (string.IsNullOrEmpty(key))
+            {
+                return false;
+            }
+
+            int value = 0;
+            for (int i = 0; i < key.Length; i++)
+            {
+                char c = key[i];
+                if (c < '0' || c > '9')
+                {
+                    return false;
+                }
+
+                int digit = c - '0';
+                if (value > (int.MaxValue - digit) / 10)
+                {
+                    return false;
+                }
+
+                value = (value * 10) + digit;
+            }
+
+            index = value;
+            return true;
         }
     }
 }
