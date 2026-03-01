@@ -756,11 +756,35 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
             else if (node is CallExpression callExpr)
             {
-                Visit(callExpr.Function);
+                // Detect method calls (obj.method() or obj[key]()) so we can pass the receiver as 'this'.
+                bool isMethodCall = false;
+                if (callExpr.Function is MemberExpression memberCallTarget)
+                {
+                    isMethodCall = true;
+                    Visit(memberCallTarget.Object);         // push receiver
+                    Emit(OpCode.Dup);                       // dup receiver: [recv, recv]
+                    int keyIdx = AddConstant(FenValue.FromString(memberCallTarget.Property));
+                    Emit(OpCode.LoadConst);
+                    EmitInt32(keyIdx);
+                    Emit(OpCode.LoadProp);                  // [recv, fn]
+                }
+                else if (callExpr.Function is IndexExpression indexCallTarget)
+                {
+                    isMethodCall = true;
+                    Visit(indexCallTarget.Left);            // push receiver
+                    Emit(OpCode.Dup);                       // dup receiver: [recv, recv]
+                    Visit(indexCallTarget.Index);           // push key: [recv, recv, key]
+                    Emit(OpCode.LoadProp);                  // [recv, fn]
+                }
+                else
+                {
+                    Visit(callExpr.Function);
+                }
+
                 if (ContainsSpread(callExpr.Arguments))
                 {
                     EmitArgumentsArray(callExpr.Arguments);
-                    Emit(OpCode.CallFromArray);
+                    Emit(isMethodCall ? OpCode.CallMethodFromArray : OpCode.CallFromArray);
                 }
                 else
                 {
@@ -768,7 +792,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     {
                         Visit(arg);
                     }
-                    Emit(OpCode.Call);
+                    Emit(isMethodCall ? OpCode.CallMethod : OpCode.Call);
                     EmitInt32(callExpr.Arguments.Count);
                 }
             }
