@@ -2551,18 +2551,17 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             int skipOffsetType = -1;
             if (applyObjectGuard)
             {
+                // Skip destructuring if source is null (real JS throws TypeError; here we silently skip)
                 EmitLoadVarByName(sourceVariableName);
                 Emit(OpCode.LoadNull);
-                Emit(OpCode.StrictNotEqual);
-                skipOffsetNull = EmitJump(OpCode.JumpIfFalse);
-
-                EmitLoadVarByName(sourceVariableName);
-                Emit(OpCode.Typeof);
-                int objectTypeIdx = AddConstant(FenValue.FromString("object"));
-                Emit(OpCode.LoadConst);
-                EmitInt32(objectTypeIdx);
                 Emit(OpCode.StrictEqual);
-                skipOffsetType = EmitJump(OpCode.JumpIfFalse);
+                skipOffsetNull = EmitJump(OpCode.JumpIfTrue);
+
+                // Skip destructuring if source is undefined
+                EmitLoadVarByName(sourceVariableName);
+                Emit(OpCode.LoadUndefined);
+                Emit(OpCode.StrictEqual);
+                skipOffsetType = EmitJump(OpCode.JumpIfTrue);
             }
 
             if (pattern is Identifier identifierPattern)
