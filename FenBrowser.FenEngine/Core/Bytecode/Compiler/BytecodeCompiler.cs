@@ -14,6 +14,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
     {
         private readonly List<byte> _instructions = new List<byte>();
         private readonly List<FenValue> _constants = new List<FenValue>();
+        private readonly Dictionary<string, int> _stringConstantIndex = new Dictionary<string, int>(StringComparer.Ordinal);
+        private readonly Dictionary<double, int> _numberConstantIndex = new Dictionary<double, int>();
         private readonly Stack<BreakContext> _breakContexts = new Stack<BreakContext>();
         private readonly Stack<LoopContext> _loopContexts = new Stack<LoopContext>();
         private readonly Stack<LabelContext> _labelContexts = new Stack<LabelContext>();
@@ -46,6 +48,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         {
             _instructions.Clear();
             _constants.Clear();
+            _stringConstantIndex.Clear();
+            _numberConstantIndex.Clear();
             _breakContexts.Clear();
             _loopContexts.Clear();
             _labelContexts.Clear();
@@ -832,6 +836,34 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
         private int AddConstant(FenValue val)
         {
+            // Deduplicate string and number constants to keep the constants pool compact.
+            if (val.IsString)
+            {
+                string str = val.AsString();
+                if (_stringConstantIndex.TryGetValue(str, out int existingIdx))
+                {
+                    return existingIdx;
+                }
+                int newIdx = _constants.Count;
+                _constants.Add(val);
+                _stringConstantIndex[str] = newIdx;
+                return newIdx;
+            }
+
+            if (val.IsNumber)
+            {
+                double num = val._numberValue;
+                if (_numberConstantIndex.TryGetValue(num, out int existingIdx))
+                {
+                    return existingIdx;
+                }
+                int newIdx = _constants.Count;
+                _constants.Add(val);
+                _numberConstantIndex[num] = newIdx;
+                return newIdx;
+            }
+
+            // Objects (regex, function templates) and other types are not deduplicated.
             _constants.Add(val);
             return _constants.Count - 1;
         }
