@@ -477,6 +477,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     {
                         EmitStoreVarByName(letStmt.Name.Value);
                     }
+                    Emit(OpCode.Pop); // declarations are statements; discard the stored value from the stack
                 }
             }
             else if (node is EmptyExpression)
@@ -610,14 +611,15 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     LocalMap = localMap
                 };
                 int funcIdx = AddConstant(FenValue.FromFunction(templateFunc));
-                
+
                 Emit(OpCode.MakeClosure);
                 EmitInt32(funcIdx);
-                
+
                 if (funcDecl.Function.Name != null)
                 {
                     EmitStoreVarByName(funcDecl.Function.Name);
                 }
+                Emit(OpCode.Pop); // function declarations are statements; clean up the closure value from the stack
             }
             else if (node is ReturnStatement retStmt)
             {
