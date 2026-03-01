@@ -1440,7 +1440,17 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                     if (arrayObj is BytecodeArrayObject denseTarget)
                                     {
                                         bool expanded = false;
-                                        if (spreadValue.IsObject && spreadValue.AsObject() is BytecodeArrayObject denseSource)
+                                        if (spreadValue.IsString)
+                                        {
+                                            // Spread string as individual characters: [...'abc'] = ['a','b','c']
+                                            var str = spreadValue.AsString();
+                                            for (int i = 0; i < str.Length; i++)
+                                            {
+                                                denseTarget.Append(FenValue.FromString(str[i].ToString()));
+                                            }
+                                            expanded = true;
+                                        }
+                                        else if (spreadValue.IsObject && spreadValue.AsObject() is BytecodeArrayObject denseSource)
                                         {
                                             for (int i = 0; i < denseSource.Length; i++)
                                             {
@@ -1480,7 +1490,18 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                     {
                                         int length = GetArrayLikeLength(arrayObj);
                                         bool expanded = false;
-                                        if (spreadValue.IsObject)
+                                        if (spreadValue.IsString)
+                                        {
+                                            // Spread string as individual characters into generic array
+                                            var str = spreadValue.AsString();
+                                            for (int i = 0; i < str.Length; i++)
+                                            {
+                                                arrayObj.Set(IndexKey(length + i), FenValue.FromString(str[i].ToString()));
+                                            }
+                                            length += str.Length;
+                                            expanded = true;
+                                        }
+                                        else if (spreadValue.IsObject)
                                         {
                                             var spreadObj = spreadValue.AsObject();
                                             if (spreadObj != null && spreadObj.Has("length"))
