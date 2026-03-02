@@ -197,6 +197,9 @@ namespace FenBrowser.FenEngine.Core
         private bool _hasEscapeInLastIdent = false;
         private bool _hasInvalidEscapeInLastIdent = false;
         private Token _prevToken; // Track previous token for regex vs division context
+        // Set to true when preceding whitespace/comments contained a line terminator.
+        // Used by --> HTML close comment detection.
+        private bool _precedingLineTerminator = false;
         private static readonly Dictionary<string, TokenType> Keywords;
 
         public static bool DebugMode = false;
@@ -308,10 +311,15 @@ namespace FenBrowser.FenEngine.Core
             return token;
         }
 
-        private Token NextTokenInternal()
+        private Token NextTokenInternal(bool resetLineTerminator = true)
         {
             if (DebugMode) Console.WriteLine($"[LEXER-TRACE] Start NextTokenInternal. _ch: '{_ch}' ({(int)_ch})");
+            // Only reset at the top-level call; recursive calls from comment handling preserve the flag.
+            if (resetLineTerminator) _precedingLineTerminator = false;
             bool hadLineTerminator = SkipWhitespace();
+            if (hadLineTerminator) _precedingLineTerminator = true;
+            // Also pick up any line terminators tracked by preceding block comments.
+            hadLineTerminator |= _precedingLineTerminator;
 
             int startPos = _position; // Capture start position
             Token token;
@@ -397,6 +405,16 @@ namespace FenBrowser.FenEngine.Core
                     if (PeekChar() == '-')
                     {
                         ReadChar();
+                        // HTML close comment: --> at start of a line (after a line terminator or
+                        // a multi-line block comment) is a line comment per Annex B.
+                        if (hadLineTerminator && PeekChar() == '>')
+                        {
+                            ReadChar(); // consume >
+                            // skip to end of line
+                            while (_ch != '\0' && !IsLineTerminator(_ch))
+                                ReadChar();
+                            return NextTokenInternal(resetLineTerminator: false);
+                        }
                         token = new Token(TokenType.Decrement, "--", _line, startColumn);
                     }
                     else if (PeekChar() == '=')
@@ -433,7 +451,7 @@ namespace FenBrowser.FenEngine.Core
                     if (PeekChar() == '/')
                     {
                         SkipLineComment();
-                        return NextTokenInternal();
+                        return NextTokenInternal(resetLineTerminator: false);
                     }
                     else if (PeekChar() == '*')
                     {
@@ -443,7 +461,7 @@ namespace FenBrowser.FenEngine.Core
                             token = new Token(TokenType.Illegal, "/*", _line, startColumn, hadLineTerminator);
                             break;
                         }
-                        return NextTokenInternal();
+                        return NextTokenInternal(resetLineTerminator: false);
                     }
                     else if (PeekChar() == '=')
                     {
@@ -504,7 +522,20 @@ namespace FenBrowser.FenEngine.Core
                     }
                     break;
                 case '<':
-                    if (PeekChar() == '=')
+                    // HTML open comment: <!-- treated as a single-line comment (Annex B)
+                    // Safe multi-char peek using _input/_readPosition without consuming.
+                    if (_readPosition < _input.Length && _input[_readPosition] == '!' &&
+                        _readPosition + 1 < _input.Length && _input[_readPosition + 1] == '-' &&
+                        _readPosition + 2 < _input.Length && _input[_readPosition + 2] == '-')
+                    {
+                        // Consume !, -, -
+                        ReadChar(); ReadChar(); ReadChar();
+                        // skip to end of line
+                        while (_ch != '\0' && !IsLineTerminator(_ch))
+                            ReadChar();
+                        return NextTokenInternal(resetLineTerminator: false);
+                    }
+                    else if (PeekChar() == '=')
                     {
                         ReadChar();
                         token = new Token(TokenType.LtEq, "<=", _line, startColumn);
@@ -832,6 +863,8 @@ namespace FenBrowser.FenEngine.Core
             // Whitespace skipping in NextToken will handle the newline
         }
 
+        // Returns true if comment was properly terminated; sets _precedingLineTerminator if
+        // the block comment spanned multiple lines (needed for --> HTML close comment detection).
         private bool SkipBlockComment()
         {
              // Consume /
@@ -852,6 +885,7 @@ namespace FenBrowser.FenEngine.Core
                 {
                     _line++;
                     _column = 0;
+                    _precedingLineTerminator = true;
                     ReadChar();
                     if (_ch == '\n')
                     {
@@ -864,6 +898,7 @@ namespace FenBrowser.FenEngine.Core
                 {
                     _line++;
                     _column = 0;
+                    _precedingLineTerminator = true;
                 }
                 ReadChar();
             }
