@@ -4193,7 +4193,16 @@ namespace FenBrowser.FenEngine.Core
                     if (functionDeclaration.Function != null &&
                         !string.IsNullOrEmpty(functionDeclaration.Function.Name))
                     {
-                        AddSwitchDeclaredName(functionDeclaration.Function.Name, lexicalNames);
+                        if (_isStrictMode)
+                        {
+                            AddSwitchDeclaredName(functionDeclaration.Function.Name, lexicalNames);
+                        }
+                        else
+                        {
+                            // Annex B B.3.3.5: In non-strict mode, duplicate function declarations
+                            // in switch case blocks are allowed.
+                            lexicalNames.Add(functionDeclaration.Function.Name);
+                        }
                     }
                     return;
 
