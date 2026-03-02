@@ -336,7 +336,10 @@ namespace FenBrowser.FenEngine.Core
             switch (_curToken.Type)
             {
                 case TokenType.LBrace:
-                    return ParseBlockStatement();
+                    // Use consumeTerminator:false so the closing '}' remains as _curToken.
+                    // The caller's loop (ParseProgram or outer ParseBlockStatement) will advance past it,
+                    // preventing the double-advance bug that skips the next statement token.
+                    return ParseBlockStatement(consumeTerminator: false);
                 case TokenType.Let:
                 case TokenType.Const:
                 case TokenType.Var:
