@@ -154,7 +154,7 @@ namespace FenBrowser.FenEngine.Testing
         /// Memory threshold in bytes. If GC reports more than this, skip the test.
         /// Default: 1.5 GB
         /// </summary>
-        public long MemoryThresholdBytes { get; set; } = 1_500_000_000L;
+        public long MemoryThresholdBytes { get; set; } = 8_000_000_000L;
 
         public async Task<TestResult> RunSingleTestAsync(string testFile)
         {
@@ -234,6 +234,10 @@ namespace FenBrowser.FenEngine.Testing
                 // We recreate the runtime for each test to ensure isolation
                 // In the future for perf we might reuse it but clean the global scope
                 var runtime = new FenBrowser.FenEngine.Core.FenRuntime();
+                if (runtime.Context != null) 
+                {
+                    runtime.Context.Permissions.Grant(FenBrowser.FenEngine.Security.JsPermissions.Eval);
+                }
                 // Suppress JS console output during benchmark runs
                 runtime.OnConsoleMessage = (msg) => Console.WriteLine($"[JS-CONSOLE] {msg}");
 
