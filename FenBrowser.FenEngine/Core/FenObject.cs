@@ -433,6 +433,13 @@ namespace FenBrowser.FenEngine.Core
         }
         
         /// <summary>
+        /// Set a built-in property: writable=true, enumerable=false, configurable=true.
+        /// Use for prototype methods and built-in properties per the ES spec.
+        /// </summary>
+        public void SetBuiltin(string key, FenValue value) =>
+            DefineOwnProperty(key, PropertyDescriptor.DataNonEnumerable(value));
+
+        /// <summary>
         /// Set raw value without descriptor checks (for internal use).
         /// </summary>
         public void SetDirect(string key, FenValue value)

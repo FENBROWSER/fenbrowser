@@ -22,26 +22,28 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private readonly bool _enableLocalSlots;
         private readonly List<Identifier> _functionParameters;
         private readonly string _functionName;
+        private readonly bool _isEval;
         private readonly Dictionary<string, int> _localSlotByName = new Dictionary<string, int>(StringComparer.Ordinal);
         private readonly List<string> _localSlotNames = new List<string>();
         private readonly HashSet<string> _localBindings = new HashSet<string>(StringComparer.Ordinal);
         private int _syntheticNameCounter;
 
-        public BytecodeCompiler()
-            : this(enableLocalSlots: false, functionParameters: null, functionName: null)
+        public BytecodeCompiler(bool isEval = false)
+            : this(enableLocalSlots: false, functionParameters: null, functionName: null, isEval: isEval)
         {
         }
 
-        private BytecodeCompiler(bool enableLocalSlots, List<Identifier> functionParameters, string functionName)
+        private BytecodeCompiler(bool enableLocalSlots, List<Identifier> functionParameters, string functionName, bool isEval = false)
         {
             _enableLocalSlots = enableLocalSlots;
             _functionParameters = functionParameters;
             _functionName = functionName;
+            _isEval = isEval;
         }
 
         private static BytecodeCompiler CreateFunctionCompiler(List<Identifier> parameters, string functionName)
         {
-            return new BytecodeCompiler(enableLocalSlots: true, functionParameters: parameters, functionName: functionName);
+            return new BytecodeCompiler(enableLocalSlots: true, functionParameters: parameters, functionName: functionName, isEval: false);
         }
 
         public CodeBlock Compile(AstNode root)
@@ -63,6 +65,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 InitializeLocalBindings(root);
             }
 
+            if (_isEval)
+            {
+                HoistEvalBlockFunctions(root);
+            }
+
             Visit(root);
 
             // Ensure every block ends with a Halt
@@ -70,6 +77,78 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
             var localSlots = _enableLocalSlots ? new List<string>(_localSlotNames) : null;
             return new CodeBlock(_instructions.ToArray(), new List<FenValue>(_constants), localSlots);
+        }
+
+        private void HoistEvalBlockFunctions(AstNode root)
+        {
+            // Traverse the AST to find block-scoped function declarations and explicitly hoist them to global.
+            // In eval, Annex B hoisting means functions declared in blocks leak to the global scope.
+            
+            var functionToHoist = new List<FunctionDeclarationStatement>();
+            
+            void TraverseForHoisting(AstNode node, bool isTopLevel)
+            {
+                if (node == null) return;
+                
+                if (node is Program prog)
+                {
+                    foreach (var stmt in prog.Statements) TraverseForHoisting(stmt, true);
+                }
+                else if (node is BlockStatement block)
+                {
+                    foreach (var stmt in block.Statements) TraverseForHoisting(stmt, false);
+                }
+                else if (node is FunctionDeclarationStatement funcDecl)
+                {
+                    if (!isTopLevel)
+                    {
+                        functionToHoist.Add(funcDecl);
+                    }
+                    // Do not traverse into function bodies
+                }
+                else if (node is IfStatement ifStmt)
+                {
+                    TraverseForHoisting(ifStmt.Consequence, false);
+                    TraverseForHoisting(ifStmt.Alternative, false);
+                }
+                else if (node is WhileStatement whileStmt) TraverseForHoisting(whileStmt.Body, false);
+                else if (node is DoWhileStatement doWhileStmt) TraverseForHoisting(doWhileStmt.Body, false);
+                else if (node is ForStatement forStmt) TraverseForHoisting(forStmt.Body, false);
+                else if (node is ForInStatement forInStmt) TraverseForHoisting(forInStmt.Body, false);
+                else if (node is ForOfStatement forOfStmt) TraverseForHoisting(forOfStmt.Body, false);
+                else if (node is TryStatement tryStmt)
+                {
+                    TraverseForHoisting(tryStmt.Block, false);
+                    TraverseForHoisting(tryStmt.CatchBlock, false);
+                    TraverseForHoisting(tryStmt.FinallyBlock, false);
+                }
+                else if (node is SwitchStatement switchStmt)
+                {
+                    if (switchStmt.Cases != null)
+                    {
+                        foreach (var c in switchStmt.Cases)
+                        {
+                            if (c.Consequent != null)
+                            {
+                                foreach (var stmt in c.Consequent) TraverseForHoisting(stmt, false);
+                            }
+                        }
+                    }
+                }
+                else if (node is LabeledStatement labelStmt) TraverseForHoisting(labelStmt.Body, false);
+            }
+            
+            TraverseForHoisting(root, true);
+            
+            // Now emit the global variable initialization for these functions explicitly
+            foreach (var hoisted in functionToHoist)
+            {
+                if (string.IsNullOrEmpty(hoisted.Function?.Name)) continue;
+                
+                Emit(OpCode.LoadUndefined);
+                EmitStoreVarByName(hoisted.Function.Name);
+                Emit(OpCode.Pop);
+            }
         }
 
         private void Visit(AstNode node)
@@ -423,7 +502,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 if (assign.Left is Identifier idNode)
                 {
                     Visit(assign.Right);
-                    EmitStoreVarByName(idNode.Value);
+                    EmitUpdateVarByName(idNode.Value);
                 }
                 else if (assign.Left is MemberExpression assignMember)
                 {
@@ -1117,14 +1196,27 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             {
                 options |= RegexOptions.Multiline;
             }
+            if (regexLit.Flags != null && regexLit.Flags.Contains("s"))
+            {
+                options |= RegexOptions.Singleline;
+            }
+
+            var rawPattern = regexLit.Pattern ?? string.Empty;
+            var sanitizedPattern = SanitizeRegexPatternForDotNet(rawPattern, regexLit.Flags ?? string.Empty);
 
             try
             {
-                var regex = new Regex(regexLit.Pattern ?? string.Empty, options);
+                var regex = new Regex(sanitizedPattern, options);
                 var regexObject = new FenObject();
                 regexObject.NativeObject = regex;
-                regexObject.Set("source", FenValue.FromString(regexLit.Pattern ?? string.Empty));
+                regexObject.InternalClass = "RegExp";
+                regexObject.Set("source", FenValue.FromString(rawPattern));
                 regexObject.Set("flags", FenValue.FromString(regexLit.Flags ?? string.Empty));
+                regexObject.Set("global", FenValue.FromBoolean(regexLit.Flags != null && regexLit.Flags.Contains("g")));
+                regexObject.Set("ignoreCase", FenValue.FromBoolean(regexLit.Flags != null && regexLit.Flags.Contains("i")));
+                regexObject.Set("multiline", FenValue.FromBoolean(regexLit.Flags != null && regexLit.Flags.Contains("m")));
+                regexObject.Set("dotAll", FenValue.FromBoolean(regexLit.Flags != null && regexLit.Flags.Contains("s")));
+                regexObject.Set("sticky", FenValue.FromBoolean(regexLit.Flags != null && regexLit.Flags.Contains("y")));
                 regexObject.Set("lastIndex", FenValue.FromNumber(0));
 
                 int idx = AddConstant(FenValue.FromObject(regexObject));
@@ -1138,6 +1230,103 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 EmitInt32(errorIdx);
             }
         }
+
+        /// <summary>
+        /// Converts JS Annex B regex escapes that .NET rejects into their identity-escape equivalents.
+        /// Only applies when the unicode flag is absent (non-unicode mode).
+        /// </summary>
+        internal static string SanitizeRegexPatternForDotNet(string pattern, string flags)
+        {
+            if (string.IsNullOrEmpty(pattern)) return pattern;
+            if (flags != null && flags.Contains("u")) return pattern; // unicode mode: don't relax
+
+            // Collect named group names to validate \k<name> references
+            var namedGroups = new System.Collections.Generic.HashSet<string>();
+            var namedGroupRx = new Regex(@"\(\?<([A-Za-z_][A-Za-z0-9_]*)>");
+            foreach (Match m in namedGroupRx.Matches(pattern))
+                namedGroups.Add(m.Groups[1].Value);
+
+            var sb = new System.Text.StringBuilder(pattern.Length);
+            int i = 0;
+            while (i < pattern.Length)
+            {
+                if (pattern[i] == '\\' && i + 1 < pattern.Length)
+                {
+                    char next = pattern[i + 1];
+                    if (next == 'x')
+                    {
+                        // \xNN — valid only if followed by exactly 2 hex digits
+                        bool valid = i + 3 < pattern.Length
+                            && IsHexDigit(pattern[i + 2]) && IsHexDigit(pattern[i + 3]);
+                        if (valid)
+                        {
+                            sb.Append('\\'); sb.Append('x'); i += 2;
+                        }
+                        else
+                        {
+                            // Annex B identity escape: \x → x
+                            sb.Append('x'); i += 2;
+                        }
+                    }
+                    else if (next == 'u')
+                    {
+                        // \uNNNN — valid only if followed by exactly 4 hex digits
+                        bool hasCurly = i + 2 < pattern.Length && pattern[i + 2] == '{';
+                        bool valid4 = i + 5 < pattern.Length
+                            && IsHexDigit(pattern[i + 2]) && IsHexDigit(pattern[i + 3])
+                            && IsHexDigit(pattern[i + 4]) && IsHexDigit(pattern[i + 5]);
+                        if (hasCurly || valid4)
+                        {
+                            sb.Append('\\'); sb.Append('u'); i += 2;
+                        }
+                        else
+                        {
+                            // Annex B identity escape: \u → u
+                            sb.Append('u'); i += 2;
+                        }
+                    }
+                    else if (next == 'k' && i + 2 < pattern.Length && pattern[i + 2] == '<')
+                    {
+                        // \k<name> — invalid if named group doesn't exist
+                        int closeIdx = pattern.IndexOf('>', i + 3);
+                        if (closeIdx >= 0)
+                        {
+                            string groupName = pattern.Substring(i + 3, closeIdx - (i + 3));
+                            if (!namedGroups.Contains(groupName))
+                            {
+                                // Identity escape: \k → k, keep <name> as literal
+                                sb.Append('k');
+                                sb.Append('<');
+                                sb.Append(groupName);
+                                sb.Append('>');
+                                i = closeIdx + 1;
+                            }
+                            else
+                            {
+                                sb.Append('\\'); sb.Append('k'); i += 2;
+                            }
+                        }
+                        else
+                        {
+                            // No closing '>', treat as identity escape
+                            sb.Append('k'); i += 2;
+                        }
+                    }
+                    else
+                    {
+                        sb.Append(pattern[i]); sb.Append(pattern[i + 1]); i += 2;
+                    }
+                }
+                else
+                {
+                    sb.Append(pattern[i]); i++;
+                }
+            }
+            return sb.ToString();
+        }
+
+        private static bool IsHexDigit(char c) =>
+            (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 
         private void EmitImportMetaExpression()
         {
@@ -2285,6 +2474,26 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
             int idx = AddConstant(FenValue.FromString(variableName ?? string.Empty));
             Emit(OpCode.StoreVar);
+            EmitInt32(idx);
+        }
+
+        /// <summary>
+        /// Emit an assignment (not declaration): walks the scope chain to update an existing binding,
+        /// falling back to implicit global creation if not found.
+        /// Use this for x = value (AssignmentExpression), NOT for var/let/const declarations.
+        /// </summary>
+        private void EmitUpdateVarByName(string variableName)
+        {
+            // Local slots are always in the current frame's environment — StoreLocal is correct for assignment too.
+            if (TryGetLocalSlot(variableName, out int slotIndex))
+            {
+                Emit(OpCode.StoreLocal);
+                EmitInt32(slotIndex);
+                return;
+            }
+
+            int idx = AddConstant(FenValue.FromString(variableName ?? string.Empty));
+            Emit(OpCode.UpdateVar);
             EmitInt32(idx);
         }
 

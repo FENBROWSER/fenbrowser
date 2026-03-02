@@ -11,7 +11,18 @@ namespace FenBrowser.FenEngine.Core
     /// </summary>
     public class FenFunction : FenObject
     {
-        public string Name { get; set; }
+        private string _name;
+        /// <summary>Function name — stored as an explicit {writable:false, enumerable:false, configurable:true} property.</summary>
+        public string Name
+        {
+            get => _name;
+            set
+            {
+                _name = value;
+                StoreFunctionNameProperty(value);
+            }
+        }
+
         public string Source { get; set; } // ES2019: Store original source code
         public Func<FenValue[], FenValue, FenValue> NativeImplementation { get; }
         public bool IsNative { get; }
@@ -19,7 +30,7 @@ namespace FenBrowser.FenEngine.Core
         public bool IsGenerator { get; set; }
         public bool IsArrowFunction { get; set; }
         public bool NeedsArgumentsObject { get; set; } = true;
-        
+
         // JIT Support
         public int CallCount { get; set; }
         public bool IsJitCompiled { get; set; }
@@ -31,12 +42,33 @@ namespace FenBrowser.FenEngine.Core
         public Bytecode.CodeBlock BytecodeBlock { get; set; }
         public FenEnvironment Env { get; }
         public FenObject Prototype { get; set; }
-        
+
         public List<(string name, bool isPrivate, bool isStatic, Expression initializer)> FieldDefinitions { get; set; }
 
         // Proxy Support
         public FenValue ProxyHandler { get; set; }
         public FenValue ProxyTarget { get; set; }
+
+        /// <summary>
+        /// Whether this function can be called with `new`. Defaults to true for user-defined
+        /// functions, false for native prototype methods and non-constructor built-ins.
+        /// </summary>
+        public bool IsConstructor { get; set; } = true;
+
+        private int _nativeLength = -1;
+        /// <summary>
+        /// Explicit length for native functions. -1 means compute from Parameters.Count.
+        /// Setting this updates the stored 'length' property descriptor.
+        /// </summary>
+        public int NativeLength
+        {
+            get => _nativeLength;
+            set
+            {
+                _nativeLength = value;
+                StoreFunctionLengthProperty();
+            }
+        }
 
         /// <summary>
         /// Default prototype for function objects (Function.prototype).
@@ -47,9 +79,10 @@ namespace FenBrowser.FenEngine.Core
 
         public FenFunction(string name, Func<FenValue[], FenValue, FenValue> nativeImplementation)
         {
-            Name = name;
             NativeImplementation = nativeImplementation;
             IsNative = true;
+            Name = name; // setter stores name property + triggers StoreFunctionLengthProperty via fallback
+            StoreFunctionLengthProperty(); // Parameters is null for native, NativeLength=-1 → length=0
             // Functions inherit from Function.prototype (which inherits from Object.prototype)
             if (DefaultFunctionPrototype != null && !ReferenceEquals(DefaultFunctionPrototype, this))
                 SetPrototype(DefaultFunctionPrototype);
@@ -61,7 +94,8 @@ namespace FenBrowser.FenEngine.Core
             Body = body;
             Env = env;
             IsNative = false;
-            Name = "anonymous";
+            Name = "anonymous"; // setter stores name property
+            StoreFunctionLengthProperty(); // Parameters.Count → length
             if (DefaultFunctionPrototype != null && !ReferenceEquals(DefaultFunctionPrototype, this))
                 SetPrototype(DefaultFunctionPrototype);
         }
@@ -72,7 +106,8 @@ namespace FenBrowser.FenEngine.Core
             BytecodeBlock = bytecodeBlock;
             Env = env;
             IsNative = false;
-            Name = "anonymous_bytecode";
+            Name = "anonymous_bytecode"; // setter stores name property
+            StoreFunctionLengthProperty();
             if (DefaultFunctionPrototype != null && !ReferenceEquals(DefaultFunctionPrototype, this))
                 SetPrototype(DefaultFunctionPrototype);
         }
@@ -83,33 +118,62 @@ namespace FenBrowser.FenEngine.Core
             Body = body;
             Env = env;
             IsNative = false;
-            Name = "arrow";
+            Name = "arrow"; // setter stores name property
+            StoreFunctionLengthProperty();
             if (DefaultFunctionPrototype != null && !ReferenceEquals(DefaultFunctionPrototype, this))
                 SetPrototype(DefaultFunctionPrototype);
         }
 
         /// <summary>
-        /// Override Get to expose 'name' and 'length' as standard function properties
-        /// without requiring every FenFunction to explicitly set them.
+        /// Store 'name' as an explicit ES-spec-compliant property descriptor:
+        /// {writable: false, enumerable: false, configurable: true}.
+        /// </summary>
+        private void StoreFunctionNameProperty(string name)
+        {
+            DefineOwnProperty("name", new PropertyDescriptor
+            {
+                Value = FenValue.FromString(name ?? ""),
+                Writable = false,
+                Enumerable = false,
+                Configurable = true
+            });
+        }
+
+        /// <summary>
+        /// Store 'length' as an explicit ES-spec-compliant property descriptor:
+        /// {writable: false, enumerable: false, configurable: true}.
+        /// </summary>
+        private void StoreFunctionLengthProperty()
+        {
+            int len = _nativeLength >= 0 ? _nativeLength : (Parameters?.Count ?? 0);
+            DefineOwnProperty("length", new PropertyDescriptor
+            {
+                Value = FenValue.FromNumber(len),
+                Writable = false,
+                Enumerable = false,
+                Configurable = true
+            });
+        }
+
+        /// <summary>
+        /// Override Get to fall back to DefaultFunctionPrototype for built-in functions
+        /// created before DefaultFunctionPrototype was initialized (they got Object.prototype
+        /// in their chain instead of Function.prototype, so call/apply/bind are missing).
         /// </summary>
         public override FenValue Get(string key, IExecutionContext context = null)
         {
-            // 'name' — return the C# Name field if no explicit 'name' property was set
-            if (key == "name")
+            var result = base.Get(key, context);
+            // Fallback: built-in functions created before DefaultFunctionPrototype was set
+            // have Object.prototype (not Function.prototype) in their chain, so they miss
+            // call/apply/bind etc. For properly-initialized functions, base.Get() already
+            // finds the method via Function.prototype so result won't be undefined here.
+            if (result.IsUndefined && DefaultFunctionPrototype != null
+                && !ReferenceEquals(DefaultFunctionPrototype, this))
             {
-                var explicitName = base.Get("name", context);
-                if (!explicitName.IsUndefined) return explicitName;
-                return FenValue.FromString(Name ?? "");
+                var dfpResult = DefaultFunctionPrototype.Get(key, context);
+                if (!dfpResult.IsUndefined) return dfpResult;
             }
-            // 'length' — return parameter count for user-defined, 0 for native unless overridden
-            if (key == "length")
-            {
-                var explicitLen = base.Get("length", context);
-                if (!explicitLen.IsUndefined) return explicitLen;
-                int paramCount = Parameters?.Count ?? 0;
-                return FenValue.FromNumber(paramCount);
-            }
-            return base.Get(key, context);
+            return result;
         }
 
         public FenValue Invoke(FenValue[] args, IExecutionContext context, FenValue? thisArg = null)
@@ -119,7 +183,7 @@ namespace FenBrowser.FenEngine.Core
             {
                 context = new ExecutionContext();
                 if (Env != null) context.Environment = Env;
-                else context.Environment = new FenEnvironment(null); // Global fallback?    
+                else context.Environment = new FenEnvironment(null); // Global fallback?
                 context.ThisBinding = FenValue.Undefined;
             }
 
@@ -128,35 +192,28 @@ namespace FenBrowser.FenEngine.Core
             if (!ProxyHandler.IsUndefined && ProxyHandler.IsObject)
             {
                 EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
-                
+
                 var handlerObj = ProxyHandler.AsObject();
                 var trap = handlerObj.Get("apply");
                 if (trap.IsFunction)
                 {
                     var thisVal = context?.ThisBinding ?? FenValue.Undefined;
-                    var argsArray = new FenObject(); 
+                    var argsArray = new FenObject();
                     for(int i=0; i<args.Length; i++) argsArray.Set(i.ToString(), args[i]);
                     argsArray.Set("length", FenValue.FromNumber(args.Length));
 
-                    return trap.AsFunction().Invoke(new FenValue[] 
-                    { 
-                        ProxyTarget.Type != Interfaces.ValueType.Undefined ? ProxyTarget : FenValue.FromObject(this), 
-                        thisVal, 
-                        FenValue.FromObject(argsArray) 
+                    return trap.AsFunction().Invoke(new FenValue[]
+                    {
+                        ProxyTarget.Type != Interfaces.ValueType.Undefined ? ProxyTarget : FenValue.FromObject(this),
+                        thisVal,
+                        FenValue.FromObject(argsArray)
                     }, context);
                 }
             }
 
             if (IsNative)
             {
-                try
-                {
-                    return NativeImplementation(args, actualThis);
-                }
-                catch (Exception ex)
-                {
-                    return FenValue.FromString($"Error: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-                }
+                return NativeImplementation(args, actualThis);
             }
 
             if (BytecodeBlock == null)
@@ -164,14 +221,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromError("Bytecode-only mode: AST-backed function invocation is not supported.");
             }
 
-            try
-            {
-                return InvokeViaBytecodeThunk(args, context, actualThis);
-            }
-            catch (Exception ex)
-            {
-                return FenValue.FromError($"Error: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-            }
+            return InvokeViaBytecodeThunk(args, context, actualThis);
         }
 
         private FenValue InvokeViaBytecodeThunk(FenValue[] args, IExecutionContext context, FenValue thisBinding)
