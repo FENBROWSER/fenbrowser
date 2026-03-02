@@ -27,6 +27,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private readonly List<string> _localSlotNames = new List<string>();
         private readonly HashSet<string> _localBindings = new HashSet<string>(StringComparer.Ordinal);
         private int _syntheticNameCounter;
+        private int _scopeDepth;
 
         public BytecodeCompiler(bool isEval = false)
             : this(enableLocalSlots: false, functionParameters: null, functionName: null, isEval: isEval)
@@ -569,10 +570,28 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
             else if (node is BlockStatement blockStmt)
             {
+                // Only create a new scope if the block contains let/const/class declarations.
+                // Blocks with only var/assignments don't need scope isolation (var is function-scoped).
+                bool needsScope = false;
+                if (_scopeDepth > 0)
+                {
+                    foreach (var s in blockStmt.Statements)
+                    {
+                        if (s is LetStatement || s is ClassStatement)
+                        {
+                            needsScope = true;
+                            break;
+                        }
+                    }
+                }
+                if (needsScope) Emit(OpCode.PushScope);
+                _scopeDepth++;
                 foreach (var stmt in blockStmt.Statements)
                 {
                     Visit(stmt);
                 }
+                _scopeDepth--;
+                if (needsScope) Emit(OpCode.PopScope);
             }
             else if (node is IfStatement ifStmt)
             {
@@ -792,25 +811,27 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             {
                 Emit(OpCode.PushExceptionHandler);
                 int catchOffsetIndex = _instructions.Count;
-                EmitInt32(0);
+                EmitInt32(0);   // catch offset (patched below)
                 int finallyOffsetIndex = _instructions.Count;
-                EmitInt32(-1); // finally not fully supported in VM yet
+                EmitInt32(-1);  // finally offset (patched below if present)
 
                 Visit(tryStmt.Block);
                 Emit(OpCode.PopExceptionHandler);
-                
+
+                // Jump over catch block on normal completion
                 int jumpOverCatch = EmitJump(OpCode.Jump);
-                
+
+                // --- Catch block ---
                 int catchStart = _instructions.Count;
                 if (tryStmt.CatchBlock != null)
                 {
                     byte[] catchBytes = BitConverter.GetBytes(catchStart);
-                    for (int i=0; i<4; i++) _instructions[catchOffsetIndex+i] = catchBytes[i];
-                    
+                    for (int i = 0; i < 4; i++) _instructions[catchOffsetIndex + i] = catchBytes[i];
+
                     if (tryStmt.CatchParameter != null)
                     {
                         EmitStoreVarByName(tryStmt.CatchParameter.Value);
-                        Emit(OpCode.Pop); // pop stored exception value
+                        Emit(OpCode.Pop);
 
                         if (tryStmt.CatchParameter.DestructuringPattern != null)
                         {
@@ -821,20 +842,29 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     {
                         Emit(OpCode.Pop); // Pop exception value when catch has no parameter
                     }
-                    
+
                     Visit(tryStmt.CatchBlock);
                 }
                 else
                 {
+                    // No catch: patch catch offset to -1 so VM knows to skip catch
                     byte[] cbytes = BitConverter.GetBytes(-1);
-                    for(int i=0; i<4; i++) _instructions[catchOffsetIndex+i] = cbytes[i];
+                    for (int i = 0; i < 4; i++) _instructions[catchOffsetIndex + i] = cbytes[i];
                 }
-                
+
                 PatchJump(jumpOverCatch);
-                
+
+                // --- Finally block ---
                 if (tryStmt.FinallyBlock != null)
                 {
+                    // Patch the finally offset so the VM can find it
+                    int finallyStart = _instructions.Count;
+                    byte[] finallyBytes = BitConverter.GetBytes(finallyStart);
+                    for (int i = 0; i < 4; i++) _instructions[finallyOffsetIndex + i] = finallyBytes[i];
+
+                    Emit(OpCode.EnterFinally);
                     Visit(tryStmt.FinallyBlock);
+                    Emit(OpCode.ExitFinally);
                 }
             }
             else if (node is CallExpression callExpr)

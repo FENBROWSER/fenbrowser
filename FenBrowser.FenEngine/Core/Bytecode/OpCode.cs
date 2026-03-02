@@ -73,10 +73,14 @@ namespace FenBrowser.FenEngine.Core.Bytecode
         IteratorCurrent = 0x6C,
         MakeValuesIterator = 0x6D,
 
-        // 0x80 - 0x8F: Exceptions
+        // 0x80 - 0x8F: Exceptions & Scoping
         PushExceptionHandler = 0x80,
         PopExceptionHandler = 0x81,
         Throw = 0x82,
+        PushScope = 0x83,
+        PopScope = 0x84,
+        EnterFinally = 0x85,
+        ExitFinally = 0x86,
 
         // 0x70 - 0x7F: Unary & Bitwise
         BitwiseAnd = 0x70,
