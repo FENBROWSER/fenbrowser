@@ -1823,6 +1823,34 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 HandleException(exceptionValue, ref frame);
                                 goto fetch_frame;
                             }
+                            case OpCode.PushScope:
+                            {
+                                // Create a new child environment for block-level bindings (let/const/class)
+                                var childEnv = new FenEnvironment(frame.Environment);
+                                frame.SetEnvironment(childEnv);
+                                break;
+                            }
+                            case OpCode.PopScope:
+                            {
+                                // Restore the parent environment, discarding block-level bindings
+                                var parentEnv = frame.Environment.Outer;
+                                if (parentEnv != null)
+                                {
+                                    frame.SetEnvironment(parentEnv);
+                                }
+                                break;
+                            }
+                            case OpCode.EnterFinally:
+                            {
+                                // Marker: finally block begins. In normal flow, execution falls through.
+                                // Exception-path finally is handled by HandleException.
+                                break;
+                            }
+                            case OpCode.ExitFinally:
+                            {
+                                // Marker: finally block ends. In normal flow, continue past.
+                                break;
+                            }
                             case OpCode.Halt:
                             {
                                 // Halt marks the end of the current frame's code block.
