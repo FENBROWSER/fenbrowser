@@ -10839,67 +10839,56 @@ namespace FenBrowser.FenEngine.Core
 
                     DevToolsCore.Instance.RegisterSource(url, code);
 
-                    // Bytecode-first execution path (conservative guardrails).
-                    if (ShouldAttemptCoreBytecode(program))
+                    // Bytecode execution — compile and run directly.
+                    bool isEval = url == "eval.js";
+                    FenBrowser.FenEngine.Core.Bytecode.CodeBlock compiledBlock;
+                    try
                     {
-                        bool isEval = url == "eval.js";
-                        if (TryCompileCoreBytecode(program, out var compiledBlock, out var compileFallbackReason, isEval))
-                        {
-                            try
-                            {
-                                var vm = new FenBrowser.FenEngine.Core.Bytecode.VM.VirtualMachine();
-                                var bytecodeResult = vm.Execute(compiledBlock, _globalEnv);
-                                sw.Stop();
-                                try
-                                {
-                                    System.IO.File.AppendAllText(logPath,
-                                        $"[SUCCESS-BYTECODE] {url} (len={codeLen}, {sw.ElapsedMilliseconds}ms)\n");
-                                }
-                                catch
-                                {
-                                }
-
-                                return bytecodeResult;
-                            }
-                            catch (Exception vmEx)
-                            {
-                                // Do not re-run after VM runtime error to avoid double side effects.
-                                sw.Stop();
-                                try
-                                {
-                                    System.IO.File.AppendAllText(logPath,
-                                        $"[BYTECODE-RUNTIME-ERROR] {url} (len={codeLen}, {sw.ElapsedMilliseconds}ms)\n" +
-                                        $"  Exception: {vmEx.GetType().Name}\n" +
-                                        $"  Message: {vmEx.Message}\n" +
-                                        $"  Stack:\n  " + vmEx.StackTrace?.Replace("\n", "\n  ") + "\n\n");
-                                }
-                                catch
-                                {
-                                }
-
-                                FenLogger.Error($"[FenRuntime] Bytecode runtime error: {vmEx.Message}", LogCategory.JavaScript, vmEx);
-                                return FenValue.FromError($"[[DEBUG_TRACE]] {vmEx.GetType().Name}: {vmEx.Message}\n{vmEx.StackTrace}");
-                            }
-                        }
-                        else
-                        {
-                            try
-                            {
-                                System.IO.File.AppendAllText(logPath,
-                                    $"[BYTECODE-FALLBACK] {url} (len={codeLen})\n" +
-                                    $"  Reason: {compileFallbackReason}\n");
-                            }
-                            catch
-                            {
-                            }
-
-                            sw.Stop();
-                            return FenValue.FromError(
-                                $"Bytecode-only mode: compilation unsupported for this script. {compileFallbackReason}");
-                        }
+                        var compiler = new FenBrowser.FenEngine.Core.Bytecode.Compiler.BytecodeCompiler(isEval);
+                        compiledBlock = compiler.Compile(program);
                     }
-                    sw.Stop();
-                    return FenValue.FromError("Bytecode-only mode: core bytecode execution is disabled or unavailable.");
+                    catch (Exception compileEx)
+                    {
+                        sw.Stop();
+                        try
+                        {
+                            System.IO.File.AppendAllText(logPath,
+                                $"[COMPILE-ERROR] {url} (len={codeLen})\n" +
+                                $"  Reason: {compileEx.Message}\n");
+                        }
+                        catch { }
+                        return FenValue.FromError(
+                            $"Bytecode compilation error: {compileEx.Message}");
+                    }
+
+                    try
+                    {
+                        var vm = new FenBrowser.FenEngine.Core.Bytecode.VM.VirtualMachine();
+                        var bytecodeResult = vm.Execute(compiledBlock, _globalEnv);
+                        sw.Stop();
+                        try
+                        {
+                            System.IO.File.AppendAllText(logPath,
+                                $"[SUCCESS] {url} (len={codeLen}, {sw.ElapsedMilliseconds}ms)\n");
+                        }
+                        catch { }
+                        return bytecodeResult;
+                    }
+                    catch (Exception vmEx)
+                    {
+                        sw.Stop();
+                        try
+                        {
+                            System.IO.File.AppendAllText(logPath,
+                                $"[RUNTIME-ERROR] {url} (len={codeLen}, {sw.ElapsedMilliseconds}ms)\n" +
+                                $"  Exception: {vmEx.GetType().Name}\n" +
+                                $"  Message: {vmEx.Message}\n" +
+                                $"  Stack:\n  " + vmEx.StackTrace?.Replace("\n", "\n  ") + "\n\n");
+                        }
+                        catch { }
+                        FenLogger.Error($"[FenRuntime] Bytecode runtime error: {vmEx.Message}", LogCategory.JavaScript, vmEx);
+                        return FenValue.FromError($"[[DEBUG_TRACE]] {vmEx.GetType().Name}: {vmEx.Message}\n{vmEx.StackTrace}");
+                    }
                 }
                 finally
                 {
@@ -10930,59 +10919,7 @@ namespace FenBrowser.FenEngine.Core
             }
         }
 
-        private static bool IsCoreBytecodeEnabled()
-        {
-            var raw = Environment.GetEnvironmentVariable("FEN_USE_CORE_BYTECODE");
-            if (string.IsNullOrWhiteSpace(raw))
-            {
-                return true;
-            }
 
-            return !string.Equals(raw, "0", StringComparison.OrdinalIgnoreCase) &&
-                   !string.Equals(raw, "false", StringComparison.OrdinalIgnoreCase) &&
-                   !string.Equals(raw, "off", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private bool ShouldAttemptCoreBytecode(Program program)
-        {
-            if (!IsCoreBytecodeEnabled() || program == null)
-            {
-                return false;
-            }
-
-            return true;
-        }
-
-        private static bool TryCompileCoreBytecode(Program program, out FenBrowser.FenEngine.Core.Bytecode.CodeBlock compiledBlock, out string fallbackReason, bool isEval = false)
-        {
-            compiledBlock = null;
-            fallbackReason = null;
-
-            try
-            {
-                var compiler = new FenBrowser.FenEngine.Core.Bytecode.Compiler.BytecodeCompiler(isEval);
-                compiledBlock = compiler.Compile(program);
-                return true;
-            }
-            catch (NotImplementedException ex)
-            {
-                fallbackReason = ex.Message;
-                return false;
-            }
-            catch (Exception ex) when (IsLikelyBytecodeCompileUnsupported(ex))
-            {
-                fallbackReason = ex.Message;
-                return false;
-            }
-        }
-
-        private static bool IsLikelyBytecodeCompileUnsupported(Exception ex)
-        {
-            var message = ex?.Message ?? string.Empty;
-            return message.IndexOf("Compiler:", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   message.IndexOf("not supported", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   message.IndexOf("Node type", StringComparison.OrdinalIgnoreCase) >= 0;
-        }
 
         #region Helper Methods for Browser APIs
 
