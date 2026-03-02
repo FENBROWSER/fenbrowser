@@ -11,41 +11,26 @@ namespace FenBrowser.Tests.Engine
     [Collection("Engine Tests")]
     public class FenRuntimeBytecodeExecutionTests : IDisposable
     {
-        private const string BytecodeEnvKey = "FEN_USE_CORE_BYTECODE";
-        private readonly string _previousBytecodeEnv;
-
         public FenRuntimeBytecodeExecutionTests()
         {
-            _previousBytecodeEnv = Environment.GetEnvironmentVariable(BytecodeEnvKey);
-            Environment.SetEnvironmentVariable(BytecodeEnvKey, "1");
             EngineContext.Reset();
             EventLoopCoordinator.ResetInstance();
         }
 
         public void Dispose()
         {
-            Environment.SetEnvironmentVariable(BytecodeEnvKey, _previousBytecodeEnv);
         }
 
         private static FenRuntime CreateRuntime() => new FenRuntime();
 
-        private static FenValue ExecuteAndReadGlobal(string script, string globalName, bool bytecodeEnabled)
+        private static FenValue ExecuteAndReadGlobal(string script, string globalName)
         {
-            var previous = Environment.GetEnvironmentVariable(BytecodeEnvKey);
-            try
-            {
-                Environment.SetEnvironmentVariable(BytecodeEnvKey, bytecodeEnabled ? "1" : "0");
-                EngineContext.Reset();
-                EventLoopCoordinator.ResetInstance();
+            EngineContext.Reset();
+            EventLoopCoordinator.ResetInstance();
 
-                var runtime = new FenRuntime();
-                runtime.ExecuteSimple(script);
-                return (FenValue)runtime.GetGlobal(globalName);
-            }
-            finally
-            {
-                Environment.SetEnvironmentVariable(BytecodeEnvKey, previous);
-            }
+            var runtime = new FenRuntime();
+            runtime.ExecuteSimple(script);
+            return (FenValue)runtime.GetGlobal(globalName);
         }
 
         private static FenFunction CreateAstBackedFunction(string declarationSource, string expectedName)
@@ -384,7 +369,7 @@ namespace FenBrowser.Tests.Engine
             var rt = CreateRuntime();
             var result = rt.ExecuteSimple("function keep(x) { if (false) { break; } return x; }");
             Assert.Equal(FenBrowser.FenEngine.Core.Interfaces.ValueType.Error, result.Type);
-            Assert.Contains("Bytecode-only mode", result.ToString(), StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Bytecode compilation error", result.ToString(), StringComparison.OrdinalIgnoreCase);
         }
 
         [Fact]
@@ -424,22 +409,5 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal(7, ((FenValue)rt.GetGlobal("classOut")).AsNumber());
         }
 
-        [Fact]
-        public void ExecuteSimple_BytecodeDisabled_ReturnsBytecodeOnlyModeError()
-        {
-            var previous = Environment.GetEnvironmentVariable(BytecodeEnvKey);
-            try
-            {
-                Environment.SetEnvironmentVariable(BytecodeEnvKey, "0");
-                var rt = CreateRuntime();
-                var result = rt.ExecuteSimple("var out = 1 + 2;");
-                Assert.Equal(FenBrowser.FenEngine.Core.Interfaces.ValueType.Error, result.Type);
-                Assert.Contains("Bytecode-only mode", result.ToString(), StringComparison.OrdinalIgnoreCase);
-            }
-            finally
-            {
-                Environment.SetEnvironmentVariable(BytecodeEnvKey, previous);
-            }
-        }
     }
 }
