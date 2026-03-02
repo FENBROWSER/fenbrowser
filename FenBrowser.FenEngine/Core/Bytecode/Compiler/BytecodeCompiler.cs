@@ -28,6 +28,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private readonly HashSet<string> _localBindings = new HashSet<string>(StringComparer.Ordinal);
         private int _syntheticNameCounter;
         private int _scopeDepth;
+        private bool _insideBlock;
 
         public BytecodeCompiler(bool isEval = false)
             : this(enableLocalSlots: false, functionParameters: null, functionName: null, isEval: isEval)
@@ -66,9 +67,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 InitializeLocalBindings(root);
             }
 
+            // Annex B: Pre-initialize var-scoped bindings for block-scoped function declarations (eval only)
             if (_isEval)
             {
-                HoistEvalBlockFunctions(root);
+                HoistBlockFunctions(root);
             }
 
             Visit(root);
@@ -80,10 +82,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             return new CodeBlock(_instructions.ToArray(), new List<FenValue>(_constants), localSlots);
         }
 
-        private void HoistEvalBlockFunctions(AstNode root)
+        private void HoistBlockFunctions(AstNode root)
         {
-            // Traverse the AST to find block-scoped function declarations and explicitly hoist them to global.
-            // In eval, Annex B hoisting means functions declared in blocks leak to the global scope.
+            // Annex B: Traverse the AST to find block-scoped function declarations and
+            // pre-initialize their names to undefined in the enclosing function/global scope.
             
             var functionToHoist = new List<FunctionDeclarationStatement>();
             
@@ -570,8 +572,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
             else if (node is BlockStatement blockStmt)
             {
-                // Only create a new scope if the block contains let/const/class declarations.
-                // Blocks with only var/assignments don't need scope isolation (var is function-scoped).
+                // Only create a new scope if the block contains let/const/class/function declarations.
                 bool needsScope = false;
                 if (_scopeDepth > 0)
                 {
@@ -586,10 +587,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 }
                 if (needsScope) Emit(OpCode.PushScope);
                 _scopeDepth++;
+                bool previousInsideBlock = _insideBlock;
+                _insideBlock = true;
                 foreach (var stmt in blockStmt.Statements)
                 {
                     Visit(stmt);
                 }
+                _insideBlock = previousInsideBlock;
                 _scopeDepth--;
                 if (needsScope) Emit(OpCode.PopScope);
             }
