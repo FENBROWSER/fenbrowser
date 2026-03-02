@@ -13,12 +13,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode
 
         // 0x10 - 0x1F: Variables & Scopes
         LoadVar = 0x10,
-        StoreVar = 0x11,
+        StoreVar = 0x11,   // Declare: always sets in current scope (for let/var/const declarations, function declarations)
         Dup = 0x12,
         Pop = 0x13,
         PopAccumulator = 0x14,
         LoadLocal = 0x15,
         StoreLocal = 0x16,
+        UpdateVar = 0x17,  // Assign: walks scope chain to update existing binding (for x = value assignments)
 
         // 0x20 - 0x2F: Math
         Add = 0x20,

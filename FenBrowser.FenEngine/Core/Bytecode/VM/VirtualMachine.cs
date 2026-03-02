@@ -923,6 +923,27 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 _stack[_sp++] = value;
                                 break;
                             }
+                            case OpCode.UpdateVar:
+                            {
+                                // Assignment: walks scope chain to update an existing binding,
+                                // or creates in current scope if not found (implicit global in non-strict mode).
+                                int nameIndex = ReadInt32(instructions, ref frame);
+                                string varName = GetStringConstant(frame.Block, constants, nameIndex);
+                                var value = _stack[--_sp];
+                                var updateResult = frame.Environment.Update(varName, value);
+                                if (updateResult.Type == JsValueType.Error)
+                                {
+                                    throw new Exception(updateResult.ToString());
+                                }
+                                // Invalidate binding cache since the binding may be in an outer scope
+                                if (CanUseBindingCache(frame))
+                                {
+                                    frame.RemoveCachedBindingEnvironment(varName);
+                                }
+                                // Assignment leaves value on stack
+                                _stack[_sp++] = value;
+                                break;
+                            }
                             case OpCode.LoadLocal:
                             {
                                 int localSlot = ReadInt32(instructions, ref frame);
@@ -1190,11 +1211,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
                                 if (!constructorVal.IsFunction) throw new Exception("VM Error: Attempted to construct non-function.");
                                 var func = constructorVal.AsObject() as FenFunction;
-                                if (func.IsArrowFunction)
+                                if (func.IsArrowFunction || !func.IsConstructor)
                                 {
-                                    throw new Exception("TypeError: Arrow function is not a constructor");
+                                    throw new Exception("TypeError: " + func.Name + " is not a constructor");
                                 }
-                                
+
                                 // Create new empty object
                                 var newObj = new FenObject();
                                 
@@ -1260,9 +1281,9 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
                                 if (!constructorVal.IsFunction) throw new Exception("VM Error: Attempted to construct non-function.");
                                 var func = constructorVal.AsObject() as FenFunction;
-                                if (func.IsArrowFunction)
+                                if (func.IsArrowFunction || !func.IsConstructor)
                                 {
-                                    throw new Exception("TypeError: Arrow function is not a constructor");
+                                    throw new Exception("TypeError: " + func.Name + " is not a constructor");
                                 }
 
                                 var newObj = new FenObject();
@@ -1347,6 +1368,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                     var key = PropertyKey(prop);
                                     if (objectRef is FenObject fenObj)
                                     {
+                                        // Lazy-link RegExp literal objects to RegExp.prototype so
+                                        // methods like test/exec/compile are found via prototype chain.
+                                        if (fenObj.GetPrototype() == null && fenObj.InternalClass == "RegExp")
+                                        {
+                                            EnsureRegExpPrototype(fenObj, frame);
+                                        }
+
                                         var cache = GetLoadPropertyInlineCache(frame.Block);
                                         if (TryLoadPropertyInlineCache(cache, instructionOffset, fenObj, key, out var cachedValue))
                                         {
@@ -1852,10 +1880,57 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             catch (Exception ex)
             {
                 // Unwind and handle .NET exceptions gracefully
-                var errorObj = FenValue.FromObject(new FenObject());
-                errorObj.AsObject().Set("message", FenValue.FromString(ex.Message));
-                errorObj.AsObject().Set("name", FenValue.FromString(ex.GetType().Name));
-                
+                // Parse error type from message prefix (e.g. "TypeError: ...")
+                string rawMsg = ex.Message;
+                string errType = "Error";
+                string errMsg = rawMsg;
+                var colonIdx = rawMsg.IndexOf(':');
+                if (colonIdx > 0)
+                {
+                    var prefix = rawMsg.Substring(0, colonIdx);
+                    if (prefix == "TypeError" || prefix == "RangeError" || prefix == "ReferenceError" ||
+                        prefix == "SyntaxError" || prefix == "URIError" || prefix == "EvalError")
+                    {
+                        errType = prefix;
+                        errMsg = rawMsg.Substring(colonIdx + 1).TrimStart();
+                    }
+                }
+
+                FenValue errorObj;
+                // Try to create a properly-typed error object using the registered constructor
+                bool madeTyped = false;
+                if (_frameCount > 0)
+                {
+                    try
+                    {
+                        var env = _callFrames[_frameCount - 1].Environment;
+                        var ctorVal = env.Get(errType);
+                        if (ctorVal.IsFunction)
+                        {
+                            var errCtor = ctorVal.AsFunction() as FenFunction;
+                            var protoVal = errCtor?.Get("prototype") ?? FenValue.Undefined;
+                            var errObj = new FenObject();
+                            if (protoVal.IsObject) errObj.SetPrototype(protoVal.AsObject());
+                            errObj.Set("name", FenValue.FromString(errType));
+                            errObj.Set("message", FenValue.FromString(errMsg));
+                            errObj.Set("stack", FenValue.FromString($"{errType}: {errMsg}\n    at <anonymous>"));
+                            errorObj = FenValue.FromObject(errObj);
+                            madeTyped = true;
+                        }
+                        else { errorObj = FenValue.Undefined; }
+                    }
+                    catch { errorObj = FenValue.Undefined; }
+                }
+                else { errorObj = FenValue.Undefined; }
+
+                if (!madeTyped)
+                {
+                    var plainErr = new FenObject();
+                    plainErr.Set("message", FenValue.FromString(errMsg));
+                    plainErr.Set("name", FenValue.FromString(errType));
+                    errorObj = FenValue.FromObject(plainErr);
+                }
+
                 if (_frameCount > 0)
                 {
                     var topFrame = _callFrames[_frameCount - 1];
@@ -1865,11 +1940,31 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 }
                 else
                 {
-                    throw new Exception($"Uncaught JS Exception: {errorObj.AsString()}", ex);
+                    throw new Exception($"Uncaught JS Exception: {FormatExceptionValue(errorObj)}", ex);
                 }
             }
 
             return FenValue.Undefined;
+        }
+
+        private string FormatExceptionValue(FenValue value)
+        {
+            if (value.IsObject)
+            {
+                var obj = value.AsObject();
+                if (obj != null)
+                {
+                    var nameVal = obj.Get("name");
+                    var msgVal = obj.Get("message");
+                    if (nameVal.Type != JsValueType.Undefined || msgVal.Type != JsValueType.Undefined)
+                    {
+                        var nameStr = nameVal.Type != JsValueType.Undefined ? nameVal.AsString() : "Error";
+                        var msgStr = msgVal.Type != JsValueType.Undefined ? msgVal.AsString() : "";
+                        return string.IsNullOrEmpty(msgStr) ? nameStr : $"{nameStr}: {msgStr}";
+                    }
+                }
+            }
+            return value.AsString();
         }
 
         private void HandleException(FenValue exceptionValue, ref CallFrame currentFrame)
@@ -1927,8 +2022,9 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             }
             
             // Uncaught exception!
-            Console.WriteLine($"[VM Uncaught Exception] {exceptionValue.AsString()}");
-            throw new Exception($"Uncaught JS Exception: {exceptionValue.AsString()}");
+            var formattedErr = FormatExceptionValue(exceptionValue);
+            Console.WriteLine($"[VM Uncaught Exception] {formattedErr}");
+            throw new Exception($"Uncaught JS Exception: {formattedErr}");
         }
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
@@ -2372,6 +2468,19 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Lazily sets RegExp.prototype as the prototype of a regex object created from a literal.
+        /// This allows methods like test/exec/compile to be found via the prototype chain.
+        /// </summary>
+        private void EnsureRegExpPrototype(FenObject regexObj, CallFrame frame)
+        {
+            var proto = GetPrimitivePrototype(frame, "RegExp");
+            if (proto != null)
+            {
+                regexObj.SetPrototype(proto);
+            }
         }
 
         /// <summary>
