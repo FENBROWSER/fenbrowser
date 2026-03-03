@@ -1965,17 +1965,13 @@ pre {{
         {
             if (_elementMap.TryGetValue(elementId, out var el))
             {
-                if (el.Attr != null && el.Attr.TryGetValue("role", out var role))
-                    return Task.FromResult(role);
-                // Default roles based on tag
-                return Task.FromResult(el.TagName switch
-                {
-                    "button" => "button",
-                    "a" => "link",
-                    "input" => "textbox",
-                    "img" => "img",
-                    _ => ""
-                });
+                var doc = el.OwnerDocument;
+                var role = FenBrowser.Core.Accessibility.AccessibilityRole.ResolveRole(el, doc);
+                // None / Generic → empty string (no meaningful ARIA role)
+                if (role == FenBrowser.Core.Accessibility.AriaRole.None ||
+                    role == FenBrowser.Core.Accessibility.AriaRole.Generic)
+                    return Task.FromResult("");
+                return Task.FromResult(role.ToString().ToLowerInvariant());
             }
             return Task.FromResult("");
         }
@@ -1984,12 +1980,9 @@ pre {{
         {
             if (_elementMap.TryGetValue(elementId, out var el))
             {
-                if (el.Attr != null)
-                {
-                    if (el.Attr.TryGetValue("aria-label", out var label)) return Task.FromResult(label);
-                    if (el.Attr.TryGetValue("alt", out var alt)) return Task.FromResult(alt);
-                    if (el.Attr.TryGetValue("title", out var title)) return Task.FromResult(title);
-                }
+                var doc = el.OwnerDocument;
+                var name = FenBrowser.Core.Accessibility.AccNameCalculator.Compute(el, doc);
+                return Task.FromResult(name);
             }
             return Task.FromResult("");
         }
