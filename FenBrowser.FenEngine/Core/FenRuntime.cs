@@ -1013,6 +1013,25 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromNumber(-1);
             })));
 
+            arrayProto.SetBuiltin("toString", FenValue.FromFunction(new FenFunction("toString", (args, thisVal) =>
+            {
+                var arr = thisVal.AsObject();
+                Console.WriteLine($"[Array.toString] thisVal Type={thisVal.Type}");
+                if (arr == null) return FenValue.FromString("[object Array]");
+                
+                var joinFunc = arr.Get("join");
+                Console.WriteLine($"[Array.toString] joinFunc Type={joinFunc.Type}");
+                if (joinFunc.IsFunction)
+                {
+                    var res = joinFunc.AsFunction().Invoke(Array.Empty<FenValue>(), _context, thisVal);
+                    Console.WriteLine($"[Array.toString] join returned Type={res.Type}");
+                    return res;
+                }
+                
+                // Fallback to Object.prototype.toString if join isn't callable
+                return FenValue.FromString($"[object {(arr as FenObject)?.InternalClass ?? "Object"}]");
+            })));
+
             arrayProto.SetBuiltin("join", FenValue.FromFunction(new FenFunction("join", (args, thisVal) =>
             {
                 var arr = thisVal.AsObject();
@@ -2049,17 +2068,33 @@ namespace FenBrowser.FenEngine.Core
                 var num = thisVal.IsNumber
                     ? thisVal.ToNumber()
                     : (thisVal.AsObject()?.Get("__value__").ToNumber() ?? double.NaN);
-                var radix = args.Length > 0 ? (int)args[0].ToNumber() : 10;
+                var radix = args.Length > 0 && !args[0].IsUndefined ? (int)args[0].ToNumber() : 10;
                 if (radix < 2 || radix > 36) return FenValue.FromError("RangeError: radix must be between 2 and 36");
-                if (radix == 10 || double.IsNaN(num) || double.IsInfinity(num))
-                    return FenValue.FromString(num.ToString());
+                if (double.IsNaN(num) || double.IsInfinity(num))
+                    return FenValue.FromString(num.ToString(System.Globalization.CultureInfo.InvariantCulture).ToLowerInvariant());
+
+                if (radix == 10)
+                {
+                    // Specific formatting rules for scientific notation mapping
+                    if (Math.Abs(num) >= 1e21 || (Math.Abs(num) > 0 && Math.Abs(num) <= 1e-7))
+                    {
+                        return FenValue.FromString(num.ToString("0.####################e+0", System.Globalization.CultureInfo.InvariantCulture).ToLowerInvariant().Replace("e+0", "e+").Replace("e-0", "e-"));
+                    }
+
+                    if (Math.Abs(num) >= 1e20)
+                    {
+                        return FenValue.FromString(num.ToString("0", System.Globalization.CultureInfo.InvariantCulture));
+                    }
+                    return FenValue.FromString(num.ToString("G15", System.Globalization.CultureInfo.InvariantCulture).ToLowerInvariant());
+                }
+
                 try
                 {
                     return FenValue.FromString(Convert.ToString((long)num, radix));
                 }
                 catch
                 {
-                    return FenValue.FromString(num.ToString());
+                    return FenValue.FromString(num.ToString(System.Globalization.CultureInfo.InvariantCulture).ToLowerInvariant());
                 }
             })));
             numberCtor.Set("prototype", FenValue.FromObject(numberProto));
@@ -6735,10 +6770,10 @@ namespace FenBrowser.FenEngine.Core
             FenValue CheckRegExpReceiver(FenValue thisVal)
             {
                 if (!thisVal.IsFunction)
-                    throw new Exception("TypeError: RegExp legacy accessor called on non-RegExp constructor");
+                    return FenValue.FromError("TypeError: RegExp legacy accessor called on non-RegExp constructor");
                 var regexpGlobal = _globalEnv.Get("RegExp");
                 if (!ReferenceEquals(thisVal.AsObject(), regexpGlobal.AsObject()))
-                    throw new Exception("TypeError: RegExp legacy accessor called on invalid receiver");
+                    return FenValue.FromError("TypeError: RegExp legacy accessor called on invalid receiver");
                 return FenValue.Undefined; // no error
             }
 
@@ -6751,32 +6786,32 @@ namespace FenBrowser.FenEngine.Core
                 regexpCtorEs6.DefineOwnProperty($"${groupIndex}", PropertyDescriptor.Accessor(
                     new FenFunction(getterName, (a, thisVal) =>
                     {
-                        CheckRegExpReceiver(thisVal);
+                        var err = CheckRegExpReceiver(thisVal); if (err.IsError) return err;
                         return FenValue.FromString(_lastRegExpGroups[groupIndex] ?? "");
                     }),
                     setter: null, enumerable: false, configurable: true));
             }
             // input / $_ — spec requires both a getter AND a setter
             regexpCtorEs6.DefineOwnProperty("input", PropertyDescriptor.Accessor(
-                new FenFunction("get input", (a, thisVal) => { CheckRegExpReceiver(thisVal); return FenValue.FromString(_lastRegExpInput); }),
-                new FenFunction("set input", (a, thisVal) => { CheckRegExpReceiver(thisVal); _lastRegExpInput = a.Length > 0 ? a[0].ToString() : ""; return FenValue.Undefined; }),
+                new FenFunction("get input", (a, thisVal) => { var err = CheckRegExpReceiver(thisVal); if (err.IsError) return err; return FenValue.FromString(_lastRegExpInput); }),
+                new FenFunction("set input", (a, thisVal) => { var err = CheckRegExpReceiver(thisVal); if (err.IsError) return err; _lastRegExpInput = a.Length > 0 ? a[0].ToString() : ""; return FenValue.Undefined; }),
                 enumerable: false, configurable: true));
             regexpCtorEs6.DefineOwnProperty("$_", PropertyDescriptor.Accessor(
-                new FenFunction("get $_", (a, thisVal) => { CheckRegExpReceiver(thisVal); return FenValue.FromString(_lastRegExpInput); }),
-                new FenFunction("set $_", (a, thisVal) => { CheckRegExpReceiver(thisVal); _lastRegExpInput = a.Length > 0 ? a[0].ToString() : ""; return FenValue.Undefined; }),
+                new FenFunction("get $_", (a, thisVal) => { var err = CheckRegExpReceiver(thisVal); if (err.IsError) return err; return FenValue.FromString(_lastRegExpInput); }),
+                new FenFunction("set $_", (a, thisVal) => { var err = CheckRegExpReceiver(thisVal); if (err.IsError) return err; _lastRegExpInput = a.Length > 0 ? a[0].ToString() : ""; return FenValue.Undefined; }),
                 enumerable: false, configurable: true));
             // lastMatch / $&
             regexpCtorEs6.DefineOwnProperty("lastMatch", PropertyDescriptor.Accessor(
-                new FenFunction("get lastMatch", (a, thisVal) => { CheckRegExpReceiver(thisVal); return FenValue.FromString(_lastRegExpGroups[0] ?? ""); }),
+                new FenFunction("get lastMatch", (a, thisVal) => { var err = CheckRegExpReceiver(thisVal); if (err.IsError) return err; return FenValue.FromString(_lastRegExpGroups[0] ?? ""); }),
                 setter: null, enumerable: false, configurable: true));
             regexpCtorEs6.DefineOwnProperty("$&", PropertyDescriptor.Accessor(
-                new FenFunction("get $&", (a, thisVal) => { CheckRegExpReceiver(thisVal); return FenValue.FromString(_lastRegExpGroups[0] ?? ""); }),
+                new FenFunction("get $&", (a, thisVal) => { var err = CheckRegExpReceiver(thisVal); if (err.IsError) return err; return FenValue.FromString(_lastRegExpGroups[0] ?? ""); }),
                 setter: null, enumerable: false, configurable: true));
             // lastParen / $+
             regexpCtorEs6.DefineOwnProperty("lastParen", PropertyDescriptor.Accessor(
                 new FenFunction("get lastParen", (a, thisVal) =>
                 {
-                    CheckRegExpReceiver(thisVal);
+                    var err = CheckRegExpReceiver(thisVal); if (err.IsError) return err;
                     for (int pi = 9; pi >= 1; pi--)
                         if (!string.IsNullOrEmpty(_lastRegExpGroups[pi])) return FenValue.FromString(_lastRegExpGroups[pi]);
                     return FenValue.FromString("");
@@ -6785,7 +6820,7 @@ namespace FenBrowser.FenEngine.Core
             regexpCtorEs6.DefineOwnProperty("$+", PropertyDescriptor.Accessor(
                 new FenFunction("get $+", (a, thisVal) =>
                 {
-                    CheckRegExpReceiver(thisVal);
+                    var err = CheckRegExpReceiver(thisVal); if (err.IsError) return err;
                     for (int pi = 9; pi >= 1; pi--)
                         if (!string.IsNullOrEmpty(_lastRegExpGroups[pi])) return FenValue.FromString(_lastRegExpGroups[pi]);
                     return FenValue.FromString("");
@@ -6793,17 +6828,17 @@ namespace FenBrowser.FenEngine.Core
                 setter: null, enumerable: false, configurable: true));
             // leftContext / $`
             regexpCtorEs6.DefineOwnProperty("leftContext", PropertyDescriptor.Accessor(
-                new FenFunction("get leftContext", (a, thisVal) => { CheckRegExpReceiver(thisVal); return FenValue.FromString(_lastRegExpLeftContext); }),
+                new FenFunction("get leftContext", (a, thisVal) => { var err = CheckRegExpReceiver(thisVal); if (err.IsError) return err; return FenValue.FromString(_lastRegExpLeftContext); }),
                 setter: null, enumerable: false, configurable: true));
             regexpCtorEs6.DefineOwnProperty("$`", PropertyDescriptor.Accessor(
-                new FenFunction("get $`", (a, thisVal) => { CheckRegExpReceiver(thisVal); return FenValue.FromString(_lastRegExpLeftContext); }),
+                new FenFunction("get $`", (a, thisVal) => { var err = CheckRegExpReceiver(thisVal); if (err.IsError) return err; return FenValue.FromString(_lastRegExpLeftContext); }),
                 setter: null, enumerable: false, configurable: true));
             // rightContext / $'
             regexpCtorEs6.DefineOwnProperty("rightContext", PropertyDescriptor.Accessor(
-                new FenFunction("get rightContext", (a, thisVal) => { CheckRegExpReceiver(thisVal); return FenValue.FromString(_lastRegExpRightContext); }),
+                new FenFunction("get rightContext", (a, thisVal) => { var err = CheckRegExpReceiver(thisVal); if (err.IsError) return err; return FenValue.FromString(_lastRegExpRightContext); }),
                 setter: null, enumerable: false, configurable: true));
             regexpCtorEs6.DefineOwnProperty("$'", PropertyDescriptor.Accessor(
-                new FenFunction("get $'", (a, thisVal) => { CheckRegExpReceiver(thisVal); return FenValue.FromString(_lastRegExpRightContext); }),
+                new FenFunction("get $'", (a, thisVal) => { var err = CheckRegExpReceiver(thisVal); if (err.IsError) return err; return FenValue.FromString(_lastRegExpRightContext); }),
                 setter: null, enumerable: false, configurable: true));
 
             SetGlobal("RegExp", FenValue.FromFunction(regexpCtorEs6));
