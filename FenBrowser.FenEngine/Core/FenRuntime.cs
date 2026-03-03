@@ -4683,6 +4683,7 @@ namespace FenBrowser.FenEngine.Core
             // (user-defined function prototypes, class instances, etc.) inherit from Object.prototype.
             // This enables hasOwnProperty, isPrototypeOf, valueOf, toString on all objects.
             FenObject.DefaultPrototype = objectProto;
+            FenObject.DefaultArrayPrototype = arrayProto;
 
 
             // navigator object - Privacy-focused (generic values to prevent fingerprinting)
