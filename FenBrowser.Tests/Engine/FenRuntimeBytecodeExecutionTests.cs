@@ -367,7 +367,7 @@ namespace FenBrowser.Tests.Engine
         public void ExecuteSimple_CompileUnsupported_ReturnsBytecodeOnlyError()
         {
             var rt = CreateRuntime();
-            var result = rt.ExecuteSimple("function keep(x) { if (false) { break; } return x; }");
+            var result = rt.ExecuteSimple("function keep(x) { with (x) { return x; } }");
             Assert.Equal(FenBrowser.FenEngine.Core.Interfaces.ValueType.Error, result.Type);
             Assert.Contains("Bytecode compilation error", result.ToString(), StringComparison.OrdinalIgnoreCase);
         }
