@@ -73,6 +73,12 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         public FenValue NewTarget { get; set; }
         public bool IsAsyncFunction { get; set; }
 
+        /// <summary>
+        /// When executing a finally-only block due to an exception, stores the
+        /// exception to be re-thrown after ExitFinally. Null when no pending exception.
+        /// </summary>
+        public FenValue? PendingException { get; set; }
+
         public CallFrame(CodeBlock block, FenEnvironment env, int stackBase)
         {
             Reset(block, env, stackBase);
@@ -88,6 +94,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             ConstructedObject = null;
             NewTarget = FenValue.Undefined;
             IsAsyncFunction = false;
+            PendingException = null;
             if (_exceptionHandlers != null)
             {
                 _exceptionHandlers.Clear();

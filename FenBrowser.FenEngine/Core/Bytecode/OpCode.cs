@@ -20,6 +20,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode
         LoadLocal = 0x15,
         StoreLocal = 0x16,
         UpdateVar = 0x17,  // Assign: walks scope chain to update existing binding (for x = value assignments)
+        LoadVarSafe = 0x18, // Like LoadVar but returns undefined (not ReferenceError) when binding is absent (used by typeof)
 
         // 0x20 - 0x2F: Math
         Add = 0x20,
@@ -72,6 +73,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode
         IteratorMoveNext = 0x6B,
         IteratorCurrent = 0x6C,
         MakeValuesIterator = 0x6D,
+        Yield = 0x6E,            // yield value — suspends generator, returns {value, done:false} to caller
 
         // 0x80 - 0x8F: Exceptions & Scoping
         PushExceptionHandler = 0x80,

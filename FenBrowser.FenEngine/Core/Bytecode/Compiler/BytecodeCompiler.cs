@@ -474,20 +474,41 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     }
                     else
                     {
-                        Visit(prefixExpr.Right);
-                        switch (prefixExpr.Operator)
+                        if (prefixExpr.Operator == "typeof" && prefixExpr.Right is Identifier typeofIdent)
                         {
-                            case "+": Emit(OpCode.ToNumber); break;
-                            case "-": Emit(OpCode.Negate); break;
-                            case "!": Emit(OpCode.LogicalNot); break;
-                            case "~": Emit(OpCode.BitwiseNot); break;
-                            case "void":
-                                Emit(OpCode.Pop);
-                                Emit(OpCode.LoadUndefined);
-                                break;
-                            case "typeof": Emit(OpCode.Typeof); break;
-                            default:
-                                throw new NotImplementedException($"Compiler: Prefix operator '{prefixExpr.Operator}' not supported.");
+                            // typeof undeclaredVar must NOT throw ReferenceError (spec 13.5.3)
+                            if (TryGetLocalSlot(typeofIdent.Value, out int localSlot))
+                            {
+                                // Local variable: always defined, LoadLocal is safe
+                                Emit(OpCode.LoadLocal);
+                                EmitInt32(localSlot);
+                            }
+                            else
+                            {
+                                // Non-local: use LoadVarSafe to avoid ReferenceError
+                                int nameIdx = AddConstant(FenValue.FromString(typeofIdent.Value));
+                                Emit(OpCode.LoadVarSafe);
+                                EmitInt32(nameIdx);
+                            }
+                            Emit(OpCode.Typeof);
+                        }
+                        else
+                        {
+                            Visit(prefixExpr.Right);
+                            switch (prefixExpr.Operator)
+                            {
+                                case "+": Emit(OpCode.ToNumber); break;
+                                case "-": Emit(OpCode.Negate); break;
+                                case "!": Emit(OpCode.LogicalNot); break;
+                                case "~": Emit(OpCode.BitwiseNot); break;
+                                case "void":
+                                    Emit(OpCode.Pop);
+                                    Emit(OpCode.LoadUndefined);
+                                    break;
+                                case "typeof": Emit(OpCode.Typeof); break;
+                                default:
+                                    throw new NotImplementedException($"Compiler: Prefix operator '{prefixExpr.Operator}' not supported.");
+                            }
                         }
                     }
                 }
@@ -2043,6 +2064,9 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             {
                 Emit(OpCode.LoadUndefined);
             }
+            // Emit Yield: suspends the generator and sends the value to the caller.
+            // The value left on the stack after resumption is the argument passed to next().
+            Emit(OpCode.Yield);
         }
 
         private void EmitMethodDefinition(MethodDefinition methodDefinition)
