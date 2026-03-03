@@ -15,6 +15,18 @@ namespace FenBrowser.FenEngine.Core
         public FenValue[] FastStore; // NEW: Exposed for JIT direct access
         public FenEnvironment Outer { get; set; }
 
+        /// <summary>
+        /// True when this scope (or any enclosing scope) is in strict mode.
+        /// Set to true by the runtime on function-level environments that contain
+        /// a "use strict" directive; child scopes inherit via the Outer chain.
+        /// </summary>
+        public bool StrictMode
+        {
+            get => _strictMode || (Outer?.StrictMode ?? false);
+            set => _strictMode = value;
+        }
+        private bool _strictMode;
+
         public FenEnvironment(FenEnvironment outer = null)
         {
             _store = new Dictionary<string, FenValue>();
@@ -148,6 +160,11 @@ namespace FenBrowser.FenEngine.Core
                     return FenValue.FromError($"Assignment to constant variable '{name}'");
                 }
                 return Outer.Update(name, value);
+            }
+
+            if (StrictMode)
+            {
+                return FenValue.FromError($"ReferenceError: {name} is not defined");
             }
 
             _store[name] = value;
