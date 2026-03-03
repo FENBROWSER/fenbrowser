@@ -139,6 +139,7 @@ namespace FenBrowser.FenEngine.Core
         public bool IsFunction => Type == Interfaces.ValueType.Function;
         public bool IsSymbol => Type == Interfaces.ValueType.Symbol;
         public bool IsBigInt => Type == Interfaces.ValueType.BigInt;
+        public bool IsError => Type == Interfaces.ValueType.Error;
 
         // IValue Implementation
         public bool ToBoolean() => AsBoolean();
@@ -237,7 +238,7 @@ namespace FenBrowser.FenEngine.Core
                     if (double.IsNaN(_numberValue)) return "NaN";
                     if (double.IsPositiveInfinity(_numberValue)) return "Infinity";
                     if (double.IsNegativeInfinity(_numberValue)) return "-Infinity";
-                    return _numberValue.ToString(CultureInfo.InvariantCulture);
+                    return NumberToJsString(_numberValue);
                 case Interfaces.ValueType.Boolean: return _numberValue != 0 ? "true" : "false";
                 case Interfaces.ValueType.Null: return "null";
                 case Interfaces.ValueType.Undefined: return "undefined";
@@ -485,6 +486,106 @@ namespace FenBrowser.FenEngine.Core
         public override int GetHashCode()
         {
             return HashCode.Combine(Type, _numberValue, _refValue);
+        }
+
+        /// <summary>
+        /// Converts a finite, non-NaN, non-Infinity double to a string following ECMAScript 9.8.1.
+        /// Matches JavaScript's Number.prototype.toString() output precisely.
+        /// </summary>
+        private static string NumberToJsString(double value)
+        {
+            if (value == 0.0) return "0"; // handles both +0 and -0
+
+            bool negative = value < 0;
+            double abs = negative ? -value : value;
+
+            // "R" (round-trip) format gives the shortest representation that parses back to the same double.
+            string r = abs.ToString("R", CultureInfo.InvariantCulture);
+
+            // Parse digits and exponent n such that value = digits * 10^(n - k), k = digits.Length
+            ParseDigitsAndExponent(r, out string digits, out int n);
+            int k = digits.Length;
+
+            string result;
+            if (k <= n && n <= 21)
+            {
+                // Integer form: e.g. 1e20 → "100000000000000000000"
+                result = digits + new string('0', n - k);
+            }
+            else if (0 < n && n <= 21)
+            {
+                // Fixed-point: e.g. 123.456 → "123.456"
+                result = digits.Substring(0, n) + "." + digits.Substring(n);
+            }
+            else if (-6 < n && n <= 0)
+            {
+                // Small decimal: e.g. 0.000001 → "0.000001"
+                result = "0." + new string('0', -n) + digits;
+            }
+            else
+            {
+                // Exponential: e.g. 1e+21, 1.5e+21, 1e-7
+                int exp = n - 1;
+                string expStr = exp >= 0 ? "e+" + exp.ToString(CultureInfo.InvariantCulture)
+                                         : "e" + exp.ToString(CultureInfo.InvariantCulture);
+                result = k == 1
+                    ? digits + expStr
+                    : digits[0] + "." + digits.Substring(1) + expStr;
+            }
+
+            return negative ? "-" + result : result;
+        }
+
+        private static void ParseDigitsAndExponent(string r, out string digits, out int n)
+        {
+            // r is in "R" format: could be "0.1", "123.456", "1.5E+20", "1E-07", etc.
+            int eIdx = r.IndexOf('E');
+            int baseExp = 0;
+            string mantissa;
+
+            if (eIdx >= 0)
+            {
+                baseExp = int.Parse(r.Substring(eIdx + 1), CultureInfo.InvariantCulture);
+                mantissa = r.Substring(0, eIdx);
+            }
+            else
+            {
+                mantissa = r;
+            }
+
+            int dotIdx = mantissa.IndexOf('.');
+            string intPart, fracPart;
+            if (dotIdx >= 0)
+            {
+                intPart = mantissa.Substring(0, dotIdx);
+                fracPart = mantissa.Substring(dotIdx + 1);
+            }
+            else
+            {
+                intPart = mantissa;
+                fracPart = string.Empty;
+            }
+
+            // Raw digits = integer part + fractional part, trailing zeros stripped
+            string raw = (intPart + fracPart).TrimEnd('0');
+            if (raw.Length == 0) raw = "0";
+
+            // n = position of most significant digit's power-of-10 + 1
+            int rawN = baseExp + intPart.Length;
+
+            // Strip leading zeros (from "0.001" the intPart is "0") and adjust n
+            int leadingZeros = 0;
+            while (leadingZeros < raw.Length && raw[leadingZeros] == '0')
+                leadingZeros++;
+
+            if (leadingZeros > 0)
+            {
+                raw = raw.Substring(leadingZeros);
+                rawN -= leadingZeros;
+            }
+
+            digits = raw.Length > 0 ? raw : "0";
+            n = rawN;
         }
     }
 }
