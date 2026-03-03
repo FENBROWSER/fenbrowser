@@ -93,7 +93,6 @@ namespace FenBrowser.Core.Accessibility
         Strong,
         Subscript,
         Superscript,
-        Term2,
         Time,
         Application,
         Caption,
