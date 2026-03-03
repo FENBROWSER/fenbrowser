@@ -16,9 +16,12 @@ namespace FenBrowser.Core.Accessibility
     {
         /// <summary>
         /// Computes the accessible description for <paramref name="el"/>.
+        /// <paramref name="precomputedName"/> — the element's already-computed accessible name —
+        /// is used to decide whether the title attribute is redundant (title == name → not a
+        /// description). Pass null to compute the name internally (slower path, for standalone use).
         /// Returns an empty string when no description can be determined.
         /// </summary>
-        public static string Compute(Element el, Document doc)
+        public static string Compute(Element el, Document doc, string precomputedName = null)
         {
             if (el == null) return "";
 
@@ -51,7 +54,7 @@ namespace FenBrowser.Core.Accessibility
 
             // Step 2: title attribute (only when not used as accessible name)
             // The title is used as description when the accessible name was obtained by other means.
-            var name = AccNameCalculator.Compute(el, doc);
+            var name = precomputedName ?? AccNameCalculator.Compute(el, doc);
             var title = el.GetAttribute("title");
             if (!string.IsNullOrWhiteSpace(title) && title.Trim() != name)
                 return title.Trim();
