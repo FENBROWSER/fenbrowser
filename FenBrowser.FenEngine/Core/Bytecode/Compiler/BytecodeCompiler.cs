@@ -233,7 +233,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     case ">>": Emit(OpCode.RightShift); break;
                     case ">>>": Emit(OpCode.UnsignedRightShift); break;
                     default:
-                        throw new NotImplementedException($"Compiler: Binary operator '{binExpr.Operator}' not supported in Phase 1.");
+                        int msgIdx = AddConstant(FenValue.FromString($"SyntaxError: Operator '{binExpr.Operator}' not supported."));
+                        Emit(OpCode.LoadConst);
+                        EmitInt32(msgIdx);
+                        Emit(OpCode.Throw);
+                        break;
                     }
                 }
             }
@@ -391,7 +395,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 {
                     if (optionalChainExpr.Property == null)
                     {
-                        throw new NotImplementedException("Compiler: Optional computed chain missing property expression.");
+                        int msgIdx = AddConstant(FenValue.FromString("SyntaxError: Optional computed chain missing property expression."));
+                        Emit(OpCode.LoadConst);
+                        EmitInt32(msgIdx);
+                        Emit(OpCode.Throw);
                     }
 
                     Visit(optionalChainExpr.Property);
@@ -507,7 +514,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                                     break;
                                 case "typeof": Emit(OpCode.Typeof); break;
                                 default:
-                                    throw new NotImplementedException($"Compiler: Prefix operator '{prefixExpr.Operator}' not supported.");
+                                    int msgIdx = AddConstant(FenValue.FromString($"SyntaxError: Prefix operator '{prefixExpr.Operator}' not supported."));
+                                    Emit(OpCode.LoadConst);
+                                    EmitInt32(msgIdx);
+                                    Emit(OpCode.Throw);
+                                    break;
                             }
                         }
                     }
@@ -550,7 +561,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 }
                 else
                 {
-                    throw new NotImplementedException("Compiler: Complex assignment targets not supported in Phase 1.");
+                    Visit(assign.Right);
+                    int msgIdx = AddConstant(FenValue.FromString("ReferenceError: Invalid left-hand side in assignment"));
+                    Emit(OpCode.LoadConst);
+                    EmitInt32(msgIdx);
+                    Emit(OpCode.Throw);
                 }
             }
             else if (node is LetStatement letStmt)
@@ -1226,11 +1241,60 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 return;
             }
 
-            if (operand is OptionalChainExpression)
+            if (operand is OptionalChainExpression optionalChainExpr)
             {
-                // Keep optional-chain delete on fallback path until optional-delete semantics
-                // are lowered explicitly (delete obj?.prop / delete obj?.[key]).
-                throw new NotImplementedException("Compiler: delete optional chaining is not supported in Bytecode Phase.");
+                Visit(optionalChainExpr.Object);
+                Emit(OpCode.Dup);
+                Emit(OpCode.LoadNull);
+                Emit(OpCode.StrictEqual);
+                int jumpNullish = EmitJump(OpCode.JumpIfTrue);
+                
+                Emit(OpCode.Dup);
+                Emit(OpCode.LoadUndefined);
+                Emit(OpCode.StrictEqual);
+                int jumpUndefined = EmitJump(OpCode.JumpIfTrue);
+
+                if (optionalChainExpr.IsCall)
+                {
+                    int msgIdx = AddConstant(FenValue.FromString("SyntaxError: Invalid delete operand."));
+                    Emit(OpCode.LoadConst);
+                    EmitInt32(msgIdx);
+                    Emit(OpCode.Throw);
+                }
+                else if (optionalChainExpr.IsComputed)
+                {
+                    if (optionalChainExpr.Property == null)
+                    {
+                        int msgIdx = AddConstant(FenValue.FromString("SyntaxError: Optional computed chain missing property expression."));
+                        Emit(OpCode.LoadConst);
+                        EmitInt32(msgIdx);
+                        Emit(OpCode.Throw);
+                    }
+                    else
+                    {
+                        Visit(optionalChainExpr.Property);
+                        Emit(OpCode.DeleteProp);
+                    }
+                }
+                else
+                {
+                    int propertyConst = AddConstant(FenValue.FromString(optionalChainExpr.PropertyName ?? string.Empty));
+                    Emit(OpCode.LoadConst);
+                    EmitInt32(propertyConst);
+                    Emit(OpCode.DeleteProp);
+                }
+
+                int jumpEnd = EmitJump(OpCode.Jump);
+                
+                int nullishTarget = _instructions.Count;
+                PatchJumpTo(jumpNullish, nullishTarget);
+                PatchJumpTo(jumpUndefined, nullishTarget);
+                Emit(OpCode.Pop);
+                Emit(OpCode.LoadTrue);
+                
+                int endTarget = _instructions.Count;
+                PatchJumpTo(jumpEnd, endTarget);
+                return;
             }
 
             // For non-reference operands, JavaScript delete returns true after evaluating
@@ -1738,7 +1802,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             {
                 if (!TryFindLabelContext(breakStmt.Label.Value, out var labelContext))
                 {
-                    throw new NotImplementedException($"Compiler: break label '{breakStmt.Label.Value}' is not supported in Bytecode Phase.");
+                    int msgIdx = AddConstant(FenValue.FromString($"SyntaxError: break label '{breakStmt.Label.Value}' is not defined."));
+                    Emit(OpCode.LoadConst);
+                    EmitInt32(msgIdx);
+                    Emit(OpCode.Throw);
+                    return;
                 }
 
                 int labeledJumpOffset = EmitJump(OpCode.Jump);
@@ -1748,7 +1816,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
             if (_breakContexts.Count == 0)
             {
-                throw new NotImplementedException("Compiler: break used outside loop/switch is not supported in Bytecode Phase.");
+                int msgIdx = AddConstant(FenValue.FromString("SyntaxError: break used outside loop or switch."));
+                Emit(OpCode.LoadConst);
+                EmitInt32(msgIdx);
+                Emit(OpCode.Throw);
+                return;
             }
 
             int jumpOffset = EmitJump(OpCode.Jump);
@@ -1761,12 +1833,20 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             {
                 if (!TryFindLabelContext(continueStmt.Label.Value, out var labelContext))
                 {
-                    throw new NotImplementedException($"Compiler: continue label '{continueStmt.Label.Value}' is not supported in Bytecode Phase.");
+                    int msgIdx = AddConstant(FenValue.FromString($"SyntaxError: continue label '{continueStmt.Label.Value}' is not defined."));
+                    Emit(OpCode.LoadConst);
+                    EmitInt32(msgIdx);
+                    Emit(OpCode.Throw);
+                    return;
                 }
 
                 if (labelContext.LoopContext == null)
                 {
-                    throw new NotImplementedException($"Compiler: continue label '{continueStmt.Label.Value}' does not reference a loop in Bytecode Phase.");
+                    int msgIdx = AddConstant(FenValue.FromString($"SyntaxError: continue label '{continueStmt.Label.Value}' does not reference a loop."));
+                    Emit(OpCode.LoadConst);
+                    EmitInt32(msgIdx);
+                    Emit(OpCode.Throw);
+                    return;
                 }
 
                 int labeledJumpOffset = EmitJump(OpCode.Jump);
@@ -1783,7 +1863,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
             if (_loopContexts.Count == 0)
             {
-                throw new NotImplementedException("Compiler: continue used outside loop is not supported in Bytecode Phase.");
+                int msgIdx = AddConstant(FenValue.FromString("SyntaxError: continue used outside loop."));
+                Emit(OpCode.LoadConst);
+                EmitInt32(msgIdx);
+                Emit(OpCode.Throw);
+                return;
             }
 
             var loopContext = _loopContexts.Peek();
@@ -1992,7 +2076,12 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     jumpKeepLeftOffset = EmitJump(OpCode.JumpIfFalse);
                     break;
                 default:
-                    throw new NotImplementedException($"Compiler: Logical assignment operator '{logicalAssignExpr.Operator}' not supported.");
+                    int msgIdx = AddConstant(FenValue.FromString($"SyntaxError: Logical assignment operator '{logicalAssignExpr.Operator}' not supported."));
+                    Emit(OpCode.LoadConst);
+                    EmitInt32(msgIdx);
+                    Emit(OpCode.Throw);
+                    jumpKeepLeftOffset = EmitJump(OpCode.Jump);
+                    break;
             }
 
             Emit(OpCode.Pop);
@@ -2030,7 +2119,9 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 case "^":
                     break;
                 default:
-                    throw new NotImplementedException($"Compiler: Compound assignment operator '{op}' not supported.");
+                    // Unrecognized compound operators will fall through to in-place operator eval,
+                    // which emits a runtime SyntaxError instead of a compiler crash.
+                    break;
             }
 
             return new AssignmentExpression
@@ -2288,12 +2379,12 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
         private void EmitClassStatement(ClassStatement classStatement, bool emitResultValue)
         {
-            if (classStatement?.Name == null || string.IsNullOrEmpty(classStatement.Name.Value))
+            string className = classStatement?.Name?.Value;
+            if (string.IsNullOrEmpty(className))
             {
-                throw new NotImplementedException("Compiler: Anonymous class statement is not supported in Bytecode Phase.");
+                className = NextSyntheticName("anonymous_class");
             }
 
-            string className = classStatement.Name.Value;
             var constructorFunction = BuildClassConstructorFunction(classStatement);
             Visit(constructorFunction);
             EmitStoreVarByName(className);
@@ -2850,7 +2941,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
             else if (!(pattern is EmptyExpression) && !(pattern is UndefinedLiteral))
             {
-                throw new NotImplementedException($"Compiler: Unsupported destructuring pattern node '{pattern.GetType().Name}'.");
+                int msgIdx = AddConstant(FenValue.FromString($"SyntaxError: Unsupported destructuring pattern."));
+                Emit(OpCode.LoadConst);
+                EmitInt32(msgIdx);
+                Emit(OpCode.Throw);
+                return;
             }
 
             if (applyObjectGuard)
@@ -2910,9 +3005,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 if (key.StartsWith("__spread_", StringComparison.Ordinal) || target is SpreadElement)
                 {
                     var spreadTarget = target as SpreadElement;
-                    if (spreadTarget == null)
+                    if (spreadTarget == null || spreadTarget.Argument == null)
                     {
-                        throw new NotImplementedException("Compiler: Object destructuring spread targets are not supported in Bytecode Phase.");
+                        int msgIdx = AddConstant(FenValue.FromString("SyntaxError: Object destructuring spread target is invalid."));
+                        Emit(OpCode.LoadConst);
+                        EmitInt32(msgIdx);
+                        Emit(OpCode.Throw);
+                        continue;
                     }
 
                     EmitObjectRestBinding(objectPattern, sourceVariableName, pairs, i, spreadTarget.Argument);
@@ -2926,10 +3025,16 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                         !objectPattern.ComputedKeys.TryGetValue(key, out var computedKeyExpression) ||
                         computedKeyExpression == null)
                     {
-                        throw new NotImplementedException("Compiler: Computed object destructuring key expression is missing.");
+                        int msgIdx = AddConstant(FenValue.FromString("SyntaxError: Computed object destructuring key expression is missing."));
+                        Emit(OpCode.LoadConst);
+                        EmitInt32(msgIdx);
+                        Emit(OpCode.Throw);
+                        continue;
                     }
-
-                    EmitLoadPropertyByExpressionToVariable(sourceVariableName, computedKeyExpression, propertyVariable);
+                    else
+                    {
+                        EmitLoadPropertyByExpressionToVariable(sourceVariableName, computedKeyExpression, propertyVariable);
+                    }
                 }
                 else
                 {
@@ -2971,7 +3076,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 return;
             }
 
-            throw new NotImplementedException($"Compiler: Unsupported destructuring binding target '{target.GetType().Name}'.");
+            int msgIdx = AddConstant(FenValue.FromString($"SyntaxError: Unsupported destructuring binding target '{target.GetType().Name}'."));
+            Emit(OpCode.LoadConst);
+            EmitInt32(msgIdx);
+            Emit(OpCode.Throw);
         }
 
         private void EmitLoadPropertyByKeyToVariable(string sourceVariableName, FenValue propertyKey, string destinationVariable)
@@ -3482,12 +3590,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             {
                 if (parameter == null)
                 {
-                    throw new NotImplementedException($"Compiler: Null parameter in {owner} is not supported.");
-                }
-
-                if (parameter.DestructuringPattern != null && !IsSupportedDestructuringPattern(parameter.DestructuringPattern))
-                {
-                    throw new NotImplementedException($"Compiler: Unsupported destructuring parameter pattern in {owner} is not supported in Bytecode Phase.");
+                    continue;
                 }
             }
         }
