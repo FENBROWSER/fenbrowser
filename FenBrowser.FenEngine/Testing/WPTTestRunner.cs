@@ -64,6 +64,50 @@ namespace FenBrowser.FenEngine.Testing
         }
         
         /// <summary>
+        /// Discover all WPT HTML test files in the root path.
+        /// </summary>
+        public List<string> DiscoverAllTests()
+        {
+            var files = new List<string>();
+            if (!Directory.Exists(_wptRootPath)) return files;
+
+            files.AddRange(Directory.GetFiles(_wptRootPath, "*.html", SearchOption.AllDirectories));
+            files.AddRange(Directory.GetFiles(_wptRootPath, "*.htm", SearchOption.AllDirectories));
+
+            return files
+                .Where(f => !Path.GetFileName(f).StartsWith("_") && !Path.GetFileName(f).StartsWith("."))
+                .OrderBy(f => f)
+                .ToList();
+        }
+
+        /// <summary>
+        /// Run a specific list of test files (used for chunked execution).
+        /// </summary>
+        public async Task<IReadOnlyList<TestExecutionResult>> RunSpecificTestsAsync(
+            List<string> tests,
+            Action<string, int>? onProgress = null)
+        {
+            _results.Clear();
+            int count = 0;
+            foreach (var testFile in tests)
+            {
+                count++;
+                var result = await RunSingleTestAsync(testFile);
+                _results.Add(result);
+                onProgress?.Invoke(Path.GetFileName(testFile), count);
+
+                // Force GC every 10 tests to reclaim runtime memory and avoid GC pressure buildup.
+                if (count % 10 == 0)
+                {
+                    GC.Collect();
+                    GC.WaitForPendingFinalizers();
+                    GC.Collect();
+                }
+            }
+            return _results.AsReadOnly();
+        }
+
+        /// <summary>
         /// Run all tests matching a pattern.
         /// </summary>
         public async Task<IReadOnlyList<TestExecutionResult>> RunTestsAsync(RunOptions options = null)
@@ -254,11 +298,11 @@ namespace FenBrowser.FenEngine.Testing
 
             // 2. Wait for structured completion signals from testharness / testRunner bridge.
             var timeoutAt = DateTime.UtcNow.AddMilliseconds(_timeoutMs);
-            var settleAt = DateTime.UtcNow.AddMilliseconds(500);
+            var settleAt = DateTime.UtcNow.AddMilliseconds(200);
             bool fallbackConsoleUsed = false;
             while (DateTime.UtcNow < timeoutAt)
             {
-                await Task.Delay(100);
+                await Task.Delay(25);
 
                 var snapshot = WebAPIs.TestHarnessAPI.GetExecutionSnapshot();
                 if (snapshot.TestDone)
@@ -314,7 +358,7 @@ namespace FenBrowser.FenEngine.Testing
             }
 
             // Small settle delay for pending console flushes/results.
-            await Task.Delay(200);
+            await Task.Delay(50);
             return state;
         }
         
