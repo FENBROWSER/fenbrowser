@@ -31,7 +31,7 @@ public sealed class WPTConfig
     /// <summary>
     /// Per-test timeout in milliseconds.
     /// </summary>
-    public int TimeoutMs { get; set; } = 30_000;
+    public int TimeoutMs { get; set; } = 1_000;
 
     /// <summary>
     /// Maximum tests to run per category (0 = unlimited).
@@ -52,6 +52,11 @@ public sealed class WPTConfig
     /// Whether to print verbose per-test output.
     /// </summary>
     public bool Verbose { get; set; } = false;
+
+    /// <summary>
+    /// Number of tests per chunk (for run_chunk command).
+    /// </summary>
+    public int ChunkSize { get; set; } = 500;
 
     /// <summary>
     /// Auto-discover the WPT root path relative to the current executable.

@@ -55,6 +55,10 @@ public static class Program
                     if (int.TryParse(args[++i], out int max))
                         config.MaxTestsPerCategory = max;
                     break;
+                case "--chunk-size" when i + 1 < args.Length:
+                    if (int.TryParse(args[++i], out int cs))
+                        config.ChunkSize = cs;
+                    break;
                 case "--verbose" or "-v":
                     config.Verbose = true;
                     break;
@@ -76,6 +80,8 @@ public static class Program
         {
             return command switch
             {
+                "get_chunk_count" => RunGetChunkCount(config),
+                "run_chunk" => await RunChunkAsync(config, args),
                 "run_category" => await RunCategoryAsync(config, args),
                 "run_single" => await RunSingleAsync(config, args),
                 "discover" => RunDiscover(config, args),
@@ -95,6 +101,152 @@ public static class Program
     // =========================================================================
     // Commands
     // =========================================================================
+
+    /// <summary>
+    /// Print total test count and number of chunks.
+    /// </summary>
+    private static int RunGetChunkCount(WPTConfig config)
+    {
+        if (string.IsNullOrEmpty(config.WptRootPath))
+        {
+            Console.Error.WriteLine("[FATAL] WPT root path not found. Use --root <path> or set WPT_ROOT.");
+            return 1;
+        }
+
+        var navigator = new HeadlessNavigator(config.WptRootPath, config.TimeoutMs);
+        var runner = new WPTTestRunner(config.WptRootPath, navigator.GetNavigatorDelegate(), config.TimeoutMs);
+        var tests = runner.DiscoverAllTests();
+        int chunkCount = (int)Math.Ceiling((double)tests.Count / config.ChunkSize);
+
+        Console.WriteLine($"Total tests: {tests.Count}");
+        Console.WriteLine($"Chunk size:  {config.ChunkSize}");
+        Console.WriteLine($"Chunks:      {chunkCount}");
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Run a specific chunk of WPT tests.
+    /// </summary>
+    private static async Task<int> RunChunkAsync(WPTConfig config, string[] args)
+    {
+        if (args.Length < 2 || !int.TryParse(args[1], out int chunkNumber) || chunkNumber < 1)
+        {
+            Console.Error.WriteLine("Usage: run_chunk <N> where N >= 1");
+            return 1;
+        }
+
+        if (string.IsNullOrEmpty(config.WptRootPath))
+        {
+            Console.Error.WriteLine("[FATAL] WPT root path not found. Use --root <path> or set WPT_ROOT.");
+            return 1;
+        }
+
+        var navigator = new HeadlessNavigator(config.WptRootPath, config.TimeoutMs);
+        var runner = new WPTTestRunner(config.WptRootPath, navigator.GetNavigatorDelegate(), config.TimeoutMs);
+
+        var allTests = runner.DiscoverAllTests();
+        int skip = (chunkNumber - 1) * config.ChunkSize;
+        int take = config.ChunkSize;
+
+        if (skip >= allTests.Count)
+        {
+            int maxChunk = (int)Math.Ceiling((double)allTests.Count / config.ChunkSize);
+            Console.Error.WriteLine($"[ERROR] Chunk {chunkNumber} exceeds total tests ({allTests.Count}). Max chunk: {maxChunk}");
+            return 1;
+        }
+
+        var chunkTests = allTests.Skip(skip).Take(take).ToList();
+        Console.WriteLine($"[WPT] Chunk {chunkNumber}: tests {skip + 1}-{skip + chunkTests.Count} of {allTests.Count}");
+
+        // Memory check
+        long freeMemKB = GetFreeMemoryKB();
+        if (freeMemKB > 0 && freeMemKB < 10_000_000)
+            Console.Error.WriteLine($"[WARNING] Low system memory: {freeMemKB / 1_048_576.0:F1}GB free.");
+
+        var sw = Stopwatch.StartNew();
+
+        var results = await runner.RunSpecificTestsAsync(chunkTests, (name, count) =>
+        {
+            if (config.Verbose || count % 10 == 0)
+            {
+                long mem = GC.GetTotalMemory(false) / 1_000_000;
+                Console.Write($"\r  [{count}/{chunkTests.Count}] {name} ({mem}MB)    ");
+            }
+        });
+
+        sw.Stop();
+        Console.WriteLine();
+
+        int passed = results.Count(r => r.Success);
+        int failed = results.Count(r => !r.Success);
+        int timedOut = results.Count(r => r.TimedOut);
+        double passRate = results.Count > 0 ? (double)passed / results.Count * 100 : 0;
+        long avgMs = results.Count > 0 ? (long)(sw.Elapsed.TotalMilliseconds / results.Count) : 0;
+
+        Console.WriteLine($"Chunk {chunkNumber} | {(long)sw.Elapsed.TotalMilliseconds}ms | Tests: {results.Count} | Pass: {passed} | Fail: {failed} | Timeout: {timedOut} | {passRate:F1}% | {avgMs}ms/test");
+
+        // Append to wpt_results.md
+        AppendChunkResultsToMd(config.WptRootPath, chunkNumber, skip + 1, skip + chunkTests.Count, sw.Elapsed, results);
+
+        // Export JSON
+        var output = ResultsExporter.Export(results, config.Format, null, sw.Elapsed, chunkNumber);
+        WriteOutput(output, config);
+
+        return failed > 0 ? 1 : 0;
+    }
+
+    private static void AppendChunkResultsToMd(string wptRootPath, int chunk, int from, int to, TimeSpan elapsed,
+        IReadOnlyList<WPTTestRunner.TestExecutionResult> results)
+    {
+        var repoRoot = Path.GetDirectoryName(wptRootPath) ?? Directory.GetCurrentDirectory();
+        var mdPath = Path.Combine(repoRoot, "wpt_results.md");
+
+        int passed = results.Count(r => r.Success);
+        int failed = results.Count(r => !r.Success);
+        int timedOut = results.Count(r => r.TimedOut);
+        double passRate = results.Count > 0 ? (double)passed / results.Count * 100 : 0;
+        long avgMs = results.Count > 0 ? (long)(elapsed.TotalMilliseconds / results.Count) : 0;
+
+        string row = $"| {chunk} | {from}-{to} | {(long)elapsed.TotalMilliseconds} | {results.Count} | {passed} | {failed} | {timedOut} | {passRate:F1}% | {avgMs} |";
+
+        if (!File.Exists(mdPath))
+        {
+            File.WriteAllText(mdPath,
+                "# WPT Results\n\n" +
+                "| Chunk | Range | Time (ms) | Tests | Passed | Failed | Timeout | Pass % | Avg/Test (ms) |\n" +
+                "|-------|-------|-----------|-------|--------|--------|---------|--------|---------------|\n");
+        }
+
+        File.AppendAllText(mdPath, row + "\n");
+    }
+
+    private static long GetFreeMemoryKB()
+    {
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "powershell",
+                    Arguments = "-Command \"(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory\"",
+                    RedirectStandardOutput = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using var proc = System.Diagnostics.Process.Start(psi);
+                if (proc != null)
+                {
+                    var output = proc.StandardOutput.ReadToEnd();
+                    proc.WaitForExit(5000);
+                    if (long.TryParse(output.Trim(), out long kb)) return kb;
+                }
+            }
+        }
+        catch { }
+        return 0;
+    }
 
     /// <summary>
     /// Run all tests in a specific WPT category.
@@ -303,6 +455,8 @@ USAGE:
   FenBrowser.WPT <command> [options]
 
 COMMANDS:
+  get_chunk_count              Show total test count and chunk count
+  run_chunk <N>                Run chunk N (1-indexed, 100 tests per chunk)
   run_category <name>          Run tests in a category (e.g., dom, css, html)
   run_single <path>            Run a single .html test file
   discover [category]          List categories or tests in a category
@@ -310,9 +464,10 @@ COMMANDS:
 
 OPTIONS:
   --root <path>                Path to WPT root directory
-  --format md|json|tap         Output format (default: md)
+  --format md|json|tap         Output format (default: json)
   --output|-o <path>           Write results to file
   --timeout <ms>               Per-test timeout (default: 30000)
+  --chunk-size <N>             Tests per chunk (default: 100)
   --max <N>                    Max tests per category
   --verbose|-v                 Verbose output
 
@@ -320,6 +475,9 @@ ENVIRONMENT:
   WPT_ROOT                     Alternative to --root flag
 
 EXAMPLES:
+  FenBrowser.WPT get_chunk_count
+  FenBrowser.WPT run_chunk 1
+  FenBrowser.WPT run_chunk 5 --format json -o results/chunk5.json
   FenBrowser.WPT discover
   FenBrowser.WPT discover dom
   FenBrowser.WPT run_category dom --max 50 --format json

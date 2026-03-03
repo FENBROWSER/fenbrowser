@@ -24,14 +24,15 @@ public static class ResultsExporter
         IReadOnlyList<WPTTestRunner.TestExecutionResult> results,
         OutputFormat format,
         string? category = null,
-        TimeSpan? totalDuration = null)
+        TimeSpan? totalDuration = null,
+        int chunkNumber = 0)
     {
         return format switch
         {
-            OutputFormat.Markdown => ExportMarkdown(results, category, totalDuration),
-            OutputFormat.Json => ExportJson(results, category, totalDuration),
+            OutputFormat.Markdown => ExportMarkdown(results, category, totalDuration, chunkNumber),
+            OutputFormat.Json => ExportJson(results, category, totalDuration, chunkNumber),
             OutputFormat.Tap => ExportTap(results),
-            _ => ExportMarkdown(results, category, totalDuration)
+            _ => ExportMarkdown(results, category, totalDuration, chunkNumber)
         };
     }
 
@@ -41,7 +42,8 @@ public static class ResultsExporter
     public static string ExportMarkdown(
         IReadOnlyList<WPTTestRunner.TestExecutionResult> results,
         string? category = null,
-        TimeSpan? totalDuration = null)
+        TimeSpan? totalDuration = null,
+        int chunkNumber = 0)
     {
         var sb = new StringBuilder();
 
@@ -59,6 +61,8 @@ public static class ResultsExporter
 
         sb.AppendLine("# WPT Conformance Results");
         sb.AppendLine();
+        if (chunkNumber > 0)
+            sb.AppendLine($"**Chunk**: {chunkNumber}");
         if (!string.IsNullOrEmpty(category))
             sb.AppendLine($"**Category**: {category}");
         sb.AppendLine($"**Date**: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
@@ -106,11 +110,13 @@ public static class ResultsExporter
     public static string ExportJson(
         IReadOnlyList<WPTTestRunner.TestExecutionResult> results,
         string? category = null,
-        TimeSpan? totalDuration = null)
+        TimeSpan? totalDuration = null,
+        int chunkNumber = 0)
     {
         var report = new
         {
             timestamp = DateTime.UtcNow.ToString("o"),
+            chunk = chunkNumber > 0 ? chunkNumber : (int?)null,
             category = category,
             total = results.Count,
             passed = results.Count(r => r.Success),
