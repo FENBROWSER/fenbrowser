@@ -41,7 +41,7 @@ namespace FenBrowser.Core.Accessibility
                     return AriaRole.Article;
 
                 case "aside":
-                    return IsDescendantOfLandmark(el) ? AriaRole.Complementary : AriaRole.Complementary;
+                    return AriaRole.Complementary;
 
                 case "audio":
                     return AriaRole.None;
@@ -506,14 +506,5 @@ namespace FenBrowser.Core.Accessibility
             return false;
         }
 
-        /// <summary>
-        /// Returns true if the element is nested inside a landmark content element
-        /// (used for aside implicit role — always complementary per current spec).
-        /// </summary>
-        private static bool IsDescendantOfLandmark(Element el)
-        {
-            // aside is always complementary per HTML-AAM 2021
-            return true;
-        }
     }
 }
