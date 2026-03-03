@@ -982,5 +982,32 @@ namespace FenBrowser.Tests.Engine.Bytecode
             var result = Evaluate(program);
             Assert.Equal(8, result.AsNumber());
         }
+
+        [Fact]
+        public void Bytecode_ForOf_CustomSymbolIterator_ShouldWork()
+        {
+            var code = @"
+                var obj = {};
+                obj['[Symbol.iterator]'] = function() {
+                    var i = 0;
+                    return {
+                        next: function() {
+                            if (i < 3) {
+                                i = i + 1;
+                                return { value: i * 10, done: false };
+                            }
+                            return { value: undefined, done: true };
+                        }
+                    };
+                };
+                var sum = 0;
+                for (var v of obj) {
+                    sum = sum + v;
+                }
+                sum;
+            ";
+            var result = Evaluate(code);
+            Assert.Equal(60, result.AsNumber());
+        }
     }
 }

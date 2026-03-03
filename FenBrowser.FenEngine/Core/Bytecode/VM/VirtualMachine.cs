@@ -20,14 +20,26 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         private const int CachedIndexKeyCount = 2048;
         private static readonly string[] s_cachedIndexKeys = BuildCachedIndexKeys();
         private static readonly ConditionalWeakTable<CodeBlock, string[]> s_stringConstantCache = new ConditionalWeakTable<CodeBlock, string[]>();
-        private static readonly ConditionalWeakTable<CodeBlock, Dictionary<int, PropertyInlineCacheEntry>> s_loadPropertyInlineCaches = new ConditionalWeakTable<CodeBlock, Dictionary<int, PropertyInlineCacheEntry>>();
-        private static readonly ConditionalWeakTable<CodeBlock, Dictionary<int, PropertyInlineCacheEntry>> s_storePropertyInlineCaches = new ConditionalWeakTable<CodeBlock, Dictionary<int, PropertyInlineCacheEntry>>();
+        private static readonly ConditionalWeakTable<CodeBlock, Dictionary<int, PolymorphicInlineCache>> s_loadPropertyInlineCaches = new ConditionalWeakTable<CodeBlock, Dictionary<int, PolymorphicInlineCache>>();
+        private static readonly ConditionalWeakTable<CodeBlock, Dictionary<int, PolymorphicInlineCache>> s_storePropertyInlineCaches = new ConditionalWeakTable<CodeBlock, Dictionary<int, PolymorphicInlineCache>>();
 
         private sealed class PropertyInlineCacheEntry
         {
             public string Key;
             public Shape Shape;
             public int SlotIndex;
+        }
+
+        /// <summary>
+        /// Polymorphic inline cache: caches up to 4 shape→slot mappings per property access site.
+        /// When more than 4 distinct shapes are seen, the site goes megamorphic (no caching).
+        /// </summary>
+        private sealed class PolymorphicInlineCache
+        {
+            public const int MaxEntries = 4;
+            public readonly PropertyInlineCacheEntry[] Entries = new PropertyInlineCacheEntry[MaxEntries];
+            public int Count;      // 0–4: valid entries
+            public bool Megamorphic; // true → too many shapes, skip caching
         }
 
         private sealed class BytecodeArrayObject : FenObject
@@ -327,6 +339,59 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             public void Dispose() => _keys?.Dispose();
         }
 
+        /// <summary>
+        /// Iterates an object that follows the JS iterator protocol: calls obj.next() each step
+        /// and reads {value, done} from the result. Works for GeneratorObjects and any native iterator.
+        /// </summary>
+        private sealed class JsProtocolIteratorEnumerator : IEnumerator<FenValue>
+        {
+            private readonly FenBrowser.FenEngine.Core.Interfaces.IObject _iterator;
+            private readonly FenFunction _nextFn;
+            private bool _done;
+
+            public JsProtocolIteratorEnumerator(FenBrowser.FenEngine.Core.Interfaces.IObject iterator, FenFunction nextFn)
+            {
+                _iterator = iterator;
+                _nextFn = nextFn;
+            }
+
+            public FenValue Current { get; private set; } = FenValue.Undefined;
+            object IEnumerator.Current => Current;
+
+            public bool MoveNext()
+            {
+                if (_done) return false;
+
+                FenValue resultVal;
+                try
+                {
+                    resultVal = _nextFn.Invoke(Array.Empty<FenValue>(), null, FenValue.FromObject(_iterator));
+                }
+                catch
+                {
+                    _done = true;
+                    return false;
+                }
+
+                if (!resultVal.IsObject) { _done = true; return false; }
+                var resultObj = resultVal.AsObject();
+
+                var doneVal = resultObj?.Get("done");
+                if (doneVal.HasValue && doneVal.Value.ToBoolean())
+                {
+                    _done = true;
+                    return false;
+                }
+
+                var valueVal = resultObj?.Get("value");
+                Current = valueVal.HasValue ? valueVal.Value : FenValue.Undefined;
+                return true;
+            }
+
+            public void Reset() { }
+            public void Dispose() { }
+        }
+
         private sealed class StringIteratorEnumerator : IEnumerator<FenValue>
         {
             private readonly string _source;
@@ -349,7 +414,18 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 }
 
                 _index = nextIndex;
-                Current = FenValue.FromString(_source[_index].ToString());
+                char c = _source[_index];
+                // ES spec: string iteration yields Unicode code points (handle surrogate pairs)
+                if (char.IsHighSurrogate(c) && _index + 1 < _source.Length && char.IsLowSurrogate(_source[_index + 1]))
+                {
+                    int codePoint = char.ConvertToUtf32(c, _source[_index + 1]);
+                    Current = FenValue.FromString(char.ConvertFromUtf32(codePoint));
+                    _index++; // consume the low surrogate too
+                }
+                else
+                {
+                    Current = FenValue.FromString(c.ToString());
+                }
                 return true;
             }
 
@@ -362,8 +438,129 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             public void Dispose() { }
         }
 
+        /// <summary>
+        /// Represents a suspended generator. Holds its own private VirtualMachine so that
+        /// the generator's stack/frames are fully isolated from the caller.
+        /// </summary>
+        private sealed class GeneratorObject : FenObject
+        {
+            private readonly VirtualMachine _vm = new VirtualMachine();
+            private readonly FenFunction _func;
+            private FenValue[] _initialArgs;
+
+            public bool IsStarted;
+            public bool IsDone;
+
+            public GeneratorObject(FenFunction func, FenValue[] args)
+            {
+                _func = func;
+                _initialArgs = args;
+                InternalClass = "Generator";
+
+                // next(value?) => resume / start the generator
+                var nextFn = new FenFunction("next", (fnArgs, thisVal) =>
+                {
+                    var gen = (thisVal.IsObject ? thisVal.AsObject() : null) as GeneratorObject ?? this;
+                    var sentValue = fnArgs.Length > 0 ? fnArgs[0] : FenValue.Undefined;
+                    return gen.Next(sentValue);
+                });
+
+                // return(value?) => close the generator
+                var returnFn = new FenFunction("return", (fnArgs, thisVal) =>
+                {
+                    var gen = (thisVal.IsObject ? thisVal.AsObject() : null) as GeneratorObject ?? this;
+                    gen.IsDone = true;
+                    var retValue = fnArgs.Length > 0 ? fnArgs[0] : FenValue.Undefined;
+                    return MakeIteratorResult(retValue, true);
+                });
+
+                // throw(error) => inject an exception into the generator
+                var throwFn = new FenFunction("throw", (fnArgs, thisVal) =>
+                {
+                    var gen = (thisVal.IsObject ? thisVal.AsObject() : null) as GeneratorObject ?? this;
+                    gen.IsDone = true;
+                    var errVal = fnArgs.Length > 0 ? fnArgs[0] : FenValue.Undefined;
+                    throw new Exception($"TypeError: {FormatGeneratorThrowValue(errVal)}");
+                });
+
+                Set("next", FenValue.FromFunction(nextFn));
+                Set("return", FenValue.FromFunction(returnFn));
+                Set("throw", FenValue.FromFunction(throwFn));
+
+                // [Symbol.iterator]() => return this (generators are their own iterators)
+                var selfIterFn = new FenFunction("[Symbol.iterator]", (fnArgs, thisVal) => thisVal);
+                Set("[Symbol.iterator]", FenValue.FromFunction(selfIterFn));
+            }
+
+            private static string FormatGeneratorThrowValue(FenValue v)
+            {
+                if (v.IsObject)
+                {
+                    var obj = v.AsObject();
+                    var msg = obj?.Get("message");
+                    if (msg.HasValue && !msg.Value.IsUndefined) return msg.Value.AsString();
+                }
+                return v.AsString();
+            }
+
+            private static FenValue MakeIteratorResult(FenValue value, bool done)
+            {
+                var result = new FenObject();
+                result.Set("value", value);
+                result.Set("done", FenValue.FromBoolean(done));
+                return FenValue.FromObject(result);
+            }
+
+            public FenValue Next(FenValue sentValue)
+            {
+                if (IsDone)
+                    return MakeIteratorResult(FenValue.Undefined, true);
+
+                if (!IsStarted)
+                {
+                    IsStarted = true;
+                    _vm._sp = 0;
+                    _vm._frameCount = 0;
+                    _vm._generatorYielded = false;
+
+                    var newEnv = new FenEnvironment(_func.Env);
+                    InitializeFunctionFastStore(_func, newEnv);
+                    if (_func.LocalMap != null && !string.IsNullOrEmpty(_func.Name) && _func.LocalMap.ContainsKey(_func.Name))
+                        SetFunctionBinding(_func, newEnv, _func.Name, FenValue.FromFunction(_func));
+                    if (!_func.IsArrowFunction)
+                        SetFunctionBinding(_func, newEnv, "this", FenValue.Undefined);
+                    BindFunctionArguments(_func, newEnv, _initialArgs);
+                    _initialArgs = null; // free args after first use
+
+                    _vm.PushFrame(_func.BytecodeBlock, newEnv, 0);
+                }
+                else
+                {
+                    _vm._generatorYielded = false;
+                    // Push sentValue: it becomes the result of the `yield` expression that suspended
+                    _vm._stack[_vm._sp++] = sentValue;
+                }
+
+                FenValue runResult = _vm.RunLoop();
+
+                if (_vm._generatorYielded)
+                {
+                    return MakeIteratorResult(_vm._generatorYieldValue, false);
+                }
+                else
+                {
+                    IsDone = true;
+                    return MakeIteratorResult(runResult, true);
+                }
+            }
+        }
+
         // Cached primitive prototype lookups (lazily resolved from the environment on first use)
         private readonly Dictionary<string, FenObject> _primitivePrototypeCache = new Dictionary<string, FenObject>(StringComparer.Ordinal);
+
+        // Generator yield state — set by the Yield opcode to signal RunLoop() to exit
+        private bool _generatorYielded;
+        private FenValue _generatorYieldValue;
 
         // Fixed-size fast heap for operands (prevents boxing and allocation in hot loop)
         private const int STACK_SIZE = 16384;
@@ -400,6 +597,31 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             }
 
             return index.ToString(CultureInfo.InvariantCulture);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void ThrowJsError(string errorType, string message)
+        {
+            throw new Exception($"{errorType}: {message}");
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void ThrowTypeError(string message)
+        {
+            ThrowJsError("TypeError", message);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void ThrowReferenceError(string message)
+        {
+            ThrowJsError("ReferenceError", message);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void RequireObjectCoercible(FenValue v, string opName)
+        {
+            if (v.IsNull || v.IsUndefined)
+                ThrowTypeError($"{opName} on {(v.IsNull ? "null" : "undefined")}");
         }
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
@@ -481,55 +703,62 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static Dictionary<int, PropertyInlineCacheEntry> GetLoadPropertyInlineCache(CodeBlock block)
+        private static Dictionary<int, PolymorphicInlineCache> GetLoadPropertyInlineCache(CodeBlock block)
         {
             return s_loadPropertyInlineCaches.GetOrCreateValue(block);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static Dictionary<int, PropertyInlineCacheEntry> GetStorePropertyInlineCache(CodeBlock block)
+        private static Dictionary<int, PolymorphicInlineCache> GetStorePropertyInlineCache(CodeBlock block)
         {
             return s_storePropertyInlineCaches.GetOrCreateValue(block);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static bool TryLoadPropertyInlineCache(
-            Dictionary<int, PropertyInlineCacheEntry> cache,
+            Dictionary<int, PolymorphicInlineCache> cache,
             int instructionOffset,
             FenObject obj,
             string key,
             out FenValue value)
         {
             value = FenValue.Undefined;
-            if (!cache.TryGetValue(instructionOffset, out var entry))
+            if (!cache.TryGetValue(instructionOffset, out var pic) || pic.Megamorphic)
             {
                 return false;
             }
 
-            if (!string.Equals(entry.Key, key, StringComparison.Ordinal) || entry.Shape != obj.GetShape())
+            var shape = obj.GetShape();
+            for (int i = 0; i < pic.Count; i++)
             {
-                return false;
+                var entry = pic.Entries[i];
+                if (entry.Shape != shape || !string.Equals(entry.Key, key, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var storage = obj.GetPropertyStorage();
+                if ((uint)entry.SlotIndex >= (uint)storage.Length)
+                {
+                    return false;
+                }
+
+                var descriptor = storage[entry.SlotIndex];
+                if (descriptor.IsAccessor || !descriptor.Value.HasValue)
+                {
+                    return false;
+                }
+
+                value = descriptor.Value.Value;
+                return true;
             }
 
-            var storage = obj.GetPropertyStorage();
-            if ((uint)entry.SlotIndex >= (uint)storage.Length)
-            {
-                return false;
-            }
-
-            var descriptor = storage[entry.SlotIndex];
-            if (descriptor.IsAccessor || !descriptor.Value.HasValue)
-            {
-                return false;
-            }
-
-            value = descriptor.Value.Value;
-            return true;
+            return false;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static void PopulatePropertyInlineCache(
-            Dictionary<int, PropertyInlineCacheEntry> cache,
+            Dictionary<int, PolymorphicInlineCache> cache,
             int instructionOffset,
             FenObject obj,
             string key,
@@ -538,39 +767,88 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             var shape = obj.GetShape();
             if (!shape.TryGetPropertyOffset(key, out int slotIndex))
             {
-                cache.Remove(instructionOffset);
                 return;
             }
 
             var storage = obj.GetPropertyStorage();
             if ((uint)slotIndex >= (uint)storage.Length)
             {
-                cache.Remove(instructionOffset);
                 return;
             }
 
             var descriptor = storage[slotIndex];
             if (descriptor.IsAccessor || !descriptor.Value.HasValue)
             {
-                cache.Remove(instructionOffset);
                 return;
             }
 
             if (writableRequired && descriptor.Writable == false)
             {
-                cache.Remove(instructionOffset);
                 return;
             }
 
-            cache[instructionOffset] = new PropertyInlineCacheEntry
+            if (!cache.TryGetValue(instructionOffset, out var pic))
             {
-                Key = key,
-                Shape = shape,
-                SlotIndex = slotIndex
-            };
+                pic = new PolymorphicInlineCache();
+                cache[instructionOffset] = pic;
+            }
+
+            if (pic.Megamorphic) return;
+
+            // Update existing entry for this shape if already cached
+            for (int i = 0; i < pic.Count; i++)
+            {
+                if (pic.Entries[i].Shape == shape && string.Equals(pic.Entries[i].Key, key, StringComparison.Ordinal))
+                {
+                    pic.Entries[i].SlotIndex = slotIndex;
+                    return;
+                }
+            }
+
+            // Add new entry or go megamorphic
+            if (pic.Count < PolymorphicInlineCache.MaxEntries)
+            {
+                if (pic.Entries[pic.Count] == null)
+                    pic.Entries[pic.Count] = new PropertyInlineCacheEntry();
+                pic.Entries[pic.Count].Key = key;
+                pic.Entries[pic.Count].Shape = shape;
+                pic.Entries[pic.Count].SlotIndex = slotIndex;
+                pic.Count++;
+            }
+            else
+            {
+                pic.Megamorphic = true; // Too many shapes at this site — go megamorphic
+            }
         }
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        private static FenValue ResolveVariableSafe(CallFrame frame, string varName)
+        {
+            if (CanUseBindingCache(frame) &&
+                frame.TryGetCachedBindingEnvironment(varName, out var cachedEnvironment))
+            {
+                if (cachedEnvironment != null && cachedEnvironment.TryGetLocal(varName, out var cachedValue))
+                {
+                    return cachedValue;
+                }
+
+                frame.RemoveCachedBindingEnvironment(varName);
+            }
+
+            var bindingEnvironment = frame.Environment.ResolveBindingEnvironment(varName);
+            if (bindingEnvironment != null && bindingEnvironment.TryGetLocal(varName, out var value))
+            {
+                if (CanUseBindingCache(frame))
+                {
+                    frame.CacheBindingEnvironment(varName, bindingEnvironment);
+                }
+
+                return value;
+            }
+
+            return FenValue.Undefined; // Safe: return undefined without throwing
+        }
+
         private static FenValue ResolveVariable(CallFrame frame, string varName)
         {
             if (CanUseBindingCache(frame) &&
@@ -595,7 +873,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 return value;
             }
 
-            return FenValue.Undefined;
+            throw new Exception($"ReferenceError: {varName} is not defined");
         }
 
         public FenValue Execute(CodeBlock initialBlock, FenEnvironment initialEnv)
@@ -779,13 +1057,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                             {
                                 var right = _stack[--_sp];
                                 var left = _stack[--_sp];
-                                if (right.IsObject)
+                                if (right.IsObject || right.IsFunction)
                                 {
                                     _stack[_sp++] = FenValue.FromBoolean(right.AsObject().Has(PropertyKey(left)));
                                 }
                                 else
                                 {
-                                    _stack[_sp++] = FenValue.FromBoolean(false);
+                                    ThrowTypeError($"Cannot use 'in' operator to search for '{PropertyKey(left)}' in {right.AsString()}");
                                 }
                                 break;
                             }
@@ -794,7 +1072,17 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 var right = _stack[--_sp];
                                 var left = _stack[--_sp];
 
-                                if (!right.IsFunction || !left.IsObject)
+                                if (!right.IsObject && !right.IsFunction)
+                                {
+                                    ThrowTypeError("Right-hand side of 'instanceof' is not an object");
+                                }
+
+                                if (!right.IsFunction)
+                                {
+                                    ThrowTypeError("Right-hand side of 'instanceof' is not callable");
+                                }
+
+                                if (!left.IsObject && !left.IsFunction)
                                 {
                                     _stack[_sp++] = FenValue.FromBoolean(false);
                                     break;
@@ -909,6 +1197,14 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 _stack[_sp++] = value;
                                 break;
                             }
+                            case OpCode.LoadVarSafe:
+                            {
+                                // Like LoadVar but returns undefined instead of throwing for undeclared bindings (used by typeof)
+                                int nameIndex = ReadInt32(instructions, ref frame);
+                                string varName = GetStringConstant(frame.Block, constants, nameIndex);
+                                _stack[_sp++] = ResolveVariableSafe(frame, varName);
+                                break;
+                            }
                             case OpCode.StoreVar:
                             {
                                 int nameIndex = ReadInt32(instructions, ref frame);
@@ -1013,7 +1309,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 int argStart = _sp - argCount;
                                 var callee = _stack[argStart - 1];
                                 
-                                if (!callee.IsFunction) throw new Exception("VM Error: Attempted to call non-function.");
+                                if (!callee.IsFunction) ThrowTypeError($"{callee.AsString()} is not a function");
                                 var func = callee.AsObject() as FenFunction;
 
                                 if (func.IsNative)
@@ -1036,16 +1332,31 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
                                 else if (func.BytecodeBlock != null)
                                 {
+                                    if (func.IsGenerator)
+                                    {
+                                        // Generator call: capture args and return a suspended GeneratorObject
+                                        var genArgs = new FenValue[argCount];
+                                        if (argCount > 0) Array.Copy(_stack, argStart, genArgs, 0, argCount);
+                                        _sp = argStart - 1;
+                                        _stack[_sp++] = FenValue.FromObject(new GeneratorObject(func, genArgs));
+                                        break;
+                                    }
+
                                     var newEnv = new FenEnvironment(func.Env);
                                     InitializeFunctionFastStore(func, newEnv);
                                     if (func.LocalMap != null && !string.IsNullOrEmpty(func.Name) && func.LocalMap.ContainsKey(func.Name))
                                     {
                                         SetFunctionBinding(func, newEnv, func.Name, FenValue.FromFunction(func));
                                     }
+                                    // Bind 'this': undefined for strict-mode-like behaviour; arrow functions inherit from closure
+                                    if (!func.IsArrowFunction)
+                                    {
+                                        SetFunctionBinding(func, newEnv, "this", FenValue.Undefined);
+                                    }
                                     BindFunctionArgumentsFromStack(func, newEnv, argCount, argStart);
 
                                     _sp = argStart - 1; // Pop callee + args
-                                     
+
                                     var newFrame = PushFrame(func.BytecodeBlock, newEnv, _sp);
                                     newFrame.NewTarget = FenValue.Undefined;
                                     newFrame.IsAsyncFunction = func.IsAsync;
@@ -1062,7 +1373,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 var argsArrayVal = _stack[--_sp];
                                 var callee = _stack[--_sp];
 
-                                if (!callee.IsFunction) throw new Exception("VM Error: Attempted to call non-function.");
+                                if (!callee.IsFunction) ThrowTypeError($"{callee.AsString()} is not a function");
                                 var func = callee.AsObject() as FenFunction;
                                 var argsObject = argsArrayVal.IsObject ? argsArrayVal.AsObject() : null;
                                 int argCount = GetArrayLikeLength(argsObject);
@@ -1081,11 +1392,22 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
                                 else if (func.BytecodeBlock != null)
                                 {
+                                    if (func.IsGenerator)
+                                    {
+                                        var genArgs = ExtractArrayLikeValues(argsArrayVal);
+                                        _stack[_sp++] = FenValue.FromObject(new GeneratorObject(func, genArgs));
+                                        break;
+                                    }
+
                                     var newEnv = new FenEnvironment(func.Env);
                                     InitializeFunctionFastStore(func, newEnv);
                                     if (func.LocalMap != null && !string.IsNullOrEmpty(func.Name) && func.LocalMap.ContainsKey(func.Name))
                                     {
                                         SetFunctionBinding(func, newEnv, func.Name, FenValue.FromFunction(func));
+                                    }
+                                    if (!func.IsArrowFunction)
+                                    {
+                                        SetFunctionBinding(func, newEnv, "this", FenValue.Undefined);
                                     }
                                     BindFunctionArgumentsFromArrayLike(func, newEnv, argsObject, argCount);
 
@@ -1107,7 +1429,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 var callee = _stack[argStart - 1];
                                 var receiver = _stack[argStart - 2];
 
-                                if (!callee.IsFunction) throw new Exception("VM Error: Attempted to call non-function.");
+                                if (!callee.IsFunction) ThrowTypeError($"{callee.AsString()} is not a function");
                                 var func = callee.AsObject() as FenFunction;
 
                                 if (func.IsNative)
@@ -1161,7 +1483,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 var callee = _stack[--_sp];
                                 var receiver = _stack[--_sp];
 
-                                if (!callee.IsFunction) throw new Exception("VM Error: Attempted to call non-function.");
+                                if (!callee.IsFunction) ThrowTypeError($"{callee.AsString()} is not a function");
                                 var func = callee.AsObject() as FenFunction;
                                 var argsObject = argsArrayVal.IsObject ? argsArrayVal.AsObject() : null;
                                 int argCount = GetArrayLikeLength(argsObject);
@@ -1209,11 +1531,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 int argStart = _sp - argCount;
                                 var constructorVal = _stack[argStart - 1];
 
-                                if (!constructorVal.IsFunction) throw new Exception("VM Error: Attempted to construct non-function.");
+                                if (!constructorVal.IsFunction) ThrowTypeError($"{constructorVal.AsString()} is not a constructor");
                                 var func = constructorVal.AsObject() as FenFunction;
                                 if (func.IsArrowFunction || !func.IsConstructor)
                                 {
-                                    throw new Exception("TypeError: " + func.Name + " is not a constructor");
+                                    ThrowTypeError(func.Name + " is not a constructor");
                                 }
 
                                 // Create new empty object
@@ -1279,11 +1601,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 var argsArrayVal = _stack[--_sp];
                                 var constructorVal = _stack[--_sp];
 
-                                if (!constructorVal.IsFunction) throw new Exception("VM Error: Attempted to construct non-function.");
+                                if (!constructorVal.IsFunction) ThrowTypeError($"{constructorVal.AsString()} is not a constructor");
                                 var func = constructorVal.AsObject() as FenFunction;
                                 if (func.IsArrowFunction || !func.IsConstructor)
                                 {
-                                    throw new Exception("TypeError: " + func.Name + " is not a constructor");
+                                    ThrowTypeError(func.Name + " is not a constructor");
                                 }
 
                                 var newObj = new FenObject();
@@ -1362,6 +1684,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                             {
                                 var prop = _stack[--_sp];
                                 var obj = _stack[--_sp];
+                                RequireObjectCoercible(obj, "LoadProp");
                                 var objectRef = obj.AsObject();
                                 if (objectRef != null)
                                 {
@@ -1433,6 +1756,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 var value = _stack[--_sp];
                                 var prop = _stack[--_sp];
                                 var obj = _stack[--_sp];
+                                RequireObjectCoercible(obj, "StoreProp");
                                 var objectRef = obj.AsObject();
                                 if (objectRef != null)
                                 {
@@ -1440,21 +1764,35 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                     if (objectRef is FenObject fenObj && !string.Equals(key, "__proto__", StringComparison.Ordinal))
                                     {
                                         var cache = GetStorePropertyInlineCache(frame.Block);
-                                        if (TryLoadPropertyInlineCache(cache, instructionOffset, fenObj, key, out _))
+                                        bool inlineCacheHit = false;
+                                        if (cache.TryGetValue(instructionOffset, out var pic) && !pic.Megamorphic)
                                         {
-                                            var cacheEntry = cache[instructionOffset];
-                                            var storage = fenObj.GetPropertyStorage();
-                                            if ((uint)cacheEntry.SlotIndex < (uint)storage.Length)
+                                            var shape = fenObj.GetShape();
+                                            for (int idx = 0; idx < pic.Count; idx++)
                                             {
-                                                var descriptor = storage[cacheEntry.SlotIndex];
-                                                if (!descriptor.IsAccessor && descriptor.Writable != false)
+                                                var entry = pic.Entries[idx];
+                                                if (entry.Shape == shape && string.Equals(entry.Key, key, StringComparison.Ordinal))
                                                 {
-                                                    descriptor.Value = value;
-                                                    storage[cacheEntry.SlotIndex] = descriptor;
-                                                    _stack[_sp++] = value;
+                                                    var storage = fenObj.GetPropertyStorage();
+                                                    if ((uint)entry.SlotIndex < (uint)storage.Length)
+                                                    {
+                                                        var descriptor = storage[entry.SlotIndex];
+                                                        if (!descriptor.IsAccessor && descriptor.Writable != false)
+                                                        {
+                                                            descriptor.Value = value;
+                                                            storage[entry.SlotIndex] = descriptor;
+                                                            _stack[_sp++] = value;
+                                                            inlineCacheHit = true;
+                                                        }
+                                                    }
                                                     break;
                                                 }
                                             }
+                                        }
+
+                                        if (inlineCacheHit)
+                                        {
+                                            break;
                                         }
 
                                         fenObj.Set(key, value);
@@ -1600,7 +1938,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 var sourceValue = _stack[--_sp];
                                 var targetValue = _stack[--_sp];
 
-                                if (targetValue.IsObject && sourceValue.IsObject)
+                                if ((targetValue.IsObject || targetValue.IsFunction) && (sourceValue.IsObject || sourceValue.IsFunction))
                                 {
                                     var targetObj = targetValue.AsObject();
                                     var sourceObj = sourceValue.AsObject();
@@ -1617,6 +1955,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                             {
                                 var prop = _stack[--_sp];
                                 var obj = _stack[--_sp];
+                                RequireObjectCoercible(obj, "DeleteProp");
                                 bool deleted = true;
                                 var objectRef = obj.AsObject();
                                 if (objectRef != null)
@@ -1642,7 +1981,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                     }
                                     iterObj.NativeObject = new KeyIteratorEnumerator(((IEnumerable<string>)indexKeys).GetEnumerator());
                                 }
-                                else if (objVal.IsObject)
+                                else if (objVal.IsObject || objVal.IsFunction)
                                 {
                                     var obj = objVal.AsObject();
                                     iterObj.NativeObject = obj != null
@@ -1660,11 +1999,40 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                             {
                                 var objVal = _stack[--_sp];
                                 var iterObj = new FenObject();
-                                if (objVal.IsString)
+                                RequireObjectCoercible(objVal, "GetIterator");
+
+                                var symIterMethod = FenValue.Undefined;
+                                if (objVal.IsObject || objVal.IsFunction)
+                                {
+                                    symIterMethod = objVal.AsObject().Get("[Symbol.iterator]");
+                                }
+                                else if (objVal.IsString)
+                                {
+                                    var strProto = GetPrimitivePrototype(frame, "String");
+                                    if (strProto != null) symIterMethod = strProto.Get("[Symbol.iterator]");
+                                }
+
+                                if (symIterMethod.IsFunction)
+                                {
+                                    var iteratorFn = symIterMethod.AsFunction() as FenFunction;
+                                    var iteratorResult = iteratorFn.Invoke(Array.Empty<FenValue>(), null, objVal);
+                                    if (!iteratorResult.IsObject)
+                                    {
+                                        ThrowTypeError("Symbol.iterator must return an object");
+                                    }
+                                    var iteratorActualObj = iteratorResult.AsObject();
+                                    var nextMethod = iteratorActualObj.Get("next");
+                                    if (!nextMethod.IsFunction)
+                                    {
+                                        ThrowTypeError("Iterator must have a next() method");
+                                    }
+                                    iterObj.NativeObject = new JsProtocolIteratorEnumerator(iteratorActualObj, nextMethod.AsFunction() as FenFunction);
+                                }
+                                else if (objVal.IsString)
                                 {
                                     iterObj.NativeObject = new StringIteratorEnumerator(objVal.AsString());
                                 }
-                                else if (objVal.IsObject)
+                                else if (objVal.IsObject || objVal.IsFunction)
                                 {
                                     var obj = objVal.AsObject();
                                     iterObj.NativeObject = obj != null
@@ -1673,7 +2041,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
                                 else
                                 {
-                                    iterObj.NativeObject = EmptyFenValueEnumerator.Instance;
+                                    ThrowTypeError($"{objVal.AsString()} is not iterable");
                                 }
                                 _stack[_sp++] = FenValue.FromObject(iterObj);
                                 break;
@@ -1780,6 +2148,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                             case OpCode.Return:
                             {
                                 var result = _stack[--_sp];
+                                // A return inside a finally block suppresses the pending exception (JS spec)
+                                frame.PendingException = null;
                                 _frameCount--;
                                 _sp = frame.StackBase;
 
@@ -1848,8 +2218,24 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                             }
                             case OpCode.ExitFinally:
                             {
-                                // Marker: finally block ends. In normal flow, continue past.
+                                // If this finally was entered due to an exception, re-throw it now
+                                if (frame.PendingException.HasValue)
+                                {
+                                    var pending = frame.PendingException.Value;
+                                    frame.PendingException = null;
+                                    HandleException(pending, ref frame);
+                                    goto fetch_frame;
+                                }
                                 break;
+                            }
+                            case OpCode.Yield:
+                            {
+                                // Suspend the generator: pop the yielded value and signal RunLoop to exit.
+                                var yieldedValue = _stack[--_sp];
+                                _generatorYielded = true;
+                                _generatorYieldValue = yieldedValue;
+                                // Return undefined as a sentinel; GeneratorObject.Next() reads _generatorYielded
+                                return FenValue.Undefined;
                             }
                             case OpCode.Halt:
                             {
@@ -1876,7 +2262,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
 
                                 return _completionValue;
-                            }    
+                            }
                             default:
                                 throw new Exception($"VM Error: Unhandled OpCode {op} at IP {frame.IP - 1}");
                         }
@@ -2015,9 +2401,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                     else if (handler.FinallyOffset != -1)
                     {
                         frame.IP = handler.FinallyOffset;
-                        // For pure finally, we might need to store the exception somewhere to rethrow later
-                        // But JS 'finally' without 'catch' is rare in Phase 1
-                        _stack[_sp++] = exceptionValue; 
+                        // Store pending exception: ExitFinally will re-throw it after finally runs
+                        frame.PendingException = exceptionValue;
                         return; // Resume execution in RunLoop
                     }
                 }
@@ -2462,13 +2847,17 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         
         private FenValue ExecuteAdd(FenValue left, FenValue right)
         {
-            // ES Spec: if either is string, concat
-            if (left.IsString || right.IsString)
+            // ES Spec 12.8.3: ToPrimitive on objects first (hint "default")
+            var ap = left.IsObject || left.IsFunction ? left.ToPrimitive(null, "default") : left;
+            var bp = right.IsObject || right.IsFunction ? right.ToPrimitive(null, "default") : right;
+
+            // If either result is a string, concatenate.
+            if (ap.IsString || bp.IsString)
             {
-                return FenValue.FromString(left.ToString() + right.ToString());
+                return FenValue.FromString(ap.AsString() + bp.AsString());
             }
             // else numeric addition
-            return FenValue.FromNumber(left.ToNumber() + right.ToNumber());
+            return FenValue.FromNumber(ap.ToNumber() + bp.ToNumber());
         }
 
         /// <summary>
@@ -2482,7 +2871,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 return cached;
             }
 
-            var ctor = ResolveVariable(frame, constructorName);
+            var ctor = ResolveVariableSafe(frame, constructorName);
             var ctorObj = ctor.AsObject();
             if (ctorObj != null)
             {
