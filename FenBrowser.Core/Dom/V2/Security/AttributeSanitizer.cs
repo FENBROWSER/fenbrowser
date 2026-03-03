@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
+using FenBrowser.Core.Accessibility;
 
 namespace FenBrowser.Core.Dom.V2.Security
 {
@@ -180,6 +181,16 @@ namespace FenBrowser.Core.Dom.V2.Security
             {
                 sanitizedValue = "";
                 return AttributeValidationResult.Sanitize("srcdoc blocked in strict mode");
+            }
+
+            // Validate ARIA attribute values (warn only — per ARIA spec §6.2.4,
+            // invalid values are treated as the property's default, not rejected).
+            if (name.StartsWith("aria-", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!AriaSpec.IsValidPropertyValue(name, value) && LogBlocked)
+                    System.Diagnostics.Debug.WriteLine(
+                        $"[Accessibility] Invalid value '{value}' for {name} (treating as missing)");
+                // Do NOT block or sanitize — ARIA spec requires graceful degradation
             }
 
             return AttributeValidationResult.Valid();
