@@ -23,12 +23,12 @@ namespace FenBrowser.Core.Accessibility
             if (root == null) return null;
 
             var ariaOwnsMap = BuildAriaOwnsMap(doc);
-            var ownedElements = new HashSet<Element>(new RefEqComparer());
+            var ownedElements = new HashSet<Element>(RefEqComparer.Instance);
             foreach (var list in ariaOwnsMap.Values)
                 foreach (var owned in list)
                     ownedElements.Add(owned);
 
-            var visited = new HashSet<Element>(new RefEqComparer());
+            var visited = new HashSet<Element>(RefEqComparer.Instance);
             return BuildNode(root, doc, ariaOwnsMap, ownedElements, visited, parentHidden: false);
         }
 
@@ -45,73 +45,106 @@ namespace FenBrowser.Core.Accessibility
             if (el == null) return null;
             if (!visited.Add(el)) return null; // Cycle guard
 
-            // Always-excluded elements (structural, not user-visible)
             if (IsAlwaysExcluded(el)) return null;
 
             bool isHidden = parentHidden || IsAriaHidden(el) || IsCssHidden(el);
 
-            // Determine role
             var role = AccessibilityRole.ResolveRole(el, doc);
-            bool isPresentational = role == AriaRole.Presentation || role == AriaRole.None;
 
             // Build children (DOM children + aria-owned children)
-            var childNodes = new List<AccessibilityNode>();
+            var childNodes = BuildChildren(el, doc, ariaOwnsMap, ownedElements, visited, isHidden);
 
-            // DOM children
-            for (var child = el.FirstChild; child != null; child = child.NextSibling)
-            {
-                if (child is not Element childEl) continue;
-                // Skip elements already owned by another element (handled via aria-owns)
-                if (ownedElements.Contains(childEl)) continue;
-
-                var childVisited = new HashSet<Element>(visited, new RefEqComparer());
-                var childNode = BuildNode(childEl, doc, ariaOwnsMap, ownedElements, childVisited, isHidden);
-                if (childNode != null)
-                    childNodes.Add(childNode);
-            }
-
-            // aria-owned children (appended after DOM children per ARIA spec)
-            if (ariaOwnsMap.TryGetValue(el, out var ownedList))
-            {
-                foreach (var ownedEl in ownedList)
-                {
-                    var childVisited = new HashSet<Element>(visited, new RefEqComparer());
-                    var childNode = BuildNode(ownedEl, doc, ariaOwnsMap, ownedElements, childVisited, isHidden);
-                    if (childNode != null)
-                        childNodes.Add(childNode);
-                }
-            }
-
-            // For presentation/none roles: remove from tree but keep children
-            if (isPresentational && !isHidden)
-            {
-                // Flatten children into parent — we return a "transparent" node
-                // The caller will need to inline these. We return a sentinel with Role=None
-                // and the children populated so the caller can unwrap.
-                return new AccessibilityNode(el, AriaRole.None, "", "", isHidden, childNodes, null);
-            }
-
-            // Compute name and description (skip for hidden subtrees to save work)
+            // Compute name and description (skip for fully-hidden subtrees to save work)
             string name = "";
             string description = "";
             if (!isHidden)
             {
                 name = AccNameCalculator.Compute(el, doc);
-                description = AccDescCalculator.Compute(el, doc);
+                description = AccDescCalculator.Compute(el, doc, name);
             }
 
-            // Collect ARIA state attributes
             var states = CollectStates(el);
-
             return new AccessibilityNode(el, role, name, description, isHidden, childNodes, states);
+        }
+
+        /// <summary>
+        /// Builds the ordered child list for <paramref name="parent"/>, honouring
+        /// aria-owns reparenting and inlining explicit presentation/none elements.
+        /// </summary>
+        private static List<AccessibilityNode> BuildChildren(
+            Element parent,
+            Document doc,
+            Dictionary<Element, List<Element>> ariaOwnsMap,
+            HashSet<Element> ownedElements,
+            HashSet<Element> visited,
+            bool parentHidden)
+        {
+            var result = new List<AccessibilityNode>();
+
+            // DOM children
+            for (var child = parent.FirstChild; child != null; child = child.NextSibling)
+            {
+                if (child is not Element childEl) continue;
+                if (ownedElements.Contains(childEl)) continue; // handled via aria-owns
+
+                AppendChild(childEl, doc, ariaOwnsMap, ownedElements, visited, parentHidden, result);
+            }
+
+            // aria-owned children (appended after DOM children per ARIA spec)
+            if (ariaOwnsMap.TryGetValue(parent, out var ownedList))
+            {
+                foreach (var ownedEl in ownedList)
+                    AppendChild(ownedEl, doc, ariaOwnsMap, ownedElements, visited, parentHidden, result);
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Builds a child node and appends it (or, for explicit presentation/none roles,
+        /// inlines its children directly into <paramref name="result"/>).
+        /// </summary>
+        private static void AppendChild(
+            Element childEl,
+            Document doc,
+            Dictionary<Element, List<Element>> ariaOwnsMap,
+            HashSet<Element> ownedElements,
+            HashSet<Element> parentVisited,
+            bool parentHidden,
+            List<AccessibilityNode> result)
+        {
+            if (IsAlwaysExcluded(childEl)) return;
+
+            bool childHidden = parentHidden || IsAriaHidden(childEl) || IsCssHidden(childEl);
+
+            // Explicit role="presentation" / role="none": skip the element, promote children.
+            // Note: only EXPLICIT author-supplied role triggers this; implicit AriaRole.None
+            // (elements with no corresponding ARIA role, e.g. <br>, <col>) are handled normally.
+            if (!childHidden && HasExplicitPresentationRole(childEl))
+            {
+                // Guard against cycles before recursing into children
+                var presentVisited = new HashSet<Element>(parentVisited, RefEqComparer.Instance);
+                if (!presentVisited.Add(childEl)) return;
+
+                var promoted = BuildChildren(childEl, doc, ariaOwnsMap, ownedElements,
+                                             presentVisited, parentHidden);
+                result.AddRange(promoted);
+                return;
+            }
+
+            var childVisited = new HashSet<Element>(parentVisited, RefEqComparer.Instance);
+            var childNode = BuildNode(childEl, doc, ariaOwnsMap, ownedElements, childVisited, parentHidden);
+            if (childNode != null)
+                result.Add(childNode);
         }
 
         // ---- aria-owns map ----
 
         private static Dictionary<Element, List<Element>> BuildAriaOwnsMap(Document doc)
         {
-            var map = new Dictionary<Element, List<Element>>(new RefEqComparer());
-            var visited = new HashSet<Element>(new RefEqComparer());
+            var map = new Dictionary<Element, List<Element>>(RefEqComparer.Instance);
+            // Tracks which elements have already been claimed to prevent double-owning.
+            var claimed = new HashSet<Element>(RefEqComparer.Instance);
 
             foreach (var node in doc.Descendants())
             {
@@ -123,8 +156,10 @@ namespace FenBrowser.Core.Accessibility
                 foreach (var id in ariaOwns.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
                 {
                     var ownedEl = doc.GetElementById(id);
-                    if (ownedEl == null || ReferenceEquals(ownedEl, el)) continue;
-                    if (!visited.Add(ownedEl)) continue; // Prevent double-owning
+                    // Reject: not found, self-reference, or already owned by another element.
+                    if (ownedEl == null) continue;
+                    if (ReferenceEquals(ownedEl, el)) continue;
+                    if (!claimed.Add(ownedEl)) continue;
                     ownedList.Add(ownedEl);
                 }
 
@@ -135,7 +170,7 @@ namespace FenBrowser.Core.Accessibility
             return map;
         }
 
-        // ---- Exclusion checks ----
+        // ---- Exclusion / visibility checks ----
 
         private static bool IsAlwaysExcluded(Element el)
         {
@@ -151,14 +186,36 @@ namespace FenBrowser.Core.Accessibility
             return hidden?.Trim().ToLowerInvariant() == "true";
         }
 
+        /// <summary>
+        /// Heuristic check of the inline style attribute for display:none / visibility:hidden.
+        /// Does not inspect the CSS cascade; computed styles are too expensive to resolve here.
+        /// Uses a more robust approach (strips internal whitespace before comparing) to avoid
+        /// being fooled by arbitrary whitespace in author stylesheets.
+        /// </summary>
         private static bool IsCssHidden(Element el)
         {
-            // Check inline style only (full CSS cascade is expensive and often not needed)
             var style = el.GetAttribute("style");
             if (string.IsNullOrEmpty(style)) return false;
-            var lower = style.ToLowerInvariant();
-            return lower.Contains("display:none") || lower.Contains("display: none") ||
-                   lower.Contains("visibility:hidden") || lower.Contains("visibility: hidden");
+
+            // Compact to "prop:value" pairs for reliable substring matching.
+            var compact = CompactCss(style);
+            return compact.Contains("display:none") || compact.Contains("visibility:hidden");
+        }
+
+        /// <summary>
+        /// Returns true if the element carries an explicit author-supplied role of
+        /// "presentation" or "none" (first valid token from the role attribute).
+        /// </summary>
+        private static bool HasExplicitPresentationRole(Element el)
+        {
+            var roleAttr = el.GetAttribute("role");
+            if (string.IsNullOrWhiteSpace(roleAttr)) return false;
+            foreach (var token in roleAttr.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                var t = token.Trim().ToLowerInvariant();
+                if (t == "presentation" || t == "none") return true;
+            }
+            return false;
         }
 
         // ---- State collection ----
@@ -166,23 +223,56 @@ namespace FenBrowser.Core.Accessibility
         private static IReadOnlyDictionary<string, string> CollectStates(Element el)
         {
             Dictionary<string, string> states = null;
-
             foreach (var attr in el.Attributes)
             {
                 if (!attr.Name.StartsWith("aria-", StringComparison.OrdinalIgnoreCase)) continue;
                 states ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 states[attr.Name] = attr.Value;
             }
-
             return states;
         }
 
-        // ---- Equality comparer ----
+        // ---- Helpers ----
+
+        /// <summary>
+        /// Strips whitespace around ':' and ';' in a CSS string so substring matching is
+        /// independent of author formatting (e.g. "display : none" → "display:none").
+        /// </summary>
+        private static string CompactCss(string style)
+        {
+            var sb = new System.Text.StringBuilder(style.Length);
+            bool lastWasSep = false;
+            foreach (char c in style.ToLowerInvariant())
+            {
+                if (c == ':' || c == ';')
+                {
+                    // Trim trailing space before separator
+                    while (sb.Length > 0 && sb[sb.Length - 1] == ' ')
+                        sb.Remove(sb.Length - 1, 1);
+                    sb.Append(c);
+                    lastWasSep = true;
+                }
+                else if (c == ' ' && lastWasSep)
+                {
+                    // Skip leading space after separator
+                }
+                else
+                {
+                    sb.Append(c);
+                    lastWasSep = false;
+                }
+            }
+            return sb.ToString();
+        }
+
+        // ---- Equality comparer (shared instance) ----
 
         private sealed class RefEqComparer : IEqualityComparer<Element>
         {
+            public static readonly RefEqComparer Instance = new RefEqComparer();
             public bool Equals(Element x, Element y) => ReferenceEquals(x, y);
-            public int GetHashCode(Element obj) => System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
+            public int GetHashCode(Element obj) =>
+                System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
         }
     }
 }
