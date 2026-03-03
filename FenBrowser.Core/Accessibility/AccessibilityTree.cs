@@ -40,8 +40,17 @@ namespace FenBrowser.Core.Accessibility
         private AccessibilityTree(Document doc)
         {
             _doc = doc;
-            // Subscribe to DOM mutations for automatic dirty-marking
-            Node.OnMutation += OnMutation;
+            // Use a WeakReference so the static event does not root this instance.
+            // The ConditionalWeakTable keeps us alive only as long as `doc` is alive.
+            // Once `doc` is collected the table drops us, the WeakReference goes dead,
+            // and the lambda below becomes a harmless no-op — no memory leak.
+            var weakSelf = new WeakReference<AccessibilityTree>(this);
+            Node.OnMutation += (target, type, attrName, ns, added, removed) =>
+            {
+                if (!weakSelf.TryGetTarget(out var self)) return;
+                if (target?.OwnerDocument == self._doc || ReferenceEquals(target, self._doc))
+                    self.Invalidate();
+            };
         }
 
         // ---- Public API ----
@@ -118,17 +127,6 @@ namespace FenBrowser.Core.Accessibility
                 foreach (var child in node.Children)
                     IndexNode(child);
             }
-        }
-
-        private void OnMutation(
-            Node target, string type,
-            string attrName, string attrNamespace,
-            System.Collections.Generic.List<Node> addedNodes,
-            System.Collections.Generic.List<Node> removedNodes)
-        {
-            // Only invalidate for the document we own
-            if (target?.OwnerDocument == _doc || ReferenceEquals(target, _doc))
-                Invalidate();
         }
 
         private sealed class RefEqComparer : IEqualityComparer<Element>
