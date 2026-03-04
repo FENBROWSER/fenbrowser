@@ -226,36 +226,20 @@ namespace FenBrowser.FenEngine.Core
 
         private FenValue InvokeViaBytecodeThunk(FenValue[] args, IExecutionContext context, FenValue thisBinding)
         {
-            var constants = new List<FenValue>(2);
+            var constants = new List<FenValue>(3);
             var instructionBytes = new List<byte>(32);
 
             var baseEnv = Env ?? context?.Environment as FenEnvironment ?? new FenEnvironment();
             FenFunction callable = this;
 
-            // Bytecode call opcodes currently resolve `this` through function lexical env.
-            // Rebind env for direct host-side invoke so callback paths still observe supplied `this`.
-            if (!IsArrowFunction)
-            {
-                var reboundEnv = new FenEnvironment(baseEnv);
-                reboundEnv.Set("this", thisBinding);
-
-                callable = new FenFunction(Parameters, BytecodeBlock, reboundEnv)
-                {
-                    Name = Name,
-                    IsArrowFunction = IsArrowFunction,
-                    IsAsync = IsAsync,
-                    IsGenerator = IsGenerator,
-                    NeedsArgumentsObject = NeedsArgumentsObject,
-                    LocalMap = LocalMap
-                };
-            }
-
+            constants.Add(thisBinding);
             constants.Add(FenValue.FromFunction(callable));
             constants.Add(FenValue.FromObject(CreateArrayLikeArgumentsObject(args)));
 
             AppendLoadConst(instructionBytes, 0);
             AppendLoadConst(instructionBytes, 1);
-            instructionBytes.Add((byte)Bytecode.OpCode.CallFromArray);
+            AppendLoadConst(instructionBytes, 2);
+            instructionBytes.Add((byte)Bytecode.OpCode.CallMethodFromArray);
             instructionBytes.Add((byte)Bytecode.OpCode.Return);
 
             var thunk = new Bytecode.CodeBlock(instructionBytes.ToArray(), constants);
@@ -284,3 +268,8 @@ namespace FenBrowser.FenEngine.Core
         }
     }
 }
+
+
+
+
+

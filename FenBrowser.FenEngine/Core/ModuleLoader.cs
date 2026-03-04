@@ -1,9 +1,12 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 using FenBrowser.Core.Network.Handlers;
 using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.FenEngine.Errors;
 
 namespace FenBrowser.FenEngine.Core
 {
@@ -280,7 +283,10 @@ namespace FenBrowser.FenEngine.Core
                                 }
                             }
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            FenLogger.Warn($"[ModuleLoader] package.json parse/read failed at '{packageJsonPath}': {ex.Message}", LogCategory.JavaScript);
+                        }
                     }
 
                     // Check for index.js
@@ -339,10 +345,10 @@ namespace FenBrowser.FenEngine.Core
             }
             catch (Exception ex)
             {
-                 throw new Exception($"Failed to load module '{path}': {ex.Message}", ex);
+                 throw new InvalidOperationException($"Failed to load module '{path}': {ex.Message}", ex);
             }
 
-            if (code  == null) throw new Exception($"Empty code for module: {path}");
+            if (code  == null) throw new InvalidOperationException($"Empty code for module: {path}");
 
             var lexer = new Lexer(code);
             var parser = new Parser(lexer, isModule: true);
@@ -350,7 +356,7 @@ namespace FenBrowser.FenEngine.Core
 
             if (parser.Errors.Count > 0)
             {
-                throw new Exception($"Module parse error in '{path}': {string.Join(", ", parser.Errors)}");
+                throw new FenSyntaxError($"Module parse error in '{path}': {string.Join(", ", parser.Errors)}");
             }
 
             // Pre-cache an export object before evaluation so cyclic module graphs can resolve.
@@ -397,7 +403,7 @@ namespace FenBrowser.FenEngine.Core
 
             if (parser.Errors.Count > 0)
             {
-                throw new Exception($"Module parse error in '{pseudoPath}': {string.Join(", ", parser.Errors)}");
+                throw new FenSyntaxError($"Module parse error in '{pseudoPath}': {string.Join(", ", parser.Errors)}");
             }
 
             // Pre-cache an export object before evaluation so cyclic module graphs can resolve.
@@ -481,12 +487,12 @@ namespace FenBrowser.FenEngine.Core
                 if (ThrowOnEvaluationError &&
                     evalResult.Type == Interfaces.ValueType.Error)
                 {
-                    throw new Exception(evalResult.ToString());
+                    throw new FenInternalError($"Module evaluation failed: {evalResult}");
                 }
             }
             catch (NotImplementedException ex)
             {
-                throw new Exception($"Bytecode-only mode: module compilation unsupported. {ex.Message}", ex);
+                throw new NotSupportedException($"Bytecode-only mode: module compilation unsupported. {ex.Message}", ex);
             }
         }
 
@@ -516,3 +522,6 @@ namespace FenBrowser.FenEngine.Core
         }
     }
 }
+
+
+

@@ -58,6 +58,9 @@ namespace FenBrowser.FenEngine.Core
             arr.InternalClass = "Array";
             if (DefaultArrayPrototype != null && !ReferenceEquals(DefaultArrayPrototype, arr))
                 arr.SetPrototype(DefaultArrayPrototype);
+
+            // JS arrays must always expose a numeric length; many runtime paths cast this directly.
+            arr.Set("length", FenValue.FromNumber(0));
             return arr;
         }
 
@@ -112,6 +115,11 @@ namespace FenBrowser.FenEngine.Core
                 return desc.Value ?? FenValue.Undefined;
             }
             
+            if (TryResolveWindowNamedProperty(key, context, out var namedWindowValue))
+            {
+                return namedWindowValue;
+            }
+
             // Prototype chain lookup
             if (_prototype != null)
                 return _prototype.GetWithReceiver(key, receiver, context);
@@ -258,8 +266,57 @@ namespace FenBrowser.FenEngine.Core
             }
 
             if (_shape.TryGetPropertyOffset(key, out _)) return true;
+            if (TryResolveWindowNamedProperty(key, context, out _)) return true;
             if (_prototype != null) return _prototype.Has(key, context);
             return false;
+        }
+
+        private bool TryResolveWindowNamedProperty(string key, IExecutionContext context, out FenValue value)
+        {
+            value = FenValue.Undefined;
+
+            if (string.IsNullOrEmpty(key) || string.Equals(key, "document", StringComparison.Ordinal) || string.Equals(key, "__fen_window_named_access__", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            if (!_shape.TryGetPropertyOffset("__fen_window_named_access__", out var markerIdx))
+            {
+                return false;
+            }
+
+            var marker = _properties[markerIdx].Value;
+            if (!marker.HasValue || !marker.Value.ToBoolean())
+            {
+                return false;
+            }
+
+            var doc = Get("document", context);
+            if (!doc.IsObject)
+            {
+                return false;
+            }
+
+            var docObj = doc.AsObject();
+            if (docObj == null)
+            {
+                return false;
+            }
+
+            var getById = docObj.Get("getElementById", context);
+            if (!getById.IsFunction)
+            {
+                return false;
+            }
+
+            var found = getById.AsFunction().Invoke(new[] { FenValue.FromString(key) }, context, doc);
+            if (found.IsNull || found.IsUndefined)
+            {
+                return false;
+            }
+
+            value = found;
+            return true;
         }
 
         public virtual bool Delete(string key, IExecutionContext context = null)
@@ -542,3 +599,5 @@ namespace FenBrowser.FenEngine.Core
         public PropertyDescriptor[] GetPropertyStorage() => _properties;
     }
 }
+
+

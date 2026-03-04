@@ -1,5 +1,7 @@
-using System;
+﻿using System;
 using System.Runtime.CompilerServices;
+using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Core;
 
@@ -25,14 +27,17 @@ namespace FenBrowser.FenEngine.Core.Types
                 var val = args.Length > 1 ? args[1] : FenValue.Undefined;
 
                 var keyRef = ExtractKey(key);
-                if (keyRef == null) throw new Exception("TypeError: WeakMap key must be an object or symbol");
+                if (keyRef == null) throw new InvalidOperationException("TypeError: WeakMap key must be an object or symbol");
 
                 try
                 {
                     _storage.Remove(keyRef);
                     _storage.Add(keyRef, val);
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[JsWeakMap] Failed to add weak key/value: {ex.Message}", LogCategory.JavaScript);
+                }
 
                 return FenValue.FromObject(this);
             })));
@@ -59,3 +64,5 @@ namespace FenBrowser.FenEngine.Core.Types
         }
     }
 }
+
+

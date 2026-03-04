@@ -1,5 +1,7 @@
-using System;
+﻿using System;
 using System.Runtime.CompilerServices;
+using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Core;
 
@@ -16,17 +18,20 @@ namespace FenBrowser.FenEngine.Core.Types
             {
                 var val = args.Length > 0 ? args[0] : FenValue.Undefined;
 
-                if (!val.IsObject) throw new Exception("TypeError: WeakSet value must be an object");
+                if (!val.IsObject) throw new InvalidOperationException("TypeError: WeakSet value must be an object");
                 
                 var valObj = val.AsObject();
-                if (valObj  == null) throw new Exception("TypeError: WeakSet value cannot be null");
+                if (valObj  == null) throw new InvalidOperationException("TypeError: WeakSet value cannot be null");
 
                 try 
                 {
                     _storage.Remove(valObj);
                     _storage.Add(valObj, _present);
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[JsWeakSet] Failed to add weak entry: {ex.Message}", LogCategory.JavaScript);
+                }
                 
                 return FenValue.FromObject(this);
             })));
@@ -51,3 +56,5 @@ namespace FenBrowser.FenEngine.Core.Types
         }
     }
 }
+
+

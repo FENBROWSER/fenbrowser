@@ -44,6 +44,8 @@ namespace FenBrowser.FenEngine.Core
             }
             return sb.ToString();
         }
+
+        public bool IsStrict { get; set; } = false;
     }
 
     public class Identifier : Expression
@@ -267,6 +269,7 @@ namespace FenBrowser.FenEngine.Core
         public bool IsGenerator { get; set; } = false; // function* syntax
         public bool IsAsync { get; set; } = false;
         public string Source { get; set; } // ES2019: Original source code
+        public bool IsStrict { get; set; } = false;
 
         public override string String()
         {
