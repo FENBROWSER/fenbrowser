@@ -53,6 +53,9 @@ namespace FenBrowser.FenEngine.Adapters
                 // CRITICAL FIX: Inject default fill for paths without explicit fill
                 // Per SVG spec, the default fill is "black", but Svg.Skia renders unfilled paths as transparent
                 svgContent = InjectDefaultFill(svgContent);
+                // Ensure intrinsic viewport size exists when only viewBox is provided.
+                // Some Svg.Skia code paths can produce empty output if width/height are missing.
+                svgContent = NormalizeSvgViewport(svgContent);
 
                 // Normalize duplicated attributes after all content transforms.
                 svgContent = DeduplicateAttributes(svgContent);
@@ -260,7 +263,7 @@ namespace FenBrowser.FenEngine.Adapters
                     svgContent = Regex.Replace(
                         svgContent,
                         $@"<{shape}(?=[\s/>])((?:(?!fill\s*=)[^>])*?)(/?>)",
-                        $@"<{shape} fill=""currentColor""$1$2",
+                        $@"<{shape} fill=""black""$1$2",
                         RegexOptions.IgnoreCase | RegexOptions.Singleline,
                         TimeSpan.FromMilliseconds(500));
                 }
@@ -273,6 +276,58 @@ namespace FenBrowser.FenEngine.Adapters
             return svgContent;
         }
 
+        /// <summary>
+        /// Normalize root <svg> sizing by deriving width/height from viewBox when absent.
+        /// This keeps rendering deterministic for SVGs that rely on intrinsic viewBox dimensions.
+        /// </summary>
+        private static string NormalizeSvgViewport(string svgContent)
+        {
+            if (string.IsNullOrWhiteSpace(svgContent))
+            {
+                return svgContent;
+            }
+
+            var svgTagMatch = Regex.Match(svgContent, @"<svg\b(?<attrs>[^>]*)>", RegexOptions.IgnoreCase | RegexOptions.Singleline, TimeSpan.FromMilliseconds(500));
+            if (!svgTagMatch.Success)
+            {
+                return svgContent;
+            }
+
+            string attrs = svgTagMatch.Groups["attrs"].Value;
+            bool hasWidth = Regex.IsMatch(attrs, @"\bwidth\s*=", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100));
+            bool hasHeight = Regex.IsMatch(attrs, @"\bheight\s*=", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100));
+            if (hasWidth && hasHeight)
+            {
+                return svgContent;
+            }
+
+            var viewBoxMatch = Regex.Match(attrs,
+                @"\bviewBox\s*=\s*[""']\s*(?<minx>[-+]?\d*\.?\d+)\s*[, ]\s*(?<miny>[-+]?\d*\.?\d+)\s*[, ]\s*(?<w>[-+]?\d*\.?\d+)\s*[, ]\s*(?<h>[-+]?\d*\.?\d+)\s*[""']",
+                RegexOptions.IgnoreCase,
+                TimeSpan.FromMilliseconds(500));
+
+            if (!viewBoxMatch.Success)
+            {
+                return svgContent;
+            }
+
+            string width = viewBoxMatch.Groups["w"].Value;
+            string height = viewBoxMatch.Groups["h"].Value;
+
+            if (!hasWidth)
+            {
+                attrs += $@" width=""{width}""";
+            }
+
+            if (!hasHeight)
+            {
+                attrs += $@" height=""{height}""";
+            }
+
+            string normalizedSvgTag = "<svg" + attrs + ">";
+            return svgContent.Remove(svgTagMatch.Index, svgTagMatch.Length)
+                             .Insert(svgTagMatch.Index, normalizedSvgTag);
+        }
         /// <summary>
         /// Deduplicate attributes within SVG tags. 
         /// Strict XML/SVG parsers fail if they find two 'fill' attributes on the same element.
@@ -325,5 +380,3 @@ namespace FenBrowser.FenEngine.Adapters
         }
     }
 }
-
-

@@ -2493,3 +2493,10 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
 - Verification:
   - Targeted: `FlexDistributionTests` + `HeightResolutionTests` => all pass.
   - Full suite latest run: `971` passed / `3` failed (non-layout clusters: SVG visibility, font bad-url behavior, worker importScripts dependency).
+
+### 2.29 Runtime Hardening (2026-03-04, Wave 25)
+- Adapters/SvgSkiaRenderer.cs
+  - Added root `<svg>` viewport normalization so SVGs that provide `viewBox` but omit explicit `width/height` now derive intrinsic dimensions from `viewBox` before parse/render.
+  - Preserved existing negative-origin cull translation and default fill injection path; this closes the remaining negative-`viewBox` visible-pixels regression.
+- Verification:
+  - Targeted: `SvgSkiaRenderer_NegativeViewBoxOrigin_RendersVisiblePixels` => pass.
