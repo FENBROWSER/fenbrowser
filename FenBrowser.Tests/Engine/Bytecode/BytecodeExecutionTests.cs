@@ -5,6 +5,7 @@ using FenBrowser.FenEngine.Core.Types;
 using FenBrowser.FenEngine.Core.Bytecode;
 using FenBrowser.FenEngine.Core.Bytecode.Compiler;
 using FenBrowser.FenEngine.Core.Bytecode.VM;
+using FenBrowser.FenEngine.Errors;
 using FenValue = FenBrowser.FenEngine.Core.FenValue;
 
 namespace FenBrowser.Tests.Engine.Bytecode
@@ -760,10 +761,32 @@ namespace FenBrowser.Tests.Engine.Bytecode
         }
 
         [Fact]
-        public void Bytecode_BigIntLiteral_SimplifiedNumberBehavior_ShouldWork()
+        public void Bytecode_BigIntAddition_WithBigIntOperands_ShouldReturnBigInt()
         {
-            var result = Evaluate("123n + 1;");
-            Assert.Equal(124, result.AsNumber());
+            var result = Evaluate("123n + 1n;");
+            Assert.True(result.IsBigInt);
+            Assert.Equal("124", result.AsBigInt().ToStringWithoutSuffix());
+        }
+
+        [Fact]
+        public void Bytecode_BigIntAddition_MixedWithNumber_ShouldThrowTypeError()
+        {
+            var ex = Assert.Throws<Exception>(() => Evaluate("123n + 1;"));
+            Assert.Contains("Cannot mix BigInt and other types", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void Bytecode_Addition_ToPrimitiveValueOf_ShouldUseNumericPrimitive()
+        {
+            var result = Evaluate("({ valueOf: function() { return 7; } }) + 5;");
+            Assert.Equal(12, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_Addition_ToPrimitiveToString_ShouldUseStringConcatenation()
+        {
+            var result = Evaluate("({ toString: function() { return 'x'; } }) + 1;");
+            Assert.Equal("x1", result.AsString());
         }
 
         [Fact]
@@ -864,6 +887,20 @@ namespace FenBrowser.Tests.Engine.Bytecode
         {
             var result = Evaluate("with ({ x: 9 }) { x; }");
             Assert.Equal(9, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_WithStatement_WithUndefinedTarget_ShouldThrowTypeError()
+        {
+            var ex = Assert.Throws<Exception>(() => Evaluate("with (undefined) { x; }"));
+            Assert.Contains("Cannot convert undefined or null to object", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void Bytecode_WithStatement_RespectsUnscopables()
+        {
+            var result = Evaluate("var x = 1; var o = { x: 9 }; o['Symbol.unscopables'] = { x: true }; with (o) { x; }");
+            Assert.Equal(1, result.AsNumber());
         }
 
         [Fact]
