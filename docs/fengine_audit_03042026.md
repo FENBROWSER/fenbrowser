@@ -637,3 +637,13 @@
 - Verification:
   - Targeted conformance tests: `String_ReplaceAll_ReplacesAll`, `Runtime_String_CodePointAt`, `Symbol_Description_Property` => `3/3` passed.
   - Full `FenBrowser.Tests`: `955` passed, `19` failed (down from `22`).
+
+## Recheck Pass 15 (2026-03-04, Symbol Constructor Contract Alignment)
+- Focus area: integration test contract alignment for Symbol global representation.
+- Files updated:
+  - `FenBrowser.Tests/Integration/ComprehensivePhaseTests.cs`
+- Changes:
+  - Updated `Phase5B_Symbol_GlobalConstructorExists` to accept `Symbol` as either function or object (`symbol.IsObject || symbol.IsFunction`), matching JS semantics and current runtime representation.
+- Verification:
+  - Targeted test `Phase5B_Symbol_GlobalConstructorExists` passed.
+  - Full `FenBrowser.Tests`: `957` passed, `17` failed (down from `19`).
