@@ -82,7 +82,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                                 if (swSettlement.IsRejected)
                                 {
                                     var rejection = swSettlement.Value.IsUndefined ? "respondWith() rejected" : swSettlement.Value.ToString();
-                                    throw new Exception($"ServiceWorker respondWith rejection: {rejection}");
+                                    throw new InvalidOperationException($"ServiceWorker respondWith rejection: {rejection}");
                                 }
 
                                 if (swSettlement.IsTimeout)
@@ -97,7 +97,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                         }
 
                         // 2. Network Fetch via Handler
-                        if (fetchHandler  == null) throw new Exception("FetchHandler missing");
+                        if (fetchHandler  == null) throw new InvalidOperationException("Fetch handler missing");
 
                         // SECURITY: Validate URL (scheme + private-IP block) and method
                         ValidateFetchUrl(request.Url);
@@ -109,7 +109,14 @@ namespace FenBrowser.FenEngine.WebAPIs
                             var ct = request.Headers.GetHeader("content-type");
                             if (!string.IsNullOrEmpty(ct)) 
                             {
-                                try { req.Content.Headers.ContentType = System.Net.Http.Headers.MediaTypeHeaderValue.Parse(ct); } catch {}
+                                try
+                                {
+                                    req.Content.Headers.ContentType = System.Net.Http.Headers.MediaTypeHeaderValue.Parse(ct);
+                                }
+                                catch (Exception ex)
+                                {
+                                    FenLogger.Warn($"[Fetch] Invalid content-type header '{ct}': {ex.Message}", LogCategory.JavaScript);
+                                }
                             }
                         }
 
@@ -229,7 +236,7 @@ namespace FenBrowser.FenEngine.WebAPIs
 
         // ------------------------------------------------------------------ security helpers
 
-        // SECURITY: Only http/https permitted — blocks file://, data:, ftp:, javascript:, etc.
+        // SECURITY: Only http/https permitted â€” blocks file://, data:, ftp:, javascript:, etc.
         internal static void ValidateFetchUrl(string url)
         {
             if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
@@ -243,7 +250,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 throw new InvalidOperationException("Failed to fetch: Requests to private or internal network addresses are blocked.");
         }
 
-        // SECURITY: Whitelist valid HTTP methods — prevents CRLF/request-smuggling injection.
+        // SECURITY: Whitelist valid HTTP methods â€” prevents CRLF/request-smuggling injection.
         private static readonly HashSet<string> _allowedHttpMethods = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             { "GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH" };
 
@@ -551,3 +558,4 @@ namespace FenBrowser.FenEngine.WebAPIs
         }
     }
 }
+

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
@@ -9,7 +9,7 @@ namespace FenBrowser.FenEngine.WebAPIs
 {
     /// <summary>
     /// Helper that creates a synchronously-resolved thenable FenObject.
-    /// Works without an IExecutionContext — suitable for static API factories.
+    /// Works without an IExecutionContext â€” suitable for static API factories.
     /// JS code can do .then(cb) and cb fires synchronously on the first .then() call.
     /// </summary>
     public static class ResolvedThenable
@@ -34,6 +34,19 @@ namespace FenBrowser.FenEngine.WebAPIs
             return p;
         }
 
+        private static void TryInvokeHandler(FenValue callback, FenValue[] args, string operation)
+        {
+            if (!callback.IsFunction) return;
+            try
+            {
+                callback.AsFunction().Invoke(args, (IExecutionContext)null);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[ResolvedThenable] {operation} callback failed: {ex.Message}", LogCategory.JavaScript);
+            }
+        }
+
         private static void AttachThenCatch(FenObject p)
         {
             // Note: native delegate is (FenValue[] args, FenValue thisVal) -> FenValue.
@@ -46,8 +59,8 @@ namespace FenBrowser.FenEngine.WebAPIs
                     var result = p.Get("__result");
                     if (args.Length > 0 && args[0].IsFunction)
                     {
-                        try { args[0].AsFunction().Invoke(new[] { result }, (IExecutionContext)null); }
-                        catch { }
+                        TryInvokeHandler(args[0], new[] { result }, "then.fulfilled");
+                        // callback faults are non-fatal but logged via TryInvokeHandler
                     }
                 }
                 else if (p.Get("__state").ToString() == "rejected")
@@ -55,8 +68,8 @@ namespace FenBrowser.FenEngine.WebAPIs
                     var reason = p.Get("__reason");
                     if (args.Length > 1 && args[1].IsFunction)
                     {
-                        try { args[1].AsFunction().Invoke(new[] { reason }, (IExecutionContext)null); }
-                        catch { }
+                        TryInvokeHandler(args[1], new[] { reason }, "then.rejected");
+                        // callback faults are non-fatal but logged via TryInvokeHandler
                     }
                 }
                 return FenValue.FromObject(p);
@@ -67,8 +80,8 @@ namespace FenBrowser.FenEngine.WebAPIs
                 if (p.Get("__state").ToString() == "rejected" && args.Length > 0 && args[0].IsFunction)
                 {
                     var reason = p.Get("__reason");
-                    try { args[0].AsFunction().Invoke(new[] { reason }, (IExecutionContext)null); }
-                    catch { }
+                    TryInvokeHandler(args[0], new[] { reason }, "catch");
+                    // callback faults are non-fatal but logged via helper wrappers
                 }
                 return FenValue.FromObject(p);
             })));
@@ -77,8 +90,8 @@ namespace FenBrowser.FenEngine.WebAPIs
             {
                 if (args.Length > 0 && args[0].IsFunction)
                 {
-                    try { args[0].AsFunction().Invoke(Array.Empty<FenValue>(), (IExecutionContext)null); }
-                    catch { }
+                    TryInvokeHandler(args[0], Array.Empty<FenValue>(), "finally");
+                    // callback faults are non-fatal but logged via helper wrappers
                 }
                 return FenValue.FromObject(p);
             })));
@@ -97,6 +110,19 @@ namespace FenBrowser.FenEngine.WebAPIs
         // Default to a privacy-preserving approximate location (city center, not exact)
         private static bool _permissionGranted = false;
         
+        private static void TryInvokeCallback(FenValue callback, FenValue[] args, string operation)
+        {
+            if (!callback.IsFunction) return;
+            try
+            {
+                callback.AsFunction().Invoke(args, null);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[GeolocationAPI] {operation} callback failed: {ex.Message}", LogCategory.JavaScript);
+            }
+        }
+
         public static FenObject CreateGeolocationObject()
         {
             var geo = new FenObject();
@@ -116,8 +142,8 @@ namespace FenBrowser.FenEngine.WebAPIs
                         var error = new FenObject();
                         error.Set("code", FenValue.FromNumber(1)); // PERMISSION_DENIED
                         error.Set("message", FenValue.FromString("Geolocation permission denied"));
-                        try { errorCallback.AsFunction().Invoke(new[] { FenValue.FromObject(error) }, null); }
-                        catch { }
+                        TryInvokeCallback(errorCallback, new[] { FenValue.FromObject(error) }, "getCurrentPosition.error");
+                        // callback faults are non-fatal but logged via TryInvokeHandler
                     }
                     return FenValue.Undefined;
                 }
@@ -136,8 +162,8 @@ namespace FenBrowser.FenEngine.WebAPIs
                     var position = new FenObject();
                     position.Set("coords", FenValue.FromObject(coords));
                     position.Set("timestamp", FenValue.FromNumber(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
-                    try { successCallback.AsFunction().Invoke(new[] { FenValue.FromObject(position) }, null); }
-                    catch { }
+                    TryInvokeCallback(successCallback, new[] { FenValue.FromObject(position) }, "getCurrentPosition.success");
+                    // callback faults are non-fatal but logged via helper wrappers
                 }
                 return FenValue.Undefined;
             })));
@@ -178,7 +204,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             // Static property: Notification.permission
             notifConstructor.Set("permission", FenValue.FromString(_permission));
             
-            // Static method: Notification.requestPermission() — returns Promise<string> per spec
+            // Static method: Notification.requestPermission() â€” returns Promise<string> per spec
             notifConstructor.Set("requestPermission", FenValue.FromFunction(new FenFunction("requestPermission",
                 (args, thisVal) =>
             {
@@ -270,7 +296,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             clipboard.Set("readText", FenValue.FromFunction(new FenFunction("readText",
                 (args, thisVal) =>
             {
-                // Returns Promise<string> — empty for privacy
+                // Returns Promise<string> â€” empty for privacy
                 return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromString("")));
             })));
 
@@ -284,7 +310,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             clipboard.Set("read", FenValue.FromFunction(new FenFunction("read",
                 (args, thisVal) =>
             {
-                // Returns Promise<ClipboardItem[]> — empty for privacy
+                // Returns Promise<ClipboardItem[]> â€” empty for privacy
                 var arr = new FenObject();
                 arr.Set("length", FenValue.FromNumber(0));
                 return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(arr)));
@@ -294,3 +320,4 @@ namespace FenBrowser.FenEngine.WebAPIs
         }
     }
 }
+
