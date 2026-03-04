@@ -12,6 +12,18 @@ namespace FenBrowser.FenEngine.Scripting
 {
     public sealed partial class JavaScriptEngine
     {
+        private static void TryLogDomDebug(string message, LogCategory category = LogCategory.DOM)
+        {
+            try { FenLogger.Debug(message, category); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[JavaScriptEngine.Dom] Debug log failed: {ex.Message}"); }
+        }
+
+        private static void TryLogDomWarn(string message, LogCategory category = LogCategory.DOM)
+        {
+            try { FenLogger.Warn(message, category); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[JavaScriptEngine.Dom] Warn log failed: {ex.Message}"); }
+        }
+
         // --------------------------- Document / Element bridge (minimal) ---------------------------
 
 
@@ -251,7 +263,7 @@ namespace FenBrowser.FenEngine.Scripting
                         _e._pendingMutations.Add(new MutationRecord { Type = MutationRecordType.ChildList, AddedNodes = new System.Collections.Generic.List<Node> { j._node }, RemovedNodes = new System.Collections.Generic.List<Node>() });
                     }
                 }
-                catch { }
+                catch (Exception ex) { TryLogDomWarn($"[JsDocument] appendChild mutation queue failed: {ex.Message}"); }
                 _e.RequestRepaint();
             }
 
@@ -275,7 +287,7 @@ namespace FenBrowser.FenEngine.Scripting
                         _e.RequestRepaint();
                     }
                 }
-                catch { }
+                catch (Exception ex) { TryLogDomWarn($"[JsDocument] removeChild failed: {ex.Message}"); }
             }
 
             // IObject implementation for runtime property access
@@ -285,7 +297,7 @@ namespace FenBrowser.FenEngine.Scripting
                 switch (key)
                 {
                     case "addEventListener": 
-                        try { FenLogger.Debug("[JsDocument] Get addEventListener", LogCategory.JavaScript); } catch { }
+                        TryLogDomDebug("[JsDocument] Get addEventListener", LogCategory.JavaScript);
                         return FenValue.FromFunction(new FenFunction("addEventListener", _e.AddEventListenerNative));
                     case "removeEventListener":
                         return FenValue.FromFunction(new FenFunction("removeEventListener", _e.RemoveEventListenerNative));
@@ -468,14 +480,14 @@ namespace FenBrowser.FenEngine.Scripting
                                     var code = s.CollectText();
                                     if (!string.IsNullOrWhiteSpace(code))
                                     {
-                                        try { _e.RunInline(code, new JsContext { BaseUri = _e._ctx?.BaseUri }); } catch { }
+                                        try { _e.RunInline(code, new JsContext { BaseUri = _e._ctx?.BaseUri }); } catch (Exception ex) { TryLogDomWarn($"[JsDomElement] inline script execution failed: {ex.Message}"); }
                                     }
                                 }
                             }
-                            catch { }
+                            catch (Exception ex) { TryLogDomWarn($"[JsDomElement] inline script scan failed: {ex.Message}"); }
                         }
                     }
-                    catch { }
+                    catch (Exception ex) { TryLogDomWarn($"[JsDomElement] innerHTML parsing/apply failed: {ex.Message}"); }
                     _e.RequestRepaint();
                 }
             }
@@ -544,14 +556,14 @@ namespace FenBrowser.FenEngine.Scripting
                     }
                     _e.RequestRepaint();
                 }
-                catch { }
+                catch (Exception ex) { TryLogDomWarn($"[JsDomElement] insertAdjacentHTML failed: {ex.Message}"); }
             }
 
             public void setAttribute(string name, string value)
             {
                 if (!_e.SandboxAllows(SandboxFeature.DomMutation, "element.setAttribute")) return;
                 if (string.IsNullOrWhiteSpace(name)) return;
-                try { FenLogger.Debug($"[JsDomElement] setAttribute {name}='{value}' on {_node.NodeName}", LogCategory.DOM); } catch {}
+                TryLogDomDebug($"[JsDomElement] setAttribute {name}='{value}' on {_node.NodeName}", LogCategory.DOM);
                 if (_node is Element el) el.SetAttribute(name, value);
                 try
                 {
@@ -560,7 +572,7 @@ namespace FenBrowser.FenEngine.Scripting
                         _e._pendingMutations.Add(new MutationRecord { Type = MutationRecordType.Attributes, AttributeName = name, Target = _node });
                     }
                 }
-                catch { }
+                catch (Exception ex) { TryLogDomWarn($"[JsDomElement] setAttribute mutation queue failed: {ex.Message}"); }
                 _e.RequestRepaint();
             }
 
@@ -581,7 +593,7 @@ namespace FenBrowser.FenEngine.Scripting
                     var name = j._node.IsText() ? "#text" : (j._node is Element nodeEl ? (nodeEl.Id != null ? "#" + nodeEl.Id : nodeEl.NodeName) : j._node.NodeName);
                     lock (_e._mutationLock) { _e._pendingMutations.Add(new MutationRecord { Type = MutationRecordType.ChildList, AddedNodes = new System.Collections.Generic.List<Node> { j._node }, RemovedNodes = new System.Collections.Generic.List<Node>() }); }
                 }
-                catch { }
+                catch (Exception ex) { TryLogDomWarn($"[JsDomElement] appendChild mutation queue failed: {ex.Message}"); }
                 _e.RequestRepaint();
             }
 
@@ -615,7 +627,7 @@ namespace FenBrowser.FenEngine.Scripting
                     var name = j._node.IsText() ? (j._node.TextContent ?? "") : (j._node is Element je ? (je.Id != null ? "#" + je.Id : je.NodeName) : j._node.NodeName);
                     lock (_e._mutationLock) { _e._pendingMutations.Add(new MutationRecord { Type = MutationRecordType.ChildList, AddedNodes = new System.Collections.Generic.List<Node>(), RemovedNodes = new System.Collections.Generic.List<Node> { j._node } }); }
                 }
-                catch { }
+                catch (Exception ex) { TryLogDomWarn($"[JsDomElement] removeChild mutation queue failed: {ex.Message}"); }
                 _e.RequestRepaint();
             }
 
@@ -677,11 +689,11 @@ namespace FenBrowser.FenEngine.Scripting
                     {
                         foreach (var attr in el.Attributes)
                         {
-                            try { c.SetAttribute(attr.Name, attr.Value); } catch {}
+                            try { c.SetAttribute(attr.Name, attr.Value); } catch (Exception ex) { TryLogDomWarn($"[JsDomElement] CloneTree attribute copy failed: {ex.Message}"); }
                         }
                     }
                     }
-                    catch { }
+                    catch (Exception ex) { TryLogDomWarn($"[JsDomElement] CloneTree attribute iteration failed: {ex.Message}"); }
                     try
                     {
                         for (int i = 0; i < el.ChildNodes.Length; i++)
@@ -690,7 +702,7 @@ namespace FenBrowser.FenEngine.Scripting
                             if (childClone != null) c.AppendChild(childClone);
                         }
                     }
-                    catch { }
+                    catch (Exception ex) { TryLogDomWarn($"[JsDomElement] CloneTree child cloning failed: {ex.Message}"); }
                     return c;
                 }
                 return null;
@@ -703,7 +715,7 @@ namespace FenBrowser.FenEngine.Scripting
                 {
                     for (int i = 0; i < n.ChildNodes.Length; i++) if (n.ChildNodes[i] is Element el) SerializeNode(el, sb);
                 }
-                catch { }
+                catch (Exception ex) { TryLogDomWarn($"[JsDomElement] SerializeChildren failed: {ex.Message}"); }
                 return sb.ToString();
             }
 
@@ -722,7 +734,7 @@ namespace FenBrowser.FenEngine.Scripting
                         sb.Append(' ').Append(original).Append('=').Append('"').Append(EscapeHtml(attr.Value ?? "")).Append('"');
                     }
                 }
-                catch { }
+                catch (Exception ex) { TryLogDomWarn($"[JsDomElement] SerializeNode attribute write failed: {ex.Message}"); }
                 if (IsVoidTag(tag)) { sb.Append('/').Append('>'); return; }
                 sb.Append('>');
                 if (string.Equals(tag, "script", StringComparison.OrdinalIgnoreCase) ||
@@ -738,7 +750,7 @@ namespace FenBrowser.FenEngine.Scripting
                             else if (ch is Element el) SerializeNode(el, sb);
                         }
                     }
-                    catch { }
+                    catch (Exception ex) { TryLogDomWarn($"[JsDomElement] SerializeNode script/style/textarea content failed: {ex.Message}"); }
                     sb.Append('<').Append('/').Append(tag).Append('>');
                     return;
                 }
@@ -795,7 +807,7 @@ namespace FenBrowser.FenEngine.Scripting
                     var body = (root as ContainerNode)?.Descendants().OfType<Element>().FirstOrDefault(e => string.Equals(e.NodeName, "body", StringComparison.OrdinalIgnoreCase));
                     if (body != null) flipClass(body);
                 }
-                catch { }
+                catch (Exception ex) { TryLogDomWarn($"[JsDomElement] applyJsEnabledClass failed: {ex.Message}"); }
 
                 self.RequestRepaint();
             }
@@ -874,7 +886,7 @@ namespace FenBrowser.FenEngine.Scripting
                         catch { return FenValue.Null; }
                     }));
                     case "addEventListener": 
-                        try { FenLogger.Debug("[JsDomElement] Get addEventListener", LogCategory.JavaScript); } catch { }
+                        TryLogDomDebug("[JsDomElement] Get addEventListener", LogCategory.JavaScript);
                         return FenValue.FromFunction(new FenFunction("addEventListener", _e.AddEventListenerNative));
                     case "removeEventListener":
                         return FenValue.FromFunction(new FenFunction("removeEventListener", _e.RemoveEventListenerNative));
@@ -995,7 +1007,7 @@ namespace FenBrowser.FenEngine.Scripting
                              _node.AppendChild(ch.CloneNode(true));
                          }
                          _e.RequestRepaint();
-                     } catch {}
+                     } catch (Exception ex) { TryLogDomWarn($"[JsDomShadowRoot] Set innerHTML failed: {ex.Message}"); }
                 }
             }
 
@@ -1032,7 +1044,7 @@ namespace FenBrowser.FenEngine.Scripting
             public void setProperty(string name, string value)
             {
                 if (string.IsNullOrWhiteSpace(name)) return;
-                try { FenLogger.Debug($"[JsCssDeclaration] setProperty {name}='{value}'", LogCategory.DOM); } catch {}
+                TryLogDomDebug($"[JsCssDeclaration] setProperty {name}='{value}'", LogCategory.DOM);
                 var current = cssText;
                 var styles = ParseStyles(current);
                 styles[name] = value ?? "";
@@ -1257,6 +1269,7 @@ namespace FenBrowser.FenEngine.Scripting
         }
     }
 }
+
 
 
 
