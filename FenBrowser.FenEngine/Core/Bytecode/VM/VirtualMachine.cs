@@ -1502,7 +1502,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
                                 else
                                 {
-                                    throw new NotSupportedException("VM Error: Bytecode-only mode does not support AST-backed function calls.");
+                                    throw new FenTypeError("TypeError: AST-backed function calls are not supported in bytecode-only mode.");
                                 }
                                 break;
                             }
@@ -1560,7 +1560,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
                                 else
                                 {
-                                    throw new NotSupportedException("VM Error: Bytecode-only mode does not support AST-backed function calls.");
+                                    throw new FenTypeError("TypeError: AST-backed function calls are not supported in bytecode-only mode.");
                                 }
                                 break;
                             }
@@ -1620,7 +1620,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
                                 else
                                 {
-                                    throw new NotSupportedException("VM Error: Bytecode-only mode does not support AST-backed function calls.");
+                                    throw new FenTypeError("TypeError: AST-backed function calls are not supported in bytecode-only mode.");
                                 }
                                 break;
                             }
@@ -1673,7 +1673,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
                                 else
                                 {
-                                    throw new NotSupportedException("VM Error: Bytecode-only mode does not support AST-backed function calls.");
+                                    throw new FenTypeError("TypeError: AST-backed function calls are not supported in bytecode-only mode.");
                                 }
                                 break;
                             }
@@ -1748,7 +1748,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
                                 else
                                 {
-                                    throw new NotSupportedException("VM Error: Bytecode-only mode does not support AST-backed constructor calls.");
+                                    throw new FenTypeError("TypeError: AST-backed constructor calls are not supported in bytecode-only mode.");
                                 }
                                 break;
                             }
@@ -1809,7 +1809,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
                                 else
                                 {
-                                    throw new NotSupportedException("VM Error: Bytecode-only mode does not support AST-backed constructor calls.");
+                                    throw new FenTypeError("TypeError: AST-backed constructor calls are not supported in bytecode-only mode.");
                                 }
                                 break;
                             }

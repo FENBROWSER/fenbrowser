@@ -853,3 +853,14 @@
 - Verification:
   - Live scan verification: `BytecodeCompiler.cs` contains `0` `NotImplementedException` occurrences.
   - Full `FenBrowser.Tests` snapshot: `978` passed, `0` failed.
+
+## Recheck Pass 31 (2026-03-04, VM bytecode-only call/construct error typing)
+- Focus area: critical audit finding on VM AST-backed call/construct hard-fail paths in bytecode-only mode.
+- Files hardened:
+  - FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs
+- Changes:
+  - Replaced VM `NotSupportedException` throws for AST-backed function/constructor execution in bytecode-only mode with typed `FenTypeError`.
+  - Error messages now use JS-facing `TypeError` semantics instead of host-level unsupported-operation exceptions.
+- Verification:
+  - Live scan verification: `VirtualMachine.cs` contains `0` AST-backed `NotSupportedException` throw sites.
+  - Full `FenBrowser.Tests` snapshot: `978` passed, `0` failed.
