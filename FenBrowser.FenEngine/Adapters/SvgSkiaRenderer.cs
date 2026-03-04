@@ -285,10 +285,11 @@ namespace FenBrowser.FenEngine.Adapters
             {
                 // Regex to find tags and their interior content
                 // <tag attr="val" attr2="val2">
-                return System.Text.RegularExpressions.Regex.Replace(svgContent, @"<([a-zA-Z0-9_\-]+)\s+([^>]+)>", m =>
+                return System.Text.RegularExpressions.Regex.Replace(svgContent, @"<([a-zA-Z0-9_\-]+)\s+([^>]*?)(/?)>", m =>
                 {
                     string tagName = m.Groups[1].Value;
                     string attrsArea = m.Groups[2].Value;
+                    string selfClose = m.Groups[3].Value;
 
                     // Regex to match individual attributes: attr="val" or attr='val' or attr=val
                     var attrMatches = System.Text.RegularExpressions.Regex.Matches(attrsArea, 
@@ -310,7 +311,8 @@ namespace FenBrowser.FenEngine.Adapters
                     // Note: This might strip non-attribute junk inside the tag, which is usually fine for SVGs.
                     if (uniqueAttrs.Count > 0)
                     {
-                        return $"<{tagName} {string.Join(" ", uniqueAttrs)}>";
+                        var closeSuffix = string.IsNullOrEmpty(selfClose) ? ">" : "/>";
+                        return $"<{tagName} {string.Join(" ", uniqueAttrs)}{closeSuffix}";
                     }
 
                     return m.Value; // No attributes found or parsing failure, return as is
@@ -323,3 +325,5 @@ namespace FenBrowser.FenEngine.Adapters
         }
     }
 }
+
+

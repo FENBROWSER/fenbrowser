@@ -728,3 +728,21 @@
   - Targeted tests passed (2/2):
     - StopPropagation_HaltsBubbling
     - StopImmediatePropagation_PreventsSameElementListeners
+## Recheck Pass 22 (2026-03-04, multi-cluster stabilization)
+- Focus area: reduce flake/regression clusters across event invariants, observer callbacks, inline layout whitespace, preload metrics accounting, and SVG XML normalization.
+- Files hardened:
+  - FenBrowser.Core/Network/ResourcePrefetcher.cs
+  - FenBrowser.FenEngine/Layout/InlineLayoutComputer.cs
+  - FenBrowser.FenEngine/Observers/ObserverCoordinator.cs
+  - FenBrowser.FenEngine/Adapters/SvgSkiaRenderer.cs
+  - FenBrowser.Tests/Core/EventInvariantTests.cs
+  - FenBrowser.Tests/Engine/LayoutFidelityTests.cs
+- Changes:
+  - Fixed preload stats double-counting (`pending` now excludes queued-only entries).
+  - Fixed IFC whitespace-only node detection (`words.All(string.IsNullOrEmpty)`) so strut height is preserved on empty/space lines.
+  - Made observer callback dispatch robust to leaked non-JS phases by switching to JSExecution during callback drain and restoring prior phase.
+  - Preserved self-closing SVG tags during deduplication to prevent malformed XML rewriting.
+  - Removed file-append contention from EventInvariant test and aligned mixed-font baseline test with DOM V2 child-node semantics.
+- Verification:
+  - Targeted failures reduced to 1/6 (SVG visible-pixels assertion still pending).
+  - Full FenBrowser.Tests snapshot improved to 967 passed, 7 failed.

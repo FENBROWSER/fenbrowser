@@ -189,7 +189,7 @@ namespace FenBrowser.Tests.Engine
             
             Assert.True(result.Metrics.ContentHeight >= 40);
             
-            var firstTextNode = span.Children[0];
+            var firstTextNode = span.ChildNodes[0];
             var lines = result.TextLines[firstTextNode];
             var line = lines[0];
             
@@ -305,3 +305,4 @@ namespace FenBrowser.Tests.Engine
         }
     }
 }
+

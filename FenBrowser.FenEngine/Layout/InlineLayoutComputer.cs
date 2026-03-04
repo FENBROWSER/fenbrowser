@@ -875,7 +875,7 @@ namespace FenBrowser.FenEngine.Layout
                     bool nowrap = (style?.WhiteSpace?.ToLowerInvariant() == "nowrap");
 
                     // If it's pure whitespace, we still need it to contribute to line height
-                    if (words.Length == 0 || (words.Length == 1 && string.IsNullOrEmpty(words[0])))
+                    if (words.Length == 0 || words.All(string.IsNullOrEmpty))
                     {
                         // Add a virtual space item to ensure the line has height
                         currentLineItems.Add(new LineItem
@@ -1109,5 +1109,6 @@ namespace FenBrowser.FenEngine.Layout
         }
     }
 }
+
 
 
