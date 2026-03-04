@@ -694,3 +694,14 @@
     - ExecuteSimple_CompileUnsupported_ReturnsBytecodeOnlyError
     - Bytecode_WithStatement_ShouldResolveObjectBackedNames
   - Full FenBrowser.Tests current snapshot: 959 passed, 15 failed.
+
+## Recheck Pass 19 (2026-03-04, Yield completion semantics)
+- Focus area: bytecode yield expression correctness outside generator wrappers.
+- Files hardened:
+  - FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs
+- Changes:
+  - Updated OpCode.Yield handling to return the yielded value directly while still setting generator suspension flags.
+  - Preserved GeneratorObject.Next behavior by retaining _generatorYielded/_generatorYieldValue signaling.
+- Verification:
+  - Targeted tests passed (5/5): yield + generator + with/compile contract checks.
+  - Full FenBrowser.Tests current snapshot: 962 passed, 12 failed.

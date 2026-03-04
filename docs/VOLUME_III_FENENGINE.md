@@ -2439,3 +2439,10 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
 - Verification:
   - Targeted compile-unsupported/with tests: 2/2 passed.
   - Full FenBrowser.Tests: 959 passed / 15 failed.
+
+### 2.24 Runtime Hardening (2026-03-04, Wave 20)
+- Core/Bytecode/VM/VirtualMachine.cs
+  - Adjusted OpCode.Yield to return yielded value directly for direct bytecode evaluation while preserving generator suspension state semantics.
+- Verification:
+  - Targeted yield/generator tests passed.
+  - Full FenBrowser.Tests: 962 passed / 12 failed.

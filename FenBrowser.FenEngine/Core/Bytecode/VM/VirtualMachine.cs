@@ -2406,12 +2406,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                             }
                             case OpCode.Yield:
                             {
-                                // Suspend the generator: pop the yielded value and signal RunLoop to exit.
+                                // Suspend execution and expose yielded value to the caller.
+                                // GeneratorObject.Next() still uses _generatorYielded/_generatorYieldValue,
+                                // while direct bytecode evaluation receives the yielded value directly.
                                 var yieldedValue = _stack[--_sp];
                                 _generatorYielded = true;
                                 _generatorYieldValue = yieldedValue;
-                                // Return undefined as a sentinel; GeneratorObject.Next() reads _generatorYielded
-                                return FenValue.Undefined;
+                                return yieldedValue;
                             }
                             case OpCode.Halt:
                             {
