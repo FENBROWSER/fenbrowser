@@ -941,3 +941,26 @@ Verification:
 - Verification:
   - Build: `FenBrowser.FenEngine` + `FenBrowser.Tests` compile clean.
   - Targeted tests: `BytecodeExecutionTests`, `JsParserReproTests`, `FenRuntimeBytecodeExecutionTests` => `137/137` pass.
+
+## Remediation Checkpoint - 2026-03-05 (In-Progress Hardening)
+
+### Changes Applied
+- Fixed malformed runtime edits and restored stable compile path for:
+  - `Core/FenRuntime.cs` object boxing branches (`Boolean`, `BigInt`, `Symbol`) and global `this` aliasing.
+  - `Core/FenValue.cs` string coercion handling for `Symbol` and stricter `ToPrimitive` behavior.
+  - `Core/FenEnvironment.cs` expanded `with` unscopables key resolution (`@@Symbol.unscopables` included).
+  - `Core/Bytecode/VM/VirtualMachine.cs` additive operator coercion ordering and symbol rejection path.
+
+### Validation Snapshot
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests|FullyQualifiedName~FenBrowser.Tests.Engine.JsParserReproTests|FullyQualifiedName~FenBrowser.Tests.Engine.FenRuntimeBytecodeExecutionTests"`: pass (137/137).
+- Test262 focused categories (current):
+  - `language/expressions/addition`: 32/48 passed.
+  - `language/expressions/template-literal`: 40/57 passed.
+  - `language/statements/with`: 76/181 passed.
+
+### Remaining Hard Gaps (Next)
+- Symbol-keyed property plumbing for `[Symbol.toPrimitive]`/`[Symbol.unscopables]` behavior consistency.
+- Template literal cook/raw escape fidelity (including null-char and TV/raw tracking semantics).
+- `with` environment proxy traps, assignment routing, and strict-mode SyntaxError enforcement parity.
+- Function/date/stringification parity for additive coercion edge cases.

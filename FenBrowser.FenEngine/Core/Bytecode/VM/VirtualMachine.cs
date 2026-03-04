@@ -3074,10 +3074,16 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             var ap = left.IsObject || left.IsFunction ? left.ToPrimitive(null, "default") : left;
             var bp = right.IsObject || right.IsFunction ? right.ToPrimitive(null, "default") : right;
 
+
             // String concatenation path is selected before numeric/BigInt addition.
             if (ap.IsString || bp.IsString)
             {
                 return FenValue.FromString(ap.AsString() + bp.AsString());
+            }
+
+            if (ap.IsSymbol || bp.IsSymbol)
+            {
+                throw new FenTypeError("TypeError: Cannot convert a Symbol value to a number");
             }
 
             // BigInt addition requires both operands to be BigInt.
@@ -3172,6 +3178,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         }
     }
 }
+
 
 
 

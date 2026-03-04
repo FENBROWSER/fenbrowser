@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Core.Types;
+using FenBrowser.FenEngine.Errors;
 
 namespace FenBrowser.FenEngine.Core
 {
@@ -240,6 +241,8 @@ namespace FenBrowser.FenEngine.Core
                     if (double.IsNegativeInfinity(_numberValue)) return "-Infinity";
                     return NumberToJsString(_numberValue);
                 case Interfaces.ValueType.Boolean: return _numberValue != 0 ? "true" : "false";
+                case Interfaces.ValueType.Symbol:
+                    throw new FenTypeError("TypeError: Cannot convert a Symbol value to a string");
                 case Interfaces.ValueType.Null: return "null";
                 case Interfaces.ValueType.Undefined: return "undefined";
                 case Interfaces.ValueType.Object:
@@ -291,29 +294,44 @@ namespace FenBrowser.FenEngine.Core
         /// </summary>
         public FenValue ToPrimitive(IExecutionContext context, string preferredType = "number")
         {
-            // Primitives return themselves
+            // Primitives return themselves.
             if (Type != Interfaces.ValueType.Object && Type != Interfaces.ValueType.Function)
                 return this;
 
             var obj = AsObject();
             if (obj == null) return this;
 
-            // ES2015: Check for [Symbol.toPrimitive] method first
-            var toPrimMethod = obj.Get("@@toPrimitive", context);
-            if (!toPrimMethod.IsUndefined && toPrimMethod.IsFunction)
+            // ES2015+: check @@toPrimitive first (multiple internal key encodings in this runtime).
+            FenValue toPrimMethod = obj.Get("@@toPrimitive", context);
+            if (toPrimMethod.IsUndefined) toPrimMethod = obj.Get("Symbol.toPrimitive", context);
+            if (toPrimMethod.IsUndefined) toPrimMethod = obj.Get("@@Symbol.toPrimitive", context);
+            if (toPrimMethod.IsUndefined) toPrimMethod = obj.Get("Symbol(Symbol.toPrimitive)", context);
+
+            if (!toPrimMethod.IsUndefined)
             {
+                if (!toPrimMethod.IsFunction)
+                    throw new FenTypeError("TypeError: @@toPrimitive is not a function");
+
                 var hint = FromString(preferredType == "string" ? "string" : preferredType == "number" ? "number" : "default");
-                // Set this binding to the object being converted
-                FenValue oldThis1 = Undefined;
-                if (context != null) { oldThis1 = context.ThisBinding; context.ThisBinding = FromObject(obj); }
-                var result = toPrimMethod.AsFunction().Invoke(new FenValue[] { hint }, context);
-                if (context != null) context.ThisBinding = oldThis1;
-                if (result.Type != Interfaces.ValueType.Object && result.Type != Interfaces.ValueType.Function)
-                    return result;
-                // If result is still an object, TypeError — but we fallthrough for safety
+                FenValue oldThis = Undefined;
+                if (context != null)
+                {
+                    oldThis = context.ThisBinding;
+                    context.ThisBinding = FromObject(obj);
+                }
+
+                var primResult = toPrimMethod.AsFunction().Invoke(new FenValue[] { hint }, context);
+
+                if (context != null)
+                    context.ThisBinding = oldThis;
+
+                if (primResult.Type != Interfaces.ValueType.Object && primResult.Type != Interfaces.ValueType.Function)
+                    return primResult;
+
+                throw new FenTypeError("TypeError: Cannot convert object to primitive value");
             }
 
-            // For date objects, prefer string
+            // Date defaults to string hint for OrdinaryToPrimitive.
             if (obj is FenObject fenObj && fenObj.InternalClass == "Date")
                 preferredType = "string";
 
@@ -324,39 +342,33 @@ namespace FenBrowser.FenEngine.Core
             foreach (var methodName in tryOrder)
             {
                 var method = obj.Get(methodName, context);
-                if (method.IsFunction)
+                if (!method.IsFunction) continue;
+
+                FenValue oldThis = Undefined;
+                IExecutionContext invokeCtx = context;
+                if (context != null)
                 {
-                    // Set this binding to the object being converted.
-                    // Always ensure ThisBinding is set (even when context is null) so that
-                    // toString/valueOf methods inside the object can access 'this' correctly.
-                    FenValue oldThis = Undefined;
-                    IExecutionContext invokeCtx = context;
-                    if (context != null)
-                    {
-                        oldThis = context.ThisBinding;
-                        context.ThisBinding = FromObject(obj);
-                    }
-                    else
-                    {
-                        // No outer context — create a minimal one so 'this' is set correctly
-                        invokeCtx = new FenBrowser.FenEngine.Core.ExecutionContext
-                        {
-                            ThisBinding = FromObject(obj)
-                        };
-                    }
-                    var result = method.AsFunction().Invoke(new FenValue[0], invokeCtx);
-                    if (context != null) context.ThisBinding = oldThis;
-                    // Check if result is primitive
-                    if (result.Type != Interfaces.ValueType.Object && result.Type != Interfaces.ValueType.Function)
-                        return result;
+                    oldThis = context.ThisBinding;
+                    context.ThisBinding = FromObject(obj);
                 }
+                else
+                {
+                    invokeCtx = new FenBrowser.FenEngine.Core.ExecutionContext
+                    {
+                        ThisBinding = FromObject(obj)
+                    };
+                }
+
+                var result = method.AsFunction().Invoke(Array.Empty<FenValue>(), invokeCtx);
+
+                if (context != null)
+                    context.ThisBinding = oldThis;
+
+                if (result.Type != Interfaces.ValueType.Object && result.Type != Interfaces.ValueType.Function)
+                    return result;
             }
 
-            // TypeError in spec when no primitive conversion path exists. In this runtime,
-            // return a stable object-string primitive so string contexts (template literals,
-            // concatenation) remain deterministic and do not degrade into NaN.
-            var fallbackClass = (obj as FenObject)?.InternalClass ?? "Object";
-            return FromString($"[object {fallbackClass}]");
+            throw new FenTypeError("TypeError: Cannot convert object to primitive value");
         }
 
         /// <summary>
@@ -592,4 +604,5 @@ namespace FenBrowser.FenEngine.Core
         }
     }
 }
+
 
