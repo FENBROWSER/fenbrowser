@@ -829,3 +829,16 @@
 - Verification:
   - Targeted test suite passed:
     - `FenBrowser.Tests.Rendering.BrowserEngineTests` (`4/4`).
+
+## Recheck Pass 29 (2026-03-04, object-to-primitive fallback determinism)
+- Focus area: template literal object interpolation regression (`obj: NaN` instead of object tag string).
+- Files hardened:
+  - FenBrowser.FenEngine/Core/FenValue.cs
+- Changes:
+  - Updated `FenValue.ToPrimitive(...)` terminal fallback path.
+  - Removed `NaN` fallback for unresolved object primitive conversion.
+  - Added deterministic object-tag string fallback (`[object <InternalClass>]`) to preserve stable behavior in string contexts (template literals/concatenation).
+- Verification:
+  - Targeted test passed:
+    - `TemplateLiteralTests.TemplateWithComplexExpression_ObjectLiteral`
+  - Full `FenBrowser.Tests` snapshot: `978` passed, `0` failed.
