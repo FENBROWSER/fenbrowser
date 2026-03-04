@@ -2454,3 +2454,12 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
 - Verification:
   - Targeted EventInvariant test passed.
   - Full FenBrowser.Tests latest run: 961 passed / 13 failed.
+### 2.26 Runtime Hardening (2026-03-04, Wave 22)
+- DOM/EventTarget.cs
+  - Hardened external listener bridge invocation to require an active execution environment (`env != null`) before using static bridge hooks.
+  - Prevented stale static bridge delegates from interfering with pure engine dispatch paths (tests and headless contexts without runtime env).
+  - Preserved post-dispatch propagation flags by removing unconditional `evt.ClearPropagationFlags()` from finalization.
+- Verification:
+  - Targeted propagation tests passed:
+    - StopPropagation_HaltsBubbling
+    - StopImmediatePropagation_PreventsSameElementListeners

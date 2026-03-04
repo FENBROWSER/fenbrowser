@@ -105,14 +105,15 @@ namespace FenBrowser.FenEngine.DOM
             evt.Path.Add(target);
             evt.Path.AddRange(path);
 
-            var documentTarget = ResolveDocumentTarget != null ? ResolveDocumentTarget(target) : null;
-            var windowTarget = ResolveWindowTarget != null ? ResolveWindowTarget(target) : null;
+            var useExternalInvoker = ExternalListenerInvoker != null && env != null;
+            var documentTarget = useExternalInvoker && ResolveDocumentTarget != null ? ResolveDocumentTarget(target) : null;
+            var windowTarget = useExternalInvoker && ResolveWindowTarget != null ? ResolveWindowTarget(target) : null;
 
             // 3. CAPTURING PHASE (Root -> Parent)
             evt.EventPhase = DomEvent.CAPTURING_PHASE;
             if (!evt.PropagationStopped)
             {
-                if (ExternalListenerInvoker != null)
+                if (useExternalInvoker)
                 {
                     if (windowTarget != null) { SetLegacyEventForTopLevel(); ExternalListenerInvoker(windowTarget, evt, context, true, false); }
                     if (!evt.PropagationStopped && documentTarget != null) { SetLegacyEventForTopLevel(); ExternalListenerInvoker(documentTarget, evt, context, true, false); }
@@ -131,7 +132,7 @@ namespace FenBrowser.FenEngine.DOM
                 evt.CurrentTarget = ancestor;
                 evt.UpdateJsProperties(context);
                 SetLegacyEventForElement(ancestor); InvokeListeners(ancestor, evt, context, true);
-                if (!evt.PropagationStopped && ExternalListenerInvoker != null)
+                if (!evt.PropagationStopped && useExternalInvoker)
                 {
                     SetLegacyEventForElement(ancestor); ExternalListenerInvoker(ancestor, evt, context, true, false);
                 }
@@ -147,13 +148,13 @@ namespace FenBrowser.FenEngine.DOM
                 // In practice, browsers usually fire capture listeners then bubble listeners (or insertion order).
                 // We will fire Capture first, then Bubble.
                 SetLegacyEventForElement(target); InvokeListeners(target, evt, context, true);  // Capture listeners at target
-                if (!evt.PropagationStopped && ExternalListenerInvoker != null)
+                if (!evt.PropagationStopped && useExternalInvoker)
                 {
                     SetLegacyEventForElement(target); ExternalListenerInvoker(target, evt, context, true, true);
                 }
 
                 SetLegacyEventForElement(target); InvokeListeners(target, evt, context, false); // Bubble listeners at target
-                if (!evt.PropagationStopped && ExternalListenerInvoker != null)
+                if (!evt.PropagationStopped && useExternalInvoker)
                 {
                     SetLegacyEventForElement(target); ExternalListenerInvoker(target, evt, context, false, true);
                 }
@@ -170,7 +171,7 @@ namespace FenBrowser.FenEngine.DOM
                     evt.CurrentTarget = ancestor;
                     evt.UpdateJsProperties(context);
                     SetLegacyEventForElement(ancestor); InvokeListeners(ancestor, evt, context, false);
-                    if (!evt.PropagationStopped && ExternalListenerInvoker != null)
+                    if (!evt.PropagationStopped && useExternalInvoker)
                     {
                         SetLegacyEventForElement(ancestor); ExternalListenerInvoker(ancestor, evt, context, false, false);
                     }
@@ -178,7 +179,7 @@ namespace FenBrowser.FenEngine.DOM
 
                 if (!evt.PropagationStopped)
                 {
-                    if (ExternalListenerInvoker != null)
+                    if (useExternalInvoker)
                     {
                         if (documentTarget != null) { SetLegacyEventForTopLevel(); ExternalListenerInvoker(documentTarget, evt, context, false, false); }
                         if (!evt.PropagationStopped && windowTarget != null) { SetLegacyEventForTopLevel(); ExternalListenerInvoker(windowTarget, evt, context, false, false); }
@@ -192,7 +193,6 @@ namespace FenBrowser.FenEngine.DOM
             }
 
             // 6. Reset/Finalize
-            evt.ClearPropagationFlags();
             evt.EventPhase = DomEvent.NONE;
             evt.CurrentTarget = null;
             evt.UpdateJsProperties(context);
@@ -417,10 +417,4 @@ namespace FenBrowser.FenEngine.DOM
         }
     }
 }
-
-
-
-
-
-
 

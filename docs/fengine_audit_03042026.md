@@ -716,3 +716,15 @@
 - Verification:
   - Targeted EventInvariant test passed.
   - Latest full FenBrowser.Tests snapshot in this environment: 961 passed, 13 failed (non-deterministic rendering/layout clusters still pending).
+## Recheck Pass 21 (2026-03-04, DOM propagation dispatch isolation)
+- Focus area: input-event propagation regressions caused by static external listener bridge leakage into env-less dispatch contexts.
+- Files hardened:
+  - FenBrowser.FenEngine/DOM/EventTarget.cs
+- Changes:
+  - Added `useExternalInvoker` gate (`ExternalListenerInvoker != null && env != null`) to isolate bridge invocation to valid runtime environments.
+  - Switched all bridge call sites in capture/target/bubble phases to the new gate.
+  - Removed unconditional propagation-flag clearing at dispatch finalization to preserve observable stop flags after dispatch.
+- Verification:
+  - Targeted tests passed (2/2):
+    - StopPropagation_HaltsBubbling
+    - StopImmediatePropagation_PreventsSameElementListeners
