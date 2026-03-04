@@ -364,15 +364,15 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                               + yOffset
                               + (float)blockBox.Geometry.Padding.Bottom + (float)blockBox.Geometry.Border.Bottom;
             
-            // ICB OVERRIDE: HTML and BODY must be at least viewport height
+            // ICB OVERRIDE: BODY must be at least viewport height
             // This is the Initial Containing Block invariant - required for CSS height chain
             string tag = (blockBox.SourceNode as FenBrowser.Core.Dom.V2.Element)?.TagName?.ToUpperInvariant() ?? "";
-            bool isRootElement = (tag == "HTML" || tag == "BODY");
+            bool isRootElement = (tag == "BODY");
             
-            if (isRootElement && autoHeight < state.ViewportHeight)
+            float rootViewportFallback = Math.Max(state.ViewportHeight, Math.Max(state.AvailableSize.Height, state.ContainingBlockHeight));
+            if (isRootElement && rootViewportFallback > 0 && autoHeight < rootViewportFallback)
             {
-                autoHeight = state.ViewportHeight;
-                System.Console.WriteLine($"[BFC-ICB] <{tag}> auto-height forced to viewport: {state.ViewportHeight}px");
+                autoHeight = rootViewportFallback;
             }
             
             // Check explicit height (px / % / calc)
@@ -695,4 +695,3 @@ namespace FenBrowser.FenEngine.Layout.Contexts
     /// </summary>
 
 }
-

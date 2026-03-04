@@ -107,6 +107,15 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             if (box is BlockBox blockBox)
             {
+                if (box.SourceNode is FenBrowser.Core.Dom.V2.Element rootElement)
+                {
+                    string rootTag = rootElement.TagName?.ToUpperInvariant() ?? string.Empty;
+                    if (rootTag == "HTML" || rootTag == "BODY")
+                    {
+                        return BlockFormattingContext.Instance;
+                    }
+                }
+
                 // Normal block or anonymous block
                 bool hasBlockChildren = false;
                 foreach(var child in blockBox.Children)

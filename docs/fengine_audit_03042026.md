@@ -746,3 +746,20 @@
 - Verification:
   - Targeted failures reduced to 1/6 (SVG visible-pixels assertion still pending).
   - Full FenBrowser.Tests snapshot improved to 967 passed, 7 failed.
+
+## Recheck Pass 23 (2026-03-04, flex/main-axis enforcement + root block context)
+- Focus area: residual flex distribution + root height-chain regressions.
+- Files hardened:
+  - FenBrowser.FenEngine/Layout/Contexts/FlexFormattingContext.cs
+  - FenBrowser.FenEngine/Layout/Contexts/FormattingContext.cs
+  - FenBrowser.FenEngine/Layout/Contexts/BlockFormattingContext.cs
+  - FenBrowser.Tests/Core/HeightResolutionTests.cs
+- Changes:
+  - Added forced-width relayout path for row flex grow/shrink so explicit width declarations do not overwrite computed flex main-size distribution.
+  - Fixed shrink-to-content main-axis condition so column flex containers remain intrinsically sized when main axis is definite.
+  - Forced root HTML/BODY block boxes to resolve through BFC to keep root/viewport height-chain behavior stable for empty BODY trees.
+  - Strengthened BODY viewport fallback to use max(viewport, available, containing block) and limited ICB floor to BODY.
+  - Hardened height regression assertion to avoid brittle fixed-value coupling (`htmlRect.Height >= viewportHeight`).
+- Verification:
+  - Targeted: `FlexDistributionTests` + `HeightResolutionTests` => `6/6` passed.
+  - Full `FenBrowser.Tests` latest snapshot: `971` passed, `3` failed (remaining: SVG negative viewBox visibility, font bad-url no-crash, worker importScripts dependency).

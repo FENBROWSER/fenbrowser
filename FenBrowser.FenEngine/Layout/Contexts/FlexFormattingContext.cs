@@ -62,7 +62,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             bool hasExplicitMainSize = isRow
                 ? (style?.Width.HasValue == true || style?.WidthPercent.HasValue == true || !string.IsNullOrEmpty(style?.WidthExpression))
                 : (style?.Height.HasValue == true || style?.HeightPercent.HasValue == true || !string.IsNullOrEmpty(style?.HeightExpression));
-            bool shrinkToContentMainAxis = mainAxisUnconstrained && !hasExplicitMainSize;
+            bool shrinkToContentMainAxis = !hasExplicitMainSize && (!isRow || mainAxisUnconstrained);
 
             // 2. Collect Flex Items (In-flow children)
             // Anonymous text nodes should be wrapped in anonymous blocks? 
@@ -220,7 +220,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         reState.AvailableSize = new SKSize(item.Geometry.MarginBox.Width, item.Geometry.ContentBox.Height);
                         reState.ContainingBlockWidth = targetWidth;
                         reState.ContainingBlockHeight = item.Geometry.ContentBox.Height;
-                        FormattingContext.Resolve(item).Layout(item, reState);
+                        LayoutWithForcedWidth(item, reState, targetWidth);
                     }
                 }
             }
@@ -305,7 +305,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     reState.AvailableSize = new SKSize(item.Geometry.MarginBox.Width, item.Geometry.ContentBox.Height);
                     reState.ContainingBlockWidth = remainingForItem;
                     reState.ContainingBlockHeight = item.Geometry.ContentBox.Height;
-                    FormattingContext.Resolve(item).Layout(item, reState);
+                    LayoutWithForcedWidth(item, reState, remainingForItem);
 
                     totalMainSize = totalMainSize - currentItemSize + item.Geometry.MarginBox.Width;
                 }
@@ -356,9 +356,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                             var reState = state.Clone();
                             reState.AvailableSize = new SKSize(item.Geometry.MarginBox.Width, item.Geometry.ContentBox.Height);
-                            reState.ContainingBlockWidth = item.Geometry.ContentBox.Width;
+                            reState.ContainingBlockWidth = targetWidth;
                             reState.ContainingBlockHeight = item.Geometry.ContentBox.Height;
-                            FormattingContext.Resolve(item).Layout(item, reState);
+                            LayoutWithForcedWidth(item, reState, targetWidth);
                         }
                         else
                         {
@@ -393,9 +393,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                              var reState = state.Clone();
                              reState.AvailableSize = new SKSize(item.Geometry.MarginBox.Width, item.Geometry.ContentBox.Height);
-                             reState.ContainingBlockWidth = item.Geometry.ContentBox.Width;
+                             reState.ContainingBlockWidth = targetWidth;
                              reState.ContainingBlockHeight = item.Geometry.ContentBox.Height;
-                             FormattingContext.Resolve(item).Layout(item, reState);
+                             LayoutWithForcedWidth(item, reState, targetWidth);
                         }
                         else
                         {
@@ -428,7 +428,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         reState.AvailableSize = new SKSize(item.Geometry.MarginBox.Width, item.Geometry.ContentBox.Height);
                         reState.ContainingBlockWidth = newWidth;
                         reState.ContainingBlockHeight = item.Geometry.ContentBox.Height;
-                        FormattingContext.Resolve(item).Layout(item, reState);
+                        LayoutWithForcedWidth(item, reState, newWidth);
                     }
                 }
             }
@@ -462,7 +462,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     reState.AvailableSize = new SKSize(item.Geometry.MarginBox.Width, item.Geometry.ContentBox.Height);
                     reState.ContainingBlockWidth = targetWidth;
                     reState.ContainingBlockHeight = item.Geometry.ContentBox.Height;
-                    FormattingContext.Resolve(item).Layout(item, reState);
+                    LayoutWithForcedWidth(item, reState, targetWidth);
                 }
             }
              
@@ -1423,7 +1423,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
         }
 
-        private static void LayoutWithForcedHeight(LayoutBox item, LayoutState state, float forcedHeight)
+        private static void LayoutWithForcedWidth(LayoutBox item, LayoutState state, float forcedWidth)
         {
             if (item == null)
             {
@@ -1437,11 +1437,30 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return;
             }
 
-            bool hasExplicitHeight = style.Height.HasValue ||
-                                     style.HeightPercent.HasValue ||
-                                     !string.IsNullOrEmpty(style.HeightExpression);
+            var oldWidth = style.Width;
+            var oldWidthPercent = style.WidthPercent;
+            var oldWidthExpression = style.WidthExpression;
 
-            if (hasExplicitHeight)
+            style.Width = Math.Max(0, forcedWidth);
+            style.WidthPercent = null;
+            style.WidthExpression = null;
+
+            FormattingContext.Resolve(item).Layout(item, state);
+
+            style.Width = oldWidth;
+            style.WidthPercent = oldWidthPercent;
+            style.WidthExpression = oldWidthExpression;
+        }
+
+        private static void LayoutWithForcedHeight(LayoutBox item, LayoutState state, float forcedHeight)
+        {
+            if (item == null)
+            {
+                return;
+            }
+
+            var style = item.ComputedStyle;
+            if (style == null)
             {
                 FormattingContext.Resolve(item).Layout(item, state);
                 return;
