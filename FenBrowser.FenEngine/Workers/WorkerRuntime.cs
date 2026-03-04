@@ -179,28 +179,22 @@ namespace FenBrowser.FenEngine.Workers
                 }
                 _runtime.SetGlobal("self", FenValue.FromObject(_globalScope));
 
-                // Load and execute worker script
-                _ = Task.Run(async () => {
-                    try {
-                        var scriptContent = await LoadWorkerScriptAsync().ConfigureAwait(false);
-
-                        if (!string.IsNullOrEmpty(scriptContent)) {
-                            _taskQueue.Enqueue(() => {
-                                try {
-                                    _runtime.ExecuteSimple(scriptContent);
-                                    FenLogger.Debug($"[WorkerRuntime] Executed script: {_scriptUrl}", LogCategory.JavaScript);
-                                } catch (Exception ex) {
-                                    FenLogger.Error($"[WorkerRuntime] Script execution error: {ex.Message}", LogCategory.Errors);
-                                    OnError?.Invoke(ex);
-                                }
-                            }, TaskSource.Networking, "Worker-ScriptLoad");
-                            _taskSignal.Set();
-                        }
-                    } catch (Exception ex) {
-                        FenLogger.Error($"[WorkerRuntime] Script fetch error: {ex.Message}", LogCategory.Errors);
-                        OnError?.Invoke(ex);
+                // Load and execute the worker bootstrap script deterministically on the worker thread.
+                // This avoids startup races where script fetch/queue can lag behind task-loop polling.
+                try
+                {
+                    var scriptContent = LoadWorkerScriptAsync().GetAwaiter().GetResult();
+                    if (!string.IsNullOrEmpty(scriptContent))
+                    {
+                        _runtime.ExecuteSimple(scriptContent);
+                        FenLogger.Debug($"[WorkerRuntime] Executed script: {_scriptUrl}", LogCategory.JavaScript);
                     }
-                });
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Error($"[WorkerRuntime] Script fetch/execute error: {ex.Message}", LogCategory.Errors);
+                    OnError?.Invoke(ex);
+                }
                 
                 while (_isRunning && !_cts.IsCancellationRequested)
                 {

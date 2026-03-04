@@ -787,3 +787,27 @@
   - Targeted test passed:
     - `FenBrowser.Tests.Rendering.FontTests.LoadFontFaceAsync_BadUrl_DoesNotCrash`
   - Full `FenBrowser.Tests` snapshot: `974` passed, `0` failed.
+
+## Recheck Pass 26 (2026-03-04, image cache native-memory lifecycle hardening)
+- Focus area: audit critical on Skia bitmap lifetime in image-cache eviction/clear paths.
+- Files hardened:
+  - FenBrowser.FenEngine/Rendering/ImageLoader.cs
+- Changes:
+  - Added deferred bitmap-disposal pipeline (`_pendingBitmapDisposals`) with a bounded grace period before native `SKBitmap.Dispose()`.
+  - `ClearCache()` now collects unique cached bitmaps and schedules deferred disposal instead of leaving full release to GC.
+  - `EvictIfNeeded()` now schedules removed entries for deferred disposal after removing cache references.
+- Verification:
+  - Full `FenBrowser.Tests` snapshot: `974` passed, `0` failed.
+
+## Recheck Pass 27 (2026-03-04, worker startup determinism for importScripts)
+- Focus area: residual worker flake in `WorkerRuntime_ImportScripts_LoadsAndExecutesDependency`.
+- Files hardened:
+  - FenBrowser.FenEngine/Workers/WorkerRuntime.cs
+- Changes:
+  - Replaced async `Task.Run` worker bootstrap with deterministic worker-thread initialization (`LoadWorkerScriptAsync().GetAwaiter().GetResult()` + immediate execute).
+  - Removed startup queue race where script prefetch/execute could lag task-loop polling and test deadlines.
+- Verification:
+  - Targeted tests passed:
+    - `WorkerRuntime_ImportScripts_LoadsAndExecutesDependency`
+    - `WorkerRuntime_ImportScripts_ReusesPrefetchedSourceAcrossRepeatedImports`
+  - Full `FenBrowser.Tests` snapshot: `974` passed, `0` failed.

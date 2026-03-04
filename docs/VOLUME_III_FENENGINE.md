@@ -2507,3 +2507,19 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
 - Verification:
   - Targeted: `LoadFontFaceAsync_BadUrl_DoesNotCrash` => pass.
   - Full suite: `974` passed / `0` failed.
+
+### 2.31 Runtime Hardening (2026-03-04, Wave 27)
+- Rendering/ImageLoader.cs
+  - Replaced cache-eviction/clear "GC-only" bitmap cleanup with deferred native disposal queue.
+  - Added bounded grace-period disposal worker (`BITMAP_DISPOSAL_GRACE_MS`) to reduce use-after-evict races while still reclaiming Skia native memory under pressure.
+  - Eviction now schedules disposed bitmaps after they are removed from both primary and legacy caches.
+- Verification:
+  - Full suite: `974` passed / `0` failed.
+
+### 2.32 Runtime Hardening (2026-03-04, Wave 28)
+- Workers/WorkerRuntime.cs
+  - Removed asynchronous `Task.Run` bootstrap race during worker startup; worker script fetch/prefetch/execute now runs deterministically on the worker thread before entering steady-state loop.
+  - Stabilizes `importScripts` dependency execution ordering under test and runtime startup contention.
+- Verification:
+  - Targeted worker importScripts tests: `2/2` pass.
+  - Full suite: `974` passed / `0` failed.
