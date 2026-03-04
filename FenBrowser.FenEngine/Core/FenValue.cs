@@ -592,3 +592,4 @@ namespace FenBrowser.FenEngine.Core
         }
     }
 }
+

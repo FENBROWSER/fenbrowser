@@ -791,7 +791,6 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             else if (node is FunctionLiteral funcLit)
             {
                 ValidateSupportedParameterList(funcLit.Parameters, "FunctionLiteral");
-                RejectWithInsideCallableBody(funcLit.Body, "FunctionLiteral");
                 var funcCompiler = CreateFunctionCompiler(funcLit.Parameters, funcLit.Name);
                 var compiledBlock = funcCompiler.Compile(BuildCallableBody(funcLit.Body, funcLit.Parameters));
                 compiledBlock.IsStrict = compiledBlock.IsStrict || funcLit.IsStrict;
@@ -812,7 +811,6 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             else if (node is AsyncFunctionExpression asyncFuncExpr)
             {
                 ValidateSupportedParameterList(asyncFuncExpr.Parameters, "AsyncFunctionExpression");
-                RejectWithInsideCallableBody(asyncFuncExpr.Body, "AsyncFunctionExpression");
                 var funcCompiler = CreateFunctionCompiler(asyncFuncExpr.Parameters, asyncFuncExpr.Name?.Value);
                 var compiledBlock = funcCompiler.Compile(BuildCallableBody(asyncFuncExpr.Body, asyncFuncExpr.Parameters));
                 var localMap = BuildFunctionLocalMap(compiledBlock);
@@ -832,7 +830,6 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             else if (node is ArrowFunctionExpression arrowExpr)
             {
                 ValidateSupportedParameterList(arrowExpr.Parameters, "ArrowFunctionExpression");
-                RejectWithInsideCallableBody(arrowExpr.Body, "ArrowFunctionExpression");
                 var funcCompiler = CreateFunctionCompiler(arrowExpr.Parameters, null);
                 var compiledBlock = funcCompiler.Compile(BuildCallableBody(arrowExpr.Body, arrowExpr.Parameters));
                 var localMap = BuildFunctionLocalMap(compiledBlock);
@@ -3641,7 +3638,6 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private void EmitFunctionDeclaration(FunctionDeclarationStatement funcDecl)
         {
             ValidateSupportedParameterList(funcDecl.Function.Parameters, "FunctionDeclarationStatement");
-            RejectWithInsideCallableBody(funcDecl.Function.Body, "FunctionDeclarationStatement");
             var funcCompiler = CreateFunctionCompiler(funcDecl.Function.Parameters, funcDecl.Function.Name);
             var compiledBlock = funcCompiler.Compile(BuildCallableBody(funcDecl.Function.Body, funcDecl.Function.Parameters));
             compiledBlock.IsStrict = compiledBlock.IsStrict || funcDecl.Function.IsStrict;
@@ -3888,4 +3884,6 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         }
     }
 }
+
+
 
