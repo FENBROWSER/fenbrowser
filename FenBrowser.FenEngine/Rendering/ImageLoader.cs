@@ -80,6 +80,9 @@ namespace FenBrowser.FenEngine.Rendering
         // ========== Memory Management ==========
         private static long _currentCacheBytes = 0;
         private static readonly object _cacheLock = new object();
+        private static readonly ConcurrentQueue<SKBitmap> _pendingBitmapDisposals = new ConcurrentQueue<SKBitmap>();
+        private static int _disposeWorkerActive = 0;
+        private const int BITMAP_DISPOSAL_GRACE_MS = 1500;
         
         // Debounce mechanism to prevent flickering from rapid repaint requests
         private static Timer _repaintDebounceTimer;
@@ -231,18 +234,31 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public static void ClearCache()
         {
+            var disposalSet = new HashSet<SKBitmap>();
+
             foreach (var entry in _memoryCache.Values)
             {
-                // entry.Bitmap?.Dispose(); // RACE CONDITION FIX: Let GC handle disposal
+                if (entry?.Bitmap != null)
+                {
+                    disposalSet.Add(entry.Bitmap);
+                }
             }
             _memoryCache.Clear();
-            
+
             foreach (var bitmap in _legacyCache.Values)
             {
-                // bitmap?.Dispose(); // RACE CONDITION FIX: Let GC handle disposal
+                if (bitmap != null)
+                {
+                    disposalSet.Add(bitmap);
+                }
             }
             _legacyCache.Clear();
-            
+
+            foreach (var bitmap in disposalSet)
+            {
+                ScheduleBitmapDispose(bitmap);
+            }
+
             lock (_cacheLock)
             {
                 _currentCacheBytes = 0;
@@ -293,7 +309,7 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         _currentCacheBytes -= entry.ByteSize;
                     }
-                    // entry.Bitmap?.Dispose(); // RACE CONDITION FIX: Let GC handle disposal
+                    ScheduleBitmapDispose(entry.Bitmap);
                     
                     FenLogger.Debug($"[ImageLoader] Evicted: {kvp.Key.Substring(0, Math.Min(40, kvp.Key.Length))}...", 
                                    LogCategory.Rendering);
@@ -301,6 +317,61 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
+
+        private static void ScheduleBitmapDispose(SKBitmap bitmap)
+        {
+            if (bitmap == null || bitmap.IsNull)
+            {
+                return;
+            }
+
+            _pendingBitmapDisposals.Enqueue(bitmap);
+            EnsureDisposeWorker();
+        }
+
+        private static void EnsureDisposeWorker()
+        {
+            if (Interlocked.CompareExchange(ref _disposeWorkerActive, 1, 0) != 0)
+            {
+                return;
+            }
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    while (true)
+                    {
+                        if (_pendingBitmapDisposals.IsEmpty)
+                        {
+                            return;
+                        }
+
+                        await Task.Delay(BITMAP_DISPOSAL_GRACE_MS).ConfigureAwait(false);
+
+                        while (_pendingBitmapDisposals.TryDequeue(out var deferredBitmap))
+                        {
+                            try
+                            {
+                                deferredBitmap.Dispose();
+                            }
+                            catch (Exception ex)
+                            {
+                                FenLogger.Warn($"[ImageLoader] Deferred bitmap dispose failed: {ex.Message}", LogCategory.Rendering);
+                            }
+                        }
+                    }
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _disposeWorkerActive, 0);
+                    if (!_pendingBitmapDisposals.IsEmpty)
+                    {
+                        EnsureDisposeWorker();
+                    }
+                }
+            });
+        }
         /// <summary>
         /// Get cache statistics for debugging
         /// </summary>
@@ -957,5 +1028,3 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
-
-
