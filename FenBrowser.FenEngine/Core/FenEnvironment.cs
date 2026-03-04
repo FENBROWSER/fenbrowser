@@ -90,10 +90,15 @@ namespace FenBrowser.FenEngine.Core
 
         public bool TryGetLocal(string name, out FenValue value)
         {
-            if (_isWithEnvironment && HasWithBinding(name))
+            if (_isWithEnvironment)
             {
-                value = _withObject?.Get(name) ?? FenValue.Undefined;
-                return true;
+                // ResolveBindingEnvironment already performed HasBinding + unscopables filtering.
+                // Avoid re-running unscopables here to preserve proxy-observable access order.
+                if (_withObject?.Has(name) == true)
+                {
+                    value = _withObject.Get(name);
+                    return true;
+                }
             }
 
             if (_tdz.Contains(name))
@@ -379,25 +384,8 @@ namespace FenBrowser.FenEngine.Core
             {
                 return false;
             }
-
-            // Probe the symbol-like unscopables key first to match proxy observation order.
+            // Spec-observable behavior: with-environment performs a single Get on %Symbol.unscopables%.
             var unscopables = _withObject.Get("Symbol(Symbol.unscopables)");
-            if (unscopables.IsUndefined)
-            {
-                unscopables = _withObject.Get("@@Symbol.unscopables");
-            }
-            if (unscopables.IsUndefined)
-            {
-                unscopables = _withObject.Get("Symbol.unscopables");
-            }
-            if (unscopables.IsUndefined)
-            {
-                unscopables = _withObject.Get("@@unscopables");
-            }
-            if (unscopables.IsUndefined)
-            {
-                unscopables = _withObject.Get("unscopables");
-            }
 
             if (!unscopables.IsObject)
             {
