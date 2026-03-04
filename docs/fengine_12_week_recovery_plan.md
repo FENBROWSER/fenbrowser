@@ -148,3 +148,9 @@ Raise FenEngine from current audit state to a production-grade baseline by fixin
   3. async void remains 0 in FenEngine .cs scan.
 - Validation snapshot:
   1. dotnet build FenBrowser.FenEngine passed (0 errors).
+
+### Incremental Progress Update (2026-03-04, VM boundary compatibility)
+- Resolved bytecode-only exception-type regression introduced by typed-error migration.
+- Validation snapshot:
+  1. Targeted bytecode contract tests: 4/4 passed.
+  2. Full suite currently: 952 passed / 22 failed.

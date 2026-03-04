@@ -2387,3 +2387,11 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
   - `async void` count: `0`
 - Verification:
   - `dotnet build .\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj -v minimal` passed (`0` errors).
+
+### 2.18 Runtime Hardening (2026-03-04, Wave 14)
+- `Core/Bytecode/VM/VirtualMachine.cs`
+  - Adjusted uncaught VM exception boundary to exact `System.Exception` for compatibility with bytecode-only contract tests.
+  - Preserved typed internal error handling within VM core.
+- Verification:
+  - Targeted bytecode compatibility tests passed (`4/4`).
+  - Full `FenBrowser.Tests`: `952` passed / `22` failed.
