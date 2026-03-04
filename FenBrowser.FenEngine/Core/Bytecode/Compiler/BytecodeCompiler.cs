@@ -365,16 +365,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
             else if (node is BigIntLiteral bigIntLit)
             {
-                // Current runtime behavior treats BigInt literals as number fallback.
-                // Keep bytecode semantics aligned until dedicated BigInt runtime representation lands.
-                double numericValue = 0;
-                if (!double.TryParse(bigIntLit.Value, System.Globalization.NumberStyles.Float,
-                        System.Globalization.CultureInfo.InvariantCulture, out numericValue))
-                {
-                    numericValue = 0;
-                }
-
-                int idx = AddConstant(FenValue.FromNumber(numericValue));
+                int idx = AddConstant(FenValue.FromBigInt(new JsBigInt(bigIntLit.Value)));
                 Emit(OpCode.LoadConst);
                 EmitInt32(idx);
             }

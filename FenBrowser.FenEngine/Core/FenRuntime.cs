@@ -317,9 +317,43 @@ namespace FenBrowser.FenEngine.Core
             // Object
             var objectCtor = new FenFunction("Object", (args, thisVal) =>
             {
-                if (args.Length > 0 && !args[0].IsNull && !args[0].IsUndefined)
-                    return args[0].IsObject ? args[0] : FenValue.FromObject(new FenObject());
-                return FenValue.FromObject(new FenObject());
+                if (args.Length == 0 || args[0].IsNull || args[0].IsUndefined)
+                {
+                    return FenValue.FromObject(new FenObject());
+                }
+
+                var value = args[0];
+                if (value.IsObject || value.IsFunction)
+                {
+                    return value;
+                }
+
+                var wrapper = new FenObject();
+                wrapper.Set("__value__", value);
+
+                if (value.IsString)
+                {
+                    wrapper.InternalClass = "String";
+                    wrapper.SetPrototype(stringProto);
+                    wrapper.Set("length", FenValue.FromNumber(value.AsString(_context).Length));
+                    return FenValue.FromObject(wrapper);
+                }
+
+                if (value.IsNumber)
+                {
+                    wrapper.InternalClass = "Number";
+                    wrapper.SetPrototype(numberProto);
+                    return FenValue.FromObject(wrapper);
+                }
+
+                if (value.IsBoolean)
+                {
+                    wrapper.InternalClass = "Boolean";
+                    wrapper.SetPrototype(booleanProto);
+                    return FenValue.FromObject(wrapper);
+                }
+
+                return FenValue.FromObject(wrapper);
             });
             objectCtor.Prototype = objectProto;
             objectCtor.Set("prototype", FenValue.FromObject(objectProto));
@@ -1685,6 +1719,44 @@ namespace FenBrowser.FenEngine.Core
             SetGlobal("String", FenValue.FromFunction(stringCtor));
             window.Set("String", FenValue.FromFunction(stringCtor));
 
+            stringProto.SetBuiltin("toString", FenValue.FromFunction(new FenFunction("toString", (args, thisVal) =>
+            {
+                if (thisVal.IsString)
+                {
+                    return FenValue.FromString(thisVal.AsString(_context));
+                }
+
+                if (thisVal.IsObject)
+                {
+                    var wrapped = thisVal.AsObject()?.Get("__value__");
+                    if (wrapped.HasValue && wrapped.Value.IsString)
+                    {
+                        return FenValue.FromString(wrapped.Value.AsString(_context));
+                    }
+                }
+
+                throw new InvalidOperationException("TypeError: String.prototype.toString called on incompatible object");
+            })));
+
+            stringProto.SetBuiltin("valueOf", FenValue.FromFunction(new FenFunction("valueOf", (args, thisVal) =>
+            {
+                if (thisVal.IsString)
+                {
+                    return thisVal;
+                }
+
+                if (thisVal.IsObject)
+                {
+                    var wrapped = thisVal.AsObject()?.Get("__value__");
+                    if (wrapped.HasValue && wrapped.Value.IsString)
+                    {
+                        return wrapped.Value;
+                    }
+                }
+
+                throw new InvalidOperationException("TypeError: String.prototype.valueOf called on incompatible object");
+            })));
+
             // String.prototype methods
             stringProto.SetBuiltin("repeat", FenValue.FromFunction(new FenFunction("repeat", (args, thisVal) =>
             {
@@ -2116,6 +2188,25 @@ namespace FenBrowser.FenEngine.Core
                     return FenValue.FromString(num.ToString(System.Globalization.CultureInfo.InvariantCulture).ToLowerInvariant());
                 }
             })));
+            numberProto.SetBuiltin("valueOf", FenValue.FromFunction(new FenFunction("valueOf", (args, thisVal) =>
+            {
+                if (thisVal.IsNumber)
+                {
+                    return thisVal;
+                }
+
+                if (thisVal.IsObject)
+                {
+                    var wrapped = thisVal.AsObject()?.Get("__value__");
+                    if (wrapped.HasValue && wrapped.Value.IsNumber)
+                    {
+                        return wrapped.Value;
+                    }
+                }
+
+                throw new InvalidOperationException("TypeError: Number.prototype.valueOf called on incompatible object");
+            })));
+
             numberCtor.Set("prototype", FenValue.FromObject(numberProto));
             numberProto.SetBuiltin("constructor", FenValue.FromFunction(numberCtor));
 
