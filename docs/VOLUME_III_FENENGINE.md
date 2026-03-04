@@ -1,4 +1,4 @@
-﻿# FenBrowser Codex - Volume III: The Engine Room
+# FenBrowser Codex - Volume III: The Engine Room
 
 **State as of:** 2026-02-27
 **Codex Version:** 1.0
@@ -173,7 +173,7 @@ Unlike the Layout Tree (which is about geometry), the Paint Tree is about **Z-Or
 - Gradient backgrounds are parsed into `SKShader` instances during paint-node creation (`FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs:1440-1570`), enabling linear/radial gradients in the new pipeline.
 - Stacking contexts now carry `filter`/`backdrop-filter`; `SkiaRenderer` parses them via `CssFilterParser` and applies Skia save-layers (`SkiaRenderer.cs:198-245`, `SkiaRenderer.cs:275-286`).
 - Input placeholders honor `::placeholder` computed color/opacity when rendering (`NewPaintTreeBuilder.cs:2290-2335`).
-- Animated GIFs are decoded frame-by-frame with `SKCodec` (including `RequiredFrame` compositing) and cached in `ImageLoader` (`FenBrowser.FenEngine/Rendering/ImageLoader.cs:650-870`). A 50ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¯ms timer calls `RequestRepaint` directly, and `SkiaDomRenderer.Render` forces paint-dirty whenever `HasActiveAnimatedImages` is true (`SkiaDomRenderer.cs:280-302`), enabling in-paint GIF animation without re-layout.
+- Animated GIFs are decoded frame-by-frame with `SKCodec` (including `RequiredFrame` compositing) and cached in `ImageLoader` (`FenBrowser.FenEngine/Rendering/ImageLoader.cs:650-870`). A 50ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¯ms timer calls `RequestRepaint` directly, and `SkiaDomRenderer.Render` forces paint-dirty whenever `HasActiveAnimatedImages` is true (`SkiaDomRenderer.cs:280-302`), enabling in-paint GIF animation without re-layout.
 - Engine targets `net8.0` (solution unified via global.json).
 - Web-compat guardrail: site/domain/class-specific styling hooks are prohibited in UA/layout/cascade paths; fixes must land as generic standards behavior with regression coverage (`Rendering/Css/CssLoader.cs`, `Rendering/UserAgent/UAStyleProvider.cs`, `Layout/MinimalLayoutComputer.cs`).
 - Paint/Compositing tranche PC-1 (2026-02-20):
@@ -2411,3 +2411,23 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
 - Verification:
   - Targeted Symbol constructor integration test passed.
   - Full `FenBrowser.Tests`: `957` passed / `17` failed.
+
+### 2.21 Runtime Hardening (2026-03-04, Wave 17)
+- Core/Bytecode/Compiler/BytecodeCompiler.cs
+  - Added strict-mode propagation into compiled CodeBlock.IsStrict via directive-prologue detection and function strict-flag carry-over.
+- Core/Bytecode/VM/VirtualMachine.cs
+  - Restored non-strict plain-call this semantics to global-object binding (globalThis/window/self).
+  - Enforced strict assignment path in UpdateVar using effective strictness from block/environment.
+  - Marked strict function invocation environments with newEnv.StrictMode = true.
+- Verification:
+  - dotnet build .\FenBrowser.Tests\FenBrowser.Tests.csproj -v minimal passed.
+  - Targeted strict tests: 3/3 passed (StrictMode_AssignmentToUndeclared_ThrowsReferenceError, NonStrictMode_This_IsGlobalObject, StrictMode_This_IsUndefinedInFunctionCall).
+
+### 2.22 Runtime Hardening (2026-03-04, Wave 18)
+- Core/Bytecode/Compiler/BytecodeCompiler.cs
+  - Fixed declaration-list emission to create bindings for no-initializer declarations (var/let x; => initialized to undefined).
+  - Closed strict-mode regression where missing declaration emission surfaced as ReferenceError.
+- Verification:
+  - Targeted strict/bytecode tests: 4/4 passed.
+  - Full FenBrowser.Tests: 957 passed / 17 failed.
+
