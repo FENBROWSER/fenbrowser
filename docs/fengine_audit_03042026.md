@@ -625,3 +625,15 @@
 - Verification:
   - Targeted bytecode compatibility tests (`Call*/Construct* AST-backed in bytecode-only mode`): `4/4` passed.
   - Full `FenBrowser.Tests`: `952` passed, `22` failed (down from `26` prior to this compatibility fix).
+
+## Recheck Pass 14 (2026-03-04, String/Symbol Conformance Recovery)
+- Focus area: JS conformance regressions in string and symbol primitive property behavior.
+- Files hardened:
+  - `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+- Changes:
+  - Added/ensured `String.prototype.replaceAll` and `String.prototype.codePointAt` on the active String prototype in runtime merge path.
+  - Added symbol primitive `LoadProp` handling in VM for `description` and Symbol prototype fallback lookup.
+- Verification:
+  - Targeted conformance tests: `String_ReplaceAll_ReplacesAll`, `Runtime_String_CodePointAt`, `Symbol_Description_Property` => `3/3` passed.
+  - Full `FenBrowser.Tests`: `955` passed, `19` failed (down from `22`).
