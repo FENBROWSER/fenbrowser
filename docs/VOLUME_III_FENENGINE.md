@@ -2541,3 +2541,11 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
 - Verification:
   - Targeted: `TemplateLiteralTests.TemplateWithComplexExpression_ObjectLiteral` => pass.
   - Full suite: `978` passed / `0` failed.
+
+### 2.35 Runtime Hardening (2026-03-04, Wave 31)
+- Core/Bytecode/Compiler/BytecodeCompiler.cs
+  - Replaced remaining bytecode compile-path `NotImplementedException` throws with typed `FenSyntaxError` to enforce engine-safe unsupported-syntax signaling.
+  - Eliminates host-style not-implemented crash paths from compiler unsupported-node/operator branches.
+- Verification:
+  - Static: `NotImplementedException` count in `BytecodeCompiler.cs` => `0`.
+  - Full suite: `978` passed / `0` failed.

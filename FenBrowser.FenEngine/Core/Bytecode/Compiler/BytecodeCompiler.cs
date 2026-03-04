@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using FenBrowser.FenEngine.Core.Types;
+using FenBrowser.FenEngine.Errors;
 using FenValue = FenBrowser.FenEngine.Core.FenValue;
 
 namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
@@ -1063,7 +1064,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
             else
             {
-                throw new NotImplementedException($"Compiler: Node type {node.GetType().Name} not supported in Bytecode Phase.");
+                throw new FenSyntaxError($"Compiler: Node type {node.GetType().Name} not supported in Bytecode Phase.");
             }
         }
 
@@ -1600,7 +1601,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 return;
             }
 
-            throw new NotImplementedException($"Compiler: {owner} requires expression-bodied block in Bytecode Phase.");
+            throw new FenSyntaxError($"Compiler: {owner} requires expression-bodied block in Bytecode Phase.");
         }
 
         private void EmitWhileStatement(WhileStatement whileStmt, string labelName = null)
@@ -2193,7 +2194,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             string op = compoundAssignExpr?.Operator ?? string.Empty;
             if (!op.EndsWith("=", StringComparison.Ordinal) || op.Length < 2)
             {
-                throw new NotImplementedException($"Compiler: Compound assignment operator '{op}' not supported.");
+                throw new FenSyntaxError($"Compiler: Compound assignment operator '{op}' not supported.");
             }
 
             string infixOp = op.Substring(0, op.Length - 1);
@@ -3258,7 +3259,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                         !pattern.ComputedKeys.TryGetValue(usedKey, out var computedKeyExpression) ||
                         computedKeyExpression == null)
                     {
-                        throw new NotImplementedException("Compiler: Computed object destructuring key expression is missing.");
+                        throw new FenSyntaxError("Compiler: Computed object destructuring key expression is missing.");
                     }
 
                     string computedKeyVariable = NextSyntheticName("obj_rest_key");
@@ -3524,7 +3525,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
             else
             {
-                throw new NotImplementedException($"Compiler: Callable body type '{body?.GetType().Name ?? "null"}' is not supported.");
+                throw new FenSyntaxError($"Compiler: Callable body type '{body?.GetType().Name ?? "null"}' is not supported.");
             }
 
             if (!HasDefaultParameters(parameters) && !HasDestructuringParameters(parameters))
