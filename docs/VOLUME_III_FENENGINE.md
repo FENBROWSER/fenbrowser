@@ -2404,3 +2404,10 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
 - Verification:
   - Targeted string/symbol conformance tests passed (`3/3`).
   - Full `FenBrowser.Tests`: `955` passed / `19` failed.
+
+### 2.20 Runtime Hardening (2026-03-04, Wave 16)
+- `FenBrowser.Tests/Integration/ComprehensivePhaseTests.cs`
+  - Aligned Symbol global constructor expectation with runtime semantics (`function`-backed constructor accepted).
+- Verification:
+  - Targeted Symbol constructor integration test passed.
+  - Full `FenBrowser.Tests`: `957` passed / `17` failed.
