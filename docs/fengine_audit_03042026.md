@@ -600,3 +600,17 @@
   - empty `catch {}`: `0`
   - `throw new Exception(...)`: `20`
   - `async void`: `0`
+
+## Recheck Pass 12 (2026-03-04, FenRuntime Generic Exception Elimination)
+- Focus area: remaining generic exceptions concentrated in `Core/FenRuntime.cs`.
+- Files hardened:
+  - `FenBrowser.FenEngine/Core/FenRuntime.cs`
+- Changes:
+  - Replaced all remaining `throw new Exception(...)` sites with typed exceptions (`FenTypeError`, `FenRangeError`, `FenResourceError`, `InvalidOperationException`).
+  - Preserved existing JS-facing error messages for dispatch/event/constructor and typed-array guard paths.
+- Verification:
+  - `dotnet build .\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj -v minimal` => `0` errors.
+- Updated static snapshot (project-level, `.cs`):
+  - empty `catch {}`: `0`
+  - `throw new Exception(...)`: `0`
+  - `async void`: `0`

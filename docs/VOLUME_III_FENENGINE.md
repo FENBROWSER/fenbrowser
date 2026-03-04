@@ -2376,3 +2376,14 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
   - `async void` count: `0`
 - Verification:
   - `dotnet build .\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj -v minimal` passed (`0` errors).
+
+### 2.17 Runtime Hardening (2026-03-04, Wave 13)
+- `Core/FenRuntime.cs`
+  - Completed conversion of all remaining generic exception throws to typed/domain exceptions.
+  - Converted string prototype/type/dispatch/constructor/newTarget/quota/typed-array guard failures to `FenTypeError`, `FenRangeError`, `FenResourceError`, or `InvalidOperationException` as appropriate.
+- Project-level post-wave counters:
+  - empty `catch {}` count: `0`
+  - `throw new Exception(...)` count: `0`
+  - `async void` count: `0`
+- Verification:
+  - `dotnet build .\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj -v minimal` passed (`0` errors).
