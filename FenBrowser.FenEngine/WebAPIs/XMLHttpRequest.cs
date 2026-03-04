@@ -1,8 +1,10 @@
-using System;
+﻿using System;
 using System.Net.Http;
 using System.Threading.Tasks;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Core;
+using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 using System.Collections.Generic;
 
 namespace FenBrowser.FenEngine.WebAPIs
@@ -59,7 +61,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             if (Get("onreadystatechange") is FenValue fn && fn.IsFunction)
             {
                  _context.ScheduleCallback(() => {
-                     try { fn.AsFunction().Invoke(Array.Empty<FenValue>(), _context); } catch {}
+                     try { fn.AsFunction().Invoke(Array.Empty<FenValue>(), _context); } catch (Exception ex) { FenLogger.Warn($"[XMLHttpRequest] onreadystatechange callback failed: {ex.Message}", LogCategory.JavaScript); }
                  }, 0);
             }
         }
@@ -68,7 +70,7 @@ namespace FenBrowser.FenEngine.WebAPIs
         private static readonly HashSet<string> _allowedMethods = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             { "GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH" };
 
-        // SECURITY: WHATWG forbidden request headers — must never be set by scripts
+        // SECURITY: WHATWG forbidden request headers â€” must never be set by scripts
         private static readonly HashSet<string> _forbiddenHeaders = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "accept-charset", "accept-encoding", "access-control-request-headers",
@@ -91,7 +93,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 return FenValue.FromError($"SecurityError: '{rawMethod}' is not an allowed HTTP method.");
             _method = rawMethod;
 
-            // SECURITY: Validate URL scheme — only http/https permitted
+            // SECURITY: Validate URL scheme â€” only http/https permitted
             _url = args[1].ToString();
             if (!Uri.TryCreate(_url, UriKind.Absolute, out var parsedUri) ||
                 (parsedUri.Scheme != "http" && parsedUri.Scheme != "https"))
@@ -205,3 +207,5 @@ namespace FenBrowser.FenEngine.WebAPIs
         }
     }
 }
+
+
