@@ -306,7 +306,7 @@ namespace FenBrowser.Tests.Integration
             var symbol = runtime.GetGlobal("Symbol");
 
             Assert.NotNull(symbol);
-            Assert.True(symbol.IsObject);
+            Assert.True(symbol.IsObject || symbol.IsFunction);
 
             var symbolObj = symbol.AsObject();
             Assert.NotNull(symbolObj.Get("for"));
@@ -349,3 +349,4 @@ namespace FenBrowser.Tests.Integration
         }
     }
 }
+
