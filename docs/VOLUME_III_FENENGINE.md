@@ -2463,3 +2463,18 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
   - Targeted propagation tests passed:
     - StopPropagation_HaltsBubbling
     - StopImmediatePropagation_PreventsSameElementListeners
+### 2.27 Runtime Hardening (2026-03-04, Wave 23)
+- Core/Network/ResourcePrefetcher.cs
+  - Corrected `GetStats()` semantics to report active pending work separately from queued work (avoids double-counting queued entries as pending).
+- Layout/InlineLayoutComputer.cs
+  - Fixed whitespace-only text handling in inline flow by recognizing all-empty split tokens and preserving strut-driven line height.
+- Observers/ObserverCoordinator.cs
+  - Hardened `ExecutePendingCallbacks` against leaked layout-phase state by temporarily entering `JSExecution` when invoked during measure/layout/paint, then restoring previous phase.
+- Adapters/SvgSkiaRenderer.cs
+  - Fixed attribute deduplication to preserve self-closing SVG tags (`/>`) instead of rewriting them as open tags.
+- Tests hardened:
+  - `EventInvariantTests` no longer performs concurrent debug-file appends.
+  - `LayoutFidelityTests` mixed-font baseline test now resolves the text node via `ChildNodes`.
+- Verification:
+  - Targeted suite (6 tests) passed 5/6 after patch set; remaining targeted failure is SVG negative-viewBox visible-pixels assertion.
+  - Full suite snapshot after patch set: 967 passed / 7 failed.

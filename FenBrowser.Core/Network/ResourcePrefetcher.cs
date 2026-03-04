@@ -466,7 +466,10 @@ namespace FenBrowser.Core.Network
         {
             lock (_lock)
             {
-                return (_pending.Count, _completedUrls.Count, _queue.Count);
+                int queued = _queue.Count;
+                int pendingActive = _pending.Count - queued;
+                if (pendingActive < 0) pendingActive = 0;
+                return (pendingActive, _completedUrls.Count, queued);
             }
         }
 
@@ -499,4 +502,6 @@ namespace FenBrowser.Core.Network
         }
     }
 }
+
+
 

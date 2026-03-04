@@ -162,28 +162,41 @@ namespace FenBrowser.FenEngine.Observers
         /// </summary>
         public void ExecutePendingCallbacks(IExecutionContext context)
         {
-            // Assert we're in the JS Execution Window
-            EnginePhaseManager.AssertNotInPhase(
-                EnginePhase.Measure, 
-                EnginePhase.Layout, 
-                EnginePhase.Paint);
+            var previousPhase = EnginePhaseManager.CurrentPhase;
+            var switchedToJsExecution = false;
 
-            List<Action> callbacks;
-            lock (_pendingCallbacks)
+            if (previousPhase == EnginePhase.Measure || previousPhase == EnginePhase.Layout || previousPhase == EnginePhase.Paint)
             {
-                callbacks = new List<Action>(_pendingCallbacks);
-                _pendingCallbacks.Clear();
+                EnginePhaseManager.EnterPhase(EnginePhase.JSExecution);
+                switchedToJsExecution = true;
             }
 
-            foreach (var callback in callbacks)
+            try
             {
-                try
+                List<Action> callbacks;
+                lock (_pendingCallbacks)
                 {
-                    callback();
+                    callbacks = new List<Action>(_pendingCallbacks);
+                    _pendingCallbacks.Clear();
                 }
-                catch
+
+                foreach (var callback in callbacks)
                 {
-                    // Callback errors should not break the observer system
+                    try
+                    {
+                        callback();
+                    }
+                    catch
+                    {
+                        // Callback errors should not break the observer system
+                    }
+                }
+            }
+            finally
+            {
+                if (switchedToJsExecution)
+                {
+                    EnginePhaseManager.EnterPhase(previousPhase);
                 }
             }
         }
