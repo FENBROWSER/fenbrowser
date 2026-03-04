@@ -136,6 +136,22 @@ namespace FenBrowser.Tests.Engine
             parser.ParseProgram();
             Assert.Contains(parser.Errors, e => e.Contains("with statement", StringComparison.OrdinalIgnoreCase));
         }
+
+        [Fact]
+        public void Parse_TemplateLiteral_InvalidUnicodeEscape_ShouldFail()
+        {
+            var parser = CreateParser("`bad: \\u00G0`");
+            parser.ParseProgram();
+            Assert.NotEmpty(parser.Errors);
+        }
+
+        [Fact]
+        public void Parse_WithStatement_SingleStatementClassDeclaration_ShouldFail()
+        {
+            var parser = CreateParser("with ({}) class C {}");
+            parser.ParseProgram();
+            Assert.Contains(parser.Errors, e => e.Contains("Declaration not allowed in with statement", StringComparison.OrdinalIgnoreCase));
+        }
         [Fact]
         public void Parse_CompoundAssignment_PlusAssign()
         {

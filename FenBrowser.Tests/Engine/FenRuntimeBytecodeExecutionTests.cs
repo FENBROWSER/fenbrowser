@@ -374,6 +374,18 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal(11, ((FenValue)rt.GetGlobal("outv")).AsNumber());
         }
 
+
+        [Fact]
+        public void ExecuteSimple_FunctionConstructor_WithBodyProducesCallableBytecodeFunction()
+        {
+            var rt = CreateRuntime();
+            var compile = rt.ExecuteSimple("var fn = new Function('obj', 'with (obj) { return x; }');");
+            Assert.NotEqual(FenBrowser.FenEngine.Core.Interfaces.ValueType.Error, compile.Type);
+
+            var fnVal = rt.GetGlobal("fn");
+            Assert.NotEqual(FenBrowser.FenEngine.Core.Interfaces.ValueType.Error, fnVal.Type);
+        }
+
         [Fact]
         public void ExecuteSimple_WithAstBackedGlobal_CallHeavyScriptFailsInBytecodeOnlyMode()
         {
