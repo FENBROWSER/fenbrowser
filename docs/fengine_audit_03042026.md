@@ -899,3 +899,19 @@
 - Verification:
   - Targeted: `EventInvariantTests` suite passed (`5/5`).
   - Full `FenBrowser.Tests` snapshot: `978` passed, `0` failed.
+
+## Implementation Update - 2026-03-04 (Wave 4)
+
+Completed items from this audit tranche:
+- BigInt + `+` coercion path in bytecode VM and FenValue operator now enforces mixed-type TypeError and BigInt+BigInt arithmetic.
+- Bytecode compiler now emits BigInt constants for `BigIntLiteral`.
+- Parser/lexer template escape hardening added for invalid hex/unicode/octal escape paths in template scanning.
+- `with` semantics hardened with object-backed environment resolution, declaration-environment targeting, and unscopables-aware lookup.
+- Callable bytecode body no longer hard-rejects `with` statements.
+
+Verification:
+- Targeted unit/regression tests added and passing.
+- Test262 re-scan (same categories used in this audit):
+  - `language/expressions/template-literal`: 24/57 -> 40/57
+  - `language/statements/with`: 21/181 -> 23/181
+  - `language/expressions/addition`: 22/48 (no net gain yet; remaining wrapper/exception-shape issues tracked)

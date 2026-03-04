@@ -1,7 +1,7 @@
 # FenBrowser Codex - Volume III: The Engine Room
 
-**State as of:** 2026-02-27
-**Codex Version:** 1.0
+**State as of:** 2026-03-04
+**Codex Version:** 1.1
 
 ## 1. Overview
 
@@ -2584,3 +2584,34 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
 - Verification:
   - Targeted: `EventInvariantTests` => `5/5` pass.
   - Full suite: `978` passed / `0` failed.
+
+### 2.8 Runtime Hardening (2026-03-04, Wave 4)
+
+- `VirtualMachine.ExecuteAdd(...)` now implements BigInt-aware `+` dispatch:
+  - string concatenation precedence is preserved,
+  - `BigInt + BigInt` performs BigInt arithmetic,
+  - mixed BigInt/non-BigInt numeric paths now throw `TypeError` (`FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`, `FenBrowser.FenEngine/Core/FenValue.cs`).
+- `BytecodeCompiler` now emits true BigInt constants for `BigIntLiteral` instead of number fallback (`FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`).
+- `with` execution model was hardened:
+  - `with` now uses object-backed environment records (not snapshot copies),
+  - declaration stores (`StoreVar`) now resolve to non-with declaration environments,
+  - unscopables-aware resolution was added for object environment lookups,
+  - `with(undefined)` / `with(null)` now throw TypeError in bytecode VM (`FenBrowser.FenEngine/Core/FenEnvironment.cs`, `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`).
+- Bytecode function-body restrictions were relaxed:
+  - removed compiler hard-fail that rejected `with` inside callable bytecode bodies,
+  - runtime now executes those paths with VM `EnterWith`/`ExitWith` semantics (`FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`).
+- Template literal lexing hardening:
+  - invalid/truncated template escapes now produce illegal tokens (hex/unicode/octal edge paths),
+  - added stricter escape validation in template start/continuation scanners (`FenBrowser.FenEngine/Core/Lexer.cs`).
+- Regression coverage added/updated:
+  - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - `FenBrowser.Tests/Engine/JsParserReproTests.cs`
+  - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`.
+
+Verification snapshot (2026-03-04):
+- Targeted engine tests (`BytecodeExecutionTests`, `JsParserReproTests`, and updated bytecode-runtime with-body test): pass.
+- Test262 category trend after this wave:
+  - `language/expressions/template-literal`: improved from 24/57 to 40/57,
+  - `language/statements/with`: 21/181 to 23/181 (incremental; substantial work remains),
+  - `language/expressions/addition`: 22/48 unchanged (remaining coercion/wrapper correctness still open).
+
