@@ -2395,3 +2395,12 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
 - Verification:
   - Targeted bytecode compatibility tests passed (`4/4`).
   - Full `FenBrowser.Tests`: `952` passed / `22` failed.
+
+### 2.19 Runtime Hardening (2026-03-04, Wave 15)
+- `Core/FenRuntime.cs`
+  - Corrected String prototype enrichment path by wiring `replaceAll` and `codePointAt` on active `String.prototype`.
+- `Core/Bytecode/VM/VirtualMachine.cs`
+  - Added symbol primitive property access path for `description` and prototype fallback.
+- Verification:
+  - Targeted string/symbol conformance tests passed (`3/3`).
+  - Full `FenBrowser.Tests`: `955` passed / `19` failed.
