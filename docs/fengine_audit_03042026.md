@@ -584,3 +584,19 @@
   - empty `catch {}`: `0`
   - `throw new Exception(...)`: `42`
   - `async void`: `0`
+
+## Recheck Pass 11 (2026-03-04, VM + TypedArray Exception Hardening)
+- Focus area: generic exceptions in bytecode VM and typed-array core.
+- Files hardened:
+  - `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+  - `FenBrowser.FenEngine/Core/Types/JsTypedArray.cs`
+- Changes:
+  - Converted VM generic throws to typed `Fen*Error` / `NotSupportedException` where appropriate.
+  - Added error-type mapping in `ThrowJsError` to produce typed exceptions while preserving message prefixes.
+  - Converted detached-buffer and bounds violations in typed arrays to `FenTypeError`/`FenRangeError`.
+- Verification:
+  - `dotnet build .\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj -v minimal` => `0` errors.
+- Updated static snapshot (project-level, `.cs`):
+  - empty `catch {}`: `0`
+  - `throw new Exception(...)`: `20`
+  - `async void`: `0`

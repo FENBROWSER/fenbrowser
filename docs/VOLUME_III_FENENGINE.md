@@ -2363,3 +2363,16 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
   - `async void` count: `0`
 - Verification:
   - `dotnet build .\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj -v minimal` passed (`0` errors).
+
+### 2.16 Runtime Hardening (2026-03-04, Wave 12)
+- `Core/Bytecode/VM/VirtualMachine.cs`
+  - Replaced generic VM throw sites with typed exceptions (`FenTypeError`, `FenReferenceError`, `FenResourceError`, `FenInternalError`, `NotSupportedException`).
+  - Added typed mapping in `ThrowJsError` for Type/Range/Reference/Syntax flows.
+- `Core/Types/JsTypedArray.cs`
+  - Replaced detached-buffer and bounds generic exceptions with `FenTypeError`/`FenRangeError`.
+- Project-level post-wave counters:
+  - empty `catch {}` count: `0`
+  - `throw new Exception(...)` count: `20`
+  - `async void` count: `0`
+- Verification:
+  - `dotnet build .\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj -v minimal` passed (`0` errors).
