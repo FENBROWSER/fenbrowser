@@ -2303,3 +2303,48 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
 - Verification:
   - `dotnet build .\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj -v minimal` passed (`0` errors).
   - Targeted FetchApi/ModuleLoader regression tests remain green (`11/11`).
+
+### 2.12 Runtime Hardening (2026-03-04, Wave 8)
+- Rendering pipeline catch-hardening completed in:
+  - `Rendering/CustomHtmlEngine.cs`
+  - `Layout/MinimalLayoutComputer.cs`
+  - `Rendering/PaintTree/NewPaintTreeBuilder.cs`
+- Replaced remaining empty `catch {}` blocks with explicit warning diagnostics while preserving fallback behavior for UI dispatch and cookie/render helper paths.
+- Project-level post-wave counters:
+  - empty `catch {}` count: `52`
+  - `throw new Exception(...)` count: `71`
+  - `async void` count: `0`
+- Verification:
+  - `dotnet build .\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj -v minimal` passed (`0` errors).
+  - Targeted FetchApi/ModuleLoader regression tests remain green (`11/11`).
+
+### 2.13 Runtime Hardening (2026-03-04, Wave 9)
+- `Scripting/JavaScriptEngine.Dom.cs`
+  - Completed empty-catch cleanup for DOM bridge wrappers.
+  - Added safe logging helpers for DOM bridge paths (`TryLogDomDebug`, `TryLogDomWarn`).
+  - Hardened innerHTML/script/mutation/clone/serialize/shadow-root CSS bridge paths with explicit warning diagnostics.
+- Project-level post-wave counters:
+  - empty `catch {}` count: `31`
+  - `throw new Exception(...)` count: `71`
+  - `async void` count: `0`
+- Verification:
+  - `dotnet build .\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj -v minimal` passed (`0` errors).
+  - Targeted FetchApi/ModuleLoader regression tests remain green (`11/11`).
+
+### 2.14 Runtime Hardening (2026-03-04, Wave 10)
+- Engine-wide catch-hardening completed in remaining runtime files:
+  - `Core/Types/JsIntl.cs`
+  - `DOM/DocumentWrapper.cs`, `DOM/EventTarget.cs`
+  - `Workers/ServiceWorkerManager.cs`
+  - `Scripting/CanvasRenderingContext2D.cs`, `Scripting/ModuleLoader.cs`
+  - `Rendering/Css/CssAnimationEngine.cs`, `CssEngineFactory.cs`, `CssParser.cs`, `CssLoader.cs`
+  - `Rendering/ElementStateManager.cs`, `FontRegistry.cs`, `ImageLoader.cs`, `NavigationManager.cs`, `SkiaDomRenderer.cs`, `SkiaRenderer.cs`, `WebGL/WebGLContextManager.cs`
+  - `Testing/Test262Runner.cs`
+- Removed all remaining empty `catch {}` blocks from `FenBrowser.FenEngine/**/*.cs` and replaced with explicit diagnostics/fallback.
+- Project-level post-wave counters:
+  - empty `catch {}` count: `0`
+  - `throw new Exception(...)` count: `71`
+  - `async void` count: `0`
+- Verification:
+  - `dotnet build .\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj -v minimal` passed (`0` errors).
+  - `dotnet test .\FenBrowser.Tests\FenBrowser.Tests.csproj -v minimal` result: `953` passed, `21` failed (existing baseline failures outside this hardening scope).
