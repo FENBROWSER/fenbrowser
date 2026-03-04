@@ -41,9 +41,13 @@ namespace FenBrowser.FenEngine.DOM
         public bool PropagationStopped { get; private set; }
         public bool ImmediatePropagationStopped { get; private set; }
         public bool IsTrusted { get; set; }
+        public bool Initialized { get; set; } = true;
+        public bool ReturnValue => !DefaultPrevented;
+        public bool CancelBubble => PropagationStopped;
 
-        // Propagation path
-        public List<Element> Path { get; set; } = new List<Element>();
+        // Propagation PropagationPath
+        internal List<Element> PropagationPath { get; } = new List<Element>();
+        public List<Element> Path => PropagationPath;
 
         private IExecutionContext _context;
 
@@ -54,20 +58,47 @@ namespace FenBrowser.FenEngine.DOM
         /// <param name="bubbles">Whether the event bubbles up through the DOM</param>
         /// <param name="cancelable">Whether the event can be cancelled</param>
         /// <param name="composed">Whether the event crosses shadow DOM boundaries</param>
-        public DomEvent(string type, bool bubbles = false, bool cancelable = false, bool composed = false, IExecutionContext context = null)
+        public DomEvent(string type, bool bubbles = false, bool cancelable = false, bool composed = false, IExecutionContext context = null, bool initialized = true)
         {
             Type = type ?? "";
             _context = context;
             Bubbles = bubbles;
             Cancelable = cancelable;
             Composed = composed;
-            TimeStamp = (DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalMilliseconds;
+            TimeStamp = ResolveEventTimeStamp(context);
             IsTrusted = false;
+            Initialized = initialized;
 
             // Set up JavaScript-accessible properties
             InitializeJsProperties();
         }
 
+        private static double ResolveEventTimeStamp(IExecutionContext context)
+        {
+            try
+            {
+                var perfVal = context?.Environment?.Get("performance") ?? FenValue.Undefined;
+                if (perfVal.IsObject)
+                {
+                    var nowFn = perfVal.AsObject().Get("now", context);
+                    if (nowFn.IsFunction)
+                    {
+                        var now = nowFn.AsFunction().Invoke(Array.Empty<FenValue>(), context, perfVal);
+                        if (now.IsNumber)
+                        {
+                            var ts = now.ToNumber();
+                            if (!double.IsNaN(ts) && !double.IsInfinity(ts))
+                                return ts;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            return Environment.TickCount64;
+        }
         private void InitializeJsProperties()
         {
             // Read-only properties
@@ -77,7 +108,7 @@ namespace FenBrowser.FenEngine.DOM
             Set("composed", FenValue.FromBoolean(Composed));
             Set("timeStamp", FenValue.FromNumber(TimeStamp));
             Set("isTrusted", FenValue.FromBoolean(IsTrusted));
-            
+
             // Phase constants
             Set("NONE", FenValue.FromNumber(NONE));
             Set("CAPTURING_PHASE", FenValue.FromNumber(CAPTURING_PHASE));
@@ -89,6 +120,9 @@ namespace FenBrowser.FenEngine.DOM
             Set("currentTarget", FenValue.Null);
             Set("eventPhase", FenValue.FromNumber(NONE));
             Set("defaultPrevented", FenValue.FromBoolean(false));
+            Set("returnValue", FenValue.FromBoolean(true));
+            Set("cancelBubble", FenValue.FromBoolean(false));
+            Set("srcElement", FenValue.Null);
 
             // Methods
             Set("preventDefault", FenValue.FromFunction(new FenFunction("preventDefault", PreventDefault)));
@@ -106,14 +140,23 @@ namespace FenBrowser.FenEngine.DOM
             Set("eventPhase", FenValue.FromNumber(EventPhase));
             Set("defaultPrevented", FenValue.FromBoolean(DefaultPrevented));
             Set("isTrusted", FenValue.FromBoolean(IsTrusted));
+            Set("returnValue", FenValue.FromBoolean(!DefaultPrevented));
+            Set("cancelBubble", FenValue.FromBoolean(PropagationStopped));
 
             if (Target != null)
-                Set("target", FenValue.FromObject(new ElementWrapper(Target, context)));
+            {
+                var wrappedTarget = DomWrapperFactory.Wrap(Target, context);
+                Set("target", wrappedTarget);
+                Set("srcElement", wrappedTarget);
+            }
             else
+            {
                 Set("target", FenValue.Null);
+                Set("srcElement", FenValue.Null);
+            }
 
             if (CurrentTarget != null)
-                Set("currentTarget", FenValue.FromObject(new ElementWrapper(CurrentTarget, context)));
+                Set("currentTarget", DomWrapperFactory.Wrap(CurrentTarget, context));
             else
                 Set("currentTarget", FenValue.Null);
         }
@@ -127,6 +170,7 @@ namespace FenBrowser.FenEngine.DOM
             {
                 DefaultPrevented = true;
                 Set("defaultPrevented", FenValue.FromBoolean(true));
+                Set("returnValue", FenValue.FromBoolean(false));
             }
             return FenValue.Undefined;
         }
@@ -137,6 +181,7 @@ namespace FenBrowser.FenEngine.DOM
         private FenValue StopPropagation(FenValue[] args, FenValue thisVal)
         {
             PropagationStopped = true;
+            Set("cancelBubble", FenValue.FromBoolean(true));
             return FenValue.Undefined;
         }
 
@@ -147,27 +192,26 @@ namespace FenBrowser.FenEngine.DOM
         {
             PropagationStopped = true;
             ImmediatePropagationStopped = true;
+            Set("cancelBubble", FenValue.FromBoolean(true));
             return FenValue.Undefined;
         }
 
         /// <summary>
-        /// Returns the event's path (ancestors from target to root)
+        /// Returns the event's PropagationPath (ancestors from target to root)
         /// </summary>
         private FenValue ComposedPath(FenValue[] args, FenValue thisVal)
         {
             // Requires context to wrap nodes
-            if (_context  == null) return FenValue.FromObject(new NodeListWrapper(new List<Node>(), null));
+            if (_context == null) return FenValue.FromObject(FenObject.CreateArray());
 
             var nodes = new List<Node>();
-            if (Path != null)
+            if (PropagationPath != null)
             {
-                // Path currently contains Elements, convert to Nodes
-                foreach (var el in Path) nodes.Add(el);
+                // PropagationPath currently contains Elements, convert to Nodes
+                foreach (var el in PropagationPath) nodes.Add(el);
             }
-            
-            // Return as array/NodeList? Spec says array of EventTargets.
-            // Using FenObject as array for now, populated with Wrappers.
-            var arr = new FenObject();
+
+            var arr = FenObject.CreateArray();
             for (int i = 0; i < nodes.Count; i++)
             {
                 arr.Set(i.ToString(), DomWrapperFactory.Wrap(nodes[i], _context));
@@ -178,26 +222,114 @@ namespace FenBrowser.FenEngine.DOM
 
         private FenValue InitEvent(FenValue[] args, FenValue thisVal)
         {
-            if (args.Length >= 1) Type = args[0].ToString();
-            if (args.Length >= 2) Bubbles = args[1].ToBoolean();
-            if (args.Length >= 3) Cancelable = args[2].ToBoolean();
+            if (args.Length < 1)
+            {
+                throw new Exception("TypeError: Failed to execute 'initEvent': 1 argument required, but only 0 present.");
+            }
+
+            // Per DOM: initEvent must be ignored while dispatching.
+            if (EventPhase != NONE)
+            {
+                return FenValue.Undefined;
+            }
+
+            Type = args[0].ToString();
+            Initialized = true;
+            Bubbles = args.Length >= 2 && args[1].ToBoolean();
+            Cancelable = args.Length >= 3 && args[2].ToBoolean();
+            // Preserve canceled state set before dispatch (e.g. pre-canceled synthetic events).
+            PropagationStopped = false;
+            ImmediatePropagationStopped = false;
+            CurrentTarget = null;
             InitializeJsProperties();
             return FenValue.Undefined;
         }
+        public override void Set(string key, FenValue value, IExecutionContext context = null)
+        {
+            var normalized = (key ?? string.Empty).ToLowerInvariant();
+            if (normalized == "returnvalue")
+            {
+                var allowDefault = value.ToBoolean();
+                // Legacy behavior: false implies preventDefault() only when cancelable.
+                if (!allowDefault)
+                {
+                    if (Cancelable)
+                    {
+                        DefaultPrevented = true;
+                        base.Set("defaultPrevented", FenValue.FromBoolean(true), context);
+                        base.Set("returnValue", FenValue.FromBoolean(false), context);
+                    }
+                    // If not cancelable, assignment has no effect.
+                    return;
+                }                // Per legacy behavior, once canceled, setting returnValue=true must not uncancel.
+                if (!DefaultPrevented)
+                {
+                    base.Set("defaultPrevented", FenValue.FromBoolean(false), context);
+                    base.Set("returnValue", FenValue.FromBoolean(true), context);
+                }
+                return;
+            }
 
+            if (normalized == "cancelbubble")
+            {
+                var stop = value.ToBoolean();
+                // Per legacy semantics, once true it cannot be reset to false.
+                if (stop)
+                {
+                    PropagationStopped = true;
+                    base.Set("cancelBubble", FenValue.FromBoolean(true), context);
+                }
+                else if (!PropagationStopped)
+                {
+                    base.Set("cancelBubble", FenValue.FromBoolean(false), context);
+                }
+                return;
+            }
+
+            base.Set(key, value, context);
+        }
         /// <summary>
         /// Reset event state for re-dispatch (not typically needed but spec-compliant)
         /// </summary>
         public void ResetState()
         {
-            DefaultPrevented = false;
+            // Preserve canceled state set before dispatch (e.g. pre-canceled synthetic events).
             PropagationStopped = false;
             ImmediatePropagationStopped = false;
             EventPhase = NONE;
             Target = null;
             CurrentTarget = null;
-            Path.Clear();
+            PropagationPath.Clear();
+        }
+
+        public void ClearPropagationFlags()
+        {
+            PropagationStopped = false;
+            ImmediatePropagationStopped = false;
+            Set("cancelBubble", FenValue.FromBoolean(false));
+        }
+        public void FinalizeDispatchState()
+        {
+            EventPhase = NONE;
+            CurrentTarget = null;
+            Set("currentTarget", FenValue.Null);
+            Set("eventPhase", FenValue.FromNumber(NONE));
+            Set("cancelBubble", FenValue.FromBoolean(PropagationStopped));
+            Set("defaultPrevented", FenValue.FromBoolean(DefaultPrevented));
+            Set("returnValue", FenValue.FromBoolean(!DefaultPrevented));
         }
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
 

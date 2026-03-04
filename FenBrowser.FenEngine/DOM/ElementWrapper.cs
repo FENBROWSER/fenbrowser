@@ -3,6 +3,7 @@ using System;
 using System.Linq;
 using System.Collections.Generic;
 using System.Text;
+using System.Runtime.CompilerServices;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
@@ -19,6 +20,7 @@ namespace FenBrowser.FenEngine.DOM
     public partial class ElementWrapper : NodeWrapper
     {
         private readonly Element _element;
+        private static readonly ConditionalWeakTable<Element, FenObject> s_iframeWindowByElement = new ConditionalWeakTable<Element, FenObject>();
         // _context is in base
 
         public ElementWrapper(Element element, IExecutionContext context) : base(element, context)
@@ -113,6 +115,27 @@ namespace FenBrowser.FenEngine.DOM
                 case "queryselectorall":
                     return FenValue.FromFunction(new FenFunction("querySelectorAll", QuerySelectorAll));
 
+                case "getelementsbytagname":
+                    return FenValue.FromFunction(new FenFunction("getElementsByTagName", GetElementsByTagNameMethod));
+
+                case "getelementsbytagnamens":
+                    return FenValue.FromFunction(new FenFunction("getElementsByTagNameNS", GetElementsByTagNameNSMethod));
+
+                case "getelementsbyclassname":
+                    return FenValue.FromFunction(new FenFunction("getElementsByClassName", GetElementsByClassNameMethod));
+
+                case "type":
+                    return FenValue.FromString(_element.GetAttribute("type") ?? string.Empty);
+
+                case "checked":
+                    return FenValue.FromBoolean(_element.HasAttribute("checked"));
+
+                case "disabled":
+                    return FenValue.FromBoolean(_element.HasAttribute("disabled"));
+
+                case "click":
+                    return FenValue.FromFunction(new FenFunction("click", ClickMethod));
+
                 case "classname":
                     return FenValue.FromString(_element.GetAttribute("class") ?? "");
 
@@ -195,13 +218,143 @@ namespace FenBrowser.FenEngine.DOM
                 case "getclientrects":
                     return FenValue.FromFunction(new FenFunction("getClientRects", GetClientRectsMethod));
 
+                case "contentwindow":
+                    return GetContentWindow();
+
+                case "contentdocument":
+                    return GetContentDocument();
+
                 default:
                     return base.Get(key, context);
             }
         }
 
+        private FenValue GetContentWindow()
+        {
+            if (!string.Equals(_element.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
+            {
+                return FenValue.Null;
+            }
 
-        public void Set(string key, FenValue value, IExecutionContext context = null)
+            if (!s_iframeWindowByElement.TryGetValue(_element, out var frameWindow))
+            {
+                frameWindow = new FenObject();
+
+                var abortSignal = new FenObject();
+                abortSignal.Set("timeout", FenValue.FromFunction(new FenFunction("timeout", (args, thisVal) =>
+                {
+                    int delayMs = 0;
+                    if (args.Length > 0)
+                    {
+                        delayMs = (int)Math.Max(0, args[0].ToNumber());
+                    }
+
+                    var signal = new FenObject();
+                    signal.Set("aborted", FenValue.FromBoolean(false));
+                    signal.Set("reason", FenValue.Undefined);
+                    signal.Set("onabort", FenValue.Undefined);
+
+                    var listeners = new List<FenValue>();
+                    signal.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (sigArgs, sigThis) =>
+                    {
+                        if (sigArgs.Length >= 2 && string.Equals(sigArgs[0].ToString(), "abort", StringComparison.OrdinalIgnoreCase))
+                        {
+                            listeners.Add(sigArgs[1]);
+                        }
+                        return FenValue.Undefined;
+                    })));
+
+                    signal.Set("removeEventListener", FenValue.FromFunction(new FenFunction("removeEventListener", (sigArgs, sigThis) =>
+                    {
+                        if (sigArgs.Length >= 2 && string.Equals(sigArgs[0].ToString(), "abort", StringComparison.OrdinalIgnoreCase))
+                        {
+                            listeners.RemoveAll(l => l.Equals(sigArgs[1]));
+                        }
+                        return FenValue.Undefined;
+                    })));
+
+                    _context?.ScheduleCallback?.Invoke(() =>
+                    {
+                        // If iframe was detached before timeout, this context is considered gone.
+                        if (_element.ParentNode == null)
+                        {
+                            return;
+                        }
+
+                        if (signal.Get("aborted").ToBoolean())
+                        {
+                            return;
+                        }
+
+                        var reason = FenValue.FromString("TimeoutError");
+                        signal.Set("aborted", FenValue.FromBoolean(true));
+                        signal.Set("reason", reason);
+
+                        var onAbort = signal.Get("onabort");
+                        if (onAbort.IsFunction)
+                        {
+                            onAbort.AsFunction().Invoke(new[] { reason }, _context, FenValue.FromObject(signal));
+                        }
+
+                        foreach (var listener in listeners.ToList())
+                        {
+                            if (listener.IsFunction)
+                            {
+                                listener.AsFunction().Invoke(new[] { reason }, _context, FenValue.FromObject(signal));
+                            }
+                        }
+                    }, delayMs);
+
+                    return FenValue.FromObject(signal);
+                })));
+
+                frameWindow.Set("AbortSignal", FenValue.FromObject(abortSignal));
+
+                var env = _context?.Environment;
+                if (env != null)
+                {
+                    var doc = env.Get("document");
+                    if (doc.IsObject)
+                    {
+                        frameWindow.Set("document", doc);
+                    }
+                }
+
+                s_iframeWindowByElement.Add(_element, frameWindow);
+            }
+
+            return FenValue.FromObject(frameWindow);
+        }
+
+        private FenValue GetContentDocument()
+        {
+            if (!string.Equals(_element.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
+            {
+                return FenValue.Null;
+            }
+
+            var frameWindow = GetContentWindow();
+            if (frameWindow.IsObject)
+            {
+                var doc = frameWindow.AsObject().Get("document");
+                if (doc.IsObject)
+                {
+                    return doc;
+                }
+            }
+
+            var env = _context?.Environment;
+            if (env == null)
+            {
+                return FenValue.Null;
+            }
+
+            var fallbackDoc = env.Get("document");
+            return fallbackDoc.IsObject ? fallbackDoc : FenValue.Null;
+        }
+
+
+        public override void Set(string key, FenValue value, IExecutionContext context = null)
         {
             if (_context != null)
             {
@@ -215,9 +368,41 @@ namespace FenBrowser.FenEngine.DOM
                 case "innerhtml":
                     SetInnerHTML(value);
                     break;
-                
+
                 case "textcontent":
                     SetTextContent(value);
+                    break;
+
+                case "id":
+                {
+                    var idValue = value.AsString(context ?? _context);
+                    _element.SetAttribute("id", idValue ?? string.Empty);
+                    break;
+                }
+
+                case "classname":
+                {
+                    var classValue = value.AsString(context ?? _context);
+                    _element.SetAttribute("class", classValue ?? string.Empty);
+                    break;
+                }
+
+                case "type":
+                    _element.SetAttribute("type", value.ToString() ?? string.Empty);
+                    break;
+
+                case "checked":
+                    if (value.ToBoolean()) _element.SetAttribute("checked", "");
+                    else _element.RemoveAttribute("checked");
+                    break;
+
+                case "disabled":
+                    if (value.ToBoolean()) _element.SetAttribute("disabled", "");
+                    else _element.RemoveAttribute("disabled");
+                    break;
+
+                default:
+                    base.Set(key, value, context);
                     break;
             }
         }
@@ -226,7 +411,7 @@ namespace FenBrowser.FenEngine.DOM
         public override bool Delete(string key, IExecutionContext context = null) => false;
 
         public override System.Collections.Generic.IEnumerable<string> Keys(IExecutionContext context = null) 
-            => new[] { "attachShadow", "shadowRoot", "innerHTML", "textContent", "tagName", "id", "attributes", "getAttribute", "setAttribute", "hasAttribute", "removeAttribute", "getAttributeNode", "setAttributeNode", "removeAttributeNode", "getContext", "width", "height", "clientWidth", "clientHeight" };
+            => new[] { "attachShadow", "shadowRoot", "innerHTML", "textContent", "tagName", "id", "className", "type", "checked", "disabled", "attributes", "getAttribute", "setAttribute", "hasAttribute", "removeAttribute", "getAttributeNode", "setAttributeNode", "removeAttributeNode", "getElementsByTagName", "getElementsByTagNameNS", "getElementsByClassName", "querySelector", "querySelectorAll", "addEventListener", "removeEventListener", "dispatchEvent", "click", "focus", "blur", "getContext", "width", "height", "clientWidth", "clientHeight" };
         
         private FenValue GetContext(FenValue[] args, FenValue thisVal)
         {
@@ -599,8 +784,10 @@ namespace FenBrowser.FenEngine.DOM
             var value = args[1].ToString();
             var oldValue = _element.GetAttribute(name);
 
-            // Enqueue mutation (Deferred)
-            // Invalidation: Attribute change usually affects Style and Layout
+            // Apply immediately for DOM API sync semantics expected by WPT.
+            _element.SetAttribute(name, value);
+
+            // Keep mutation signal for pipeline invalidation / diagnostics.
             DomMutationQueue.Instance.EnqueueMutation(new DomMutation(
                 MutationType.AttributeChange,
                 InvalidationKind.Style | InvalidationKind.Layout,
@@ -610,10 +797,7 @@ namespace FenBrowser.FenEngine.DOM
                 value
             ));
 
-            // Legacy notification and render request removed/deferred
-            // _context.RequestRender?.Invoke(); 
-            // Notifications happen when applied.
-            
+            _context.RequestRender?.Invoke();
             return FenValue.Undefined;
         }
 
@@ -722,23 +906,31 @@ namespace FenBrowser.FenEngine.DOM
 
             if (args.Length == 0 || !args[0].IsObject) return FenValue.Null;
 
-            var childWrapper = args[0].AsObject() as ElementWrapper;
-            
-            if (childWrapper != null)
+            var argObj = args[0].AsObject();
+            if (argObj is AttrWrapper)
             {
-                // Enqueue mutation (Deferred)
+                throw new DomException("HierarchyRequestError", "Attributes cannot be inserted into the child node list.");
+            }
+
+            var childNode = (argObj as ElementWrapper)?.Element ?? (argObj as NodeWrapper)?.Node;
+
+            if (childNode != null)
+            {
+                // Apply immediately for DOM-observable semantics, then notify invalidation pipeline.
+                _element.AppendChild(childNode);
+
                 DomMutationQueue.Instance.EnqueueMutation(new DomMutation(
                     MutationType.NodeInsert,
                     InvalidationKind.Layout | InvalidationKind.Paint,
                     _element,
-                    null, // PropertyName irrelevant for insert
                     null,
-                    childWrapper.Element // NewValue is the node to insert
+                    null,
+                    childNode
                 ));
-                
+
                 return args[0];
             }
-            
+
             return FenValue.Null;
         }
 
@@ -749,23 +941,31 @@ namespace FenBrowser.FenEngine.DOM
 
             if (args.Length == 0 || !args[0].IsObject) return FenValue.Null;
 
-            var childWrapper = args[0].AsObject() as ElementWrapper;
-            
-            if (childWrapper != null)
+            var argObj = args[0].AsObject();
+            if (argObj is AttrWrapper)
             {
-                // Enqueue mutation (Deferred)
+                throw new DomException("HierarchyRequestError", "Attributes cannot be inserted into the child node list.");
+            }
+
+            var childNode = (argObj as ElementWrapper)?.Element ?? (argObj as NodeWrapper)?.Node;
+
+            if (childNode != null)
+            {
+                // Apply immediately for DOM-observable semantics, then notify invalidation pipeline.
+                _element.RemoveChild(childNode);
+
                 DomMutationQueue.Instance.EnqueueMutation(new DomMutation(
                     MutationType.NodeRemove,
                     InvalidationKind.Layout | InvalidationKind.Paint,
                     _element,
                     null,
-                    childWrapper.Element, // OldValue is the node to remove
+                    childNode,
                     null
                 ));
-                
+
                 return args[0];
             }
-            
+
             return FenValue.Null;
         }
 
@@ -861,6 +1061,27 @@ namespace FenBrowser.FenEngine.DOM
              }
         }
 
+        private FenValue GetElementsByTagNameMethod(FenValue[] args, FenValue thisVal)
+        {
+            var tag = args.Length > 0 ? args[0].ToString() : "*";
+            var collection = _element.GetElementsByTagName(tag);
+            return FenValue.FromObject(new HTMLCollectionWrapper(collection, _context));
+        }
+
+        private FenValue GetElementsByTagNameNSMethod(FenValue[] args, FenValue thisVal)
+        {
+            // Namespace-aware matching is not yet implemented in the core DOM; delegate by local name.
+            var localName = args.Length > 1 ? args[1].ToString() : "*";
+            var collection = _element.GetElementsByTagName(localName);
+            return FenValue.FromObject(new HTMLCollectionWrapper(collection, _context));
+        }
+
+        private FenValue GetElementsByClassNameMethod(FenValue[] args, FenValue thisVal)
+        {
+            var classNames = args.Length > 0 ? args[0].ToString() : string.Empty;
+            var collection = _element.GetElementsByClassName(classNames);
+            return FenValue.FromObject(new HTMLCollectionWrapper(collection, _context));
+        }
         private FenValue ShowDialog(FenValue[] args, FenValue thisVal)
         {
             if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "show"))
@@ -964,32 +1185,69 @@ namespace FenBrowser.FenEngine.DOM
             var type = args[0].ToString();
             var callback = args[1];
 
-            if (string.IsNullOrEmpty(type) || callback  == null || !callback.IsFunction)
-                return FenValue.Undefined;
-            
-             bool capture = false;
-             bool once = false;
-             bool passive = false;
-             FenObject signalObj = null;
-             if (args.Length >= 3)
-             {
-                if (args[2].IsBoolean) capture = args[2].ToBoolean();
-                else if (args[2].IsObject)
+            bool capture = false;
+            bool once = false;
+            bool passive = false;
+            IObject signalObj = null;
+            if (args.Length >= 3)
+            {
+                if (!args[2].IsObject || args[2].IsNull)
                 {
-                   var opts = args[2].AsObject() as FenObject;
-                   if (opts != null) {
-                       var cVal = opts.Get("capture"); capture = cVal.IsBoolean ? cVal.ToBoolean() : false;
-                       var oVal = opts.Get("once"); once = oVal.IsBoolean ? oVal.ToBoolean() : false;
-                       var pVal = opts.Get("passive"); passive = pVal.IsBoolean ? pVal.ToBoolean() : false;
-                       var sVal = opts.Get("signal");
-                       if (sVal.IsObject) signalObj = sVal.AsObject() as FenObject;
-                   }
+                    capture = args[2].ToBoolean();
                 }
-             }
+                else
+                {
+                    var opts = args[2].AsObject();
+                    if (opts != null)
+                    {
+                        var captureVal = opts.Get("capture", _context);
+                        if (captureVal.IsUndefined)
+                        {
+                            var captureGetter = opts.Get("__get_capture", _context);
+                            if (captureGetter.IsFunction)
+                            {
+                                captureVal = captureGetter.AsFunction().Invoke(Array.Empty<FenValue>(), _context, FenValue.FromObject(opts));
+                            }
+                        }
+                        capture = captureVal.ToBoolean();
 
-             // If signal is already aborted, do not add the listener (per spec)
-             if (signalObj != null && signalObj.Get("aborted").ToBoolean())
-                 return FenValue.Undefined;
+                        var onceVal = opts.Get("once", _context);
+                        if (onceVal.IsUndefined)
+                        {
+                            var onceGetter = opts.Get("__get_once", _context);
+                            if (onceGetter.IsFunction)
+                            {
+                                onceVal = onceGetter.AsFunction().Invoke(Array.Empty<FenValue>(), _context, FenValue.FromObject(opts));
+                            }
+                        }
+                        once = onceVal.ToBoolean();
+
+                        var passiveVal = opts.Get("passive", _context);
+                        if (passiveVal.IsUndefined)
+                        {
+                            var passiveGetter = opts.Get("__get_passive", _context);
+                            if (passiveGetter.IsFunction)
+                            {
+                                passiveVal = passiveGetter.AsFunction().Invoke(Array.Empty<FenValue>(), _context, FenValue.FromObject(opts));
+                            }
+                        }
+                        passive = passiveVal.ToBoolean();
+
+                        var sVal = opts.Get("signal", _context);
+                        if (sVal.IsObject) signalObj = sVal.AsObject();
+                    }
+                }
+            }
+
+            var callbackIsValid = callback.IsFunction || callback.IsObject;
+            if (type == null || callbackIsValid == false)
+                return FenValue.Undefined;
+            if (callback.IsNull || callback.IsUndefined)
+                return FenValue.Undefined;
+
+            // If signal is already aborted, do not add the listener (per spec)
+            if (signalObj != null && signalObj.Get("aborted", _context).ToBoolean())
+                return FenValue.Undefined;
 
             EventTarget.Registry.Add(_element, type, callback, capture, once, passive);
 
@@ -1000,7 +1258,7 @@ namespace FenBrowser.FenEngine.DOM
                 var capturedType = type;
                 var capturedCallback = callback;
                 var capturedCapture = capture;
-                var addAbortListener = signalObj.Get("addEventListener");
+                var addAbortListener = signalObj.Get("addEventListener", _context);
                 if (addAbortListener.IsFunction)
                 {
                     addAbortListener.AsFunction()?.Invoke(new FenValue[]
@@ -1026,21 +1284,115 @@ namespace FenBrowser.FenEngine.DOM
             var type = args[0].ToString();
             var callback = args[1];
             bool capture = false;
-            if (args.Length >= 3 && args[2].IsBoolean) capture = args[2].ToBoolean();
-            
+            if (args.Length >= 3)
+            {
+                if (!args[2].IsObject || args[2].IsNull)
+                {
+                    capture = args[2].ToBoolean();
+                }
+                else
+                {
+                    var opts = args[2].AsObject();
+                    if (opts != null)
+                    {
+                        var captureVal = opts.Get("capture", _context);
+                        if (captureVal.IsUndefined)
+                        {
+                            var captureGetter = opts.Get("__get_capture", _context);
+                            if (captureGetter.IsFunction)
+                            {
+                                captureVal = captureGetter.AsFunction().Invoke(Array.Empty<FenValue>(), _context, FenValue.FromObject(opts));
+                            }
+                        }
+                        capture = captureVal.ToBoolean();
+                    }
+                }
+            }
+
             EventTarget.Registry.Remove(_element, type, callback, capture);
             return FenValue.Undefined;
         }
 
         private FenValue DispatchEventMethod(FenValue[] args, FenValue thisValue)
         {
-             if (args.Length == 0 || !args[0].IsObject) return FenValue.FromBoolean(false);
-             var eventObj = args[0].AsObject() as DomEvent;
-             // Ensure it's dispatched through the correct DOM Event Flow
-             var notPrevented = EventTarget.DispatchEvent(_element, eventObj, _context);
-             return FenValue.FromBoolean(notPrevented);
-        }
+            if (args.Length == 0 || !args[0].IsObject)
+            {
+                throw new Exception("TypeError: Failed to execute 'dispatchEvent': parameter 1 is not of type 'Event'.");
+            }
 
+            var originalEventValue = args[0];
+            var eventObj = args[0].AsObject() as DomEvent;
+            if (eventObj == null)
+            {
+                var evtLike = args[0].AsObject() as FenObject;
+                if (evtLike == null) return FenValue.FromBoolean(false);
+
+                var typeVal = evtLike.Get("type");
+                var type = !typeVal.IsUndefined ? typeVal.ToString() : string.Empty;
+                var bubbles = evtLike.Get("bubbles").ToBoolean();
+                var cancelable = evtLike.Get("cancelable").ToBoolean();
+                var composed = evtLike.Get("composed").ToBoolean();
+                eventObj = new DomEvent(type, bubbles, cancelable, composed, _context);
+            }
+
+            var shouldRunMouseActivation =
+                string.Equals(eventObj.Type, "click", StringComparison.OrdinalIgnoreCase) &&
+                IsMouseClickEvent(originalEventValue);
+
+            var hadCheckablePreActivation = false;
+            var previouslyChecked = false;
+            if (shouldRunMouseActivation && TryGetCheckableInputType(_element, out var checkableType))
+            {
+                previouslyChecked = _element.HasAttribute("checked");
+                ApplyCheckablePreActivation(_element, checkableType);
+                hadCheckablePreActivation = _element.HasAttribute("checked") != previouslyChecked;
+            }
+
+            var notPrevented = EventTarget.DispatchEvent(_element, eventObj, _context);
+
+            // Legacy fallback for runtimes that do not wire EventTarget top-level dispatch.
+            if (eventObj.Bubbles && EventTarget.ExternalListenerInvoker == null)
+            {
+                var windowVal = _context?.Environment?.Get("window") ?? FenValue.Undefined;
+                if (windowVal.IsObject)
+                {
+                    var windowDispatch = windowVal.AsObject().Get("dispatchEvent");
+                    if (windowDispatch.IsFunction)
+                    {
+                        var windowResult = windowDispatch.AsFunction().Invoke(
+                            new[] { FenValue.FromObject(eventObj) },
+                            _context,
+                            windowVal);
+                        if (windowResult.IsBoolean)
+                        {
+                            notPrevented = notPrevented && windowResult.ToBoolean();
+                        }
+                    }
+                }
+            }
+
+            if (shouldRunMouseActivation)
+            {
+                if (!notPrevented && hadCheckablePreActivation)
+                {
+                    RestoreCheckableState(_element, previouslyChecked);
+                }
+                else
+                {
+                    if (hadCheckablePreActivation && _element.IsConnected)
+                    {
+                        DispatchInputAndChangeEvents(_element);
+                    }
+
+                    if (notPrevented)
+                    {
+                        RunSubmitActivation(_element);
+                    }
+                }
+            }
+
+            return FenValue.FromBoolean(notPrevented);
+        }
         private FenValue FocusMethod(FenValue[] args, FenValue thisVal)
         {
             if (!IsPotentiallyFocusable(_element))
@@ -1079,6 +1431,181 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.Undefined;
         }
 
+        private FenValue ClickMethod(FenValue[] args, FenValue thisVal)
+        {
+            if (_element == null)
+            {
+                return FenValue.Undefined;
+            }
+
+            if (IsUserInteractionDisabledControl(_element))
+            {
+                return FenValue.Undefined;
+            }
+
+            var hadCheckablePreActivation = false;
+            var previouslyChecked = false;
+            if (TryGetCheckableInputType(_element, out var checkableType))
+            {
+                previouslyChecked = _element.HasAttribute("checked");
+                ApplyCheckablePreActivation(_element, checkableType);
+                hadCheckablePreActivation = _element.HasAttribute("checked") != previouslyChecked;
+            }
+
+            var clickEvent = new DomEvent("click", bubbles: true, cancelable: true, composed: true, context: _context);
+            var notPrevented = EventTarget.DispatchEvent(_element, clickEvent, _context);
+
+            if (!notPrevented)
+            {
+                if (hadCheckablePreActivation)
+                {
+                    RestoreCheckableState(_element, previouslyChecked);
+                }
+                return FenValue.Undefined;
+            }
+
+            if (hadCheckablePreActivation && _element.IsConnected)
+            {
+                DispatchInputAndChangeEvents(_element);
+            }
+
+            RunSubmitActivation(_element);
+            return FenValue.Undefined;
+        }
+
+        private bool IsMouseClickEvent(FenValue eventValue)
+        {
+            if (!eventValue.IsObject)
+            {
+                return false;
+            }
+
+            var current = eventValue.AsObject();
+            while (current != null)
+            {
+                var ctorVal = current.Get("constructor", _context);
+                if (ctorVal.IsFunction && ctorVal.AsFunction() is FenFunction ctorFn)
+                {
+                    var ctorName = ctorFn.Name ?? string.Empty;
+                    if (string.Equals(ctorName, "MouseEvent", StringComparison.Ordinal) ||
+                        string.Equals(ctorName, "PointerEvent", StringComparison.Ordinal))
+                    {
+                        return true;
+                    }
+
+                    if (string.Equals(ctorName, "Event", StringComparison.Ordinal))
+                    {
+                        return false;
+                    }
+                }
+
+                current = current.GetPrototype();
+            }
+
+            return false;
+        }
+
+        private static bool TryGetCheckableInputType(Element element, out string type)
+        {
+            type = string.Empty;
+            if (!string.Equals(element?.TagName, "input", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var inputType = (element.GetAttribute("type") ?? string.Empty).ToLowerInvariant();
+            if (inputType != "checkbox" && inputType != "radio")
+            {
+                return false;
+            }
+
+            type = inputType;
+            return true;
+        }
+
+        private static void ApplyCheckablePreActivation(Element element, string inputType)
+        {
+            var wasChecked = element.HasAttribute("checked");
+            if (inputType == "checkbox")
+            {
+                if (wasChecked) element.RemoveAttribute("checked");
+                else element.SetAttribute("checked", "");
+            }
+            else if (inputType == "radio" && !wasChecked)
+            {
+                element.SetAttribute("checked", "");
+            }
+        }
+
+        private static void RestoreCheckableState(Element element, bool shouldBeChecked)
+        {
+            if (shouldBeChecked) element.SetAttribute("checked", "");
+            else element.RemoveAttribute("checked");
+        }
+
+        private void DispatchInputAndChangeEvents(Element element)
+        {
+            var inputEvt = new DomEvent("input", bubbles: true, cancelable: false, composed: true, context: _context);
+            EventTarget.DispatchEvent(element, inputEvt, _context);
+
+            var changeEvt = new DomEvent("change", bubbles: true, cancelable: false, composed: false, context: _context);
+            EventTarget.DispatchEvent(element, changeEvt, _context);
+        }
+
+        private static bool IsUserInteractionDisabledControl(Element element)
+        {
+            if (element == null || !element.HasAttribute("disabled"))
+            {
+                return false;
+            }
+
+            var tag = element.TagName?.ToLowerInvariant() ?? string.Empty;
+            return tag == "input" || tag == "button" || tag == "select" || tag == "textarea" || tag == "option" || tag == "optgroup";
+        }
+
+        private void RunSubmitActivation(Element control)
+        {
+            if (control == null || !control.IsConnected || IsUserInteractionDisabledControl(control))
+            {
+                return;
+            }
+
+            var tag = control.TagName?.ToLowerInvariant() ?? string.Empty;
+            var type = (control.GetAttribute("type") ?? string.Empty).ToLowerInvariant();
+
+            var isSubmit = false;
+            if (tag == "button")
+            {
+                isSubmit = string.IsNullOrEmpty(type) || type == "submit";
+            }
+            else if (tag == "input")
+            {
+                isSubmit = type == "submit" || type == "image";
+            }
+
+            if (!isSubmit)
+            {
+                return;
+            }
+
+            var current = control.ParentNode;
+            while (current != null)
+            {
+                if (current is Element formElement && string.Equals(formElement.TagName, "form", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!formElement.IsConnected)
+                    {
+                        return;
+                    }
+
+                    var submitEvent = new DomEvent("submit", bubbles: true, cancelable: true, composed: false, context: _context);
+                    EventTarget.DispatchEvent(formElement, submitEvent, _context);
+                    return;
+                }
+
+                current = current.ParentNode;
+            }
+        }
         private static bool IsPotentiallyFocusable(Element element)
         {
             if (element == null) return false;
@@ -1318,7 +1845,7 @@ namespace FenBrowser.FenEngine.DOM
 
         public FenValue Get(string key, IExecutionContext context = null)
         {
-            var attrName = "data-" + CamelToKebab(key);
+            var attrName = "data-" + PropertyNameToAttributeSuffix(key);
             var val = _element.GetAttribute(attrName);
             if (val != null)
                 return FenValue.FromString(val);
@@ -1327,24 +1854,128 @@ namespace FenBrowser.FenEngine.DOM
 
         public void Set(string key, FenValue value, IExecutionContext context = null)
         {
-            var attrName = "data-" + CamelToKebab(key);
+            var attrName = "data-" + PropertyNameToAttributeSuffix(key);
             _element.SetAttribute(attrName, value.ToString());
-             _context?.RequestRender?.Invoke();
+            _context?.RequestRender?.Invoke();
         }
 
-        public bool Has(string key, IExecutionContext context = null) => !Get(key, context).IsUndefined;
-        public bool Delete(string key, IExecutionContext context = null) => false;
-        public IEnumerable<string> Keys(IExecutionContext context = null) => new string[0];
+        public bool Has(string key, IExecutionContext context = null)
+        {
+            return EnumerateSupportedPropertyNames().Contains(key, StringComparer.Ordinal);
+        }
+
+        public bool Delete(string key, IExecutionContext context = null)
+        {
+            var attrName = "data-" + PropertyNameToAttributeSuffix(key);
+            if (_element.HasAttribute(attrName))
+            {
+                _element.RemoveAttribute(attrName);
+                _context?.RequestRender?.Invoke();
+            }
+            return true;
+        }
+
+        public IEnumerable<string> Keys(IExecutionContext context = null) => EnumerateSupportedPropertyNames();
+
+        public IEnumerable<string> GetOwnPropertyNames(IExecutionContext context = null) => EnumerateSupportedPropertyNames();
+
+        public PropertyDescriptor? GetOwnPropertyDescriptor(string key)
+        {
+            if (!Has(key))
+            {
+                return null;
+            }
+
+            return new PropertyDescriptor
+            {
+                Value = Get(key),
+                Writable = true,
+                Enumerable = true,
+                Configurable = true,
+                Getter = null,
+                Setter = null
+            };
+        }
+
         public IObject GetPrototype() => _prototype;
         public void SetPrototype(IObject prototype) => _prototype = prototype;
         public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
 
-        private string CamelToKebab(string s)
+        private IEnumerable<string> EnumerateSupportedPropertyNames()
         {
-            return System.Text.RegularExpressions.Regex.Replace(s, "(?<!^)([A-Z])", "-$1").ToLower();
+            var yielded = new HashSet<string>(StringComparer.Ordinal);
+            var attrs = _element.Attributes;
+            for (int i = 0; i < attrs.Length; i++)
+            {
+                var attr = attrs[i];
+                if (attr == null || string.IsNullOrEmpty(attr.Name))
+                {
+                    continue;
+                }
+
+                if (!attr.Name.StartsWith("data-", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var suffix = attr.Name.Substring(5);
+                var propName = AttributeSuffixToPropertyName(suffix);
+                if (yielded.Add(propName))
+                {
+                    yield return propName;
+                }
+            }
+        }
+
+        private static string AttributeSuffixToPropertyName(string suffix)
+        {
+            if (suffix == null)
+            {
+                return string.Empty;
+            }
+
+            var sb = new StringBuilder(suffix.Length);
+            for (int i = 0; i < suffix.Length; i++)
+            {
+                var c = suffix[i];
+                if (c == '-' && i + 1 < suffix.Length && suffix[i + 1] >= 'a' && suffix[i + 1] <= 'z')
+                {
+                    sb.Append(char.ToUpperInvariant(suffix[i + 1]));
+                    i++;
+                    continue;
+                }
+
+                sb.Append(c);
+            }
+
+            return sb.ToString();
+        }
+
+        private static string PropertyNameToAttributeSuffix(string propertyName)
+        {
+            if (propertyName == null)
+            {
+                return string.Empty;
+            }
+
+            var sb = new StringBuilder(propertyName.Length * 2);
+            for (int i = 0; i < propertyName.Length; i++)
+            {
+                var c = propertyName[i];
+                if (c >= 'A' && c <= 'Z')
+                {
+                    sb.Append('-');
+                    sb.Append(char.ToLowerInvariant(c));
+                }
+                else
+                {
+                    sb.Append(c);
+                }
+            }
+
+            return sb.ToString();
         }
     }
-
     public class CSSStyleDeclaration : IObject
     {
         private readonly Element _element;
@@ -1478,3 +2109,32 @@ namespace FenBrowser.FenEngine.DOM
         }
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

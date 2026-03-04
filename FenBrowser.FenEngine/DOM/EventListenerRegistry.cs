@@ -74,7 +74,7 @@ namespace FenBrowser.FenEngine.DOM
         /// </summary>
         public void Add(Element element, string type, FenValue callback, bool capture = false, bool once = false, bool passive = false)
         {
-            if (element  == null || string.IsNullOrEmpty(type) || callback  == null)
+            if (element  == null || type == null || callback  == null)
                 return;
 
             lock (_lock)
@@ -108,7 +108,7 @@ namespace FenBrowser.FenEngine.DOM
         /// </summary>
         public void Remove(Element element, string type, FenValue callback, bool capture = false)
         {
-            if (element  == null || string.IsNullOrEmpty(type) || callback  == null)
+            if (element  == null || type == null || callback  == null)
                 return;
 
             lock (_lock)
@@ -150,7 +150,7 @@ namespace FenBrowser.FenEngine.DOM
         {
             var result = new List<EventListener>();
 
-            if (element  == null || string.IsNullOrEmpty(type))
+            if (element  == null || type == null)
                 return result;
 
             lock (_lock)
@@ -179,7 +179,7 @@ namespace FenBrowser.FenEngine.DOM
         {
             var result = new List<EventListener>();
 
-            if (element  == null || string.IsNullOrEmpty(type))
+            if (element  == null || type == null)
                 return result;
 
             lock (_lock)
@@ -202,7 +202,7 @@ namespace FenBrowser.FenEngine.DOM
         /// </summary>
         public void RemoveOnce(Element element, string type, EventListener listener)
         {
-            if (element  == null || string.IsNullOrEmpty(type) || listener  == null)
+            if (element  == null || type == null || listener  == null)
                 return;
 
             lock (_lock)
@@ -244,4 +244,6 @@ namespace FenBrowser.FenEngine.DOM
         }
     }
 }
+
+
 
