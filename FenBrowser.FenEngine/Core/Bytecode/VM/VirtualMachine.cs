@@ -31,15 +31,15 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         }
 
         /// <summary>
-        /// Polymorphic inline cache: caches up to 4 shape→slot mappings per property access site.
+        /// Polymorphic inline cache: caches up to 4 shape?slot mappings per property access site.
         /// When more than 4 distinct shapes are seen, the site goes megamorphic (no caching).
         /// </summary>
         private sealed class PolymorphicInlineCache
         {
             public const int MaxEntries = 4;
             public readonly PropertyInlineCacheEntry[] Entries = new PropertyInlineCacheEntry[MaxEntries];
-            public int Count;      // 0–4: valid entries
-            public bool Megamorphic; // true → too many shapes, skip caching
+            public int Count;      // 0?4: valid entries
+            public bool Megamorphic; // true ? too many shapes, skip caching
         }
 
         private sealed class BytecodeArrayObject : FenObject
@@ -558,7 +558,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         // Cached primitive prototype lookups (lazily resolved from the environment on first use)
         private readonly Dictionary<string, FenObject> _primitivePrototypeCache = new Dictionary<string, FenObject>(StringComparer.Ordinal);
 
-        // Generator yield state — set by the Yield opcode to signal RunLoop() to exit
+        // Generator yield state ? set by the Yield opcode to signal RunLoop() to exit
         private bool _generatorYielded;
         private FenValue _generatorYieldValue;
 
@@ -817,7 +817,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             }
             else
             {
-                pic.Megamorphic = true; // Too many shapes at this site — go megamorphic
+                pic.Megamorphic = true; // Too many shapes at this site ? go megamorphic
             }
         }
 
@@ -844,6 +844,16 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 }
 
                 return value;
+            }
+
+            if (TryResolveNamedGlobalById(frame, varName, out var namedGlobalById))
+            {
+                return namedGlobalById;
+            }
+
+            if (frame.Environment.HasBinding(varName))
+            {
+                return frame.Environment.Get(varName);
             }
 
             return FenValue.Undefined; // Safe: return undefined without throwing
@@ -873,7 +883,74 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 return value;
             }
 
+            if (TryResolveNamedGlobalById(frame, varName, out var namedGlobalById))
+            {
+                return namedGlobalById;
+            }
+
+            if (frame.Environment.HasBinding(varName))
+            {
+                return frame.Environment.Get(varName);
+            }
+
             throw new Exception($"ReferenceError: {varName} is not defined");
+        }
+
+        private static bool TryResolveNamedGlobalById(CallFrame frame, string varName, out FenValue value)
+        {
+            value = FenValue.Undefined;
+            if (string.IsNullOrEmpty(varName))
+            {
+                return false;
+            }
+
+            var root = frame.Environment;
+            while (root?.Outer != null)
+            {
+                root = root.Outer;
+            }
+
+            if (root == null)
+            {
+                return false;
+            }
+
+            var docVal = root.Get("document");
+            if (!docVal.IsObject)
+            {
+                var windowVal = root.Get("window");
+                if (windowVal.IsObject)
+                {
+                    docVal = windowVal.AsObject().Get("document");
+                }
+            }
+
+            if (!docVal.IsObject)
+            {
+                return false;
+            }
+
+            var docObj = docVal.AsObject();
+            if (docObj == null)
+            {
+                return false;
+            }
+
+            var getById = docObj.Get("getElementById");
+            if (!getById.IsFunction)
+            {
+                return false;
+            }
+
+            var found = getById.AsFunction().Invoke(new[] { FenValue.FromString(varName) }, null, docVal);
+            if (found.IsNull || found.IsUndefined)
+            {
+                return false;
+            }
+
+            root.Set(varName, found);
+            value = found;
+            return true;
         }
 
         public FenValue Execute(CodeBlock initialBlock, FenEnvironment initialEnv)
@@ -897,6 +974,26 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             if (block != null && block.LocalSlotCount > 0)
             {
                 env.InitializeFastStore(block.LocalSlotCount);
+
+                // Seed fast slots from already-resolved bindings (global/env) so optimized local loads
+                // observe existing values instead of defaulting to undefined.
+                for (int slotIndex = 0; slotIndex < block.LocalSlotCount; slotIndex++)
+                {
+                    var slotName = block.GetLocalSlotName(slotIndex);
+                    if (string.IsNullOrEmpty(slotName))
+                    {
+                        continue;
+                    }
+
+                    if (env.TryGetLocal(slotName, out var localValue))
+                    {
+                        env.SetFast(slotIndex, localValue);
+                    }
+                    else if (env.HasBinding(slotName))
+                    {
+                        env.SetFast(slotIndex, env.Get(slotName));
+                    }
+                }
             }
                 
             var frame = _callFrames[_frameCount];
@@ -1243,7 +1340,9 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                             case OpCode.LoadLocal:
                             {
                                 int localSlot = ReadInt32(instructions, ref frame);
-                                _stack[_sp++] = frame.Environment.GetFast(localSlot);
+                                var slotName = frame.Block.GetLocalSlotName(localSlot);
+                                var localValue = frame.Environment.GetFast(localSlot);
+                                _stack[_sp++] = localValue;
                                 break;
                             }
                             case OpCode.StoreLocal:
@@ -1460,7 +1559,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                     }
                                     if (!func.IsArrowFunction)
                                     {
-                                        SetFunctionBinding(func, newEnv, "this", receiver);
+                                        var thisVal = receiver;
+                                        SetFunctionBinding(func, newEnv, "this", thisVal);
                                     }
                                     BindFunctionArgumentsFromStack(func, newEnv, argCount, argStart);
 
@@ -1510,7 +1610,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                     }
                                     if (!func.IsArrowFunction)
                                     {
-                                        SetFunctionBinding(func, newEnv, "this", receiver);
+                                        var thisVal = receiver;
+                                        SetFunctionBinding(func, newEnv, "this", thisVal);
                                     }
                                     BindFunctionArgumentsFromArrayLike(func, newEnv, argsObject, argCount);
 
@@ -2454,6 +2555,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             if (func?.LocalMap != null && func.LocalMap.Count > 0)
             {
                 env.InitializeFastStore(func.LocalMap.Count);
+                // Keep dictionary-backed lexical updates and fast-slot loads coherent.
+                // Without this mapping, closure writes via Environment.Update() can leave
+                // captured locals stale in FastStore.
+                env.ConfigureFastSlots(func.LocalMap);
             }
         }
 
@@ -2935,4 +3040,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         }
     }
 }
+
+
+
+
+
+
 

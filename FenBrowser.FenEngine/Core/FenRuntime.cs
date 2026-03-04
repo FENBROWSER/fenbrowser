@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom.V2;
+﻿using FenBrowser.Core.Dom.V2;
 using System;
 using System;
 using FenBrowser.Core;
@@ -102,10 +102,27 @@ namespace FenBrowser.FenEngine.Core
                 {
                     // Dispatch to all addEventListener("popstate", ...) listeners
                     var listeners = _windowEventListeners["popstate"].ToList();
-                    foreach (var callback in listeners)
+                    foreach (var listener in listeners)
                     {
+                        var callback = listener.Callback;
                         if (callback.IsFunction)
+                        {
                             ExecuteFunction(callback.AsFunction() as FenFunction, popStateArgs);
+                        }
+                        else if (callback.IsObject)
+                        {
+                            var handleEvent = callback.AsObject().Get("handleEvent");
+                            if (handleEvent.IsFunction)
+                            {
+                                _context.ThisBinding = callback;
+                                handleEvent.AsFunction().Invoke(popStateArgs, _context, callback);
+                            }
+                        }
+
+                        if (listener.Once)
+                        {
+                            _windowEventListeners["popstate"].Remove(listener);
+                        }
                     }
                 }
 
@@ -289,6 +306,7 @@ namespace FenBrowser.FenEngine.Core
             // CORE CONSTRUCTORS (Refactored to FenFunction)
             // ============================================
             var window = new FenObject();
+            window.Set("__fen_window_named_access__", FenValue.FromBoolean(true));
             var objectProto = new FenObject();
             var arrayProto = new FenObject();
             var stringProto = new FenObject();
@@ -1118,7 +1136,7 @@ namespace FenBrowser.FenEngine.Core
                 if (arr == null) return thisVal;
                 var compareFn = args.Length > 0 && args[0].IsFunction ? args[0].AsFunction() : null;
                 var len = (int)arr.Get("length").ToNumber();
-                // O(n log n) sort — read into List, sort, write back
+                // O(n log n) sort â€” read into List, sort, write back
                 var items = new System.Collections.Generic.List<FenValue>(len);
                 for (int i = 0; i < len; i++)
                     items.Add(arr.Get(i.ToString()));
@@ -1191,7 +1209,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromNumber(newLen);
             })));
 
-            // splice — ES3
+            // splice â€” ES3
             arrayProto.SetBuiltin("splice", FenValue.FromFunction(new FenFunction("splice", (args, thisVal) =>
             {
                 var arr = thisVal.AsObject();
@@ -1239,7 +1257,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(removed);
             })));
 
-            // reduceRight — ES5
+            // reduceRight â€” ES5
             arrayProto.SetBuiltin("reduceRight", FenValue.FromFunction(new FenFunction("reduceRight", (args, thisVal) =>
             {
                 var arr = thisVal.AsObject();
@@ -1263,7 +1281,7 @@ namespace FenBrowser.FenEngine.Core
                 return accumulator;
             })));
 
-            // copyWithin — ES6
+            // copyWithin â€” ES6
             arrayProto.SetBuiltin("copyWithin", FenValue.FromFunction(new FenFunction("copyWithin", (args, thisVal) =>
             {
                 var arr = thisVal.AsObject();
@@ -1285,7 +1303,7 @@ namespace FenBrowser.FenEngine.Core
                 return thisVal;
             })));
 
-            // keys — ES6 iterator
+            // keys â€” ES6 iterator
             arrayProto.SetBuiltin("keys", FenValue.FromFunction(new FenFunction("keys", (args, thisVal) =>
             {
                 var src = thisVal.AsObject() as FenObject;
@@ -1315,7 +1333,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(iter);
             })));
 
-            // values — ES6 iterator
+            // values â€” ES6 iterator
             arrayProto.SetBuiltin("values", FenValue.FromFunction(new FenFunction("values", (args, thisVal) =>
             {
                 var src = thisVal.AsObject() as FenObject;
@@ -1345,7 +1363,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(iter);
             })));
 
-            // entries — ES6 iterator
+            // entries â€” ES6 iterator
             arrayProto.SetBuiltin("entries", FenValue.FromFunction(new FenFunction("entries", (args, thisVal) =>
             {
                 var src = thisVal.AsObject() as FenObject;
@@ -1379,7 +1397,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(iter);
             })));
 
-            // at — ES2022
+            // at â€” ES2022
             arrayProto.SetBuiltin("at", FenValue.FromFunction(new FenFunction("at", (args, thisVal) =>
             {
                 var arr = thisVal.AsObject();
@@ -1391,7 +1409,7 @@ namespace FenBrowser.FenEngine.Core
                 return arr.Get(idx.ToString());
             })));
 
-            // flat — ES2019
+            // flat â€” ES2019
             arrayProto.SetBuiltin("flat", FenValue.FromFunction(new FenFunction("flat", (args, thisVal) =>
             {
                 var arr = thisVal.AsObject() as FenObject;
@@ -1422,7 +1440,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(result);
             })));
 
-            // flatMap — ES2019
+            // flatMap â€” ES2019
             arrayProto.SetBuiltin("flatMap", FenValue.FromFunction(new FenFunction("flatMap", (args, thisVal) =>
             {
                 var arr = thisVal.AsObject();
@@ -1459,7 +1477,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(result);
             })));
 
-            // findLast — ES2023
+            // findLast â€” ES2023
             arrayProto.SetBuiltin("findLast", FenValue.FromFunction(new FenFunction("findLast", (args, thisVal) =>
             {
                 var arr = thisVal.AsObject();
@@ -1479,7 +1497,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.Undefined;
             })));
 
-            // findLastIndex — ES2023
+            // findLastIndex â€” ES2023
             arrayProto.SetBuiltin("findLastIndex", FenValue.FromFunction(new FenFunction("findLastIndex", (args, thisVal) =>
             {
                 var arr = thisVal.AsObject();
@@ -1499,7 +1517,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromNumber(-1);
             })));
 
-            // toReversed — ES2023 (non-mutating)
+            // toReversed â€” ES2023 (non-mutating)
             arrayProto.SetBuiltin("toReversed", FenValue.FromFunction(new FenFunction("toReversed", (args, thisVal) =>
             {
                 var arr = thisVal.AsObject();
@@ -1511,7 +1529,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(result);
             })));
 
-            // toSorted — ES2023 (non-mutating)
+            // toSorted â€” ES2023 (non-mutating)
             arrayProto.SetBuiltin("toSorted", FenValue.FromFunction(new FenFunction("toSorted", (args, thisVal) =>
             {
                 var arr = thisVal.AsObject();
@@ -1531,7 +1549,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(result);
             })));
 
-            // toSpliced — ES2023 (non-mutating)
+            // toSpliced â€” ES2023 (non-mutating)
             arrayProto.SetBuiltin("toSpliced", FenValue.FromFunction(new FenFunction("toSpliced", (args, thisVal) =>
             {
                 var arr = thisVal.AsObject();
@@ -1580,7 +1598,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(result);
             })));
 
-            // with — ES2023 (non-mutating)
+            // with â€” ES2023 (non-mutating)
             arrayProto.SetBuiltin("with", FenValue.FromFunction(new FenFunction("with", (args, thisVal) =>
             {
                 var arr = thisVal.AsObject();
@@ -1963,7 +1981,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromNumber(match.Success ? match.Index : -1);
             })));
 
-            // at — ES2022
+            // at â€” ES2022
             stringProto.SetBuiltin("at", FenValue.FromFunction(new FenFunction("at", (args, thisVal) =>
             {
                 var str = thisVal.AsString(_context);
@@ -2193,9 +2211,7 @@ namespace FenBrowser.FenEngine.Core
                 if (func == null) return FenValue.FromError("TypeError: call called on non-function");
                 var newThis = args.Length > 0 ? args[0] : FenValue.Undefined;
                 var funcArgs = args.Length > 1 ? args.Skip(1).ToArray() : new FenValue[0];
-                if (func.IsNative && func.NativeImplementation != null)
-                    return func.NativeImplementation(funcArgs, newThis);
-                return func.Invoke(funcArgs, _context);
+                return func.Invoke(funcArgs, _context, newThis);
             })));
 
             // Function.prototype.apply(thisArg, argsArray)
@@ -2220,9 +2236,7 @@ namespace FenBrowser.FenEngine.Core
                 else
                     return FenValue.FromError("TypeError: apply arguments not iterable");
 
-                if (func.IsNative && func.NativeImplementation != null)
-                    return func.NativeImplementation(funcArgs, newThis);
-                return func.Invoke(funcArgs, _context);
+                return func.Invoke(funcArgs, _context, newThis);
             })));
 
             // Function.prototype.bind(thisArg, ...args)
@@ -2236,9 +2250,7 @@ namespace FenBrowser.FenEngine.Core
                 var boundFunc = new FenFunction("bound " + (originalFunc.Name ?? "anonymous"), (callArgs, _) =>
                 {
                     var finalArgs = boundArgs.Concat(callArgs).ToArray();
-                    if (originalFunc.IsNative && originalFunc.NativeImplementation != null)
-                        return originalFunc.NativeImplementation(finalArgs, boundThis);
-                    return originalFunc.Invoke(finalArgs, _context);
+                    return originalFunc.Invoke(finalArgs, _context, boundThis);
                 });
                 return FenValue.FromFunction(boundFunc);
             })));
@@ -2336,7 +2348,7 @@ namespace FenBrowser.FenEngine.Core
 
             SetGlobal("Symbol", FenValue.FromFunction(symbolCtor));
 
-            // Shared Iterator prototype — declared here so array/string iterator instances can use it as their prototype.
+            // Shared Iterator prototype â€” declared here so array/string iterator instances can use it as their prototype.
             // Methods (map, filter, etc.) are attached after MakeIteratorObject is defined below (~line 3440).
             FenObject iteratorProto = new FenObject();
             iteratorProto.InternalClass = "Iterator";
@@ -2919,7 +2931,7 @@ namespace FenBrowser.FenEngine.Core
                 }
             })));
 
-            // Annex B: Date.prototype.getYear() — returns year - 1900 for years in range
+            // Annex B: Date.prototype.getYear() â€” returns year - 1900 for years in range
             {
                 var fn = new FenFunction("getYear", (args, thisVal) =>
                 {
@@ -2932,7 +2944,7 @@ namespace FenBrowser.FenEngine.Core
                 dateProto.SetBuiltin("getYear", FenValue.FromFunction(fn));
             }
 
-            // Annex B: Date.prototype.setYear(year) — sets full year = year < 100 ? year+1900 : year
+            // Annex B: Date.prototype.setYear(year) â€” sets full year = year < 100 ? year+1900 : year
             {
                 var fn = new FenFunction("setYear", (args, thisVal) =>
                 {
@@ -2954,7 +2966,7 @@ namespace FenBrowser.FenEngine.Core
                 dateProto.SetBuiltin("setYear", FenValue.FromFunction(fn));
             }
 
-            // Annex B: Date.prototype.toGMTString() — alias for toUTCString
+            // Annex B: Date.prototype.toGMTString() â€” alias for toUTCString
             {
                 var fn = new FenFunction("toGMTString", (args, thisVal) =>
                 {
@@ -3035,7 +3047,7 @@ namespace FenBrowser.FenEngine.Core
                 // ES2022: Error.cause
                 if (args.Length > 1 && args[1].IsObject)
                 {
-                    var opts = args[1].AsObject() as FenObject;
+                    var opts = args[1].AsObject();
                     err.Set("cause", opts.Get("cause"));
                 }
 
@@ -3141,12 +3153,34 @@ namespace FenBrowser.FenEngine.Core
                     if (args.Length == 0) return FenValue.Null;
                     return _domBridge.QuerySelector(args[0].ToString());
                 })));
+            document.Set("getElementsByTagName", FenValue.FromFunction(new FenFunction("getElementsByTagName",
+                (FenValue[] args, FenValue thisVal) =>
+                {
+                    if (_domBridge == null) return FenValue.FromObject(new FenObject());
+                    var tagName = args.Length > 0 ? args[0].ToString() : "*";
+                    return _domBridge.GetElementsByTagName(tagName);
+                })));
+            document.Set("getElementsByClassName", FenValue.FromFunction(new FenFunction("getElementsByClassName",
+                (FenValue[] args, FenValue thisVal) =>
+                {
+                    if (_domBridge == null) return FenValue.FromObject(new FenObject());
+                    var classNames = args.Length > 0 ? args[0].ToString() : "";
+                    return _domBridge.GetElementsByClassName(classNames);
+                })));
             document.Set("createElement", FenValue.FromFunction(new FenFunction("createElement",
                 (FenValue[] args, FenValue thisVal) =>
                 {
                     if (_domBridge == null) return FenValue.Null;
                     if (args.Length == 0) return FenValue.Null;
                     return _domBridge.CreateElement(args[0].ToString());
+                })));
+            document.Set("createElementNS", FenValue.FromFunction(new FenFunction("createElementNS",
+                (FenValue[] args, FenValue thisVal) =>
+                {
+                    if (_domBridge == null) return FenValue.Null;
+                    var namespaceUri = args.Length > 0 ? args[0].ToString() : "";
+                    var qualifiedName = args.Length > 1 ? args[1].ToString() : "";
+                    return _domBridge.CreateElementNS(namespaceUri, qualifiedName);
                 })));
 
             document.Set("createTextNode", FenValue.FromFunction(new FenFunction("createTextNode",
@@ -3157,7 +3191,19 @@ namespace FenBrowser.FenEngine.Core
                     return _domBridge.CreateTextNode(text);
                 })));
 
-            // document.body / head (Stubs or getters if bridge supports)
+            // Basic document element references used by WPT harness and DOM tests.
+            if (_domBridge != null)
+            {
+                document.Set("body", _domBridge.QuerySelector("body"));
+                document.Set("head", _domBridge.QuerySelector("head"));
+                document.Set("documentElement", _domBridge.QuerySelector("html"));
+            }
+            else
+            {
+                document.Set("body", FenValue.Null);
+                document.Set("head", FenValue.Null);
+                document.Set("documentElement", FenValue.Null);
+            }
 
             SetGlobal("document", FenValue.FromObject(document));
 
@@ -3170,8 +3216,9 @@ namespace FenBrowser.FenEngine.Core
                 {
                     FenLogger.Debug("[FenRuntime] console.log invoked from JS", LogCategory.JavaScript);
                 }
-                catch
+                catch (Exception logEx)
                 {
+                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 var messages = new List<string>();
@@ -3183,8 +3230,9 @@ namespace FenBrowser.FenEngine.Core
                 {
                     FenLogger.Debug($"[FenRuntime] Console.log: {msg}", LogCategory.JavaScript);
                 }
-                catch
+                catch (Exception logEx)
                 {
+                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 try
@@ -3212,16 +3260,18 @@ namespace FenBrowser.FenEngine.Core
                 {
                     FenLogger.Error($"[FenRuntime] Console.error: {msg}", LogCategory.JavaScript);
                 }
-                catch
+                catch (Exception logEx)
                 {
+                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 try
                 {
                     OnConsoleMessage?.Invoke($"[Error] {msg}");
                 }
-                catch
+                catch (Exception logEx)
                 {
+                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 return FenValue.Undefined;
@@ -3237,16 +3287,18 @@ namespace FenBrowser.FenEngine.Core
                 {
                     FenLogger.Info($"[FenRuntime] Console.warn: {msg}", LogCategory.JavaScript);
                 }
-                catch
+                catch (Exception logEx)
                 {
+                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 try
                 {
                     OnConsoleMessage?.Invoke($"[Warn] {msg}");
                 }
-                catch
+                catch (Exception logEx)
                 {
+                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 return FenValue.Undefined;
@@ -3260,16 +3312,18 @@ namespace FenBrowser.FenEngine.Core
                 {
                     FenLogger.Info($"[FenRuntime] Console.info: {msg}", LogCategory.JavaScript);
                 }
-                catch
+                catch (Exception logEx)
                 {
+                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 try
                 {
                     OnConsoleMessage?.Invoke($"[Info] {msg}");
                 }
-                catch
+                catch (Exception logEx)
                 {
+                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 return FenValue.Undefined;
@@ -3281,8 +3335,9 @@ namespace FenBrowser.FenEngine.Core
                 {
                     OnConsoleMessage?.Invoke("[Clear]");
                 }
-                catch
+                catch (Exception logEx)
                 {
+                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 return FenValue.Undefined;
@@ -3299,16 +3354,18 @@ namespace FenBrowser.FenEngine.Core
                 {
                     FenLogger.Debug($"[FenRuntime] Console.dir: {output}", LogCategory.JavaScript);
                 }
-                catch
+                catch (Exception logEx)
                 {
+                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 try
                 {
                     OnConsoleMessage?.Invoke($"[Dir] {output}");
                 }
-                catch
+                catch (Exception logEx)
                 {
+                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 return FenValue.Undefined;
@@ -3325,16 +3382,18 @@ namespace FenBrowser.FenEngine.Core
                 {
                     FenLogger.Debug($"[FenRuntime] Console.table: {output}", LogCategory.JavaScript);
                 }
-                catch
+                catch (Exception logEx)
                 {
+                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 try
                 {
                     OnConsoleMessage?.Invoke(output);
                 }
-                catch
+                catch (Exception logEx)
                 {
+                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 return FenValue.Undefined;
@@ -3347,14 +3406,15 @@ namespace FenBrowser.FenEngine.Core
                 var label = args.Length > 0 ? args[0].ToString() : "";
                 _consoleGroupLevel++;
                 var indent = new string(' ', _consoleGroupLevel * 2);
-                var msg = $"{indent}▼ {label}";
+                var msg = $"{indent}â–¼ {label}";
                 Console.WriteLine(msg);
                 try
                 {
                     OnConsoleMessage?.Invoke($"[Group] {label}");
                 }
-                catch
+                catch (Exception logEx)
                 {
+                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 return FenValue.Undefined;
@@ -3366,7 +3426,7 @@ namespace FenBrowser.FenEngine.Core
                     var label = args.Length > 0 ? args[0].ToString() : "";
                     _consoleGroupLevel++;
                     var indent = new string(' ', _consoleGroupLevel * 2);
-                    var msg = $"{indent}▶ {label}";
+                    var msg = $"{indent}â–¶ {label}";
                     Console.WriteLine(msg);
                     try
                     {
@@ -3431,8 +3491,9 @@ namespace FenBrowser.FenEngine.Core
                 {
                     OnConsoleMessage?.Invoke($"[Count] {msg}");
                 }
-                catch
+                catch (Exception logEx)
                 {
+                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 return FenValue.Undefined;
@@ -3460,16 +3521,18 @@ namespace FenBrowser.FenEngine.Core
                 {
                     FenLogger.Error($"[FenRuntime] Console.assert: {msg}", LogCategory.JavaScript);
                 }
-                catch
+                catch (Exception logEx)
                 {
+                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 try
                 {
                     OnConsoleMessage?.Invoke($"[Assert] {msg}");
                 }
-                catch
+                catch (Exception logEx)
                 {
+                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 return FenValue.Undefined;
@@ -3485,8 +3548,9 @@ namespace FenBrowser.FenEngine.Core
                 {
                     OnConsoleMessage?.Invoke($"[Trace] {label}");
                 }
-                catch
+                catch (Exception logEx)
                 {
+                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 return FenValue.Undefined;
@@ -3654,15 +3718,15 @@ namespace FenBrowser.FenEngine.Core
                 }
             }
 
-            // ── iteratorProto methods ─────────────────────────────────────────────────────
+            // â”€â”€ iteratorProto methods â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             // All iterators (from MakeIteratorObject, array iterator, string iterator) share
             // this prototype so that Test262 prototype-chain checks pass.
 
-            // [Symbol.iterator] — returns this (self-iterable protocol)
+            // [Symbol.iterator] â€” returns this (self-iterable protocol)
             iteratorProto.SetBuiltin("[Symbol.iterator]",
                 FenValue.FromFunction(new FenFunction("[Symbol.iterator]", (_, t) => t)));
 
-            // map — lazy transform
+            // map â€” lazy transform
             iteratorProto.SetBuiltin("map", FenValue.FromFunction(new FenFunction("map", (a, t) =>
             {
                 var fn = a.Length > 0 ? a[0].AsFunction() : null;
@@ -3677,7 +3741,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(MakeIteratorObject(Mapped()));
             })));
 
-            // filter — lazy predicate
+            // filter â€” lazy predicate
             iteratorProto.SetBuiltin("filter", FenValue.FromFunction(new FenFunction("filter", (a, t) =>
             {
                 var fn = a.Length > 0 ? a[0].AsFunction() : null;
@@ -3692,7 +3756,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(MakeIteratorObject(Filtered()));
             })));
 
-            // take — first n elements
+            // take â€” first n elements
             iteratorProto.SetBuiltin("take", FenValue.FromFunction(new FenFunction("take", (a, t) =>
             {
                 int n = a.Length > 0 ? (int)a[0].ToNumber() : 0;
@@ -3709,7 +3773,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(MakeIteratorObject(Taken()));
             })));
 
-            // drop — skip first n elements
+            // drop â€” skip first n elements
             iteratorProto.SetBuiltin("drop", FenValue.FromFunction(new FenFunction("drop", (a, t) =>
             {
                 int n = a.Length > 0 ? (int)a[0].ToNumber() : 0;
@@ -3726,7 +3790,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(MakeIteratorObject(Dropped()));
             })));
 
-            // flatMap — map + flatten one level
+            // flatMap â€” map + flatten one level
             iteratorProto.SetBuiltin("flatMap", FenValue.FromFunction(new FenFunction("flatMap", (a, t) =>
             {
                 var fn = a.Length > 0 ? a[0].AsFunction() : null;
@@ -3760,7 +3824,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(MakeIteratorObject(FlatMapped()));
             })));
 
-            // toArray — terminal: collect all into an Array
+            // toArray â€” terminal: collect all into an Array
             iteratorProto.SetBuiltin("toArray", FenValue.FromFunction(new FenFunction("toArray", (a, t) =>
             {
                 var arr = FenObject.CreateArray();
@@ -3770,7 +3834,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(arr);
             })));
 
-            // forEach — terminal: call fn for each
+            // forEach â€” terminal: call fn for each
             iteratorProto.SetBuiltin("forEach", FenValue.FromFunction(new FenFunction("forEach", (a, t) =>
             {
                 var fn = a.Length > 0 ? a[0].AsFunction() : null;
@@ -3780,7 +3844,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.Undefined;
             })));
 
-            // reduce — terminal: fold
+            // reduce â€” terminal: fold
             iteratorProto.SetBuiltin("reduce", FenValue.FromFunction(new FenFunction("reduce", (a, t) =>
             {
                 var fn = a.Length > 0 ? a[0].AsFunction() : null;
@@ -3795,7 +3859,7 @@ namespace FenBrowser.FenEngine.Core
                 return acc;
             })));
 
-            // some — terminal: short-circuit OR
+            // some â€” terminal: short-circuit OR
             iteratorProto.SetBuiltin("some", FenValue.FromFunction(new FenFunction("some", (a, t) =>
             {
                 var fn = a.Length > 0 ? a[0].AsFunction() : null;
@@ -3805,7 +3869,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromBoolean(false);
             })));
 
-            // every — terminal: short-circuit AND
+            // every â€” terminal: short-circuit AND
             iteratorProto.SetBuiltin("every", FenValue.FromFunction(new FenFunction("every", (a, t) =>
             {
                 var fn = a.Length > 0 ? a[0].AsFunction() : null;
@@ -3815,7 +3879,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromBoolean(true);
             })));
 
-            // find — terminal: first match or undefined
+            // find â€” terminal: first match or undefined
             iteratorProto.SetBuiltin("find", FenValue.FromFunction(new FenFunction("find", (a, t) =>
             {
                 var fn = a.Length > 0 ? a[0].AsFunction() : null;
@@ -3825,7 +3889,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.Undefined;
             })));
 
-            // findIndex — terminal: first matching index or -1
+            // findIndex â€” terminal: first matching index or -1
             iteratorProto.SetBuiltin("findIndex", FenValue.FromFunction(new FenFunction("findIndex", (a, t) =>
             {
                 var fn = a.Length > 0 ? a[0].AsFunction() : null;
@@ -3839,7 +3903,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromNumber(-1.0);
             })));
 
-            // ── iteratorCtor linkage ──────────────────────────────────────────────────────
+            // â”€â”€ iteratorCtor linkage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             iteratorProto.SetBuiltin("constructor", FenValue.FromFunction(iteratorCtor));
             iteratorCtor.Set("prototype", FenValue.FromObject(iteratorProto));
 
@@ -4328,7 +4392,7 @@ namespace FenBrowser.FenEngine.Core
                     (args, thisVal) => { return args.Length > 0 ? args[0] : FenValue.Undefined; })));
 
             // Object.create is already defined earlier (line ~377) with full propertiesObject support.
-            // Do NOT re-define it here — the earlier definition handles both args correctly.
+            // Do NOT re-define it here â€” the earlier definition handles both args correctly.
 
             // Object.getPrototypeOf(obj) - ES5
             objectConstructor.Set("getPrototypeOf", FenValue.FromFunction(new FenFunction("getPrototypeOf",
@@ -4406,7 +4470,7 @@ namespace FenBrowser.FenEngine.Core
                         return FenValue.FromError("TypeError: Object.defineProperty called on non-object");
                     }
 
-                    var obj = args[0].AsObject() as FenObject;
+                    var obj = args[0].AsObject();
                     if (obj == null)
                     {
                         return FenValue.FromError("TypeError: Object.defineProperty called on non-object");
@@ -4419,7 +4483,7 @@ namespace FenBrowser.FenEngine.Core
                         return FenValue.FromError("TypeError: Property description must be an object");
                     }
 
-                    var descObj = args[2].AsObject() as FenObject;
+                    var descObj = args[2].AsObject();
                     if (descObj == null)
                     {
                         return FenValue.FromError("TypeError: Property description must be an object");
@@ -4503,10 +4567,20 @@ namespace FenBrowser.FenEngine.Core
                     if (args[0].IsNull || args[0].IsUndefined)
                         return FenValue.FromError("TypeError: Cannot convert undefined or null to object");
                     // ES2015+: primitives are coerced via ToObject; just use AsObject which handles strings/numbers/booleans
-                    var obj = args[0].AsObject() as FenObject;
-                    if (obj == null) return FenValue.Undefined; // primitive with no own properties
+                    var rawObj = args[0].AsObject();
+                    if (rawObj == null) return FenValue.Undefined;
                     var prop = args[1].ToString();
-                    var desc = obj?.GetOwnPropertyDescriptor(prop);
+
+                    PropertyDescriptor? desc = null;
+                    if (rawObj is FenObject fenObj)
+                    {
+                        desc = fenObj.GetOwnPropertyDescriptor(prop);
+                    }
+                    else
+                    {
+                        desc = rawObj.GetOwnPropertyDescriptor(prop);
+                    }
+
                     if (desc == null) return FenValue.Undefined;
                     var result = new FenObject();
                     if (desc.Value.IsAccessor)
@@ -4536,10 +4610,11 @@ namespace FenBrowser.FenEngine.Core
                         return FenValue.FromError("TypeError: Cannot convert undefined or null to object");
                     if (!args[0].IsObject && !args[0].IsFunction)
                         return FenValue.FromObject(result); // primitives have no own properties
-                    var obj = args[0].AsObject() as FenObject;
-                    if (obj == null) return FenValue.FromObject(result);
+                    var rawObj = args[0].AsObject();
+                    if (rawObj == null) return FenValue.FromObject(result);
                     var getDescFn = objectConstructor.Get("getOwnPropertyDescriptor", null).AsFunction();
-                    foreach (var key in obj.GetOwnPropertyNames())
+                    var ownNames = rawObj is FenObject fenOwnObj ? fenOwnObj.GetOwnPropertyNames() : rawObj.GetOwnPropertyNames();
+                    foreach (var key in ownNames)
                         result.Set(key,
                             getDescFn?.Invoke(new FenValue[] { args[0], FenValue.FromString(key) }, null) ??
                             FenValue.Undefined);
@@ -4556,20 +4631,28 @@ namespace FenBrowser.FenEngine.Core
                         return
                             FenValue.FromObject(
                                 CreateEmptyArray()); // primitives: empty (per ES2015 ToObject coercion returning empty array)
-                    var obj = args[0].AsObject() as FenObject;
-                    if (obj == null) return FenValue.FromObject(CreateEmptyArray());
-                    var names = obj.GetOwnPropertyNames().ToList();
+                    var rawObj = args[0].AsObject();
+                    var names = new List<string>();
+                    if (rawObj is FenObject fenObj)
+                    {
+                        names.AddRange(fenObj.GetOwnPropertyNames());
+                    }
+                    else if (rawObj != null)
+                    {
+                        names.AddRange(rawObj.Keys() ?? Enumerable.Empty<string>());
+                    }
+
                     var result = FenObject.CreateArray();
                     for (int i = 0; i < names.Count; i++) result.Set(i.ToString(), FenValue.FromString(names[i]));
                     result.Set("length", FenValue.FromNumber(names.Count));
                     return FenValue.FromObject(result);
                 })));
 
-            // ES6: Object.getOwnPropertySymbols(obj) — returns array of own symbol keys
+            // ES6: Object.getOwnPropertySymbols(obj) â€” returns array of own symbol keys
             objectConstructor.Set("getOwnPropertySymbols", FenValue.FromFunction(new FenFunction(
                 "getOwnPropertySymbols", (args, thisVal) =>
                 {
-                    // Symbols stored as @@{id} keys — return empty for now (spec compliant skeleton)
+                    // Symbols stored as @@{id} keys â€” return empty for now (spec compliant skeleton)
                     return FenValue.FromObject(CreateEmptyArray());
                 })));
 
@@ -4587,7 +4670,7 @@ namespace FenBrowser.FenEngine.Core
                 (args, thisVal) =>
                 {
                     if (args.Length == 0 || !args[0].IsObject) return FenValue.FromBoolean(false);
-                    var obj = args[0].AsObject() as FenObject;
+                    var obj = args[0].AsObject();
                     return FenValue.FromBoolean(obj?.IsExtensible ?? false);
                 })));
 
@@ -4595,7 +4678,7 @@ namespace FenBrowser.FenEngine.Core
             objectConstructor.Set("isFrozen", FenValue.FromFunction(new FenFunction("isFrozen", (args, thisVal) =>
             {
                 if (args.Length == 0 || !args[0].IsObject) return FenValue.FromBoolean(true);
-                var obj = args[0].AsObject() as FenObject;
+                var obj = args[0].AsObject();
                 return FenValue.FromBoolean(obj?.IsFrozen() ?? true);
             })));
 
@@ -4603,7 +4686,7 @@ namespace FenBrowser.FenEngine.Core
             objectConstructor.Set("isSealed", FenValue.FromFunction(new FenFunction("isSealed", (args, thisVal) =>
             {
                 if (args.Length == 0 || !args[0].IsObject) return FenValue.FromBoolean(true);
-                var obj = args[0].AsObject() as FenObject;
+                var obj = args[0].AsObject();
                 return FenValue.FromBoolean(obj?.IsSealed() ?? true);
             })));
 
@@ -4619,7 +4702,7 @@ namespace FenBrowser.FenEngine.Core
                 return args.Length > 0 ? args[0] : FenValue.Undefined;
             })));
 
-            // Object.prototype methods — attached to a shared prototype all objects inherit from
+            // Object.prototype methods â€” attached to a shared prototype all objects inherit from
             objectProto.SetBuiltin("hasOwnProperty", FenValue.FromFunction(new FenFunction("hasOwnProperty", (args, thisVal) =>
             {
                 var prop = args.Length > 0 ? args[0].ToString() : "";
@@ -4653,7 +4736,7 @@ namespace FenBrowser.FenEngine.Core
             {
                 if (thisVal.IsUndefined) return FenValue.FromString("[object Undefined]");
                 if (thisVal.IsNull) return FenValue.FromString("[object Null]");
-                // ES2015 §19.1.3.6: check Symbol.toStringTag first
+                // ES2015 Â§19.1.3.6: check Symbol.toStringTag first
                 if (thisVal.IsObject || thisVal.IsFunction)
                 {
                     var obj = thisVal.AsObject() as FenObject;
@@ -4875,59 +4958,404 @@ namespace FenBrowser.FenEngine.Core
             window.Set("name", FenValue.FromString(""));
             window.Set("closed", FenValue.FromBoolean(false));
             window.Set("opener", FenValue.Null);
+            window.Set("event", FenValue.Undefined);
 
-            // Event listeners storage for window - Use class field
-            // var windowEventListeners = new Dictionary<string, List<FenValue>>(); // Field used instead
+                        // EventTarget prototype for Window + generic EventTarget APIs.
+            var eventTargetPrototype = new FenObject();
+            eventTargetPrototype.SetPrototype(objectProto);
 
-            // addEventListener
             var addEventListenerFunc = FenValue.FromFunction(new FenFunction("addEventListener",
                 (FenValue[] args, FenValue thisVal) =>
                 {
-                    if (args.Length >= 2)
+                    if (args.Length < 2)
                     {
-                        var eventType = args[0].ToString();
-                        var callback = args[1];
-                        FenLogger.Info($"[FenRuntime] addEventListener called for '{eventType}'", LogCategory.Events);
-
-                        if (!_windowEventListeners.ContainsKey(eventType))
-                        {
-                            _windowEventListeners[eventType] = new List<FenValue>();
-                        }
-
-                        _windowEventListeners[eventType].Add(callback);
+                        return FenValue.Undefined;
                     }
 
+                    var eventType = args[0].ToString();
+                    var callback = args[1];
+                    if (eventType == null || !callback.IsFunction)
+                    {
+                        return FenValue.Undefined;
+                    }
+
+                    bool capture = false;
+                    bool once = false;
+                    bool passive = false;
+                    if (args.Length >= 3)
+                    {
+                        if (args[2].IsBoolean)
+                        {
+                            capture = args[2].ToBoolean();
+                        }
+                        else if (args[2].IsObject)
+                        {
+                            var opts = args[2].AsObject();
+                            var cap = opts.Get("capture");
+                            capture = cap.IsBoolean && cap.ToBoolean();
+                            var one = opts.Get("once");
+                            once = one.IsBoolean && one.ToBoolean();
+                            var pas = opts.Get("passive");
+                            passive = pas.IsBoolean && pas.ToBoolean();
+                        }
+                    }
+
+
+                    if (thisVal.IsObject && thisVal.AsObject() is ElementWrapper elementTarget)
+                    {
+                        FenBrowser.FenEngine.DOM.EventTarget.Registry.Add(elementTarget.Element, eventType, callback, capture, once, passive);
+                        return FenValue.Undefined;
+                    }
+
+                    // Generic EventTarget instance listeners
+                    if (thisVal.IsObject)
+                    {
+                        var targetObj = thisVal.AsObject();
+                        var listenersVal = targetObj.Get("__fen_listeners__");
+                        var listenersObj = listenersVal.IsObject ? listenersVal.AsObject() as FenObject : null;
+                        if (listenersObj == null)
+                        {
+                            listenersObj = new FenObject();
+                            targetObj.Set("__fen_listeners__", FenValue.FromObject(listenersObj));
+                        }
+
+                        var arrVal = listenersObj.Get(eventType);
+                        var arr = arrVal.IsObject ? arrVal.AsObject() as FenObject : null;
+                        if (arr == null)
+                        {
+                            arr = FenObject.CreateArray();
+                            listenersObj.Set(eventType, FenValue.FromObject(arr));
+                        }
+
+                        int len = (int)arr.Get("length").ToNumber();
+                        bool duplicate = false;
+                        for (int i = 0; i < len; i++)
+                        {
+                            var entry = arr.Get(i.ToString());
+                            if (!entry.IsObject) continue;
+                            var entryObj = entry.AsObject();
+                            var existingCallback = entryObj.Get("callback");
+                            var existingCapture = entryObj.Get("capture").ToBoolean();
+                            if (existingCallback.Equals(callback) && existingCapture == capture)
+                            {
+                                duplicate = true;
+                                break;
+                            }
+                        }
+
+                        if (!duplicate)
+                        {
+                            var entry = new FenObject();
+                            entry.Set("callback", callback);
+                            entry.Set("capture", FenValue.FromBoolean(capture));
+                            entry.Set("once", FenValue.FromBoolean(once));
+                            entry.Set("passive", FenValue.FromBoolean(passive));
+                            arr.Set(len.ToString(), FenValue.FromObject(entry));
+                            arr.Set("length", FenValue.FromNumber(len + 1));
+                        }
+
+                        return FenValue.Undefined;
+                    }
+
+                    if (!_windowEventListeners.TryGetValue(eventType, out var windowListeners))
+                    {
+                        windowListeners = new List<WindowEventListener>();
+                        _windowEventListeners[eventType] = windowListeners;
+                    }
+
+                    if (!windowListeners.Any(l => l.Callback.Equals(callback) && l.Capture == capture))
+                    {
+                        windowListeners.Add(new WindowEventListener(callback, capture, once, passive));
+                    }
                     return FenValue.Undefined;
                 }));
-            window.Set("addEventListener", addEventListenerFunc);
 
-            // removeEventListener
             var removeEventListenerFunc = FenValue.FromFunction(new FenFunction("removeEventListener",
                 (FenValue[] args, FenValue thisVal) =>
                 {
-                    if (args.Length >= 2)
+                    if (args.Length < 2)
                     {
-                        var eventType = args[0].ToString();
-                        var callback = args[1];
+                        return FenValue.Undefined;
+                    }
 
-                        if (_windowEventListeners.ContainsKey(eventType))
+                    var eventType = args[0].ToString();
+                    var callback = args[1];
+                    bool capture = false;
+                    if (args.Length >= 3 && args[2].IsBoolean)
+                    {
+                        capture = args[2].ToBoolean();
+                    }
+
+
+                    if (thisVal.IsObject && thisVal.AsObject() is ElementWrapper elementTarget)
+                    {
+                        FenBrowser.FenEngine.DOM.EventTarget.Registry.Remove(elementTarget.Element, eventType, callback, capture);
+                        return FenValue.Undefined;
+                    }
+
+                    if (thisVal.IsObject)
+                    {
+                        var targetObj = thisVal.AsObject();
+                        var listenersVal = targetObj.Get("__fen_listeners__");
+                        if (listenersVal.IsObject)
                         {
-                            _windowEventListeners[eventType].RemoveAll(l => l.Equals(callback));
+                            var listenersObj = listenersVal.AsObject() as FenObject;
+                            var arrVal = listenersObj?.Get(eventType) ?? FenValue.Undefined;
+                            var arr = arrVal.IsObject ? arrVal.AsObject() as FenObject : null;
+                            if (arr != null)
+                            {
+                                int len = (int)arr.Get("length").ToNumber();
+                                var kept = FenObject.CreateArray();
+                                int k = 0;
+                                for (int i = 0; i < len; i++)
+                                {
+                                    var item = arr.Get(i.ToString());
+                                    bool remove = false;
+                                    if (item.IsObject)
+                                    {
+                                        var itemObj = item.AsObject();
+                                        var itemCallback = itemObj.Get("callback");
+                                        var itemCapture = itemObj.Get("capture").ToBoolean();
+                                        remove = itemCallback.Equals(callback) && itemCapture == capture;
+                                    }
+
+                                    if (!remove)
+                                    {
+                                        kept.Set(k.ToString(), item);
+                                        k++;
+                                    }
+                                }
+                                kept.Set("length", FenValue.FromNumber(k));
+                                listenersObj.Set(eventType, FenValue.FromObject(kept));
+                            }
                         }
+                        return FenValue.Undefined;
+                    }
+
+                    if (_windowEventListeners.ContainsKey(eventType))
+                    {
+                        _windowEventListeners[eventType].RemoveAll(l => l.Callback.Equals(callback) && l.Capture == capture);
                     }
 
                     return FenValue.Undefined;
                 }));
-            window.Set("removeEventListener", removeEventListenerFunc);
 
-            // dispatchEvent (basic implementation)
             var dispatchEventFunc = FenValue.FromFunction(new FenFunction("dispatchEvent",
                 (FenValue[] args, FenValue thisVal) =>
                 {
-                    // Basic stub - returns true to indicate event was dispatched
-                    return FenValue.FromBoolean(true);
+                    if (args.Length == 0 || !args[0].IsObject)
+                    {
+                        throw new Exception("TypeError: Failed to execute 'dispatchEvent': parameter 1 is not of type 'Event'.");
+                    }
+
+                    var eventObj = args[0].AsObject() as DomEvent;
+                    if (eventObj == null)
+                    {
+                        var obj = args[0].AsObject();
+                        var typeVal = obj?.Get("type") ?? FenValue.Undefined;
+                        var type = !typeVal.IsUndefined ? typeVal.ToString() : "";
+                        eventObj = new DomEvent(type, false, false, false, _context);
+                    }
+
+                    if (!eventObj.Initialized)
+                    {
+                        throw new Exception("InvalidStateError: Failed to execute 'dispatchEvent' on 'EventTarget': The event's initialized flag is not set.");
+                    }
+
+                    if (thisVal.IsObject && thisVal.AsObject() is ElementWrapper elementTarget)
+                    {
+                        var elementNotPrevented = FenBrowser.FenEngine.DOM.EventTarget.DispatchEvent(elementTarget.Element, eventObj, _context);
+                        return FenValue.FromBoolean(elementNotPrevented);
+                    }
+
+                    if (thisVal.IsObject)
+                    {
+                        var thisObj = thisVal.AsObject();
+                        if (thisObj is FenObject fenObj && fenObj.NativeObject is Element nativeElement)
+                        {
+                            var elementNotPrevented = FenBrowser.FenEngine.DOM.EventTarget.DispatchEvent(nativeElement, eventObj, _context);
+                            return FenValue.FromBoolean(elementNotPrevented);
+                        }
+
+                        // Some wrapper objects expose NativeObject without IObject/FenObject typing.
+                        var nativeObjectProp = thisObj?.GetType().GetProperty("NativeObject");
+                        if (nativeObjectProp?.GetValue(thisObj) is Element reflectedElement)
+                        {
+                            var reflectedNotPrevented = FenBrowser.FenEngine.DOM.EventTarget.DispatchEvent(reflectedElement, eventObj, _context);
+                            return FenValue.FromBoolean(reflectedNotPrevented);
+                        }
+                    }
+
+                    var effectiveThis = thisVal;
+                    if (!effectiveThis.IsObject || effectiveThis.IsNull || effectiveThis.IsUndefined)
+                    {
+                        effectiveThis = FenValue.FromObject(window);
+                    }
+
+                    // Generic EventTarget dispatch path (window/custom targets): AT_TARGET only.
+                    eventObj.ResetState();
+                    eventObj.Set("eventPhase", FenValue.FromNumber(DomEvent.AT_TARGET));
+                    eventObj.Set("target", effectiveThis);
+                    eventObj.Set("srcElement", effectiveThis);
+
+                    var typeName = eventObj.Type ?? "";
+
+                    if (effectiveThis.IsObject)
+                    {
+                        var targetObj = effectiveThis.AsObject();
+                        var listenersVal = targetObj.Get("__fen_listeners__");
+                        if (listenersVal.IsObject)
+                        {
+                            var listenersObj = listenersVal.AsObject() as FenObject;
+                            var arrVal = listenersObj?.Get(typeName) ?? FenValue.Undefined;
+                            var arr = arrVal.IsObject ? arrVal.AsObject() as FenObject : null;
+                            if (arr != null)
+                            {
+                                int len = (int)arr.Get("length").ToNumber();
+                                for (int i = 0; i < len; i++)
+                                {
+                                    var listenerEntry = arr.Get(i.ToString());
+                                    var callback = listenerEntry;
+                                    var onceListener = false;
+
+                                    if (listenerEntry.IsObject)
+                                    {
+                                        var entryObj = listenerEntry.AsObject();
+                                        var cbVal = entryObj.Get("callback");
+                                        if (!cbVal.IsUndefined)
+                                        {
+                                            callback = cbVal;
+                                            onceListener = entryObj.Get("once").ToBoolean();
+                                        }
+                                    }
+
+                                    FenFunction callbackFn = null;
+                                    var callbackThis = effectiveThis;
+                                    if (callback.IsFunction)
+                                    {
+                                        callbackFn = callback.AsFunction() as FenFunction;
+                                    }
+                                    else if (callback.IsObject)
+                                    {
+                                        var handleEvent = callback.AsObject().Get("handleEvent");
+                                        if (handleEvent.IsFunction)
+                                        {
+                                            callbackFn = handleEvent.AsFunction() as FenFunction;
+                                            callbackThis = callback;
+                                        }
+                                    }
+
+                                    if (callbackFn == null) continue;
+
+                                    _context.ThisBinding = callbackThis;
+                                    callbackFn.Invoke(new[] { FenValue.FromObject(eventObj) }, _context, callbackThis);
+
+                                    if (onceListener)
+                                    {
+                                        var kept = FenObject.CreateArray();
+                                        int k = 0;
+                                        for (int j = 0; j < len; j++)
+                                        {
+                                            if (j == i) continue;
+                                            kept.Set(k.ToString(), arr.Get(j.ToString()));
+                                            k++;
+                                        }
+                                        kept.Set("length", FenValue.FromNumber(k));
+                                        listenersObj.Set(typeName, FenValue.FromObject(kept));
+                                        arr = kept;
+                                        len = k;
+                                        i--;
+                                    }
+
+                                    var cancelBubbleVal = eventObj.Get("cancelBubble");
+                                    if (cancelBubbleVal.IsBoolean && cancelBubbleVal.ToBoolean())
+                                        eventObj.StopPropagation();
+                                    var returnValueVal = eventObj.Get("returnValue");
+                                    if (returnValueVal.IsBoolean && !returnValueVal.ToBoolean())
+                                        eventObj.PreventDefault();
+                                    if (eventObj.ImmediatePropagationStopped)
+                                        break;
+                                }
+                            }
+                        }
+                        var branchReturnValue = eventObj.Get("returnValue");
+                        var branchNotPrevented = !eventObj.DefaultPrevented && !(branchReturnValue.IsBoolean && !branchReturnValue.ToBoolean());
+                        return FenValue.FromBoolean(branchNotPrevented);
+                    }
+
+                    if (_windowEventListeners.TryGetValue(typeName, out var listeners))
+                    {
+                        foreach (var listener in listeners.ToList())
+                        {
+                            FenFunction callbackFn = null;
+                            var callbackThis = FenValue.FromObject(window);
+                            var callback = listener.Callback;
+
+                            if (callback.IsFunction)
+                            {
+                                callbackFn = callback.AsFunction() as FenFunction;
+                            }
+                            else if (callback.IsObject)
+                            {
+                                var handleEvent = callback.AsObject().Get("handleEvent");
+                                if (handleEvent.IsFunction)
+                                {
+                                    callbackFn = handleEvent.AsFunction() as FenFunction;
+                                    callbackThis = callback;
+                                }
+                            }
+
+                            if (callbackFn == null) continue;
+
+                            _context.ThisBinding = callbackThis;
+                            callbackFn.Invoke(new[] { FenValue.FromObject(eventObj) }, _context, callbackThis);
+
+                            if (listener.Once)
+                            {
+                                listeners.Remove(listener);
+                            }
+
+                            var cancelBubbleVal = eventObj.Get("cancelBubble");
+                            if (cancelBubbleVal.IsBoolean && cancelBubbleVal.ToBoolean())
+                                eventObj.StopPropagation();
+                            var returnValueVal = eventObj.Get("returnValue");
+                            if (returnValueVal.IsBoolean && !returnValueVal.ToBoolean())
+                                eventObj.PreventDefault();
+                            if (eventObj.ImmediatePropagationStopped)
+                                break;
+                        }
+                    }
+
+                    var onHandler = window.Get("on" + typeName);
+                    if (onHandler.IsFunction)
+                    {
+                        _context.ThisBinding = FenValue.FromObject(window);
+                        onHandler.AsFunction().Invoke(new[] { FenValue.FromObject(eventObj) }, _context, FenValue.FromObject(window));
+                    }
+
+                    eventObj.FinalizeDispatchState();
+                    eventObj.Set("target", FenValue.Null);
+                    eventObj.Set("srcElement", FenValue.Null);
+                    eventObj.Set("currentTarget", FenValue.Null);
+                    eventObj.Set("eventPhase", FenValue.FromNumber(DomEvent.NONE));
+
+                    var finalReturnValue = eventObj.Get("returnValue");
+                    var finalNotPrevented = !eventObj.DefaultPrevented && !(finalReturnValue.IsBoolean && !finalReturnValue.ToBoolean());
+                    return FenValue.FromBoolean(finalNotPrevented);
                 }));
-            window.Set("dispatchEvent", dispatchEventFunc);
+
+            eventTargetPrototype.SetBuiltin("addEventListener", addEventListenerFunc);
+            eventTargetPrototype.SetBuiltin("removeEventListener", removeEventListenerFunc);
+            eventTargetPrototype.SetBuiltin("dispatchEvent", dispatchEventFunc);
+
+            var eventTargetCtor = new FenFunction("EventTarget", (FenValue[] args, FenValue thisVal) => { var targetObj = new FenObject(); targetObj.SetPrototype(eventTargetPrototype); return FenValue.FromObject(targetObj); });
+            eventTargetCtor.Prototype = eventTargetPrototype;
+            eventTargetCtor.Set("prototype", FenValue.FromObject(eventTargetPrototype));
+            eventTargetPrototype.SetBuiltin("constructor", FenValue.FromFunction(eventTargetCtor));
+            SetGlobal("EventTarget", FenValue.FromFunction(eventTargetCtor));
+
+            // Window extends EventTarget: methods are inherited, not own properties.
+            window.SetPrototype(eventTargetPrototype);
 
             // window.open (popup gate + same-window fallback)
             var windowOpenFunc = FenValue.FromFunction(new FenFunction("open", (FenValue[] args, FenValue thisVal) =>
@@ -4951,8 +5379,9 @@ namespace FenBrowser.FenEngine.Core
                         _historyBridge.PushState(null, string.Empty, requestedUrl);
                     }
                 }
-                catch
+                catch (Exception logEx)
                 {
+                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 try
@@ -4973,8 +5402,9 @@ namespace FenBrowser.FenEngine.Core
                         location.Set("href", FenValue.FromString(requestedUrl));
                     }
                 }
-                catch
+                catch (Exception logEx)
                 {
+                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 // Same-window fallback for now until full popup/tab orchestration is wired.
@@ -4983,7 +5413,105 @@ namespace FenBrowser.FenEngine.Core
             window.Set("open", windowOpenFunc);
 
             SetGlobal("window", FenValue.FromObject(window));
+            // Bridge DOM EventTarget static dispatch to FenRuntime top-level listener storage.
+            FenBrowser.FenEngine.DOM.EventTarget.ResolveWindowTarget = _ => window;
+            FenBrowser.FenEngine.DOM.EventTarget.ResolveDocumentTarget = _ =>
+            {
+                var d = GetGlobal("document");
+                return d.IsObject ? d.AsObject() : null;
+            };
+            FenBrowser.FenEngine.DOM.EventTarget.ExternalListenerInvoker = (targetObj, domEvt, execCtx, capturePhase, atTargetPhase) =>
+            {
+                if (targetObj is not IObject target || domEvt == null || string.IsNullOrWhiteSpace(domEvt.Type)) return;
 
+                domEvt.Set("currentTarget", FenValue.FromObject(target));
+
+                var listenersVal = target.Get("__fen_listeners__");
+                if (listenersVal.IsObject)
+                {
+                    var listenersObj = listenersVal.AsObject() as FenObject;
+                    var arrVal = listenersObj?.Get(domEvt.Type) ?? FenValue.Undefined;
+                    var arr = arrVal.IsObject ? arrVal.AsObject() as FenObject : null;
+                    if (arr != null)
+                    {
+                        int len = (int)arr.Get("length").ToNumber();
+                        for (int i = 0; i < len; i++)
+                        {
+                            if (domEvt.ImmediatePropagationStopped) break;
+
+                            var entryVal = arr.Get(i.ToString());
+                            if (!entryVal.IsObject) continue;
+
+                            var entryObj = entryVal.AsObject();
+                            var callback = entryObj.Get("callback");
+                            var capture = entryObj.Get("capture").ToBoolean();
+                            if (capture != capturePhase) continue;
+
+                            FenFunction callbackFn = null;
+                            FenValue callbackThis = FenValue.FromObject(target);
+                            if (callback.IsFunction)
+                            {
+                                callbackFn = callback.AsFunction() as FenFunction;
+                            }
+                            else if (callback.IsObject)
+                            {
+                                var handleEvent = callback.AsObject().Get("handleEvent");
+                                if (handleEvent.IsFunction)
+                                {
+                                    callbackFn = handleEvent.AsFunction() as FenFunction;
+                                    callbackThis = callback;
+                                }
+                            }
+
+                            if (callbackFn == null) continue;
+
+                            _context.ThisBinding = callbackThis;
+                            callbackFn.Invoke(new[] { FenValue.FromObject(domEvt) }, _context, callbackThis);
+
+                            if (entryObj.Get("once").ToBoolean())
+                            {
+                                for (int j = i + 1; j < len; j++)
+                                {
+                                    arr.Set((j - 1).ToString(), arr.Get(j.ToString()));
+                                }
+                                len--;
+                                arr.Delete(len.ToString());
+                                arr.Set("length", FenValue.FromNumber(len));
+                                i--;
+                            }
+
+                            var cancelBubbleVal = domEvt.Get("cancelBubble");
+                            if (cancelBubbleVal.IsBoolean && cancelBubbleVal.ToBoolean())
+                                domEvt.StopPropagation();
+                            var returnValueVal = domEvt.Get("returnValue");
+                            if (returnValueVal.IsBoolean && !returnValueVal.ToBoolean())
+                                domEvt.PreventDefault();
+                        }
+                    }
+                }
+
+                if (!capturePhase && !domEvt.ImmediatePropagationStopped)
+                {
+                    var onHandler = target.Get("on" + domEvt.Type);
+                    if (onHandler.IsFunction)
+                    {
+                        var thisArg = FenValue.FromObject(target);
+                        _context.ThisBinding = thisArg;
+                        var handlerResult = onHandler.AsFunction().Invoke(new[] { FenValue.FromObject(domEvt) }, _context, thisArg);
+                        if (handlerResult.IsBoolean && !handlerResult.ToBoolean())
+                        {
+                            domEvt.PreventDefault();
+                        }
+
+                        var cancelBubbleVal = domEvt.Get("cancelBubble");
+                        if (cancelBubbleVal.IsBoolean && cancelBubbleVal.ToBoolean())
+                            domEvt.StopPropagation();
+                        var returnValueVal = domEvt.Get("returnValue");
+                        if (returnValueVal.IsBoolean && !returnValueVal.ToBoolean())
+                            domEvt.PreventDefault();
+                    }
+                }
+            };
             // IMPORTANT: Also expose window properties at global scope for direct access
             // In browsers, 'innerWidth' works the same as 'window.innerWidth'
             SetGlobal("innerWidth", FenValue.FromNumber(1920));
@@ -5005,6 +5533,13 @@ namespace FenBrowser.FenEngine.Core
             SetGlobal("removeEventListener", removeEventListenerFunc);
             SetGlobal("dispatchEvent", dispatchEventFunc);
             SetGlobal("open", windowOpenFunc);
+            // Minimal WPT test_driver shim fallback.
+            var testDriverObj = new FenObject();
+            testDriverObj.Set("click", FenValue.FromFunction(new FenFunction("click", (tdArgs, tdThis) => FenValue.FromObject(JsPromise.Resolve(FenValue.Undefined, _context)))));
+            var testDriverVal = FenValue.FromObject(testDriverObj);
+            SetGlobal("test_driver", testDriverVal);
+            window.Set("test_driver", testDriverVal);
+
 
             // globalThis - ES2020 (reference to global object)
             SetGlobal("globalThis", FenValue.FromObject(window));
@@ -5117,98 +5652,162 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(result);
             })));
 
-            // Array.fromAsync(asyncIterable, mapFn?) - ES2024
-            // Returns a Promise<Array> that resolves from an async or sync iterable.
+            // Array.fromAsync(asyncIterable, mapFn?, thisArg?) - ES2024
+            // This runtime executes the sync-resolvable subset and rejects deterministic
+            // type/iterator protocol errors to match spec-facing expectations.
             arrayConstructor.Set("fromAsync", FenValue.FromFunction(new FenFunction("fromAsync", (args, thisVal) =>
             {
-                var asyncIterable = args.Length > 0 ? args[0] : FenValue.Undefined;
-                var mapFnAsync = args.Length > 1 && args[1].IsFunction ? args[1].AsFunction() : null;
+                FenValue Reject(string message) =>
+                    FenValue.FromObject(JsPromise.Reject(FenValue.FromError(message), _context));
 
-                // Build array synchronously (async-iterable awaiting requires full event-loop integration;
-                // for the synchronous subset this covers the most common patterns).
-                var resultArr = FenObject.CreateArray();
-                int idxAsync = 0;
+                if (args.Length == 0 || args[0].IsUndefined || args[0].IsNull)
+                    return Reject("TypeError: Array.fromAsync requires an iterable or array-like input");
 
-                if (asyncIterable.IsObject)
+                var input = args[0];
+                bool mapperProvided = args.Length > 1 && !args[1].IsUndefined;
+                var mapFnAsync = mapperProvided && args[1].IsFunction ? args[1].AsFunction() : null;
+                var mapThisArg = args.Length > 2 ? args[2] : FenValue.Undefined;
+
+                if (mapperProvided && mapFnAsync == null)
+                    return Reject("TypeError: Array.fromAsync mapper must be callable");
+
+                try
                 {
-                    var iterableObj = asyncIterable.AsObject() as FenObject;
-                    if (iterableObj != null)
+                    var resultArr = FenObject.CreateArray();
+                    int idxAsync = 0;
+
+                    // Strings are array-like and handled explicitly, even when boxed iteration is unavailable.
+                    if (input.IsString)
                     {
-                        // Try Symbol.asyncIterator first, then Symbol.iterator, then array-like
-                        var asyncIterMethod = iterableObj.Get("[Symbol.asyncIterator]");
-                        var syncIterMethod = iterableObj.Get("[Symbol.iterator]");
-
-                        FenValue iteratorVal = FenValue.Undefined;
-                        var iterCtx = new ExecutionContext { ThisBinding = asyncIterable };
-                        if (asyncIterMethod.IsFunction)
-                            iteratorVal = asyncIterMethod.AsFunction().Invoke(Array.Empty<FenValue>(), iterCtx);
-                        else if (syncIterMethod.IsFunction)
-                            iteratorVal = syncIterMethod.AsFunction().Invoke(Array.Empty<FenValue>(), iterCtx);
-
-                        var iteratorObj = iteratorVal.IsObject ? iteratorVal.AsObject() as FenObject : null;
-                        if (iteratorObj != null)
+                        var str = input.ToString() ?? string.Empty;
+                        for (int i = 0; i < str.Length; i++)
                         {
-                            var nextFnVal = iteratorObj.Get("next");
-                            if (nextFnVal.IsFunction)
-                            {
-                                var nextFn = nextFnVal.AsFunction();
-                                while (true)
-                                {
-                                    var nextResult = nextFn.Invoke(Array.Empty<FenValue>(), null);
-                                    // Unwrap Promise if needed (synchronous resolution only)
-                                    var nextResultObj = nextResult.AsObject() as FenObject;
-                                    if (nextResultObj is JsPromise nextPromise && nextPromise.IsFulfilled)
-                                    {
-                                        nextResultObj = nextPromise.Result.AsObject() as FenObject;
-                                        if (nextResultObj == null) break;
-                                    }
-                                    if (nextResultObj == null || nextResultObj.Get("done").ToBoolean()) break;
-                                    var elem = nextResultObj.Get("value");
-                                    // Unwrap Promise value if already resolved
-                                    if (elem.IsObject && elem.AsObject() is JsPromise elemP && elemP.IsFulfilled)
-                                        elem = elemP.Result;
-                                    var mappedElem = mapFnAsync != null
-                                        ? mapFnAsync.Invoke(new FenValue[] { elem, FenValue.FromNumber(idxAsync) }, null)
-                                        : elem;
-                                    resultArr.Set(idxAsync.ToString(), mappedElem, null);
-                                    idxAsync++;
-                                }
-                            }
+                            var elem = FenValue.FromString(str[i].ToString());
+                            var mapped = mapFnAsync != null
+                                ? mapFnAsync.Invoke(new FenValue[] { elem, FenValue.FromNumber(idxAsync) }, _context, mapThisArg)
+                                : elem;
+                            resultArr.Set(idxAsync.ToString(), mapped, null);
+                            idxAsync++;
                         }
-                        else
+
+                        resultArr.Set("length", FenValue.FromNumber(idxAsync), null);
+                        return FenValue.FromObject(JsPromise.Resolve(FenValue.FromObject(resultArr), _context));
+                    }
+
+                    FenObject iterableObj = input.IsObject ? input.AsObject() as FenObject : null;
+                    if (iterableObj == null)
+                    {
+                        // Primitive non-null/non-undefined values (number/boolean/symbol/bigint) are treated
+                        // as object-coercible array-like values with length defaulting to zero.
+                        resultArr.Set("length", FenValue.FromNumber(0), null);
+                        return FenValue.FromObject(JsPromise.Resolve(FenValue.FromObject(resultArr), _context));
+                    }
+
+                    var asyncIterMethod = iterableObj.Get("[Symbol.asyncIterator]");
+                    if (!asyncIterMethod.IsUndefined && !asyncIterMethod.IsNull && !asyncIterMethod.IsFunction)
+                        return Reject("TypeError: [Symbol.asyncIterator] must be a function");
+
+                    var syncIterMethod = iterableObj.Get("[Symbol.iterator]");
+                    if (!syncIterMethod.IsUndefined && !syncIterMethod.IsNull && !syncIterMethod.IsFunction)
+                        return Reject("TypeError: [Symbol.iterator] must be a function");
+
+                    FenValue iteratorVal = FenValue.Undefined;
+                    if (asyncIterMethod.IsFunction)
+                        iteratorVal = asyncIterMethod.AsFunction().Invoke(Array.Empty<FenValue>(), _context, input);
+                    else if (syncIterMethod.IsFunction)
+                        iteratorVal = syncIterMethod.AsFunction().Invoke(Array.Empty<FenValue>(), _context, input);
+
+                    var iteratorObj = iteratorVal.IsObject ? iteratorVal.AsObject() as FenObject : null;
+                    if (iteratorObj != null)
+                    {
+                        var nextFnVal = iteratorObj.Get("next");
+                        if (!nextFnVal.IsFunction)
+                            return Reject("TypeError: iterator.next is not callable");
+
+                        var nextFn = nextFnVal.AsFunction();
+                        while (true)
                         {
-                            // Array-like fallback
-                            var lenVal2 = iterableObj.Get("length");
-                            int len2 = lenVal2.IsNumber ? (int)lenVal2.ToNumber() : 0;
-                            for (int i = 0; i < len2; i++)
+                            var nextResult = nextFn.Invoke(Array.Empty<FenValue>(), _context, iteratorVal);
+
+                            if (nextResult.IsObject && nextResult.AsObject() is JsPromise nextPromise)
                             {
-                                var elem = iterableObj.Get(i.ToString());
-                                var mappedElem = mapFnAsync != null
-                                    ? mapFnAsync.Invoke(new FenValue[] { elem, FenValue.FromNumber(i) }, null)
-                                    : elem;
-                                resultArr.Set(idxAsync.ToString(), mappedElem, null);
-                                idxAsync++;
+                                if (nextPromise.IsRejected)
+                                    return FenValue.FromObject(JsPromise.Reject(nextPromise.Result, _context));
+                                if (!nextPromise.IsFulfilled)
+                                    return Reject("TypeError: async iterator result is unresolved in synchronous runtime path");
+                                nextResult = nextPromise.Result;
                             }
+
+                            if (!nextResult.IsObject)
+                                return Reject("TypeError: iterator.next() must return an object");
+
+                            var nextResultObj = nextResult.AsObject() as FenObject;
+                            if (nextResultObj == null)
+                                return Reject("TypeError: iterator.next() must return an object");
+
+                            if (nextResultObj.Get("done").ToBoolean())
+                                break;
+
+                            var elem = nextResultObj.Get("value");
+                            if (elem.IsObject && elem.AsObject() is JsPromise elemPromise)
+                            {
+                                if (elemPromise.IsRejected)
+                                    return FenValue.FromObject(JsPromise.Reject(elemPromise.Result, _context));
+                                if (!elemPromise.IsFulfilled)
+                                    return Reject("TypeError: async element value is unresolved in synchronous runtime path");
+                                elem = elemPromise.Result;
+                            }
+
+                            var mappedElem = mapFnAsync != null
+                                ? mapFnAsync.Invoke(new FenValue[] { elem, FenValue.FromNumber(idxAsync) }, _context, mapThisArg)
+                                : elem;
+                            resultArr.Set(idxAsync.ToString(), mappedElem, null);
+                            idxAsync++;
                         }
                     }
+                    else
+                    {
+                        // Array-like fallback
+                        var lenVal = iterableObj.Get("length");
+                        int len = lenVal.IsNumber ? (int)lenVal.ToNumber() : 0;
+                        if (len < 0) len = 0;
+
+                        for (int i = 0; i < len; i++)
+                        {
+                            var elem = iterableObj.Get(i.ToString());
+                            var mappedElem = mapFnAsync != null
+                                ? mapFnAsync.Invoke(new FenValue[] { elem, FenValue.FromNumber(idxAsync) }, _context, mapThisArg)
+                                : elem;
+                            resultArr.Set(idxAsync.ToString(), mappedElem, null);
+                            idxAsync++;
+                        }
+                    }
+
+                    resultArr.Set("length", FenValue.FromNumber(idxAsync), null);
+                    return FenValue.FromObject(JsPromise.Resolve(FenValue.FromObject(resultArr), _context));
+                }
+                catch (Exception ex)
+                {
+                    return FenValue.FromObject(JsPromise.Reject(FenValue.FromError($"TypeError: {ex.Message}"), _context));
+                }
+            })));
+            // Event constructor (DOM Level 3)
+            var eventPrototype = new FenObject();
+            var eventCtorFn = new FenFunction("Event", (FenValue[] args, FenValue thisVal) =>
+            {
+                if (args.Length == 0)
+                {
+                    throw new Exception("TypeError: Failed to construct 'Event': 1 argument required, but only 0 present.");
                 }
 
-                resultArr.Set("length", FenValue.FromNumber(idxAsync), null);
-                // Wrap in a resolved Promise
-                return FenValue.FromObject(JsPromise.Resolve(FenValue.FromObject(resultArr), _context));
-            })));
-
-            // Event constructor (DOM Level 3)
-            SetGlobal("Event", FenValue.FromFunction(new FenFunction("Event", (FenValue[] args, FenValue thisVal) =>
-            {
-                var type = args.Length > 0 ? args[0].ToString() : "";
+                var type = args[0].ToString();
                 bool bubbles = false;
                 bool cancelable = false;
                 bool composed = false;
 
                 if (args.Length > 1 && args[1].IsObject)
                 {
-                    var opts = args[1].AsObject() as FenObject;
+                    var opts = args[1].AsObject();
                     if (opts != null)
                     {
                         bubbles = opts.Get("bubbles").ToBoolean();
@@ -5217,36 +5816,311 @@ namespace FenBrowser.FenEngine.Core
                     }
                 }
 
-                return FenValue.FromObject(new FenBrowser.FenEngine.DOM.DomEvent(type, bubbles, cancelable, composed));
-            })));
+                var evt = new FenBrowser.FenEngine.DOM.DomEvent(type, bubbles, cancelable, composed, _context);
+                evt.SetPrototype(eventPrototype);
+                evt.Delete("path");
+                evt.Delete("getPreventDefault");
+                return FenValue.FromObject(evt);
+            });
+            eventCtorFn.Prototype = eventPrototype;
+            eventCtorFn.Set("prototype", FenValue.FromObject(eventPrototype));
+            var eventCtor = FenValue.FromFunction(eventCtorFn);
+            eventPrototype.SetBuiltin("constructor", eventCtor);
+            eventPrototype.Delete("path");
+            eventPrototype.Delete("getPreventDefault");
+            eventCtorFn.Set("NONE", FenValue.FromNumber(FenBrowser.FenEngine.DOM.DomEvent.NONE));
+            eventCtorFn.Set("CAPTURING_PHASE", FenValue.FromNumber(FenBrowser.FenEngine.DOM.DomEvent.CAPTURING_PHASE));
+            eventCtorFn.Set("AT_TARGET", FenValue.FromNumber(FenBrowser.FenEngine.DOM.DomEvent.AT_TARGET));
+            eventCtorFn.Set("BUBBLING_PHASE", FenValue.FromNumber(FenBrowser.FenEngine.DOM.DomEvent.BUBBLING_PHASE));
+            SetGlobal("Event", eventCtor);
 
-            // CustomEvent constructor (DOM Level 3)
-            SetGlobal("CustomEvent", FenValue.FromFunction(new FenFunction("CustomEvent",
-                (FenValue[] args, FenValue thisVal) =>
+            FenValue DefineEventSubclass(string name)
+            {
+                var subProto = new FenObject();
+                subProto.SetPrototype(eventPrototype);
+                var subCtorFn = new FenFunction(name, (FenValue[] ctorArgs, FenValue thisVal) =>
                 {
-                    var type = args.Length > 0 ? args[0].ToString() : "";
-                    bool bubbles = false;
-                    bool cancelable = false;
-                    IValue detail = FenValue.Null;
-
-                    if (args.Length > 1 && args[1].IsObject)
+                    if (ctorArgs.Length == 0)
                     {
-                        var opts = args[1].AsObject() as FenObject;
+                        throw new Exception($"TypeError: Failed to construct '{name}': 1 argument required, but only 0 present.");
+                    }
+
+                    var subType = ctorArgs[0].ToString();
+                    bool subBubbles = false;
+                    bool subCancelable = false;
+                    bool subComposed = false;
+                    if (ctorArgs.Length > 1 && ctorArgs[1].IsObject)
+                    {
+                        var opts = ctorArgs[1].AsObject();
                         if (opts != null)
                         {
-                            var bubblesVal = opts.Get("bubbles");
-                            bubbles = bubblesVal.IsUndefined ? false : bubblesVal.ToBoolean();
-                            var cancelableVal = opts.Get("cancelable");
-                            cancelable = cancelableVal.IsUndefined ? false : cancelableVal.ToBoolean();
-                            detail = opts.Get("detail");
+                            subBubbles = opts.Get("bubbles").ToBoolean();
+                            subCancelable = opts.Get("cancelable").ToBoolean();
+                            subComposed = opts.Get("composed").ToBoolean();
                         }
                     }
 
-                    return FenValue.FromObject(
-                        new FenBrowser.FenEngine.DOM.CustomEvent(type, bubbles, cancelable, detail));
-                })));
+                    var subEvt = new FenBrowser.FenEngine.DOM.DomEvent(subType, subBubbles, subCancelable, subComposed, _context);
+                    subEvt.SetPrototype(subProto);
+                    return FenValue.FromObject(subEvt);
+                });
+                subCtorFn.Prototype = subProto;
+                subCtorFn.Set("prototype", FenValue.FromObject(subProto));
+                var ctorVal = FenValue.FromFunction(subCtorFn);
+                subProto.SetBuiltin("constructor", ctorVal);
+                SetGlobal(name, ctorVal);
+                return ctorVal;
+            }
 
-            // ─── performance object ───
+            var uiEventCtor = DefineEventSubclass("UIEvent");
+            var mouseEventCtor = DefineEventSubclass("MouseEvent");
+            var keyboardEventCtor = DefineEventSubclass("KeyboardEvent");
+            var gamepadEventCtor = DefineEventSubclass("GamepadEvent");
+            var beforeUnloadEventCtor = DefineEventSubclass("BeforeUnloadEvent");
+            var focusEventCtor = DefineEventSubclass("FocusEvent");
+            var inputEventCtor = DefineEventSubclass("InputEvent");
+            var compositionEventCtor = DefineEventSubclass("CompositionEvent");
+            var pointerEventCtor = DefineEventSubclass("PointerEvent");
+            var wheelEventCtor = DefineEventSubclass("WheelEvent");
+            var touchEventCtor = DefineEventSubclass("TouchEvent");
+            var animationEventCtor = DefineEventSubclass("AnimationEvent");
+            var transitionEventCtor = DefineEventSubclass("TransitionEvent");
+
+            var errorEventProto = new FenObject();
+            errorEventProto.SetPrototype(eventPrototype);
+            var errorEventCtorFn = new FenFunction("ErrorEvent", (FenValue[] ctorArgs, FenValue thisVal) =>
+            {
+                if (ctorArgs.Length == 0)
+                {
+                    throw new Exception("TypeError: Failed to construct 'ErrorEvent': 1 argument required, but only 0 present.");
+                }
+
+                var evtType = ctorArgs[0].ToString();
+                bool evtBubbles = false;
+                bool evtCancelable = false;
+                bool evtComposed = false;
+                string message = string.Empty;
+                string filename = string.Empty;
+                double lineno = 0;
+                double colno = 0;
+                FenValue errorValue = FenValue.Null;
+
+                if (ctorArgs.Length > 1 && ctorArgs[1].IsObject)
+                {
+                    var opts = ctorArgs[1].AsObject();
+                    if (opts != null)
+                    {
+                        evtBubbles = opts.Get("bubbles").ToBoolean();
+                        evtCancelable = opts.Get("cancelable").ToBoolean();
+                        evtComposed = opts.Get("composed").ToBoolean();
+
+                        var msgVal = opts.Get("message");
+                        message = msgVal.IsUndefined || msgVal.IsNull ? string.Empty : msgVal.ToString();
+
+                        var fileVal = opts.Get("filename");
+                        filename = fileVal.IsUndefined || fileVal.IsNull ? string.Empty : fileVal.ToString();
+
+                        var lineVal = opts.Get("lineno");
+                        if (!lineVal.IsUndefined && !lineVal.IsNull && lineVal.IsNumber)
+                            lineno = lineVal.ToNumber();
+
+                        var colVal = opts.Get("colno");
+                        if (!colVal.IsUndefined && !colVal.IsNull && colVal.IsNumber)
+                            colno = colVal.ToNumber();
+
+                        var errVal = opts.Get("error");
+                        errorValue = errVal.IsUndefined ? FenValue.Null : errVal;
+                    }
+                }
+
+                var subEvt = new FenBrowser.FenEngine.DOM.DomEvent(evtType, evtBubbles, evtCancelable, evtComposed, _context);
+                subEvt.SetPrototype(errorEventProto);
+                subEvt.Set("message", FenValue.FromString(message));
+                subEvt.Set("filename", FenValue.FromString(filename));
+                subEvt.Set("lineno", FenValue.FromNumber(lineno));
+                subEvt.Set("colno", FenValue.FromNumber(colno));
+                subEvt.Set("error", errorValue);
+                return FenValue.FromObject(subEvt);
+            });
+            errorEventCtorFn.Prototype = errorEventProto;
+            errorEventCtorFn.Set("prototype", FenValue.FromObject(errorEventProto));
+            var errorEventCtor = FenValue.FromFunction(errorEventCtorFn);
+            errorEventProto.SetBuiltin("constructor", errorEventCtor);
+            SetGlobal("ErrorEvent", errorEventCtor);
+
+            // CustomEvent constructor (DOM Level 3)
+            var customEventProto = new FenObject();
+            customEventProto.SetPrototype(eventPrototype);
+            var customEventCtorFn = new FenFunction("CustomEvent", (FenValue[] args, FenValue thisVal) =>
+            {
+                if (args.Length == 0)
+                {
+                    throw new Exception("TypeError: Failed to construct 'CustomEvent': 1 argument required, but only 0 present.");
+                }
+
+                var type = args[0].ToString();
+                bool bubbles = false;
+                bool cancelable = false;
+                IValue detail = FenValue.Null;
+
+                if (args.Length > 1 && args[1].IsObject)
+                {
+                    var opts = args[1].AsObject();
+                    if (opts != null)
+                    {
+                        var bubblesVal = opts.Get("bubbles");
+                        bubbles = bubblesVal.IsUndefined ? false : bubblesVal.ToBoolean();
+                        var cancelableVal = opts.Get("cancelable");
+                        cancelable = cancelableVal.IsUndefined ? false : cancelableVal.ToBoolean();
+                        detail = opts.Get("detail");
+                    }
+                }
+
+                var custom = new FenBrowser.FenEngine.DOM.CustomEvent(type, bubbles, cancelable, detail);
+                custom.SetPrototype(customEventProto);
+                return FenValue.FromObject(custom);
+            });
+            customEventCtorFn.Prototype = customEventProto;
+            customEventCtorFn.Set("prototype", FenValue.FromObject(customEventProto));
+            var customEventCtor = FenValue.FromFunction(customEventCtorFn);
+            customEventProto.SetBuiltin("constructor", customEventCtor);
+            SetGlobal("CustomEvent", customEventCtor);
+
+            // Expose core DOM constructors on window as non-enumerable, configurable globals.
+            static void DefineWindowInterface(FenObject windowObj, string name, FenValue value)
+            {
+                windowObj.DefineOwnProperty(name, new PropertyDescriptor
+                {
+                    Value = value,
+                    Writable = true,
+                    Enumerable = false,
+                    Configurable = true
+                });
+            }
+
+            // Provide minimal constructor interfaces required by baseline DOM WPT files.
+            var nodePrototype = new FenObject();
+            var nodeCtorFn = new FenFunction("Node", (FenValue[] args, FenValue thisVal) => FenValue.FromObject(new FenObject()));
+            nodeCtorFn.Prototype = nodePrototype;
+            nodeCtorFn.Set("prototype", FenValue.FromObject(nodePrototype));
+            var nodeCtorVal = FenValue.FromFunction(nodeCtorFn);
+            SetGlobal("Node", nodeCtorVal);
+            DefineWindowInterface(window, "Node", nodeCtorVal);
+
+            var attrPrototype = new FenObject();
+            attrPrototype.SetPrototype(nodePrototype);
+            var attrCtorFn = new FenFunction("Attr", (FenValue[] args, FenValue thisVal) =>
+            {
+                var name = args.Length > 0 ? args[0].ToString() : "";
+                var wrapper = new AttrWrapper(new Attr(string.IsNullOrWhiteSpace(name) ? "attr" : name, ""), _context);
+                wrapper.SetPrototype(attrPrototype);
+                return FenValue.FromObject(wrapper);
+            });
+            attrCtorFn.Prototype = attrPrototype;
+            attrCtorFn.Set("prototype", FenValue.FromObject(attrPrototype));
+            var attrCtorVal = FenValue.FromFunction(attrCtorFn);
+            SetGlobal("Attr", attrCtorVal);
+            DefineWindowInterface(window, "Attr", attrCtorVal);
+
+            var textPrototype = new FenObject();
+            textPrototype.SetPrototype(nodePrototype);
+            var textCtorFn = new FenFunction("Text", (FenValue[] args, FenValue thisVal) =>
+            {
+                var data = args.Length > 0 ? args[0].ToString() : string.Empty;
+                var wrapperVal = DomWrapperFactory.Wrap(new Text(data), _context);
+                if (wrapperVal.IsObject)
+                {
+                    wrapperVal.AsObject().SetPrototype(textPrototype);
+                }
+                return wrapperVal;
+            });
+            textCtorFn.Prototype = textPrototype;
+            textCtorFn.Set("prototype", FenValue.FromObject(textPrototype));
+            var textCtorVal = FenValue.FromFunction(textCtorFn);
+            SetGlobal("Text", textCtorVal);
+            DefineWindowInterface(window, "Text", textCtorVal);
+
+            var commentPrototype = new FenObject();
+            commentPrototype.SetPrototype(nodePrototype);
+            var commentCtorFn = new FenFunction("Comment", (FenValue[] args, FenValue thisVal) =>
+            {
+                var data = args.Length > 0 ? args[0].ToString() : string.Empty;
+                var wrapperVal = DomWrapperFactory.Wrap(new Comment(data), _context);
+                if (wrapperVal.IsObject)
+                {
+                    wrapperVal.AsObject().SetPrototype(commentPrototype);
+                }
+                return wrapperVal;
+            });
+            commentCtorFn.Prototype = commentPrototype;
+            commentCtorFn.Set("prototype", FenValue.FromObject(commentPrototype));
+            var commentCtorVal = FenValue.FromFunction(commentCtorFn);
+            SetGlobal("Comment", commentCtorVal);
+            DefineWindowInterface(window, "Comment", commentCtorVal);
+            var requiredInterfaces = new[]
+            {
+                "AbortController", "AbortSignal", "Document", "DOMImplementation", "DocumentFragment",
+                "ProcessingInstruction", "DocumentType", "Element", "CharacterData", "Text", "Comment",
+                "NodeIterator", "TreeWalker", "NodeFilter", "NodeList", "HTMLCollection", "DOMTokenList", "HTMLElement"
+            };
+
+            foreach (var ifaceName in requiredInterfaces)
+            {
+                var existing = GetGlobal(ifaceName);
+                FenValue ifaceValue;
+                if (existing is FenValue existingFen && !existingFen.IsUndefined && !existingFen.IsNull)
+                {
+                    ifaceValue = existingFen;
+                }
+                else
+                {
+                    ifaceValue = FenValue.FromFunction(new FenFunction(ifaceName,
+                        (FenValue[] args, FenValue thisVal) => FenValue.FromObject(new FenObject())));
+                    SetGlobal(ifaceName, ifaceValue);
+                }
+
+                DefineWindowInterface(window, ifaceName, ifaceValue);
+            }
+
+            var eventTargetVal = GetGlobal("EventTarget");
+            if (eventTargetVal is FenValue eventTargetFen)
+            {
+                DefineWindowInterface(window, "EventTarget", eventTargetFen);
+            }
+            DefineWindowInterface(window, "Event", eventCtor);
+            DefineWindowInterface(window, "UIEvent", uiEventCtor);
+            DefineWindowInterface(window, "MouseEvent", mouseEventCtor);
+            DefineWindowInterface(window, "KeyboardEvent", keyboardEventCtor);
+            DefineWindowInterface(window, "GamepadEvent", gamepadEventCtor);
+            DefineWindowInterface(window, "BeforeUnloadEvent", beforeUnloadEventCtor);
+            DefineWindowInterface(window, "FocusEvent", focusEventCtor);
+            DefineWindowInterface(window, "InputEvent", inputEventCtor);
+            DefineWindowInterface(window, "CompositionEvent", compositionEventCtor);
+            DefineWindowInterface(window, "PointerEvent", pointerEventCtor);
+            DefineWindowInterface(window, "WheelEvent", wheelEventCtor);
+            DefineWindowInterface(window, "TouchEvent", touchEventCtor);
+            DefineWindowInterface(window, "AnimationEvent", animationEventCtor);
+            DefineWindowInterface(window, "TransitionEvent", transitionEventCtor);
+            DefineWindowInterface(window, "ErrorEvent", errorEventCtor);
+            DefineWindowInterface(window, "CustomEvent", customEventCtor);
+
+            // Minimal XPathResult constants needed by WPT XPath tests.
+            var xpathResult = new FenObject();
+            xpathResult.Set("ANY_TYPE", FenValue.FromNumber(0));
+            xpathResult.Set("NUMBER_TYPE", FenValue.FromNumber(1));
+            xpathResult.Set("STRING_TYPE", FenValue.FromNumber(2));
+            xpathResult.Set("BOOLEAN_TYPE", FenValue.FromNumber(3));
+            xpathResult.Set("UNORDERED_NODE_ITERATOR_TYPE", FenValue.FromNumber(4));
+            xpathResult.Set("ORDERED_NODE_ITERATOR_TYPE", FenValue.FromNumber(5));
+            xpathResult.Set("UNORDERED_NODE_SNAPSHOT_TYPE", FenValue.FromNumber(6));
+            xpathResult.Set("ORDERED_NODE_SNAPSHOT_TYPE", FenValue.FromNumber(7));
+            xpathResult.Set("ANY_UNORDERED_NODE_TYPE", FenValue.FromNumber(8));
+            xpathResult.Set("FIRST_ORDERED_NODE_TYPE", FenValue.FromNumber(9));
+            var xpathResultVal = FenValue.FromObject(xpathResult);
+            SetGlobal("XPathResult", xpathResultVal);
+            DefineWindowInterface(window, "XPathResult", xpathResultVal);
+
+            // â”€â”€â”€ performance object â”€â”€â”€
             var perfStartTime = System.Diagnostics.Stopwatch.GetTimestamp();
             var perfFreq = (double)System.Diagnostics.Stopwatch.Frequency;
             var performanceObj = new FenObject();
@@ -5277,7 +6151,7 @@ namespace FenBrowser.FenEngine.Core
             SetGlobal("performance", FenValue.FromObject(performanceObj));
             window.Set("performance", FenValue.FromObject(performanceObj));
 
-            // ─── TextEncoder ───
+            // â”€â”€â”€ TextEncoder â”€â”€â”€
             SetGlobal("TextEncoder", FenValue.FromFunction(new FenFunction("TextEncoder", (args, thisVal) =>
             {
                 var encoder = new FenObject();
@@ -5304,7 +6178,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(encoder);
             })));
 
-            // ─── TextDecoder ───
+            // â”€â”€â”€ TextDecoder â”€â”€â”€
             SetGlobal("TextDecoder", FenValue.FromFunction(new FenFunction("TextDecoder", (args, thisVal) =>
             {
                 var label = args.Length > 0 ? args[0].ToString() : "utf-8";
@@ -5338,7 +6212,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(decoder);
             })));
 
-            // ─── AbortController / AbortSignal ───
+            // â”€â”€â”€ AbortController / AbortSignal â”€â”€â”€
             SetGlobal("AbortController", FenValue.FromFunction(new FenFunction("AbortController", (args, thisVal) =>
             {
                 var controller = new FenObject();
@@ -5381,7 +6255,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(controller);
             })));
 
-            // ─── WebSocket ───
+            // â”€â”€â”€ WebSocket â”€â”€â”€
             SetGlobal("WebSocket", FenValue.FromFunction(new FenFunction("WebSocket", (args, thisVal) =>
             {
                 var url = args.Length > 0 ? args[0].ToString() : string.Empty;
@@ -5632,7 +6506,7 @@ namespace FenBrowser.FenEngine.Core
 
                 return FenValue.FromObject(ws);
             })));
-            // ─── structuredClone ───
+            // â”€â”€â”€ structuredClone â”€â”€â”€
             SetGlobal("structuredClone", FenValue.FromFunction(new FenFunction("structuredClone", (args, thisVal) =>
             {
                 if (args.Length == 0) return FenValue.Undefined;
@@ -5655,7 +6529,7 @@ namespace FenBrowser.FenEngine.Core
 
             // crypto and Intl are registered later in InitializeBuiltins (fuller implementations)
 
-            // ─── getComputedStyle ───
+            // â”€â”€â”€ getComputedStyle â”€â”€â”€
             var getComputedStyleFn = FenValue.FromFunction(new FenFunction("getComputedStyle", (args, thisVal) =>
             {
                 if (args.Length == 0) return FenValue.FromObject(new FenObject());
@@ -5713,7 +6587,7 @@ namespace FenBrowser.FenEngine.Core
             SetGlobal("getComputedStyle", getComputedStyleFn);
             window.Set("getComputedStyle", getComputedStyleFn);
 
-            // ─── matchMedia ───
+            // â”€â”€â”€ matchMedia â”€â”€â”€
             var matchMediaFn = FenValue.FromFunction(new FenFunction("matchMedia", (args, thisVal) =>
             {
                 var query = args.Length > 0 ? args[0].ToString() : "";
@@ -5763,7 +6637,7 @@ namespace FenBrowser.FenEngine.Core
             SetGlobal("matchMedia", matchMediaFn);
             window.Set("matchMedia", matchMediaFn);
 
-            // ─── requestIdleCallback / cancelIdleCallback ───
+            // â”€â”€â”€ requestIdleCallback / cancelIdleCallback â”€â”€â”€
             SetGlobal("requestIdleCallback", FenValue.FromFunction(new FenFunction("requestIdleCallback",
                 (args, thisVal) =>
                 {
@@ -5790,7 +6664,7 @@ namespace FenBrowser.FenEngine.Core
             window.Set("requestIdleCallback", (FenValue)GetGlobal("requestIdleCallback"));
             window.Set("cancelIdleCallback", (FenValue)GetGlobal("cancelIdleCallback"));
 
-            // ─── queueMicrotask at global scope ───
+            // â”€â”€â”€ queueMicrotask at global scope â”€â”€â”€
             SetGlobal("queueMicrotask", FenValue.FromFunction(new FenFunction("queueMicrotask", (args, thisVal) =>
             {
                 if (args.Length > 0 && args[0].IsFunction)
@@ -5805,7 +6679,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.Undefined;
             })));
 
-            // ─── btoa / atob ───
+            // â”€â”€â”€ btoa / atob â”€â”€â”€
             SetGlobal("btoa", FenValue.FromFunction(new FenFunction("btoa", (args, thisVal) =>
             {
                 if (args.Length == 0) return FenValue.FromString("");
@@ -5977,7 +6851,7 @@ namespace FenBrowser.FenEngine.Core
 
                         result.Set("groups", hasNamedGroups ? FenValue.FromObject(groups) : FenValue.Undefined);
 
-                        // ES2022: hasIndices ('d' flag) — populate .indices array
+                        // ES2022: hasIndices ('d' flag) â€” populate .indices array
                         if (hasIndices)
                         {
                             var indicesArr = new FenObject();
@@ -6434,7 +7308,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(weakSet);
             })));
 
-            // DisposableStack — ES2024 explicit resource management (Stage 4)
+            // DisposableStack â€” ES2024 explicit resource management (Stage 4)
             {
                 var disposableStackProto = new FenObject();
 
@@ -6447,7 +7321,7 @@ namespace FenBrowser.FenEngine.Core
                     var disposeList = new System.Collections.Generic.List<(string type, FenValue fn, FenValue val)>();
                     bool disposed = false;
 
-                    // use(resource) — registers resource[Symbol.dispose]() for LIFO disposal
+                    // use(resource) â€” registers resource[Symbol.dispose]() for LIFO disposal
                     stack.Set("use", FenValue.FromFunction(new FenFunction("use", (useArgs, _) =>
                     {
                         var resource = useArgs.Length > 0 ? useArgs[0] : FenValue.Undefined;
@@ -6462,7 +7336,7 @@ namespace FenBrowser.FenEngine.Core
                         return resource;
                     })));
 
-                    // adopt(value, onDispose) — calls onDispose(value) on disposal
+                    // adopt(value, onDispose) â€” calls onDispose(value) on disposal
                     stack.Set("adopt", FenValue.FromFunction(new FenFunction("adopt", (adoptArgs, _) =>
                     {
                         var val = adoptArgs.Length > 0 ? adoptArgs[0] : FenValue.Undefined;
@@ -6471,7 +7345,7 @@ namespace FenBrowser.FenEngine.Core
                         return val;
                     })));
 
-                    // defer(fn) — calls fn() on disposal
+                    // defer(fn) â€” calls fn() on disposal
                     stack.Set("defer", FenValue.FromFunction(new FenFunction("defer", (deferArgs, _) =>
                     {
                         var fn = deferArgs.Length > 0 ? deferArgs[0] : FenValue.Undefined;
@@ -6479,7 +7353,7 @@ namespace FenBrowser.FenEngine.Core
                         return FenValue.Undefined;
                     })));
 
-                    // move() — transfer ownership to a new DisposableStack (simplified)
+                    // move() â€” transfer ownership to a new DisposableStack (simplified)
                     stack.Set("move", FenValue.FromFunction(new FenFunction("move", (moveArgs, _) =>
                     {
                         if (disposed) throw new Exception("TypeError: DisposableStack already disposed");
@@ -6491,7 +7365,7 @@ namespace FenBrowser.FenEngine.Core
                             : FenValue.Undefined;
                     })));
 
-                    // [Symbol.dispose]() — LIFO disposal
+                    // [Symbol.dispose]() â€” LIFO disposal
                     stack.Set("[Symbol.dispose]", FenValue.FromFunction(new FenFunction("[Symbol.dispose]", (_, __) =>
                     {
                         if (disposed) return FenValue.Undefined;
@@ -6505,7 +7379,7 @@ namespace FenBrowser.FenEngine.Core
                                     fn.AsFunction()?.Invoke(new FenValue[] { val }, null);
                                 else if (type == "defer")
                                     fn.AsFunction()?.Invoke(Array.Empty<FenValue>(), null);
-                                else // "resource" — fn is the [Symbol.dispose] method, val is the resource
+                                else // "resource" â€” fn is the [Symbol.dispose] method, val is the resource
                                     fn.AsFunction()?.Invoke(Array.Empty<FenValue>(),
                                         new ExecutionContext { ThisBinding = val });
                             }
@@ -6514,7 +7388,7 @@ namespace FenBrowser.FenEngine.Core
                         return FenValue.Undefined;
                     })));
 
-                    // disposed getter — lazily reflect state
+                    // disposed getter â€” lazily reflect state
                     // Store as a regular property; real spec uses an accessor, but this is sufficient for most tests
                     stack.Set("disposed", FenValue.FromBoolean(false));
 
@@ -6658,8 +7532,9 @@ namespace FenBrowser.FenEngine.Core
                 {
                     regex = new Regex(pattern, options);
                 }
-                catch
+                catch (Exception logEx)
                 {
+                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 regexObj.NativeObject = regex;
@@ -6752,7 +7627,7 @@ namespace FenBrowser.FenEngine.Core
                     thisObj.Set("multiline", FenValue.FromBoolean(fl.Contains("m")));
                     thisObj.Set("lastIndex", FenValue.FromNumber(0));
                 }
-                catch { }
+                catch (Exception ex) { FenLogger.Warn($"[FenRuntime] RegExp.compile failed: {ex.Message}", LogCategory.JavaScript); }
                 return compileThis;
             })));
 
@@ -6792,7 +7667,7 @@ namespace FenBrowser.FenEngine.Core
                     }),
                     setter: null, enumerable: false, configurable: true));
             }
-            // input / $_ — spec requires both a getter AND a setter
+            // input / $_ â€” spec requires both a getter AND a setter
             regexpCtorEs6.DefineOwnProperty("input", PropertyDescriptor.Accessor(
                 new FenFunction("get input", (a, thisVal) => { var err = CheckRegExpReceiver(thisVal); if (err.IsError) return err; return FenValue.FromString(_lastRegExpInput); }),
                 new FenFunction("set input", (a, thisVal) => { var err = CheckRegExpReceiver(thisVal); if (err.IsError) return err; _lastRegExpInput = a.Length > 0 ? a[0].ToString() : ""; return FenValue.Undefined; }),
@@ -7332,14 +8207,14 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromBoolean(double.IsNaN(num));
             })));
 
-            // eval — global function; direct eval is handled in runtime execution path.
+            // eval â€” global function; direct eval is handled in runtime execution path.
             // This entry makes typeof eval === "function" and supports indirect eval.
             SetGlobal("eval", FenValue.FromFunction(new FenFunction("eval", (args, thisVal) =>
             {
                 if (args.Length == 0) return FenValue.Undefined;
                 if (!args[0].IsString) return args[0]; // non-string eval returns its argument
 
-                // SECURITY: Check JsPermissions.Eval — denied unless explicitly granted.
+                // SECURITY: Check JsPermissions.Eval â€” denied unless explicitly granted.
                 // Browser contexts grant it by default; CSP 'unsafe-eval' enforcement revokes it.
                 if (_context != null && !_context.Permissions.Check(FenBrowser.FenEngine.Security.JsPermissions.Eval))
                 {
@@ -8469,10 +9344,12 @@ namespace FenBrowser.FenEngine.Core
 
             // --- XHR ---
             SetGlobal("XMLHttpRequest", FenValue.FromFunction(new FenFunction("XMLHttpRequest", (args, thisVal) =>
-                FenValue.FromObject(new XMLHttpRequest(_context, SendNetworkRequestAsync)))));
+            {
+                var xhr = new XMLHttpRequest(_context, SendNetworkRequestAsync);
+                xhr.SetPrototype(eventTargetPrototype);
+                return FenValue.FromObject(xhr);
+            })));
 
-
-            // CRYPTO API
             var cryptoObj = new FenObject();
 
             // crypto.getRandomValues(typedArray)
@@ -8899,7 +9776,7 @@ namespace FenBrowser.FenEngine.Core
                 }
             })));
 
-            // Atomics.wait(typedArray, index, value[, timeout]) — blocks until notified or timeout
+            // Atomics.wait(typedArray, index, value[, timeout]) â€” blocks until notified or timeout
             atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal) =>
             {
                 // In a single-threaded runtime, we cannot actually block
@@ -8926,7 +9803,7 @@ namespace FenBrowser.FenEngine.Core
                 }
             })));
 
-            // ES2024: Atomics.waitAsync(typedArray, index, value[, timeout]) — async version of wait
+            // ES2024: Atomics.waitAsync(typedArray, index, value[, timeout]) â€” async version of wait
             atomics.Set("waitAsync", FenValue.FromFunction(new FenFunction("waitAsync", (args, thisVal) =>
             {
                 // In the current single-threaded runtime without shared memory threads, return a resolved async value
@@ -8936,7 +9813,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(result);
             })));
 
-            // Atomics.notify(typedArray, index[, count]) — wake waiting agents
+            // Atomics.notify(typedArray, index[, count]) â€” wake waiting agents
             atomics.Set("notify", FenValue.FromFunction(new FenFunction("notify", (args, thisVal) =>
                 FenValue.FromNumber(0)))); // No agents waiting in single-threaded engine
 
@@ -8989,7 +9866,7 @@ namespace FenBrowser.FenEngine.Core
                 }
             })));
 
-            // Atomics.isLockFree(size) — returns true for sizes 1,2,4 on most platforms
+            // Atomics.isLockFree(size) â€” returns true for sizes 1,2,4 on most platforms
             atomics.Set("isLockFree", FenValue.FromFunction(new FenFunction("isLockFree", (args, thisVal) =>
             {
                 int size = args.Length > 0 ? (int)args[0].ToNumber() : 0;
@@ -10079,7 +10956,7 @@ namespace FenBrowser.FenEngine.Core
             // Function(...args, body) constructor - creates function from string
             var functionCtor = new FenFunction("Function", (args, thisVal) =>
             {
-                // SECURITY: Function() is equivalent to eval() — require the same permission.
+                // SECURITY: Function() is equivalent to eval() â€” require the same permission.
                 // Without this check, `new Function("code")()` bypasses CSP unsafe-eval restrictions.
                 if (_context != null && !_context.Permissions.Check(FenBrowser.FenEngine.Security.JsPermissions.Eval))
                 {
@@ -10160,9 +11037,7 @@ namespace FenBrowser.FenEngine.Core
                 var fn = thisVal.AsFunction();
                 var newThis = args.Length > 0 ? args[0] : FenValue.Undefined;
                 var fnArgs = args.Length > 1 ? args.Skip(1).ToArray() : new FenValue[0];
-                // Pass newThis as the ThisBinding so fn sees correct 'this'
-                var callCtx = new ExecutionContext { ThisBinding = newThis };
-                return fn.Invoke(fnArgs, callCtx);
+                return fn.Invoke(fnArgs, _context, newThis);
             })), null);
 
             // Function.prototype.apply(thisArg, argsArray)
@@ -10181,9 +11056,7 @@ namespace FenBrowser.FenEngine.Core
                         fnArgs[i] = argsObj.Get(i.ToString(), null);
                 }
 
-                // Pass newThis as the ThisBinding so fn sees correct 'this'
-                var applyCtx = new ExecutionContext { ThisBinding = newThis };
-                return fn.Invoke(fnArgs, applyCtx);
+                return fn.Invoke(fnArgs, _context, newThis);
             })), null);
 
             // Function.prototype.bind(thisArg, ...args)
@@ -10196,9 +11069,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromFunction(new FenFunction("bound", (newArgs, _) =>
                 {
                     var allArgs = boundArgs.Concat(newArgs).ToArray();
-                    // Pass boundThis as ThisBinding so the callee sees the correct 'this'
-                    var bindCtx = new ExecutionContext { ThisBinding = boundThis };
-                    return fn.Invoke(allArgs, bindCtx);
+                    return fn.Invoke(allArgs, _context, boundThis);
                 }));
             })), null);
 
@@ -10525,6 +11396,8 @@ namespace FenBrowser.FenEngine.Core
                 window.AsObject().Set("document", docValue);
             }
 
+            RegisterLegacyNamedGlobals(root);
+
             // Create Document constructor/prototype for scripts that check Document.prototype
             var documentPrototype = new FenObject();
             // fonts is not supported, so hasOwnProperty("fonts") should return false
@@ -10550,12 +11423,6 @@ namespace FenBrowser.FenEngine.Core
         {
             try
             {
-                FenLogger.Debug($"[DispatchEvent] Dispatching '{type}'", LogCategory.Events);
-
-                // Simple implementation: look for window["on" + type]
-                // and iterate windowEventListeners[type]
-
-                // 1. Check on{type} property
                 var handlerName = "on" + type;
                 var windowObj = _globalEnv.Get("window");
                 if (windowObj is FenValue fvWindow && fvWindow.IsObject)
@@ -10567,43 +11434,45 @@ namespace FenBrowser.FenEngine.Core
                         _context.ThisBinding = fvWindow;
                         handler.AsFunction().Invoke(new[] { evt }, _context);
                     }
-
-                    // 2. Check listeners (we need access to the private dictionary, or expose it via property?)
-                    // Since the dictionary is local to InitializeBuiltins, we can't access it here easily.
-                    // Ideally, we should move InitializeBuiltins logic or store the listener map in a field.
-                    // For now, we will use a global hidden property on window to store listeners for access here.
-
-                    var listeners = fvWindow.AsObject().Get("_listeners");
-                    if (listeners.IsObject)
-                    {
-                        var typeListeners = listeners.AsObject().Get(type);
-                        if (typeListeners is FenValue fvList && fvList.IsObject) // Array
-                        {
-                            // Iterate and call
-                            // This is complex without Array interop. 
-                            // Let's rely on the C# dictionary approach if we refactor.
-                            // Refactoring InitializeBuiltins is better.
-                        }
-                    }
                 }
 
-                // REFACTOR: We need access to windowEventListeners. I will move it to a class field.
                 if (_windowEventListeners.ContainsKey(type))
                 {
-                    var listeners = _windowEventListeners[type].ToList(); // Copy to avoid modification during iteration
+                    var listeners = _windowEventListeners[type].ToList();
                     foreach (var listener in listeners)
                     {
-                        if (listener.IsFunction)
+                        var callback = listener.Callback;
+                        var evt = eventData != null ? FenValue.FromObject(eventData) : FenValue.Null;
+                        if (callback.IsFunction)
                         {
-                            var evt = eventData != null ? FenValue.FromObject(eventData) : FenValue.Null;
                             _context.ThisBinding = FenValue.Undefined;
                             try
                             {
-                                listener.AsFunction().Invoke(new[] { evt }, _context);
+                                callback.AsFunction().Invoke(new[] { evt }, _context);
                             }
                             catch
                             {
                             }
+                        }
+                        else if (callback.IsObject)
+                        {
+                            var handleEvent = callback.AsObject().Get("handleEvent");
+                            if (handleEvent.IsFunction)
+                            {
+                                _context.ThisBinding = callback;
+                                try
+                                {
+                                    handleEvent.AsFunction().Invoke(new[] { evt }, _context, callback);
+                                }
+                                catch
+                                {
+                                }
+                            }
+                        }
+
+                        if (listener.Once)
+                        {
+                            _windowEventListeners[type].Remove(listener);
                         }
                     }
                 }
@@ -10614,7 +11483,23 @@ namespace FenBrowser.FenEngine.Core
             }
         }
 
-        private Dictionary<string, List<FenValue>> _windowEventListeners = new Dictionary<string, List<FenValue>>();
+        private sealed class WindowEventListener
+        {
+            public FenValue Callback { get; }
+            public bool Capture { get; }
+            public bool Once { get; }
+            public bool Passive { get; }
+
+            public WindowEventListener(FenValue callback, bool capture, bool once, bool passive)
+            {
+                Callback = callback;
+                Capture = capture;
+                Once = once;
+                Passive = passive;
+            }
+        }
+
+        private Dictionary<string, List<WindowEventListener>> _windowEventListeners = new Dictionary<string, List<WindowEventListener>>(StringComparer.OrdinalIgnoreCase);
 
         private FenValue CreateTimer(FenFunction callback, int delay, bool repeat, FenValue[] args)
         {
@@ -10741,8 +11626,55 @@ namespace FenBrowser.FenEngine.Core
             }
         }
 
+        private void RegisterLegacyNamedGlobals(Node root)
+        {
+            if (root == null)
+            {
+                return;
+            }
+
+            if (root is Element element)
+            {
+                var id = element.Id;
+                if (string.Equals(id, "iframe", StringComparison.Ordinal))
+                {
+                }
+                if (!string.IsNullOrWhiteSpace(id))
+                {
+                    var existing = _globalEnv.Get(id);
+                    if (existing.IsUndefined || existing.IsNull)
+                    {
+                        var wrapped = DomWrapperFactory.Wrap(element, _context);
+                        if (wrapped.IsObject)
+                        {
+                            _globalEnv.Set(id, wrapped);
+                            var window = _globalEnv.Get("window");
+                            if (window.IsObject)
+                            {
+                                window.AsObject().Set(id, wrapped);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (root.ChildNodes == null)
+            {
+                return;
+            }
+
+            foreach (var child in root.ChildNodes)
+            {
+                RegisterLegacyNamedGlobals(child);
+            }
+        }
         public void SetGlobal(string name, FenValue value)
         {
+            if ((string.Equals(name, "window", StringComparison.Ordinal) || string.Equals(name, "globalThis", StringComparison.Ordinal)) && value.IsObject)
+            {
+                value.AsObject().Set("__fen_window_named_access__", FenValue.FromBoolean(true));
+            }
+
             _globalEnv.Set(name, value);
         }
 
@@ -10875,7 +11807,7 @@ namespace FenBrowser.FenEngine.Core
 
                     DevToolsCore.Instance.RegisterSource(url, code);
 
-                    // Bytecode execution — compile and run directly.
+                    // Bytecode execution â€” compile and run directly.
                     bool isEval = url == "eval.js";
                     FenBrowser.FenEngine.Core.Bytecode.CodeBlock compiledBlock;
                     try
@@ -10892,7 +11824,7 @@ namespace FenBrowser.FenEngine.Core
                                 $"[COMPILE-ERROR] {url} (len={codeLen})\n" +
                                 $"  Reason: {compileEx.Message}\n");
                         }
-                        catch { }
+                        catch (Exception ex) { FenLogger.Warn($"[FenRuntime] Failed writing compile diagnostics: {ex.Message}", LogCategory.JavaScript); }
                         return FenValue.FromError(
                             $"Bytecode compilation error: {compileEx.Message}");
                     }
@@ -10907,7 +11839,7 @@ namespace FenBrowser.FenEngine.Core
                             System.IO.File.AppendAllText(logPath,
                                 $"[SUCCESS] {url} (len={codeLen}, {sw.ElapsedMilliseconds}ms)\n");
                         }
-                        catch { }
+                        catch (Exception ex) { FenLogger.Warn($"[FenRuntime] Failed writing success diagnostics: {ex.Message}", LogCategory.JavaScript); }
                         return bytecodeResult;
                     }
                     catch (Exception vmEx)
@@ -10921,7 +11853,7 @@ namespace FenBrowser.FenEngine.Core
                                 $"  Message: {vmEx.Message}\n" +
                                 $"  Stack:\n  " + vmEx.StackTrace?.Replace("\n", "\n  ") + "\n\n");
                         }
-                        catch { }
+                        catch (Exception ex) { FenLogger.Warn($"[FenRuntime] Failed writing runtime diagnostics: {ex.Message}", LogCategory.JavaScript); }
                         FenLogger.Error($"[FenRuntime] Bytecode runtime error: {vmEx.Message}", LogCategory.JavaScript, vmEx);
                         return FenValue.FromError($"[[DEBUG_TRACE]] {vmEx.GetType().Name}: {vmEx.Message}\n{vmEx.StackTrace}");
                     }
@@ -10946,8 +11878,9 @@ namespace FenBrowser.FenEngine.Core
                         $"  Message: {ex.Message}\n" +
                         $"  Stack:\n  " + ex.StackTrace?.Replace("\n", "\n  ") + "\n\n");
                 }
-                catch
+                catch (Exception logEx)
                 {
+                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 FenLogger.Error($"[FenRuntime] Runtime error: {ex.Message}", LogCategory.JavaScript, ex);
@@ -13201,3 +14134,90 @@ namespace FenBrowser.FenEngine.Core
         #endregion
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

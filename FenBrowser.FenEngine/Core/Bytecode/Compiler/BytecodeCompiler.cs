@@ -23,6 +23,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private readonly List<Identifier> _functionParameters;
         private readonly string _functionName;
         private readonly bool _isEval;
+        private readonly HashSet<FunctionDeclarationStatement> _topLevelHoistedFunctions = new HashSet<FunctionDeclarationStatement>();
         private readonly Dictionary<string, int> _localSlotByName = new Dictionary<string, int>(StringComparer.Ordinal);
         private readonly List<string> _localSlotNames = new List<string>();
         private readonly HashSet<string> _localBindings = new HashSet<string>(StringComparer.Ordinal);
@@ -61,11 +62,14 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             _localBindings.Clear();
             _localSlotByName.Clear();
             _localSlotNames.Clear();
+            _topLevelHoistedFunctions.Clear();
 
             if (_enableLocalSlots)
             {
                 InitializeLocalBindings(root);
             }
+
+            HoistTopLevelFunctionDeclarations(root);
 
             // Annex B: Pre-initialize var-scoped bindings for block-scoped function declarations (eval only)
             if (_isEval)
@@ -154,6 +158,39 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
         }
 
+        private void HoistTopLevelFunctionDeclarations(AstNode root)
+        {
+            List<Statement> topLevelStatements = null;
+            if (root is Program program)
+            {
+                topLevelStatements = program.Statements;
+            }
+            else if (root is BlockStatement block)
+            {
+                topLevelStatements = block.Statements;
+            }
+
+            if (topLevelStatements == null)
+            {
+                return;
+            }
+
+            foreach (var statement in topLevelStatements)
+            {
+                if (!(statement is FunctionDeclarationStatement functionDeclaration))
+                {
+                    continue;
+                }
+
+                if (functionDeclaration.Function == null || string.IsNullOrEmpty(functionDeclaration.Function.Name))
+                {
+                    continue;
+                }
+
+                EmitFunctionDeclaration(functionDeclaration);
+                _topLevelHoistedFunctions.Add(functionDeclaration);
+            }
+        }
         private void Visit(AstNode node)
         {
             if (node == null) return;
@@ -739,29 +776,12 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
             else if (node is FunctionDeclarationStatement funcDecl)
             {
-                ValidateSupportedParameterList(funcDecl.Function.Parameters, "FunctionDeclarationStatement");
-                var funcCompiler = CreateFunctionCompiler(funcDecl.Function.Parameters, funcDecl.Function.Name);
-                var compiledBlock = funcCompiler.Compile(BuildCallableBody(funcDecl.Function.Body, funcDecl.Function.Parameters));
-                var localMap = BuildFunctionLocalMap(compiledBlock);
-                
-                var templateFunc = new FenFunction(funcDecl.Function.Parameters, compiledBlock, null)
+                if (_topLevelHoistedFunctions.Contains(funcDecl))
                 {
-                    Name = funcDecl.Function.Name,
-                    IsAsync = funcDecl.Function.IsAsync,
-                    IsGenerator = funcDecl.Function.IsGenerator,
-                    NeedsArgumentsObject = BytecodeBlockMayReferenceArguments(compiledBlock, localMap),
-                    LocalMap = localMap
-                };
-                int funcIdx = AddConstant(FenValue.FromFunction(templateFunc));
-
-                Emit(OpCode.MakeClosure);
-                EmitInt32(funcIdx);
-
-                if (funcDecl.Function.Name != null)
-                {
-                    EmitStoreVarByName(funcDecl.Function.Name);
+                    return;
                 }
-                Emit(OpCode.Pop); // function declarations are statements; clean up the closure value from the stack
+
+                EmitFunctionDeclaration(funcDecl);
             }
             else if (node is ReturnStatement retStmt)
             {
@@ -3394,6 +3414,34 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             return false;
         }
 
+        private void EmitFunctionDeclaration(FunctionDeclarationStatement funcDecl)
+        {
+            ValidateSupportedParameterList(funcDecl.Function.Parameters, "FunctionDeclarationStatement");
+            var funcCompiler = CreateFunctionCompiler(funcDecl.Function.Parameters, funcDecl.Function.Name);
+            var compiledBlock = funcCompiler.Compile(BuildCallableBody(funcDecl.Function.Body, funcDecl.Function.Parameters));
+            var localMap = BuildFunctionLocalMap(compiledBlock);
+
+            var templateFunc = new FenFunction(funcDecl.Function.Parameters, compiledBlock, null)
+            {
+                Name = funcDecl.Function.Name,
+                IsAsync = funcDecl.Function.IsAsync,
+                IsGenerator = funcDecl.Function.IsGenerator,
+                NeedsArgumentsObject = BytecodeBlockMayReferenceArguments(compiledBlock, localMap),
+                LocalMap = localMap
+            };
+            int funcIdx = AddConstant(FenValue.FromFunction(templateFunc));
+
+            Emit(OpCode.MakeClosure);
+            EmitInt32(funcIdx);
+
+            if (funcDecl.Function.Name != null)
+            {
+                EmitStoreVarByName(funcDecl.Function.Name);
+            }
+
+            // Function declaration is a statement; consume stored value result.
+            Emit(OpCode.Pop);
+        }
         private static Dictionary<string, int> BuildFunctionLocalMap(CodeBlock block)
         {
             var map = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -3614,3 +3662,4 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         }
     }
 }
+

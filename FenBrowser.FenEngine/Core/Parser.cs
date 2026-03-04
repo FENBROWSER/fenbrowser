@@ -325,6 +325,7 @@ namespace FenBrowser.FenEngine.Core
             }
 
             ValidateModuleTopLevelEarlyErrors(program);
+            program.IsStrict = _isStrictMode;
             return program;
         }
 
@@ -495,97 +496,117 @@ namespace FenBrowser.FenEngine.Core
             };
         }
 
-        private LetStatement ParseLetStatement()
+        private Statement ParseLetStatement()
         {
-            var stmt = new LetStatement { Token = _curToken };
-            
-            // Determine the declaration kind
+            var declarationToken = _curToken;
+            var kind = DeclarationKind.Var;
+
             if (_curToken.Type == TokenType.Const)
-                stmt.Kind = DeclarationKind.Const;
+            {
+                kind = DeclarationKind.Const;
+            }
             else if (_curToken.Type == TokenType.Let)
-                stmt.Kind = DeclarationKind.Let;
-            else
-                stmt.Kind = DeclarationKind.Var;
-
-            NextToken(); // Move past var/let/const
-
-            // Check for destructuring: var { a, b } = obj  or  var [x, y] = arr
-            if (CurTokenIs(TokenType.LBrace) || CurTokenIs(TokenType.LBracket))
             {
-                // Parse the destructuring pattern
-                stmt.DestructuringPattern = ParseExpression(Precedence.Lowest);
-                stmt.Name = new Identifier(_curToken, "_destructured"); // Dummy name
-                
-                if (PeekTokenIs(TokenType.Assign))
+                kind = DeclarationKind.Let;
+            }
+
+            var declarations = new List<Statement>();
+            NextToken(); // move to first declarator
+
+            while (true)
+            {
+                var declarator = new LetStatement
                 {
-                    NextToken(); // Move to =
-                    NextToken(); // Move past =
-                    stmt.Value = ParseExpression(Precedence.Lowest);
-                }
-                
-                if (PeekTokenIs(TokenType.Semicolon))
+                    Token = declarationToken,
+                    Kind = kind
+                };
+
+                if (CurTokenIs(TokenType.LBrace) || CurTokenIs(TokenType.LBracket))
                 {
-                    NextToken();
-                }
-                
-                return stmt;
-            }
+                    declarator.DestructuringPattern = ParseExpression(Precedence.Comma);
+                    declarator.Name = new Identifier(declarationToken, "_destructured");
 
-            // Normal variable: var x = value
-            // Check for reserved words used as variable names
-            if (!CurTokenIs(TokenType.Identifier))
-            {
-                // If it's a keyword, report SyntaxError for using reserved word as binding identifier
-                if (IsKeywordToken(_curToken.Type) && !_contextualKeywords.Contains(_curToken.Type))
+                    if (PeekTokenIs(TokenType.Assign))
+                    {
+                        NextToken(); // '='
+                        NextToken(); // initializer start
+                        declarator.Value = ParseExpression(Precedence.Comma);
+                    }
+                    else if (kind == DeclarationKind.Const)
+                    {
+                        _errors.Add("SyntaxError: Missing initializer in const declaration");
+                    }
+                }
+                else
                 {
-                    _errors.Add($"SyntaxError: Unexpected reserved word '{_curToken.Literal}'");
-                    return null;
+                    if (!CurTokenIs(TokenType.Identifier))
+                    {
+                        if (IsKeywordToken(_curToken.Type) && !_contextualKeywords.Contains(_curToken.Type))
+                        {
+                            _errors.Add($"SyntaxError: Unexpected reserved word '{_curToken.Literal}'");
+                        }
+                        else if (!IsKeywordToken(_curToken.Type))
+                        {
+                            _errors.Add($"SyntaxError: Expected identifier in {kind.ToString().ToLowerInvariant()} declaration");
+                        }
+
+                        while (!CurTokenIs(TokenType.Comma) && !CurTokenIs(TokenType.Semicolon) && !CurTokenIs(TokenType.Eof))
+                        {
+                            NextToken();
+                        }
+                    }
+                    else if (!ValidateBindingIdentifier(_curToken))
+                    {
+                        return null;
+                    }
+                    else
+                    {
+                        declarator.Name = new Identifier(_curToken, _curToken.Literal);
+                        if (_functionDepth == 0 && kind != DeclarationKind.Var && declarator.Name.Value == "undefined")
+                        {
+                            _errors.Add("SyntaxError: Lexical declaration cannot redeclare restricted global property 'undefined'");
+                        }
+
+                        if (PeekTokenIs(TokenType.Assign))
+                        {
+                            NextToken(); // '='
+                            NextToken(); // initializer start
+                            declarator.Value = ParseExpression(Precedence.Comma);
+                        }
+                        else if (kind == DeclarationKind.Const)
+                        {
+                            _errors.Add("SyntaxError: Missing initializer in const declaration");
+                        }
+                    }
                 }
-                // Could be a contextual keyword used as identifier — allow it
-                if (!IsKeywordToken(_curToken.Type))
+
+                declarations.Add(declarator);
+
+                if (PeekTokenIs(TokenType.Comma))
                 {
-                _errors.Add($"SyntaxError: Expected identifier in {stmt.Kind.ToString().ToLowerInvariant()} declaration");
-                    return null;
+                    NextToken(); // ','
+                    NextToken(); // next declarator
+                    continue;
                 }
+
+                break;
             }
-
-            if (!ValidateBindingIdentifier(_curToken))
-            {
-                return null;
-            }
-
-            stmt.Name = new Identifier(_curToken, _curToken.Literal);
-            if (_functionDepth == 0 && stmt.Kind != DeclarationKind.Var && stmt.Name.Value == "undefined")
-            {
-                _errors.Add("SyntaxError: Lexical declaration cannot redeclare restricted global property 'undefined'");
-            }
-
-            // ASI: if next token is semicolon, comma, or on new line (except const which needs init)
-            bool isConst = stmt.Kind == DeclarationKind.Const;
-            
-            if (PeekTokenIs(TokenType.Semicolon) || PeekTokenIs(TokenType.Comma) || 
-                PeekTokenIs(TokenType.RBrace) || PeekTokenIs(TokenType.Eof) ||
-                (_peekToken.HadLineTerminatorBefore && !isConst))
-            {
-                if (PeekTokenIs(TokenType.Semicolon)) NextToken();
-                return stmt;
-            }
-
-            if (!ExpectPeek(TokenType.Assign))
-            {
-                return null;
-            }
-
-            NextToken();
-
-            stmt.Value = ParseExpression(Precedence.Lowest);
 
             if (PeekTokenIs(TokenType.Semicolon))
             {
                 NextToken();
             }
 
-            return stmt;
+            if (declarations.Count == 1)
+            {
+                return declarations[0];
+            }
+
+            return new BlockStatement
+            {
+                Token = declarationToken,
+                Statements = declarations
+            };
         }
 
         private ReturnStatement ParseReturnStatement()
@@ -613,7 +634,7 @@ namespace FenBrowser.FenEngine.Core
             if (_curToken.HadLineTerminatorBefore || CurTokenIs(TokenType.Semicolon) ||
                 CurTokenIs(TokenType.RBrace) || CurTokenIs(TokenType.Eof))
             {
-                // Don't advance past ';' — the outer ParseBlockStatement/ParseProgram loop
+                // Don't advance past ';' Ã¢â‚¬â€ the outer ParseBlockStatement/ParseProgram loop
                 // will do NextToken() to advance to the next statement.
                 return stmt; // Return undefined
             }
@@ -1180,7 +1201,7 @@ namespace FenBrowser.FenEngine.Core
             }
         }
 
-        private BlockStatement ParseBlockStatement(bool consumeTerminator = true)
+        private BlockStatement ParseBlockStatement(bool consumeTerminator = true, bool enableDirectiveStrictMode = false)
         {
             var block = new BlockStatement { Token = _curToken };
             _moduleDeclarationNestingDepth++;
@@ -1188,12 +1209,29 @@ namespace FenBrowser.FenEngine.Core
             {
                 NextToken();
 
+                bool inDirectivePrologue = enableDirectiveStrictMode;
+
                 while (!CurTokenIs(TokenType.RBrace) && !CurTokenIs(TokenType.Eof))
                 {
                     var stmt = ParseStatement();
                     if (stmt != null)
                     {
                         block.Statements.Add(stmt);
+
+                        if (inDirectivePrologue)
+                        {
+                            if (stmt is ExpressionStatement es && es.Expression is StringLiteral sl)
+                            {
+                                if (sl.Value == "use strict")
+                                {
+                                    _isStrictMode = true;
+                                }
+                            }
+                            else
+                            {
+                                inDirectivePrologue = false;
+                            }
+                        }
                     }
 
                     // After block-based statements (if/while/for/try via ParseBodyAsBlock),
@@ -1266,12 +1304,20 @@ namespace FenBrowser.FenEngine.Core
             _functionDepth++;
             if (lit.IsAsync) _asyncFunctionDepth++;
             if (lit.IsGenerator) _generatorFunctionDepth++;
+            bool previousStrictMode = _isStrictMode;
+            bool inheritedStrictMode = _isModule || previousStrictMode;
             try
             {
-                lit.Body = ParseBlockStatement(consumeTerminator: false);
+                if (inheritedStrictMode)
+                {
+                    _isStrictMode = true;
+                }
+
+                lit.Body = ParseBlockStatement(consumeTerminator: false, enableDirectiveStrictMode: true);
             }
             finally
             {
+                _isStrictMode = previousStrictMode;
                 if (lit.IsGenerator) _generatorFunctionDepth--;
                 if (lit.IsAsync) _asyncFunctionDepth--;
                 _functionDepth--;
@@ -1311,7 +1357,8 @@ namespace FenBrowser.FenEngine.Core
                 }
             }
 
-            bool functionIsStrict = _isModule || _isStrictMode || ContainsUseStrictDirective(lit.Body);
+            bool functionIsStrict = _isModule || inheritedStrictMode || ContainsUseStrictDirective(lit.Body);
+            lit.IsStrict = functionIsStrict;
             if (functionIsStrict)
             {
                 if (BodyContainsWithStatement(lit.Body))
@@ -2941,7 +2988,7 @@ namespace FenBrowser.FenEngine.Core
                 return null;
             }
 
-            // Parse class body — advance past { then parse members
+            // Parse class body Ã¢â‚¬â€ advance past { then parse members
             bool prevStrictMode = _isStrictMode;
             var inheritedPrivateScope = _privateNameScopeStack.Count > 0
                 ? new HashSet<string>(_privateNameScopeStack.Peek(), StringComparer.Ordinal)
@@ -3021,7 +3068,7 @@ namespace FenBrowser.FenEngine.Core
                 return null;
             }
 
-            // Parse class body — advance past { then parse members
+            // Parse class body Ã¢â‚¬â€ advance past { then parse members
             bool prevStrictMode = _isStrictMode;
             var inheritedPrivateScope = _privateNameScopeStack.Count > 0
                 ? new HashSet<string>(_privateNameScopeStack.Peek(), StringComparer.Ordinal)
@@ -3131,7 +3178,7 @@ namespace FenBrowser.FenEngine.Core
                 if (PeekTokenIs(TokenType.LParen) || PeekTokenIs(TokenType.Assign) || PeekTokenIs(TokenType.Semicolon) || PeekTokenIs(TokenType.RBrace))
                 {
                      isStatic = false;
-                     // 'static' is the name — don't advance, handle below
+                     // 'static' is the name Ã¢â‚¬â€ don't advance, handle below
                 }
                 else
                 {
@@ -3139,7 +3186,7 @@ namespace FenBrowser.FenEngine.Core
                     NextToken(); // Move past 'static' to the actual member name
                 }
             }
-            // No else needed — _curToken is already on the right token
+            // No else needed Ã¢â‚¬â€ _curToken is already on the right token
 
             // Check for async modifier
             if (CurTokenIs(TokenType.Async) || (CurTokenIs(TokenType.Identifier) && _curToken.Literal == "async"))

@@ -9,8 +9,11 @@ namespace FenBrowser.FenEngine.Core
     {
         FenValue GetElementById(string id);
         FenValue QuerySelector(string selector);
+        FenValue GetElementsByTagName(string tagName);
+        FenValue GetElementsByClassName(string classNames);
         void AddEventListener(string elementId, string eventName, FenValue callback);
         FenValue CreateElement(string tagName);
+        FenValue CreateElementNS(string namespaceUri, string qualifiedName);
         FenValue CreateTextNode(string text);
         void AppendChild(FenValue parent, FenValue child);
         void SetAttribute(FenValue element, string name, string value);

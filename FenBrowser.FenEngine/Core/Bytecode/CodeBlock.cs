@@ -17,6 +17,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode
         
         // Maps instruction offsets to original source source line numbers for errors/stack traces
         public Dictionary<int, int> SourceLineMap { get; }
+        public bool IsStrict { get; set; } = false;
 
         public CodeBlock(byte[] instructions, List<FenValue> constants, List<string> localSlotNames = null)
         {
