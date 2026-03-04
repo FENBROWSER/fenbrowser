@@ -282,7 +282,7 @@ namespace FenBrowser.Core.Dom.V2
         public TagNameHTMLCollection(ContainerNode root, string tagName)
         {
             _root = root;
-            _tagName = tagName?.ToUpperInvariant() ?? "*";
+            _tagName = tagName ?? "*";
             _matchAll = _tagName == "*";
         }
 
@@ -293,7 +293,7 @@ namespace FenBrowser.Core.Dom.V2
                 int count = 0;
                 foreach (var node in _root.Descendants())
                 {
-                    if (node is Element el && (_matchAll || el.TagName == _tagName))
+                    if (node is Element el && (_matchAll || string.Equals(el.TagName, _tagName, StringComparison.OrdinalIgnoreCase) || string.Equals(el.LocalName, _tagName, StringComparison.OrdinalIgnoreCase)))
                         count++;
                 }
                 return count;
@@ -308,7 +308,7 @@ namespace FenBrowser.Core.Dom.V2
                 int i = 0;
                 foreach (var node in _root.Descendants())
                 {
-                    if (node is Element el && (_matchAll || el.TagName == _tagName))
+                    if (node is Element el && (_matchAll || string.Equals(el.TagName, _tagName, StringComparison.OrdinalIgnoreCase) || string.Equals(el.LocalName, _tagName, StringComparison.OrdinalIgnoreCase)))
                     {
                         if (i == index) return el;
                         i++;
@@ -323,7 +323,7 @@ namespace FenBrowser.Core.Dom.V2
             if (string.IsNullOrEmpty(name)) return null;
             foreach (var node in _root.Descendants())
             {
-                if (node is Element el && (_matchAll || el.TagName == _tagName))
+                if (node is Element el && (_matchAll || string.Equals(el.TagName, _tagName, StringComparison.OrdinalIgnoreCase) || string.Equals(el.LocalName, _tagName, StringComparison.OrdinalIgnoreCase)))
                 {
                     if (el.Id == name || el.GetAttribute("name") == name)
                         return el;
@@ -337,7 +337,7 @@ namespace FenBrowser.Core.Dom.V2
             var snapshot = new List<Element>();
             foreach (var node in _root.Descendants())
             {
-                if (node is Element el && (_matchAll || el.TagName == _tagName))
+                if (node is Element el && (_matchAll || string.Equals(el.TagName, _tagName, StringComparison.OrdinalIgnoreCase) || string.Equals(el.LocalName, _tagName, StringComparison.OrdinalIgnoreCase)))
                     snapshot.Add(el);
             }
             return snapshot.GetEnumerator();
@@ -425,3 +425,4 @@ namespace FenBrowser.Core.Dom.V2
         }
     }
 }
+
