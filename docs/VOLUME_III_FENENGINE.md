@@ -2615,3 +2615,26 @@ Verification snapshot (2026-03-04):
   - `language/statements/with`: 21/181 to 23/181 (incremental; substantial work remains),
   - `language/expressions/addition`: 22/48 unchanged (remaining coercion/wrapper correctness still open).
 
+
+### 2.40 Runtime Hardening (2026-03-04, Wave 36)
+- Core/Bytecode/Compiler/BytecodeCompiler.cs
+  - `BigIntLiteral` bytecode emission now stores `FenValue.FromBigInt(...)` constants (removed numeric downgrade path).
+- Core/Bytecode/VM/VirtualMachine.cs
+  - `ExecuteAdd(...)` aligned to spec order: string concat precedence, BigInt+BigInt arithmetic, mixed BigInt/non-BigInt TypeError.
+  - `EnterWith` hardened for null/undefined object conversion failure behavior.
+- Core/FenRuntime.cs
+  - `Object(...)` primitive boxing corrected for String/Number/Boolean wrappers with prototype linkage and `__value__` payload.
+  - Added missing primitive-coercion methods:
+    - `String.prototype.toString`
+    - `String.prototype.valueOf`
+    - `Number.prototype.valueOf`
+- Core/Parser.cs
+  - `ParseWithStatement()` now emits SyntaxError for declaration forms in single-statement `with` bodies.
+- Regression coverage updates:
+  - Engine/Bytecode/BytecodeExecutionTests.cs
+  - Engine/JsParserReproTests.cs
+  - Engine/FenRuntimeBytecodeExecutionTests.cs
+
+Verification snapshot (2026-03-04):
+- Build: `FenBrowser.FenEngine` and `FenBrowser.Tests` pass.
+- Targeted suites (`BytecodeExecutionTests`, `JsParserReproTests`, `FenRuntimeBytecodeExecutionTests`): `137/137` pass.
