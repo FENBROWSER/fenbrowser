@@ -162,5 +162,44 @@ namespace FenBrowser.Tests.WebAPIs
               
              Assert.Equal("API Data", await tcs.Task);
         }
+        [Fact]
+        public async Task Fetch_ShouldReject_WhenFetchHandlerMissing()
+        {
+             EngineContext.Reset();
+             var perm = new PermissionManager(JsPermissions.StandardWeb);
+             var context = new FenBrowser.FenEngine.Core.ExecutionContext(perm);
+             context.Environment = new FenEnvironment();
+             FetchApi.Register(context, null);
+
+             var fetch = context.Environment.Get("fetch").AsFunction();
+             var promise = fetch.Invoke(new FenValue[] { FenValue.FromString("https://example.com") }, context);
+
+             var tcs = new TaskCompletionSource<string>();
+             var onFulfilled = new FenFunction("onFulfilled", (args, thisVal) =>
+             {
+                 tcs.TrySetException(new Exception("Expected fetch to reject"));
+                 return FenValue.Undefined;
+             });
+             var onRejected = new FenFunction("onRejected", (args, thisVal) =>
+             {
+                 tcs.TrySetResult(args.Length > 0 ? args[0].ToString() : string.Empty);
+                 return FenValue.Undefined;
+             });
+
+             promise.AsObject().Get("then").AsFunction().Invoke(
+                 new FenValue[] { FenValue.FromFunction(onFulfilled), FenValue.FromFunction(onRejected) },
+                 context);
+
+             var timeout = Task.Delay(5000);
+             while (!tcs.Task.IsCompleted)
+             {
+                 if (timeout.IsCompleted) throw new TimeoutException("Fetch rejection timed out");
+                 EventLoopCoordinator.Instance.PerformMicrotaskCheckpoint();
+                 await Task.Delay(10);
+             }
+
+             var message = await tcs.Task;
+             Assert.Contains("Fetch handler missing", message, StringComparison.OrdinalIgnoreCase);
+        }
     }
 }

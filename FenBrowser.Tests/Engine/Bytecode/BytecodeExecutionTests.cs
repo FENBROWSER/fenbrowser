@@ -87,6 +87,21 @@ namespace FenBrowser.Tests.Engine.Bytecode
         }
 
         [Fact]
+        public void Bytecode_VarDeclarationList_ShouldDeclareAllBindings()
+        {
+            var result = Evaluate("var expectedName, actualName; actualName = 'TypeError'; expectedName = 'RangeError'; expectedName + ':' + actualName;");
+            Assert.Equal("RangeError:TypeError", result.AsString());
+        }
+
+        [Fact]
+        public void Bytecode_StrictVarDeclarationList_ShouldDeclareAllBindings()
+        {
+            var result = Evaluate("'use strict'; var expectedName, actualName; actualName = 42; actualName;");
+            Assert.Equal(42, result.AsNumber());
+        }
+
+
+        [Fact]
         public void Bytecode_StringConcatenation_ShouldWork()
         {
             var result = Evaluate("'Hello ' + 'World';");
@@ -311,6 +326,27 @@ namespace FenBrowser.Tests.Engine.Bytecode
         {
             var result = Evaluate("function add(a, b) { return a + b; } add(10, 20);");
             Assert.Equal(30, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_FunctionDeclaration_ShouldBeCallableBeforeSourcePosition()
+        {
+            var result = Evaluate("add(10, 20); function add(a, b) { return a + b; }");
+            Assert.Equal(30, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_FunctionDeclaration_InFunctionBody_ShouldHoist()
+        {
+            var result = Evaluate("function outer() { return inner(); function inner() { return 9; } } outer();");
+            Assert.Equal(9, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_FunctionDeclaration_DuplicateNames_LastDeclarationWins()
+        {
+            var result = Evaluate("which(); function which() { return 1; } function which() { return 2; }");
+            Assert.Equal(2, result.AsNumber());
         }
 
         [Fact]
@@ -1011,3 +1047,5 @@ namespace FenBrowser.Tests.Engine.Bytecode
         }
     }
 }
+
+
