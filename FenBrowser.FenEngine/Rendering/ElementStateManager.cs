@@ -468,7 +468,7 @@ namespace FenBrowser.FenEngine.Rendering
                         if (!string.IsNullOrEmpty(value) && !regex.IsMatch(value))
                             return false;
                     }
-                    catch { }
+                    catch (Exception ex) { FenLogger.Warn($"[ElementStateManager] Pattern validation failed: {ex.Message}", LogCategory.Rendering); }
                 }
                 
                 // Min/max for number types
@@ -575,6 +575,7 @@ namespace FenBrowser.FenEngine.Rendering
         #endregion
     }
 }
+
 
 
 

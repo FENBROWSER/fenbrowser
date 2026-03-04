@@ -82,7 +82,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { FenBrowser.Core.FenLogger.Warn($"[CssEngineFactory] Named color parsing failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering); }
             return result;
         }
     }
@@ -117,3 +117,4 @@ namespace FenBrowser.FenEngine.Rendering.Css
         }
     }
 }
+

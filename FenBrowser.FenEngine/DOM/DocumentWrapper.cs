@@ -733,7 +733,7 @@ namespace FenBrowser.FenEngine.DOM
                     var bridged = CookieReadBridge(_baseUri);
                     if (bridged != null) return bridged;
                 }
-                catch { }
+                catch (Exception ex) { FenBrowser.Core.FenLogger.Warn($"[DocumentWrapper] Cookie read bridge failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript); }
             }
 
             // fromScript: true — HttpOnly cookies must not be exposed to JavaScript
@@ -747,7 +747,7 @@ namespace FenBrowser.FenEngine.DOM
             if (_baseUri != null && CookieWriteBridge != null)
             {
                 try { CookieWriteBridge(_baseUri, cookieStr); return; }
-                catch { }
+                catch (Exception ex) { FenBrowser.Core.FenLogger.Warn($"[DocumentWrapper] Cookie write bridge failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript); }
             }
 
             _cookieStore.SetCookie(cookieStr, _baseUri);
@@ -756,6 +756,7 @@ namespace FenBrowser.FenEngine.DOM
         public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
     }
 }
+
 
 
 

@@ -179,7 +179,7 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }
             }
-            catch {}
+            catch (Exception ex) { FenLogger.Warn($"[SkiaRenderer] RenderToBitmap failed: {ex.Message}", LogCategory.Rendering); }
         }
         
         /// <summary>
@@ -1010,3 +1010,4 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
+

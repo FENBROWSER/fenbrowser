@@ -180,7 +180,7 @@ namespace FenBrowser.FenEngine.Scripting
                             defaultDeclared = true;
                         }
                         sb.AppendLine("__module_default = " + tail);
-                        sb.AppendLine("try { if (typeof window !== 'undefined') window.__lastModuleDefault = __module_default; } catch { }");
+                        sb.AppendLine("try { if (typeof window !== 'undefined') window.__lastModuleDefault = __module_default; } catch(e){}");
                         continue;
                     }
 
@@ -212,5 +212,6 @@ namespace FenBrowser.FenEngine.Scripting
         }
     }
 }
+
 
 

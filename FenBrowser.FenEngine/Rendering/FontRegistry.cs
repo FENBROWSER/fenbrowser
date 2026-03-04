@@ -240,7 +240,7 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                     FenLogger.Debug($"[FontRegistry] Loaded font: {descriptor.Family} ({typeface.FamilyName})", LogCategory.Rendering);
                     tcs.SetResult(typeface);
-                    try { FontLoaded?.Invoke(descriptor.Family); } catch { }
+                    try { FontLoaded?.Invoke(descriptor.Family); } catch (Exception ex) { FenLogger.Warn($"[FontRegistry] FontLoaded callback failed: {ex.Message}", LogCategory.Rendering); }
                     return typeface;
                 }
             }
@@ -332,16 +332,18 @@ namespace FenBrowser.FenEngine.Rendering
                     return styled;
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                FenLogger.Warn($"[FontRegistry] Styled local typeface load failed for '{localName}': {ex.Message}", LogCategory.Rendering);
             }
 
             try
             {
                 return SKTypeface.FromFamilyName(localName);
             }
-            catch
+            catch (Exception ex)
             {
+                FenLogger.Warn($"[FontRegistry] Local typeface load failed for '{localName}': {ex.Message}", LogCategory.Rendering);
                 return null;
             }
         }
@@ -460,7 +462,7 @@ namespace FenBrowser.FenEngine.Rendering
                              return skTypeface;
                          }
                      }
-                     catch {}
+                     catch (Exception ex) { FenLogger.Warn($"[FontRegistry] Fallback font resolve failed for '{fallbackName}': {ex.Message}", LogCategory.Rendering); }
                 }
 
                 // If registered but not loaded, it might be loading or failed. 
@@ -531,3 +533,4 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
+

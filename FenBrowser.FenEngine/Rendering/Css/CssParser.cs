@@ -305,7 +305,7 @@ namespace FenBrowser.FenEngine.Rendering
                             var c = (SKColor)p.GetValue(null);
                             _namedColors[p.Name] = c;
                         } 
-                        catch { }
+                        catch (Exception ex) { FenBrowser.Core.FenLogger.Warn($"[CssParser] Failed reading SKColors property value: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering); }
                     }
                 }
                 
@@ -320,11 +320,11 @@ namespace FenBrowser.FenEngine.Rendering
                             var c = (SKColor)f.GetValue(null);
                             _namedColors[f.Name] = c;
                         }
-                        catch {}
+                        catch (Exception ex) { FenBrowser.Core.FenLogger.Warn($"[CssParser] Failed reading SKColors field value: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering); }
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { FenBrowser.Core.FenLogger.Warn($"[CssParser] InitializeNamedColors failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering); }
         }
 
         /// <summary>
@@ -1110,3 +1110,5 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
+
+

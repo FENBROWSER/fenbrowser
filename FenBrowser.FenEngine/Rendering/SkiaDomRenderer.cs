@@ -307,7 +307,7 @@ namespace FenBrowser.FenEngine.Rendering
                             var sb = new System.Text.StringBuilder();
                             DumpDom(root, 0, sb, styles, _boxes);
                             FenLogger.Debug($"[SkiaDomRenderer] DOM Dump: {sb}", LogCategory.Rendering);
-                        } catch {}
+                        } catch (Exception ex) { FenLogger.Warn($"[SkiaDomRenderer] DOM dump logging failed: {ex.Message}", LogCategory.Rendering); }
                     }
                     
                     FenLogger.Debug($"[SkiaDomRenderer] Copied {boxCount} boxes for rendering.", LogCategory.Rendering);
@@ -482,7 +482,7 @@ namespace FenBrowser.FenEngine.Rendering
                     }
 
                 } 
-                catch {}
+                catch (Exception ex) { FenLogger.Warn($"[SkiaDomRenderer] Background color resolution failed: {ex.Message}", LogCategory.Rendering); }
                 
                 using (pipelineContext.BeginScopedStage(PipelineStage.Rasterizing))
                 {
@@ -834,6 +834,7 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
+
 
 
 

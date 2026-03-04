@@ -307,7 +307,7 @@ namespace FenBrowser.FenEngine.DOM
                     InvokeFenListenerArray(winVal.AsObject(), evt, context, capturePhase);
                 }
             }
-            catch { }
+            catch (Exception ex) { FenLogger.Warn($"[EventTarget] Window top-level listeners invocation failed: {ex.Message}", LogCategory.Events); }
 
             if (evt.PropagationStopped) return;
 
@@ -319,7 +319,7 @@ namespace FenBrowser.FenEngine.DOM
                     InvokeFenListenerArray(docVal.AsObject(), evt, context, capturePhase);
                 }
             }
-            catch { }
+            catch (Exception ex) { FenLogger.Warn($"[EventTarget] Window top-level listeners invocation failed: {ex.Message}", LogCategory.Events); }
         }
 
         private static void InvokeFenListenerArray(IObject targetObj, DomEvent evt, IExecutionContext context, bool capturePhase)
@@ -417,6 +417,7 @@ namespace FenBrowser.FenEngine.DOM
         }
     }
 }
+
 
 
 
