@@ -915,3 +915,29 @@ Verification:
   - `language/expressions/template-literal`: 24/57 -> 40/57
   - `language/statements/with`: 21/181 -> 23/181
   - `language/expressions/addition`: 22/48 (no net gain yet; remaining wrapper/exception-shape issues tracked)
+
+## Recheck Pass 35 (2026-03-04, BigInt/addition + with-body parser/runtime hardening)
+- Focus area: remaining audit items for additive coercion, parser negatives, and with-statement body restrictions.
+- Files hardened:
+  - FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs
+  - FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs
+  - FenBrowser.FenEngine/Core/FenRuntime.cs
+  - FenBrowser.FenEngine/Core/Parser.cs
+  - FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs
+  - FenBrowser.Tests/Engine/JsParserReproTests.cs
+  - FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs
+- Changes:
+  - Bytecode compiler now emits true BigInt constants for `BigIntLiteral` instead of number fallback.
+  - VM `+` now performs spec-aligned dispatch:
+    - string-concat precedence,
+    - BigInt+BigInt arithmetic,
+    - mixed BigInt/non-BigInt TypeError.
+  - VM `with` entry now consistently performs object conversion checks and throws for null/undefined targets.
+  - `Object(...)` primitive boxing corrected for String/Number/Boolean wrappers with `__value__` and prototype linkage.
+  - Added missing primitive prototype coercion methods:
+    - `String.prototype.toString` / `String.prototype.valueOf`
+    - `Number.prototype.valueOf`
+  - Parser `with` single-statement body now rejects declaration forms (`class`, function declaration, lexical declarations).
+- Verification:
+  - Build: `FenBrowser.FenEngine` + `FenBrowser.Tests` compile clean.
+  - Targeted tests: `BytecodeExecutionTests`, `JsParserReproTests`, `FenRuntimeBytecodeExecutionTests` => `137/137` pass.
