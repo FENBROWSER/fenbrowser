@@ -364,12 +364,14 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
-        public void ExecuteSimple_CompileUnsupported_ReturnsBytecodeOnlyError()
+        public void ExecuteSimple_WithStatementInFunctionBody_ShouldCompileAndRun()
         {
             var rt = CreateRuntime();
-            var result = rt.ExecuteSimple("function keep(x) { with (x) { return x; } }");
-            Assert.Equal(FenBrowser.FenEngine.Core.Interfaces.ValueType.Error, result.Type);
-            Assert.Contains("Bytecode compilation error", result.ToString(), StringComparison.OrdinalIgnoreCase);
+            var compile = rt.ExecuteSimple("function keep(obj) { with (obj) { return x; } }");
+            Assert.NotEqual(FenBrowser.FenEngine.Core.Interfaces.ValueType.Error, compile.Type);
+
+            rt.ExecuteSimple("var outv = keep({ x: 11 });");
+            Assert.Equal(11, ((FenValue)rt.GetGlobal("outv")).AsNumber());
         }
 
         [Fact]
@@ -411,3 +413,5 @@ namespace FenBrowser.Tests.Engine
 
     }
 }
+
+

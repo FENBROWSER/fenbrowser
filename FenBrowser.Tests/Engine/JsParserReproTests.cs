@@ -107,6 +107,36 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void Parse_TemplateLiteral_InvalidHexEscape_ShouldFail()
+        {
+            var parser = CreateParser("`bad: \\xG1`");
+            parser.ParseProgram();
+            Assert.NotEmpty(parser.Errors);
+        }
+
+        [Fact]
+        public void Parse_TemplateLiteral_InvalidUnicodeCodePointEscape_ShouldFail()
+        {
+            var parser = CreateParser("`bad: \\u{110000}`");
+            parser.ParseProgram();
+            Assert.NotEmpty(parser.Errors);
+        }
+
+        [Fact]
+        public void Parse_TemplateLiteral_InvalidLegacyOctalEscape_ShouldFail()
+        {
+            var parser = CreateParser("`bad: \\08`");
+            parser.ParseProgram();
+            Assert.NotEmpty(parser.Errors);
+        }
+        [Fact]
+        public void Parse_StrictMode_WithStatement_ShouldFail()
+        {
+            var parser = CreateParser("\"use strict\"; with ({ x: 1 }) { x; }");
+            parser.ParseProgram();
+            Assert.Contains(parser.Errors, e => e.Contains("with statement", StringComparison.OrdinalIgnoreCase));
+        }
+        [Fact]
         public void Parse_CompoundAssignment_PlusAssign()
         {
             var input = "var x = 1; x += 2;";
@@ -116,3 +146,6 @@ namespace FenBrowser.Tests.Engine
         }
     }
 }
+
+
+
