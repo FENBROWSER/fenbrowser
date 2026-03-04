@@ -423,7 +423,7 @@ namespace FenBrowser.FenEngine.Rendering
                 var gate = new System.Threading.SemaphoreSlim(6);
                 int budget = 32; // avoid over-queuing
                 double dw = viewportWidth ?? 0; 
-                try { if (dw <= 0) dw = GetPrimaryWindowWidth(); } catch { }
+                try { if (dw <= 0) dw = GetPrimaryWindowWidth(); } catch (Exception ex) { FenLogger.Warn($"[CustomHtmlEngine] Failed reading primary window width: {ex.Message}", LogCategory.Rendering); }
                 if (dw <= 0) dw = 480;
 
                 // Helper to execute load
@@ -666,8 +666,8 @@ namespace FenBrowser.FenEngine.Rendering
             try
             {
                 CssParser.MediaViewportWidth = viewportWidth;
-                try { CssParser.MediaViewportHeight = (double?)GetPrimaryWindowHeight(); } catch { }
-                try { CssParser.MediaDppx = 1.0; } catch { }
+                try { CssParser.MediaViewportHeight = (double?)GetPrimaryWindowHeight(); } catch (Exception ex) { FenLogger.Warn($"[CustomHtmlEngine] Failed setting media viewport height: {ex.Message}", LogCategory.Rendering); }
+                try { CssParser.MediaDppx = 1.0; } catch (Exception ex) { FenLogger.Warn($"[CustomHtmlEngine] Failed setting media dppx: {ex.Message}", LogCategory.Rendering); }
                 try { CssParser.MediaPrefersColorScheme = "light"; } catch { CssParser.MediaPrefersColorScheme = "light"; }
             }
             catch (Exception ex)
@@ -921,7 +921,7 @@ namespace FenBrowser.FenEngine.Rendering
                      var sb = new StringBuilder();
                      DumpTree((doc as FenBrowser.Core.Dom.V2.Document)?.DocumentElement ?? doc, sb, 0);
                      System.IO.File.WriteAllText(DiagnosticPaths.GetRootArtifactPath("dom_dump.txt"), sb.ToString());
-                } catch {}
+                } catch (Exception ex) { FenLogger.Warn($"[RenderAsync] Failed writing dom_dump.txt: {ex.Message}", LogCategory.Rendering); }
 
                 var metrics = builder.LastBuildMetrics ?? new FenBrowser.Core.Parsing.HtmlParseBuildMetrics();
                 return new DomParseResult
@@ -1057,7 +1057,7 @@ namespace FenBrowser.FenEngine.Rendering
                          if (disp != null && !UiThreadHelper.HasThreadAccess(disp)) action();
                          else action();
                      }
-                     catch { action(); }
+                     catch (Exception ex) { FenLogger.Warn($"[CustomHtmlEngine] UI dispatch invoke failed, running inline action: {ex.Message}", LogCategory.Rendering); action(); }
                  },
                  setTitle: null,
                  alert: (msg) => { AlertTriggered?.Invoke(msg); },
@@ -1150,7 +1150,7 @@ namespace FenBrowser.FenEngine.Rendering
                      }
                  }
              }
-             catch { }
+             catch (Exception ex) { FenLogger.Warn($"[CustomHtmlEngine] Domain tuning failed: {ex.Message}", LogCategory.Rendering); }
 
              if (js != null) 
              {
@@ -1404,11 +1404,11 @@ namespace FenBrowser.FenEngine.Rendering
                         }
                     }
                 }
-                catch { }
+                catch (Exception ex) { FenLogger.Warn($"[CustomHtmlEngine] Declarative shadow DOM processing failed: {ex.Message}", LogCategory.Rendering); }
 
                 // 4. Prewarm Images
                 FenLogger.Debug("[CustomHtmlEngine] Prewarming images...", LogCategory.Rendering);
-                try { PrewarmImages((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, imageLoader, viewportWidth); } catch { }
+                try { PrewarmImages((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, imageLoader, viewportWidth); } catch (Exception ex) { FenLogger.Warn($"[CustomHtmlEngine] PrewarmImages invocation failed: {ex.Message}", LogCategory.Rendering); }
 
                 // 5. Setup Javascript
                 bool allowJs = EnableJavaScript;
@@ -1754,7 +1754,7 @@ namespace FenBrowser.FenEngine.Rendering
             Action<object>? onFixedBackground = null)
         {
             try { var _ = RenderAsync(html, baseUri, fetchExternalCssAsync, imageLoader, onNavigate, viewportWidth, onFixedBackground); }
-            catch { }
+            catch (Exception ex) { FenLogger.Warn($"[CustomHtmlEngine] Fire-and-forget render launch failed: {ex.Message}", LogCategory.Rendering); }
         }
 
         /// <summary>Expose the current active Lite DOM (last parsed).</summary>
@@ -1785,7 +1785,7 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { FenLogger.Warn($"[CustomHtmlEngine] Cookie snapshot failed: {ex.Message}", LogCategory.Rendering); }
             return dict;
         }
 
@@ -1797,7 +1797,7 @@ namespace FenBrowser.FenEngine.Rendering
                 var cookie = new System.Net.Cookie(name ?? string.Empty, value ?? string.Empty, path ?? "/", u.Host);
                 _jsCookieJar.Add(u, cookie);
             }
-            catch { }
+            catch (Exception ex) { FenLogger.Warn($"[CustomHtmlEngine] SetCookie failed: {ex.Message}", LogCategory.Rendering); }
         }
 
         public void DeleteCookie(Uri scope, string name)
@@ -1809,7 +1809,7 @@ namespace FenBrowser.FenEngine.Rendering
                 var expired = new System.Net.Cookie(name ?? string.Empty, string.Empty, "/", u.Host) { Expires = DateTime.UtcNow.AddDays(-1) };
                 _jsCookieJar.Add(u, expired);
             }
-            catch { }
+            catch (Exception ex) { FenLogger.Warn($"[CustomHtmlEngine] DeleteCookie failed: {ex.Message}", LogCategory.Rendering); }
         }
 
 
@@ -1868,6 +1868,8 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
+
+
 
 
 

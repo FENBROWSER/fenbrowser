@@ -226,7 +226,7 @@ namespace FenBrowser.FenEngine.Layout
                      else if (prop.PropertyType == typeof(string))
                         prop.SetValue(style, $"#{color:X8}");
                 }
-            } catch {}
+            } catch (Exception ex) { FenLogger.Warn($"[MinimalLayoutComputer] Failed applying text color style: {ex.Message}", LogCategory.Layout); }
         }
 
         internal IEnumerable<Node> GetChildrenWithPseudosInternal(Element element, Node fallbackNode) => GetChildrenWithPseudos(element, fallbackNode);
@@ -350,7 +350,7 @@ namespace FenBrowser.FenEngine.Layout
              try {
                 var prop = style.GetType().GetProperty(name);
                 if (prop != null && prop.CanWrite) prop.SetValue(style, val);
-            } catch {}
+            } catch (Exception ex) { FenLogger.Warn($"[MinimalLayoutComputer] Failed applying style property '{name}': {ex.Message}", LogCategory.Layout); }
         }
         
         public BoxModel GetBox(Node node) => (node != null && _boxes.TryGetValue(node, out var box)) ? box : null;
@@ -374,7 +374,7 @@ namespace FenBrowser.FenEngine.Layout
                         "debug_layout_dims.txt",
                         $"[LAYOUT] Node={e.TagName} W={metrics.MaxChildWidth} H={metrics.ContentHeight}\r\n");
                 }
-            } catch {}
+            } catch (Exception ex) { FenLogger.Warn($"[MinimalLayoutComputer] Failed writing debug layout dims: {ex.Message}", LogCategory.Layout); }
 
             return metrics; 
         }
@@ -3129,6 +3129,7 @@ namespace FenBrowser.FenEngine.Layout
         public int GetZeroSizedCount() => _zeroSizedCount;
     }
 }
+
 
 
 

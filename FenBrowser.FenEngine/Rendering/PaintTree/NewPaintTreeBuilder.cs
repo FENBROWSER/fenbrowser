@@ -1871,7 +1871,7 @@ namespace FenBrowser.FenEngine.Rendering
                     var uri = new Uri(new Uri(_baseUri), url);
                     url = uri.ToString();
                 }
-                catch {}
+                catch (Exception ex) { global::FenBrowser.Core.FenLogger.Warn($"[IMG-BUILD] Failed resolving image URL against base URI: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering); }
             }
 
             var bitmap = ImageLoader.GetImage(url);
@@ -2527,7 +2527,7 @@ namespace FenBrowser.FenEngine.Rendering
                             url = $"{uri.Scheme}://{uri.Host}/{url}";
                         }
                     }
-                    catch {}
+                    catch (Exception ex) { global::FenBrowser.Core.FenLogger.Warn($"[IMG-BUILD] Failed normalizing image URL: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering); }
                 }
 
                 global::FenBrowser.Core.FenLogger.Debug($"[IMG-BUILD] Tag={tag} URL={(url?.Length > 80 ? url?.Substring(0, 80) + "..." : url)}");
@@ -2606,7 +2606,7 @@ namespace FenBrowser.FenEngine.Rendering
                                     }
                                 }
                             }
-                            catch { }
+                            catch (Exception ex) { global::FenBrowser.Core.FenLogger.Warn($"[IMG-BUILD] Failed parsing ancestor style while resolving image URL: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering); }
                             ancestor = ancestor.ParentElement;
                         }
                     }
