@@ -111,11 +111,16 @@ namespace FenBrowser.FenEngine.Core
             { TokenType.Decrement, Precedence.Prefix },
         };
 
-        public Parser(Lexer lexer, bool isModule = false, bool allowReturnOutsideFunction = false)
+        public Parser(
+            Lexer lexer,
+            bool isModule = false,
+            bool allowReturnOutsideFunction = false,
+            bool initialStrictMode = false)
         {
             _lexer = lexer;
             _isModule = isModule;
             _allowReturnOutsideFunction = allowReturnOutsideFunction;
+            _isStrictMode = initialStrictMode || isModule;
             _prefixParseFns = new Dictionary<TokenType, Func<Expression>>();
             _infixParseFns = new Dictionary<TokenType, Func<Expression, Expression>>();
 
@@ -925,7 +930,7 @@ namespace FenBrowser.FenEngine.Core
                 if (!string.IsNullOrWhiteSpace(exprStr))
                 {
                     var exprLexer = new Lexer(exprStr);
-                    var exprParser = new Parser(exprLexer);
+                    var exprParser = new Parser(exprLexer, initialStrictMode: _isStrictMode || _isModule);
                     var exprProgram = exprParser.ParseProgram();
                     if (exprProgram.Statements.Count > 0 && exprProgram.Statements[0] is ExpressionStatement exprStmt)
                     {

@@ -7539,7 +7539,8 @@ namespace FenBrowser.FenEngine.Core
                 // Create a proxy object that intercepts operations
                 var proxy = new FenObject();
                 proxy.SetBuiltin("__isProxy__", FenValue.FromBoolean(true));
-                proxy.Set("__target__", FenValue.FromObject(target));
+                proxy.SetBuiltin("__target__", FenValue.FromObject(target));
+                proxy.SetBuiltin("__proxyTarget__", FenValue.FromObject(target));
                 proxy.Set("__handler__", FenValue.FromObject(handlerVal));
 
                 // Override Get to use handler.get trap
@@ -9122,7 +9123,8 @@ namespace FenBrowser.FenEngine.Core
 
                 var proxy = new FenObject();
                 proxy.SetBuiltin("__isProxy__", FenValue.FromBoolean(true));
-                proxy.Set("__target__", FenValue.FromObject(target));
+                proxy.SetBuiltin("__target__", FenValue.FromObject(target));
+                proxy.SetBuiltin("__proxyTarget__", FenValue.FromObject(target));
                 proxy.Set("__handler__", FenValue.FromObject(handler));
 
                 // Proxy get trap
@@ -9305,7 +9307,8 @@ namespace FenBrowser.FenEngine.Core
                         var p = new FenObject();
                         p.SetBuiltin("__isProxy__", FenValue.FromBoolean(true));
                         p.Set("__isRevoked__", FenValue.FromBoolean(false)); // Track revocation
-                        p.Set("__target__", target);
+                        p.SetBuiltin("__target__", target);
+                        p.SetBuiltin("__proxyTarget__", target);
                         p.Set("__handler__", handler);
 
                         // Copy traps
@@ -11148,7 +11151,7 @@ namespace FenBrowser.FenEngine.Core
 
                     // Compile the function expression to bytecode via ExecuteSimple so the
                     // resulting FenFunction has a BytecodeBlock and is callable from the VM.
-                    var funcResult = ExecuteSimple(functionSource);
+                    var funcResult = ExecuteSimple(functionSource, inheritStrictFromContext: false);
                     if (funcResult is FenValue fv && fv.IsFunction)
                         return fv;
 
@@ -11904,9 +11907,8 @@ namespace FenBrowser.FenEngine.Core
         {
             return ExecuteSimple(code, "script", false, cancellationToken);
         }
-
         public IValue ExecuteSimple(string code, string url = "script", bool allowReturn = false,
-            System.Threading.CancellationToken cancellationToken = default)
+            System.Threading.CancellationToken cancellationToken = default, bool inheritStrictFromContext = true)
         {
             var sw = System.Diagnostics.Stopwatch.StartNew();
             string logPath = DiagnosticPaths.GetLogArtifactPath("script_execution.log");
@@ -11963,7 +11965,7 @@ namespace FenBrowser.FenEngine.Core
                 try
                 {
                     var lexer = new Lexer(code);
-                    var parser = new Parser(lexer, allowReturnOutsideFunction: allowReturn);
+                    var parser = new Parser(lexer, allowReturnOutsideFunction: allowReturn, initialStrictMode: inheritStrictFromContext && (_context?.StrictMode ?? false));
                     var program = parser.ParseProgram();
 
                     if (parser.Errors.Count > 0)
@@ -14315,6 +14317,7 @@ namespace FenBrowser.FenEngine.Core
         #endregion
     }
 }
+
 
 
 
