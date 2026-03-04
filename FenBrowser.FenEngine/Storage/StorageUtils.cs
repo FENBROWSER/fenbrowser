@@ -23,7 +23,7 @@ namespace FenBrowser.FenEngine.Storage
 
                 // Handle Arrays
                 var lengthVal = obj.Get("length");
-                if (lengthVal != null && lengthVal.IsNumber && obj.Has("0")) // Heuristic for array
+                if (lengthVal.IsNumber && obj.Has("0")) // Heuristic for array
                 {
                     int len = (int)lengthVal.ToNumber();
                     var list = new List<object>(len);
@@ -120,3 +120,4 @@ namespace FenBrowser.FenEngine.Storage
         }
     }
 }
+

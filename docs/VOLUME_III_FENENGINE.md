@@ -2564,3 +2564,15 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
   - Removes CS8073 warning-class issues and makes worker callback gating semantically explicit.
 - Verification:
   - Full suite: `978` passed / `0` failed.
+
+### 2.38 Runtime Hardening (2026-03-04, Wave 34)
+- Storage/StorageUtils.cs
+  - Removed invalid `FenValue` null check in array-shape detection path.
+- DOM/NodeWrapper.cs
+  - Replaced `args[1] != null` guard with explicit `!IsUndefined && !IsNull` before `insertBefore` reference-node resolution.
+- DOM/CustomElementRegistry.cs
+  - Replaced value-type null compare in `get` return path with explicit undefined sentinel check.
+- DOM/MutationObserverWrapper.cs
+  - Replaced value-type null compare when collecting `attributeFilter` entries with explicit undefined/null guards.
+- Verification:
+  - Full suite: `978` passed / `0` failed.

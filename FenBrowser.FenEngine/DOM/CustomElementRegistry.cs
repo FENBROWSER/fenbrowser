@@ -262,7 +262,7 @@ namespace FenBrowser.FenEngine.DOM
             {
                 if (args.Length == 0) return FenValue.Undefined;
                 var constructor = Get(args[0].ToString());
-                return constructor != null ? (FenValue)constructor : FenValue.Undefined;
+                return !constructor.IsUndefined ? constructor : FenValue.Undefined;
             })));
 
             obj.Set("getName", FenValue.FromFunction(new FenFunction("getName", (args, thisVal) =>
@@ -370,4 +370,5 @@ namespace FenBrowser.FenEngine.DOM
         public string Extends { get; set; }
     }
 }
+
 

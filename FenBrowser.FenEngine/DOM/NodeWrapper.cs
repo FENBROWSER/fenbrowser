@@ -254,7 +254,7 @@ namespace FenBrowser.FenEngine.DOM
             Node newNode = (newW as NodeWrapper)?._node ?? (newW as ElementWrapper)?.Element;
 
             Node refNode = null;
-            if (args[1] != null && !args[1].IsNull)
+            if (!args[1].IsUndefined && !args[1].IsNull)
             {
                 var refW = args[1].AsObject();
                 refNode = (refW as NodeWrapper)?._node ?? (refW as ElementWrapper)?.Element;
@@ -364,6 +364,7 @@ namespace FenBrowser.FenEngine.DOM
         public virtual bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
     }
 }
+
 
 
 
