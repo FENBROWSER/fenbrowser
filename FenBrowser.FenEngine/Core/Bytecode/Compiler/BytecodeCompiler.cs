@@ -83,7 +83,70 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             Emit(OpCode.Halt);
 
             var localSlots = _enableLocalSlots ? new List<string>(_localSlotNames) : null;
-            return new CodeBlock(_instructions.ToArray(), new List<FenValue>(_constants), localSlots);
+            var codeBlock = new CodeBlock(_instructions.ToArray(), new List<FenValue>(_constants), localSlots)
+            {
+                IsStrict = IsStrictRoot(root)
+            };
+            return codeBlock;
+        }
+
+        private static bool IsStrictRoot(AstNode root)
+        {
+            if (root is Program program)
+            {
+                if (program.IsStrict)
+                {
+                    return true;
+                }
+
+                return HasUseStrictDirective(program.Statements);
+            }
+
+            if (root is BlockStatement block)
+            {
+                return HasUseStrictDirective(block.Statements);
+            }
+
+            return false;
+        }
+
+        private static bool HasUseStrictDirective(List<Statement> statements)
+        {
+            if (statements == null)
+            {
+                return false;
+            }
+
+            foreach (var statement in statements)
+            {
+                if (statement is ExpressionStatement expressionStatement &&
+                    expressionStatement.Expression is StringLiteral stringLiteral)
+                {
+                    if (IsUseStrictLiteral(stringLiteral))
+                    {
+                        return true;
+                    }
+
+                    continue;
+                }
+
+                break;
+            }
+
+            return false;
+        }
+
+        private static bool IsUseStrictLiteral(StringLiteral literal)
+        {
+            if (literal == null)
+            {
+                return false;
+            }
+
+            var value = literal.Value;
+            return string.Equals(value, "use strict", StringComparison.Ordinal)
+                || string.Equals(value, "\"use strict\"", StringComparison.Ordinal)
+                || string.Equals(value, "'use strict'", StringComparison.Ordinal);
         }
 
         private void HoistBlockFunctions(AstNode root)
@@ -638,6 +701,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     }
                     Emit(OpCode.Pop); // declarations are statements; discard the stored value from the stack
                 }
+                else if (letStmt.Name != null)
+                {
+                    // Declarations without initializer still create a binding with undefined.
+                    Emit(OpCode.LoadUndefined);
+                    EmitStoreVarByName(letStmt.Name.Value);
+                    Emit(OpCode.Pop);
+                }
             }
             else if (node is EmptyExpression)
             {
@@ -722,6 +792,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 ValidateSupportedParameterList(funcLit.Parameters, "FunctionLiteral");
                 var funcCompiler = CreateFunctionCompiler(funcLit.Parameters, funcLit.Name);
                 var compiledBlock = funcCompiler.Compile(BuildCallableBody(funcLit.Body, funcLit.Parameters));
+                compiledBlock.IsStrict = compiledBlock.IsStrict || funcLit.IsStrict;
                 var localMap = BuildFunctionLocalMap(compiledBlock);
 
                 var templateFunc = new FenFunction(funcLit.Parameters, compiledBlock, null)
@@ -3419,6 +3490,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             ValidateSupportedParameterList(funcDecl.Function.Parameters, "FunctionDeclarationStatement");
             var funcCompiler = CreateFunctionCompiler(funcDecl.Function.Parameters, funcDecl.Function.Name);
             var compiledBlock = funcCompiler.Compile(BuildCallableBody(funcDecl.Function.Body, funcDecl.Function.Parameters));
+            compiledBlock.IsStrict = compiledBlock.IsStrict || funcDecl.Function.IsStrict;
             var localMap = BuildFunctionLocalMap(compiledBlock);
 
             var templateFunc = new FenFunction(funcDecl.Function.Parameters, compiledBlock, null)

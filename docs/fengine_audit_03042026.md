@@ -1,4 +1,4 @@
-﻿# FenEngine Full Audit - 03/04/2026
+# FenEngine Full Audit - 03/04/2026
 
 ## Scope and Coverage Guarantee
 - Audited root: `FenBrowser.FenEngine/`
@@ -647,3 +647,37 @@
 - Verification:
   - Targeted test `Phase5B_Symbol_GlobalConstructorExists` passed.
   - Full `FenBrowser.Tests`: `957` passed, `17` failed (down from `19`).
+
+## Recheck Pass 16 (2026-03-04, Strict Mode VM/Compiler Enforcement Recovery)
+- Focus area: strict-mode behavioral regressions (this binding and undeclared assignment) in bytecode execution.
+- Files hardened:
+  - FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs
+  - FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs
+- Changes:
+  - Added strict-mode propagation to CodeBlock.IsStrict during compilation (program directive-prologue detection + function strict flag carry-over).
+  - Bound non-strict plain-call this to global object fallback (globalThis/window/self) instead of unconditional undefined.
+  - Enforced strict assignment behavior in VM UpdateVar using combined block/environment strictness.
+  - Marked function-call environments as strict when invoking strict bytecode blocks.
+- Verification:
+  - dotnet build .\FenBrowser.Tests\FenBrowser.Tests.csproj -v minimal => 0 errors.
+  - Targeted strict conformance tests passed:
+    - StrictMode_AssignmentToUndeclared_ThrowsReferenceError
+    - NonStrictMode_This_IsGlobalObject
+    - StrictMode_This_IsUndefinedInFunctionCall
+    - Result: 3/3 passed.
+
+## Recheck Pass 17 (2026-03-04, Strict Var Declaration Regression Fix)
+- Focus area: strict-mode regression exposed by bytecode declaration-list test.
+- Files hardened:
+  - FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs
+- Changes:
+  - Fixed bytecode emission for declarations without initializers (var/let name;) to always create a binding initialized to undefined.
+  - Prevented strict-mode ReferenceError regressions where undeclared assignment had been masking missing declaration emission in non-strict mode.
+- Verification:
+  - Targeted tests passed (4/4):
+    - Bytecode_StrictVarDeclarationList_ShouldDeclareAllBindings
+    - StrictMode_AssignmentToUndeclared_ThrowsReferenceError
+    - NonStrictMode_This_IsGlobalObject
+    - StrictMode_This_IsUndefinedInFunctionCall
+  - Full FenBrowser.Tests current snapshot: 957 passed, 17 failed.
+

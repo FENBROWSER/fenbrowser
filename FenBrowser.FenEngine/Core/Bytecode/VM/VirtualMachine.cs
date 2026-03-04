@@ -625,6 +625,32 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             ThrowJsError("ReferenceError", message);
         }
 
+        private FenValue ResolveNonStrictThisBinding(CallFrame frame)
+        {
+            if (frame != null)
+            {
+                var globalThis = ResolveVariableSafe(frame, "globalThis");
+                if (globalThis.IsObject)
+                {
+                    return globalThis;
+                }
+
+                var window = ResolveVariableSafe(frame, "window");
+                if (window.IsObject)
+                {
+                    return window;
+                }
+
+                var self = ResolveVariableSafe(frame, "self");
+                if (self.IsObject)
+                {
+                    return self;
+                }
+            }
+
+            return FenValue.Undefined;
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void RequireObjectCoercible(FenValue v, string opName)
         {
@@ -1331,7 +1357,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 int nameIndex = ReadInt32(instructions, ref frame);
                                 string varName = GetStringConstant(frame.Block, constants, nameIndex);
                                 var value = _stack[--_sp];
-                                var updateResult = frame.Environment.Update(varName, value);
+                                bool strictAssignment = (frame.Block != null && frame.Block.IsStrict) || frame.Environment.StrictMode;
+                                var updateResult = frame.Environment.Update(varName, value, strictAssignment);
                                 if (updateResult.Type == JsValueType.Error)
                                 {
                                     throw new FenInternalError(updateResult.ToString());
@@ -1450,6 +1477,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                     }
 
                                     var newEnv = new FenEnvironment(func.Env);
+                                    if (func.BytecodeBlock != null && func.BytecodeBlock.IsStrict)
+                                    {
+                                        newEnv.StrictMode = true;
+                                    }
                                     InitializeFunctionFastStore(func, newEnv);
                                     if (func.LocalMap != null && !string.IsNullOrEmpty(func.Name) && func.LocalMap.ContainsKey(func.Name))
                                     {
@@ -1458,7 +1489,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                     // Bind 'this': undefined for strict-mode-like behaviour; arrow functions inherit from closure
                                     if (!func.IsArrowFunction)
                                     {
-                                        SetFunctionBinding(func, newEnv, "this", FenValue.Undefined);
+                                        SetFunctionBinding(func, newEnv, "this", func.BytecodeBlock != null && func.BytecodeBlock.IsStrict ? FenValue.Undefined : ResolveNonStrictThisBinding(frame));
                                     }
                                     BindFunctionArgumentsFromStack(func, newEnv, argCount, argStart);
 
@@ -1507,6 +1538,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                     }
 
                                     var newEnv = new FenEnvironment(func.Env);
+                                    if (func.BytecodeBlock != null && func.BytecodeBlock.IsStrict)
+                                    {
+                                        newEnv.StrictMode = true;
+                                    }
                                     InitializeFunctionFastStore(func, newEnv);
                                     if (func.LocalMap != null && !string.IsNullOrEmpty(func.Name) && func.LocalMap.ContainsKey(func.Name))
                                     {
@@ -1514,7 +1549,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                     }
                                     if (!func.IsArrowFunction)
                                     {
-                                        SetFunctionBinding(func, newEnv, "this", FenValue.Undefined);
+                                        SetFunctionBinding(func, newEnv, "this", func.BytecodeBlock != null && func.BytecodeBlock.IsStrict ? FenValue.Undefined : ResolveNonStrictThisBinding(frame));
                                     }
                                     BindFunctionArgumentsFromArrayLike(func, newEnv, argsObject, argCount);
 
@@ -1560,6 +1595,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 else if (func.BytecodeBlock != null)
                                 {
                                     var newEnv = new FenEnvironment(func.Env);
+                                    if (func.BytecodeBlock != null && func.BytecodeBlock.IsStrict)
+                                    {
+                                        newEnv.StrictMode = true;
+                                    }
                                     InitializeFunctionFastStore(func, newEnv);
                                     if (func.LocalMap != null && !string.IsNullOrEmpty(func.Name) && func.LocalMap.ContainsKey(func.Name))
                                     {
@@ -1611,6 +1650,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 else if (func.BytecodeBlock != null)
                                 {
                                     var newEnv = new FenEnvironment(func.Env);
+                                    if (func.BytecodeBlock != null && func.BytecodeBlock.IsStrict)
+                                    {
+                                        newEnv.StrictMode = true;
+                                    }
                                     InitializeFunctionFastStore(func, newEnv);
                                     if (func.LocalMap != null && !string.IsNullOrEmpty(func.Name) && func.LocalMap.ContainsKey(func.Name))
                                     {
@@ -1680,6 +1723,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 else if (func.BytecodeBlock != null)
                                 {
                                     var newEnv = new FenEnvironment(func.Env);
+                                    if (func.BytecodeBlock != null && func.BytecodeBlock.IsStrict)
+                                    {
+                                        newEnv.StrictMode = true;
+                                    }
                                      
                                     // Bind 'this' to newObj
                                     InitializeFunctionFastStore(func, newEnv);
@@ -1741,6 +1788,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 else if (func.BytecodeBlock != null)
                                 {
                                     var newEnv = new FenEnvironment(func.Env);
+                                    if (func.BytecodeBlock != null && func.BytecodeBlock.IsStrict)
+                                    {
+                                        newEnv.StrictMode = true;
+                                    }
                                     InitializeFunctionFastStore(func, newEnv);
                                     if (func.LocalMap != null && !string.IsNullOrEmpty(func.Name) && func.LocalMap.ContainsKey(func.Name))
                                     {
@@ -3064,6 +3115,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         }
     }
 }
+
 
 
 
