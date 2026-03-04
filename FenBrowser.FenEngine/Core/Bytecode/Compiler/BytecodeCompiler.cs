@@ -790,6 +790,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             else if (node is FunctionLiteral funcLit)
             {
                 ValidateSupportedParameterList(funcLit.Parameters, "FunctionLiteral");
+                RejectWithInsideCallableBody(funcLit.Body, "FunctionLiteral");
                 var funcCompiler = CreateFunctionCompiler(funcLit.Parameters, funcLit.Name);
                 var compiledBlock = funcCompiler.Compile(BuildCallableBody(funcLit.Body, funcLit.Parameters));
                 compiledBlock.IsStrict = compiledBlock.IsStrict || funcLit.IsStrict;
@@ -810,6 +811,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             else if (node is AsyncFunctionExpression asyncFuncExpr)
             {
                 ValidateSupportedParameterList(asyncFuncExpr.Parameters, "AsyncFunctionExpression");
+                RejectWithInsideCallableBody(asyncFuncExpr.Body, "AsyncFunctionExpression");
                 var funcCompiler = CreateFunctionCompiler(asyncFuncExpr.Parameters, asyncFuncExpr.Name?.Value);
                 var compiledBlock = funcCompiler.Compile(BuildCallableBody(asyncFuncExpr.Body, asyncFuncExpr.Parameters));
                 var localMap = BuildFunctionLocalMap(compiledBlock);
@@ -829,6 +831,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             else if (node is ArrowFunctionExpression arrowExpr)
             {
                 ValidateSupportedParameterList(arrowExpr.Parameters, "ArrowFunctionExpression");
+                RejectWithInsideCallableBody(arrowExpr.Body, "ArrowFunctionExpression");
                 var funcCompiler = CreateFunctionCompiler(arrowExpr.Parameters, null);
                 var compiledBlock = funcCompiler.Compile(BuildCallableBody(arrowExpr.Body, arrowExpr.Parameters));
                 var localMap = BuildFunctionLocalMap(compiledBlock);
@@ -3354,6 +3357,155 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             PatchJumpTo(skipDefaultOffset, _instructions.Count);
         }
 
+        private static void RejectWithInsideCallableBody(AstNode body, string nodeKind)
+        {
+            if (ContainsWithStatement(body))
+            {
+                throw new NotSupportedException($"Compiler: {nodeKind} with 'with' statement is not supported in bytecode-only function bodies.");
+            }
+        }
+
+        private static bool ContainsWithStatement(AstNode node)
+        {
+            if (node == null)
+            {
+                return false;
+            }
+
+            if (node is WithStatement)
+            {
+                return true;
+            }
+
+            if (node is FunctionLiteral || node is AsyncFunctionExpression || node is ArrowFunctionExpression)
+            {
+                return false;
+            }
+
+            if (node is Program program)
+            {
+                if (program.Statements == null)
+                {
+                    return false;
+                }
+
+                foreach (var statement in program.Statements)
+                {
+                    if (ContainsWithStatement(statement))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            if (node is BlockStatement block)
+            {
+                if (block.Statements == null)
+                {
+                    return false;
+                }
+
+                foreach (var statement in block.Statements)
+                {
+                    if (ContainsWithStatement(statement))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            if (node is WithStatement withStatement)
+            {
+                return ContainsWithStatement(withStatement.Object) || ContainsWithStatement(withStatement.Body);
+            }
+
+            if (node is IfStatement ifStatement)
+            {
+                return ContainsWithStatement(ifStatement.Condition)
+                    || ContainsWithStatement(ifStatement.Consequence)
+                    || ContainsWithStatement(ifStatement.Alternative);
+            }
+
+            if (node is WhileStatement whileStatement)
+            {
+                return ContainsWithStatement(whileStatement.Condition) || ContainsWithStatement(whileStatement.Body);
+            }
+
+            if (node is DoWhileStatement doWhileStatement)
+            {
+                return ContainsWithStatement(doWhileStatement.Condition) || ContainsWithStatement(doWhileStatement.Body);
+            }
+
+            if (node is ForStatement forStatement)
+            {
+                return ContainsWithStatement(forStatement.Init)
+                    || ContainsWithStatement(forStatement.Condition)
+                    || ContainsWithStatement(forStatement.Update)
+                    || ContainsWithStatement(forStatement.Body);
+            }
+
+            if (node is ForInStatement forInStatement)
+            {
+                return ContainsWithStatement(forInStatement.Object) || ContainsWithStatement(forInStatement.Body);
+            }
+
+            if (node is ForOfStatement forOfStatement)
+            {
+                return ContainsWithStatement(forOfStatement.Iterable) || ContainsWithStatement(forOfStatement.Body);
+            }
+
+            if (node is TryStatement tryStatement)
+            {
+                return ContainsWithStatement(tryStatement.Block)
+                    || ContainsWithStatement(tryStatement.CatchBlock)
+                    || ContainsWithStatement(tryStatement.FinallyBlock);
+            }
+
+            if (node is LabeledStatement labeledStatement)
+            {
+                return ContainsWithStatement(labeledStatement.Body);
+            }
+
+            if (node is SwitchStatement switchStatement)
+            {
+                if (switchStatement.Cases == null)
+                {
+                    return false;
+                }
+
+                foreach (var switchCase in switchStatement.Cases)
+                {
+                    if (switchCase == null)
+                    {
+                        continue;
+                    }
+
+                    if (ContainsWithStatement(switchCase.Test))
+                    {
+                        return true;
+                    }
+
+                    if (switchCase.Consequent == null)
+                    {
+                        continue;
+                    }
+
+                    foreach (var statement in switchCase.Consequent)
+                    {
+                        if (ContainsWithStatement(statement))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            return false;
+        }
         private static AstNode BuildCallableBody(AstNode body, List<Identifier> parameters = null)
         {
             BlockStatement normalizedBody;
@@ -3488,6 +3640,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private void EmitFunctionDeclaration(FunctionDeclarationStatement funcDecl)
         {
             ValidateSupportedParameterList(funcDecl.Function.Parameters, "FunctionDeclarationStatement");
+            RejectWithInsideCallableBody(funcDecl.Function.Body, "FunctionDeclarationStatement");
             var funcCompiler = CreateFunctionCompiler(funcDecl.Function.Parameters, funcDecl.Function.Name);
             var compiledBlock = funcCompiler.Compile(BuildCallableBody(funcDecl.Function.Body, funcDecl.Function.Parameters));
             compiledBlock.IsStrict = compiledBlock.IsStrict || funcDecl.Function.IsStrict;

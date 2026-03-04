@@ -2431,3 +2431,11 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
   - Targeted strict/bytecode tests: 4/4 passed.
   - Full FenBrowser.Tests: 957 passed / 17 failed.
 
+
+### 2.23 Runtime Hardening (2026-03-04, Wave 19)
+- Core/Bytecode/Compiler/BytecodeCompiler.cs
+  - Added callable-body rejection for with statements to keep unsupported function-local with usage deterministic in bytecode-only mode.
+  - Retained top-level with support.
+- Verification:
+  - Targeted compile-unsupported/with tests: 2/2 passed.
+  - Full FenBrowser.Tests: 959 passed / 15 failed.
