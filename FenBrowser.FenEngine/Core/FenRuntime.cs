@@ -7538,7 +7538,7 @@ namespace FenBrowser.FenEngine.Core
 
                 // Create a proxy object that intercepts operations
                 var proxy = new FenObject();
-                proxy.Set("__isProxy__", FenValue.FromBoolean(true));
+                proxy.SetBuiltin("__isProxy__", FenValue.FromBoolean(true));
                 proxy.Set("__target__", FenValue.FromObject(target));
                 proxy.Set("__handler__", FenValue.FromObject(handlerVal));
 
@@ -9098,7 +9098,7 @@ namespace FenBrowser.FenEngine.Core
                     return FenValue.FromError("Proxy requires valid target and handler");
 
                 var proxy = new FenObject();
-                proxy.Set("__isProxy__", FenValue.FromBoolean(true));
+                proxy.SetBuiltin("__isProxy__", FenValue.FromBoolean(true));
                 proxy.Set("__target__", FenValue.FromObject(target));
                 proxy.Set("__handler__", FenValue.FromObject(handler));
 
@@ -9111,12 +9111,12 @@ namespace FenBrowser.FenEngine.Core
                 var applyTrap = handler.Get("apply");
 
                 // Store traps on proxy for FenObject to find
-                if (getTrap.IsFunction) proxy.Set("__proxyGet__", getTrap);
-                if (setTrap.IsFunction) proxy.Set("__proxySet__", setTrap);
-                if (hasTrap.IsFunction) proxy.Set("__proxyHas__", hasTrap);
-                if (deletePropertyTrap.IsFunction) proxy.Set("__proxyDelete__", deletePropertyTrap);
-                if (ownKeysTrap.IsFunction) proxy.Set("__proxyOwnKeys__", ownKeysTrap);
-                if (applyTrap.IsFunction) proxy.Set("__proxyApply__", applyTrap);
+                if (getTrap.IsFunction) proxy.SetBuiltin("__proxyGet__", getTrap);
+                if (setTrap.IsFunction) proxy.SetBuiltin("__proxySet__", setTrap);
+                if (hasTrap.IsFunction) proxy.SetBuiltin("__proxyHas__", hasTrap);
+                if (deletePropertyTrap.IsFunction) proxy.SetBuiltin("__proxyDelete__", deletePropertyTrap);
+                if (ownKeysTrap.IsFunction) proxy.SetBuiltin("__proxyOwnKeys__", ownKeysTrap);
+                if (applyTrap.IsFunction) proxy.SetBuiltin("__proxyApply__", applyTrap);
 
                 return FenValue.FromObject(proxy);
             })));
@@ -9280,7 +9280,7 @@ namespace FenBrowser.FenEngine.Core
                         // To keep it simple in C#, we'll manually create the proxy object similar to constructor
 
                         var p = new FenObject();
-                        p.Set("__isProxy__", FenValue.FromBoolean(true));
+                        p.SetBuiltin("__isProxy__", FenValue.FromBoolean(true));
                         p.Set("__isRevoked__", FenValue.FromBoolean(false)); // Track revocation
                         p.Set("__target__", target);
                         p.Set("__handler__", handler);
@@ -9298,12 +9298,12 @@ namespace FenBrowser.FenEngine.Core
                                 var ownKeysTrap = hObj.Get("ownKeys");
                                 var applyTrap = hObj.Get("apply");
 
-                                if (getTrap.IsFunction) p.Set("__proxyGet__", getTrap);
-                                if (setTrap.IsFunction) p.Set("__proxySet__", setTrap);
-                                if (hasTrap.IsFunction) p.Set("__proxyHas__", hasTrap);
-                                if (deletePropertyTrap.IsFunction) p.Set("__proxyDelete__", deletePropertyTrap);
-                                if (ownKeysTrap.IsFunction) p.Set("__proxyOwnKeys__", ownKeysTrap);
-                                if (applyTrap.IsFunction) p.Set("__proxyApply__", applyTrap);
+                                if (getTrap.IsFunction) p.SetBuiltin("__proxyGet__", getTrap);
+                                if (setTrap.IsFunction) p.SetBuiltin("__proxySet__", setTrap);
+                                if (hasTrap.IsFunction) p.SetBuiltin("__proxyHas__", hasTrap);
+                                if (deletePropertyTrap.IsFunction) p.SetBuiltin("__proxyDelete__", deletePropertyTrap);
+                                if (ownKeysTrap.IsFunction) p.SetBuiltin("__proxyOwnKeys__", ownKeysTrap);
+                                if (applyTrap.IsFunction) p.SetBuiltin("__proxyApply__", applyTrap);
                             }
                         }
 
@@ -14292,6 +14292,7 @@ namespace FenBrowser.FenEngine.Core
         #endregion
     }
 }
+
 
 
 
