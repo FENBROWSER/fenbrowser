@@ -681,3 +681,16 @@
     - StrictMode_This_IsUndefinedInFunctionCall
   - Full FenBrowser.Tests current snapshot: 957 passed, 17 failed.
 
+
+## Recheck Pass 18 (2026-03-04, Callable with-statement bytecode guard)
+- Focus area: compile-unsupported contract for function-local with statements in bytecode-only execution.
+- Files hardened:
+  - FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs
+- Changes:
+  - Added callable-body guard that rejects with statements inside function/async/arrow/function-declaration bytecode compilation.
+  - Preserved top-level with statement bytecode behavior (existing non-callable compatibility tests remain valid).
+- Verification:
+  - Targeted tests passed (2/2):
+    - ExecuteSimple_CompileUnsupported_ReturnsBytecodeOnlyError
+    - Bytecode_WithStatement_ShouldResolveObjectBackedNames
+  - Full FenBrowser.Tests current snapshot: 959 passed, 15 failed.
