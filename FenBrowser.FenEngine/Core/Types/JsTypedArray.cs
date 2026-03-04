@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Core;
+using FenBrowser.FenEngine.Errors;
 
 namespace FenBrowser.FenEngine.Core.Types
 {
@@ -19,7 +20,7 @@ namespace FenBrowser.FenEngine.Core.Types
             // ES2024: transfer([newByteLength]) — detaches this buffer, returns new one with the data
             Set("transfer", FenValue.FromFunction(new FenFunction("transfer", (args, thisVal) =>
             {
-                if (_detached) throw new Exception("TypeError: Cannot transfer a detached ArrayBuffer");
+                if (_detached) throw new FenTypeError("TypeError: Cannot transfer a detached ArrayBuffer");
                 int newLen = args.Length > 0 && !args[0].IsUndefined ? (int)args[0].ToNumber() : Data.Length;
                 var newBuf = new JsArrayBuffer(newLen);
                 Array.Copy(Data, newBuf.Data, Math.Min(Data.Length, newLen));
@@ -33,7 +34,7 @@ namespace FenBrowser.FenEngine.Core.Types
             // ES2024: transferToFixedLength([newByteLength]) — same as transfer
             Set("transferToFixedLength", FenValue.FromFunction(new FenFunction("transferToFixedLength", (args, thisVal) =>
             {
-                if (_detached) throw new Exception("TypeError: Cannot transfer a detached ArrayBuffer");
+                if (_detached) throw new FenTypeError("TypeError: Cannot transfer a detached ArrayBuffer");
                 int newLen = args.Length > 0 && !args[0].IsUndefined ? (int)args[0].ToNumber() : Data.Length;
                 var newBuf = new JsArrayBuffer(newLen);
                 Array.Copy(Data, newBuf.Data, Math.Min(Data.Length, newLen));
@@ -123,7 +124,7 @@ namespace FenBrowser.FenEngine.Core.Types
         private FenValue GetInt(FenValue[] args, int size, bool signed, bool multiByte, bool unused1, bool unused2)
         {
             int offset = args.Length > 0 ? (int)args[0].ToNumber() : 0;
-            if (offset < 0 || offset + size > ByteLength) throw new Exception("RangeError: offset out of bounds");
+            if (offset < 0 || offset + size > ByteLength) throw new FenRangeError("RangeError: offset out of bounds");
             bool le = args.Length > 1 && args[1].ToBoolean();
             int abs = ByteOffset + offset;
             byte[] d = Buffer.Data;
@@ -148,7 +149,7 @@ namespace FenBrowser.FenEngine.Core.Types
         private FenValue GetFloat(FenValue[] args, int size)
         {
             int offset = args.Length > 0 ? (int)args[0].ToNumber() : 0;
-            if (offset < 0 || offset + size > ByteLength) throw new Exception("RangeError: offset out of bounds");
+            if (offset < 0 || offset + size > ByteLength) throw new FenRangeError("RangeError: offset out of bounds");
             bool le = args.Length > 1 && args[1].ToBoolean();
             int abs = ByteOffset + offset;
             byte[] d = Buffer.Data;
@@ -163,7 +164,7 @@ namespace FenBrowser.FenEngine.Core.Types
         private FenValue GetBigInt(FenValue[] args, bool signed)
         {
             int offset = args.Length > 0 ? (int)args[0].ToNumber() : 0;
-            if (offset < 0 || offset + 8 > ByteLength) throw new Exception("RangeError: offset out of bounds");
+            if (offset < 0 || offset + 8 > ByteLength) throw new FenRangeError("RangeError: offset out of bounds");
             bool le = args.Length > 1 && args[1].ToBoolean();
             int abs = ByteOffset + offset;
             byte[] d = Buffer.Data;
@@ -179,7 +180,7 @@ namespace FenBrowser.FenEngine.Core.Types
         private FenValue SetInt(FenValue[] args, int size, bool signed, bool multiByte)
         {
             int offset = args.Length > 0 ? (int)args[0].ToNumber() : 0;
-            if (offset < 0 || offset + size > ByteLength) throw new Exception("RangeError: offset out of bounds");
+            if (offset < 0 || offset + size > ByteLength) throw new FenRangeError("RangeError: offset out of bounds");
             double val = args.Length > 1 ? args[1].ToNumber() : 0;
             bool le = args.Length > 2 && args[2].ToBoolean();
             int abs = ByteOffset + offset;
@@ -206,7 +207,7 @@ namespace FenBrowser.FenEngine.Core.Types
         private FenValue SetFloat(FenValue[] args, int size)
         {
             int offset = args.Length > 0 ? (int)args[0].ToNumber() : 0;
-            if (offset < 0 || offset + size > ByteLength) throw new Exception("RangeError: offset out of bounds");
+            if (offset < 0 || offset + size > ByteLength) throw new FenRangeError("RangeError: offset out of bounds");
             double val = args.Length > 1 ? args[1].ToNumber() : 0;
             bool le = args.Length > 2 && args[2].ToBoolean();
             byte[] tmp = size == 4 ? BitConverter.GetBytes((float)val) : BitConverter.GetBytes(val);
@@ -218,7 +219,7 @@ namespace FenBrowser.FenEngine.Core.Types
         private FenValue SetBigInt(FenValue[] args, bool signed)
         {
             int offset = args.Length > 0 ? (int)args[0].ToNumber() : 0;
-            if (offset < 0 || offset + 8 > ByteLength) throw new Exception("RangeError: offset out of bounds");
+            if (offset < 0 || offset + 8 > ByteLength) throw new FenRangeError("RangeError: offset out of bounds");
             double val = args.Length > 1 ? args[1].ToNumber() : 0;
             bool le = args.Length > 2 && args[2].ToBoolean();
             byte[] tmp = signed
@@ -523,3 +524,4 @@ namespace FenBrowser.FenEngine.Core.Types
          }
     }
 }
+
