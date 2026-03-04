@@ -11120,7 +11120,7 @@ namespace FenBrowser.FenEngine.Core
 
                     if (parser.Errors.Count > 0)
                     {
-                        return FenValue.FromError($"SyntaxError: {string.Join(", ", parser.Errors)}");
+                        throw new FenSyntaxError($"SyntaxError: {string.Join(", ", parser.Errors)}");
                     }
 
                     // Compile the function expression to bytecode via ExecuteSimple so the
@@ -11129,11 +11129,11 @@ namespace FenBrowser.FenEngine.Core
                     if (funcResult is FenValue fv && fv.IsFunction)
                         return fv;
 
-                    return FenValue.FromError("SyntaxError: Invalid function syntax");
+                    throw new FenSyntaxError("SyntaxError: Invalid function syntax");
                 }
                 catch (Exception ex)
                 {
-                    return FenValue.FromError($"SyntaxError: {ex.Message}");
+                    throw new FenSyntaxError($"SyntaxError: {ex.Message}");
                 }
             });
 
@@ -14292,6 +14292,7 @@ namespace FenBrowser.FenEngine.Core
         #endregion
     }
 }
+
 
 
 

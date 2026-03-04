@@ -964,3 +964,4 @@ Verification:
 - Template literal cook/raw escape fidelity (including null-char and TV/raw tracking semantics).
 - `with` environment proxy traps, assignment routing, and strict-mode SyntaxError enforcement parity.
 - Function/date/stringification parity for additive coercion edge cases.
+- Follow-up 2026-03-05: converted Function-constructor parse failures to thrown `SyntaxError` (`FenSyntaxError`) instead of plain error values; `with` Test262 moved from **76/181** to **78/181**.
