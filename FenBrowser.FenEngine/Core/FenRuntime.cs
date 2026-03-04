@@ -11269,6 +11269,33 @@ namespace FenBrowser.FenEngine.Core
                     {
                         stringTarget.Set(key, stringConstructor.Get(key, null), null);
                     }
+                    var stringProtoVal = stringTarget.Get("prototype", null);
+                    var stringProtoObj = stringProtoVal.IsObject ? stringProtoVal.AsObject() as FenObject : null;
+                    if (stringProtoObj != null)
+                    {
+                        stringProtoObj.SetBuiltin("replaceAll", FenValue.FromFunction(new FenFunction("replaceAll", (args, thisVal) =>
+                        {
+                            var str = thisVal.AsString(_context);
+                            if (args.Length < 2) return FenValue.FromString(str);
+                            var searchStr = args[0].AsString(_context);
+                            var replaceStr = args[1].AsString(_context);
+                            if (string.IsNullOrEmpty(searchStr)) return FenValue.FromString(str);
+                            return FenValue.FromString(str.Replace(searchStr, replaceStr));
+                        })));
+
+                        stringProtoObj.SetBuiltin("codePointAt", FenValue.FromFunction(new FenFunction("codePointAt", (args, thisVal) =>
+                        {
+                            var str = thisVal.AsString(_context);
+                            int pos = args.Length > 0 ? (int)args[0].ToNumber() : 0;
+                            if (pos < 0 || pos >= str.Length) return FenValue.Undefined;
+                            char first = str[pos];
+                            if (char.IsHighSurrogate(first) && pos + 1 < str.Length && char.IsLowSurrogate(str[pos + 1]))
+                            {
+                                return FenValue.FromNumber(char.ConvertToUtf32(first, str[pos + 1]));
+                            }
+                            return FenValue.FromNumber(first);
+                        })));
+                    }
                 }
             }
             else
