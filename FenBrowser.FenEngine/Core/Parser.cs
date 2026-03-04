@@ -2661,8 +2661,25 @@ namespace FenBrowser.FenEngine.Core
                 }
             }
 
+            bool bodyHasBraces = PeekTokenIs(TokenType.LBrace);
+
             // Handle body with or without braces
             stmt.Body = ParseBodyAsBlock();
+
+            // In single-statement position, declarations are not valid statement bodies.
+            if (!bodyHasBraces && stmt.Body is BlockStatement singleBodyBlock && singleBodyBlock.Statements.Count > 0)
+            {
+                var bodyStatement = singleBodyBlock.Statements[0];
+                bool invalidDeclaration =
+                    bodyStatement is ClassStatement ||
+                    bodyStatement is FunctionDeclarationStatement ||
+                    (bodyStatement is LetStatement declaration && declaration.Kind != DeclarationKind.Var);
+
+                if (invalidDeclaration)
+                {
+                    _errors.Add("SyntaxError: Declaration not allowed in with statement single-statement body");
+                }
+            }
 
             return stmt;
         }

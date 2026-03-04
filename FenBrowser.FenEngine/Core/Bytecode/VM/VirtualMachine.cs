@@ -1341,12 +1341,12 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 int nameIndex = ReadInt32(instructions, ref frame);
                                 string varName = GetStringConstant(frame.Block, constants, nameIndex);
                                 var value = _stack[--_sp];
-                                frame.Environment.Set(varName, value);
+                                var declarationEnv = frame.Environment.GetDeclarationEnvironment();
+                                declarationEnv.Set(varName, value);
                                 if (CanUseBindingCache(frame))
                                 {
-                                    frame.CacheBindingEnvironment(varName, frame.Environment);
+                                    frame.CacheBindingEnvironment(varName, declarationEnv);
                                 }
-                                // Assignment leaves value on stack
                                 _stack[_sp++] = value;
                                 break;
                             }
@@ -2293,22 +2293,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                             case OpCode.EnterWith:
                             {
                                 var withObjectValue = _stack[--_sp];
-                                if (!withObjectValue.IsObject)
+                                var withObject = ToObjectForWith(withObjectValue, frame);
+                                if (withObject == null)
                                 {
-                                    // Keep bytecode path stable for unsupported non-object with operands.
-                                    break;
+                                    throw new FenTypeError("TypeError: Cannot convert undefined or null to object");
                                 }
 
-                                var withEnv = new FenEnvironment(frame.Environment);
-                                var withObject = withObjectValue.AsObject();
-                                if (withObject != null)
-                                {
-                                    foreach (var key in withObject.Keys())
-                                    {
-                                        withEnv.Set(key, withObject.Get(key));
-                                    }
-                                }
-
+                                var withEnv = new FenEnvironment(frame.Environment, withObject);
                                 frame.WithEnvironments.Push(frame.Environment);
                                 frame.SetEnvironment(withEnv);
                                 break;
@@ -3026,18 +3017,83 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             return FenValue.Undefined;
         }
         
+
+        private FenBrowser.FenEngine.Core.Interfaces.IObject ToObjectForWith(FenValue value, CallFrame frame)
+        {
+            if (value.IsUndefined || value.IsNull)
+            {
+                return null;
+            }
+
+            if (value.IsObject || value.IsFunction)
+            {
+                return value.AsObject();
+            }
+
+            var wrapper = new FenObject();
+            if (value.IsString)
+            {
+                wrapper.InternalClass = "String";
+                wrapper.Set("__value__", value);
+                var proto = GetPrimitivePrototype(frame, "String");
+                if (proto != null) wrapper.SetPrototype(proto);
+                return wrapper;
+            }
+
+            if (value.IsNumber)
+            {
+                wrapper.InternalClass = "Number";
+                wrapper.Set("__value__", value);
+                var proto = GetPrimitivePrototype(frame, "Number");
+                if (proto != null) wrapper.SetPrototype(proto);
+                return wrapper;
+            }
+
+            if (value.IsBoolean)
+            {
+                wrapper.InternalClass = "Boolean";
+                wrapper.Set("__value__", value);
+                var proto = GetPrimitivePrototype(frame, "Boolean");
+                if (proto != null) wrapper.SetPrototype(proto);
+                return wrapper;
+            }
+
+            if (value.IsBigInt || value.IsSymbol)
+            {
+                wrapper.Set("__value__", value);
+                wrapper.Set("valueOf", FenValue.FromFunction(new FenFunction("valueOf", (args, thisVal) => value)));
+                return wrapper;
+            }
+
+            return wrapper;
+        }
+
         private FenValue ExecuteAdd(FenValue left, FenValue right)
         {
-            // ES Spec 12.8.3: ToPrimitive on objects first (hint "default")
+            // ES2023 AdditiveExpression: apply ToPrimitive(default) first.
             var ap = left.IsObject || left.IsFunction ? left.ToPrimitive(null, "default") : left;
             var bp = right.IsObject || right.IsFunction ? right.ToPrimitive(null, "default") : right;
 
-            // If either result is a string, concatenate.
+            // String concatenation path is selected before numeric/BigInt addition.
             if (ap.IsString || bp.IsString)
             {
                 return FenValue.FromString(ap.AsString() + bp.AsString());
             }
-            // else numeric addition
+
+            // BigInt addition requires both operands to be BigInt.
+            if (ap.IsBigInt || bp.IsBigInt)
+            {
+                if (!ap.IsBigInt || !bp.IsBigInt)
+                {
+                    throw new FenTypeError("TypeError: Cannot mix BigInt and other types, use explicit conversions");
+                }
+
+                var leftBigInt = ap.AsBigInt();
+                var rightBigInt = bp.AsBigInt();
+                return FenValue.FromBigInt(JsBigInt.Add(leftBigInt, rightBigInt));
+            }
+
+            // Number addition fallback.
             return FenValue.FromNumber(ap.ToNumber() + bp.ToNumber());
         }
 
@@ -3116,6 +3172,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         }
     }
 }
+
+
 
 
 
