@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using FenBrowser.Core.Engine;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.EventLoop;
@@ -11,42 +12,34 @@ namespace FenBrowser.Tests.Core
         [Fact]
         public void Test_Invariant_Microtasks_NonReentrant()
         {
-            // Setup
             EventLoopCoordinator.ResetInstance();
             var coordinator = EventLoopCoordinator.Instance;
             bool reentrantDetected = false;
+            string debugPath = Path.Combine(AppContext.BaseDirectory, "test_debug.txt");
 
-            // Scenario: Schedule a microtask that attempts to trigger another checkpoint
-            // which would trigger recursion if not protected.
             coordinator.ScheduleMicrotask(() =>
             {
                 try
                 {
-                    // DIRECT DEBUG: Check phase
                     var phase = EnginePhaseManager.CurrentPhase;
-                    System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\test_debug.txt", $"[Test] Microtask running. Phase: {phase}\r\n");
-
-                    // Directly calling Checkpoint to force the issue
+                    File.AppendAllText(debugPath, $"[Test] Microtask running. Phase: {phase}\r\n");
                     coordinator.PerformMicrotaskCheckpoint();
                 }
                 catch (InvalidOperationException ex)
                 {
-                    System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\test_debug.txt", $"[Test] Catch InvalidOperation: {ex.Message}\r\n");
+                    File.AppendAllText(debugPath, $"[Test] Catch InvalidOperation: {ex.Message}\r\n");
                     reentrantDetected = true;
                 }
                 catch (Exception ex)
                 {
-                     System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\test_debug.txt", $"[Test] Catch Exception: {ex.Message}\r\n");
+                    File.AppendAllText(debugPath, $"[Test] Catch Exception: {ex.Message}\r\n");
                 }
             });
 
-            // Act
-            // Trigger the first checkpoint safely from a "JS" phase
             EnginePhaseManager.EnterPhase(EnginePhase.JSExecution);
             try
             {
-                // DEBUG: Print start phase
-                System.IO.File.AppendAllText(@"C:\Users\udayk\Videos\FENBROWSER\test_debug.txt", $"Test Start Phase: {EnginePhaseManager.CurrentPhase}\r\n");
+                File.AppendAllText(debugPath, $"Test Start Phase: {EnginePhaseManager.CurrentPhase}\r\n");
                 coordinator.PerformMicrotaskCheckpoint();
             }
             finally
@@ -54,8 +47,7 @@ namespace FenBrowser.Tests.Core
                 EnginePhaseManager.TryEnterIdle();
             }
 
-            // Assert
-            Assert.True(reentrantDetected, $"Engine failed to detect re-entrant Microtask phase entry! Phase was likely not Microtasks.");
+            Assert.True(reentrantDetected, "Engine failed to detect re-entrant Microtask phase entry! Phase was likely not Microtasks.");
         }
     }
 }

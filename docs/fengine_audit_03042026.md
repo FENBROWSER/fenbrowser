@@ -705,3 +705,14 @@
 - Verification:
   - Targeted tests passed (5/5): yield + generator + with/compile contract checks.
   - Full FenBrowser.Tests current snapshot: 962 passed, 12 failed.
+
+## Recheck Pass 20 (2026-03-04, Test harness path portability)
+- Focus area: environment-dependent failure in EventInvariant test.
+- Files hardened:
+  - FenBrowser.Tests/Core/EventInvariantTests.cs
+- Changes:
+  - Replaced hardcoded absolute debug path with per-run local path under AppContext.BaseDirectory.
+  - Removed dependence on host-specific C:\Users\...\FENBROWSER directory layout.
+- Verification:
+  - Targeted EventInvariant test passed.
+  - Latest full FenBrowser.Tests snapshot in this environment: 961 passed, 13 failed (non-deterministic rendering/layout clusters still pending).
