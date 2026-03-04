@@ -966,3 +966,4 @@ Verification:
 - Function/date/stringification parity for additive coercion edge cases.
 - Follow-up 2026-03-05: converted Function-constructor parse failures to thrown `SyntaxError` (`FenSyntaxError`) instead of plain error values; `with` Test262 moved from **76/181** to **78/181**.
 - Follow-up 2026-03-05: switched Proxy internal trap metadata writes to `SetBuiltin` (non-observable), reducing spurious `[[Set]]` side-effects; `with` Test262 moved from **78/181** to **80/181**.
+- Follow-up 2026-03-05: `eval` now maps `ExecuteSimple` error payloads to thrown typed exceptions (`SyntaxError`/`ReferenceError`/`TypeError`) instead of silently returning error values; `with` Test262 moved from **80/181** to **81/181**.
