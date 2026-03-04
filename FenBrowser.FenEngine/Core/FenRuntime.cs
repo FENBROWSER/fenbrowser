@@ -8360,16 +8360,39 @@ namespace FenBrowser.FenEngine.Core
                 if (code.Length > 1_000_000)
                     return FenValue.FromError("EvalError: eval() input exceeds maximum allowed size (1 MB).");
 
-                // Indirect eval: run in global scope
+                // Indirect eval: run in global scope and propagate exceptions as throws.
                 try
                 {
                     var evalResult = ExecuteSimple(code, allowReturn: false);
-                    if (evalResult is FenValue fv) return fv;
+                    if (evalResult is FenValue fv)
+                    {
+                        if (fv.IsError)
+                        {
+                            var err = fv.AsError() ?? fv.AsString();
+                            if (err.StartsWith("SyntaxError:", StringComparison.Ordinal)) throw new FenSyntaxError(err);
+                            if (err.StartsWith("ReferenceError:", StringComparison.Ordinal)) throw new FenReferenceError(err);
+                            if (err.StartsWith("TypeError:", StringComparison.Ordinal)) throw new FenTypeError(err);
+                            throw new Exception(err);
+                        }
+                        return fv;
+                    }
                     return FenValue.Undefined;
+                }
+                catch (FenSyntaxError)
+                {
+                    throw;
+                }
+                catch (FenReferenceError)
+                {
+                    throw;
+                }
+                catch (FenTypeError)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
-                    return FenValue.FromError($"EvalError: {ex.Message}");
+                    throw new Exception($"EvalError: {ex.Message}");
                 }
             })));
 
