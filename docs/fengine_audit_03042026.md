@@ -498,3 +498,67 @@
   - empty `catch {}`: `69`
   - `throw new Exception(...)`: `71`
   - `async void`: `0`
+
+## Recheck Pass 7 (2026-03-04, Rendering Pipeline Catch Cleanup)
+- Focus area:
+  - `FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs`
+  - `FenBrowser.FenEngine/Layout/MinimalLayoutComputer.cs`
+  - `FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs`
+- Changes:
+  - Replaced remaining silent `catch {}` blocks in these rendering/layout pipeline files with explicit warning diagnostics.
+  - Preserved fallback behavior where required (UI dispatch fallback action, fire-and-forget render launch, cookie operations).
+  - Hardened URL normalization and background image resolution guards in paint tree building.
+- Verification:
+  - `dotnet build .\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj -v minimal` => `0` errors.
+  - `dotnet test .\FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~FetchApiTests|FullyQualifiedName~ModuleLoaderTests" -v minimal` => `11` passed, `0` failed.
+- Updated static snapshot (project-level, `.cs`):
+  - empty `catch {}`: `52`
+  - `throw new Exception(...)`: `71`
+  - `async void`: `0`
+
+## Recheck Pass 8 (2026-03-04, DOM Bridge Catch Cleanup)
+- Focus area: `FenBrowser.FenEngine/Scripting/JavaScriptEngine.Dom.cs`.
+- Changes:
+  - Removed all remaining empty `catch {}` blocks in DOM bridge wrappers.
+  - Added local guarded logging helpers (`TryLogDomDebug`, `TryLogDomWarn`) to keep diagnostics safe under logger failure.
+  - Replaced silent suppression in innerHTML/script execution, mutation queue updates, clone/serialize helpers, and ShadowRoot/CSS declaration setters with explicit warning paths.
+- Verification:
+  - `dotnet build .\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj -v minimal` => `0` errors, `368` warnings.
+  - `dotnet test .\FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~FetchApiTests|FullyQualifiedName~ModuleLoaderTests" -v minimal` => `11` passed, `0` failed.
+- Updated static snapshot (project-level, `.cs`):
+  - empty `catch {}`: `31`
+  - `throw new Exception(...)`: `71`
+  - `async void`: `0`
+
+## Recheck Pass 9 (2026-03-04, Full FenEngine Zero-Empty-Catch Sweep)
+- Focus area: remaining empty-catch sites across FenEngine runtime surfaces, with no skipped files.
+- Files hardened:
+  - `FenBrowser.FenEngine/Workers/ServiceWorkerManager.cs`
+  - `FenBrowser.FenEngine/DOM/DocumentWrapper.cs`
+  - `FenBrowser.FenEngine/DOM/EventTarget.cs`
+  - `FenBrowser.FenEngine/Scripting/ModuleLoader.cs`
+  - `FenBrowser.FenEngine/Testing/Test262Runner.cs`
+  - `FenBrowser.FenEngine/Scripting/CanvasRenderingContext2D.cs`
+  - `FenBrowser.FenEngine/Core/Types/JsIntl.cs`
+  - `FenBrowser.FenEngine/Rendering/ElementStateManager.cs`
+  - `FenBrowser.FenEngine/Rendering/FontRegistry.cs`
+  - `FenBrowser.FenEngine/Rendering/Css/CssAnimationEngine.cs`
+  - `FenBrowser.FenEngine/Rendering/ImageLoader.cs`
+  - `FenBrowser.FenEngine/Rendering/NavigationManager.cs`
+  - `FenBrowser.FenEngine/Rendering/Css/CssEngineFactory.cs`
+  - `FenBrowser.FenEngine/Rendering/Css/CssParser.cs`
+  - `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`
+  - `FenBrowser.FenEngine/Rendering/SkiaRenderer.cs`
+  - `FenBrowser.FenEngine/Rendering/WebGL/WebGLContextManager.cs`
+  - `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs` (false-positive comment cleanup)
+- Changes:
+  - Replaced all remaining `catch {}` blocks with explicit diagnostics and safe fallback behavior.
+  - Preserved behavior at callback/event boundaries while preventing silent suppression.
+  - Verified no remaining empty catches in `FenBrowser.FenEngine/**/*.cs`.
+- Verification:
+  - `dotnet build .\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj -v minimal` => `0` errors.
+  - `dotnet test .\FenBrowser.Tests\FenBrowser.Tests.csproj -v minimal` => `953` passed, `21` failed (known pre-existing baseline failures not introduced by this sweep).
+- Updated static snapshot (project-level, `.cs`):
+  - empty `catch {}`: `0`
+  - `throw new Exception(...)`: `71`
+  - `async void`: `0`

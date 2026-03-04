@@ -67,7 +67,7 @@ Raise FenEngine from current audit state to a production-grade baseline by fixin
 9. Completed JavaScriptEngine hardening wave 4: removed all empty `catch {}` blocks in `JavaScriptEngine.cs`, added guarded callback/log wrappers, and switched fetch-handler setup to typed exceptions.
 
 ### Next immediate tasks
-1. Burn down remaining engine-wide empty catch blocks (current scan: 69) with priority on `Core`, `Core/Bytecode`, `WebAPIs`, `Rendering` runtime paths.
+1. Burn down remaining engine-wide empty catch blocks (current scan: 31) with priority on `Core`, `Core/Bytecode`, `WebAPIs`, `Rendering` runtime paths.
 2. Replace remaining generic `throw new Exception(...)` usages (current scan: 71) with domain-typed exceptions and wire failure-path tests.
 3. Add regression tests for JavaScriptEngine callback/timer fault-isolation and storage/image async error paths; then enforce these checks in CI gating.
 
@@ -95,3 +95,29 @@ Raise FenEngine from current audit state to a production-grade baseline by fixin
   1. Empty catch {} reduced to 69.
   2. Generic throw new Exception(...) remains 71.
   3. async void remains 0 in FenEngine .cs scan.
+
+
+### Incremental Progress Update (2026-03-04, Rendering pipeline sweep)
+- Hardened render/layout core paths (`CustomHtmlEngine`, `MinimalLayoutComputer`, `NewPaintTreeBuilder`) by removing remaining silent catches in those files.
+- Current metric deltas after this pass:
+  1. Empty catch {} reduced to 52.
+  2. Generic throw new Exception(...) remains 71.
+  3. async void remains 0 in FenEngine .cs scan.
+
+
+### Incremental Progress Update (2026-03-04, DOM bridge sweep)
+- Hardened `JavaScriptEngine.Dom` by removing all remaining silent catches and adding guarded logging wrappers for DOM bridge operations.
+- Current metric deltas after this pass:
+  1. Empty catch {} reduced to 31.
+  2. Generic throw new Exception(...) remains 71.
+  3. async void remains 0 in FenEngine .cs scan.
+
+### Incremental Progress Update (2026-03-04, full zero-empty-catch milestone)
+- Completed final sweep over remaining FenEngine files and removed all residual empty catch blocks.
+- Current metric deltas after this pass:
+  1. Empty catch {} reduced to 0.
+  2. Generic throw new Exception(...) remains 71.
+  3. async void remains 0 in FenEngine .cs scan.
+- Validation snapshot:
+  1. dotnet build FenBrowser.FenEngine passed (0 errors).
+  2. dotnet test FenBrowser.Tests currently shows 953 passed / 21 failed (pre-existing failures to be handled in next hardening stream).
