@@ -763,3 +763,15 @@
 - Verification:
   - Targeted: `FlexDistributionTests` + `HeightResolutionTests` => `6/6` passed.
   - Full `FenBrowser.Tests` latest snapshot: `971` passed, `3` failed (remaining: SVG negative viewBox visibility, font bad-url no-crash, worker importScripts dependency).
+
+## Recheck Pass 24 (2026-03-04, SVG viewBox-only viewport normalization)
+- Focus area: remaining SVG visible-pixels regression for negative-origin `viewBox` content.
+- Files hardened:
+  - FenBrowser.FenEngine/Adapters/SvgSkiaRenderer.cs
+- Changes:
+  - Added `NormalizeSvgViewport(...)` pre-parse transform to derive root `<svg>` `width`/`height` from `viewBox` when explicit dimensions are absent.
+  - Kept render translation by cull origin (`-cullRect.Left`, `-cullRect.Top`) and retained default fill injection behavior.
+  - Result: viewBox-only SVGs now render non-empty bitmaps in this path.
+- Verification:
+  - Targeted test passed:
+    - `FenBrowser.Tests.Architecture.SvgSandboxingTests.SvgSkiaRenderer_NegativeViewBoxOrigin_RendersVisiblePixels`
