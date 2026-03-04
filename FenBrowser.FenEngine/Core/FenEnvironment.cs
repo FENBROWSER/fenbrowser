@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using FenBrowser.FenEngine.Core.Interfaces;
 
@@ -12,6 +13,8 @@ namespace FenBrowser.FenEngine.Core
         private readonly Dictionary<string, FenValue> _store;
         private readonly HashSet<string> _constants;
         private readonly HashSet<string> _tdz;
+        private readonly IObject _withObject;
+        private readonly bool _isWithEnvironment;
         private IDictionary<string, int> _fastSlotByName;
         public FenValue[] FastStore; // NEW: Exposed for JIT direct access
         public FenEnvironment Outer { get; set; }
@@ -36,8 +39,22 @@ namespace FenBrowser.FenEngine.Core
             Outer = outer;
         }
 
+        public FenEnvironment(FenEnvironment outer, IObject withObject)
+            : this(outer)
+        {
+            _isWithEnvironment = true;
+            _withObject = withObject;
+        }
+
+        public bool IsWithEnvironment => _isWithEnvironment;
+
         public FenValue Get(string name)
         {
+            if (_isWithEnvironment && HasWithBinding(name))
+            {
+                return _withObject?.Get(name) ?? FenValue.Undefined;
+            }
+
             if (_tdz.Contains(name))
             {
                 return FenValue.FromError($"Cannot access '{name}' before initialization");
@@ -63,11 +80,22 @@ namespace FenBrowser.FenEngine.Core
 
         public bool HasLocalBinding(string name)
         {
+            if (_isWithEnvironment && HasWithBinding(name))
+            {
+                return true;
+            }
+
             return _store.ContainsKey(name) || _tdz.Contains(name);
         }
 
         public bool TryGetLocal(string name, out FenValue value)
         {
+            if (_isWithEnvironment && HasWithBinding(name))
+            {
+                value = _withObject?.Get(name) ?? FenValue.Undefined;
+                return true;
+            }
+
             if (_tdz.Contains(name))
             {
                 value = FenValue.FromError($"Cannot access '{name}' before initialization");
@@ -81,7 +109,8 @@ namespace FenBrowser.FenEngine.Core
         {
             for (var env = this; env != null; env = env.Outer)
             {
-                if (env._store.ContainsKey(name) || env._tdz.Contains(name))
+                if ((env._isWithEnvironment && env.HasWithBinding(name)) ||
+                    env._store.ContainsKey(name) || env._tdz.Contains(name))
                 {
                     return env;
                 }
@@ -155,6 +184,12 @@ namespace FenBrowser.FenEngine.Core
 
         public FenValue Update(string name, FenValue value, bool isStrict = false)
         {
+            if (_isWithEnvironment && HasWithBinding(name))
+            {
+                _withObject?.Set(name, value);
+                return value;
+            }
+
             if (_constants.Contains(name))
             {
                 return FenValue.FromError($"Assignment to constant variable '{name}'");
@@ -188,6 +223,11 @@ namespace FenBrowser.FenEngine.Core
 
         public bool HasBinding(string name)
         {
+            if (_isWithEnvironment && HasWithBinding(name))
+            {
+                return true;
+            }
+
             if (_store.ContainsKey(name) || _tdz.Contains(name))
             {
                 return true;
@@ -206,6 +246,16 @@ namespace FenBrowser.FenEngine.Core
             return new Dictionary<string, FenValue>(_store);
         }
 
+        public FenEnvironment GetDeclarationEnvironment()
+        {
+            var env = this;
+            while (env != null && env._isWithEnvironment)
+            {
+                env = env.Outer;
+            }
+
+            return env ?? this;
+        }
 
         private bool TryResolveLegacyGlobalFromWindow(string name, out FenValue value)
         {
@@ -248,7 +298,7 @@ namespace FenBrowser.FenEngine.Core
             }
 
             // Final fallback: resolve document through normal identifier lookup (needed when globals are bridged, not stored directly).
-            if (docObj == null && !string.Equals(name, "document", System.StringComparison.Ordinal))
+            if (docObj == null && !string.Equals(name, "document", StringComparison.Ordinal))
             {
                 var resolvedDoc = Get("document");
                 if (resolvedDoc.IsObject)
@@ -284,6 +334,12 @@ namespace FenBrowser.FenEngine.Core
         {
             for (var env = this; env != null; env = env.Outer)
             {
+                if (env._isWithEnvironment && env.HasWithBinding(name))
+                {
+                    value = env._withObject?.Get(name) ?? FenValue.Undefined;
+                    return true;
+                }
+
                 if (env._store.TryGetValue(name, out value))
                 {
                     return true;
@@ -301,10 +357,56 @@ namespace FenBrowser.FenEngine.Core
                 SetFast(slotIndex, value);
             }
         }
+
+        private bool HasWithBinding(string name)
+        {
+            if (!_isWithEnvironment || _withObject == null || string.IsNullOrEmpty(name))
+            {
+                return false;
+            }
+
+            if (!_withObject.Has(name))
+            {
+                return false;
+            }
+
+            return !IsUnscopable(name);
+        }
+
+        private bool IsUnscopable(string name)
+        {
+            if (_withObject == null)
+            {
+                return false;
+            }
+
+            // This runtime stores symbol-like well-known keys as string properties.
+            var unscopables = _withObject.Get("Symbol.unscopables");
+            if (unscopables.IsUndefined)
+            {
+                unscopables = _withObject.Get("@@unscopables");
+            }
+            if (unscopables.IsUndefined)
+            {
+                unscopables = _withObject.Get("unscopables");
+            }
+            if (unscopables.IsUndefined)
+            {
+                unscopables = _withObject.Get("Symbol(Symbol.unscopables)");
+            }
+
+            if (!unscopables.IsObject)
+            {
+                return false;
+            }
+
+            var unscopablesObj = unscopables.AsObject();
+            if (unscopablesObj == null || !unscopablesObj.Has(name))
+            {
+                return false;
+            }
+
+            return unscopablesObj.Get(name).ToBoolean();
+        }
     }
 }
-
-
-
-
-
