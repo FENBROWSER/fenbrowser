@@ -1,6 +1,7 @@
 using FenBrowser.Core.Dom.V2;
 using System;
 using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.FenEngine.Scripting
 {
@@ -17,13 +18,13 @@ namespace FenBrowser.FenEngine.Scripting
         bool RunInline(string code, JsContext ctx);
         bool AllowExternalScripts { get; set; }
         SandboxPolicy Sandbox { get; set; }
-        
+
         // Execute a multi-line script block (e.g. <script> body)
         void ExecuteBlock(string code, JsContext ctx);
-        
+
         // Register a named host function accessible from script (maps to _userFunctions)
         void RegisterHostFunction(string name, string body);
-        
+
         // Evaluate an expression and return a stringified result (minimal for diagnostics)
         string EvaluateExpression(string expr, JsContext ctx);
     }
@@ -37,7 +38,7 @@ namespace FenBrowser.FenEngine.Scripting
 
         public JsZeroRuntime(JavaScriptEngine inner)
         {
-            if (inner  == null) throw new ArgumentNullException("inner");
+            if (inner == null) throw new ArgumentNullException("inner");
             _inner = inner;
         }
 
@@ -48,49 +49,75 @@ namespace FenBrowser.FenEngine.Scripting
 
         public void SetDom(Element root)
         {
-            try { _inner.SetDom(root); } catch { }
+            ExecuteSafely(() => _inner.SetDom(root), "SetDom");
         }
 
         public void Reset(JsContext ctx)
         {
-            try { _inner.Reset(ctx); } catch { }
+            ExecuteSafely(() => _inner.Reset(ctx), "Reset");
         }
 
         public bool RunInline(string code, JsContext ctx)
         {
-            try { return _inner.RunInline(code, ctx); } catch { return false; }
+            return ExecuteSafely(() => _inner.RunInline(code, ctx), false, "RunInline");
         }
 
         public bool AllowExternalScripts
         {
-            get { try { return _inner.AllowExternalScripts; } catch { return false; } }
-            set { try { _inner.AllowExternalScripts = value; } catch { } }
+            get => ExecuteSafely(() => _inner.AllowExternalScripts, false, "AllowExternalScripts.get");
+            set => ExecuteSafely(() => _inner.AllowExternalScripts = value, "AllowExternalScripts.set");
         }
 
         public SandboxPolicy Sandbox
         {
-            get { try { return _inner.Sandbox; } catch { return SandboxPolicy.AllowAll; } }
-            set { try { _inner.Sandbox = value; } catch { } }
+            get => ExecuteSafely(() => _inner.Sandbox, SandboxPolicy.AllowAll, "Sandbox.get");
+            set => ExecuteSafely(() => _inner.Sandbox = value, "Sandbox.set");
         }
 
         public void ExecuteBlock(string code, JsContext ctx)
         {
-            try { _inner.ExecuteScriptBlock(code, ctx?.BaseUri?.ToString()); } catch { }
+            ExecuteSafely(() => _inner.ExecuteScriptBlock(code, ctx?.BaseUri?.ToString()), "ExecuteBlock");
         }
 
         public void RegisterHostFunction(string name, string body)
         {
-            try 
-            { 
-                if (!string.IsNullOrWhiteSpace(name)) 
-                    _inner.RegisterUserFunction(name, null); 
-            } 
-            catch { }
+            ExecuteSafely(() =>
+            {
+                if (!string.IsNullOrWhiteSpace(name))
+                {
+                    _inner.RegisterUserFunction(name, null);
+                }
+            }, "RegisterHostFunction");
         }
 
         public string EvaluateExpression(string expr, JsContext ctx)
         {
-            try { return _inner.EvalToString(expr); } catch { return null; }
+            return ExecuteSafely(() => _inner.EvalToString(expr), null, "EvaluateExpression");
+        }
+
+        private static void ExecuteSafely(Action action, string operation)
+        {
+            try
+            {
+                action();
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[JsZeroRuntime] {operation} failed: {ex.Message}", LogCategory.JavaScript);
+            }
+        }
+
+        private static T ExecuteSafely<T>(Func<T> action, T fallback, string operation)
+        {
+            try
+            {
+                return action();
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[JsZeroRuntime] {operation} failed: {ex.Message}", LogCategory.JavaScript);
+                return fallback;
+            }
         }
     }
 
@@ -117,4 +144,3 @@ namespace FenBrowser.FenEngine.Scripting
         public string EvaluateExpression(string expr, JsContext ctx) { return null; }
     }
 }
-

@@ -1,4 +1,6 @@
-using System;
+﻿using System;
+using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -28,8 +30,13 @@ namespace FenBrowser.FenEngine.Rendering
                     if (string.Equals(valStr, "0") || string.Equals(valStr, "false", StringComparison.OrdinalIgnoreCase) || string.Equals(valStr, "off", StringComparison.OrdinalIgnoreCase)) return false;
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[BrowserCoreHelpers] Failed parsing js query override: {ex.Message}", LogCategory.Navigation);
+            }
             return null;
         }
     }
 }
+
+

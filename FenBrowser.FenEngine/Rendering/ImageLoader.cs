@@ -197,7 +197,7 @@ namespace FenBrowser.FenEngine.Rendering
                     kvp.Value.LoadStarted = true;
                     if (TryRegisterPendingLoad(kvp.Key))
                     {
-                        LoadImageAsync(kvp.Key, isLazy: true);
+                        _ = LoadImageAsync(kvp.Key, isLazy: true);
                     }
                 }
             }
@@ -589,7 +589,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
             
             FenLogger.Debug($"[ImageLoader] Starting LoadImageAsync: {url}", LogCategory.Rendering);
-            LoadImageAsync(url, isLazy, targetWidth, targetHeight);
+            _ = LoadImageAsync(url, isLazy, targetWidth, targetHeight);
             return null;
         }
 
@@ -657,7 +657,7 @@ namespace FenBrowser.FenEngine.Rendering
             return (bmp, isLazy);
         }
 
-        private static async void LoadImageAsync(string url, bool isLazy = false, int? targetWidth = null, int? targetHeight = null)
+        private static async Task LoadImageAsync(string url, bool isLazy = false, int? targetWidth = null, int? targetHeight = null)
         {
             try
             {
@@ -957,3 +957,4 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
+

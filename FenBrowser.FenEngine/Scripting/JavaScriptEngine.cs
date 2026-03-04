@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom.V2;
+﻿using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -56,7 +56,7 @@ namespace FenBrowser.FenEngine.Scripting
 
         public JavaScriptEngine(IJsHost host)
         {
-            try { FenLogger.Debug("[JavaScriptEngine] Constructor Start", LogCategory.JavaScript); } catch { }
+            TryLogDebug("[JavaScriptEngine] Constructor Start");
             _host = host;
             _storageBackend = new FenBrowser.FenEngine.Storage.FileStorageBackend();
 
@@ -68,7 +68,7 @@ namespace FenBrowser.FenEngine.Scripting
                 IsWorkerScriptUriAllowed);
             DocumentWrapper.CookieReadBridge = scope => GetCookieString(scope);
             DocumentWrapper.CookieWriteBridge = (scope, cookieString) => SetCookieString(scope, cookieString);
-            try { FenLogger.Debug("[JavaScriptEngine] Constructor: InitRuntime Done", LogCategory.JavaScript); } catch { }
+            TryLogDebug("[JavaScriptEngine] Constructor: InitRuntime Done");
             SetupMutationObserver();
             // Legacy mini runtime removed.
         }
@@ -155,14 +155,14 @@ namespace FenBrowser.FenEngine.Scripting
 
 
 
-            try { FenLogger.Debug("[JavaScriptEngine] InitRuntime: Creating FenRuntime...", LogCategory.JavaScript); } catch { }
+            TryLogDebug("[JavaScriptEngine] InitRuntime: Creating FenRuntime...");
             _fenRuntime = new FenRuntime(context, _storageBackend, this);
             _fenRuntime.NetworkFetchHandler = async (req) =>
             {
-                if (FetchHandler == null) throw new Exception("FetchHandler not configured on engine");
+                if (FetchHandler == null) throw new InvalidOperationException("FetchHandler not configured on engine");
                 return await FetchHandler(req).ConfigureAwait(false);
             };
-            try { FenLogger.Debug("[JavaScriptEngine] InitRuntime: FenRuntime Created", LogCategory.JavaScript); } catch { }
+            TryLogDebug("[JavaScriptEngine] InitRuntime: FenRuntime Created");
             // Connect console messages to BrowserHost
             _fenRuntime.OnConsoleMessage = msg => 
             {
@@ -185,7 +185,7 @@ namespace FenBrowser.FenEngine.Scripting
             // Register Fetch API with lazy delegate resolution to support property injection after constructor
             FenBrowser.FenEngine.WebAPIs.FetchApi.Register(_fenRuntime.Context, async (req) => 
             {
-                 if (FetchHandler  == null) throw new Exception("FetchHandler not configured on engine");
+                 if (FetchHandler  == null) throw new InvalidOperationException("FetchHandler not configured on engine");
                  return await FetchHandler(req);
             });
         }
@@ -207,6 +207,47 @@ namespace FenBrowser.FenEngine.Scripting
              return result is IObject obj ? FenValue.FromObject(obj) : FenValue.Null;
         }
 
+
+        public FenValue GetElementsByTagName(string tagName)
+        {
+            if (_domRoot == null) return FenValue.Null;
+            var doc = new JsDocument(this, _domRoot);
+            var results = doc.getElementsByTagName(tagName) ?? new object[0];
+            var arr = new FenObject();
+            for (int i = 0; i < results.Length; i++)
+            {
+                if (results[i] is IObject itemObj)
+                {
+                    arr.Set(i.ToString(), FenValue.FromObject(itemObj));
+                }
+            }
+            arr.Set("length", FenValue.FromNumber(results.Length));
+            return FenValue.FromObject(arr);
+        }
+
+        public FenValue GetElementsByClassName(string classNames)
+        {
+            if (_domRoot == null) return FenValue.Null;
+            var doc = new JsDocument(this, _domRoot);
+            var results = doc.getElementsByClassName(classNames) ?? new object[0];
+            var arr = new FenObject();
+            for (int i = 0; i < results.Length; i++)
+            {
+                if (results[i] is IObject itemObj)
+                {
+                    arr.Set(i.ToString(), FenValue.FromObject(itemObj));
+                }
+            }
+            arr.Set("length", FenValue.FromNumber(results.Length));
+            return FenValue.FromObject(arr);
+        }
+
+        public FenValue CreateElementNS(string namespaceUri, string qualifiedName)
+        {
+            if (_domRoot == null) return FenValue.Null;
+            // Namespace URI is currently ignored by this bridge path; DOM wrapper handles qualified name creation.
+            return CreateElement(qualifiedName);
+        }
         public void AddEventListener(string elementId, string eventName, FenValue callback)
         {
              var elVal = GetElementById(elementId);
@@ -277,53 +318,70 @@ namespace FenBrowser.FenEngine.Scripting
         {
             if (args.Length < 2) return FenValue.Undefined;
             var evt = args[0].ToString();
-            
-            // Check for function callback
+
             FenFunction callback = null;
             if (args[1].IsFunction) callback = args[1].AsFunction() as FenFunction;
-            else if (args[1].IsObject) 
-            {
-                // handle { handleEvent: function() ... } object interface?
-                var obj = args[1].AsObject();
-                // simplified: ignore for now, standard requires function or object with handleEvent
-            }
-            
-            if (callback  == null) return FenValue.Undefined;
+            if (callback == null || string.IsNullOrWhiteSpace(evt)) return FenValue.Undefined;
 
-            try { FenLogger.Debug($"[JS_API] addEventListener called for '{evt}' on {thisVal.ToString()}", LogCategory.JavaScript); } catch { }
+            bool capture = false;
+            bool once = false;
+            bool passive = false;
+            ParseListenerOptions(args, 2, ref capture, ref once, ref passive);
 
-            // Normalize target key
-            // If thisVal is a wrapper (JsDomElement), key by the underlying Node to ensure identity persistence
-            object key = thisVal.IsObject ? thisVal.AsObject() : null;
-            if (thisVal.IsObject)
+            try { FenLogger.Debug($"[JS_API] addEventListener called for '{evt}' on {thisVal.ToString()} capture={capture} once={once}", LogCategory.JavaScript); } catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
+
+            var key = NormalizeEventTargetKey(thisVal.IsObject ? thisVal.AsObject() : null);
+            if (key == null) return FenValue.Undefined;
+
+            if (!_objectEventListeners.TryGetValue(key, out var listeners))
             {
-                 var obj = thisVal.AsObject();
-                 if (obj is JsDomElement elWrapper) key = elWrapper._node;
-                 else if (obj is JsDomText textWrapper) key = textWrapper._node;
-                 else key = obj;
+                listeners = new Dictionary<string, List<ObjectEventListener>>(StringComparer.OrdinalIgnoreCase);
+                _objectEventListeners.Add(key, listeners);
             }
 
-            if (key != null)
+            if (!listeners.TryGetValue(evt, out var list))
             {
-                // Get or create listener dictionary for this object
-                Dictionary<string, List<FenFunction>> listeners;
-                if (!_objectEventListeners.TryGetValue(key, out listeners))
+                list = new List<ObjectEventListener>();
+                listeners[evt] = list;
+            }
+
+            var exists = list.Any(l => ReferenceEquals(l.Callback, callback) && l.Capture == capture);
+            if (!exists)
+            {
+                list.Add(new ObjectEventListener
                 {
-                    listeners = new Dictionary<string, List<FenFunction>>(StringComparer.OrdinalIgnoreCase);
-                    _objectEventListeners.Add(key, listeners);
-                }
-
-                if (!listeners.ContainsKey(evt)) listeners[evt] = new List<FenFunction>();
-                
-                // Avoid duplicates? Standard says yes.
-                // Assuming simple linear scan is fine for now.
-                // Note: FenFunction equality might reference underlying delegate, which should be fine.
-                if (!listeners[evt].Contains(callback)) 
-                {
-                    listeners[evt].Add(callback);
-                }
+                    Callback = callback,
+                    Capture = capture,
+                    Once = once,
+                    Passive = passive
+                });
             }
-            
+
+            return FenValue.Undefined;
+        }
+
+        public FenValue RemoveEventListenerNative(FenValue[] args, FenValue thisVal)
+        {
+            if (args.Length < 2) return FenValue.Undefined;
+            var evt = args[0].ToString();
+
+            FenFunction callback = null;
+            if (args[1].IsFunction) callback = args[1].AsFunction() as FenFunction;
+            if (callback == null || string.IsNullOrWhiteSpace(evt)) return FenValue.Undefined;
+
+            bool capture = false;
+            bool once = false;
+            bool passive = false;
+            ParseListenerOptions(args, 2, ref capture, ref once, ref passive);
+
+            var key = NormalizeEventTargetKey(thisVal.IsObject ? thisVal.AsObject() : null);
+            if (key == null) return FenValue.Undefined;
+
+            if (_objectEventListeners.TryGetValue(key, out var listeners) && listeners.TryGetValue(evt, out var list))
+            {
+                list.RemoveAll(l => ReferenceEquals(l.Callback, callback) && l.Capture == capture);
+            }
+
             return FenValue.Undefined;
         }
 
@@ -332,50 +390,212 @@ namespace FenBrowser.FenEngine.Scripting
         /// </summary>
         public void DispatchEvent(object target, string eventName, FenObject eventArgs = null)
         {
-            if (target  == null || string.IsNullOrEmpty(eventName)) return;
+            if (target == null || string.IsNullOrEmpty(eventName)) return;
 
-            // Normalize key
-            object key = target;
-            if (target is JsDomElement elWrapper) key = elWrapper._node;
+            object key = NormalizeEventTargetKey(target);
+            if (key == null) return;
 
-            if (_objectEventListeners.TryGetValue(key, out var listeners) && listeners.ContainsKey(eventName))
+            if (_objectEventListeners.TryGetValue(key, out var listeners) && listeners.TryGetValue(eventName, out var list))
             {
-                var list = listeners[eventName].ToArray(); 
-                
-                // Wrap 'this' context if needed
-                // If we keyed by Element, the 'this' passed to handler should be a JsDomElement wrapper
-                object thisContext = target;
-                if (key is Element domEl && !(target is JsDomElement))
-                {
-                    thisContext = new JsDomElement(this, domEl);
-                }
-                // If 'thisContext' is not IValue/FenObject/JsObject, function invocation can fail.
-                // JsDomElement implements IObject.
+                var snapshot = list.ToArray();
 
-                var args = new FenValue[] {
+                var thisBinding = target as IObject;
+                if (thisBinding == null && key is Element domEl)
+                {
+                    thisBinding = new JsDomElement(this, domEl);
+                }
+
+                var args = new FenValue[]
+                {
                     eventArgs != null ? FenValue.FromObject(eventArgs) : FenValue.Undefined
                 };
 
-                foreach (var handler in list)
+                foreach (var listener in snapshot)
                 {
-                        _fenRuntime.Context.ScheduleCallback(() => {
-                        try { 
-                            // Check if 'thisContext' is valid for Invoke?
-                            // FenFunction.Invoke mainly uses context, 'this' is implicit in how it's called unless we pass it?
-                            // FenRuntime.ExecuteFunction / FenFunction.Invoke signature: (args, context). 
-                            // It doesn't take 'this' explicitly unless the function logic uses it.
-                            // The closure might capture 'this'.
-                            // BUT 'addEventListener' callbacks usually expect 'this' to be the element.
-                            // The MiniPratt engine implementation of FenFunction might not support 'this' binding easily 
-                            // without 'call'/'apply'.
-                            // However, let's assume standard behavior: handler(event).
-                            handler.Invoke(args, _fenRuntime.Context); 
-                        } catch (Exception ex) {
-                            FenLogger.Error($"[DispatchEvent] Error in handler for {eventName}: {ex}", LogCategory.JavaScript);
-                        }
-                        }, 0);
+                    try
+                    {
+                        var thisArg = thisBinding != null ? FenValue.FromObject(thisBinding) : FenValue.Undefined;
+                        listener.Callback.Invoke(args, _fenRuntime.Context, thisArg);
+                    }
+                    catch (Exception ex)
+                    {
+                        FenLogger.Error($"[DispatchEvent] Error in handler for {eventName}: {ex}", LogCategory.JavaScript);
+                    }
                 }
             }
+        }
+
+        private void InvokeObjectListenersForDomEvent(object target, DomEvent evt, IExecutionContext context, bool isCapturePhase, bool atTargetPhase)
+        {
+            if (target == null || evt == null || string.IsNullOrWhiteSpace(evt.Type)) return;
+            if (evt.ImmediatePropagationStopped) return;
+
+            var key = NormalizeEventTargetKey(target);
+            if (key == null) return;
+
+            var thisBinding = target as IObject;
+            if (thisBinding == null && key is Element domEl)
+            {
+                thisBinding = new JsDomElement(this, domEl);
+            }
+
+            SetEventCurrentTargetForObject(evt, thisBinding, target, context);
+
+            if (_objectEventListeners.TryGetValue(key, out var listeners) && listeners.TryGetValue(evt.Type, out var list) && list.Count > 0)
+            {
+                var snapshot = list.ToArray();
+                foreach (var listener in snapshot)
+                {
+                    if (evt.ImmediatePropagationStopped) break;
+                    if (listener.Capture != isCapturePhase) continue;
+
+                    try
+                    {
+                        var thisArg = thisBinding != null ? FenValue.FromObject(thisBinding) : FenValue.Undefined;
+                        listener.Callback.Invoke(new[] { FenValue.FromObject(evt) }, context, thisArg);
+                    }
+                    catch (Exception ex)
+                    {
+                        FenLogger.Error($"[DispatchEvent] Error in DOM handler for {evt.Type}: {ex}", LogCategory.JavaScript);
+                    }
+
+                    if (listener.Once)
+                    {
+                        list.RemoveAll(l => ReferenceEquals(l.Callback, listener.Callback) && l.Capture == listener.Capture);
+                    }
+                }
+            }
+
+            InvokeFenTargetListenersForDomEvent(thisBinding, evt, context, isCapturePhase);
+        }
+
+        private void InvokeFenTargetListenersForDomEvent(IObject targetObj, DomEvent evt, IExecutionContext context, bool isCapturePhase)
+        {
+            if (targetObj == null || evt == null) return;
+
+            var listenersVal = targetObj.Get("__fen_listeners__");
+            if (!listenersVal.IsObject) return;
+
+            var listenersObj = listenersVal.AsObject() as FenObject;
+            if (listenersObj == null) return;
+
+            var arrVal = listenersObj.Get(evt.Type);
+            if (!arrVal.IsObject) return;
+
+            var arr = arrVal.AsObject() as FenObject;
+            if (arr == null) return;
+
+            int len = (int)arr.Get("length").ToNumber();
+            for (int i = 0; i < len; i++)
+            {
+                if (evt.ImmediatePropagationStopped) break;
+
+                var entryVal = arr.Get(i.ToString());
+                if (!entryVal.IsObject) continue;
+
+                var entry = entryVal.AsObject();
+                var callback = entry.Get("callback");
+                if (!callback.IsFunction) continue;
+
+                var captureVal = entry.Get("capture");
+                var capture = captureVal.IsBoolean && captureVal.ToBoolean();
+                if (capture != isCapturePhase) continue;
+
+                try
+                {
+                    callback.AsFunction().Invoke(new[] { FenValue.FromObject(evt) }, context, FenValue.FromObject(targetObj));
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Error($"[DispatchEvent] Error in __fen_listeners__ handler for {evt.Type}: {ex}", LogCategory.JavaScript);
+                }
+
+                var onceVal = entry.Get("once");
+                if (onceVal.IsBoolean && onceVal.ToBoolean())
+                {
+                    // Compact array by shifting left.
+                    for (int j = i + 1; j < len; j++)
+                    {
+                        arr.Set((j - 1).ToString(), arr.Get(j.ToString()));
+                    }
+
+                    len--;
+                    arr.Delete(len.ToString());
+                    arr.Set("length", FenValue.FromNumber(len));
+                    i--;
+                }
+            }
+        }
+
+        private void SetEventCurrentTargetForObject(DomEvent evt, IObject thisBinding, object target, IExecutionContext context)
+        {
+            try
+            {
+                if (thisBinding != null)
+                {
+                    evt.Set("currentTarget", FenValue.FromObject(thisBinding));
+                    return;
+                }
+
+                if (target is IObject obj)
+                {
+                    evt.Set("currentTarget", FenValue.FromObject(obj));
+                    return;
+                }
+
+                evt.Set("currentTarget", FenValue.Null);
+                evt.UpdateJsProperties(context);
+            }
+            catch
+            {
+            }
+        }
+
+        private object ResolveDocumentEventTarget(Element target)
+        {
+            var doc = _fenRuntime?.GetGlobal("document") ?? FenValue.Undefined;
+            if (!doc.IsObject) return null;
+            return doc.AsObject();
+        }
+
+        private object ResolveWindowEventTarget(Element target)
+        {
+            var win = _fenRuntime?.GetGlobal("window") ?? FenValue.Undefined;
+            if (!win.IsObject) return null;
+            return win.AsObject();
+        }
+
+        private static object NormalizeEventTargetKey(object target)
+        {
+            if (target == null) return null;
+            if (target is JsDomElement elWrapper) return elWrapper._node;
+            if (target is JsDomText textWrapper) return textWrapper._node;
+            return target;
+        }
+
+        private static void ParseListenerOptions(FenValue[] args, int optionIndex, ref bool capture, ref bool once, ref bool passive)
+        {
+            if (args.Length <= optionIndex) return;
+            var options = args[optionIndex];
+
+            if (options.IsBoolean)
+            {
+                capture = options.ToBoolean();
+                return;
+            }
+
+            if (!options.IsObject) return;
+            var opts = options.AsObject() as FenObject;
+            if (opts == null) return;
+
+            var cVal = opts.Get("capture");
+            if (cVal.IsBoolean) capture = cVal.ToBoolean();
+
+            var oVal = opts.Get("once");
+            if (oVal.IsBoolean) once = oVal.ToBoolean();
+
+            var pVal = opts.Get("passive");
+            if (pVal.IsBoolean) passive = pVal.ToBoolean();
         }
 
         /// <summary>
@@ -383,14 +603,14 @@ namespace FenBrowser.FenEngine.Scripting
         /// </summary>
         public void DispatchEventForElement(Element el, string eventName)
         {
-            if (el  == null) return;
-            
-            try 
+            if (el == null) return;
+
+            try
             {
                 // Create Event Object
                 // In a perfect world we reuse the same object and update currentTarget.
                 var jsEl = new JsDomElement(this, el);
-                
+
                 var evtObj = new FenBrowser.FenEngine.Core.FenObject();
                 evtObj.Set("type", FenValue.FromString(eventName));
                 evtObj.Set("target", FenValue.FromObject(jsEl));
@@ -411,7 +631,7 @@ namespace FenBrowser.FenEngine.Scripting
 
                 // 4. Document & Window
                 var doc = _fenRuntime.GetGlobal("document");
-                if (doc.IsObject) 
+                if (doc.IsObject)
                 {
                     var dObj = doc.AsObject();
                     object dNative = dObj;
@@ -419,9 +639,9 @@ namespace FenBrowser.FenEngine.Scripting
                     else if (dObj is JsDocument jd) dNative = jd.NativeObject;
                     DispatchEvent(dNative ?? dObj, eventName, evtObj);
                 }
-                
+
                 var win = _fenRuntime.GetGlobal("window");
-                if (win.IsObject) 
+                if (win.IsObject)
                 {
                     var wObj = win.AsObject();
                     object wNative = wObj;
@@ -435,9 +655,17 @@ namespace FenBrowser.FenEngine.Scripting
             }
         }
 
+        private sealed class ObjectEventListener
+        {
+            public FenFunction Callback;
+            public bool Capture;
+            public bool Once;
+            public bool Passive;
+        }
+
         private void SetupWindowEvents()
         {
-            try { FenLogger.Debug("[SetupWindowEvents] Configuring window/document events", LogCategory.JavaScript); } catch { }
+            try { FenLogger.Debug("[SetupWindowEvents] Configuring window/document events", LogCategory.JavaScript); } catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
             
             // Ensure 'window' exists
             var win = _fenRuntime.GetGlobal("window");
@@ -451,17 +679,20 @@ namespace FenBrowser.FenEngine.Scripting
             // Alias self -> window (Critical for WPT testharness.js)
             _fenRuntime.SetGlobal("self", FenValue.FromObject(winObj));
             
-            // Add addEventListener to window object using shared implementation
-            var fnVal = FenValue.FromFunction(new FenFunction("addEventListener", AddEventListenerNative));
-            winObj.Set("addEventListener", fnVal);
-            _fenRuntime.SetGlobal("addEventListener", fnVal);
-            
-            // Also ensure document is on window
-            // Overwrite the specific default document with our wrapper
-            var docWrapper = new JsDocument(this, null); // Root will be resolved dynamically via DomRoot
-            var docVal = FenValue.FromObject(docWrapper);
-            _fenRuntime.SetGlobal("document", docVal);
-            winObj.Set("document", docVal);
+            // Preserve runtime EventTarget methods if already present.
+            var docValue = _fenRuntime.GetGlobal("document");
+            FenValue docFenValue;
+            if (!docValue.IsObject)
+            {
+                var docWrapper = new JsDocument(this, null); // Fallback only
+                docFenValue = FenValue.FromObject(docWrapper);
+                _fenRuntime.SetGlobal("document", docFenValue);
+            }
+            else
+            {
+                docFenValue = FenValue.FromObject(docValue.AsObject());
+            }
+            winObj.Set("document", docFenValue);
 
             // [Compliance] Window Dimensions
             winObj.Set("innerWidth", FenValue.FromFunction(new FenFunction("innerWidth", (args, ctx) => FenValue.FromNumber(WindowWidth))));
@@ -482,6 +713,11 @@ namespace FenBrowser.FenEngine.Scripting
             
             winObj.Set("screen", FenValue.FromObject(screenObj));
             _fenRuntime.SetGlobal("screen", FenValue.FromObject(screenObj));
+
+            // Bridge object listeners into DOM event flow for window/document and native object listeners.
+            FenBrowser.FenEngine.DOM.EventTarget.ExternalListenerInvoker = InvokeObjectListenersForDomEvent;
+            FenBrowser.FenEngine.DOM.EventTarget.ResolveDocumentTarget = ResolveDocumentEventTarget;
+            FenBrowser.FenEngine.DOM.EventTarget.ResolveWindowTarget = ResolveWindowEventTarget;
 
              // Note: DocumentWrapper now exposes addEventListener natively via Get/Has/Keys.
              // We don't need to overwrite it here.
@@ -590,10 +826,13 @@ namespace FenBrowser.FenEngine.Scripting
                             statusObj.Set("onchange", FenValue.Null); 
 
                             _fenRuntime.Context.ScheduleCallback(() => {
-                                try { onFulfilled.Invoke(new FenValue[] { FenValue.FromObject(statusObj) }, _fenRuntime.Context); } catch {}
+                                TryInvokeFunction(onFulfilled, new FenValue[] { FenValue.FromObject(statusObj) }, _fenRuntime.Context, "permissions.query.then");
                             }, 0);
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            FenLogger.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
+                        }
                     });
                     
                     return FenValue.FromObject(thenable);
@@ -617,7 +856,10 @@ namespace FenBrowser.FenEngine.Scripting
                     {
                         granted = await _fenRuntime.Context.Permissions.RequestPermissionAsync(JsPermissions.Geolocation, origin);
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        FenLogger.Warn($"[JavaScriptEngine] setTimeout dispatch failed: {ex.Message}", LogCategory.JavaScript);
+                    }
 
                     if (granted)
                     {
@@ -631,7 +873,7 @@ namespace FenBrowser.FenEngine.Scripting
                          pos.Set("timestamp", FenValue.FromNumber((DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())));
                          
                          _fenRuntime.Context.ScheduleCallback(() => {
-                            try { successCb.Invoke(new FenValue[] { FenValue.FromObject(pos) }, _fenRuntime.Context); } catch {}
+                            TryInvokeFunction(successCb, new FenValue[] { FenValue.FromObject(pos) }, _fenRuntime.Context, "geolocation.getCurrentPosition.success");
                          }, 0);
                     }
                     else
@@ -642,7 +884,7 @@ namespace FenBrowser.FenEngine.Scripting
                              err.Set("code", FenValue.FromNumber(1)); // PERMISSION_DENIED
                              err.Set("message", FenValue.FromString("User denied Geolocation"));
                              _fenRuntime.Context.ScheduleCallback(() => {
-                                try { errorCb.Invoke(new FenValue[] { FenValue.FromObject(err) }, _fenRuntime.Context); } catch {}
+                                TryInvokeFunction(errorCb, new FenValue[] { FenValue.FromObject(err) }, _fenRuntime.Context, "geolocation.getCurrentPosition.error");
                              }, 0);
                         }
                     }
@@ -707,7 +949,7 @@ namespace FenBrowser.FenEngine.Scripting
                 var cookie = navObj.Get("cookieEnabled").AsBoolean();
                 FenLogger.Debug($"[Compliance] JS Navigator: UA='{ua}' Platform='{platform}' Vendor='{vendor}' CookieEnabled={cookie}", LogCategory.JavaScript);
             }
-            catch { }
+            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
 
             // Service Workers API - navigator.serviceWorker
             // Service Workers API - navigator.serviceWorker
@@ -849,7 +1091,7 @@ namespace FenBrowser.FenEngine.Scripting
         private void RecordSandboxBlock(SandboxFeature feature, string detail)
         {
             var messageDetail = detail ?? string.Empty;
-            try { TraceFeatureGap("Sandbox", feature.ToString(), messageDetail); } catch { }
+            try { TraceFeatureGap("Sandbox", feature.ToString(), messageDetail); } catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
             try
             {
                 var status = string.IsNullOrWhiteSpace(messageDetail)
@@ -857,7 +1099,7 @@ namespace FenBrowser.FenEngine.Scripting
                     : "[Sandbox] Blocked " + feature + " : " + messageDetail;
                 _host?.SetStatus(status);
             }
-            catch { }
+            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
 
             lock (_sandboxLogLock)
             {
@@ -891,8 +1133,8 @@ namespace FenBrowser.FenEngine.Scripting
         // Centralized event listener storage for all objects (Window, Document, Element)
         // Key: The target object (Element, or FenObject for Window/Document)
         // Value: Dictionary of EventName -> List of Handlers
-        private readonly System.Runtime.CompilerServices.ConditionalWeakTable<object, Dictionary<string, List<FenFunction>>> _objectEventListeners =
-            new System.Runtime.CompilerServices.ConditionalWeakTable<object, Dictionary<string, List<FenFunction>>>();
+        private readonly System.Runtime.CompilerServices.ConditionalWeakTable<object, Dictionary<string, List<ObjectEventListener>>> _objectEventListeners =
+            new System.Runtime.CompilerServices.ConditionalWeakTable<object, Dictionary<string, List<ObjectEventListener>>>();
 
         private readonly Dictionary<string, Dictionary<string, List<string>>> _evtEl =
             new Dictionary<string, Dictionary<string, List<string>>>(StringComparer.Ordinal);
@@ -1060,11 +1302,11 @@ namespace FenBrowser.FenEngine.Scripting
                 {
                     foreach (var fn in list.ToArray())
                     {
-                        EnqueueMicrotask(() => { try { RunInline(fn + "({ type:'" + evt + "', target:'document' })", _ctx, evt, "document"); } catch { } });
+                        EnqueueMicrotask(() => { TryRunInline(fn + "({ type:'" + evt + "', target:'document' })", _ctx, evt, "document"); });
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
 
         }
 
@@ -1076,11 +1318,11 @@ namespace FenBrowser.FenEngine.Scripting
                 {
                     foreach (var fn in list.ToArray())
                     {
-                        EnqueueMicrotask(() => { try { RunInline(fn + "({ type:'" + evt + "', target:'window' })", _ctx, evt, "window"); } catch { } });
+                        EnqueueMicrotask(() => { TryRunInline(fn + "({ type:'" + evt + "', target:'window' })", _ctx, evt, "window"); });
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
 
         }
 
@@ -1172,11 +1414,14 @@ namespace FenBrowser.FenEngine.Scripting
                         {
                             RunInline(fn + "({ type:'" + evt + "', target:'" + id + "' })", _ctx, evt, id);
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            FenLogger.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
+                        }
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
             
             // Dispatch to FenRuntime (simulating bubbling to window)
             FenLogger.Debug($"[RaiseElementEvent] Check _fenRuntime: {(_fenRuntime  == null ? "NULL" : "OK")}", LogCategory.Events);
@@ -1225,11 +1470,14 @@ namespace FenBrowser.FenEngine.Scripting
                             RunInline(fnName + "({ type:'" + evt + "', target:'" + id + "' })", _ctx, evt, id);
                             if (_stopPropagationRequested) return true;
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            FenLogger.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
+                        }
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
             return _stopPropagationRequested;
         }
 
@@ -1257,11 +1505,17 @@ namespace FenBrowser.FenEngine.Scripting
                             if (isFnName) RunInline(codeOrFn + "()", _ctx);
                             else RunInline(codeOrFn, _ctx);
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            FenLogger.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
+                        }
                     };
                     if (repaintHost != null) repaintHost.InvokeOnUiThread(run); else run();
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[JavaScriptEngine] Feature-gap trace failed: {ex.Message}", LogCategory.JavaScript);
+                }
             };
             t = new Timer(tick, null, ms, ms <= 0 ? 1 : ms);
             lock (_intervals) _intervals[id] = t;
@@ -1274,7 +1528,7 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 Timer t; if (_intervals.TryGetValue(id, out t))
                 {
-                    try { t.Dispose(); } catch { }
+                    TryDisposeTimer(t);
                     _intervals.Remove(id);
                 }
             }
@@ -1289,10 +1543,13 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 try
                 {
-                    Action run = () => { try { RunInline(fnName + "(Date.now&&Date.now()||0)", _ctx); } catch { } };
+                    Action run = () => { TryRunInline(fnName + "(Date.now&&Date.now()||0)", _ctx); };
                     if (repaintHost != null) repaintHost.InvokeOnUiThread(run); else run();
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[JavaScriptEngine] Feature-gap trace failed: {ex.Message}", LogCategory.JavaScript);
+                }
                 finally { CancelAnimationFrame(id); }
             }, null, 16, Timeout.Infinite);
             lock (_rafs) _rafs[id] = t;
@@ -1305,7 +1562,7 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 Timer t; if (_rafs.TryGetValue(id, out t))
                 {
-                    try { t.Dispose(); } catch { }
+                    TryDisposeTimer(t);
                     _rafs.Remove(id);
                 }
             }
@@ -1373,7 +1630,7 @@ namespace FenBrowser.FenEngine.Scripting
                 }
                 await Windows.Storage.FileIO.WriteTextAsync(file, sb.ToString());
             }
-            catch { }
+            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
             */
         }
 
@@ -1405,11 +1662,14 @@ namespace FenBrowser.FenEngine.Scripting
                             }
                             bag[parts[1]] = parts[2];
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            FenLogger.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
+                        }
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
             */
         }
 
@@ -1424,7 +1684,7 @@ namespace FenBrowser.FenEngine.Scripting
                 if (jar  == null) return;
                 jar.SetCookies(scope, cookieString);
             }
-            catch { }
+            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
         }
 
         private string GetCookieString(Uri scope)
@@ -1468,6 +1728,106 @@ namespace FenBrowser.FenEngine.Scripting
             catch { return u != null ? ((u.Scheme ?? "") + "://" + (u.Host ?? "") + (u.PathAndQuery ?? "")) : null; }
         }
 
+        private static void TryLogDebug(string message)
+        {
+            try
+            {
+                FenLogger.Debug(message, LogCategory.JavaScript);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[JavaScriptEngine] Debug log failed: {ex.Message}", LogCategory.JavaScript);
+            }
+        }
+
+        private static void TryInvokeFunction(FenFunction callback, FenValue[] args, IExecutionContext context, string operation)
+        {
+            if (callback == null || context == null) return;
+            try
+            {
+                callback.Invoke(args, context);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[JavaScriptEngine] Callback '{operation}' failed: {ex.Message}", LogCategory.JavaScript);
+            }
+        }
+
+        private void TryExecuteFunction(FenFunction callback, FenValue[] args, string operation)
+        {
+            if (callback == null || _fenRuntime == null) return;
+            try
+            {
+                _fenRuntime.ExecuteFunction(callback, args);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[JavaScriptEngine] ExecuteFunction '{operation}' failed: {ex.Message}", LogCategory.JavaScript);
+            }
+        }
+        private void TrySetStatus(string message)
+        {
+            try
+            {
+                _host?.SetStatus(message);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[JavaScriptEngine] Host SetStatus failed: {ex.Message}", LogCategory.JavaScript);
+            }
+        }
+
+        private void TryNavigate(Uri uri)
+        {
+            if (uri == null) return;
+            try
+            {
+                _host?.Navigate(uri);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[JavaScriptEngine] Host Navigate failed for '{uri}': {ex.Message}", LogCategory.JavaScript);
+            }
+        }
+
+        private void TryRunInline(string code, JsContext ctx)
+        {
+            try
+            {
+                RunInline(code, ctx);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[JavaScriptEngine] RunInline failed in callback: {ex.Message}", LogCategory.JavaScript);
+            }
+        }
+
+        private void TryRunInline(string code, JsContext ctx, string eventType, string eventTarget)
+        {
+            try
+            {
+                RunInline(code, ctx, eventType, eventTarget);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[JavaScriptEngine] RunInline failed for event '{eventType}' on '{eventTarget}': {ex.Message}", LogCategory.JavaScript);
+            }
+        }
+
+        private static void TryDisposeTimer(System.Threading.Timer timer)
+        {
+            if (timer == null) return;
+            try
+            {
+                timer.Dispose();
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[JavaScriptEngine] Timer dispose failed: {ex.Message}", LogCategory.JavaScript);
+            }
+        }
+
+
         private void HistoryPush(Uri u)
         {
             if (u  == null) return;
@@ -1477,7 +1837,11 @@ namespace FenBrowser.FenEngine.Scripting
                 _history.RemoveRange(_historyIndex + 1, _history.Count - (_historyIndex + 1));
             _history.Add(u);
             _historyIndex = _history.Count - 1;
-            try { if (prev != null && string.Equals(BaseWithoutFragment(prev), BaseWithoutFragment(u), StringComparison.OrdinalIgnoreCase) && !string.Equals(prev.Fragment ?? "", u.Fragment ?? "", StringComparison.Ordinal)) FireWindowEvent("hashchange"); } catch { }
+            if (prev != null && string.Equals(BaseWithoutFragment(prev), BaseWithoutFragment(u), StringComparison.OrdinalIgnoreCase) && !string.Equals(prev.Fragment ?? "", u.Fragment ?? "", StringComparison.Ordinal))
+            {
+                try { FireWindowEvent("hashchange"); }
+                catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] hashchange dispatch failed: {ex.Message}", LogCategory.JavaScript); }
+            }
         }
 
         private void HistoryReplace(Uri u)
@@ -1487,7 +1851,11 @@ namespace FenBrowser.FenEngine.Scripting
             Uri prev = null; if (_historyIndex >= 0 && _historyIndex < _history.Count) prev = _history[_historyIndex];
             if (_historyIndex < 0) { _history.Add(u); _historyIndex = _history.Count - 1; }
             else _history[_historyIndex] = u;
-            try { if (prev != null && string.Equals(BaseWithoutFragment(prev), BaseWithoutFragment(u), StringComparison.OrdinalIgnoreCase) && !string.Equals(prev.Fragment ?? "", u.Fragment ?? "", StringComparison.Ordinal)) FireWindowEvent("hashchange"); } catch { }
+            if (prev != null && string.Equals(BaseWithoutFragment(prev), BaseWithoutFragment(u), StringComparison.OrdinalIgnoreCase) && !string.Equals(prev.Fragment ?? "", u.Fragment ?? "", StringComparison.Ordinal))
+            {
+                try { FireWindowEvent("hashchange"); }
+                catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] hashchange dispatch failed: {ex.Message}", LogCategory.JavaScript); }
+            }
         }
 
         private void HistoryGo(int delta)
@@ -1496,7 +1864,7 @@ namespace FenBrowser.FenEngine.Scripting
             if (target < 0 || target >= _history.Count) return;
             if (!SandboxAllows(SandboxFeature.Navigation, "history.go(" + delta + ")")) return;
             _historyIndex = target;
-            try { _host.Navigate(_history[_historyIndex]); } catch { }
+            TryNavigate(_history[_historyIndex]);
             FireWindowEvent("popstate");
         }
         // Handles Phase 1/2/3 builtins; returns true if the line was handled.
@@ -1530,7 +1898,7 @@ namespace FenBrowser.FenEngine.Scripting
                 var code = mSI.Groups["code"].Success ? mSI.Groups["code"].Value : null;
                 var fn = mSI.Groups["fn"].Success ? mSI.Groups["fn"].Value : null;
                 var id = ScheduleInterval(code ?? fn, ms, isFnName: fn != null);
-                try { _host.SetStatus("setInterval id=" + id); } catch { }
+                TrySetStatus("setInterval id=" + id);
                 return true;
             }
             var mCI = Regex.Match(line, @"^\s*clearInterval\s*\(\s*(?<id>\d+)\s*\)\s*;?$", RegexOptions.IgnoreCase);
@@ -1538,7 +1906,7 @@ namespace FenBrowser.FenEngine.Scripting
 
             // ---------- requestAnimationFrame / cancelAnimationFrame ----------
             var mRaf = Regex.Match(line, @"^\s*requestAnimationFrame\s*\(\s*(?<fn>[A-Za-z_$][A-ZaZ0-9_$]*)\s*\)\s*;?$", RegexOptions.IgnoreCase);
-            if (mRaf.Success) { var id = RequestAnimationFrame(mRaf.Groups["fn"].Value); try { _host.SetStatus("rAF id=" + id); } catch { } return true; }
+            if (mRaf.Success) { var id = RequestAnimationFrame(mRaf.Groups["fn"].Value); TrySetStatus("rAF id=" + id); return true; }
             var mCRaf = Regex.Match(line, @"^\s*cancelAnimationFrame\s*\(\s*(?<id>\d+)\s*\)\s*;?$", RegexOptions.IgnoreCase);
             if (mCRaf.Success) { int id; if (int.TryParse(mCRaf.Groups["id"].Value, out id)) CancelAnimationFrame(id); return true; }
 
@@ -1555,7 +1923,7 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 var originKey = OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri);
                 var val = StorageApi.GetLocalStorageItem(originKey, mLSgetCb.Groups["k"].Value);
-                var esc = JsEscape(val ?? "", '\''); EnqueueMicrotask(() => { try { RunInline(mLSgetCb.Groups["fn"].Value + "('" + esc + "')", _ctx); } catch { } });
+                var esc = JsEscape(val ?? "", '\''); EnqueueMicrotask(() => { TryRunInline(mLSgetCb.Groups["fn"].Value + "('" + esc + "')", _ctx); });
                 return true;
             }
             var mLSrem = Regex.Match(line, @"^\s*localStorage\s*\.removeItem\s*\(\s*['""](?<k>.+?)['""]\s*\)\s*;?$", RegexOptions.IgnoreCase);
@@ -1587,7 +1955,7 @@ namespace FenBrowser.FenEngine.Scripting
                 var originKey = OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri);
                 var sessionScope = StorageApi.BuildSessionScope(_sessionStoragePartitionId, originKey);
                 var vSS = StorageApi.GetSessionStorageItem(sessionScope, mSSget.Groups["k"].Value);
-                var escSS = JsEscape(vSS ?? "", '\''); EnqueueMicrotask(() => { try { RunInline(mSSget.Groups["fn"].Value + "('" + escSS + "')", _ctx); } catch { } });
+                var escSS = JsEscape(vSS ?? "", '\''); EnqueueMicrotask(() => { TryRunInline(mSSget.Groups["fn"].Value + "('" + escSS + "')", _ctx); });
                 return true;
             }
             var mSSrem = Regex.Match(line, @"^\s*sessionStorage\s*\.removeItem\s*\(\s*['\""](?<k>.+?)['\""]\s*\)\s*;?$", RegexOptions.IgnoreCase);
@@ -1614,7 +1982,7 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 var s = GetCookieString(ctx?.BaseUri ?? _ctx?.BaseUri);
                 var esc = JsEscape(s ?? "", '\'');
-                EnqueueMicrotask(() => { try { RunInline(mCget.Groups["fn"].Value + "('" + esc + "')", _ctx); } catch { } });
+                EnqueueMicrotask(() => { TryRunInline(mCget.Groups["fn"].Value + "('" + esc + "')", _ctx); });
                 return true;
             }
 
@@ -1642,14 +2010,14 @@ namespace FenBrowser.FenEngine.Scripting
             if (mPush.Success)
             {
                 var u = Resolve(ctx?.BaseUri ?? _ctx?.BaseUri, mPush.Groups["url"].Value);
-                if (u != null) { HistoryPush(u); try { _host.SetStatus("pushState -> " + u); } catch { } }
+                if (u != null) { HistoryPush(u); TrySetStatus("pushState -> " + u); }
                 return true;
             }
             var mRep = Regex.Match(line, @"^\s*history\s*\.replaceState\s*\(\s*.*?,\s*['""](?<url>.*?)['""]\s*\)\s*;?$", RegexOptions.IgnoreCase);
             if (mRep.Success)
             {
                 var u = Resolve(ctx?.BaseUri ?? _ctx?.BaseUri, mRep.Groups["url"].Value);
-                if (u != null) { HistoryReplace(u); try { _host.SetStatus("replaceState -> " + u); } catch { } }
+                if (u != null) { HistoryReplace(u); TrySetStatus("replaceState -> " + u); }
                 return true;
             }
             if (Regex.IsMatch(line, @"^\s*history\s*\.back\s*\(\s*\)\s*;?$", RegexOptions.IgnoreCase)) { HistoryGo(-1); return true; }
@@ -1668,7 +2036,10 @@ namespace FenBrowser.FenEngine.Scripting
                 {
                     TraceFeatureGap("Audio", "new Audio().play", mAudioNewPlay.Groups["url"].Value ?? string.Empty);
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[JavaScriptEngine] Feature-gap trace failed: {ex.Message}", LogCategory.JavaScript);
+                }
                 return true;
             }
 
@@ -1685,7 +2056,10 @@ namespace FenBrowser.FenEngine.Scripting
                     var el = doc.getElementById(id) as JsDomElement;
                     if (el != null) { el.innerText = txt; RequestRepaint(); }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[JavaScriptEngine] Feature-gap trace failed: {ex.Message}", LogCategory.JavaScript);
+                }
                 return true;
             }
             // document.getElementById('id').addEventListener('evt', fn)
@@ -1718,7 +2092,10 @@ namespace FenBrowser.FenEngine.Scripting
                     var el = doc.getElementById(id) as JsDomElement;
                     if (el != null) { el.innerText = b64; RequestRepaint(); }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[JavaScriptEngine] Feature-gap trace failed: {ex.Message}", LogCategory.JavaScript);
+                }
                 return true;
             }
 
@@ -1764,7 +2141,7 @@ namespace FenBrowser.FenEngine.Scripting
                                     var token = RegisterResponseBody(text);
                                     EnqueueMicrotask(() =>
                                     {
-                                        try { RunInline(fn + "({ ok:true, status:200, text:function(){ return '" + JsEscape(text) + "'; }, json:function(){ return JSON.parse('" + JsEscape(text) + "'); } })", _ctx); } catch { }
+                                        TryRunInline(fn + "({ ok:true, status:200, text:function(){ return '" + JsEscape(text) + "'; }, json:function(){ return JSON.parse('" + JsEscape(text) + "'); } })", _ctx);
                                     });
                                 }
                                 else if (!corsOk)
@@ -1772,12 +2149,15 @@ namespace FenBrowser.FenEngine.Scripting
                                     // CORS blocked
                                     EnqueueMicrotask(() =>
                                     {
-                                        try { RunInline(fn + "({ ok:false, status:0, statusText:'CORS error' })", _ctx); } catch { }
+                                        TryRunInline(fn + "({ ok:false, status:0, statusText:'CORS error' })", _ctx);
                                     });
                                 }
                             }
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            FenLogger.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
+                        }
                     });
                 }
                 return true;
@@ -1803,19 +2183,25 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                 if (fn != null) RunInline(fn + "()", _ctx);
                                 else if (!string.IsNullOrEmpty(code)) RunInline(code, _ctx);
                             }
-                            catch { }
+                            catch (Exception ex)
+                        {
+                            FenLogger.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
+                        }
                         };
                         if (repaintHost != null) repaintHost.InvokeOnUiThread(run); else run();
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        FenLogger.Warn($"[JavaScriptEngine] setTimeout dispatch failed: {ex.Message}", LogCategory.JavaScript);
+                    }
                     finally
                     {
-                        lock (_timers) { try { if (_timers.ContainsKey(id)) { _timers[id].Dispose(); } } catch { } _timers.Remove(id); }
+                        lock (_timers) { if (_timers.TryGetValue(id, out var existingTimer)) { TryDisposeTimer(existingTimer); } _timers.Remove(id); }
                     }
                 };
                 t = new System.Threading.Timer(fire, null, ms, System.Threading.Timeout.Infinite);
                 lock (_timers) _timers[id] = t;
-                try { _host.SetStatus("setTimeout id=" + id); } catch { }
+                TrySetStatus("setTimeout id=" + id);
                 return true;
             }
             var mCT = System.Text.RegularExpressions.Regex.Match(line, @"^\s*clearTimeout\s*\(\s*(?<id>\d+)\s*\)\s*;?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
@@ -1825,7 +2211,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                 {
                     lock (_timers)
                     {
-                        System.Threading.Timer t; if (_timers.TryGetValue(id, out t)) { try { t.Dispose(); } catch { } _timers.Remove(id); }
+                        System.Threading.Timer t; if (_timers.TryGetValue(id, out t)) { TryDisposeTimer(t); _timers.Remove(id); }
                     }
                 }
                 return true;
@@ -1835,7 +2221,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             var mLog = System.Text.RegularExpressions.Regex.Match(line, @"^\s*console\s*\.\s*(?<kind>log|error|warn)\s*\(\s*['""](?<msg>.*?)['""]\s*\)\s*;?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             if (mLog.Success)
             {
-                try { _host.SetStatus((mLog.Groups["kind"].Value.ToLowerInvariant()) + ": " + mLog.Groups["msg"].Value); } catch { }
+                TrySetStatus((mLog.Groups["kind"].Value.ToLowerInvariant()) + ": " + mLog.Groups["msg"].Value);
                 return true;
             }
 
@@ -1848,12 +2234,12 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             {
                 if (BrowserSettings.Instance.BlockPopups)
                 {
-                    try { _host.SetStatus("popup blocked by policy"); } catch { }
+                    TrySetStatus("popup blocked by policy");
                     return true;
                 }
 
                 var u = Resolve(ctx?.BaseUri ?? _ctx?.BaseUri, mWindowOpen.Groups["u"].Value);
-                if (u != null) { try { _host.Navigate(u); } catch { } }
+                if (u != null) { TryNavigate(u); }
                 return true;
             }
 
@@ -1861,21 +2247,21 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             if (mAssign.Success)
             {
                 var u = Resolve(ctx?.BaseUri ?? _ctx?.BaseUri, mAssign.Groups["u"].Value);
-                if (u != null) { try { _host.Navigate(u); } catch { } }
+                if (u != null) { TryNavigate(u); }
                 return true;
             }
             var mReplace = System.Text.RegularExpressions.Regex.Match(line, @"^\s*location\s*\.\s*replace\s*\(\s*['""](?<u>.+?)['""]\s*\)\s*;?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             if (mReplace.Success)
             {
                 var u = Resolve(ctx?.BaseUri ?? _ctx?.BaseUri, mReplace.Groups["u"].Value);
-                if (u != null) { try { _host.Navigate(u); } catch { } }
+                if (u != null) { TryNavigate(u); }
                 return true;
             }
             var mHrefSet = System.Text.RegularExpressions.Regex.Match(line, @"^\s*location\s*\.\s*href\s*=\s*['""](?<u>.+?)['""]\s*;?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             if (mHrefSet.Success)
             {
                 var u = Resolve(ctx?.BaseUri ?? _ctx?.BaseUri, mHrefSet.Groups["u"].Value);
-                if (u != null) { try { _host.Navigate(u); } catch { } }
+                if (u != null) { TryNavigate(u); }
                 return true;
             }
 
@@ -1894,7 +2280,10 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                         tval = mTitle.Groups["t"].Value;
                     _host.SetTitle(tval);
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[JavaScriptEngine] Feature-gap trace failed: {ex.Message}", LogCategory.JavaScript);
+                }
                 return true;
             }
 
@@ -1903,7 +2292,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
 
         public object Evaluate(string script)
         {
-            try { FenLogger.Debug($"[JavaScriptEngine] Evaluate called with script length: {script?.Length ?? 0}", LogCategory.JavaScript); } catch { }
+            try { FenLogger.Debug($"[JavaScriptEngine] Evaluate called with script length: {script?.Length ?? 0}", LogCategory.JavaScript); } catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
 
             // Use FenEngine for evaluation
             if (_fenRuntime != null)
@@ -1959,55 +2348,64 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
 
         // Legacy JSON-based localStorage persistence (no longer used; kept for compatibility reference)
         // The engine now uses a simple line-based format via SaveLocalStorageAsync/RestoreLocalStorageAsync
-        // against the _localStorageMap dictionary. This stub remains to avoid breaking older call sites.
-        private async void PersistLocalStorage()
+        // against the _localStorageMap dictionary.
+        private Task PersistLocalStorageAsync()
+        {
+            return SaveLocalStorageAsync();
+        }
+
+        public void LocalStorageSet(string key, string value, JsContext ctx)
         {
             try
             {
-                await SaveLocalStorageAsync().ConfigureAwait(false);
+                if (!SandboxAllows(SandboxFeature.Storage, "localStorage.setItem")) return;
+                StorageApi.SetLocalStorageItem(OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri), key, value);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[JavaScriptEngine] localStorage.setItem failed: {ex.Message}", LogCategory.JavaScript);
+            }
         }
 
-    public void LocalStorageSet(string key, string value, JsContext ctx)
-    {
-        try
+        public string LocalStorageGet(string key, JsContext ctx)
         {
-            if (!SandboxAllows(SandboxFeature.Storage, "localStorage.setItem")) return;
-            StorageApi.SetLocalStorageItem(OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri), key, value);
+            try
+            {
+                if (!SandboxAllows(SandboxFeature.Storage, "localStorage.getItem")) return null;
+                return StorageApi.GetLocalStorageItem(OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri), key);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[JavaScriptEngine] localStorage.getItem failed: {ex.Message}", LogCategory.JavaScript);
+                return null;
+            }
         }
-        catch { }
-    }
 
-    public string LocalStorageGet(string key, JsContext ctx)
-    {
-        try
+        public void LocalStorageRemove(string key, JsContext ctx)
         {
-            if (!SandboxAllows(SandboxFeature.Storage, "localStorage.getItem")) return null;
-            return StorageApi.GetLocalStorageItem(OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri), key);
+            try
+            {
+                if (!SandboxAllows(SandboxFeature.Storage, "localStorage.removeItem")) return;
+                StorageApi.RemoveLocalStorageItem(OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri), key);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[JavaScriptEngine] localStorage.removeItem failed: {ex.Message}", LogCategory.JavaScript);
+            }
         }
-        catch { return null; }
-    }
 
-    public void LocalStorageRemove(string key, JsContext ctx)
-    {
-        try
+        public void LocalStorageClear(JsContext ctx)
         {
-            if (!SandboxAllows(SandboxFeature.Storage, "localStorage.removeItem")) return;
-            StorageApi.RemoveLocalStorageItem(OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri), key);
+            try
+            {
+                if (!SandboxAllows(SandboxFeature.Storage, "localStorage.clear")) return;
+                StorageApi.ClearLocalStorage(OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri));
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[JavaScriptEngine] localStorage.clear failed: {ex.Message}", LogCategory.JavaScript);
+            }
         }
-        catch { }
-    }
-
-    public void LocalStorageClear(JsContext ctx)
-    {
-        try
-        {
-            if (!SandboxAllows(SandboxFeature.Storage, "localStorage.clear")) return;
-            StorageApi.ClearLocalStorage(OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri));
-        }
-        catch { }
-    }
 
     public void Reset(JsContext ctx)
         {
@@ -2355,10 +2753,10 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             else
             {
                 // fallback: set status so developer sees mutations
-                try { _host.SetStatus("[DOM mutated]"); } catch { }
+                try { _host.SetStatus("[DOM mutated]"); } catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
             }
             // after the host is requested to repaint, schedule any MutationObserver callbacks
-            try { InvokeMutationObservers(); } catch { }
+            try { InvokeMutationObservers(); } catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
             _repaintRequested = false;
         }
 
@@ -2401,12 +2799,12 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                         
                         foreach (var fn in legacyObservers)
                         {
-                            EnqueueMicrotask(() => { try { RunInline(fn + "(" + json + ")", _ctx); } catch { } });
+                            EnqueueMicrotask(() => { TryRunInline(fn + "(" + json + ")", _ctx); });
                         }
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
 
             // 2. New Wrapper-based observers (Standard MutationObserver)
             try
@@ -2440,12 +2838,12 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                         
                         EnqueueMicrotask(() => 
                         {
-                            try { _fenRuntime.ExecuteFunction(wrapper.Callback, args); } catch { }
+                            TryExecuteFunction(wrapper.Callback, args, "mutation-observer");
                         });
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
         }
 
         private void RecordMutation(MutationRecord record)
@@ -2721,7 +3119,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             private void LogToFile(string level, string msg)
             {
                 DiagnosticPaths.AppendRootText("js_debug.log", $"[Console:{level}] {msg}\n");
-                try { _engine._host.Log($"[{level}] {msg}"); } catch {}
+                try { _engine._host.Log($"[{level}] {msg}"); } catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Host console forwarding failed: {ex.Message}", LogCategory.JavaScript); }
             }
         }
 
@@ -3023,7 +3421,10 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                                         .ConfigureAwait(false);
                                                     moduleLoader.LoadModule(scriptUri.AbsoluteUri);
                                                 }
-                                                catch { }
+                                                catch (Exception ex)
+                        {
+                            FenLogger.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
+                        }
                                                 continue;
                                             }
 
@@ -3040,7 +3441,10 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                                 }
                                             }
                                         }
-                                        catch { }
+                                        catch (Exception ex)
+                        {
+                            FenLogger.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
+                        }
                                     }
                                 }
                                 // 2. Inline Script
@@ -3081,14 +3485,17 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
 
                                             moduleLoader.LoadModuleSrc(code, inlineModulePath);
                                         }
-                                        catch { }
+                                        catch (Exception ex)
+                        {
+                            FenLogger.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
+                        }
                                         continue; 
                                     }
                                 }
                                 
                                 if (!string.IsNullOrWhiteSpace(code))
                                 {
-                                    // SRI check — external scripts with an integrity attr must match before execution
+                                    // SRI check ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â external scripts with an integrity attr must match before execution
                                     if (!string.IsNullOrEmpty(src) && !VerifySriIntegrity(code, integrity))
                                     {
                                         DiagnosticPaths.AppendRootText("js_debug.log", $"[SRI] Blocked script (hash mismatch): {srcInfo}\n");
@@ -3229,7 +3636,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                 var body = (root as ContainerNode)?.GetElementsByTagName("body").FirstOrDefault();
                 if (body != null) flipClass(body);
             }
-            catch { }
+            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
 
             try
             {
@@ -3239,7 +3646,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                         toRemove.Add(n);
                 foreach (var n in toRemove) n.Remove();
             }
-            catch { }
+            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
 
             // Do NOT remove <noscript> on this platform; we are a limited JS renderer
             // and <noscript> often contains the only usable fallback content.
@@ -3266,7 +3673,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                 else if (op == "toggle") { if (!set.Remove(cls)) { set.Add(cls); } changed = true; }
                 if (changed) el.setAttribute("class", string.Join(" ", set.ToArray()));
             }
-            catch { }
+            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
         }
         internal sealed class ResponseEntry
         {
@@ -3284,7 +3691,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         /// Verifies Subresource Integrity (SRI) for a fetched resource.
         /// Returns true if <paramref name="integrity"/> is absent/empty (no check required) or
         /// if at least one hash token in the space-separated list matches the content.
-        /// Returns false if tokens are present and none match — caller must block the resource.
+        /// Returns false if tokens are present and none match ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â caller must block the resource.
         /// Supported algorithms: sha256, sha384, sha512.
         /// </summary>
         private static bool VerifySriIntegrity(string content, string integrity)
@@ -3311,14 +3718,14 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                         "sha512" => System.Security.Cryptography.SHA512.Create(),
                         _ => null
                     };
-                    if (alg == null) continue; // Unknown algorithm — skip token
+                    if (alg == null) continue; // Unknown algorithm ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â skip token
                     hash = alg.ComputeHash(bytes);
                 }
                 catch { continue; }
 
                 if (Convert.ToBase64String(hash) == expectedB64) return true;
             }
-            // No matching token found — block the resource
+            // No matching token found ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â block the resource
             return false;
         }
     }
@@ -3376,8 +3783,8 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             _navigate = navigate ?? (_ => { });
             _post = post ?? ((_, __) => { });
             _status = status ?? (_ => { });
-            _requestRender = requestRender ?? (() => { try { _status("[DOM mutated]"); } catch { } });
-            _invokeOnUiThread = invokeOnUiThread ?? (a => { try { a(); } catch { } });
+            _requestRender = requestRender ?? (() => { try { _status("[DOM mutated]"); } catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); } });
+            _invokeOnUiThread = invokeOnUiThread ?? (a => { try { a(); } catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); } });
             _setTitle = setTitle ?? (_ => { });
             _alert = alert ?? (_ => { });
             _log = log ?? (_ => { });
@@ -3455,6 +3862,31 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
     }
 
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

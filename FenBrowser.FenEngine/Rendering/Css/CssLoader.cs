@@ -1,4 +1,4 @@
-using FenBrowser.Core.Css;
+﻿using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
@@ -48,7 +48,7 @@ namespace FenBrowser.FenEngine.Rendering
         private static readonly Dictionary<Element, List<NewCss.CssRule>> _elementMatchedRulesCache = new Dictionary<Element, List<NewCss.CssRule>>();
         private static readonly Dictionary<Element, CssComputed> _elementStyleCache = new Dictionary<Element, CssComputed>();
 
-        // UA stylesheet cache — read from disk only once per process lifetime
+        // UA stylesheet cache â€” read from disk only once per process lifetime
         private static string _cachedUaCss;
 
         // CSS Custom Properties (CSS Variables) storage - keyed by property name (e.g., "--primary-color")
@@ -339,7 +339,7 @@ namespace FenBrowser.FenEngine.Rendering
                     continue;
                 }
 
-                // SRI — capture integrity attribute before the async closure
+                // SRI â€” capture integrity attribute before the async closure
                 string sriIntegrity = link.GetAttribute("integrity");
                 
                 DebugLog(@"css_debug_v2.txt", $"[LINK] Found stylesheet href='{href}'\r\n");
@@ -381,11 +381,11 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         var css = await fetchExternalCssAsync(abs).ConfigureAwait(false);
                         /* [PERF-REMOVED] */
-                        // SRI check — if the link has an integrity attribute, verify before applying
+                        // SRI check â€” if the link has an integrity attribute, verify before applying
                         if (!string.IsNullOrWhiteSpace(css) && !VerifySriIntegrity(css, sriIntegrity))
                         {
                             Log(log, $"[CssLoader] [SRI] Blocked stylesheet (hash mismatch): {abs}");
-                            return; // Drop this stylesheet — integrity check failed
+                            return; // Drop this stylesheet â€” integrity check failed
                         }
                         // Limit CSS size to prevent crashes on massive stylesheets (GitHub, etc.)
                         const int MAX_CSS_SIZE = 2_000_000; // 2MB per stylesheet
@@ -804,7 +804,7 @@ namespace FenBrowser.FenEngine.Rendering
                         css = await fetchExternal(abs).ConfigureAwait(false);
                     }
                     catch (Exception ex) { Log(log, "[CssLoader] @import fetch failed: " + abs + " :: " + ex.Message); }
-                    finally { try { gate.Release(); } catch { } }
+                    finally { try { gate.Release(); } catch (Exception ex) { FenLogger.Warn($"[CssLoader] Semaphore release failed: {ex.Message}", LogCategory.CSS); } }
 
                     if (!string.IsNullOrWhiteSpace(css))
                     {
@@ -827,7 +827,7 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }));
             }
-            if (tasks.Count > 0) { try { await System.Threading.Tasks.Task.WhenAll(tasks).ConfigureAwait(false); } catch { /* Ignore task errors */ } }
+            if (tasks.Count > 0) { try { await System.Threading.Tasks.Task.WhenAll(tasks).ConfigureAwait(false); } catch (Exception ex) { Log(log, "[CssLoader] @import task batch failed: " + ex.Message); } }
 
             // Keep the remainder (with @imports stripped)
             output.Add(new CssSource
@@ -1732,11 +1732,11 @@ namespace FenBrowser.FenEngine.Rendering
 
             FenLogger.Debug($"[DEBUG-CSS] ParseRules input length: {css.Length}", LogCategory.Rendering);
 
-            try { if (DEBUG_FILE_LOGGING) DebugLog(@"debug_raw_css.txt", "\n--- RAW CSS BLOCK ---\n" + css + "\n-------------------\n"); } catch {}
+            try { if (DEBUG_FILE_LOGGING) DebugLog(@"debug_raw_css.txt", "\n--- RAW CSS BLOCK ---\n" + css + "\n-------------------\n"); } catch (Exception ex) { FenLogger.Warn($"[CssLoader] Debug raw css log failed: {ex.Message}", LogCategory.CSS); }
             var text = StripComments(css);
             FenLogger.Debug($"[DEBUG-CSS] After StripComments length: {text.Length}", LogCategory.Rendering);
             
-             try { if (DEBUG_FILE_LOGGING) DebugLog(@"debug_full_css.txt", "\n--- NEW CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch {}
+             try { if (DEBUG_FILE_LOGGING) DebugLog(@"debug_full_css.txt", "\n--- NEW CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch (Exception ex) { FenLogger.Warn($"[CssLoader] Debug preprocessed css log failed: {ex.Message}", LogCategory.CSS); }
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
             // FlattenBasicMedia REMOVED: Now handled by proper parsing in CssSyntaxParser + Recursive processing below
@@ -1761,7 +1761,7 @@ namespace FenBrowser.FenEngine.Rendering
                 log);
              FenLogger.Debug($"[PERF-CSS] FlattenContainerQueries: {sw.ElapsedMilliseconds}ms", LogCategory.Rendering); sw.Restart();
 
-             try { if (DEBUG_FILE_LOGGING) DebugLog(@"debug_full_css.txt", "\n--- PROCESSED CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch {}
+             try { if (DEBUG_FILE_LOGGING) DebugLog(@"debug_full_css.txt", "\n--- PROCESSED CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch (Exception ex) { FenLogger.Warn($"[CssLoader] Debug processed css log failed: {ex.Message}", LogCategory.CSS); }
 
             // New Pipeline: Tokenize -> Parse
             FenLogger.Debug($"[DEBUG-CSS] Creating tokenizer for text length {text.Length}", LogCategory.Rendering);
@@ -3330,7 +3330,7 @@ private static double? ExtractPx(string text, string prop)
                 if (!string.IsNullOrEmpty(resolved))
                     css.FontFamilyName = resolved;
             }
-            catch { }
+            catch (Exception ex) { FenLogger.Warn($"[CssLoader] Font-family resolution failed: {ex.Message}", LogCategory.CSS); }
 
             var fwRaw = Safe(DictGet(css.Map, "font-weight"));
             if (!string.IsNullOrEmpty(fwRaw))
@@ -3825,7 +3825,7 @@ private static double? ExtractPx(string text, string prop)
                         var brush = ParseGradient(bgValue);
                         if (brush != null) css.Background = brush;
                     }
-                    catch { }
+                    catch (Exception ex) { FenLogger.Warn($"[CssLoader] Background gradient parse failed: {ex.Message}", LogCategory.CSS); }
                 }
                 else if (bgValue.IndexOf("url(", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
@@ -3834,7 +3834,7 @@ private static double? ExtractPx(string text, string prop)
                         var brush = ParseBackgroundImage(bgValue);
                         if (brush != null) css.Background = brush;
                     }
-                    catch { }
+                    catch (Exception ex) { FenLogger.Warn($"[CssLoader] Background image parse failed: {ex.Message}", LogCategory.CSS); }
                 }
                 else if (string.Equals(bgValue, "none", StringComparison.OrdinalIgnoreCase))
                 {
@@ -5912,7 +5912,7 @@ private static double? ExtractPx(string text, string prop)
 
         private static void Log(Action<string> log, string msg)
         {
-            try { if (log != null) log(msg); } catch { }
+            try { if (log != null) log(msg); } catch (Exception ex) { FenLogger.Warn($"[CssLoader] External logger callback failed: {ex.Message}", LogCategory.CSS); }
         }
 
 
@@ -5951,7 +5951,7 @@ private static double? ExtractPx(string text, string prop)
                 safeName = "css_debug.txt";
             DiagnosticPaths.AppendRootText(safeName, message);
         }
-        catch { }
+        catch (Exception ex) { FenLogger.Warn($"[CssLoader] Debug file write failed: {ex.Message}", LogCategory.CSS); }
 #endif
     }
 
@@ -6107,7 +6107,7 @@ private static double? ExtractPx(string text, string prop)
     /// <summary>
     /// Verifies Subresource Integrity (SRI) for fetched content.
     /// Returns true if integrity is absent (no check needed) or if at least one hash token matches.
-    /// Returns false if one or more tokens are present and none match — caller must block the resource.
+    /// Returns false if one or more tokens are present and none match â€” caller must block the resource.
     /// Supported algorithms: sha256, sha384, sha512.
     /// </summary>
     private static bool VerifySriIntegrity(string content, string integrity)
@@ -6134,18 +6134,21 @@ private static double? ExtractPx(string text, string prop)
                     "sha512" => System.Security.Cryptography.SHA512.Create(),
                     _ => null
                 };
-                if (alg == null) continue; // Unknown algorithm — skip this token
+                if (alg == null) continue; // Unknown algorithm â€” skip this token
                 hash = alg.ComputeHash(bytes);
             }
             catch { continue; }
 
             if (Convert.ToBase64String(hash) == expectedB64) return true;
         }
-        // No token matched — block the resource
+        // No token matched â€” block the resource
         return false;
     }
 }
 }
+
+
+
 
 
 
