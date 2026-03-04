@@ -424,7 +424,7 @@ namespace FenBrowser.FenEngine.Scripting
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { FenBrowser.Core.FenLogger.Warn($"[Canvas2D] EnsureSurface failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering); }
         }
 
         private void Draw(Action<SKCanvas> drawAction)
@@ -1020,6 +1020,8 @@ namespace FenBrowser.FenEngine.Scripting
         public void SetPrototype(IObject prototype) => _prototype = prototype;
     }
 }
+
+
 
 
 

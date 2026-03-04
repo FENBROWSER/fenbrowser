@@ -458,7 +458,7 @@ namespace FenBrowser.FenEngine.Testing
                                 }
                             }
                         }
-                        catch {}
+                        catch (Exception ex) { Console.WriteLine($"[Test262Runner] Failed reading __VERIFICATION_RESULT__: {ex.Message}"); }
 
                         if (!isError && metadata.IsAsync && asyncSignal != null)
                         {
@@ -544,7 +544,7 @@ namespace FenBrowser.FenEngine.Testing
                             ? $"Test killed: memory grew {(memAfter - memBefore) / 1_000_000}MB (limit 500MB)"
                             : $"Test timed out after {_timeoutMs}ms";
                         // Reset EventLoop to break any spinning microtask/promise chains
-                        try { EventLoopCoordinator.ResetInstance(); } catch { }
+                        try { EventLoopCoordinator.ResetInstance(); } catch (Exception ex) { Console.WriteLine($"[Test262Runner] EventLoop reset failed after timeout/memory kill: {ex.Message}"); }
                         // Force aggressive GC to reclaim memory from abandoned closures
                         GC.Collect(2, GCCollectionMode.Aggressive, true, true);
                         GC.WaitForPendingFinalizers();
@@ -579,7 +579,7 @@ namespace FenBrowser.FenEngine.Testing
             result.Duration = sw.Elapsed;
 
             // CRITICAL: Reset singleton EventLoop between tests to prevent memory accumulation
-            try { EventLoopCoordinator.ResetInstance(); } catch { }
+            try { EventLoopCoordinator.ResetInstance(); } catch (Exception ex) { Console.WriteLine($"[Test262Runner] EventLoop reset failed after test run: {ex.Message}"); }
 
             // Force GC every 50 tests or if memory is above 500MB
             long mem = GC.GetTotalMemory(false);
@@ -828,3 +828,4 @@ namespace FenBrowser.FenEngine.Testing
         }
     }
 }
+

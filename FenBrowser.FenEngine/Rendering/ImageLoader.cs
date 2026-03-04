@@ -422,7 +422,7 @@ namespace FenBrowser.FenEngine.Rendering
                         scaledBitmap.Encode(stream, SKEncodedImageFormat.Png, 100);
                         FenLogger.Debug($"[ImageLoader] Saved SCALED SVG bitmap {w}x{h} to svg_debug_bitmap.png", LogCategory.Rendering);
                     }
-                    catch {}
+                    catch (Exception ex) { FenLogger.Warn($"[ImageLoader] Failed writing svg_debug_bitmap.png: {ex.Message}", LogCategory.Rendering); }
                 }
 #endif
                 
@@ -710,7 +710,7 @@ namespace FenBrowser.FenEngine.Rendering
                      try {
                          string header = System.Text.Encoding.UTF8.GetString(data, 0, Math.Min(data.Length, 100)).Trim();
                          if (header.StartsWith("<svg") || header.StartsWith("<?xml") || header.Contains("<svg")) isSvg = true;
-                     } catch {}
+                     } catch (Exception ex) { FenLogger.Warn($"[ImageLoader] SVG header sniff failed: {ex.Message}", LogCategory.Rendering); }
                 }
 
                 if (isSvg)
@@ -957,4 +957,5 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
+
 

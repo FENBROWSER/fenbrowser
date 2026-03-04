@@ -166,7 +166,7 @@ namespace FenBrowser.FenEngine.Workers
                     runtime.Terminate();
                     runtime.Dispose();
                 }
-                catch { }
+                catch (Exception ex) { FenBrowser.Core.FenLogger.Warn($"[ServiceWorkerManager] Runtime disposal failed: {ex.Message}", LogCategory.ServiceWorker); }
             }
 
             removed.Installing?.UpdateState("redundant");
@@ -359,8 +359,9 @@ namespace FenBrowser.FenEngine.Workers
                     oldRuntime.Terminate();
                     oldRuntime.Dispose();
                 }
-                catch { }
+                catch (Exception ex) { FenBrowser.Core.FenLogger.Warn($"[ServiceWorkerManager] Old runtime disposal failed: {ex.Message}", LogCategory.ServiceWorker); }
             }
         }
     }
 }
+

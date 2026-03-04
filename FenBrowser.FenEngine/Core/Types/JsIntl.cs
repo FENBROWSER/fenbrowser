@@ -35,7 +35,7 @@ namespace FenBrowser.FenEngine.Core.Types
                         // simplified: take first
                     }
                 }
-                catch {}
+                catch (Exception ex) { FenBrowser.Core.FenLogger.Warn($"[Intl] DateTimeFormat locale parse failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript); }
 
                 var formatter = new FenObject();
                 
@@ -71,7 +71,7 @@ namespace FenBrowser.FenEngine.Core.Types
                 var options = args.Length > 1 ? args[1] : FenValue.Undefined;
                 
                 CultureInfo culture = CultureInfo.CurrentCulture;
-                try { if (locales.IsString) culture = new CultureInfo(locales.ToString()); } catch {}
+                try { if (locales.IsString) culture = new CultureInfo(locales.ToString()); } catch (Exception ex) { FenBrowser.Core.FenLogger.Warn($"[Intl] NumberFormat locale parse failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript); }
 
                 bool isCurrency = false;
                 string currency = "USD";
@@ -120,3 +120,4 @@ namespace FenBrowser.FenEngine.Core.Types
         }
     }
 }
+

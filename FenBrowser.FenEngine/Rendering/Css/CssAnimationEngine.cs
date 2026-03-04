@@ -1003,7 +1003,7 @@ namespace FenBrowser.FenEngine.Rendering
                     color = SKColor.Parse(value);
                     return true;
                 }
-                catch { }
+                catch (Exception ex) { FenLogger.Warn($"[CssAnimationEngine] Hex color parse failed: {ex.Message}", LogCategory.Rendering); }
             }
             
             // Try rgb/rgba
@@ -1030,6 +1030,7 @@ namespace FenBrowser.FenEngine.Rendering
         #endregion
     }
 }
+
 
 
 

@@ -88,7 +88,7 @@ namespace FenBrowser.FenEngine.Rendering.WebGL
         {
             foreach (var context in _contexts.Values)
             {
-                try { context.Dispose(); } catch { }
+                try { context.Dispose(); } catch (Exception ex) { FenLogger.Warn($"[WebGLContextManager] Context dispose failed: {ex.Message}", LogCategory.Rendering); }
             }
             _contexts.Clear();
             _canvasBitmaps.Clear();
@@ -281,3 +281,4 @@ namespace FenBrowser.FenEngine.Rendering.WebGL
         }
     }
 }
+
