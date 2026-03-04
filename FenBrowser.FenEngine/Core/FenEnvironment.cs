@@ -388,6 +388,10 @@ namespace FenBrowser.FenEngine.Core
             }
             if (unscopables.IsUndefined)
             {
+                unscopables = _withObject.Get("@@Symbol.unscopables");
+            }
+            if (unscopables.IsUndefined)
+            {
                 unscopables = _withObject.Get("unscopables");
             }
             if (unscopables.IsUndefined)

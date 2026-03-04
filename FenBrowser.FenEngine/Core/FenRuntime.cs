@@ -353,7 +353,44 @@ namespace FenBrowser.FenEngine.Core
                     return FenValue.FromObject(wrapper);
                 }
 
+                if (value.IsBigInt)
+                {
+                    wrapper.InternalClass = "BigInt";
+                    wrapper.Set("valueOf", FenValue.FromFunction(new FenFunction("valueOf", (vArgs, vThis) =>
+                    {
+                        if (vThis.IsObject)
+                        {
+                            var wrapped = vThis.AsObject()?.Get("__value__");
+                            if (wrapped.HasValue && wrapped.Value.IsBigInt)
+                            {
+                                return wrapped.Value;
+                            }
+                        }
+                        throw new FenTypeError("TypeError: BigInt.prototype.valueOf called on incompatible object");
+                    })));
+                    return FenValue.FromObject(wrapper);
+                }
+
+                if (value.IsSymbol)
+                {
+                    wrapper.InternalClass = "Symbol";
+                    wrapper.Set("valueOf", FenValue.FromFunction(new FenFunction("valueOf", (vArgs, vThis) =>
+                    {
+                        if (vThis.IsObject)
+                        {
+                            var wrapped = vThis.AsObject()?.Get("__value__");
+                            if (wrapped.HasValue && wrapped.Value.IsSymbol)
+                            {
+                                return wrapped.Value;
+                            }
+                        }
+                        throw new FenTypeError("TypeError: Symbol.prototype.valueOf called on incompatible object");
+                    })));
+                    return FenValue.FromObject(wrapper);
+                }
+
                 return FenValue.FromObject(wrapper);
+
             });
             objectCtor.Prototype = objectProto;
             objectCtor.Set("prototype", FenValue.FromObject(objectProto));
@@ -5635,6 +5672,7 @@ namespace FenBrowser.FenEngine.Core
 
             // globalThis - ES2020 (reference to global object)
             SetGlobal("globalThis", FenValue.FromObject(window));
+            SetGlobal("this", FenValue.FromObject(window));
 
             // Array constructor with static methods - ES2015+
             var arrayConstructor = arrayCtor;
@@ -9088,6 +9126,7 @@ namespace FenBrowser.FenEngine.Core
             // Use the 'window' object we created earlier (it was SetGlobal'd as "window")
             var winGlobal = GetGlobal("window");
             SetGlobal("globalThis", (FenValue)(winGlobal ?? FenValue.Undefined));
+            SetGlobal("this", (FenValue)(winGlobal ?? FenValue.Undefined));
             /* [PERF-REMOVED] */
 
             /* [PERF-REMOVED] */
@@ -14253,6 +14292,7 @@ namespace FenBrowser.FenEngine.Core
         #endregion
     }
 }
+
 
 
 
