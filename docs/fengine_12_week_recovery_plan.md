@@ -130,3 +130,12 @@ Raise FenEngine from current audit state to a production-grade baseline by fixin
   3. async void remains 0 in FenEngine .cs scan.
 - Validation snapshot:
   1. dotnet build FenBrowser.FenEngine passed (0 errors).
+
+### Incremental Progress Update (2026-03-04, VM + TypedArray typed-error wave)
+- Converted VM and typed-array generic exceptions to typed errors with preserved message contracts.
+- Current metric deltas after this pass:
+  1. Empty catch {} remains 0.
+  2. Generic throw new Exception(...) reduced to 20.
+  3. async void remains 0 in FenEngine .cs scan.
+- Validation snapshot:
+  1. dotnet build FenBrowser.FenEngine passed (0 errors).
