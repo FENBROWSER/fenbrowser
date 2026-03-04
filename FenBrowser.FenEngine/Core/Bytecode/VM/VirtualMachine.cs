@@ -1854,6 +1854,22 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                     var proto = GetPrimitivePrototype(frame, "Boolean");
                                     _stack[_sp++] = proto != null ? proto.Get(key) : FenValue.Undefined;
                                 }
+                                else if (obj.IsSymbol)
+                                {
+                                    var key = PropertyKey(prop);
+                                    if (string.Equals(key, "description", StringComparison.Ordinal))
+                                    {
+                                        var sym = obj.AsSymbol();
+                                        _stack[_sp++] = sym != null && sym.Description != null
+                                            ? FenValue.FromString(sym.Description)
+                                            : FenValue.Undefined;
+                                    }
+                                    else
+                                    {
+                                        var proto = GetPrimitivePrototype(frame, "Symbol");
+                                        _stack[_sp++] = proto != null ? proto.Get(key) : FenValue.Undefined;
+                                    }
+                                }
                                 else
                                 {
                                     _stack[_sp++] = FenValue.Undefined;
