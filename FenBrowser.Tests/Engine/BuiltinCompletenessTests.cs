@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using FenBrowser.Core.Engine;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.EventLoop;
@@ -28,7 +28,7 @@ namespace FenBrowser.Tests.Engine
         {
             var rt = CreateRuntime();
             rt.ExecuteSimple("var a = [1, [2, 3], [4, [5]]].flat(); var len = a.length;");
-            Assert.Equal(5.0, rt.GetGlobal("len").ToNumber()); // [1,2,3,4,[5]] — 5 elements
+            Assert.Equal(5.0, rt.GetGlobal("len").ToNumber()); // [1,2,3,4,[5]] â€” 5 elements
         }
 
         [Fact]
@@ -264,7 +264,7 @@ namespace FenBrowser.Tests.Engine
             rt.ExecuteSimple(code);
             // Drain pending microtasks (Promise.then callbacks are scheduled as microtasks).
             try { EventLoopCoordinator.Instance.PerformMicrotaskCheckpoint(); }
-            catch (InvalidOperationException) { /* already draining — ignore */ }
+            catch (InvalidOperationException) { /* already draining â€” ignore */ }
         }
 
         [Fact]
@@ -307,6 +307,56 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal(4.0, second);
         }
 
+        [Fact]
+        public void Array_FromAsync_NullInput_Rejects()
+        {
+            var rt = CreateRuntime();
+            RunWithMicrotasks(rt, @"
+                var rejected = false;
+                Array.fromAsync(null).then(function() { }, function() { rejected = true; });
+            ");
+            Assert.True(rt.GetGlobal("rejected").ToBoolean());
+        }
+
+        [Fact]
+        public void Array_FromAsync_NonCallableMapper_Rejects()
+        {
+            var rt = CreateRuntime();
+            RunWithMicrotasks(rt, @"
+                var rejected = false;
+                Array.fromAsync([1, 2, 3], 123).then(function() { }, function() { rejected = true; });
+            ");
+            Assert.True(rt.GetGlobal("rejected").ToBoolean());
+        }
+
+        [Fact]
+        public void Array_FromAsync_MapFn_UsesThisArg()
+        {
+            var rt = CreateRuntime();
+            RunWithMicrotasks(rt, @"
+                var resolved = null;
+                var ctx = { mul: 3 };
+                Array.fromAsync([2, 4], function(x) { return x * this.mul; }, ctx)
+                  .then(function(arr) { resolved = arr; });
+            ");
+
+            var first = rt.GetGlobal("resolved").AsObject()?.Get("0").ToNumber() ?? -1;
+            var second = rt.GetGlobal("resolved").AsObject()?.Get("1").ToNumber() ?? -1;
+            Assert.Equal(6.0, first);
+            Assert.Equal(12.0, second);
+        }
+
+        [Fact]
+        public void Array_FromAsync_InvalidIteratorMethod_Rejects()
+        {
+            var rt = CreateRuntime();
+            RunWithMicrotasks(rt, @"
+                var rejected = false;
+                var bad = { [Symbol.iterator]: 1 };
+                Array.fromAsync(bad).then(function() { }, function() { rejected = true; });
+            ");
+            Assert.True(rt.GetGlobal("rejected").ToBoolean());
+        }
         // ==================== JS-2b: Iterator.prototype TESTS ====================
 
         [Fact]
@@ -485,3 +535,4 @@ namespace FenBrowser.Tests.Engine
         }
     }
 }
+

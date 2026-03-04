@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using FenBrowser.FenEngine.Core;
 using Xunit;
 using FenExecutionContext = FenBrowser.FenEngine.Core.ExecutionContext;
+using FenBrowser.FenEngine.Errors;
 
 namespace FenBrowser.Tests.Engine
 {
@@ -64,5 +66,29 @@ namespace FenBrowser.Tests.Engine
             Assert.Throws<UnauthorizedAccessException>(() =>
                 loader.Resolve("javascript:alert(1)", "https://app.example.com/main.js"));
         }
+
+        [Fact]
+        public void LoadModule_MissingFile_ThrowsInvalidOperationException()
+        {
+            var loader = new ModuleLoader(new FenEnvironment(), new FenExecutionContext());
+
+            var ex = Assert.Throws<InvalidOperationException>(() =>
+                loader.LoadModule(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".mjs")));
+
+            Assert.Contains("Failed to load module", ex.Message);
+        }
+
+        [Fact]
+        public void LoadModuleSrc_ParseError_ThrowsFenSyntaxError()
+        {
+            var loader = new ModuleLoader(new FenEnvironment(), new FenExecutionContext());
+            var badModuleSource = "export const = ;";
+
+            var ex = Assert.Throws<FenSyntaxError>(() => loader.LoadModuleSrc(badModuleSource, "memory://bad-module.mjs"));
+
+            Assert.Contains("Module parse error", ex.Message);
+        }
     }
 }
+
+

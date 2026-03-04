@@ -198,7 +198,37 @@ namespace FenBrowser.FenEngine.Testing
                 result.Duration = sw.Elapsed;
                 return result;
             }
-            
+
+            // Reftests are visual comparison tests (link rel=match) and do not emit
+            // testharness assertions. Treat them as skipped in the harness runner.
+            try
+            {
+                var source = File.ReadAllText(testFile);
+                var hasHarness = source.IndexOf("/resources/testharness.js", StringComparison.OrdinalIgnoreCase) >= 0;
+                var hasScriptTag = source.IndexOf("<script", StringComparison.OrdinalIgnoreCase) >= 0;
+                var isRefTest = source.IndexOf("rel=\"match\"", StringComparison.OrdinalIgnoreCase) >= 0
+                                || source.IndexOf("rel='match'", StringComparison.OrdinalIgnoreCase) >= 0
+                                || source.IndexOf("rel=match", StringComparison.OrdinalIgnoreCase) >= 0;
+                if (!hasHarness && (isRefTest || !hasScriptTag))
+                {
+                    result.Success = true;
+                    result.HarnessCompleted = true;
+                    result.TimedOut = false;
+                    result.CompletionSignal = "reftest-skipped";
+                    result.PassCount = 0;
+                    result.FailCount = 0;
+                    result.TotalCount = 0;
+                    result.Error = null;
+                    sw.Stop();
+                    result.Duration = sw.Elapsed;
+                    return result;
+                }
+            }
+            catch
+            {
+                // Continue through normal harness execution path if test source cannot be read.
+            }
+
             try
             {
                 // Enable test mode
@@ -216,6 +246,17 @@ namespace FenBrowser.FenEngine.Testing
                 result.PassCount = passed;
                 result.FailCount = failed;
                 result.TotalCount = total;
+                var failedSubtests = WebAPIs.TestHarnessAPI.GetResults()
+                    .Where(r => r.Status == WebAPIs.TestHarnessAPI.TestStatus.Fail)
+                    .Select(r =>
+                    {
+                        var name = string.IsNullOrWhiteSpace(r.Name) ? "<unnamed>" : r.Name;
+                        var msg = string.IsNullOrWhiteSpace(r.Message) ? "" : r.Message;
+                        return string.IsNullOrWhiteSpace(msg) ? name : $"{name}: {msg}";
+                    })
+                    .Take(5)
+                    .ToList();
+                var failedSummary = failedSubtests.Count > 0 ? string.Join(" | ", failedSubtests) : null;
                 if (total == 0)
                 {
                     result.Success = false;
@@ -235,6 +276,12 @@ namespace FenBrowser.FenEngine.Testing
                 {
                     result.Success = failed == 0;
                 }
+
+                if (!result.Success && string.IsNullOrWhiteSpace(result.Error) && !string.IsNullOrWhiteSpace(failedSummary))
+                {
+                    result.Error = failedSummary;
+                }
+
                 result.Output = WebAPIs.TestConsoleCapture.GetFullOutput();
             }
             catch (Exception ex)

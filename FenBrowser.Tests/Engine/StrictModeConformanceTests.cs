@@ -123,7 +123,14 @@ namespace FenBrowser.Tests.Engine
                     }
                 })();
             ");
-            Assert.True(rt.GetGlobal("threw").ToBoolean(),
+            var threwVal = rt.GetGlobal("threw");
+            var eName = rt.GetGlobal("eName");
+            if (!threwVal.ToBoolean())
+            {
+                var globalObj = rt.ExecuteSimple("1;"); // Dummy get result, but wait, rt.ExecuteSimple might have returned an Error directly
+                Assert.True(threwVal.ToBoolean(), $"Expected threw=true. Actual threw={threwVal}. eName={eName}");
+            }
+            Assert.True(threwVal.ToBoolean(),
                 "Assigning to undeclared variable in strict mode should throw");
         }
 
