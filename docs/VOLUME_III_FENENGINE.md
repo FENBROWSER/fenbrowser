@@ -2549,3 +2549,11 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
 - Verification:
   - Static: `NotImplementedException` count in `BytecodeCompiler.cs` => `0`.
   - Full suite: `978` passed / `0` failed.
+
+### 2.36 Runtime Hardening (2026-03-04, Wave 32)
+- Core/Bytecode/VM/VirtualMachine.cs
+  - Replaced AST-backed bytecode-only function/constructor `NotSupportedException` paths with typed `FenTypeError` to align runtime failures with JS-visible error contracts.
+  - Removes host exception leakage from bytecode call/construct unsupported branches.
+- Verification:
+  - Static: AST-backed `NotSupportedException` throw sites in `VirtualMachine.cs` => `0`.
+  - Full suite: `978` passed / `0` failed.
