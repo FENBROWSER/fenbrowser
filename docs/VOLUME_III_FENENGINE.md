@@ -2348,3 +2348,18 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
 - Verification:
   - `dotnet build .\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj -v minimal` passed (`0` errors).
   - `dotnet test .\FenBrowser.Tests\FenBrowser.Tests.csproj -v minimal` result: `953` passed, `21` failed (existing baseline failures outside this hardening scope).
+
+### 2.15 Runtime Hardening (2026-03-04, Wave 11)
+- Converted generic exceptions to typed exceptions in DOM dispatch wrappers, Browser API host paths, JIT bootstrap, Storage quota, and Test262 detach hooks.
+- Key files:
+  - `DOM/DomEvent.cs`, `DOM/CustomEvent.cs`, `DOM/EventTarget.cs`, `DOM/ElementWrapper.cs`, `DOM/NodeWrapper.cs`
+  - `Rendering/BrowserApi.cs`
+  - `Jit/JitCompiler.cs`
+  - `WebAPIs/StorageApi.cs`
+  - `Testing/Test262Runner.cs`
+- Project-level post-wave counters:
+  - empty `catch {}` count: `0`
+  - `throw new Exception(...)` count: `42`
+  - `async void` count: `0`
+- Verification:
+  - `dotnet build .\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj -v minimal` passed (`0` errors).
