@@ -2576,3 +2576,11 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
   - Replaced value-type null compare when collecting `attributeFilter` entries with explicit undefined/null guards.
 - Verification:
   - Full suite: `978` passed / `0` failed.
+
+### 2.39 Runtime Hardening (2026-03-04, Wave 35)
+- DOM/EventListenerRegistry.cs
+  - Replaced `FenValue` callback null comparisons in listener add/remove guards with explicit `IsUndefined`/`IsNull` checks.
+  - Removes CS8073 warning-class issue and keeps registration/removal preconditions JS-value-correct.
+- Verification:
+  - Targeted: `EventInvariantTests` => `5/5` pass.
+  - Full suite: `978` passed / `0` failed.

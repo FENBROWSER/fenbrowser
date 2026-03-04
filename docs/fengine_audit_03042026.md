@@ -888,3 +888,14 @@
   - Preserved behavior for array/object conversion, DOM insert-before reference resolution, custom element lookup return-path, and mutation observer attribute filter extraction.
 - Verification:
   - Full `FenBrowser.Tests` snapshot: `978` passed, `0` failed.
+
+## Recheck Pass 34 (2026-03-04, event listener callback guard hardening)
+- Focus area: warning-volume reduction for invalid `FenValue` null comparison in event-listener registration paths.
+- Files hardened:
+  - FenBrowser.FenEngine/DOM/EventListenerRegistry.cs
+- Changes:
+  - Replaced value-type callback null checks in both `Add` and `Remove` with explicit JS sentinel guards (`IsUndefined || IsNull`).
+  - Preserves existing listener registration semantics while removing CS8073 invalid-comparison pattern.
+- Verification:
+  - Targeted: `EventInvariantTests` suite passed (`5/5`).
+  - Full `FenBrowser.Tests` snapshot: `978` passed, `0` failed.

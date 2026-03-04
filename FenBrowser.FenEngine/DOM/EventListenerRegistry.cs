@@ -74,7 +74,7 @@ namespace FenBrowser.FenEngine.DOM
         /// </summary>
         public void Add(Element element, string type, FenValue callback, bool capture = false, bool once = false, bool passive = false)
         {
-            if (element  == null || type == null || callback  == null)
+            if (element == null || type == null || callback.IsUndefined || callback.IsNull)
                 return;
 
             lock (_lock)
@@ -108,7 +108,7 @@ namespace FenBrowser.FenEngine.DOM
         /// </summary>
         public void Remove(Element element, string type, FenValue callback, bool capture = false)
         {
-            if (element  == null || type == null || callback  == null)
+            if (element == null || type == null || callback.IsUndefined || callback.IsNull)
                 return;
 
             lock (_lock)
@@ -244,6 +244,7 @@ namespace FenBrowser.FenEngine.DOM
         }
     }
 }
+
 
 
 
