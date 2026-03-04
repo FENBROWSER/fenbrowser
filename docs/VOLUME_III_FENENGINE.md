@@ -2557,3 +2557,10 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
 - Verification:
   - Static: AST-backed `NotSupportedException` throw sites in `VirtualMachine.cs` => `0`.
   - Full suite: `978` passed / `0` failed.
+
+### 2.37 Runtime Hardening (2026-03-04, Wave 33)
+- Workers/WorkerConstructor.cs
+  - Replaced value-type null comparisons on `FenValue` with explicit `IsUndefined`/`IsNull` checks in worker URL validation and event-handler invocation paths.
+  - Removes CS8073 warning-class issues and makes worker callback gating semantically explicit.
+- Verification:
+  - Full suite: `978` passed / `0` failed.

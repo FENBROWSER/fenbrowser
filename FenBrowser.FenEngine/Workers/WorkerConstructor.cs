@@ -45,7 +45,7 @@ namespace FenBrowser.FenEngine.Workers
 
         private FenValue CreateWorker(FenValue[] args, FenValue thisVal)
         {
-            if (args.Length == 0 || args[0] == null || args[0].IsUndefined)
+            if (args.Length == 0 || args[0].IsUndefined || args[0].IsNull)
             {
                 FenLogger.Debug("[WorkerConstructor] Missing script URL", LogCategory.Errors);
                 throw new ArgumentException("Worker constructor requires a script URL");
@@ -106,7 +106,7 @@ namespace FenBrowser.FenEngine.Workers
             runtime.OnMessage += (data) =>
             {
                 var onmessage = workerObj.Get("onmessage");
-                if (onmessage != null && onmessage.IsFunction)
+                if (!onmessage.IsUndefined && !onmessage.IsNull && onmessage.IsFunction)
                 {
                     var evt = new FenObject();
                     evt.Set("data", ConvertToFenValue(data));
@@ -123,7 +123,7 @@ namespace FenBrowser.FenEngine.Workers
             runtime.OnError += (ex) =>
             {
                 var onerror = workerObj.Get("onerror");
-                if (onerror != null && onerror.IsFunction)
+                if (!onerror.IsUndefined && !onerror.IsNull && onerror.IsFunction)
                 {
                     var evt = new FenObject();
                     evt.Set("message", FenValue.FromString(ex.Message));
@@ -212,3 +212,4 @@ namespace FenBrowser.FenEngine.Workers
         }
     }
 }
+
