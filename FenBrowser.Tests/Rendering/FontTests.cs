@@ -6,6 +6,7 @@ using Xunit;
 
 namespace FenBrowser.Tests.Rendering
 {
+    [Collection("Engine Tests")]
     public class FontTests
     {
         [Fact]
