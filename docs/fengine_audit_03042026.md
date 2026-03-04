@@ -614,3 +614,14 @@
   - empty `catch {}`: `0`
   - `throw new Exception(...)`: `0`
   - `async void`: `0`
+
+## Recheck Pass 13 (2026-03-04, VM Exception Boundary Compatibility)
+- Focus area: preserve expected public exception boundary behavior for bytecode-only mode tests.
+- Files hardened:
+  - `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+- Changes:
+  - Kept typed internal exception flow in VM internals.
+  - Restored uncaught VM boundary to throw `System.Exception` (exact type) for compatibility with existing bytecode contract tests.
+- Verification:
+  - Targeted bytecode compatibility tests (`Call*/Construct* AST-backed in bytecode-only mode`): `4/4` passed.
+  - Full `FenBrowser.Tests`: `952` passed, `22` failed (down from `26` prior to this compatibility fix).
