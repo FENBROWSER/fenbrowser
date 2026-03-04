@@ -59,6 +59,11 @@ namespace FenBrowser.FenEngine.Core.Interfaces
         /// </summary>
         bool DefineOwnProperty(string key, PropertyDescriptor desc);
 
+        /// <summary>
+        /// Get all own property names (including non-enumerable).
+        /// </summary>
+        public IEnumerable<string> GetOwnPropertyNames(IExecutionContext context = null) => Keys(context);
+
         // Default Interface Methods for ES5/ES6 Reflection
         public PropertyDescriptor? GetOwnPropertyDescriptor(string key) => null;
         public bool PreventExtensions() => false; 
@@ -69,3 +74,5 @@ namespace FenBrowser.FenEngine.Core.Interfaces
         public bool IsFrozen() => false;
     }
 }
+
+
