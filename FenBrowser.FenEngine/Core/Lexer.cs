@@ -1468,104 +1468,221 @@ namespace FenBrowser.FenEngine.Core
             return TokenType.Identifier;
         }
 
-        // Read template literal: `Hello ${name}!`
-        // For simplicity, we'll evaluate ${} expressions and return the concatenated string
+                // Read template literal start: `...` or `...${
         private Token ReadTemplateStart()
         {
             int startLine = _line;
             int startColumn = _column;
-            
+
             ReadChar(); // consume `
-            
+
             var sb = new StringBuilder();
             while (_ch != '\0')
             {
                 if (_ch == '`')
                 {
-                    ReadChar(); // consume `
+                    ReadChar();
                     return new Token(TokenType.TemplateNoSubst, sb.ToString(), startLine, startColumn);
                 }
-                
+
                 if (_ch == '$' && PeekChar() == '{')
                 {
                     ReadChar(); // consume $
                     ReadChar(); // consume {
                     return new Token(TokenType.TemplateHead, sb.ToString(), startLine, startColumn);
                 }
-                
-                if (_ch == '\\') 
+
+                if (_ch == '\\')
                 {
-                    ReadChar();
-                    // Basic escape handling for templates
-                    switch (_ch)
+                    if (!TryReadTemplateEscape(sb, out var escapeError))
                     {
-                        case 'n': sb.Append('\n'); break;
-                        case 't': sb.Append('\t'); break;
-                        case 'r': sb.Append('\r'); break;
-                        case '\\': sb.Append('\\'); break;
-                        case '`': sb.Append('`'); break;
-                        case '$': sb.Append('$'); break;
-                        default: sb.Append(_ch); break;
+                        return new Token(TokenType.Illegal, escapeError, startLine, startColumn);
                     }
-                    ReadChar();
+                    continue;
                 }
-                else
-                {
-                     sb.Append(_ch);
-                     ReadChar();
-                }
+
+                sb.Append(_ch);
+                ReadChar();
             }
-            
+
             return new Token(TokenType.Illegal, "Unterminated template literal", startLine, startColumn);
         }
 
         public Token ReadTemplateContinuation()
         {
-             // Parser calls this when it expects a template continuation (after '}' of an expression)
-             // The Parser has already seen the '}' token (RBrace), so the Lexer position 
-             // is already past the '}'. We simply continue reading the string context.
-             
-             int startLine = _line;
-             int startColumn = _column;
-             var sb = new StringBuilder();
-             
-             while (_ch != '\0')
-             {
+            // Parser calls this after finishing a ${...} expression.
+            int startLine = _line;
+            int startColumn = _column;
+            var sb = new StringBuilder();
+
+            while (_ch != '\0')
+            {
                 if (_ch == '`')
                 {
-                    ReadChar(); // consume `
+                    ReadChar();
                     return new Token(TokenType.TemplateTail, sb.ToString(), startLine, startColumn);
                 }
-                
+
                 if (_ch == '$' && PeekChar() == '{')
                 {
                     ReadChar(); // consume $
                     ReadChar(); // consume {
                     return new Token(TokenType.TemplateMiddle, sb.ToString(), startLine, startColumn);
                 }
-                
-                if (_ch == '\\') 
+
+                if (_ch == '\\')
                 {
-                    ReadChar();
-                    switch (_ch)
+                    if (!TryReadTemplateEscape(sb, out var escapeError))
                     {
-                        case 'n': sb.Append('\n'); break;
-                        case 't': sb.Append('\t'); break;
-                        case 'r': sb.Append('\r'); break;
-                        case '\\': sb.Append('\\'); break;
-                        case '`': sb.Append('`'); break;
-                        case '$': sb.Append('$'); break;
-                        default: sb.Append(_ch); break;
+                        return new Token(TokenType.Illegal, escapeError, startLine, startColumn);
                     }
+                    continue;
+                }
+
+                sb.Append(_ch);
+                ReadChar();
+            }
+
+            return new Token(TokenType.Illegal, "Unterminated template continuation", startLine, startColumn);
+        }
+
+        private bool TryReadTemplateEscape(StringBuilder sb, out string error)
+        {
+            error = null;
+            ReadChar(); // consume backslash, _ch now points to escaped char
+
+            if (_ch == '\0')
+            {
+                error = "Unterminated escape sequence in template literal";
+                return false;
+            }
+
+            if (IsLineTerminator(_ch))
+            {
+                // Line continuation in template literals.
+                if (_ch == '\r' && PeekChar() == '\n')
+                {
                     ReadChar();
                 }
-                else
+                ReadChar();
+                return true;
+            }
+
+            switch (_ch)
+            {
+                case 'n': sb.Append('\n'); ReadChar(); return true;
+                case 'r': sb.Append('\r'); ReadChar(); return true;
+                case 't': sb.Append('\t'); ReadChar(); return true;
+                case 'b': sb.Append('\b'); ReadChar(); return true;
+                case 'f': sb.Append('\f'); ReadChar(); return true;
+                case 'v': sb.Append('\v'); ReadChar(); return true;
+                case '\\': sb.Append('\\'); ReadChar(); return true;
+                case '`': sb.Append('`'); ReadChar(); return true;
+                case '$': sb.Append('$'); ReadChar(); return true;
+                case '"': sb.Append('"'); ReadChar(); return true;
+                case '\'': sb.Append('\''); ReadChar(); return true;
+                case '0':
+                    if (IsDigit(PeekChar()))
+                    {
+                        error = "Invalid legacy octal escape in template literal";
+                        return false;
+                    }
+                    sb.Append('\0');
+                    ReadChar();
+                    return true;
+                case 'x':
                 {
-                     sb.Append(_ch);
-                     ReadChar();
+                    ReadChar();
+                    if (!IsHexDigit(_ch))
+                    {
+                        error = "Invalid hexadecimal escape sequence in template literal";
+                        return false;
+                    }
+                    char h1 = _ch;
+                    ReadChar();
+                    if (!IsHexDigit(_ch))
+                    {
+                        error = "Invalid hexadecimal escape sequence in template literal";
+                        return false;
+                    }
+                    char h2 = _ch;
+                    int code = Convert.ToInt32(new string(new[] { h1, h2 }), 16);
+                    sb.Append((char)code);
+                    ReadChar();
+                    return true;
                 }
-             }
-             return new Token(TokenType.Illegal, "Unterminated template continuation", startLine, startColumn);
+                case 'u':
+                {
+                    ReadChar();
+                    if (_ch == '{')
+                    {
+                        var hex = new StringBuilder();
+                        ReadChar();
+                        while (_ch != '}' && _ch != '\0')
+                        {
+                            if (!IsHexDigit(_ch))
+                            {
+                                error = "Invalid Unicode escape sequence in template literal";
+                                return false;
+                            }
+                            hex.Append(_ch);
+                            if (hex.Length > 6)
+                            {
+                                error = "Unicode code point escape out of range in template literal";
+                                return false;
+                            }
+                            ReadChar();
+                        }
+
+                        if (_ch != '}' || hex.Length == 0)
+                        {
+                            error = "Invalid Unicode escape sequence in template literal";
+                            return false;
+                        }
+
+                        int codePoint = Convert.ToInt32(hex.ToString(), 16);
+                        if (codePoint > 0x10FFFF)
+                        {
+                            error = "Unicode code point escape out of range in template literal";
+                            return false;
+                        }
+
+                        sb.Append(char.ConvertFromUtf32(codePoint));
+                        ReadChar();
+                        return true;
+                    }
+
+                    char[] digits = new char[4];
+                    for (int i = 0; i < 4; i++)
+                    {
+                        if (!IsHexDigit(_ch))
+                        {
+                            error = "Invalid Unicode escape sequence in template literal";
+                            return false;
+                        }
+                        digits[i] = _ch;
+                        if (i < 3)
+                        {
+                            ReadChar();
+                        }
+                    }
+
+                    int unit = Convert.ToInt32(new string(digits), 16);
+                    sb.Append((char)unit);
+                    ReadChar();
+                    return true;
+                }
+                default:
+                    if (_ch >= '1' && _ch <= '9')
+                    {
+                        error = "Invalid legacy octal escape in template literal";
+                        return false;
+                    }
+                    // Non-special escapes are identity escapes in untagged templates.
+                    sb.Append(_ch);
+                    ReadChar();
+                    return true;
+            }
         }
         private bool IsRegexStart(Token prev)
         {
@@ -1766,3 +1883,6 @@ namespace FenBrowser.FenEngine.Core
         }
     }
 }
+
+
+
