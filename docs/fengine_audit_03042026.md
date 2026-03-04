@@ -864,3 +864,14 @@
 - Verification:
   - Live scan verification: `VirtualMachine.cs` contains `0` AST-backed `NotSupportedException` throw sites.
   - Full `FenBrowser.Tests` snapshot: `978` passed, `0` failed.
+
+## Recheck Pass 32 (2026-03-04, worker constructor null-safety warning cleanup)
+- Focus area: warning-volume reduction and runtime guard correctness for worker constructor value checks.
+- Files hardened:
+  - FenBrowser.FenEngine/Workers/WorkerConstructor.cs
+- Changes:
+  - Removed invalid `FenValue` null comparisons (`args[0] == null`, `onmessage != null`, `onerror != null`).
+  - Replaced with explicit JS-value guards (`IsUndefined` / `IsNull`) before function dispatch.
+  - Preserves runtime behavior while eliminating compiler CS8073 false/always checks for value-type comparisons.
+- Verification:
+  - Full `FenBrowser.Tests` snapshot: `978` passed, `0` failed.
