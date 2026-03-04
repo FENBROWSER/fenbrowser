@@ -135,7 +135,7 @@ namespace FenBrowser.FenEngine.DOM
                             for (int i = 0; i < len; i++)
                             {
                                 var item = afv.AsObject().Get(i.ToString());
-                                if (item != null) options.AttributeFilter.Add(item.ToString());
+                                if (!item.IsUndefined && !item.IsNull) options.AttributeFilter.Add(item.ToString());
                             }
                         }
 
@@ -218,3 +218,4 @@ namespace FenBrowser.FenEngine.DOM
         public List<string> AttributeFilter { get; set; }
     }
 }
+

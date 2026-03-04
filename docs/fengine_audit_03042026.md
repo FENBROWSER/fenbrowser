@@ -875,3 +875,16 @@
   - Preserves runtime behavior while eliminating compiler CS8073 false/always checks for value-type comparisons.
 - Verification:
   - Full `FenBrowser.Tests` snapshot: `978` passed, `0` failed.
+
+## Recheck Pass 33 (2026-03-04, FenValue null-comparison cleanup sweep)
+- Focus area: warning-volume reduction for CS8073 (`FenValue` value-type null comparisons) across storage/DOM bridge helpers.
+- Files hardened:
+  - FenBrowser.FenEngine/Storage/StorageUtils.cs
+  - FenBrowser.FenEngine/DOM/NodeWrapper.cs
+  - FenBrowser.FenEngine/DOM/CustomElementRegistry.cs
+  - FenBrowser.FenEngine/DOM/MutationObserverWrapper.cs
+- Changes:
+  - Replaced value-type null comparisons with explicit JS-value guards (`IsUndefined` / `IsNull`) or direct `FenValue` usage.
+  - Preserved behavior for array/object conversion, DOM insert-before reference resolution, custom element lookup return-path, and mutation observer attribute filter extraction.
+- Verification:
+  - Full `FenBrowser.Tests` snapshot: `978` passed, `0` failed.
