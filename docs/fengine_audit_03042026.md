@@ -562,3 +562,25 @@
   - empty `catch {}`: `0`
   - `throw new Exception(...)`: `71`
   - `async void`: `0`
+
+## Recheck Pass 10 (2026-03-04, Typed Exception Conversion Wave)
+- Focus area: remaining high-impact generic exception sites outside `FenRuntime`/VM core loops.
+- Files hardened:
+  - `FenBrowser.FenEngine/DOM/DomEvent.cs`
+  - `FenBrowser.FenEngine/DOM/CustomEvent.cs`
+  - `FenBrowser.FenEngine/DOM/EventTarget.cs`
+  - `FenBrowser.FenEngine/DOM/ElementWrapper.cs`
+  - `FenBrowser.FenEngine/DOM/NodeWrapper.cs`
+  - `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+  - `FenBrowser.FenEngine/Jit/JitCompiler.cs`
+  - `FenBrowser.FenEngine/WebAPIs/StorageApi.cs`
+  - `FenBrowser.FenEngine/Testing/Test262Runner.cs`
+- Changes:
+  - Replaced `throw new Exception(...)` with typed exceptions (`FenTypeError`, `FenResourceError`, `InvalidOperationException`, `KeyNotFoundException`) while preserving message semantics.
+  - Kept JS-facing TypeError/Quota error text stable where behavior contracts depend on string checks.
+- Verification:
+  - `dotnet build .\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj -v minimal` => `0` errors.
+- Updated static snapshot (project-level, `.cs`):
+  - empty `catch {}`: `0`
+  - `throw new Exception(...)`: `42`
+  - `async void`: `0`

@@ -121,3 +121,12 @@ Raise FenEngine from current audit state to a production-grade baseline by fixin
 - Validation snapshot:
   1. dotnet build FenBrowser.FenEngine passed (0 errors).
   2. dotnet test FenBrowser.Tests currently shows 953 passed / 21 failed (pre-existing failures to be handled in next hardening stream).
+
+### Incremental Progress Update (2026-03-04, typed-exception wave)
+- Completed typed exception conversion for DOM wrappers, Browser API, JIT bootstrap, storage quota, and Test262 detach host hooks.
+- Current metric deltas after this pass:
+  1. Empty catch {} remains 0.
+  2. Generic throw new Exception(...) reduced to 42.
+  3. async void remains 0 in FenEngine .cs scan.
+- Validation snapshot:
+  1. dotnet build FenBrowser.FenEngine passed (0 errors).
