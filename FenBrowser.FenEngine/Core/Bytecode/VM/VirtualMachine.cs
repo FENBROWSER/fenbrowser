@@ -6,6 +6,7 @@ using System.Runtime.CompilerServices;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.EventLoop;
 using FenBrowser.FenEngine.Core.Types;
+using FenBrowser.FenEngine.Errors;
 using FenValue = FenBrowser.FenEngine.Core.FenValue;
 using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType;
 
@@ -480,7 +481,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                     var gen = (thisVal.IsObject ? thisVal.AsObject() : null) as GeneratorObject ?? this;
                     gen.IsDone = true;
                     var errVal = fnArgs.Length > 0 ? fnArgs[0] : FenValue.Undefined;
-                    throw new Exception($"TypeError: {FormatGeneratorThrowValue(errVal)}");
+                    throw new FenTypeError($"TypeError: {FormatGeneratorThrowValue(errVal)}");
                 });
 
                 Set("next", FenValue.FromFunction(nextFn));
@@ -602,7 +603,14 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void ThrowJsError(string errorType, string message)
         {
-            throw new Exception($"{errorType}: {message}");
+            throw errorType switch
+            {
+                "TypeError" => new FenTypeError($"{errorType}: {message}"),
+                "RangeError" => new FenRangeError($"{errorType}: {message}"),
+                "ReferenceError" => new FenReferenceError($"{errorType}: {message}"),
+                "SyntaxError" => new FenSyntaxError($"{errorType}: {message}"),
+                _ => new FenInternalError($"{errorType}: {message}")
+            };
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -893,7 +901,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 return frame.Environment.Get(varName);
             }
 
-            throw new Exception($"ReferenceError: {varName} is not defined");
+            throw new FenReferenceError($"ReferenceError: {varName} is not defined");
         }
 
         private static bool TryResolveNamedGlobalById(CallFrame frame, string varName, out FenValue value)
@@ -969,7 +977,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         private CallFrame PushFrame(CodeBlock block, FenEnvironment env, int stackBase)
         {
             if (_frameCount >= MAX_FRAMES)
-                throw new Exception("VM Error: Call stack exceeded maximum depth.");
+                throw new FenResourceError("VM Error: Call stack exceeded maximum depth.");
 
             if (block != null && block.LocalSlotCount > 0)
             {
@@ -1326,7 +1334,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 var updateResult = frame.Environment.Update(varName, value);
                                 if (updateResult.Type == JsValueType.Error)
                                 {
-                                    throw new Exception(updateResult.ToString());
+                                    throw new FenInternalError(updateResult.ToString());
                                 }
                                 // Invalidate binding cache since the binding may be in an outer scope
                                 if (CanUseBindingCache(frame))
@@ -1463,7 +1471,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
                                 else
                                 {
-                                    throw new Exception("VM Error: Bytecode-only mode does not support AST-backed function calls.");
+                                    throw new NotSupportedException("VM Error: Bytecode-only mode does not support AST-backed function calls.");
                                 }
                                 break;
                             }
@@ -1517,7 +1525,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
                                 else
                                 {
-                                    throw new Exception("VM Error: Bytecode-only mode does not support AST-backed function calls.");
+                                    throw new NotSupportedException("VM Error: Bytecode-only mode does not support AST-backed function calls.");
                                 }
                                 break;
                             }
@@ -1573,7 +1581,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
                                 else
                                 {
-                                    throw new Exception("VM Error: Bytecode-only mode does not support AST-backed function calls.");
+                                    throw new NotSupportedException("VM Error: Bytecode-only mode does not support AST-backed function calls.");
                                 }
                                 break;
                             }
@@ -1622,7 +1630,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
                                 else
                                 {
-                                    throw new Exception("VM Error: Bytecode-only mode does not support AST-backed function calls.");
+                                    throw new NotSupportedException("VM Error: Bytecode-only mode does not support AST-backed function calls.");
                                 }
                                 break;
                             }
@@ -1693,7 +1701,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
                                 else
                                 {
-                                    throw new Exception("VM Error: Bytecode-only mode does not support AST-backed constructor calls.");
+                                    throw new NotSupportedException("VM Error: Bytecode-only mode does not support AST-backed constructor calls.");
                                 }
                                 break;
                             }
@@ -1750,7 +1758,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 }
                                 else
                                 {
-                                    throw new Exception("VM Error: Bytecode-only mode does not support AST-backed constructor calls.");
+                                    throw new NotSupportedException("VM Error: Bytecode-only mode does not support AST-backed constructor calls.");
                                 }
                                 break;
                             }
@@ -2365,7 +2373,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 return _completionValue;
                             }
                             default:
-                                throw new Exception($"VM Error: Unhandled OpCode {op} at IP {frame.IP - 1}");
+                                throw new FenInternalError($"VM Error: Unhandled OpCode {op} at IP {frame.IP - 1}");
                         }
                     }
                     
@@ -2455,7 +2463,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 }
                 else
                 {
-                    throw new Exception($"Uncaught JS Exception: {FormatExceptionValue(errorObj)}", ex);
+                    throw new FenInternalError($"Uncaught JS Exception: {FormatExceptionValue(errorObj)}", ex);
                 }
             }
 
@@ -2538,7 +2546,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             // Uncaught exception!
             var formattedErr = FormatExceptionValue(exceptionValue);
             Console.WriteLine($"[VM Uncaught Exception] {formattedErr}");
-            throw new Exception($"Uncaught JS Exception: {formattedErr}");
+            throw new FenInternalError($"Uncaught JS Exception: {formattedErr}");
         }
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
@@ -3040,6 +3048,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         }
     }
 }
+
+
 
 
 
