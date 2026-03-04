@@ -2446,3 +2446,11 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
 - Verification:
   - Targeted yield/generator tests passed.
   - Full FenBrowser.Tests: 962 passed / 12 failed.
+
+### 2.25 Runtime Hardening (2026-03-04, Wave 21)
+- FenBrowser.Tests/Core/EventInvariantTests.cs
+  - Removed absolute-path dependency from test diagnostics output.
+  - Test now writes diagnostics to AppContext.BaseDirectory for environment-independent execution.
+- Verification:
+  - Targeted EventInvariant test passed.
+  - Full FenBrowser.Tests latest run: 961 passed / 13 failed.
