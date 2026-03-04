@@ -2463,7 +2463,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 }
                 else
                 {
-                    throw new FenInternalError($"Uncaught JS Exception: {FormatExceptionValue(errorObj)}", ex);
+                    throw new global::System.Exception($"Uncaught JS Exception: {FormatExceptionValue(errorObj)}", ex);
                 }
             }
 
@@ -2546,7 +2546,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             // Uncaught exception!
             var formattedErr = FormatExceptionValue(exceptionValue);
             Console.WriteLine($"[VM Uncaught Exception] {formattedErr}");
-            throw new FenInternalError($"Uncaught JS Exception: {formattedErr}");
+            throw new global::System.Exception($"Uncaught JS Exception: {formattedErr}");
         }
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
@@ -3048,6 +3048,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         }
     }
 }
+
 
 
 
