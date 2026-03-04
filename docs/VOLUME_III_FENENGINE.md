@@ -2523,3 +2523,13 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
 - Verification:
   - Targeted worker importScripts tests: `2/2` pass.
   - Full suite: `974` passed / `0` failed.
+
+### 2.33 Runtime Hardening (2026-03-04, Wave 29)
+- Rendering/BrowserEngine.cs
+  - Replaced placeholder page-title assignment with deterministic title extraction and fallback chain.
+  - Added URL argument guard, compiled timeout-bounded `<title>` matching, HTML decode + whitespace normalization, and bounded title length cap.
+  - Fallback semantics now resolve to URL host (or raw URL) when no meaningful title exists; exception path preserves `Error loading page`.
+- Tests/Rendering/BrowserEngineTests.cs
+  - Added focused coverage for title extraction, entity + whitespace normalization, host fallback behavior, and network-failure title behavior.
+- Verification:
+  - Targeted: `FenBrowser.Tests.Rendering.BrowserEngineTests` => `4/4` pass.

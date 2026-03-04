@@ -811,3 +811,21 @@
     - `WorkerRuntime_ImportScripts_LoadsAndExecutesDependency`
     - `WorkerRuntime_ImportScripts_ReusesPrefetchedSourceAcrossRepeatedImports`
   - Full `FenBrowser.Tests` snapshot: `974` passed, `0` failed.
+
+## Recheck Pass 28 (2026-03-04, BrowserEngine title resolution hardening)
+- Focus area: placeholder title assignment path in page-load flow.
+- Files hardened:
+  - FenBrowser.FenEngine/Rendering/BrowserEngine.cs
+  - FenBrowser.Tests/Rendering/BrowserEngineTests.cs
+- Changes:
+  - Replaced placeholder title handling with deterministic extraction pipeline:
+    - Validates input URL argument.
+    - Extracts `<title>` via compiled, culture-invariant regex with timeout.
+    - HTML-decodes and whitespace-normalizes title text.
+    - Applies bounded title length cap.
+    - Falls back to URL host (or raw URL) when title is missing/empty.
+  - Preserved explicit load-failure title (`Error loading page`) on fetch exceptions.
+  - Added focused engine tests for title extraction, entity/whitespace normalization, host fallback, and network-failure fallback behavior.
+- Verification:
+  - Targeted test suite passed:
+    - `FenBrowser.Tests.Rendering.BrowserEngineTests` (`4/4`).
