@@ -12,24 +12,55 @@ namespace FenBrowser.FenEngine.DOM
     public class CustomEvent : DomEvent
     {
         /// <summary>
-        /// Custom data associated with the event
+        /// Custom data associated with the event.
         /// </summary>
-        public IValue Detail { get; }
+        public FenValue Detail { get; private set; } = FenValue.Null;
 
         /// <summary>
-        /// Create a new CustomEvent
+        /// Create a new CustomEvent.
         /// </summary>
-        /// <param name="type">Event type</param>
-        /// <param name="bubbles">Whether the event bubbles</param>
-        /// <param name="cancelable">Whether the event is cancelable</param>
-        /// <param name="detail">Custom data to pass with the event</param>
         public CustomEvent(string type, bool bubbles = false, bool cancelable = false, IValue detail = null)
             : base(type, bubbles, cancelable)
         {
-            Detail = detail ;
-            
-            // Add detail property to JavaScript-accessible object
-            Set("detail", (FenValue)Detail);
+            if (detail is FenValue fv)
+            {
+                Detail = fv;
+            }
+
+            Set("detail", Detail);
+            Set("initCustomEvent", FenValue.FromFunction(new FenFunction("initCustomEvent", InitCustomEvent)));
+        }
+
+        private FenValue InitCustomEvent(FenValue[] args, FenValue thisVal)
+        {
+            if (args.Length < 1)
+            {
+                throw new Exception("TypeError: Failed to execute 'initCustomEvent': 1 argument required, but only 0 present.");
+            }
+
+            // Per DOM: must be ignored while dispatching.
+            if (EventPhase != NONE)
+            {
+                return FenValue.Undefined;
+            }
+
+            Type = args[0].ToString();
+            Bubbles = args.Length >= 2 && args[1].ToBoolean();
+            Cancelable = args.Length >= 3 && args[2].ToBoolean();
+            Detail = args.Length >= 4 ? args[3] : FenValue.Null;
+            Initialized = true;
+
+            ResetState();
+
+            Set("type", FenValue.FromString(Type));
+            Set("bubbles", FenValue.FromBoolean(Bubbles));
+            Set("cancelable", FenValue.FromBoolean(Cancelable));
+            Set("detail", Detail);
+            Set("defaultPrevented", FenValue.FromBoolean(false));
+            Set("returnValue", FenValue.FromBoolean(true));
+            Set("cancelBubble", FenValue.FromBoolean(false));
+
+            return FenValue.Undefined;
         }
     }
 }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
@@ -86,9 +87,17 @@ namespace FenBrowser.FenEngine.DOM
         
         public IEnumerable<string> Keys(IExecutionContext context = null) 
         {
-            var keys = new List<string> { "length", "item", "getNamedItem", "setNamedItem", "removeNamedItem" };
-            for(int i=0; i<_map.Length; i++) keys.Add(i.ToString());
-            return keys;
+            var keys = new List<string>();
+            for(int i=0; i<_map.Length; i++)
+            {
+                keys.Add(i.ToString());
+                var attr = _map[i];
+                if (attr != null && !string.IsNullOrEmpty(attr.Name))
+                {
+                    keys.Add(attr.Name);
+                }
+            }
+            return keys.Distinct(StringComparer.Ordinal);
         }
 
         public IObject GetPrototype() => _prototype;
@@ -156,3 +165,7 @@ namespace FenBrowser.FenEngine.DOM
         }
     }
 }
+
+
+
+

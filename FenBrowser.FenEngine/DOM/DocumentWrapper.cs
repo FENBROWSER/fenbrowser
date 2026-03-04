@@ -24,6 +24,7 @@ namespace FenBrowser.FenEngine.DOM
         private readonly Uri _baseUri;
         private IObject _prototype;
         private string _readyState = "loading"; // Spec compliant default
+        private readonly Dictionary<string, FenValue> _expando = new Dictionary<string, FenValue>(StringComparer.Ordinal);
         public object NativeObject { get; set; }
 
         public DocumentWrapper(Node root, IExecutionContext context, Uri baseUri = null)
@@ -260,6 +261,10 @@ namespace FenBrowser.FenEngine.DOM
                     return FenValue.FromObject(childArr);
 
                 default:
+                    if (_expando.TryGetValue(key, out var extra))
+                    {
+                        return extra;
+                    }
                     return FenValue.Undefined;
             }
         }
@@ -271,14 +276,15 @@ namespace FenBrowser.FenEngine.DOM
                 SetCookie(value.ToString());
                 return;
             }
-            // document properties are mostly read-only
-            // Could add support for document.title setter
+            _expando[key] = value;
         }
 
         public bool Has(string key, IExecutionContext context = null) => !Get(key, context).IsUndefined;
         public bool Delete(string key, IExecutionContext context = null) => false;
-        public IEnumerable<string> Keys(IExecutionContext context = null) 
-            => new[] { "getElementById", "querySelector", "querySelectorAll", "createElement", "createDocumentFragment", "createTextNode", "createComment", "createEvent", "getElementsByClassName", "getElementsByTagName", "body", "head", "title", "documentElement", "readyState", "addEventListener", "removeEventListener", "dispatchEvent", "cookie", "domain", "implementation" };
+        public IEnumerable<string> Keys(IExecutionContext context = null)
+            => new[] { "getElementById", "querySelector", "querySelectorAll", "createElement", "createDocumentFragment", "createTextNode", "createComment", "createEvent", "getElementsByClassName", "getElementsByTagName", "body", "head", "title", "documentElement", "readyState", "addEventListener", "removeEventListener", "dispatchEvent", "cookie", "domain", "implementation" }
+                .Concat(_expando.Keys)
+                .Distinct();
         public IObject GetPrototype() => _prototype;
         public void SetPrototype(IObject prototype) => _prototype = prototype;
 
@@ -376,9 +382,9 @@ namespace FenBrowser.FenEngine.DOM
 
         private FenValue CreateEvent(FenValue[] args, FenValue thisVal)
         {
-            var type = args.Length > 0 ? args[0].ToString() : "";
-            // Pass context to event so it can wrap nodes in composedPath
-            return FenValue.FromObject(new DomEvent(type, false, false, false, _context));
+            // document.createEvent(interface) creates an uninitialized event; type is set via initEvent().
+            // Keep defaults false and initialized flag off until initEvent is called.
+            return FenValue.FromObject(new DomEvent("", false, false, false, _context, initialized: false));
         }
 
         private FenValue QuerySelectorAll(FenValue[] args, FenValue thisVal)
@@ -533,31 +539,27 @@ namespace FenBrowser.FenEngine.DOM
 
             var type = args[0].ToString();
             var callback = args[1];
-
-            if (string.IsNullOrEmpty(type) || callback  == null || !callback.IsFunction)
+            if (string.IsNullOrEmpty(type) || callback == null || !callback.IsFunction)
                 return FenValue.Undefined;
-            
+
             FenLogger.Debug($"[DocumentWrapper] addEventListener called for '{type}'", FenBrowser.Core.Logging.LogCategory.JavaScript);
 
-            // Handle immediate execution for load events if ready
             if ((type == "DOMContentLoaded" || type == "load") && (_readyState == "complete" || _readyState == "interactive"))
             {
-                FenLogger.Debug($"[DocumentWrapper] Immediate execution of {type}", FenBrowser.Core.Logging.LogCategory.JavaScript);
-                try {
+                try
+                {
                     var evt = new DomEvent(type);
-                    callback.AsFunction().Invoke(new FenValue[] { FenValue.FromObject(evt) }, _context);
-                } catch (Exception ex) {
+                    callback.AsFunction().Invoke(new[] { FenValue.FromObject(evt) }, _context);
+                }
+                catch (Exception ex)
+                {
                     FenLogger.Error($"[DocumentWrapper] Error executing immediate {type}: {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript);
                 }
             }
 
-            // Use ElementWrapper's registry to store listeners on the root element
-            // This is a simplification; ideally Document has its own registry or we use a virtual element.
-            // Using _root means document listeners are effective on the <html> element.
             bool capture = false;
             bool once = false;
             bool passive = false;
-
             if (args.Length >= 3)
             {
                 if (args[2].IsBoolean) capture = args[2].ToBoolean();
@@ -567,21 +569,16 @@ namespace FenBrowser.FenEngine.DOM
                     if (opts != null)
                     {
                         var cVal = opts.Get("capture");
-                        capture = cVal.IsBoolean ? cVal.ToBoolean() : false;
-                        
+                        capture = cVal.IsBoolean && cVal.ToBoolean();
                         var oVal = opts.Get("once");
-                        once = oVal.IsBoolean ? oVal.ToBoolean() : false;
-                        
+                        once = oVal.IsBoolean && oVal.ToBoolean();
                         var pVal = opts.Get("passive");
-                        passive = pVal.IsBoolean ? pVal.ToBoolean() : false;
+                        passive = pVal.IsBoolean && pVal.ToBoolean();
                     }
                 }
             }
 
-            if (_root is Element rootElement)
-            {
-                EventTarget.Registry.Add(rootElement, type, callback, capture, once, passive);
-            }
+            AddToDocumentListenerStore(type, callback, capture, once, passive);
             return FenValue.Undefined;
         }
 
@@ -592,24 +589,20 @@ namespace FenBrowser.FenEngine.DOM
             var callback = args[1];
             bool capture = false;
             if (args.Length >= 3 && args[2].IsBoolean) capture = args[2].ToBoolean();
-            
-            if (_root is Element rootElement)
-            {
-                EventTarget.Registry.Remove(rootElement, type, callback, capture);
-            }
+
+            RemoveFromDocumentListenerStore(type, callback, capture);
             return FenValue.Undefined;
         }
 
         private FenValue DispatchEventMethod(FenValue[] args, FenValue thisValue)
         {
             if (args.Length == 0 || !args[0].IsObject) return FenValue.FromBoolean(false);
-            
+
             var eventObj = args[0].AsObject() as DomEvent;
-            // Create proper event object if needed
-            if (eventObj  == null)
+            if (eventObj == null)
             {
                 var obj = args[0].AsObject() as FenObject;
-                if (obj  == null) return FenValue.FromBoolean(false);
+                if (obj == null) return FenValue.FromBoolean(false);
                 var typeVal = obj.Get("type");
                 var type = !typeVal.IsUndefined ? typeVal.ToString() : "";
                 eventObj = new DomEvent(type);
@@ -618,15 +611,113 @@ namespace FenBrowser.FenEngine.DOM
             FenLogger.Debug($"[DocumentWrapper] dispatchEvent '{eventObj.Type}'", FenBrowser.Core.Logging.LogCategory.JavaScript);
 
             var notPrevented = false;
-            if (_root is Element rootElement)
+            var rootElement = GetDocumentEventTargetElement();
+            if (rootElement != null)
             {
                 notPrevented = EventTarget.DispatchEvent(rootElement, eventObj, _context);
             }
-            
+
             return FenValue.FromBoolean(notPrevented);
         }
 
-        // --- Cookie Implementation ---
+        private void AddToDocumentListenerStore(string type, FenValue callback, bool capture, bool once, bool passive)
+        {
+            var listenersVal = Get("__fen_listeners__");
+            var listenersObj = listenersVal.IsObject ? listenersVal.AsObject() as FenObject : null;
+            if (listenersObj == null)
+            {
+                listenersObj = new FenObject();
+                Set("__fen_listeners__", FenValue.FromObject(listenersObj));
+            }
+
+            var arrVal = listenersObj.Get(type);
+            var arr = arrVal.IsObject ? arrVal.AsObject() as FenObject : null;
+            if (arr == null)
+            {
+                arr = FenObject.CreateArray();
+                listenersObj.Set(type, FenValue.FromObject(arr));
+            }
+
+            int len = (int)arr.Get("length").ToNumber();
+            for (int i = 0; i < len; i++)
+            {
+                var existing = arr.Get(i.ToString());
+                if (!existing.IsObject) continue;
+                var entry = existing.AsObject();
+                var existingCallback = entry.Get("callback");
+                var existingCapture = entry.Get("capture").ToBoolean();
+                if (existingCallback.Equals(callback) && existingCapture == capture)
+                {
+                    return;
+                }
+            }
+
+            var newEntry = new FenObject();
+            newEntry.Set("callback", callback);
+            newEntry.Set("capture", FenValue.FromBoolean(capture));
+            newEntry.Set("once", FenValue.FromBoolean(once));
+            newEntry.Set("passive", FenValue.FromBoolean(passive));
+            arr.Set(len.ToString(), FenValue.FromObject(newEntry));
+            arr.Set("length", FenValue.FromNumber(len + 1));
+        }
+
+        private void RemoveFromDocumentListenerStore(string type, FenValue callback, bool capture)
+        {
+            var listenersVal = Get("__fen_listeners__");
+            if (!listenersVal.IsObject) return;
+
+            var listenersObj = listenersVal.AsObject() as FenObject;
+            var arrVal = listenersObj?.Get(type) ?? FenValue.Undefined;
+            var arr = arrVal.IsObject ? arrVal.AsObject() as FenObject : null;
+            if (arr == null) return;
+
+            int len = (int)arr.Get("length").ToNumber();
+            var kept = FenObject.CreateArray();
+            int k = 0;
+            for (int i = 0; i < len; i++)
+            {
+                var item = arr.Get(i.ToString());
+                bool remove = false;
+                if (item.IsObject)
+                {
+                    var itemObj = item.AsObject();
+                    var itemCallback = itemObj.Get("callback");
+                    var itemCapture = itemObj.Get("capture").ToBoolean();
+                    remove = itemCallback.Equals(callback) && itemCapture == capture;
+                }
+
+                if (!remove)
+                {
+                    kept.Set(k.ToString(), item);
+                    k++;
+                }
+            }
+            kept.Set("length", FenValue.FromNumber(k));
+            listenersObj.Set(type, FenValue.FromObject(kept));
+        }
+        private Element GetDocumentEventTargetElement()
+        {
+            if (_root is Element e)
+            {
+                return e;
+            }
+
+            var html = FindElementByTag(_root, "html");
+            if (html != null)
+            {
+                return html;
+            }
+
+            var body = FindElementByTag(_root, "body");
+            if (body != null)
+            {
+                return body;
+            }
+
+            var nodes = new List<Node>();
+            CollectNodes(_root, nodes);
+            return nodes.OfType<Element>().FirstOrDefault();
+        }        // --- Cookie Implementation ---
         public static Func<Uri, string> CookieReadBridge { get; set; }
         public static Action<Uri, string> CookieWriteBridge { get; set; }
 
@@ -665,4 +756,6 @@ namespace FenBrowser.FenEngine.DOM
         public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
     }
 }
+
+
 
