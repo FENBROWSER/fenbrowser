@@ -1,6 +1,7 @@
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.FenEngine.Errors;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -297,7 +298,7 @@ namespace FenBrowser.FenEngine.DOM
         {
             if (args.Length == 0 || !args[0].IsObject)
             {
-                throw new Exception("TypeError: Failed to execute 'dispatchEvent': parameter 1 is not of type 'Event'.");
+                throw new FenTypeError("TypeError: Failed to execute 'dispatchEvent': parameter 1 is not of type 'Event'.");
             }
 
             var eventObj = args[0].AsObject() as DomEvent;
@@ -363,4 +364,7 @@ namespace FenBrowser.FenEngine.DOM
         public virtual bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
     }
 }
+
+
+
 

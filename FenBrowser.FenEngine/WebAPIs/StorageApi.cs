@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Threading;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.FenEngine.Errors;
 
 namespace FenBrowser.FenEngine.WebAPIs
 {
@@ -307,7 +308,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                     usedBytes -= ((long)key.Length + existing.Length) * 2; // replacing — remove old size
                 long newBytes = usedBytes + ((long)key.Length + val.Length) * 2;
                 if (newBytes > QuotaBytes)
-                    throw new Exception($"QuotaExceededError: The {_type} quota of 5\u00a0MB per origin has been exceeded.");
+                    throw new FenResourceError($"QuotaExceededError: The {_type} quota of 5\u00a0MB per origin has been exceeded.");
 
                 store[key] = val;
                 UpdateLength();
@@ -350,3 +351,4 @@ namespace FenBrowser.FenEngine.WebAPIs
         }
     }
 }
+

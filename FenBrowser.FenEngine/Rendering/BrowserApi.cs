@@ -1300,7 +1300,7 @@ pre {{
         {
             await Task.CompletedTask;
             var dom = _engine.GetActiveDom();
-            if (dom == null) throw new Exception("No active DOM");
+            if (dom == null) throw new InvalidOperationException("No active DOM");
 
             Element found = null;
             if (strategy == "css selector")
@@ -1335,7 +1335,7 @@ pre {{
                 _elementMap[id] = found;
                 return id;
             }
-            throw new Exception("Element not found");
+            throw new KeyNotFoundException("Element not found");
         }
 
         public async Task ClickElementAsync(string elementId)
@@ -2100,7 +2100,7 @@ pre {{
             
             if (rawResult is FenBrowser.FenEngine.Core.FenValue val && val.Type == JsValueType.Error)
             {
-                throw new Exception(val.AsError());
+                throw new InvalidOperationException(val.AsError());
             }
 
             // Convert FenValue to native .NET type for proper JSON serialization
@@ -3666,6 +3666,7 @@ pre {{
         }
     }
 }
+
 
 
 

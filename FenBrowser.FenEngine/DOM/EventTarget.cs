@@ -35,7 +35,7 @@ namespace FenBrowser.FenEngine.DOM
 
             if (!evt.Initialized)
             {
-                throw new Exception("InvalidStateError: Failed to execute 'dispatchEvent' on 'EventTarget': The event's initialized flag is not set.");
+                throw new InvalidOperationException("InvalidStateError: Failed to execute 'dispatchEvent' on 'EventTarget': The event's initialized flag is not set.");
             }
 
             var env = context?.Environment;
@@ -417,6 +417,7 @@ namespace FenBrowser.FenEngine.DOM
         }
     }
 }
+
 
 
 

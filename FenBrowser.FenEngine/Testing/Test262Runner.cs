@@ -17,6 +17,7 @@ using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.EventLoop;
+using FenBrowser.FenEngine.Errors;
 
 namespace FenBrowser.FenEngine.Testing
 {
@@ -304,13 +305,13 @@ namespace FenBrowser.FenEngine.Testing
                 {
                     if (args.Length == 0 || !args[0].IsObject || args[0].AsObject() is not FenBrowser.FenEngine.Core.Types.JsArrayBuffer jsArrayBuffer)
                     {
-                        throw new Exception("TypeError: detachArrayBuffer expects an ArrayBuffer");
+                        throw new FenTypeError("TypeError: detachArrayBuffer expects an ArrayBuffer");
                     }
 
                     var transferFn = jsArrayBuffer.Get("transfer");
                     if (!transferFn.IsFunction)
                     {
-                        throw new Exception("TypeError: detachArrayBuffer host hook unavailable");
+                        throw new InvalidOperationException("TypeError: detachArrayBuffer host hook unavailable");
                     }
 
                     transferFn.AsFunction().Invoke(Array.Empty<FenValue>(), runtime.Context, FenValue.FromObject(jsArrayBuffer));
@@ -828,4 +829,5 @@ namespace FenBrowser.FenEngine.Testing
         }
     }
 }
+
 
