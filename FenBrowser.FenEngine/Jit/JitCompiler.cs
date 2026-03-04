@@ -37,24 +37,24 @@ namespace FenBrowser.FenEngine.Jit
 
         static JitCompiler()
         {
-            if (JitCallMethod == null) throw new Exception("JitCallMethod not found");
-            if (JitGetPropMethod == null) throw new Exception("JitGetPropMethod not found");
-            if (JitSetPropMethod == null) throw new Exception("JitSetPropMethod not found");
-            if (JitCreateArrayMethod == null) throw new Exception("JitCreateArrayMethod not found");
-            if (JitCreateObjectMethod == null) throw new Exception("JitCreateObjectMethod not found");
-            if (FromNumberMethod == null) throw new Exception("FromNumberMethod not found");
-            if (FromStringMethod == null) throw new Exception("FromStringMethod not found");
-            if (FromBooleanMethod == null) throw new Exception("FromBooleanMethod not found");
-            if (EnvGetMethod == null) throw new Exception("EnvGetMethod not found");
-            if (EnvUpdateMethod == null) throw new Exception("EnvUpdateMethod not found");
-            if (FastStoreField == null) throw new Exception("FastStoreField not found");
-            if (ValueTypeField == null) throw new Exception("ValueTypeField not found");
-            if (ValueNumberField == null) throw new Exception("ValueNumberField not found");
-            if (ValueToNumberMethod == null) throw new Exception("ValueToNumberMethod not found");
-            if (ValueToBooleanMethod == null) throw new Exception("ValueToBooleanMethod not found");
-            if (ValueToStringMethod == null) throw new Exception("ValueToStringMethod not found");
-            if (UndefinedField == null) throw new Exception("UndefinedField not found");
-            if (NullField == null) throw new Exception("NullField not found");
+            if (JitCallMethod == null) throw new InvalidOperationException("JitCallMethod not found");
+            if (JitGetPropMethod == null) throw new InvalidOperationException("JitGetPropMethod not found");
+            if (JitSetPropMethod == null) throw new InvalidOperationException("JitSetPropMethod not found");
+            if (JitCreateArrayMethod == null) throw new InvalidOperationException("JitCreateArrayMethod not found");
+            if (JitCreateObjectMethod == null) throw new InvalidOperationException("JitCreateObjectMethod not found");
+            if (FromNumberMethod == null) throw new InvalidOperationException("FromNumberMethod not found");
+            if (FromStringMethod == null) throw new InvalidOperationException("FromStringMethod not found");
+            if (FromBooleanMethod == null) throw new InvalidOperationException("FromBooleanMethod not found");
+            if (EnvGetMethod == null) throw new InvalidOperationException("EnvGetMethod not found");
+            if (EnvUpdateMethod == null) throw new InvalidOperationException("EnvUpdateMethod not found");
+            if (FastStoreField == null) throw new InvalidOperationException("FastStoreField not found");
+            if (ValueTypeField == null) throw new InvalidOperationException("ValueTypeField not found");
+            if (ValueNumberField == null) throw new InvalidOperationException("ValueNumberField not found");
+            if (ValueToNumberMethod == null) throw new InvalidOperationException("ValueToNumberMethod not found");
+            if (ValueToBooleanMethod == null) throw new InvalidOperationException("ValueToBooleanMethod not found");
+            if (ValueToStringMethod == null) throw new InvalidOperationException("ValueToStringMethod not found");
+            if (UndefinedField == null) throw new InvalidOperationException("UndefinedField not found");
+            if (NullField == null) throw new InvalidOperationException("NullField not found");
         }
 
         private LocalBuilder _tempVal;
@@ -460,3 +460,4 @@ namespace FenBrowser.FenEngine.Jit
         }
     }
 }
+

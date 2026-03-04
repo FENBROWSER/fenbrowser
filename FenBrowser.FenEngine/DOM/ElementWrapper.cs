@@ -1317,7 +1317,7 @@ namespace FenBrowser.FenEngine.DOM
         {
             if (args.Length == 0 || !args[0].IsObject)
             {
-                throw new Exception("TypeError: Failed to execute 'dispatchEvent': parameter 1 is not of type 'Event'.");
+                throw new FenTypeError("TypeError: Failed to execute 'dispatchEvent': parameter 1 is not of type 'Event'.");
             }
 
             var originalEventValue = args[0];
@@ -2109,6 +2109,7 @@ namespace FenBrowser.FenEngine.DOM
         }
     }
 }
+
 
 
 

@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using FenBrowser.Core;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.FenEngine.Errors;
 
 namespace FenBrowser.FenEngine.DOM
 {
@@ -224,7 +225,7 @@ namespace FenBrowser.FenEngine.DOM
         {
             if (args.Length < 1)
             {
-                throw new Exception("TypeError: Failed to execute 'initEvent': 1 argument required, but only 0 present.");
+                throw new FenTypeError("TypeError: Failed to execute 'initEvent': 1 argument required, but only 0 present.");
             }
 
             // Per DOM: initEvent must be ignored while dispatching.
@@ -320,6 +321,7 @@ namespace FenBrowser.FenEngine.DOM
         }
     }
 }
+
 
 
 
