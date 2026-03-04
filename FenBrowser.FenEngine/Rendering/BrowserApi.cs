@@ -230,6 +230,59 @@ namespace FenBrowser.FenEngine.Rendering
         public event Action<string> ConsoleMessage;
         public event Action<SKRect?> HighlightRectChanged;
         public event Func<string, JsPermissions, Task<bool>> PermissionRequested;
+        private static void TryLogDebug(string message, LogCategory category = LogCategory.General)
+        {
+            try { FenLogger.Debug(message, category); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Debug log failed: {ex.Message}"); }
+        }
+
+        private static void TryLogInfo(string message, LogCategory category = LogCategory.General)
+        {
+            try { FenLogger.Info(message, category); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Info log failed: {ex.Message}"); }
+        }
+
+        private static void TryLogWarn(string message, LogCategory category = LogCategory.General)
+        {
+            try { FenLogger.Warn(message, category); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Warn log failed: {ex.Message}"); }
+        }
+
+        private static void TryLogError(string message, LogCategory category = LogCategory.General)
+        {
+            try { FenLogger.Error(message, category); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
+        }
+
+        private void TryInvokeRepaintReady(object payload)
+        {
+            try { RepaintReady?.Invoke(this, payload); }
+            catch (Exception ex) { TryLogWarn($"[BrowserHost] RepaintReady handler failed: {ex.Message}", LogCategory.Events); }
+        }
+
+        private void TryInvokeNavigated(Uri uri)
+        {
+            try { Navigated?.Invoke(this, uri); }
+            catch (Exception ex) { TryLogWarn($"[BrowserHost] Navigated handler failed: {ex.Message}", LogCategory.Navigation); }
+        }
+
+        private void TryInvokeLoadingChanged(bool loading)
+        {
+            try { LoadingChanged?.Invoke(this, loading); }
+            catch (Exception ex) { TryLogWarn($"[BrowserHost] LoadingChanged handler failed: {ex.Message}", LogCategory.Navigation); }
+        }
+
+        private void TryInvokeNavigationLifecycleChanged(NavigationLifecycleTransition transition)
+        {
+            try { NavigationLifecycleChanged?.Invoke(this, transition); }
+            catch (Exception ex) { TryLogWarn($"[BrowserHost] NavigationLifecycleChanged handler failed: {ex.Message}", LogCategory.Navigation); }
+        }
+
+        private void TryInvokeConsoleMessage(string message)
+        {
+            try { ConsoleMessage?.Invoke(message); }
+            catch (Exception ex) { TryLogWarn($"[BrowserHost] ConsoleMessage handler failed: {ex.Message}", LogCategory.JavaScript); }
+        }
 
         public Uri CurrentUri => _current;
         public ResourceManager ResourceManager => _resources;
@@ -309,7 +362,7 @@ namespace FenBrowser.FenEngine.Rendering
                             }
                         }
                     }
-                    catch { }
+                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
 
                     var info = new CertificateInfo
                     {
@@ -365,12 +418,12 @@ namespace FenBrowser.FenEngine.Rendering
                          if (!dump.ContainsKey("User-Agent") && req.Headers.UserAgent != null) dump["User-Agent"] = req.Headers.UserAgent.ToString();
                          FenLogger.Debug($"[Compliance] HTTP Request: {req.Method} {req.RequestUri} Headers: {JsonSerializer.Serialize(dump)}", LogCategory.Network);
                     }
-                    catch { }
+                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
 
                     // Pass the ResourceManager's ID to DevToolsCore so we can correlate completion
                     DevToolsCore.Instance.RecordRequest(req.RequestUri.ToString(), req.Method.ToString(), headers, id);
                 }
-                catch { }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
             };
 
             _resources.NetworkRequestCompleted += (id, resp) =>
@@ -387,17 +440,17 @@ namespace FenBrowser.FenEngine.Rendering
                     var mime = resp.Content?.Headers?.ContentType?.MediaType ?? "";
                     DevToolsCore.Instance.CompleteRequest(id, (int)resp.StatusCode, headers, size, mime);
                 }
-                catch { }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
             };
 
-            _resources.NetworkRequestFailed += (id, ex) =>
+            _resources.NetworkRequestFailed += (id, failureEx) =>
             {
                 try
                 {
                     // Use 599 to indicate network failure (treated as error in DevToolsCore)
                     DevToolsCore.Instance.CompleteRequest(id, 599, null, 0, "error");
                 }
-                catch { }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
             };
 
             DevToolsCore.Instance.CookieSnapshotProvider = () =>
@@ -451,8 +504,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             _engine.RepaintReady += (elem) =>
             {
-                try { RepaintReady?.Invoke(this, elem); }
-                catch { }
+                TryInvokeRepaintReady(elem);
             };
 
             // Wire ElementStateManager.OnStateChanged → CSS re-cascade.
@@ -472,36 +524,35 @@ namespace FenBrowser.FenEngine.Rendering
                     _engineLoop.SetRoot(dom); // Phase 5: Connect DOM to Loop
                     RepaintReady?.Invoke(this, dom); 
                 }
-                catch { }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
             };
 
             _engine.LoadingChanged += (s, loading) =>
             {
-                try { LoadingChanged?.Invoke(this, loading); }
-                catch { }
+                TryInvokeLoadingChanged(loading);
             };
 
             _engine.TitleChanged += (s, title) =>
             {
                 try { TitleChanged?.Invoke(this, title); }
-                catch { }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
             };
 
             _engine.AlertTriggered += (msg) =>
             {
                 TriggerAlert(msg);
-                try { ConsoleMessage?.Invoke($"[Alert] {msg}"); } catch { }
+                TryInvokeConsoleMessage($"[Alert] {msg}");
             };
 
             _engine.ConsoleMessage += (msg) =>
             {
-                try { ConsoleMessage?.Invoke(msg); } catch { }
+                TryInvokeConsoleMessage(msg);
             };
 
             _engine.HighlightRectChanged += (rect) =>
             {
                 try { HighlightRectChanged?.Invoke(rect); }
-                catch { }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
             };
             
             _engine.PermissionRequested += async (origin, perm) =>
@@ -516,8 +567,8 @@ namespace FenBrowser.FenEngine.Rendering
             ResourceManager.LogSink = (msg) =>
             {
                 Console.WriteLine(msg);
-                try { FenLogger.Debug(msg, LogCategory.Network); } catch { }
-                try { ConsoleMessage?.Invoke(msg); } catch { }
+                TryLogDebug(msg, LogCategory.Network);
+                TryInvokeConsoleMessage(msg);
             };
             _engine.ScriptFetcher = async (u) => 
             {
@@ -603,7 +654,7 @@ namespace FenBrowser.FenEngine.Rendering
             _navManager = new NavigationManager(_resources);
             _navigationLifecycle.Transitioned += transition =>
             {
-                try { NavigationLifecycleChanged?.Invoke(this, transition); } catch { }
+                TryInvokeNavigationLifecycleChanged(transition);
             };
             
             ImageLoader.FetchBytesAsync = async (uri) =>
@@ -626,7 +677,7 @@ namespace FenBrowser.FenEngine.Rendering
                     FenLogger.Debug($"[ImageLoader-Repaint] Triggering repaint after image load", LogCategory.Rendering);
                     RepaintReady?.Invoke(this, null);
                 }
-                catch { }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
             };
 
             ImageLoader.RequestRelayout = () =>
@@ -637,7 +688,7 @@ namespace FenBrowser.FenEngine.Rendering
                     var dom = _engine.GetActiveDom();
                     if (dom != null) RepaintReady?.Invoke(this, dom);
                 }
-                catch { }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
             };
 
             // Wire up FontRegistry to trigger RepaintReady when fonts finish loading
@@ -649,7 +700,7 @@ namespace FenBrowser.FenEngine.Rendering
                     // Trigger layout recalculation by raising RepaintReady
                     RepaintReady?.Invoke(this, null);
                 }
-                catch { }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
             };
             FontRegistry.FontLoaded += _fontLoadedHandler;
         }
@@ -696,7 +747,7 @@ namespace FenBrowser.FenEngine.Rendering
                              // FenLogger.Debug($"[WPT-Remap] {u} -> {mapped}", LogCategory.Navigation);
                              return new Uri(mapped);
                          } 
-                         catch {}
+                         catch (Exception ex) { TryLogWarn($"[BrowserHost] Failed to remap WPT URI '{u}': {ex.Message}", LogCategory.Navigation); }
                      }
                 }
             }
@@ -730,7 +781,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 _current = entry.Url;
                 _engine.NotifyPopState(entry.State); // Notify JS
-                try { Navigated?.Invoke(this, _current); } catch { }
+                TryInvokeNavigated(_current);
                 return true;
             }
 
@@ -749,7 +800,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 _current = entry.Url;
                 _engine.NotifyPopState(entry.State); // Notify JS
-                try { Navigated?.Invoke(this, _current); } catch { }
+                TryInvokeNavigated(_current);
                 return true;
             }
 
@@ -771,7 +822,7 @@ namespace FenBrowser.FenEngine.Rendering
         private async Task<bool> NavigateAsync(string url, NavigationRequestKind requestKind)
         {
             long navigationId = 0;
-            try { FenLogger.Debug($"[BrowserHost] NavigateAsync called for: '{url}'", LogCategory.Navigation); } catch {}
+            TryLogDebug($"[BrowserHost] NavigateAsync called for: '{url}'", LogCategory.Navigation);
 
             if (_disposed) return false;
                 if (string.IsNullOrWhiteSpace(url)) return false;
@@ -786,7 +837,7 @@ namespace FenBrowser.FenEngine.Rendering
                 _navigationLifecycle.MarkFetching(navigationId, url);
 
                 // Log raw navigation input for diagnostics
-                try { FenLogger.Info($"[BrowserHost] Nav raw='{url}'", LogCategory.Navigation); } catch {}
+                TryLogInfo($"[BrowserHost] Nav raw='{url}'", LogCategory.Navigation);
 
                 // SPECIAL HANDLING: fen://history
                 if (url.Equals("fen://history", StringComparison.OrdinalIgnoreCase))
@@ -836,7 +887,7 @@ namespace FenBrowser.FenEngine.Rendering
                         _navigationLifecycle.MarkCancelled(navigationId, "superseded-by-new-navigation");
                         return false;
                     }
-                    try { RepaintReady?.Invoke(this, elem); } catch { }
+                    TryInvokeRepaintReady(elem);
                     _navigationLifecycle.MarkInteractive(navigationId, "history-dom-ready");
                     await MarkNavigationCompleteWhenSettledAsync(navigationId, "history-document-complete").ConfigureAwait(false);
 
@@ -851,7 +902,7 @@ namespace FenBrowser.FenEngine.Rendering
                         _historyIndex = _history.Count - 1;
                     }
 
-                    try { Navigated?.Invoke(this, _current); } catch { }
+                    TryInvokeNavigated(_current);
                     return true;
                 }
 
@@ -868,7 +919,7 @@ namespace FenBrowser.FenEngine.Rendering
                     if (_current != null && IsExplicitRelativeUrl(url) && Uri.TryCreate(_current, url, out var relative))
                     {
                         url = relative.AbsoluteUri;
-                        try { FenLogger.Info($"[BrowserHost] Resolved relative URL -> '{url}'", LogCategory.Navigation); } catch {}
+                        TryLogInfo($"[BrowserHost] Resolved relative URL -> '{url}'", LogCategory.Navigation);
                     }
                     // Normalize if missing scheme
                     else if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed))
@@ -876,13 +927,13 @@ namespace FenBrowser.FenEngine.Rendering
                         var candidate = "https://" + url.TrimStart('/');
                         if (Uri.TryCreate(candidate, UriKind.Absolute, out var normalized))
                         {
-                            try { FenLogger.Info($"[BrowserHost] Normalized missing-scheme -> '{normalized}'", LogCategory.Navigation); } catch {}
+                            TryLogInfo($"[BrowserHost] Normalized missing-scheme -> '{normalized}'", LogCategory.Navigation);
                             url = normalized.AbsoluteUri;
                         }
                     }
                     else
                     {
-                        try { FenLogger.Info($"[BrowserHost] Parsed absolute Uri='{parsed}'", LogCategory.Navigation); } catch {}
+                        TryLogInfo($"[BrowserHost] Parsed absolute Uri='{parsed}'", LogCategory.Navigation);
                         url = parsed.AbsoluteUri; // canonicalize
                     }
 
@@ -1043,13 +1094,13 @@ pre {{
                 
                 // Debug: Log navigation with base URL
                 // Debug: Log navigation with base URL
-                try { FenLogger.Debug($"[BrowserApi] Navigating to: {uri}. Previous _current: {_current?.AbsoluteUri ?? "null"}", LogCategory.General); } catch {}
+                TryLogDebug($"[BrowserApi] Navigating to: {uri}. Previous _current: {_current?.AbsoluteUri ?? "null"}", LogCategory.General);
 
                 // FIX: Set _current BEFORE rendering so UI has access to correct BaseUrl during render events
                 _current = uri;
                 var commitSource = result.Status == FetchStatus.Success ? "network-document" : "error-document";
                 _navigationLifecycle.MarkCommitting(navigationId, _current.AbsoluteUri, commitSource);
-                try { FenLogger.Debug($"[BrowserApi] _current updated early to: {_current?.AbsoluteUri}", LogCategory.General); } catch {}
+                TryLogDebug($"[BrowserApi] _current updated early to: {_current?.AbsoluteUri}", LogCategory.General);
                 
                 // Dump raw HTML source for debugging (CURL level)
                 try 
@@ -1059,7 +1110,7 @@ pre {{
                     {
                         FenBrowser.Core.Verification.ContentVerifier.RegisterSourceFile(dumpPath);
                     }
-                } catch { }
+                } catch (Exception ex) { TryLogWarn($"[BrowserHost] Raw source dump failed for '{uri}': {ex.Message}", LogCategory.General); }
 
                 var trackedCssFetcher = CreateTrackedCssFetcher(navigationId);
                 var trackedImageFetcher = CreateTrackedImageFetcher(navigationId);
@@ -1094,11 +1145,11 @@ pre {{
                         FenBrowser.Core.Verification.ContentVerifier.RegisterEngineSourceFile(enginePath);
                     }
                 }
-                catch { }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
                 
-                try { FenLogger.Debug($"[BrowserApi] RenderAsync finished for {_current?.AbsoluteUri}. Firing RepaintReady...", LogCategory.General); } catch {}
+                TryLogDebug($"[BrowserApi] RenderAsync finished for {_current?.AbsoluteUri}. Firing RepaintReady...", LogCategory.General);
                 
-                try { RepaintReady?.Invoke(this, elem); } catch { }
+                TryInvokeRepaintReady(elem);
                 _navigationLifecycle.MarkInteractive(navigationId, BuildInteractiveLifecycleDetail(result));
 
                 // Dump Rendered Text for side-by-side comparison (Phase 11)
@@ -1117,7 +1168,7 @@ pre {{
                         FenBrowser.Core.Verification.ContentVerifier.RegisterRenderedFile(renderedPath);
                     }
                 }
-                catch { }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
 
                 if (!_isNavigatingHistory)
                 {
@@ -1129,7 +1180,7 @@ pre {{
                     _historyIndex = _history.Count - 1;
                 }
 
-                try { Navigated?.Invoke(this, uri); } catch { }
+                TryInvokeNavigated(uri);
                 await MarkNavigationCompleteWhenSettledAsync(navigationId, "document-complete").ConfigureAwait(false);
                 
                 // Fetch Favicon
@@ -1139,7 +1190,7 @@ pre {{
             }
             catch (Exception ex)
             {
-                try { System.Diagnostics.Debug.WriteLine("[NavigateAsync] Exception: " + ex.ToString()); } catch { }
+                System.Diagnostics.Debug.WriteLine("[NavigateAsync] Exception: " + ex.ToString());
                 var details = ex.ToString();
                 if (details != null && details.Length > 2000) details = details.Substring(0, 2000) + "...";
                 if (navigationId > 0)
@@ -1159,7 +1210,7 @@ pre {{
                 var u = _current ?? new Uri("about:blank");
                 _engine.SetCookie(u, name, value);
             }
-            catch { }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
         }
 
         public void DeleteCookie(string name)
@@ -1169,7 +1220,7 @@ pre {{
                 var u = _current ?? new Uri("about:blank");
                 _engine.DeleteCookie(u, name);
             }
-            catch { }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
         }
 
         public void ClearBrowsingData()
@@ -1205,7 +1256,7 @@ pre {{
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
             return list;
         }
 
@@ -1241,7 +1292,7 @@ pre {{
         public async Task<object> ExecuteScriptAsync(string script)
         {
             await Task.CompletedTask;
-            try { FenLogger.Debug($"[BrowserApi] ExecuteScriptAsync called with script: {script}", LogCategory.JavaScript); } catch { }
+            TryLogDebug($"[BrowserApi] ExecuteScriptAsync called with script: {script}", LogCategory.JavaScript);
             return _engine.Evaluate(script);
         }
 
@@ -1750,7 +1801,7 @@ pre {{
                 if (!ReferenceEquals(ElementStateManager.Instance.HoveredElement, hovered))
                 {
                     ElementStateManager.Instance.SetHoveredElement(hovered);
-                    try { RepaintReady?.Invoke(this, _engine.GetActiveDom()); } catch { }
+                    TryInvokeRepaintReady(_engine.GetActiveDom());
                 }
             }
 
@@ -2043,9 +2094,9 @@ pre {{
                 wrappedScript = $"var __args = []; (function() {{ {script} }})()";
             }
             
-            try { FenLogger.Debug($"[ExecuteScript] Wrapped: {wrappedScript.Substring(0, Math.Min(500, wrappedScript.Length))}...", LogCategory.JavaScript); } catch { }
+            TryLogDebug($"[ExecuteScript] Wrapped: {wrappedScript.Substring(0, Math.Min(500, wrappedScript.Length))}...", LogCategory.JavaScript);
             var rawResult = _engine.Evaluate(wrappedScript);
-            try { FenLogger.Debug($"[ExecuteScript] Raw result type: {rawResult?.GetType().Name}", LogCategory.JavaScript); } catch { }
+            TryLogDebug($"[ExecuteScript] Raw result type: {rawResult?.GetType().Name}", LogCategory.JavaScript);
             
             if (rawResult is FenBrowser.FenEngine.Core.FenValue val && val.Type == JsValueType.Error)
             {
@@ -2216,23 +2267,23 @@ pre {{
                 console.log('[WPT] rAF callbacks length: ' + (window.__raf_callbacks ? window.__raf_callbacks.length : 'no array'));
             ";
             
-            try { FenLogger.Debug($"[AsyncScript] Executing wrapped script (timeout {timeoutMs}ms)", LogCategory.JavaScript); } catch { }
-            try { FenLogger.Debug($"[AsyncScript] Input script (first 500 chars): {(script.Length > 500 ? script.Substring(0, 500) : script)}", LogCategory.JavaScript); } catch { }
-            try { FenLogger.Debug($"[AsyncScript] Processed script (first 500 chars): {(processedScript.Length > 500 ? processedScript.Substring(0, 500) : processedScript)}", LogCategory.JavaScript); } catch { }
+            TryLogDebug($"[AsyncScript] Executing wrapped script (timeout {timeoutMs}ms)", LogCategory.JavaScript);
+            TryLogDebug($"[AsyncScript] Input script (first 500 chars): {(script.Length > 500 ? script.Substring(0, 500) : script)}", LogCategory.JavaScript);
+            TryLogDebug($"[AsyncScript] Processed script (first 500 chars): {(processedScript.Length > 500 ? processedScript.Substring(0, 500) : processedScript)}", LogCategory.JavaScript);
             
             // Execute the script (it should call the callback eventually)
             try 
             {
                 var execResult = _engine.Evaluate(wrappedScript);
-                try { FenLogger.Debug($"[AsyncScript] Script executed, result type: {execResult?.GetType().Name ?? "null"}", LogCategory.JavaScript); } catch { }
+                TryLogDebug($"[AsyncScript] Script executed, result type: {execResult?.GetType().Name ?? "null"}", LogCategory.JavaScript);
                 if (execResult is FenBrowser.FenEngine.Core.FenValue fv && (int)fv.Type == 10)
                 {
-                    try { FenLogger.Debug($"[AsyncScript] Script error: {fv.AsError()}", LogCategory.Errors); } catch { }
+                    TryLogDebug($"[AsyncScript] Script error: {fv.AsError()}", LogCategory.Errors);
                 }
             }
             catch (Exception ex)
             {
-                try { FenLogger.Debug($"[AsyncScript] Script exception: {ex.Message}", LogCategory.Errors); } catch { }
+                TryLogDebug($"[AsyncScript] Script exception: {ex.Message}", LogCategory.Errors);
             }
             
             // Process rAF queue helper script
@@ -2267,12 +2318,12 @@ pre {{
                     var rafResult = _engine.Evaluate(processRafScript);
                     if (loopCount % 100 == 1) // Log every 100th iteration
                     {
-                        try { FenLogger.Debug($"[AsyncScript] Poll loop {loopCount}, rafCount: {rafResult}", LogCategory.JavaScript); } catch { }
+                        TryLogDebug($"[AsyncScript] Poll loop {loopCount}, rafCount: {rafResult}", LogCategory.JavaScript);
                     }
                 } 
                 catch (Exception ex)
                 {
-                    try { FenLogger.Debug($"[AsyncScript] rAF error: {ex.Message}", LogCategory.Errors); } catch { }
+                    TryLogDebug($"[AsyncScript] rAF error: {ex.Message}", LogCategory.Errors);
                 }
                 
                 // Check if the callback was called
@@ -2281,7 +2332,7 @@ pre {{
                 {
                     // Get the result
                     var result = _engine.Evaluate($"window.__wptrunner_async_result_{callbackId}");
-                    try { FenLogger.Debug($"[AsyncScript] Callback received result after {sw.ElapsedMilliseconds}ms", LogCategory.JavaScript); } catch { }
+                    TryLogDebug($"[AsyncScript] Callback received result after {sw.ElapsedMilliseconds}ms", LogCategory.JavaScript);
                     
                     // Convert FenValue to native object
                     if (result is FenBrowser.FenEngine.Core.FenValue fenValue)
@@ -2295,7 +2346,7 @@ pre {{
                 await Task.Delay(10);
             }
             
-            try { FenLogger.Debug($"[AsyncScript] Timeout after {timeoutMs}ms", LogCategory.Errors); } catch { }
+            TryLogDebug($"[AsyncScript] Timeout after {timeoutMs}ms", LogCategory.Errors);
             
             // Timeout - throw exception
             throw new TimeoutException($"Script execution timeout ({timeoutMs/1000}s)");
@@ -2586,7 +2637,7 @@ pre {{
                 }
             }
             
-            try { if (hit != null) FenLogger.Debug($"[BrowserApi] Hit test at ({docX},{docY}) found: {hit.NodeName} (ID: {hit.Id})", LogCategory.General); } catch {}
+            if (hit != null) TryLogDebug($"[BrowserApi] Hit test at ({docX},{docY}) found: {hit.NodeName} (ID: {hit.Id})", LogCategory.General);
             
             return hit;
         }
@@ -2684,7 +2735,7 @@ pre {{
                  case "selectall":
                      _selectionAnchor = 0;
                      _cursorIndex = val.Length;
-                     try { RepaintReady?.Invoke(this, _engine.GetActiveDom()); } catch {}
+                     TryInvokeRepaintReady(_engine.GetActiveDom());
                      break;
                      
                  case "copy":
@@ -2699,7 +2750,7 @@ pre {{
                          _cursorIndex = start + data.Length;
                          _selectionAnchor = -1; // Clear selection
                          _focusedElement.SetAttribute("value", val);
-                         try { RepaintReady?.Invoke(this, _engine.GetActiveDom()); } catch {}
+                         TryInvokeRepaintReady(_engine.GetActiveDom());
                      }
                      break;
              }
@@ -2727,7 +2778,7 @@ pre {{
                  _cursorIndex = start;
                  _selectionAnchor = -1;
                  _focusedElement.SetAttribute("value", val);
-                 try { RepaintReady?.Invoke(this, _engine.GetActiveDom()); } catch {}
+                 TryInvokeRepaintReady(_engine.GetActiveDom());
              }
         }
 
@@ -2739,7 +2790,7 @@ pre {{
             {
                 _focusedElement = null;
                 ElementStateManager.Instance.SetFocusedElement(null);
-                try { RepaintReady?.Invoke(this, _engine.GetActiveDom()); } catch {}
+                TryInvokeRepaintReady(_engine.GetActiveDom());
                 return;
             }
             
@@ -2809,7 +2860,7 @@ pre {{
                         }
                     }
 
-                    try { RepaintReady?.Invoke(this, _engine.GetActiveDom()); } catch { }
+                    TryInvokeRepaintReady(_engine.GetActiveDom());
                 }
                 return;
             }
@@ -2829,7 +2880,7 @@ pre {{
                  element.GetAttribute("type")?.ToLowerInvariant() == "button")))
             {
                  // Verify if this is a search button (simplified check)
-                 try { FenLogger.Debug($"[BrowserApi] Button clicked: {element.NodeName}", LogCategory.General); } catch {}
+                 TryLogDebug($"[BrowserApi] Button clicked: {element.NodeName}", LogCategory.General);
 
                  if (allowDefaultActivation && IsSubmitActivationControl(element, tag))
                  {
@@ -2847,10 +2898,10 @@ pre {{
                 _cursorIndex = val.Length;
                 _selectionAnchor = -1;
                 
-                try { FenLogger.Debug($"[BrowserApi] Input focused: {element.NodeName} (ID: {element.GetAttribute("id")})", LogCategory.General); } catch {}
+                TryLogDebug($"[BrowserApi] Input focused: {element.NodeName} (ID: {element.GetAttribute("id")})", LogCategory.General);
                 
                 // Trigger a repaint to show caret (if we had one)
-                try { RepaintReady?.Invoke(this, _engine.GetActiveDom()); } catch {}
+                TryInvokeRepaintReady(_engine.GetActiveDom());
             }
             else
             {
@@ -2865,7 +2916,7 @@ pre {{
                 {
                     _focusedElement = element;
                     ElementStateManager.Instance.SetFocusedElement(element);
-                    try { FenLogger.Debug($"[BrowserApi] Element focused: {element.NodeName} (ID: {element.GetAttribute("id")})", LogCategory.General); } catch {}
+                    TryLogDebug($"[BrowserApi] Element focused: {element.NodeName} (ID: {element.GetAttribute("id")})", LogCategory.General);
                 }
                 else
                 {
@@ -2894,7 +2945,7 @@ pre {{
                 }
                 
                 // Trigger repaint 
-                try { RepaintReady?.Invoke(this, _engine.GetActiveDom()); } catch {}
+                TryInvokeRepaintReady(_engine.GetActiveDom());
             }
         }
 
@@ -2970,7 +3021,7 @@ pre {{
             bool allowSubmit = FenBrowser.FenEngine.DOM.EventTarget.DispatchEvent(form, submitEvent, context);
             if (!allowSubmit)
             {
-                try { FenLogger.Debug("[BrowserApi] Form submit canceled by script.", LogCategory.Events); } catch {}
+                TryLogDebug("[BrowserApi] Form submit canceled by script.", LogCategory.Events);
                 return true;
             }
 
@@ -2988,7 +3039,7 @@ pre {{
                 return true;
             }
 
-            try { FenLogger.Warn($"[BrowserApi] Form method '{method}' not fully implemented; navigating to action URL.", LogCategory.Navigation); } catch {}
+            TryLogWarn($"[BrowserApi] Form method '{method}' not fully implemented; navigating to action URL.", LogCategory.Navigation);
             await NavigateAsync(actionUri.AbsoluteUri);
             return true;
         }
@@ -3354,7 +3405,7 @@ pre {{
                     _focusedElement.SetAttribute("value", val);
                     
                     // Trigger Repaint
-                     try { RepaintReady?.Invoke(this, _engine.GetActiveDom()); } catch {}
+                     TryInvokeRepaintReady(_engine.GetActiveDom());
                 }
                 else if (isContentEditable)
                 {
@@ -3438,12 +3489,12 @@ pre {{
                     }
 
                     _focusedElement.TextContent = val;
-                    try { RepaintReady?.Invoke(this, _engine.GetActiveDom()); } catch {}
+                    TryInvokeRepaintReady(_engine.GetActiveDom());
                 }
             }
             catch (Exception ex)
             {
-                 try { FenLogger.Error($"[BrowserApi] Error typing key: {ex.Message}", LogCategory.General); } catch {}
+                 TryLogError($"[BrowserApi] Error typing key: {ex.Message}", LogCategory.General);
             }
             
             return Task.CompletedTask;
@@ -3507,7 +3558,8 @@ pre {{
                 FontRegistry.FontLoaded -= _fontLoadedHandler;
 
             _disposed = true;
-            try { _engine.Dispose(); } catch { }
+            try { _engine.Dispose(); }
+            catch (Exception ex) { TryLogWarn($"[BrowserHost] Engine dispose failed: {ex.Message}", LogCategory.General); }
         }
 
         // IHistoryBridge Implementation
@@ -3534,7 +3586,7 @@ pre {{
                 _current = newUri;
                 
                 // Notify UI of URL change without reload
-                try { Navigated?.Invoke(this, _current); } catch { }
+                TryInvokeNavigated(_current);
             }
             catch (Exception ex)
             {
@@ -3558,7 +3610,7 @@ pre {{
                     _current = newUri;
                     
                     // Notify UI of URL change without reload
-                    try { Navigated?.Invoke(this, _current); } catch { }
+                    TryInvokeNavigated(_current);
                 }
             }
             catch (Exception ex)
@@ -3599,7 +3651,7 @@ pre {{
                             {
                                 _current = entry.Url;
                                 _engine.NotifyPopState(entry.State);
-                                try { Navigated?.Invoke(this, _current); } catch { }
+                                TryInvokeNavigated(_current);
                             }
                             else
                             {
@@ -3614,6 +3666,11 @@ pre {{
         }
     }
 }
+
+
+
+
+
 
 
 
