@@ -2533,3 +2533,11 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
   - Added focused coverage for title extraction, entity + whitespace normalization, host fallback behavior, and network-failure title behavior.
 - Verification:
   - Targeted: `FenBrowser.Tests.Rendering.BrowserEngineTests` => `4/4` pass.
+
+### 2.34 Runtime Hardening (2026-03-04, Wave 30)
+- Core/FenValue.cs
+  - Hardened `ToPrimitive(...)` terminal fallback: replaced `NaN` fallback with stable object-tag string primitive (`[object <InternalClass>]`).
+  - Prevents template/string concatenation regressions where unresolved object coercion surfaced as `NaN`.
+- Verification:
+  - Targeted: `TemplateLiteralTests.TemplateWithComplexExpression_ObjectLiteral` => pass.
+  - Full suite: `978` passed / `0` failed.

@@ -352,8 +352,11 @@ namespace FenBrowser.FenEngine.Core
                 }
             }
 
-            // TypeError in spec, but we'll return NaN for safety
-            return FromNumber(double.NaN);
+            // TypeError in spec when no primitive conversion path exists. In this runtime,
+            // return a stable object-string primitive so string contexts (template literals,
+            // concatenation) remain deterministic and do not degrade into NaN.
+            var fallbackClass = (obj as FenObject)?.InternalClass ?? "Object";
+            return FromString($"[object {fallbackClass}]");
         }
 
         /// <summary>
