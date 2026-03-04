@@ -380,23 +380,23 @@ namespace FenBrowser.FenEngine.Core
                 return false;
             }
 
-            // This runtime stores symbol-like well-known keys as string properties.
-            var unscopables = _withObject.Get("Symbol.unscopables");
-            if (unscopables.IsUndefined)
-            {
-                unscopables = _withObject.Get("@@unscopables");
-            }
+            // Probe the symbol-like unscopables key first to match proxy observation order.
+            var unscopables = _withObject.Get("Symbol(Symbol.unscopables)");
             if (unscopables.IsUndefined)
             {
                 unscopables = _withObject.Get("@@Symbol.unscopables");
             }
             if (unscopables.IsUndefined)
             {
-                unscopables = _withObject.Get("unscopables");
+                unscopables = _withObject.Get("Symbol.unscopables");
             }
             if (unscopables.IsUndefined)
             {
-                unscopables = _withObject.Get("Symbol(Symbol.unscopables)");
+                unscopables = _withObject.Get("@@unscopables");
+            }
+            if (unscopables.IsUndefined)
+            {
+                unscopables = _withObject.Get("unscopables");
             }
 
             if (!unscopables.IsObject)

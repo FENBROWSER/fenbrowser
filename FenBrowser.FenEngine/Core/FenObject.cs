@@ -84,7 +84,7 @@ namespace FenBrowser.FenEngine.Core
                 if (_shape.TryGetPropertyOffset("__proxyGet__", out var pgIdx) && 
                     (_properties[pgIdx].Value.HasValue && _properties[pgIdx].Value.Value.IsFunction))
                 {
-                    _shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx);
+                    if (!_shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx)) _shape.TryGetPropertyOffset("__target__", out targetIdx);
                     var target = targetIdx >= 0 ? _properties[targetIdx].Value : FenValue.Undefined;
                     
                     var fn = _properties[pgIdx].Value.Value.AsFunction();
@@ -155,7 +155,7 @@ namespace FenBrowser.FenEngine.Core
                 if (_shape.TryGetPropertyOffset("__proxySet__", out var psIdx) && 
                     (_properties[psIdx].Value.HasValue && _properties[psIdx].Value.Value.IsFunction))
                 {
-                    _shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx);
+                    if (!_shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx)) _shape.TryGetPropertyOffset("__target__", out targetIdx);
                     var target = targetIdx >= 0 ? _properties[targetIdx].Value : FenValue.Undefined;
                     
                     var fn = _properties[psIdx].Value.Value.AsFunction();
@@ -256,7 +256,7 @@ namespace FenBrowser.FenEngine.Core
                 if (_shape.TryGetPropertyOffset("__proxyHas__", out var phIdx) && 
                     (_properties[phIdx].Value.HasValue && _properties[phIdx].Value.Value.IsFunction))
                 {
-                    _shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx);
+                    if (!_shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx)) _shape.TryGetPropertyOffset("__target__", out targetIdx);
                     var target = targetIdx >= 0 ? _properties[targetIdx].Value : FenValue.Undefined;
                     
                     var fn = _properties[phIdx].Value.Value.AsFunction();
@@ -599,5 +599,6 @@ namespace FenBrowser.FenEngine.Core
         public PropertyDescriptor[] GetPropertyStorage() => _properties;
     }
 }
+
 
 
