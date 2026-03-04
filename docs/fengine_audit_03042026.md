@@ -842,3 +842,14 @@
   - Targeted test passed:
     - `TemplateLiteralTests.TemplateWithComplexExpression_ObjectLiteral`
   - Full `FenBrowser.Tests` snapshot: `978` passed, `0` failed.
+
+## Recheck Pass 30 (2026-03-04, bytecode unsupported-path error typing)
+- Focus area: critical audit finding on bytecode compile-time `NotImplementedException` crash surfaces.
+- Files hardened:
+  - FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs
+- Changes:
+  - Replaced all remaining `NotImplementedException` throw sites in bytecode compiler paths with typed `FenSyntaxError`.
+  - Preserves deterministic unsupported-syntax reporting while preventing engine-level not-implemented crash semantics.
+- Verification:
+  - Live scan verification: `BytecodeCompiler.cs` contains `0` `NotImplementedException` occurrences.
+  - Full `FenBrowser.Tests` snapshot: `978` passed, `0` failed.
