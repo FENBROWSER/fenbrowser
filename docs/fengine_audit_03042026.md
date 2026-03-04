@@ -775,3 +775,15 @@
 - Verification:
   - Targeted test passed:
     - `FenBrowser.Tests.Architecture.SvgSandboxingTests.SvgSkiaRenderer_NegativeViewBoxOrigin_RendersVisiblePixels`
+
+## Recheck Pass 25 (2026-03-04, FontRegistry test-state isolation)
+- Focus area: residual full-suite nondeterminism in font loading assertions.
+- Files hardened:
+  - FenBrowser.Tests/Rendering/FontTests.cs
+- Changes:
+  - Added `[Collection("Engine Tests")]` to `FontTests` so static `FontRegistry` state is not mutated concurrently by unrelated parallel test workers.
+  - Preserved test semantics; change is execution-order hardening only.
+- Verification:
+  - Targeted test passed:
+    - `FenBrowser.Tests.Rendering.FontTests.LoadFontFaceAsync_BadUrl_DoesNotCrash`
+  - Full `FenBrowser.Tests` snapshot: `974` passed, `0` failed.

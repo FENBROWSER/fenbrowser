@@ -2500,3 +2500,10 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
   - Preserved existing negative-origin cull translation and default fill injection path; this closes the remaining negative-`viewBox` visible-pixels regression.
 - Verification:
   - Targeted: `SvgSkiaRenderer_NegativeViewBoxOrigin_RendersVisiblePixels` => pass.
+
+### 2.30 Runtime Hardening (2026-03-04, Wave 26)
+- Tests/Rendering/FontTests.cs
+  - Moved `FontTests` into the existing `Engine Tests` collection to serialize execution against shared static engine state (`FontRegistry`) and eliminate suite-order race failures.
+- Verification:
+  - Targeted: `LoadFontFaceAsync_BadUrl_DoesNotCrash` => pass.
+  - Full suite: `974` passed / `0` failed.
