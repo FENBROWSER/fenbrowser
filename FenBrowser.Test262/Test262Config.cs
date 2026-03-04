@@ -43,7 +43,7 @@ public sealed class Test262Config
     /// <summary>
     /// Maximum managed heap memory in MB before skipping tests.
     /// </summary>
-    public int MaxMemoryMB { get; set; } = 1500;
+    public int MaxMemoryMB { get; set; } = 10000;
 
     /// <summary>
     /// Output format for results.

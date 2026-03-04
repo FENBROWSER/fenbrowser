@@ -26,6 +26,8 @@ namespace FenBrowser.FenEngine.Testing
     /// </summary>
     public class Test262Runner
     {
+        private const string AsyncCompleteSignal = "Test262:AsyncTestComplete";
+        private const string AsyncFailureSignalPrefix = "Test262:AsyncTestFailure:";
         private readonly string _test262RootPath;
         private readonly int _timeoutMs;
         private readonly List<TestResult> _results = new List<TestResult>();
@@ -57,7 +59,7 @@ namespace FenBrowser.FenEngine.Testing
         
         public Test262Runner(string test262RootPath, int timeoutMs = 10000)
         {
-            _test262RootPath = test262RootPath;
+            _test262RootPath = Path.GetFullPath(test262RootPath);
             _timeoutMs = timeoutMs;
         }
         
@@ -181,15 +183,30 @@ namespace FenBrowser.FenEngine.Testing
                         return result;
                     }
                 }
-                if (Path.IsPathRooted(testFile))
-            {
-               // It's absolute, use it directly
-            }
-            else
-            {
-               testFile = Path.Combine(_test262RootPath, testFile);
-            }
-                var content = await File.ReadAllTextAsync(testFile);
+                // Normalize to an absolute path exactly once; avoid duplicate root prefixing
+                // when discovered paths are already root-relative (for example: test262\\test\\...).
+                var resolvedTestFile = Path.IsPathRooted(testFile)
+                    ? testFile
+                    : Path.GetFullPath(testFile);
+
+                if (!File.Exists(resolvedTestFile))
+                {
+                    var trimmed = testFile.TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                    var rootName = Path.GetFileName(_test262RootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                    if (!string.IsNullOrWhiteSpace(rootName))
+                    {
+                        var rootPrefix = rootName + Path.DirectorySeparatorChar;
+                        var altRootPrefix = rootName + Path.AltDirectorySeparatorChar;
+                        if (trimmed.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase) ||
+                            trimmed.StartsWith(altRootPrefix, StringComparison.OrdinalIgnoreCase))
+                        {
+                            trimmed = trimmed.Substring(rootName.Length + 1);
+                        }
+                    }
+                    resolvedTestFile = Path.Combine(_test262RootPath, trimmed);
+                }
+
+                var content = await File.ReadAllTextAsync(resolvedTestFile);
                 var metadata = ParseMetadata(content);
                 result.Metadata = metadata;
                 bool isModuleGoal = metadata.IsModule;
@@ -234,12 +251,30 @@ namespace FenBrowser.FenEngine.Testing
                 // We recreate the runtime for each test to ensure isolation
                 // In the future for perf we might reuse it but clean the global scope
                 var runtime = new FenBrowser.FenEngine.Core.FenRuntime();
+                TaskCompletionSource<string> asyncSignal = null;
+                if (metadata.IsAsync)
+                {
+                    asyncSignal = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+                }
                 if (runtime.Context != null) 
                 {
                     runtime.Context.Permissions.Grant(FenBrowser.FenEngine.Security.JsPermissions.Eval);
                 }
-                // Suppress JS console output during benchmark runs
-                runtime.OnConsoleMessage = (msg) => Console.WriteLine($"[JS-CONSOLE] {msg}");
+                runtime.OnConsoleMessage = (msg) =>
+                {
+                    if (asyncSignal != null && !string.IsNullOrEmpty(msg))
+                    {
+                        if (msg.StartsWith(AsyncCompleteSignal, StringComparison.Ordinal))
+                        {
+                            asyncSignal.TrySetResult(AsyncCompleteSignal);
+                        }
+                        else if (msg.StartsWith(AsyncFailureSignalPrefix, StringComparison.Ordinal))
+                        {
+                            asyncSignal.TrySetResult(msg);
+                        }
+                    }
+                    Console.WriteLine($"[JS-CONSOLE] {msg}");
+                };
 
                 if (isModuleGoal &&
                     metadata.Negative &&
@@ -258,12 +293,40 @@ namespace FenBrowser.FenEngine.Testing
                     return FenBrowser.FenEngine.Core.FenValue.Undefined;
                 })));
                 runtime.GlobalEnv.Set("console", FenBrowser.FenEngine.Core.FenValue.FromObject(consoleObj));
+                runtime.GlobalEnv.Set("print", FenValue.FromFunction(new FenFunction("print", (args, thisVal) =>
+                {
+                    var msg = args.Length > 0 ? args[0].ToString() : "";
+                    runtime.OnConsoleMessage?.Invoke(msg);
+                    return FenValue.Undefined;
+                })));
+                var host262 = new FenObject();
+                host262.Set("detachArrayBuffer", FenValue.FromFunction(new FenFunction("detachArrayBuffer", (args, thisVal) =>
+                {
+                    if (args.Length == 0 || !args[0].IsObject || args[0].AsObject() is not FenBrowser.FenEngine.Core.Types.JsArrayBuffer jsArrayBuffer)
+                    {
+                        throw new Exception("TypeError: detachArrayBuffer expects an ArrayBuffer");
+                    }
+
+                    var transferFn = jsArrayBuffer.Get("transfer");
+                    if (!transferFn.IsFunction)
+                    {
+                        throw new Exception("TypeError: detachArrayBuffer host hook unavailable");
+                    }
+
+                    transferFn.AsFunction().Invoke(Array.Empty<FenValue>(), runtime.Context, FenValue.FromObject(jsArrayBuffer));
+                    return FenValue.Undefined;
+                })));
+                runtime.GlobalEnv.Set("$262", FenValue.FromObject(host262));
                 
                 // 2. Load Harness Files
                 // Default harness files required by most tests
                 var harnessPath = Path.Combine(_test262RootPath, "harness");
                 var assertJs = await File.ReadAllTextAsync(Path.Combine(harnessPath, "assert.js"));
                 var staJs = await File.ReadAllTextAsync(Path.Combine(harnessPath, "sta.js"));
+                if (metadata.IsAsync && !metadata.Includes.Any(x => string.Equals(x, "doneprintHandle.js", StringComparison.Ordinal)))
+                {
+                    metadata.Includes.Add("doneprintHandle.js");
+                }
                 
                 var preludeBuilder = new StringBuilder();
                 if (metadata.IsOnlyStrict)
@@ -361,7 +424,6 @@ namespace FenBrowser.FenEngine.Testing
 
                     if (completedTask == executionTask && !cts.IsCancellationRequested)
                     {
-                        cts.Cancel(); // stop watchdog
                         // Task completed within timeout
                         // Re-throw if the task itself faulted (unlikely due to try/catch inside ExecuteSimple but possible)
                         var resultValue = await executionTask; 
@@ -374,7 +436,7 @@ namespace FenBrowser.FenEngine.Testing
                         bool isError = false;
                         string errorMsg = "";
 
-                        // Check for Error/Throw value types only — no string-based heuristics
+                        // Check for Error/Throw value types only Ã¢â‚¬â€ no string-based heuristics
                         if (resultValue != null && (resultValue.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Error || resultValue.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Throw))
                         {
                             isError = true;
@@ -397,6 +459,33 @@ namespace FenBrowser.FenEngine.Testing
                             }
                         }
                         catch {}
+
+                        if (!isError && metadata.IsAsync && asyncSignal != null)
+                        {
+                            var asyncDeadline = DateTime.UtcNow.AddMilliseconds(_timeoutMs);
+                            while (!asyncSignal.Task.IsCompleted && DateTime.UtcNow < asyncDeadline)
+                            {
+                                EventLoopCoordinator.Instance.PerformMicrotaskCheckpoint();
+                                await Task.Delay(1);
+                            }
+
+                            if (!asyncSignal.Task.IsCompleted)
+                            {
+                                isError = true;
+                                errorMsg = $"Async test did not signal $DONE within {_timeoutMs}ms";
+                            }
+                            else
+                            {
+                                var signalValue = await asyncSignal.Task;
+                                if (!string.Equals(signalValue, AsyncCompleteSignal, StringComparison.Ordinal))
+                                {
+                                    isError = true;
+                                    errorMsg = signalValue;
+                                }
+                            }
+                        }
+
+                        cts.Cancel(); // stop watchdog
 
                         // If we reached here without exception
                         if (metadata.Negative)
@@ -536,56 +625,42 @@ namespace FenBrowser.FenEngine.Testing
                     meta.NegativePhase = phaseMatch.Groups[1].Value;
             }
             
-            // Parse features
-            var featuresMatch = Regex.Match(yaml, @"features:\s*\[(.*?)\]", RegexOptions.Singleline);
-            if (featuresMatch.Success)
+                        // Parse features
+            foreach (var feature in ParseYamlList(yaml, "features"))
             {
-                var features = featuresMatch.Groups[1].Value.Split(',');
-                foreach (var f in features)
+                if (!string.IsNullOrEmpty(feature))
                 {
-                    var trimmed = f.Trim().Trim('"', '\'');
-                    if (!string.IsNullOrEmpty(trimmed))
-                        meta.Features.Add(trimmed);
+                    meta.Features.Add(feature);
                 }
             }
             
             // Parse includes
-            var includesMatch = Regex.Match(yaml, @"includes:\s*\[(.*?)\]", RegexOptions.Singleline);
-            if (includesMatch.Success)
+            foreach (var include in ParseYamlList(yaml, "includes"))
             {
-                var includes = includesMatch.Groups[1].Value.Split(',');
-                foreach (var i in includes)
+                if (!string.IsNullOrEmpty(include))
                 {
-                    var trimmed = i.Trim().Trim('"', '\'');
-                    if (!string.IsNullOrEmpty(trimmed))
-                        meta.Includes.Add(trimmed);
+                    meta.Includes.Add(include);
                 }
             }
 
             // Parse flags
-            var flagsMatch = Regex.Match(yaml, @"flags:\s*\[(.*?)\]", RegexOptions.Singleline);
-            if (flagsMatch.Success)
+            foreach (var flag in ParseYamlList(yaml, "flags"))
             {
-                var flags = flagsMatch.Groups[1].Value.Split(',');
-                foreach (var f in flags)
+                if (string.Equals(flag, "onlyStrict", StringComparison.Ordinal))
                 {
-                    var flag = f.Trim().Trim('"', '\'');
-                    if (string.Equals(flag, "onlyStrict", StringComparison.Ordinal))
-                    {
-                        meta.IsOnlyStrict = true;
-                    }
-                    else if (string.Equals(flag, "noStrict", StringComparison.Ordinal))
-                    {
-                        meta.IsNoStrict = true;
-                    }
-                    else if (string.Equals(flag, "async", StringComparison.Ordinal))
-                    {
-                        meta.IsAsync = true;
-                    }
-                    else if (string.Equals(flag, "module", StringComparison.Ordinal))
-                    {
-                        meta.IsModule = true;
-                    }
+                    meta.IsOnlyStrict = true;
+                }
+                else if (string.Equals(flag, "noStrict", StringComparison.Ordinal))
+                {
+                    meta.IsNoStrict = true;
+                }
+                else if (string.Equals(flag, "async", StringComparison.Ordinal))
+                {
+                    meta.IsAsync = true;
+                }
+                else if (string.Equals(flag, "module", StringComparison.Ordinal))
+                {
+                    meta.IsModule = true;
                 }
             }
             
@@ -597,6 +672,69 @@ namespace FenBrowser.FenEngine.Testing
             
             return meta;
         }
+
+        private static List<string> ParseYamlList(string yaml, string key)
+        {
+            var values = new List<string>();
+
+            var inlineMatch = Regex.Match(
+                yaml,
+                $@"(?m)^\s*{Regex.Escape(key)}\s*:\s*\[(?<items>.*?)\]\s*$",
+                RegexOptions.Singleline);
+            if (inlineMatch.Success)
+            {
+                foreach (var token in inlineMatch.Groups["items"].Value.Split(','))
+                {
+                    var item = NormalizeYamlScalar(token);
+                    if (!string.IsNullOrEmpty(item))
+                    {
+                        values.Add(item);
+                    }
+                }
+            }
+
+            var blockMatch = Regex.Match(
+                yaml,
+                $@"(?ms)^\s*{Regex.Escape(key)}\s*:\s*\r?\n(?<body>(?:\s*-\s*.*(?:\r?\n|$))*)");
+            if (blockMatch.Success)
+            {
+                var lines = blockMatch.Groups["body"].Value.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (var line in lines)
+                {
+                    var listItemMatch = Regex.Match(line, @"^\s*-\s*(?<value>.+?)\s*$");
+                    if (!listItemMatch.Success)
+                    {
+                        continue;
+                    }
+
+                    var item = NormalizeYamlScalar(listItemMatch.Groups["value"].Value);
+                    if (!string.IsNullOrEmpty(item))
+                    {
+                        values.Add(item);
+                    }
+                }
+            }
+
+            return values.Distinct(StringComparer.Ordinal).ToList();
+        }
+
+        private static string NormalizeYamlScalar(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return string.Empty;
+            }
+
+            var noComment = raw;
+            var commentIdx = noComment.IndexOf('#');
+            if (commentIdx >= 0)
+            {
+                noComment = noComment.Substring(0, commentIdx);
+            }
+
+            return noComment.Trim().Trim('"', '\'');
+        }
+
         
         /// <summary>
         /// Generate summary report.

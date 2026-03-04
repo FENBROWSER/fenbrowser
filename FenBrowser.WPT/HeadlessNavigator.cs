@@ -7,7 +7,9 @@
 // =============================================================================
 
 using FenBrowser.Core.Dom.V2;
+using FenBrowser.Core.Accessibility;
 using FenBrowser.FenEngine.Core;
+using FenBrowser.FenEngine.DOM;
 using FenBrowser.FenEngine.HTML;
 using FenBrowser.FenEngine.WebAPIs;
 
@@ -16,8 +18,12 @@ namespace FenBrowser.WPT;
 public sealed class HeadlessNavigator
 {
     private const string MinimalHarnessScript = @"
-var __fenMiniHarnessPendingAsync = 0;
+var self = (typeof globalThis !== 'undefined') ? globalThis : this;
 var __fenMiniHarnessDoneSignaled = false;
+var __fenMiniHarnessRunScheduled = false;
+var __fenMiniHarnessRunning = false;
+var __fenMiniHarnessSetupPromise = Promise.resolve();
+var __fenMiniHarnessQueue = [];
 
 function __fenMiniHarnessToMessage(e) {
   try {
@@ -36,8 +42,8 @@ function __fenMiniHarnessReport(name, pass, message) {
   } catch (_) {}
 }
 
-function __fenMiniHarnessMaybeDone() {
-  if (__fenMiniHarnessDoneSignaled || __fenMiniHarnessPendingAsync !== 0) { return; }
+function __fenMiniHarnessNotifyDone() {
+  if (__fenMiniHarnessDoneSignaled) { return; }
   __fenMiniHarnessDoneSignaled = true;
   try {
     if (typeof testRunner !== 'undefined' && testRunner && typeof testRunner.reportHarnessStatus === 'function') {
@@ -49,64 +55,34 @@ function __fenMiniHarnessMaybeDone() {
   } catch (_) {}
 }
 
-function setup() {}
-
-function test(fn, name) {
-  var testName = name || 'unnamed';
-  try {
-    fn();
-    __fenMiniHarnessReport(testName, true, '');
-  } catch (e) {
-    __fenMiniHarnessReport(testName, false, __fenMiniHarnessToMessage(e));
-  }
-}
-
-function promise_test(fn, name) {
-  var testName = name || 'unnamed';
-  __fenMiniHarnessPendingAsync++;
-  try {
-    Promise.resolve(fn()).then(function () {
-      __fenMiniHarnessReport(testName, true, '');
-      __fenMiniHarnessPendingAsync--;
-      __fenMiniHarnessMaybeDone();
-    }, function (e) {
-      __fenMiniHarnessReport(testName, false, __fenMiniHarnessToMessage(e));
-      __fenMiniHarnessPendingAsync--;
-      __fenMiniHarnessMaybeDone();
-    });
-  } catch (e) {
-    __fenMiniHarnessReport(testName, false, __fenMiniHarnessToMessage(e));
-    __fenMiniHarnessPendingAsync--;
-    __fenMiniHarnessMaybeDone();
-  }
-}
-
-function async_test(name) {
-  var testName = name || 'unnamed';
-  var finished = false;
-  __fenMiniHarnessPendingAsync++;
-
-  function finish(pass, message) {
-    if (finished) { return; }
-    finished = true;
-    __fenMiniHarnessReport(testName, pass, message);
-    __fenMiniHarnessPendingAsync--;
-    __fenMiniHarnessMaybeDone();
-  }
-
+function __fenCreateTestContext(testName, finish) {
+  var cleanups = [];
   return {
-    step_func: function (cb) {
+    add_cleanup: function (fn) {
+      if (typeof fn === 'function') { cleanups.push(fn); }
+    },
+    step_func: function (cb, this_obj) {
+      var ctx = (arguments.length > 1) ? this_obj : this;
       return function () {
         try {
-          cb.apply(this, arguments);
+          return cb.apply(ctx, arguments);
         } catch (e) {
           finish(false, __fenMiniHarnessToMessage(e));
+          return undefined;
         }
       };
     },
+    step_func_done: function (cb, this_obj) {
+      var wrapped = this.step_func(typeof cb === ""function"" ? cb : function () {}, this_obj);
+      var selfRef = this;
+      return function () {
+        var ret = wrapped.apply(this, arguments);
+        selfRef.done();
+        return ret;
+      };
+    },
     step_timeout: function (cb, ms) {
-      var self = this;
-      setTimeout(self.step_func(cb), ms || 0);
+      setTimeout(this.step_func(cb), ms || 0);
     },
     unreached_func: function (message) {
       return function () {
@@ -115,11 +91,111 @@ function async_test(name) {
     },
     done: function () {
       finish(true, '');
-    }
+    },
+    __run_cleanups: async function () {
+      while (cleanups.length > 0) {
+        var fn = cleanups.pop();
+        try {
+          await Promise.resolve(fn());
+        } catch (_) {}
+      }
+    },
+    __name: testName
   };
 }
 
-function done() { __fenMiniHarnessMaybeDone(); }
+function __fenMiniHarnessQueueTest(name, body) {
+  __fenMiniHarnessQueue.push({ name: name || 'unnamed', body: body });
+  __fenMiniHarnessKick();
+}
+
+async function __fenMiniHarnessRun() {
+  if (__fenMiniHarnessRunning) { return; }
+  __fenMiniHarnessRunning = true;
+  try {
+    while (__fenMiniHarnessQueue.length > 0) {
+      var item = __fenMiniHarnessQueue.shift();
+      var finished = false;
+      var resolveFinish;
+      var finishPromise = new Promise(function (resolve) { resolveFinish = resolve; });
+      var ctx = __fenCreateTestContext(item.name, function (pass, message) {
+        if (finished) { return; }
+        finished = true;
+        __fenMiniHarnessReport(item.name, pass, message);
+        resolveFinish();
+      });
+
+      try {
+        await __fenMiniHarnessSetupPromise;
+        await Promise.resolve(item.body(ctx));
+        if (!finished) { ctx.done(); }
+      } catch (e) {
+        if (!finished) {
+          __fenMiniHarnessReport(item.name, false, __fenMiniHarnessToMessage(e));
+          resolveFinish();
+        }
+      }
+
+      await finishPromise;
+      await ctx.__run_cleanups();
+    }
+  } finally {
+    __fenMiniHarnessRunning = false;
+    __fenMiniHarnessNotifyDone();
+  }
+}
+
+function __fenMiniHarnessKick() {
+  if (__fenMiniHarnessRunScheduled) { return; }
+  __fenMiniHarnessRunScheduled = true;
+  setTimeout(function () {
+    __fenMiniHarnessRunScheduled = false;
+    __fenMiniHarnessRun();
+  }, 0);
+}
+
+function setup(fn) {
+  if (typeof fn === 'function') {
+    __fenMiniHarnessSetupPromise = __fenMiniHarnessSetupPromise.then(function () { return fn(); });
+  }
+}
+
+function promise_setup(fn) {
+  setup(fn);
+}
+
+function test(fn, name) {
+  __fenMiniHarnessQueueTest(name, function (t) {
+    return fn.call(t, t);
+  });
+}
+
+function promise_test(fn, name) {
+  __fenMiniHarnessQueueTest(name, function (t) {
+    return Promise.resolve(fn.call(t, t));
+  });
+}
+
+function async_test(fnOrName, maybeName) {
+  var name = typeof fnOrName === 'function' ? maybeName : fnOrName;
+  if (typeof fnOrName === 'function') {
+    __fenMiniHarnessQueueTest(name, function (t) {
+      return new Promise(function (resolve) {
+        var oldDone = t.done;
+        t.done = function () { oldDone(); resolve(); };
+        try {
+          fnOrName.call(t, t);
+        } catch (e) {
+          __fenMiniHarnessReport(t.__name, false, __fenMiniHarnessToMessage(e));
+          resolve();
+        }
+      });
+    });
+  }
+  return __fenCreateTestContext(name || 'unnamed', function () {});
+}
+
+function done() { __fenMiniHarnessNotifyDone(); }
 function assert_true(value, message) { if (!value) { throw new Error(message || 'assert_true failed'); } }
 function assert_false(value, message) { if (value) { throw new Error(message || 'assert_false failed'); } }
 function assert_equals(actual, expected, message) {
@@ -128,6 +204,25 @@ function assert_equals(actual, expected, message) {
 function assert_not_equals(actual, expected, message) {
   if (actual === expected) { throw new Error(message || ('assert_not_equals failed: both are ' + actual)); }
 }
+function assert_less_than(actual, expected, message) {
+  if (!(actual < expected)) { throw new Error(message || ('assert_less_than failed: ' + actual + ' >= ' + expected)); }
+}
+function assert_less_than_equal(actual, expected, message) {
+  if (!(actual <= expected)) { throw new Error(message || ('assert_less_than_equal failed: ' + actual + ' > ' + expected)); }
+}
+function assert_greater_than(actual, expected, message) {
+  if (!(actual > expected)) { throw new Error(message || ('assert_greater_than failed: ' + actual + ' <= ' + expected)); }
+}
+function assert_greater_than_equal(actual, expected, message) {
+  if (!(actual >= expected)) { throw new Error(message || ('assert_greater_than_equal failed: ' + actual + ' < ' + expected)); }
+}
+function assert_approx_equals(actual, expected, epsilon, message) {
+  if (Math.abs(actual - expected) > epsilon) { throw new Error(message || ('assert_approx_equals failed: ' + actual + ' !~= ' + expected)); }
+}
+function assert_implements(value, message) {
+  if (!value) { throw new Error(message || 'assert_implements failed'); }
+}
+function assert_implements_optional(_value, _message) {}
 function assert_throws_dom(_name, fn, message) {
   var threw = false;
   try { fn(); } catch (e) { threw = true; }
@@ -135,8 +230,35 @@ function assert_throws_dom(_name, fn, message) {
 }
 function assert_throws_js(_ctor, fn, message) {
   var threw = false;
-  try { fn(); } catch (e) { threw = true; }
+  try {
+    var result = fn();
+    if (result && typeof result === 'object') {
+      var n = result.name;
+      var m = result.message;
+      if ((typeof n === 'string' && n.length > 0) || (typeof m === 'string' && m.length > 0)) {
+        threw = true;
+      }
+    }
+  } catch (e) { threw = true; }
   if (!threw) { throw new Error(message || 'Expected JS exception was not thrown'); }
+}
+function promise_rejects_js(_test, ctor, promise, message) {
+  return Promise.resolve(promise).then(function () {
+    throw new Error(message || 'Expected promise rejection');
+  }, function (err) {
+    if (typeof ctor === 'function' && !(err instanceof ctor)) {
+      throw new Error(message || 'Rejected with unexpected error type');
+    }
+  });
+}
+function promise_rejects_exactly(_test, expected, promise, message) {
+  return Promise.resolve(promise).then(function () {
+    throw new Error(message || 'Expected promise rejection');
+  }, function (err) {
+    if (err !== expected) {
+      throw new Error(message || 'Rejected with unexpected error object');
+    }
+  });
 }
 function assert_unreached(message) { throw new Error(message || 'Reached unreachable code'); }
 function assert_array_equals(actual, expected, message) {
@@ -149,10 +271,59 @@ function assert_array_equals(actual, expected, message) {
     }
   }
 }
+function assert_array_approx_equals(actual, expected, epsilon, message) {
+  if (!actual || !expected || actual.length !== expected.length) {
+    throw new Error(message || 'assert_array_approx_equals length mismatch');
+  }
+  for (var i = 0; i < actual.length; i++) {
+    if (Math.abs(actual[i] - expected[i]) > epsilon) {
+      throw new Error(message || ('assert_array_approx_equals mismatch at index ' + i));
+    }
+  }
+}
+function assert_own_property(obj, prop, message) {
+  if (obj === null || obj === undefined || !Object.prototype.hasOwnProperty.call(obj, prop)) {
+    throw new Error(message || ('assert_own_property failed: missing own property ' + prop));
+  }
+}
+function assert_not_own_property(obj, prop, message) {
+  if (obj !== null && obj !== undefined && Object.prototype.hasOwnProperty.call(obj, prop)) {
+    throw new Error(message || ('assert_not_own_property failed: unexpected own property ' + prop));
+  }
+}
+function format_value(v) {
+  try { return String(v); } catch (_) { return '<unprintable>'; }
+}
 
-setTimeout(__fenMiniHarnessMaybeDone, 0);
+function EventWatcher(t, target, events) {
+  this.t = t;
+  this.target = target;
+  this.events = Array.isArray(events) ? events : [events];
+}
+EventWatcher.prototype.wait_for = function (eventName) {
+  var selfRef = this;
+  return new Promise(function (resolve, reject) {
+    var handler = function (ev) {
+      if (selfRef.target && typeof selfRef.target.removeEventListener === 'function') {
+        selfRef.target.removeEventListener(eventName, handler);
+      }
+      resolve(ev || { type: eventName, data: undefined, timeStamp: (performance && performance.now) ? performance.now() : Date.now() });
+    };
+    if (!selfRef.target || typeof selfRef.target.addEventListener !== 'function') {
+      reject(new Error('Event target does not support addEventListener'));
+      return;
+    }
+    selfRef.target.addEventListener(eventName, handler);
+    if (selfRef.t && typeof selfRef.t.add_cleanup === 'function') {
+      selfRef.t.add_cleanup(function () {
+        if (selfRef.target && typeof selfRef.target.removeEventListener === 'function') {
+          selfRef.target.removeEventListener(eventName, handler);
+        }
+      });
+    }
+  });
+};
 ";
-
     private const string HarnessBridgeScript = @"
 (function () {
   if (typeof globalThis === 'undefined') { return; }
@@ -191,7 +362,244 @@ setTimeout(__fenMiniHarnessMaybeDone, 0);
   } catch (e) {}
 })();
 ";
+    private const string TestDriverShimScript = @"
+/* FenBrowser WPT test_driver shim: accessibility helpers + virtual generic sensors. */
+(function () {
+  var g = (typeof globalThis !== 'undefined') ? globalThis : this;
+  var nextSensorId = 1;
+  var permissions = {};
+  var sensorsByType = {};
 
+  function nowMs() {
+    try { return (performance && performance.now) ? performance.now() : Date.now(); } catch (_) { return Date.now(); }
+  }
+
+  function normalizeVirtualType(name) {
+    if (!name) return '';
+    var n = String(name).toLowerCase();
+    if (n.indexOf('accelerometer') >= 0) return 'accelerometer';
+    if (n.indexOf('linear') >= 0) return 'linearacceleration';
+    if (n.indexOf('gravity') >= 0) return 'gravity';
+    return n;
+  }
+
+  function ctorToPermission(typeName) {
+    if (typeName === 'Accelerometer' || typeName === 'LinearAccelerationSensor' || typeName === 'GravitySensor') {
+      return 'accelerometer';
+    }
+    return typeName.toLowerCase();
+  }
+
+  function createEventTarget(owner) {
+    owner.__listeners = {};
+    owner.addEventListener = function (name, cb) {
+      if (typeof cb !== 'function') return;
+      if (!owner.__listeners[name]) owner.__listeners[name] = [];
+      owner.__listeners[name].push(cb);
+    };
+    owner.removeEventListener = function (name, cb) {
+      var arr = owner.__listeners[name];
+      if (!arr) return;
+      owner.__listeners[name] = arr.filter(function (x) { return x !== cb; });
+    };
+    owner.__dispatch = function (name, payload) {
+      var ev = payload || {};
+      ev.type = name;
+      ev.timeStamp = nowMs();
+      var prop = 'on' + name;
+      if (typeof owner[prop] === 'function') {
+        try { owner[prop](ev); } catch (_) {}
+      }
+      var arr = owner.__listeners[name] || [];
+      for (var i = 0; i < arr.length; i++) {
+        try { arr[i](ev); } catch (_) {}
+      }
+    };
+  }
+
+  function getVirtualInfo(type) {
+    var key = normalizeVirtualType(type);
+    if (!sensorsByType[key]) {
+      sensorsByType[key] = {
+        connected: true,
+        minSamplingFrequency: 1,
+        maxSamplingFrequency: 60,
+        requestedSamplingFrequency: 60,
+        lastReading: null,
+        instances: []
+      };
+    }
+    return sensorsByType[key];
+  }
+
+  function recomputeRequestedFrequency(vs) {
+    var maxReq = vs.minSamplingFrequency;
+    for (var i = 0; i < vs.instances.length; i++) {
+      var s = vs.instances[i];
+      if (!s.activated) continue;
+      if (s.__requestedFrequency > maxReq) maxReq = s.__requestedFrequency;
+    }
+    if (maxReq < vs.minSamplingFrequency) maxReq = vs.minSamplingFrequency;
+    if (maxReq > vs.maxSamplingFrequency) maxReq = vs.maxSamplingFrequency;
+    if (maxReq > 60) maxReq = 60;
+    vs.requestedSamplingFrequency = maxReq;
+  }
+
+  function SensorBase(typeName, options) {
+    options = options || {};
+    createEventTarget(this);
+    var freq = options.frequency;
+    if (freq !== undefined) {
+      if (typeof freq !== 'number' || !isFinite(freq)) {
+        throw new TypeError('Invalid frequency');
+      }
+    }
+    this.__id = nextSensorId++;
+    this.__typeName = typeName;
+    this.__permissionName = ctorToPermission(typeName);
+    this.__virtualType = normalizeVirtualType(typeName);
+    this.__requestedFrequency = (typeof freq === 'number' ? freq : 60);
+    if (this.__requestedFrequency < 1) this.__requestedFrequency = 1;
+    if (this.__requestedFrequency > 60) this.__requestedFrequency = 60;
+    this.activated = false;
+    this.hasReading = false;
+    this.timestamp = null;
+    this.x = null;
+    this.y = null;
+    this.z = null;
+    this.onerror = null;
+    this.onreading = null;
+    this.onactivate = null;
+  }
+
+  SensorBase.prototype.start = function () {
+    var perm = permissions[this.__permissionName] || 'granted';
+    var info = getVirtualInfo(this.__virtualType);
+    if (perm === 'denied') {
+      this.activated = false;
+      this.__dispatch('error', { error: { name: 'NotAllowedError' } });
+      return;
+    }
+    if (!info.connected) {
+      this.activated = false;
+      this.__dispatch('error', { error: { name: 'NotReadableError' } });
+      return;
+    }
+    if (info.instances.indexOf(this) < 0) info.instances.push(this);
+    this.activated = true;
+    recomputeRequestedFrequency(info);
+    this.__dispatch('activate', {});
+    if (info.lastReading) {
+      this.__applyReading(info.lastReading);
+      this.__dispatch('reading', {});
+    }
+  };
+
+  SensorBase.prototype.stop = function () {
+    var info = getVirtualInfo(this.__virtualType);
+    this.activated = false;
+    this.hasReading = false;
+    this.timestamp = null;
+    this.x = null;
+    this.y = null;
+    this.z = null;
+    recomputeRequestedFrequency(info);
+  };
+
+  SensorBase.prototype.__applyReading = function (reading) {
+    reading = reading || {};
+    this.x = (reading.x !== undefined) ? reading.x : ((reading.values && reading.values.length > 0) ? reading.values[0] : 0);
+    this.y = (reading.y !== undefined) ? reading.y : ((reading.values && reading.values.length > 1) ? reading.values[1] : 0);
+    this.z = (reading.z !== undefined) ? reading.z : ((reading.values && reading.values.length > 2) ? reading.values[2] : 0);
+    this.timestamp = nowMs();
+    this.hasReading = true;
+  };
+
+  function Accelerometer(options) { SensorBase.call(this, 'Accelerometer', options); }
+  Accelerometer.prototype = Object.create(SensorBase.prototype);
+  Accelerometer.prototype.constructor = Accelerometer;
+
+  function LinearAccelerationSensor(options) { SensorBase.call(this, 'LinearAccelerationSensor', options); }
+  LinearAccelerationSensor.prototype = Object.create(SensorBase.prototype);
+  LinearAccelerationSensor.prototype.constructor = LinearAccelerationSensor;
+
+  function GravitySensor(options) { SensorBase.call(this, 'GravitySensor', options); }
+  GravitySensor.prototype = Object.create(SensorBase.prototype);
+  GravitySensor.prototype.constructor = GravitySensor;
+
+  g.Accelerometer = g.Accelerometer || Accelerometer;
+  g.LinearAccelerationSensor = g.LinearAccelerationSensor || LinearAccelerationSensor;
+  g.GravitySensor = g.GravitySensor || GravitySensor;
+  g.self = g.self || g;
+
+  function updateVirtualSensor(type, reading) {
+    var info = getVirtualInfo(type);
+    info.lastReading = reading || {};
+    for (var i = 0; i < info.instances.length; i++) {
+      var s = info.instances[i];
+      if (!s.activated) continue;
+      s.__applyReading(info.lastReading);
+      s.__dispatch('reading', {});
+    }
+  }
+
+  var test_driver = {
+    click: function () { return Promise.resolve(); },
+    get_computed_label: function(el) {
+      try { return Promise.resolve(__fenGetComputedLabel(el)); } catch(e) { return Promise.reject(e); }
+    },
+    get_computed_role: function(el) {
+      try { return Promise.resolve(__fenGetComputedRole(el)); } catch(e) { return Promise.reject(e); }
+    },
+    create_virtual_sensor: function(type, opts) {
+      opts = opts || {};
+      var info = getVirtualInfo(type);
+      info.connected = (opts.connected !== false);
+      if (typeof opts.minSamplingFrequency === 'number') info.minSamplingFrequency = opts.minSamplingFrequency;
+      if (typeof opts.maxSamplingFrequency === 'number') info.maxSamplingFrequency = opts.maxSamplingFrequency;
+      recomputeRequestedFrequency(info);
+      return Promise.resolve();
+    },
+    remove_virtual_sensor: function(type) {
+      var info = getVirtualInfo(type);
+      info.connected = true;
+      info.lastReading = null;
+      info.instances = [];
+      info.requestedSamplingFrequency = 60;
+      return Promise.resolve();
+    },
+    update_virtual_sensor: function(type, reading) {
+      updateVirtualSensor(type, reading);
+      return Promise.resolve();
+    },
+    get_virtual_sensor_information: function(type) {
+      var info = getVirtualInfo(type);
+      recomputeRequestedFrequency(info);
+      return Promise.resolve({
+        requestedSamplingFrequency: info.requestedSamplingFrequency,
+        minSamplingFrequency: info.minSamplingFrequency,
+        maxSamplingFrequency: info.maxSamplingFrequency
+      });
+    },
+    bidi: {
+      permissions: {
+        set_permission: function(data) {
+          var descriptor = data && data.descriptor ? data.descriptor : {};
+          var name = descriptor.name ? String(descriptor.name) : '';
+          permissions[name] = data && data.state ? String(data.state) : 'granted';
+          return Promise.resolve();
+        }
+      }
+    }
+  };
+
+  if (typeof window !== 'undefined') { window.test_driver = test_driver; }
+  if (typeof window !== 'undefined' && !window.test_driver_internal) {
+    window.test_driver_internal = test_driver;
+  }
+  g.test_driver = test_driver;
+})();
+";
     private readonly string? _wptRootPath;
     private readonly int _timeoutMs;
 
@@ -210,8 +618,40 @@ setTimeout(__fenMiniHarnessMaybeDone, 0);
         var builder = new HtmlTreeBuilder(tokenizer);
         var document = builder.Build();
 
-        var runtime = new FenRuntime();
+        var runtime = new FenRuntime(new FenBrowser.FenEngine.Core.ExecutionContext(new FenBrowser.FenEngine.Security.PermissionManager(FenBrowser.FenEngine.Security.JsPermissions.StandardWeb)));
         TestHarnessAPI.Register(runtime);
+
+        // Inject parsed DOM through the runtime DOM bridge so global/window/document stay coherent.
+        Uri? baseUri = null;
+        try { baseUri = new Uri(filePath); } catch { }
+        runtime.SetDom(document, baseUri);
+
+        // Register C# host functions for accessibility (used by TestDriverShimScript).
+        runtime.GlobalEnv.Set("__fenGetComputedLabel",
+            FenBrowser.FenEngine.Core.FenValue.FromFunction(new FenBrowser.FenEngine.Core.FenFunction(
+                "__fenGetComputedLabel", (args, thisVal) =>
+                {
+                    if (args.Length > 0 && args[0].IsObject && args[0].AsObject() is ElementWrapper ew)
+                    {
+                        var label = AccNameCalculator.Compute(ew.Element, ew.Element.OwnerDocument);
+                        return FenBrowser.FenEngine.Core.FenValue.FromString(label);
+                    }
+                    return FenBrowser.FenEngine.Core.FenValue.FromString("");
+                })));
+
+        runtime.GlobalEnv.Set("__fenGetComputedRole",
+            FenBrowser.FenEngine.Core.FenValue.FromFunction(new FenBrowser.FenEngine.Core.FenFunction(
+                "__fenGetComputedRole", (args, thisVal) =>
+                {
+                    if (args.Length > 0 && args[0].IsObject && args[0].AsObject() is ElementWrapper ew)
+                    {
+                        var role = AccessibilityRole.ResolveRole(ew.Element, ew.Element.OwnerDocument);
+                        if (role == AriaRole.None || role == AriaRole.Generic)
+                            return FenBrowser.FenEngine.Core.FenValue.FromString("");
+                        return FenBrowser.FenEngine.Core.FenValue.FromString(role.ToString().ToLowerInvariant());
+                    }
+                    return FenBrowser.FenEngine.Core.FenValue.FromString("");
+                })));
         runtime.OnConsoleMessage = msg =>
         {
             var level = "log";
@@ -242,6 +682,17 @@ setTimeout(__fenMiniHarnessMaybeDone, 0);
                 {
                     code = "/* FenBrowser shim: testharnessreport.js intentionally no-op */";
                     scriptLabel = "fen-minimal-testharnessreport.js";
+                }
+                else if (IsTestDriverScript(src))
+                {
+                    code = TestDriverShimScript;
+                    scriptLabel = "fen-testdriver-shim.js";
+                }
+                else if (IsTestDriverSupportScript(src))
+                {
+                    // testdriver-vendor.js and testdriver-actions.js: no-op shim.
+                    code = "/* FenBrowser shim: testdriver support script intentionally no-op */";
+                    scriptLabel = "fen-testdriver-support-noop.js";
                 }
                 else
                 {
@@ -413,13 +864,36 @@ setTimeout(__fenMiniHarnessMaybeDone, 0);
     private static bool IsTestHarnessScript(string src)
     {
         if (string.IsNullOrWhiteSpace(src)) return false;
-        return src.Replace('\\', '/').EndsWith("/resources/testharness.js", StringComparison.OrdinalIgnoreCase);
+        var normalized = src.Replace('\\', '/');
+        var queryIndex = normalized.IndexOf('?');
+        if (queryIndex >= 0) normalized = normalized.Substring(0, queryIndex);
+        return normalized.EndsWith("/resources/testharness.js", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("/resources/testharness.js", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsTestHarnessReportScript(string src)
     {
         if (string.IsNullOrWhiteSpace(src)) return false;
-        return src.Replace('\\', '/').EndsWith("/resources/testharnessreport.js", StringComparison.OrdinalIgnoreCase);
+        var normalized = src.Replace('\\', '/');
+        var queryIndex = normalized.IndexOf('?');
+        if (queryIndex >= 0) normalized = normalized.Substring(0, queryIndex);
+        return normalized.EndsWith("/resources/testharnessreport.js", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("/resources/testharnessreport.js", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsTestDriverScript(string src)
+    {
+        if (string.IsNullOrWhiteSpace(src)) return false;
+        var normalized = src.Replace('\\', '/');
+        return normalized.EndsWith("/resources/testdriver.js", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsTestDriverSupportScript(string src)
+    {
+        if (string.IsNullOrWhiteSpace(src)) return false;
+        var normalized = src.Replace('\\', '/');
+        return normalized.EndsWith("/resources/testdriver-vendor.js", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith("/resources/testdriver-actions.js", StringComparison.OrdinalIgnoreCase);
     }
 
     private static List<(string? Src, string Content, bool IsExternal)> ExtractScripts(Document document)
@@ -454,3 +928,16 @@ setTimeout(__fenMiniHarnessMaybeDone, 0);
         }
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
