@@ -2708,3 +2708,15 @@ Verification snapshot (2026-03-05):
 - Static scan: `CssLoader.cs` direct `Task.Run` count `3 -> 0`.
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass.
 - Targeted tests (`Bytecode_WithStatement_RespectsUnscopables|ModuleLoaderTests|HistoryApiTests`): `15/15` pass.
+
+### 2.47 Runtime Hardening (2026-03-05, DevTools CSS matched-rule recursion + viewport-safe cache key)
+- Rendering/Css/CssLoader.cs
+  - `GetMatchedRules(...)` now recursively traverses nested CSS rule containers (`@media`, `@layer`, `@scope`) for DevTools matched-rule extraction.
+  - Added scope-aware filtering for scoped rules prior to selector specificity matching.
+  - Upgraded parse cache key for this path to include active viewport dimensions (`MediaViewportWidth`, `MediaViewportHeight`) so matched-rule parsing remains correct across viewport changes.
+  - Removed prior TODO-only handling for media-rule nesting in DevTools inspection.
+
+Verification snapshot (2026-03-05):
+- Static scan: media-nesting TODO removed from `CssLoader.GetMatchedRules`.
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass.
+- Targeted tests (`CssMediaRangeQueryTests|CascadeModernTests`): `6/6` pass.

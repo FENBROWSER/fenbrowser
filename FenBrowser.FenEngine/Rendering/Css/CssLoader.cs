@@ -1,4 +1,4 @@
-﻿using FenBrowser.Core.Css;
+using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
@@ -48,7 +48,7 @@ namespace FenBrowser.FenEngine.Rendering
         private static readonly Dictionary<Element, List<NewCss.CssRule>> _elementMatchedRulesCache = new Dictionary<Element, List<NewCss.CssRule>>();
         private static readonly Dictionary<Element, CssComputed> _elementStyleCache = new Dictionary<Element, CssComputed>();
 
-        // UA stylesheet cache â€” read from disk only once per process lifetime
+        // UA stylesheet cache — read from disk only once per process lifetime
         private static string _cachedUaCss;
 
         // CSS Custom Properties (CSS Variables) storage - keyed by property name (e.g., "--primary-color")
@@ -104,34 +104,98 @@ namespace FenBrowser.FenEngine.Rendering
         {
              var matched = new List<MatchedRule>();
              if (element == null || sources == null) return matched;
+             double? viewportWidth = CssParser.MediaViewportWidth;
+             double? viewportHeight = CssParser.MediaViewportHeight;
+
+             bool MatchesScope(NewCss.CssStyleRule styleRule)
+             {
+                 if (styleRule == null || string.IsNullOrEmpty(styleRule.ScopeSelector))
+                 {
+                     return true;
+                 }
+
+                 var current = element.ParentElement;
+                 while (current != null)
+                 {
+                     if (SelectorMatcher.Matches(current, styleRule.ScopeSelector))
+                     {
+                         return true;
+                     }
+
+                     current = current.ParentElement;
+                 }
+
+                 return false;
+             }
+
+             void CollectMatchedRules(NewCss.CssRule rule, CssSource source)
+             {
+                 if (rule is NewCss.CssStyleRule styleRule)
+                 {
+                     if (!MatchesScope(styleRule))
+                     {
+                         return;
+                     }
+
+                     var spec = SelectorMatcher.GetMatchingSpecificity(element, styleRule.Selector);
+                     if (spec.HasValue)
+                     {
+                         matched.Add(new MatchedRule { Rule = styleRule, Source = source, Specificity = spec.Value });
+                     }
+
+                     return;
+                 }
+
+                 if (rule is NewCss.CssMediaRule mediaRule)
+                 {
+                     if (EvaluateMediaQuery(mediaRule.Condition, viewportWidth))
+                     {
+                         foreach (var child in mediaRule.Rules)
+                         {
+                             CollectMatchedRules(child, source);
+                         }
+                     }
+
+                     return;
+                 }
+
+                 if (rule is NewCss.CssLayerRule layerRule)
+                 {
+                     foreach (var child in layerRule.Rules)
+                     {
+                         CollectMatchedRules(child, source);
+                     }
+
+                     return;
+                 }
+
+                 if (rule is NewCss.CssScopeRule scopeRule)
+                 {
+                     foreach (var child in scopeRule.Rules)
+                     {
+                         CollectMatchedRules(child, source);
+                     }
+                 }
+             }
              
              foreach(var source in sources)
              {
                  try
                  {
                      List<NewCss.CssRule> rules;
-                     string parseCacheKey = BuildParsedRuleCacheKey(source.CssText, null, null);
+                     string parseCacheKey = BuildParsedRuleCacheKey(source.CssText, viewportWidth, viewportHeight);
                      lock (_parsedRulesCache)
                      {
                          if (!_parsedRulesCache.TryGetValue(parseCacheKey, out rules))
                          {
-                             rules = ParseRules(source.CssText, source.SourceOrder, source.BaseUri, null, null, null, MapToNewCssOrigin(source.Origin));
+                             rules = ParseRules(source.CssText, source.SourceOrder, source.BaseUri, viewportWidth, viewportHeight, null, MapToNewCssOrigin(source.Origin));
                              _parsedRulesCache[parseCacheKey] = rules;
                          }
                      }
 
                      foreach(var rule in rules)
                      {
-                         if (rule is NewCss.CssStyleRule styleRule)
-                         {
-                             // Specificity calculation
-                             var spec = SelectorMatcher.GetMatchingSpecificity(element, styleRule.Selector);
-                             if (spec.HasValue)
-                             {
-                                 matched.Add(new MatchedRule { Rule = rule, Source = source, Specificity = spec.Value });
-                             }
-                         }
-                         // TODO: Support media rules nesting for DevTools inspection
+                         CollectMatchedRules(rule, source);
                      }
                  }
                  catch (Exception parseEx)
@@ -160,7 +224,6 @@ namespace FenBrowser.FenEngine.Rendering
              });
              return matched;
         }
-
         // ===========================
         // Public API
         // ===========================
@@ -353,7 +416,7 @@ namespace FenBrowser.FenEngine.Rendering
                     continue;
                 }
 
-                // SRI â€” capture integrity attribute before the async closure
+                // SRI — capture integrity attribute before the async closure
                 string sriIntegrity = link.GetAttribute("integrity");
                 
                 DebugLog(@"css_debug_v2.txt", $"[LINK] Found stylesheet href='{href}'\r\n");
@@ -395,11 +458,11 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         var css = await fetchExternalCssAsync(abs).ConfigureAwait(false);
                         /* [PERF-REMOVED] */
-                        // SRI check â€” if the link has an integrity attribute, verify before applying
+                        // SRI check — if the link has an integrity attribute, verify before applying
                         if (!string.IsNullOrWhiteSpace(css) && !VerifySriIntegrity(css, sriIntegrity))
                         {
                             Log(log, $"[CssLoader] [SRI] Blocked stylesheet (hash mismatch): {abs}");
-                            return; // Drop this stylesheet â€” integrity check failed
+                            return; // Drop this stylesheet — integrity check failed
                         }
                         // Limit CSS size to prevent crashes on massive stylesheets (GitHub, etc.)
                         const int MAX_CSS_SIZE = 2_000_000; // 2MB per stylesheet
@@ -6121,7 +6184,7 @@ private static double? ExtractPx(string text, string prop)
     /// <summary>
     /// Verifies Subresource Integrity (SRI) for fetched content.
     /// Returns true if integrity is absent (no check needed) or if at least one hash token matches.
-    /// Returns false if one or more tokens are present and none match â€” caller must block the resource.
+    /// Returns false if one or more tokens are present and none match — caller must block the resource.
     /// Supported algorithms: sha256, sha384, sha512.
     /// </summary>
     private static bool VerifySriIntegrity(string content, string integrity)
@@ -6148,18 +6211,19 @@ private static double? ExtractPx(string text, string prop)
                     "sha512" => System.Security.Cryptography.SHA512.Create(),
                     _ => null
                 };
-                if (alg == null) continue; // Unknown algorithm â€” skip this token
+                if (alg == null) continue; // Unknown algorithm — skip this token
                 hash = alg.ComputeHash(bytes);
             }
             catch { continue; }
 
             if (Convert.ToBase64String(hash) == expectedB64) return true;
         }
-        // No token matched â€” block the resource
+        // No token matched — block the resource
         return false;
     }
 }
 }
+
 
 
 
