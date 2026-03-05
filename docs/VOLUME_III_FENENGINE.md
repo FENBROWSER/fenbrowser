@@ -2753,3 +2753,13 @@ Verification snapshot (2026-03-05):
 - Static scan: `WorkerGlobalScope.cs` direct `Task.Run` count `2 -> 0`.
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass.
 - Targeted tests (`WorkerTimerTests|WorkerTests`): `26/26` pass.
+
+### 2.51 Runtime Hardening (2026-03-05, JavaScriptEngine microtask detached scheduler convergence)
+- Scripting/JavaScriptEngine.Methods.cs
+  - Replaced direct `Task.Run` microtask pump scheduling with existing detached helper (`RunDetached`) in both initial enqueue scheduling and max-drain reschedule paths.
+  - Aligns microtask background scheduling strategy across JavaScriptEngine partial implementations.
+
+Verification snapshot (2026-03-05):
+- Static scan: `JavaScriptEngine.Methods.cs` direct `Task.Run` count `2 -> 0`.
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass.
+- Targeted tests (`JsEngineImprovementsTests|WebApiPromiseTests`): `39/39` pass.

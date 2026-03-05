@@ -66,7 +66,7 @@ namespace FenBrowser.FenEngine.Scripting
                 if (!_microtaskPumpScheduled)
                 {
                     _microtaskPumpScheduled = true;
-                    Task.Run(() => PumpMicrotasks());
+                    _ = RunDetached(PumpMicrotasks);
                 }
             }
         }
@@ -102,7 +102,7 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 if (_microtasks.Count > 0)
                 {
-                    Task.Run(() => PumpMicrotasks());
+                    _ = RunDetached(PumpMicrotasks);
                 }
                 else
                 {
@@ -221,3 +221,4 @@ namespace FenBrowser.FenEngine.Scripting
         }
     }
 }
+
