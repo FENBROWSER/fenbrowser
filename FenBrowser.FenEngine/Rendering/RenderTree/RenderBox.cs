@@ -1,8 +1,9 @@
-using FenBrowser.Core.Css;
+﻿using FenBrowser.Core.Css;
 using System;
 using SkiaSharp;
 using FenBrowser.Core;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -482,6 +483,17 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }
 
+
+                // Recompute line main size after flex grow/shrink adjustments.
+                lineMainSize = 0;
+                foreach (var child in line)
+                {
+                    var childMargin = child.Style?.Margin ?? new Thickness(0);
+                    lineMainSize += isRow
+                        ? child.Bounds.Width + childMargin.Left + childMargin.Right
+                        : child.Bounds.Height + childMargin.Top + childMargin.Bottom;
+                }
+
                 // 3. Calculate Cross Size (after potential resize)
                 foreach (var child in line)
                 {
@@ -520,9 +532,10 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }
 
-                double itemMainPos = startMain;
+                var positionedLine = isReverse ? line.AsEnumerable().Reverse() : line;
+                double itemMainPos = isReverse ? startMain + lineMainSize : startMain;
 
-                foreach (var child in line)
+                foreach (var child in positionedLine)
                 {
                     var childMargin = child.Style?.Margin ?? new Thickness(0);
                     var bounds = child.Bounds;
@@ -551,13 +564,33 @@ namespace FenBrowser.FenEngine.Rendering
 
                     if (isRow)
                     {
-                         bounds.Location = new SKPoint((float)(itemMainPos + childMargin.Left), (float)(itemCrossPos + childMargin.Top));
+                        if (isReverse)
+                        {
+                            itemMainPos -= childMargin.Right + bounds.Width;
+                            bounds.Location = new SKPoint((float)itemMainPos, (float)(itemCrossPos + childMargin.Top));
+                            itemMainPos -= childMargin.Left + gapMain;
+                        }
+                        else
+                        {
+                            bounds.Location = new SKPoint((float)(itemMainPos + childMargin.Left), (float)(itemCrossPos + childMargin.Top));
+                            itemMainPos += childMargin.Left + bounds.Width + childMargin.Right + gapMain;
+                        }
                     }
                     else
                     {
-                         bounds.Location = new SKPoint((float)(itemCrossPos + childMargin.Left), (float)(itemMainPos + childMargin.Top));
+                        if (isReverse)
+                        {
+                            itemMainPos -= childMargin.Bottom + bounds.Height;
+                            bounds.Location = new SKPoint((float)(itemCrossPos + childMargin.Left), (float)itemMainPos);
+                            itemMainPos -= childMargin.Top + gapMain;
+                        }
+                        else
+                        {
+                            bounds.Location = new SKPoint((float)(itemCrossPos + childMargin.Left), (float)(itemMainPos + childMargin.Top));
+                            itemMainPos += childMargin.Top + bounds.Height + childMargin.Bottom + gapMain;
+                        }
                     }
-                    
+
                     child.Bounds = bounds;
                 }
 
