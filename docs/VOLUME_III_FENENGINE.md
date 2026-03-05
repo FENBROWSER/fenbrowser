@@ -2846,3 +2846,20 @@ Verification snapshot (2026-03-05):
 - Static scan: `rg -n "Task.Run(" FenBrowser.FenEngine` => no matches.
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass (`0` errors).
 - Targeted tests (`JsEngineImprovementsTests|WorkerTests|ServiceWorkerLifecycleTests`): `49/49` pass.
+
+### 2.57 Runtime Hardening (2026-03-05, JavaScript visual geometry bridge productionization)
+- Scripting/JavaScriptEngine.cs
+  - Added thread-safe visual-rect provider registration (`SetVisualRectProvider(Func<Element, SKRect?>)`).
+  - Replaced `TryGetVisualRect` TODO/stub behavior with provider-backed geometry resolution and guarded failure semantics.
+  - Added warning log on provider failures to preserve observability without crashing script-call paths.
+  - Legacy methods (`RegisterDomVisual`, `RegisterVisualRoot`) remain compatibility no-ops.
+- Rendering/CustomHtmlEngine.cs
+  - Wired active renderer as provider source: `SkiaDomRenderer.GetElementBox(element)?.BorderBox`.
+  - Cleared provider during `Dispose()` to prevent stale renderer capture.
+- Net effect: JS geometry access paths now return real layout metrics from the active render pipeline.
+
+Verification snapshot (2026-03-05):
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass (`0` errors).
+- Targeted tests (`JsEngineImprovementsTests|EventInvariantTests|WorkerTests`): `48/48` pass.
+- Maturity state: `production`.
+- Score: `98/100`.

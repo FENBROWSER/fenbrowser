@@ -1600,3 +1600,26 @@ ew SK*): 196
   - Static check: `rg -n "Task.Run(" FenBrowser.FenEngine` => no matches.
   - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass (`0` errors).
   - Targeted tests: `JsEngineImprovementsTests|WorkerTests|ServiceWorkerLifecycleTests` => `49/49` passed.
+
+## Recheck Pass 53 (2026-03-05, JS visual rect provider hardening)
+
+- Focus area: close runtime TODO in JavaScript geometry bridge so visual metrics come from live renderer state instead of stub fallback.
+- Files hardened:
+  - FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs
+  - FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs
+- Changes:
+  - `JavaScriptEngine`:
+    - Added thread-safe provider hook: `SetVisualRectProvider(Func<Element, SKRect?>)` with `Volatile.Write/Read`.
+    - Replaced `TryGetVisualRect` TODO-stub return path with provider-backed rect extraction (`x/y/w/h`), null-guarded failure, and exception-safe warning logging.
+    - Marked legacy visual registration APIs as compatibility no-ops.
+  - `CustomHtmlEngine`:
+    - Registers provider after renderer creation to map DOM element -> `SkiaDomRenderer.GetElementBox(...).BorderBox`.
+    - Clears provider during dispose to avoid stale references and post-dispose access.
+- State update:
+  - Capability: DOM visual rect retrieval for JS engine bridge.
+  - Previous state: `stub` (always false).
+  - Current state: `production`.
+  - Score: `98/100`.
+- Verification:
+  - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass (`0` errors).
+  - Targeted tests: `JsEngineImprovementsTests|EventInvariantTests|WorkerTests` => `48/48` passed.
