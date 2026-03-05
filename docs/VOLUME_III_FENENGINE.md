@@ -2863,3 +2863,20 @@ Verification snapshot (2026-03-05):
 - Targeted tests (`JsEngineImprovementsTests|EventInvariantTests|WorkerTests`): `48/48` pass.
 - Maturity state: `production`.
 - Score: `98/100`.
+
+### 2.58 Runtime Hardening (2026-03-05, RenderBox flex placement productionization)
+- Rendering/RenderTree/RenderBox.cs
+  - Completed flex item placement path by advancing main-axis cursor per item (including margin and justify gap).
+  - Recomputed line main-size after grow/shrink mutations so `justify-content` uses post-flex resolved sizes.
+  - Added reverse-direction placement path (`row-reverse` / `column-reverse`) to avoid overlap artifacts and maintain deterministic ordering.
+- Tests
+  - Added `Rendering/RenderBoxFlexLayoutTests.cs` with focused assertions for:
+    - sequential row placement (`flex-start`),
+    - distributed row placement (`space-between`) without overlap.
+- Net effect: RenderTree fallback flex container now places siblings without overlap and with stable justification semantics.
+
+Verification snapshot (2026-03-05):
+- Targeted tests (`RenderBoxFlexLayoutTests`): `2/2` pass.
+- Regression tests (`Engine.FlexLayoutTests|Layout.FlexLayoutTests`): `26/26` pass.
+- Maturity state: `production`.
+- Score: `97/100`.

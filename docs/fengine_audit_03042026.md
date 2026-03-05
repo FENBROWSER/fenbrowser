@@ -1623,3 +1623,25 @@ ew SK*): 196
 - Verification:
   - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass (`0` errors).
   - Targeted tests: `JsEngineImprovementsTests|EventInvariantTests|WorkerTests` => `48/48` passed.
+
+## Recheck Pass 54 (2026-03-05, RenderBox flex main-axis progression hardening)
+
+- Focus area: close non-production flex layout behavior in `RenderBox` where sibling items could overlap due to missing main-axis cursor progression.
+- Files hardened:
+  - FenBrowser.FenEngine/Rendering/RenderTree/RenderBox.cs
+  - FenBrowser.Tests/Rendering/RenderBoxFlexLayoutTests.cs
+- Changes:
+  - `RenderBox.LayoutFlexChildren(...)`:
+    - Removed stale TODO marker and finalized line placement path.
+    - Recomputed `lineMainSize` after flex grow/shrink adjustments before justification distribution.
+    - Added deterministic main-axis progression for each positioned item (including `space-between`/gap handling).
+    - Added reverse-direction placement support for `row-reverse`/`column-reverse` item ordering.
+  - Added new tests validating non-overlapping sequential placement and gap-distributed placement for flex rows.
+- State update:
+  - Capability: RenderTree flex-item placement in `RenderBox`.
+  - Previous state: `partial`.
+  - Current state: `production`.
+  - Score: `97/100`.
+- Verification:
+  - Targeted tests: `RenderBoxFlexLayoutTests` => `2/2` passed.
+  - Regression tests: `Engine.FlexLayoutTests|Layout.FlexLayoutTests` => `26/26` passed.
