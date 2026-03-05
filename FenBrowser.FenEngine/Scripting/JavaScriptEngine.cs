@@ -1,4 +1,4 @@
-﻿using FenBrowser.Core.Dom.V2;
+using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -1279,10 +1279,11 @@ namespace FenBrowser.FenEngine.Scripting
         
         // --- DOM visual registry for approximate layout metrics ---
         // [MIGRATION] Avalonia Visual Registry removed. Layout metrics should be retrieved from SkiaDomRenderer.
-        
+        private static Func<Element, SKRect?> _visualRectProvider;
+
         public static void RegisterDomVisual(Element node, object fe)
         {
-            // No-op
+            // No-op (legacy API retained for compatibility)
         }
 
         public static object GetControlForElement(Element node)
@@ -1290,11 +1291,44 @@ namespace FenBrowser.FenEngine.Scripting
             return null;
         }
 
+        public static void SetVisualRectProvider(Func<Element, SKRect?> provider)
+        {
+            Volatile.Write(ref _visualRectProvider, provider);
+        }
+
         public static bool TryGetVisualRect(Element node, out double x, out double y, out double w, out double h)
         {
             x = y = w = h = 0;
-            // TODO: Query SkiaDomRenderer for layout box
-            return false;
+            if (node == null)
+            {
+                return false;
+            }
+
+            var provider = Volatile.Read(ref _visualRectProvider);
+            if (provider == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                var rect = provider(node);
+                if (!rect.HasValue)
+                {
+                    return false;
+                }
+
+                x = rect.Value.Left;
+                y = rect.Value.Top;
+                w = rect.Value.Width;
+                h = rect.Value.Height;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[JavaScriptEngine] TryGetVisualRect provider failed: {ex.Message}", LogCategory.JavaScript);
+                return false;
+            }
         }
 
         internal static object GetVisual(Element node)
@@ -1303,9 +1337,8 @@ namespace FenBrowser.FenEngine.Scripting
         }
         public static void RegisterVisualRoot(object root)
         {
-            // No-op
+            // No-op (legacy API retained for compatibility)
         }
-        
         // ---- Phase 1/2/3 state ----
         private readonly Dictionary<string, List<string>> _evtDoc = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, List<string>> _evtWin = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);

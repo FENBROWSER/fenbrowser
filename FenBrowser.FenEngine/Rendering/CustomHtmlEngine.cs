@@ -1,4 +1,4 @@
-﻿using FenBrowser.Core.Css;
+using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
@@ -297,6 +297,7 @@ namespace FenBrowser.FenEngine.Rendering
                 _activeDom = null;
                 // _cachedView = null;
                 _cachedRenderer = null;
+                JavaScriptEngine.SetVisualRectProvider(null);
             }
             catch (Exception ex)
             {
@@ -770,6 +771,17 @@ namespace FenBrowser.FenEngine.Rendering
                 FenLogger.Debug("[BuildVisualTree] Creating NEW renderer...", LogCategory.Rendering);
                 _cachedRenderer = new SkiaDomRenderer();
             }
+
+            JavaScriptEngine.SetVisualRectProvider(element =>
+            {
+                if (element == null || _cachedRenderer == null)
+                {
+                    return null;
+                }
+
+                var box = _cachedRenderer.GetElementBox(element);
+                return box?.BorderBox;
+            });
 
             // [MIGRATION] View logic removed. Host is responsible for rendering.
             
