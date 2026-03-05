@@ -84,6 +84,35 @@ namespace FenBrowser.FenEngine.Core
         public Func<HttpRequestMessage, Task<HttpResponseMessage>> NetworkFetchHandler { get; set; }
 
         public void SetHistoryBridge(IHistoryBridge bridge) => _historyBridge = bridge;
+        private static Task RunDetachedAsync(Func<Task> operation)
+        {
+            return Task.Factory.StartNew(async () =>
+            {
+                try
+                {
+                    await operation().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[FenRuntime] Detached async operation failed: {ex.Message}", LogCategory.JavaScript);
+                }
+            }, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
+        }
+
+        private static Task RunDetached(Action operation)
+        {
+            return Task.Factory.StartNew(() =>
+            {
+                try
+                {
+                    operation();
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[FenRuntime] Detached operation failed: {ex.Message}", LogCategory.JavaScript);
+                }
+            }, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
+        }
 
         public void NotifyPopState(object state)
         {
@@ -6488,7 +6517,7 @@ namespace FenBrowser.FenEngine.Core
                             return FenValue.FromError("WebSocket: not open");
                     }
 
-                    _ = Task.Run(async () =>
+                    _ = RunDetachedAsync(async () =>
                     {
                         try
                         {
@@ -6515,7 +6544,7 @@ namespace FenBrowser.FenEngine.Core
                         ws.Set("readyState", FenValue.FromNumber(2)); // CLOSING
                     }
 
-                    _ = Task.Run(async () =>
+                    _ = RunDetachedAsync(async () =>
                     {
                         try
                         {
@@ -6564,7 +6593,7 @@ namespace FenBrowser.FenEngine.Core
                     return FenValue.Undefined;
                 })));
 
-                _ = Task.Run(async () =>
+                _ = RunDetachedAsync(async () =>
                 {
                     try
                     {
@@ -12212,7 +12241,7 @@ namespace FenBrowser.FenEngine.Core
 
             // Execute the fetch asynchronously
             /* [PERF-REMOVED] */
-            _ = Task.Run(async () =>
+            _ = RunDetachedAsync(async () =>
             {
                 try
                 {
@@ -12470,7 +12499,7 @@ namespace FenBrowser.FenEngine.Core
                 if (args.Length == 0) return FenValue.Undefined;
                 var data = args[0].ToString();
 
-                _ = Task.Run(async () =>
+                _ = RunDetachedAsync(async () =>
                 {
                     try
                     {
@@ -12494,7 +12523,7 @@ namespace FenBrowser.FenEngine.Core
             {
                 ws.Set("readyState", FenValue.FromNumber(CLOSING));
 
-                _ = Task.Run(async () =>
+                _ = RunDetachedAsync(async () =>
                 {
                     try
                     {
@@ -12526,7 +12555,7 @@ namespace FenBrowser.FenEngine.Core
             })));
 
             // Connect asynchronously
-            _ = Task.Run(async () =>
+            _ = RunDetachedAsync(async () =>
             {
                 try
                 {
@@ -12645,7 +12674,7 @@ namespace FenBrowser.FenEngine.Core
                 request.Set("onupgradeneeded", FenValue.Null);
 
                 // Simulate async database opening
-                _ = Task.Run(async () =>
+                _ = RunDetachedAsync(async () =>
                 {
                     await Task.Delay(10); // Small delay to mimic async
 
@@ -12763,7 +12792,7 @@ namespace FenBrowser.FenEngine.Core
                 var value = args.Length > 0 ? args[0] : FenValue.Undefined;
                 var key = args.Length > 1 ? args[1].ToString() : Guid.NewGuid().ToString();
 
-                _ = Task.Run(async () =>
+                _ = RunDetachedAsync(async () =>
                 {
                     await _storageBackend.Add(origin, dbName, storeName, key, StorageUtils.ToSerializable(value));
                 });
@@ -12772,7 +12801,7 @@ namespace FenBrowser.FenEngine.Core
                 request.Set("result", FenValue.FromString(key));
                 request.Set("onsuccess", FenValue.Null);
 
-                _ = Task.Run(async () =>
+                _ = RunDetachedAsync(async () =>
                 {
                     await Task.Delay(1);
                     var cb = request.Get("onsuccess");
@@ -12798,7 +12827,7 @@ namespace FenBrowser.FenEngine.Core
                 var request = new FenObject();
                 request.Set("onsuccess", FenValue.Null);
 
-                _ = Task.Run(async () =>
+                _ = RunDetachedAsync(async () =>
                 {
                     var result = await _storageBackend.Get(origin, dbName, storeName, key);
                     request.Set("result", StorageUtils.FromSerializable(result));
@@ -12830,7 +12859,7 @@ namespace FenBrowser.FenEngine.Core
                 request.Set("result", FenValue.FromString(key));
                 request.Set("onsuccess", FenValue.Null);
 
-                _ = Task.Run(async () =>
+                _ = RunDetachedAsync(async () =>
                 {
                     await _storageBackend.Put(origin, dbName, storeName, key, StorageUtils.ToSerializable(value));
 
@@ -12857,7 +12886,7 @@ namespace FenBrowser.FenEngine.Core
                 var request = new FenObject();
                 request.Set("onsuccess", FenValue.Null);
 
-                _ = Task.Run(async () =>
+                _ = RunDetachedAsync(async () =>
                 {
                     await _storageBackend.Delete(origin, dbName, storeName, key);
 
@@ -12883,7 +12912,7 @@ namespace FenBrowser.FenEngine.Core
                 var request = new FenObject();
                 request.Set("onsuccess", FenValue.Null);
 
-                _ = Task.Run(async () =>
+                _ = RunDetachedAsync(async () =>
                 {
                     await _storageBackend.Clear(origin, dbName, storeName);
 
@@ -13556,7 +13585,7 @@ namespace FenBrowser.FenEngine.Core
                     }
                     else
                     {
-                        Task.Run(() =>
+                        _ = RunDetached(() =>
                         {
                             try
                             {
@@ -13743,7 +13772,7 @@ namespace FenBrowser.FenEngine.Core
                 var data = args.Length > 0 ? args[0] : FenValue.Undefined;
 
                 // Simulate worker responding (simplified)
-                _ = Task.Run(async () =>
+                _ = RunDetachedAsync(async () =>
                 {
                     await Task.Delay(10);
                     var onmessage = worker.Get("onmessage");
@@ -14317,6 +14346,7 @@ namespace FenBrowser.FenEngine.Core
         #endregion
     }
 }
+
 
 
 
