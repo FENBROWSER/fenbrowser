@@ -2742,3 +2742,14 @@ Verification snapshot (2026-03-05):
 Verification snapshot (2026-03-05):
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass.
 - Targeted tests (`InputEventTests|EventInvariantTests`): `11/11` pass.
+
+### 2.50 Runtime Hardening (2026-03-05, WorkerGlobalScope detached timer scheduler consolidation)
+- Workers/WorkerGlobalScope.cs
+  - Added detached scheduler helper `RunDetachedAsync(Func<Task>)` for worker timer scheduling internals.
+  - Replaced direct `Task.Run(async ...)` usage in `setTimeout` and `setInterval` paths with helper-backed detached scheduling.
+  - Centralized detached error handling; expected cancellation for timer clear paths is explicitly handled without noisy error surfacing.
+
+Verification snapshot (2026-03-05):
+- Static scan: `WorkerGlobalScope.cs` direct `Task.Run` count `2 -> 0`.
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass.
+- Targeted tests (`WorkerTimerTests|WorkerTests`): `26/26` pass.
