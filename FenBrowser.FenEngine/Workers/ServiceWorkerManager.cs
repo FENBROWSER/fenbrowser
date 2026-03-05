@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
@@ -71,7 +72,7 @@ namespace FenBrowser.FenEngine.Workers
 
             // 3. Spin up runtime (simplified)
             // In real browser: Download script -> byte-for-byte check -> spin up
-            await Task.Run(() => StartWorkerRuntime(scriptUri.AbsoluteUri, normalizedScope, sw, registration));
+            await RunBackground(() => StartWorkerRuntime(scriptUri.AbsoluteUri, normalizedScope, sw, registration)).ConfigureAwait(false);
 
             return registration;
         }
@@ -191,6 +192,11 @@ namespace FenBrowser.FenEngine.Workers
             {
                FenBrowser.Core.FenLogger.Debug($"[ServiceWorkerManager] No active runtime found for scope {scope}", LogCategory.ServiceWorker);
             }
+        }
+
+        private static Task RunBackground(Action operation)
+        {
+            return Task.Factory.StartNew(operation, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
         }
 
         private void StartWorkerRuntime(string scriptUrl, string scope, ServiceWorker sw, ServiceWorkerRegistration reg)
@@ -364,4 +370,5 @@ namespace FenBrowser.FenEngine.Workers
         }
     }
 }
+
 

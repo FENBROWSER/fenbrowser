@@ -1559,3 +1559,24 @@ ew SK*): 196
     - `XMLHttpRequest.cs` direct `Task.Run` count `1 -> 0`.
   - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass (`0` errors).
   - Targeted tests: `FetchApiTests|FetchHardeningTests|WorkerTests|ServiceWorkerCacheTests|WebApiPromiseTests` => `40/40` passed.
+
+## Recheck Pass 51 (2026-03-05, ImageLoader + ServiceWorkerManager scheduler hardening)
+
+- Focus area: eliminate residual direct `Task.Run` usage in runtime rendering and service-worker lifecycle paths.
+- Files hardened:
+  - FenBrowser.FenEngine/Rendering/ImageLoader.cs
+  - FenBrowser.FenEngine/Workers/ServiceWorkerManager.cs
+- Changes:
+  - `ImageLoader`:
+    - Added centralized detached helper `RunDetachedAsync(Func<Task>)`.
+    - Replaced deferred bitmap disposal worker launch direct `Task.Run(async ...)` with helper-backed detached scheduling.
+  - `ServiceWorkerManager`:
+    - Added background helper `RunBackground(Action)`.
+    - Replaced `await Task.Run(() => StartWorkerRuntime(...))` with helper-backed background scheduling (`await RunBackground(...).ConfigureAwait(false)`).
+  - Preserved runtime behavior while converging scheduler semantics and fault surfacing.
+- Verification:
+  - Static check:
+    - `ImageLoader.cs` direct `Task.Run` count `1 -> 0`.
+    - `ServiceWorkerManager.cs` direct `Task.Run` count `1 -> 0`.
+  - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass (`0` errors).
+  - Targeted tests: `ServiceWorkerLifecycleTests|WorkerTests` => `23/23` passed.
