@@ -1,4 +1,4 @@
-using FenBrowser.Core.Css;
+﻿using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
@@ -117,6 +117,20 @@ namespace FenBrowser.FenEngine.Rendering
         public RenderTelemetrySnapshot LastRenderTelemetry { get; private set; }
         public IExecutionContext Context => _activeJs?.GlobalContext;
 
+        private static Task RunDetachedAsync(Func<Task> operation)
+        {
+            return Task.Factory.StartNew(async () =>
+            {
+                try
+                {
+                    await operation().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[CustomHtmlEngine] Detached async operation failed: {ex.Message}", LogCategory.Rendering);
+                }
+            }, System.Threading.CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
+        }
         public RenderContext? BuildRenderContext()
         {
             return _cachedRenderer?.CreateRenderContext();
@@ -435,7 +449,7 @@ namespace FenBrowser.FenEngine.Rendering
                     if (abs != null)
                     {
                         budget--;
-                        tasks.Add(Task.Run(async () => 
+                        tasks.Add(RunDetachedAsync(async () => 
                         { 
                             try 
                             { 
@@ -704,7 +718,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 // PERF: LoadCssAsync() in RenderAsync already ran CascadeIntoComputedStyles()
                 // and assigned n.ComputedStyle to every node. Reuse those styles instead of
-                // running the full O(elements × rules) cascade a second time.
+                // running the full O(elements Ã— rules) cascade a second time.
                 if (LastComputedStyles != null && LastComputedStyles.Count > 0)
                 {
                     FenLogger.Debug($"[BuildVisualTree] Reusing {LastComputedStyles.Count} pre-computed styles (skipping duplicate cascade)", LogCategory.Rendering);
@@ -1007,7 +1021,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (pending != null && !pending.IsCompleted)
                 return;
 
-            _pendingRecascade = Task.Run(async () =>
+            _pendingRecascade = RunDetachedAsync(async () =>
             {
                 try { await RecascadeAsync().ConfigureAwait(false); }
                 catch (Exception ex)
@@ -1112,9 +1126,9 @@ namespace FenBrowser.FenEngine.Rendering
                      }
                      return allowed;
                  }
-                 // No CSP policy from HTTP header or meta tag — permissively allow inline scripts.
+                 // No CSP policy from HTTP header or meta tag â€” permissively allow inline scripts.
                  // This is correct behavior; the warning was misleading noise.
-                 FenLogger.Debug("[CSP] No ActivePolicy during nonce check — permissively allowing inline script.", LogCategory.Rendering);
+                 FenLogger.Debug("[CSP] No ActivePolicy during nonce check â€” permissively allowing inline script.", LogCategory.Rendering);
                  return true;
              };
              
@@ -1202,7 +1216,7 @@ namespace FenBrowser.FenEngine.Rendering
             // 2. Main Page Scripts
             try 
             {
-                var scriptTask = Task.Run(async () => { await js.SetDomAsync(dom, baseUri).ConfigureAwait(false); });
+                var scriptTask = RunDetachedAsync(async () => { await js.SetDomAsync(dom, baseUri).ConfigureAwait(false); });
                 var timeoutTask = Task.Delay(15000); 
                 var completedTask = await Task.WhenAny(scriptTask, timeoutTask);
                 
@@ -1420,7 +1434,7 @@ namespace FenBrowser.FenEngine.Rendering
                     allowJs = false;
                 }
 
-                // HTML spec §4.12.1: When scripting is enabled, <noscript> must not render.
+                // HTML spec Â§4.12.1: When scripting is enabled, <noscript> must not render.
                 // Remove noscript elements entirely when JS is on to prevent their raw HTML-encoded
                 // fallback content (scripts, styles, inline HTML strings) from leaking into the page.
                 if (allowJs)
@@ -1432,7 +1446,7 @@ namespace FenBrowser.FenEngine.Rendering
                             .ToList();
                         foreach (var ns in noscripts) ns.Remove();
                         if (noscripts.Count > 0)
-                            FenLogger.Debug($"[CustomHtmlEngine] Removed {noscripts.Count} <noscript> element(s) (JS on — spec §4.12.1)", LogCategory.Rendering);
+                            FenLogger.Debug($"[CustomHtmlEngine] Removed {noscripts.Count} <noscript> element(s) (JS on â€” spec Â§4.12.1)", LogCategory.Rendering);
                     }
                     catch (Exception nsEx)
                     {
@@ -1441,7 +1455,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 else
                 {
-                    // JS is disabled — noscript content should be visible.
+                    // JS is disabled â€” noscript content should be visible.
                     // FIX: Google Search puts <style>table,div,span,p{display:none}</style> inside <noscript>.
                     // Since we render <noscript>, this style applies globally and hides everything.
                     // Remove only harmful <style> tags from <noscript> when keeping noscript visible.
@@ -1868,6 +1882,7 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
+
 
 
 

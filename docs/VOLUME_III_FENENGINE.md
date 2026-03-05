@@ -2693,3 +2693,18 @@ Verification snapshot (2026-03-05):
 - Static scan: `JavaScriptEngine.cs` direct `Task.Run` count `4 -> 0`.
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass.
 - Targeted tests (`Bytecode_WithStatement_RespectsUnscopables|ModuleLoaderTests|HistoryApiTests`): `15/15` pass.
+
+### 2.46 Runtime Hardening (2026-03-05, rendering detached scheduler consolidation)
+- Rendering/CustomHtmlEngine.cs
+  - Added `RunDetachedAsync(Func<Task>)` helper for detached HTML/resource follow-up tasks with guarded error logging.
+  - Replaced all direct `Task.Run(async ...)` usage with helper-backed detached scheduling.
+- Rendering/Css/CssLoader.cs
+  - Added `RunDetachedAsync(Func<Task>)` helper for detached CSS load processing paths with guarded error logging.
+  - Replaced all direct `Task.Run(async ...)` usage with helper-backed detached scheduling.
+- Net effect: both rendering loader components now have zero direct `Task.Run` call sites.
+
+Verification snapshot (2026-03-05):
+- Static scan: `CustomHtmlEngine.cs` direct `Task.Run` count `3 -> 0`.
+- Static scan: `CssLoader.cs` direct `Task.Run` count `3 -> 0`.
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass.
+- Targeted tests (`Bytecode_WithStatement_RespectsUnscopables|ModuleLoaderTests|HistoryApiTests`): `15/15` pass.

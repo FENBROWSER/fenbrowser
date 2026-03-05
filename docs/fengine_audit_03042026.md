@@ -1390,3 +1390,20 @@ ew SK*): 196
   - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass.
   - Targeted tests: `Bytecode_WithStatement_RespectsUnscopables|ModuleLoaderTests|HistoryApiTests` => `15/15` passed.
 
+
+## Recheck Pass 42 (2026-03-05, rendering scheduler hardening in HTML/CSS loaders)
+
+- Focus area: remove remaining unstructured detached scheduling in rendering-side async fetch/load paths.
+- Files hardened:
+  - FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs
+  - FenBrowser.FenEngine/Rendering/Css/CssLoader.cs
+- Changes:
+  - Added centralized detached scheduler helper in both files:
+    - `RunDetachedAsync(Func<Task>)`
+  - Replaced direct `Task.Run(async ...)` fire-and-forget call sites with helper-backed detached scheduling.
+  - Preserved existing async behavior and added consistent fault logging safety-net for detached tasks.
+- Verification:
+  - Static check: `CustomHtmlEngine.cs` direct `Task.Run` count `3 -> 0`.
+  - Static check: `CssLoader.cs` direct `Task.Run` count `3 -> 0`.
+  - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass.
+  - Targeted tests: `Bytecode_WithStatement_RespectsUnscopables|ModuleLoaderTests|HistoryApiTests` => `15/15` passed.
