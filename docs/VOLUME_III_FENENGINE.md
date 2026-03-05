@@ -2820,3 +2820,17 @@ Verification snapshot (2026-03-05):
   - `XMLHttpRequest.cs` direct `Task.Run` count `1 -> 0`.
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass (`0` errors).
 - Targeted tests (`FetchApiTests|FetchHardeningTests|WorkerTests|ServiceWorkerCacheTests|WebApiPromiseTests`): `40/40` pass.
+
+### 2.55 Runtime Hardening (2026-03-05, runtime scheduler cleanup in rendering + service worker manager)
+- Rendering/ImageLoader.cs
+  - Added `RunDetachedAsync(Func<Task>)` helper and replaced deferred bitmap-disposal worker `Task.Run(async ...)` launch with helper-backed detached scheduling.
+- Workers/ServiceWorkerManager.cs
+  - Added `RunBackground(Action)` helper and replaced `await Task.Run(() => StartWorkerRuntime(...))` with helper-backed background execution.
+- Net effect: runtime engine paths now have zero direct `Task.Run` call sites; remaining direct usages are isolated to `Testing/Test262Runner.cs`.
+
+Verification snapshot (2026-03-05):
+- Static scan:
+  - `ImageLoader.cs` direct `Task.Run` count `1 -> 0`.
+  - `ServiceWorkerManager.cs` direct `Task.Run` count `1 -> 0`.
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass (`0` errors).
+- Targeted tests (`ServiceWorkerLifecycleTests|WorkerTests`): `23/23` pass.

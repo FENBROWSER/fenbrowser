@@ -329,6 +329,21 @@ namespace FenBrowser.FenEngine.Rendering
             EnsureDisposeWorker();
         }
 
+
+        private static Task RunDetachedAsync(Func<Task> operation)
+        {
+            return Task.Factory.StartNew(async () =>
+            {
+                try
+                {
+                    await operation().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[ImageLoader] Detached async operation failed: {ex.Message}", LogCategory.Rendering);
+                }
+            }, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
+        }
         private static void EnsureDisposeWorker()
         {
             if (Interlocked.CompareExchange(ref _disposeWorkerActive, 1, 0) != 0)
@@ -336,7 +351,7 @@ namespace FenBrowser.FenEngine.Rendering
                 return;
             }
 
-            _ = Task.Run(async () =>
+            _ = RunDetachedAsync(async () =>
             {
                 try
                 {
@@ -1028,3 +1043,4 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
+
