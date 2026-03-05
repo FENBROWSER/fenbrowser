@@ -1358,3 +1358,19 @@ ew SK*): 196
   - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass (`359` warnings, `0` errors).
   - Targeted tests: `Bytecode_WithStatement_RespectsUnscopables|ModuleLoaderTests|HistoryApiTests` => `15/15` passed.
 
+## Recheck Pass 40 (2026-03-05, FenRuntime Task.Run elimination via detached runner)
+
+- Focus area: high-volume unstructured background scheduling in runtime hot paths (WebSocket/fetch/indexedDB/promise/worker shims).
+- Files hardened:
+  - FenBrowser.FenEngine/Core/FenRuntime.cs
+- Changes:
+  - Added centralized detached execution helpers:
+    - `RunDetachedAsync(Func<Task>)`
+    - `RunDetached(Action)`
+  - Replaced all direct `Task.Run(...)` call sites in `FenRuntime.cs` with helper-backed detached scheduling.
+  - Preserved async behavior and fire-and-forget semantics while centralizing exception logging for detached operations.
+- Verification:
+  - Static check: `FenRuntime.cs` now has `0` direct `Task.Run(...)` occurrences.
+  - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass.
+  - Targeted tests: `Bytecode_WithStatement_RespectsUnscopables|ModuleLoaderTests|HistoryApiTests` => `15/15` passed.
+

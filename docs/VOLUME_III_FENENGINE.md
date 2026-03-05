@@ -2671,3 +2671,14 @@ Verification snapshot (2026-03-05):
 Verification snapshot (2026-03-05):
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass (`359` warnings, `0` errors).
 - Targeted tests (`Bytecode_WithStatement_RespectsUnscopables|ModuleLoaderTests|HistoryApiTests`): `15/15` pass.
+
+### 2.44 Runtime Hardening (2026-03-05, FenRuntime detached task scheduler consolidation)
+- Core/FenRuntime.cs
+  - Introduced centralized detached background executors (`RunDetachedAsync`, `RunDetached`) with guarded logging.
+  - Replaced all direct `Task.Run(...)` call sites in runtime WebSocket/fetch/indexedDB/promise/worker helper paths with helper-backed scheduling.
+  - Net effect: runtime source now has zero direct `Task.Run` call sites while preserving async semantics.
+
+Verification snapshot (2026-03-05):
+- Static scan: `FenRuntime.cs` direct `Task.Run` count `16 -> 0`.
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass.
+- Targeted tests (`Bytecode_WithStatement_RespectsUnscopables|ModuleLoaderTests|HistoryApiTests`): `15/15` pass.
