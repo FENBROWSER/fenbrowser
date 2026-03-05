@@ -1490,3 +1490,19 @@ ew SK*): 196
   - Static check: `JavaScriptEngine.Methods.cs` direct `Task.Run` count `2 -> 0`.
   - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass (`0` errors).
   - Targeted tests: `JsEngineImprovementsTests|WebApiPromiseTests` => `39/39` passed.
+
+## Recheck Pass 48 (2026-03-05, ExecutionContext default scheduler hardening)
+
+- Focus area: remove direct `Task.Run` usage from default callback/microtask scheduling in execution-context baseline.
+- Files hardened:
+  - FenBrowser.FenEngine/Core/ExecutionContext.cs
+- Changes:
+  - Added centralized detached scheduler helpers:
+    - `RunDetachedAsync(Func<Task>)`
+    - `RunDetached(Action)`
+  - Updated default `ScheduleCallback` and `ScheduleMicrotask` delegates to use helper-backed detached scheduling.
+  - Added null-guard checks for scheduled actions to avoid null callback execution.
+  - Net effect: `ExecutionContext.cs` direct `Task.Run` count `2 -> 0`.
+- Verification:
+  - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass.
+  - Targeted tests: `EventInvariantTests|JsEngineImprovementsTests` => `31/31` passed.

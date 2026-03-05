@@ -2763,3 +2763,14 @@ Verification snapshot (2026-03-05):
 - Static scan: `JavaScriptEngine.Methods.cs` direct `Task.Run` count `2 -> 0`.
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass.
 - Targeted tests (`JsEngineImprovementsTests|WebApiPromiseTests`): `39/39` pass.
+
+### 2.52 Runtime Hardening (2026-03-05, ExecutionContext detached scheduler baseline)
+- Core/ExecutionContext.cs
+  - Replaced default `ScheduleCallback` and `ScheduleMicrotask` `Task.Run` paths with detached helper-backed scheduling.
+  - Added `RunDetachedAsync(Func<Task>)` and `RunDetached(Action)` helpers to centralize detached-fault handling.
+  - Added null guards before queueing callback/microtask actions.
+
+Verification snapshot (2026-03-05):
+- Static scan: `ExecutionContext.cs` direct `Task.Run` count `2 -> 0`.
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass.
+- Targeted tests (`EventInvariantTests|JsEngineImprovementsTests`): `31/31` pass.

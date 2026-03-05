@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading;
+using System.Threading.Tasks;
 using FenBrowser.FenEngine.Security;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.Core.Dom.V2; // MutationRecord
@@ -25,16 +27,26 @@ namespace FenBrowser.FenEngine.Core
 
         public Action<Action, int> ScheduleCallback { get; set; } = (action, delay) =>
         {
-            Task.Run(async () =>
+            if (action == null)
             {
-                await Task.Delay(delay);
+                return;
+            }
+
+            _ = RunDetachedAsync(async () =>
+            {
+                await Task.Delay(delay).ConfigureAwait(false);
                 action();
             });
         };
 
         public Action<Action> ScheduleMicrotask { get; set; } = (action) =>
         {
-            Task.Run(() => action());
+            if (action == null)
+            {
+                return;
+            }
+
+            _ = RunDetached(action);
         };
 
         public FenValue ThisBinding { get; set; }
@@ -48,6 +60,37 @@ namespace FenBrowser.FenEngine.Core
         public bool StrictMode { get; set; }
 
         public Func<FenBrowser.FenEngine.Rendering.Core.ILayoutEngine> LayoutEngineProvider { get; set; }
+
+
+        private static Task RunDetachedAsync(Func<Task> operation)
+        {
+            return Task.Factory.StartNew(async () =>
+            {
+                try
+                {
+                    await operation().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[ExecutionContext] Detached async operation failed: {ex.Message}");
+                }
+            }, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
+        }
+
+        private static Task RunDetached(Action operation)
+        {
+            return Task.Factory.StartNew(() =>
+            {
+                try
+                {
+                    operation();
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[ExecutionContext] Detached operation failed: {ex.Message}");
+                }
+            }, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
+        }
 
         public FenBrowser.FenEngine.Rendering.Core.ILayoutEngine GetLayoutEngine()
         {
@@ -105,3 +148,5 @@ namespace FenBrowser.FenEngine.Core
         }
     }
 }
+
+
