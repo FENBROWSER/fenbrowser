@@ -1,4 +1,4 @@
-using FenBrowser.Core.Css;
+﻿using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
@@ -48,7 +48,7 @@ namespace FenBrowser.FenEngine.Rendering
         private static readonly Dictionary<Element, List<NewCss.CssRule>> _elementMatchedRulesCache = new Dictionary<Element, List<NewCss.CssRule>>();
         private static readonly Dictionary<Element, CssComputed> _elementStyleCache = new Dictionary<Element, CssComputed>();
 
-        // UA stylesheet cache — read from disk only once per process lifetime
+        // UA stylesheet cache â€” read from disk only once per process lifetime
         private static string _cachedUaCss;
 
         // CSS Custom Properties (CSS Variables) storage - keyed by property name (e.g., "--primary-color")
@@ -86,6 +86,20 @@ namespace FenBrowser.FenEngine.Rendering
         }
         // -------------------------------------------------------------------------
 
+        private static Task RunDetachedAsync(Func<Task> operation)
+        {
+            return Task.Factory.StartNew(async () =>
+            {
+                try
+                {
+                    await operation().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[CssLoader] Detached async operation failed: {ex.Message}", LogCategory.Rendering);
+                }
+            }, System.Threading.CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
+        }
         public static List<MatchedRule> GetMatchedRules(Element element, List<CssSource> sources)
         {
              var matched = new List<MatchedRule>();
@@ -339,7 +353,7 @@ namespace FenBrowser.FenEngine.Rendering
                     continue;
                 }
 
-                // SRI — capture integrity attribute before the async closure
+                // SRI â€” capture integrity attribute before the async closure
                 string sriIntegrity = link.GetAttribute("integrity");
                 
                 DebugLog(@"css_debug_v2.txt", $"[LINK] Found stylesheet href='{href}'\r\n");
@@ -374,18 +388,18 @@ namespace FenBrowser.FenEngine.Rendering
                 DebugLog(@"css_debug_v2.txt", $"[LINK] QUEUE: {abs}\r\n");
 
                 var order = sourceIndex++;
-                var t = Task.Run(async () =>
+                var t = RunDetachedAsync(async () =>
                 {
                     await gate.WaitAsync().ConfigureAwait(false);
                     try
                     {
                         var css = await fetchExternalCssAsync(abs).ConfigureAwait(false);
                         /* [PERF-REMOVED] */
-                        // SRI check — if the link has an integrity attribute, verify before applying
+                        // SRI check â€” if the link has an integrity attribute, verify before applying
                         if (!string.IsNullOrWhiteSpace(css) && !VerifySriIntegrity(css, sriIntegrity))
                         {
                             Log(log, $"[CssLoader] [SRI] Blocked stylesheet (hash mismatch): {abs}");
-                            return; // Drop this stylesheet — integrity check failed
+                            return; // Drop this stylesheet â€” integrity check failed
                         }
                         // Limit CSS size to prevent crashes on massive stylesheets (GitHub, etc.)
                         const int MAX_CSS_SIZE = 2_000_000; // 2MB per stylesheet
@@ -436,7 +450,7 @@ namespace FenBrowser.FenEngine.Rendering
             FenLogger.Debug($"[PERF-CSS-TRACK] Validated CSS Blobs: {expanded.Count}. Scheduling tasks...", LogCategory.Rendering);
             foreach (var blob in expanded)
             {
-                parseTasks.Add(Task.Run(async () =>
+                parseTasks.Add(RunDetachedAsync(async () =>
                 {
                     // FenLogger.Debug($"[PERF-CSS-TRACK] Task Started for Source={blob.SourceOrder}", LogCategory.Rendering); // Noise reduced
                     await parseGate.WaitAsync().ConfigureAwait(false);
@@ -795,7 +809,7 @@ namespace FenBrowser.FenEngine.Rendering
                 seenUrls.Add(key);
                 if (fetchExternal == null) continue;
 
-                tasks.Add(System.Threading.Tasks.Task.Run(async () =>
+                tasks.Add(RunDetachedAsync(async () =>
                 {
                     string css = null;
                     await gate.WaitAsync().ConfigureAwait(false);
@@ -6107,7 +6121,7 @@ private static double? ExtractPx(string text, string prop)
     /// <summary>
     /// Verifies Subresource Integrity (SRI) for fetched content.
     /// Returns true if integrity is absent (no check needed) or if at least one hash token matches.
-    /// Returns false if one or more tokens are present and none match — caller must block the resource.
+    /// Returns false if one or more tokens are present and none match â€” caller must block the resource.
     /// Supported algorithms: sha256, sha384, sha512.
     /// </summary>
     private static bool VerifySriIntegrity(string content, string integrity)
@@ -6134,18 +6148,20 @@ private static double? ExtractPx(string text, string prop)
                     "sha512" => System.Security.Cryptography.SHA512.Create(),
                     _ => null
                 };
-                if (alg == null) continue; // Unknown algorithm — skip this token
+                if (alg == null) continue; // Unknown algorithm â€” skip this token
                 hash = alg.ComputeHash(bytes);
             }
             catch { continue; }
 
             if (Convert.ToBase64String(hash) == expectedB64) return true;
         }
-        // No token matched — block the resource
+        // No token matched â€” block the resource
         return false;
     }
 }
 }
+
+
 
 
 
