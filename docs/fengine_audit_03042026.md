@@ -1528,3 +1528,34 @@ ew SK*): 196
     - `ServiceWorkerClients.cs` direct `Task.Run` count `1 -> 0`.
   - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass.
   - Targeted tests: `ServiceWorkerLifecycleTests|ServiceWorkerCacheTests|WorkerTests` => `27/27` passed.
+
+## Recheck Pass 50 (2026-03-05, WebAPI detached scheduler consolidation)
+
+- Focus area: remove remaining direct `Task.Run(async ...)` fire-and-forget usage in WebAPI async bridge paths.
+- Files hardened:
+  - FenBrowser.FenEngine/WebAPIs/WebAudioAPI.cs
+  - FenBrowser.FenEngine/WebAPIs/WebRTCAPI.cs
+  - FenBrowser.FenEngine/WebAPIs/Cache.cs
+  - FenBrowser.FenEngine/WebAPIs/CacheStorage.cs
+  - FenBrowser.FenEngine/WebAPIs/IndexedDBService.cs
+  - FenBrowser.FenEngine/WebAPIs/XMLHttpRequest.cs
+- Changes:
+  - Added centralized detached scheduler helper in each file:
+    - `RunDetachedAsync(Func<Task>)`
+  - Replaced direct `Task.Run(async ...)` call sites with helper-backed detached scheduling in:
+    - WebAudio decode promise path,
+    - WebRTC data-channel open simulation path,
+    - Cache and CacheStorage promise executors,
+    - IndexedDB open request async dispatch,
+    - XMLHttpRequest send pipeline dispatch.
+  - Preserved promise/callback behavior while centralizing detached-fault logging.
+- Verification:
+  - Static check:
+    - `WebAudioAPI.cs` direct `Task.Run` count `1 -> 0`.
+    - `WebRTCAPI.cs` direct `Task.Run` count `1 -> 0`.
+    - `Cache.cs` direct `Task.Run` count `1 -> 0`.
+    - `CacheStorage.cs` direct `Task.Run` count `1 -> 0`.
+    - `IndexedDBService.cs` direct `Task.Run` count `1 -> 0`.
+    - `XMLHttpRequest.cs` direct `Task.Run` count `1 -> 0`.
+  - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass (`0` errors).
+  - Targeted tests: `FetchApiTests|FetchHardeningTests|WorkerTests|ServiceWorkerCacheTests|WebApiPromiseTests` => `40/40` passed.

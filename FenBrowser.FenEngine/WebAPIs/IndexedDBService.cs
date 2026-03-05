@@ -32,6 +32,20 @@ namespace FenBrowser.FenEngine.WebAPIs
             global.Set("indexedDB", FenValue.FromObject(indexedDB));
         }
 
+        private static Task RunDetachedAsync(Func<Task> operation)
+        {
+            return Task.Factory.StartNew(async () =>
+            {
+                try
+                {
+                    await operation().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    FenBrowser.Core.FenLogger.Warn($"[IndexedDB] Detached async operation failed: {ex.Message}", LogCategory.Storage);
+                }
+            }, System.Threading.CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
+        }
         private static FenValue OpenDatabase(string name, int version, IExecutionContext context)
         {
             var request = new FenObject();
@@ -39,7 +53,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             request.Set("onerror", FenValue.Null);
             request.Set("onupgradeneeded", FenValue.Null);
 
-            Task.Run(async () => 
+            _ = RunDetachedAsync(async () => 
             {
                 await Task.Delay(10); // Simulate async
                 
@@ -132,3 +146,5 @@ namespace FenBrowser.FenEngine.WebAPIs
         }
     }
 }
+
+

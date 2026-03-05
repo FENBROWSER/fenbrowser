@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
@@ -14,7 +15,20 @@ namespace FenBrowser.FenEngine.WebAPIs
     public static class WebAudioAPI
     {
         private static int _contextIdCounter = 0;
-
+        private static Task RunDetachedAsync(Func<Task> operation)
+        {
+            return Task.Factory.StartNew(async () =>
+            {
+                try
+                {
+                    await operation().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[WebAudio] Detached async operation failed: {ex.Message}", LogCategory.JavaScript);
+                }
+            }, System.Threading.CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
+        }
         /// <summary>
         /// Creates the AudioContext constructor
         /// </summary>
@@ -30,7 +44,6 @@ namespace FenBrowser.FenEngine.WebAPIs
 
             return constructor;
         }
-
         /// <summary>
         /// Creates an AudioContext instance
         /// </summary>
@@ -118,7 +131,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("executor", (execArgs, execThis) => 
                 {
                     var resolve = execArgs[0].AsFunction();
-                    Task.Run(async () => 
+                    _ = RunDetachedAsync(async () => 
                     {
                         await Task.Delay(50); // Simulate decode
                         var buffer = CreateAudioBuffer(2, 44100, sampleRate);
@@ -399,3 +412,4 @@ namespace FenBrowser.FenEngine.WebAPIs
         }
     }
 }
+

@@ -150,10 +150,24 @@ namespace FenBrowser.FenEngine.WebAPIs
 
         private Task<FenValue> Resolve(FenValue value) => Task.FromResult(value);
 
+        private static Task RunDetachedAsync(Func<Task> operation)
+        {
+            return Task.Factory.StartNew(async () =>
+            {
+                try
+                {
+                    await operation().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    FenBrowser.Core.FenLogger.Warn($"[Cache] Detached async operation failed: {ex.Message}", LogCategory.Storage);
+                }
+            }, System.Threading.CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
+        }
         private FenObject CreatePromise(Func<Task<FenValue>> valueFactory)
         {
             var promise = new FenObject();
-            Task.Run(async () =>
+            _ = RunDetachedAsync(async () =>
             {
                 try
                 {
@@ -272,3 +286,4 @@ namespace FenBrowser.FenEngine.WebAPIs
         public string Body { get; set; }
     }
 }
+
