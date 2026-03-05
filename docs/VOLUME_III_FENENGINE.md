@@ -2774,3 +2774,23 @@ Verification snapshot (2026-03-05):
 - Static scan: `ExecutionContext.cs` direct `Task.Run` count `2 -> 0`.
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass.
 - Targeted tests (`EventInvariantTests|JsEngineImprovementsTests`): `31/31` pass.
+
+### 2.53 Runtime Hardening (2026-03-05, ServiceWorker detached promise scheduler consolidation)
+- Workers/ServiceWorkerContainer.cs
+  - Added `RunDetachedAsync(Func<Task>)` helper and replaced direct `Task.Run(async ...)` promise execution in `CreatePromise(...)`.
+- Workers/ServiceWorkerGlobalScope.cs
+  - Added `RunDetachedAsync(Func<Task>)` helper and replaced direct `Task.Run(async ...)` promise execution in `CreatePromise(...)`.
+- Workers/ServiceWorkerRegistration.cs
+  - Added `RunDetachedAsync(Func<Task>)` helper and replaced direct `Task.Run(async ...)` promise execution in `CreatePromise(...)`.
+- Workers/ServiceWorkerClients.cs
+  - Added `RunDetachedAsync(Func<Task>)` helper and replaced direct `Task.Run(async ...)` promise execution in `CreatePromise(...)`.
+- Net effect: all four service-worker promise bridge components now have zero direct `Task.Run` call sites.
+
+Verification snapshot (2026-03-05):
+- Static scan:
+  - `ServiceWorkerContainer.cs` direct `Task.Run` count `1 -> 0`.
+  - `ServiceWorkerGlobalScope.cs` direct `Task.Run` count `1 -> 0`.
+  - `ServiceWorkerRegistration.cs` direct `Task.Run` count `1 -> 0`.
+  - `ServiceWorkerClients.cs` direct `Task.Run` count `1 -> 0`.
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass.
+- Targeted tests (`ServiceWorkerLifecycleTests|ServiceWorkerCacheTests|WorkerTests`): `27/27` pass.
