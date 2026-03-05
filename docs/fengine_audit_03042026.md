@@ -1407,3 +1407,21 @@ ew SK*): 196
   - Static check: `CssLoader.cs` direct `Task.Run` count `3 -> 0`.
   - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass.
   - Targeted tests: `Bytecode_WithStatement_RespectsUnscopables|ModuleLoaderTests|HistoryApiTests` => `15/15` passed.
+
+## Recheck Pass 43 (2026-03-05, DevTools CSS matched-rule completeness)
+
+- Focus area: close non-production TODO in DevTools rule inspector path and improve viewport correctness of matched-rule parse caching.
+- Files hardened:
+  - FenBrowser.FenEngine/Rendering/Css/CssLoader.cs
+- Changes:
+  - `GetMatchedRules(...)` now performs recursive matched-rule traversal for nested rule containers:
+    - `CssMediaRule` (with media-condition gating),
+    - `CssLayerRule`,
+    - `CssScopeRule`.
+  - Added scope-aware guard for matched style rules using `ScopeSelector` ancestor checks before selector specificity matching.
+  - Removed TODO-only behavior from DevTools matched-rule pass.
+  - Parse-cache key in this path is now viewport-aware (`MediaViewportWidth`/`MediaViewportHeight`) instead of fixed null-null key, preventing stale reuse across viewport changes.
+- Verification:
+  - Static check: removed `TODO: Support media rules nesting for DevTools inspection` marker.
+  - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass (`0` errors).
+  - Targeted tests: `CssMediaRangeQueryTests|CascadeModernTests` => `6/6` passed.
