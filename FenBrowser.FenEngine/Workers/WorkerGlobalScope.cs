@@ -46,7 +46,25 @@ namespace FenBrowser.FenEngine.Workers
             InitializeProperties();
         }
 
-        private void InitializeProperties()
+
+        private static System.Threading.Tasks.Task RunDetachedAsync(Func<System.Threading.Tasks.Task> operation)
+        {
+            return System.Threading.Tasks.Task.Factory.StartNew(async () =>
+            {
+                try
+                {
+                    await operation().ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Timer cancellation is expected for clearTimeout/clearInterval.
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Debug($"[WorkerGlobalScope] Detached async operation error: {ex.Message}", LogCategory.JavaScript);
+                }
+            }, CancellationToken.None, System.Threading.Tasks.TaskCreationOptions.DenyChildAttach, System.Threading.Tasks.TaskScheduler.Default).Unwrap();
+        }        private void InitializeProperties()
         {
             // self reference (points to this)
             Set("self", FenValue.FromObject(this));
@@ -175,7 +193,7 @@ namespace FenBrowser.FenEngine.Workers
                 }
 
                 var capturedId = timerId;
-                _ = System.Threading.Tasks.Task.Run(async () =>
+                _ = RunDetachedAsync(async () =>
                 {
                     try
                     {
@@ -239,7 +257,7 @@ namespace FenBrowser.FenEngine.Workers
                 }
 
                 var capturedId = timerId;
-                _ = System.Threading.Tasks.Task.Run(async () =>
+                _ = RunDetachedAsync(async () =>
                 {
                     while (!cts.Token.IsCancellationRequested)
                     {
@@ -399,3 +417,5 @@ namespace FenBrowser.FenEngine.Workers
         }
     }
 }
+
+

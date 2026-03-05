@@ -1458,3 +1458,20 @@ ew SK*): 196
 - Verification:
   - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass.
   - Targeted tests: `InputEventTests|EventInvariantTests` => `11/11` passed.
+
+## Recheck Pass 46 (2026-03-05, WorkerGlobalScope timer scheduler hardening)
+
+- Focus area: eliminate direct `Task.Run` fire-and-forget paths in worker timer API implementation.
+- Files hardened:
+  - FenBrowser.FenEngine/Workers/WorkerGlobalScope.cs
+- Changes:
+  - Added centralized detached scheduler helper:
+    - `RunDetachedAsync(Func<Task>)`
+  - Replaced direct `Task.Run(async ...)` call sites in:
+    - `setTimeout` timer scheduling path,
+    - `setInterval` timer loop path.
+  - Helper now centralizes detached-fault logging while treating cancellation as expected behavior for `clearTimeout`/`clearInterval`.
+- Verification:
+  - Static check: `WorkerGlobalScope.cs` direct `Task.Run` count `2 -> 0`.
+  - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass (`0` errors).
+  - Targeted tests: `WorkerTimerTests|WorkerTests` => `26/26` passed.
