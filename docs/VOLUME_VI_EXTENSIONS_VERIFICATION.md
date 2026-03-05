@@ -411,3 +411,15 @@ To implement a new command (e.g., `GET /session/{id}/print`):
     - completed using the same harness path as WPT CLI.
 _End of Volume VI_
 
+
+### 4.17 Test262 Watchdog Parallel-Worker Enablement (2026-03-05)
+- `scripts/run_test262_full_watchdog.ps1`
+  - Added chunk-range execution controls:
+    - `-StartChunk <N>`
+    - `-EndChunk <N>` (or `0` for auto max)
+  - Added output-root override:
+    - `-ResultsRoot <path>` for per-worker isolated outputs.
+  - Added range validation and range reporting in summary output.
+- Operational impact:
+  - Multiple watchdog instances can now run non-overlapping chunk ranges concurrently on multi-core machines without output collisions.
+  - Example pattern: run 4 workers with distinct ranges and distinct `ResultsRoot` directories, then aggregate summaries.
