@@ -2880,3 +2880,15 @@ Verification snapshot (2026-03-05):
 - Regression tests (`Engine.FlexLayoutTests|Layout.FlexLayoutTests`): `26/26` pass.
 - Maturity state: `production`.
 - Score: `97/100`.
+
+### 2.59 Runtime Hardening (2026-03-05, ModuleLoader exception visibility)
+- Core/ModuleLoader.cs
+  - Upgraded two silent catch branches to warning-logged fallbacks:
+    - `Resolve(...)` fallback path now logs resolution exception context (`specifier`, `referrer`).
+    - `ResolveNodeModules(...)` fallback path now logs node_modules traversal/parse failures.
+- Net effect: module-resolution fallback behavior is unchanged functionally, but runtime observability is now production-safe and audit-friendly.
+
+Verification snapshot (2026-03-05):
+- Targeted tests (`ModuleLoaderTests`): `7/7` pass.
+- Maturity state: `full`.
+- Score: `90/100`.

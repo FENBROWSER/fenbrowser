@@ -128,8 +128,9 @@ namespace FenBrowser.FenEngine.Core
             {
                 throw;
             }
-            catch
+            catch (Exception ex)
             {
+                FenLogger.Warn($"[ModuleLoader] Resolve fallback for '{specifier}' (referrer: '{referrer}'): {ex.Message}", LogCategory.JavaScript);
                 return specifier;
             }
         }
@@ -311,8 +312,9 @@ namespace FenBrowser.FenEngine.Core
 
                 return null; // Not found
             }
-            catch
+            catch (Exception ex)
             {
+                FenLogger.Warn($"[ModuleLoader] node_modules resolution failed for '{moduleName}': {ex.Message}", LogCategory.JavaScript);
                 return null;
             }
         }
@@ -515,7 +517,4 @@ namespace FenBrowser.FenEngine.Core
         }
     }
 }
-
-
-
 
