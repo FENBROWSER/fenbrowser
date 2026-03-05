@@ -188,6 +188,35 @@ namespace FenBrowser.FenEngine.Scripting
             });
         }
         
+        private static Task RunDetachedAsync(Func<Task> operation)
+        {
+            return Task.Factory.StartNew(async () =>
+            {
+                try
+                {
+                    await operation().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[JavaScriptEngine] Detached async operation failed: {ex.Message}", LogCategory.JavaScript);
+                }
+            }, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
+        }
+
+        private static Task RunDetached(Action operation)
+        {
+            return Task.Factory.StartNew(() =>
+            {
+                try
+                {
+                    operation();
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[JavaScriptEngine] Detached operation failed: {ex.Message}", LogCategory.JavaScript);
+                }
+            }, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
+        }
         private static async Task ScheduleCallbackAsync(Action action, int delay)
         {
             await Task.Delay(delay).ConfigureAwait(false);
@@ -799,7 +828,7 @@ namespace FenBrowser.FenEngine.Scripting
                     var desc = (args.Length > 0 && args[0].IsObject) ? args[0].AsObject() : null;
                     var origin = OriginKey(_ctx?.BaseUri);
 
-                    Task.Run(() =>
+                    _ = RunDetached(() =>
                     {
                         try
                         {
@@ -856,7 +885,7 @@ namespace FenBrowser.FenEngine.Scripting
                 var errorCb = (args.Length > 1 && args[1].IsFunction) ? args[1].AsFunction() : null;
                 var origin = OriginKey(_ctx?.BaseUri);
 
-                Task.Run(async () =>
+                _ = RunDetachedAsync(async () =>
                 {
                     bool granted = false;
                     try
@@ -2116,7 +2145,7 @@ namespace FenBrowser.FenEngine.Scripting
                 if (uri != null)
                 {
                     var pageOrigin = _ctx?.BaseUri;
-                    Task.Run(async () =>
+                    _ = RunDetachedAsync(async () =>
                     {
                         try
                         {
@@ -2915,7 +2944,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                 if (uri != null && (AllowExternalScripts || SandboxAllows(SandboxFeature.ExternalScripts)))
                 {
                     // Run fetch-and-execute on background, then post back to main loop
-                    Task.Run(async () => 
+                    _ = RunDetachedAsync(async () => 
                     {
                         try
                         {
@@ -3869,6 +3898,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
     }
 
 }
+
 
 
 

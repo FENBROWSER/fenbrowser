@@ -2682,3 +2682,14 @@ Verification snapshot (2026-03-05):
 - Static scan: `FenRuntime.cs` direct `Task.Run` count `16 -> 0`.
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass.
 - Targeted tests (`Bytecode_WithStatement_RespectsUnscopables|ModuleLoaderTests|HistoryApiTests`): `15/15` pass.
+
+### 2.45 Runtime Hardening (2026-03-05, JavaScriptEngine detached task scheduler consolidation)
+- Scripting/JavaScriptEngine.cs
+  - Added detached execution helpers (`RunDetachedAsync`, `RunDetached`) with guarded logging.
+  - Replaced all direct `Task.Run(...)` sites in permissions/fetch bridge/dynamic script helper paths with helper-backed scheduling.
+  - Net effect: JavaScriptEngine source now has zero direct `Task.Run` call sites.
+
+Verification snapshot (2026-03-05):
+- Static scan: `JavaScriptEngine.cs` direct `Task.Run` count `4 -> 0`.
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass.
+- Targeted tests (`Bytecode_WithStatement_RespectsUnscopables|ModuleLoaderTests|HistoryApiTests`): `15/15` pass.

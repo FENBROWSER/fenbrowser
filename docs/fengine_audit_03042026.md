@@ -1374,3 +1374,19 @@ ew SK*): 196
   - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass.
   - Targeted tests: `Bytecode_WithStatement_RespectsUnscopables|ModuleLoaderTests|HistoryApiTests` => `15/15` passed.
 
+## Recheck Pass 41 (2026-03-05, JavaScriptEngine Task.Run elimination via detached runner)
+
+- Focus area: remaining unstructured background scheduling in JS host-bridge runtime helpers.
+- Files hardened:
+  - FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs
+- Changes:
+  - Added centralized detached execution helpers:
+    - `RunDetachedAsync(Func<Task>)`
+    - `RunDetached(Action)`
+  - Replaced all direct `Task.Run(...)` call sites in JavaScriptEngine with helper-backed detached execution.
+  - Existing call-site local error handling preserved; helper adds final safety-net logging for uncaught detached faults.
+- Verification:
+  - Static check: `JavaScriptEngine.cs` direct `Task.Run` count `4 -> 0`.
+  - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass.
+  - Targeted tests: `Bytecode_WithStatement_RespectsUnscopables|ModuleLoaderTests|HistoryApiTests` => `15/15` passed.
+
