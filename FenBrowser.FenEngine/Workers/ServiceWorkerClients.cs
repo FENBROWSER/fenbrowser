@@ -111,10 +111,24 @@ namespace FenBrowser.FenEngine.Workers
             }.Uri;
         }
 
-        private static FenObject CreatePromise(Func<Task<FenValue>> valueFactory)
+
+        private static Task RunDetachedAsync(Func<Task> operation)
+        {
+            return Task.Factory.StartNew(async () =>
+            {
+                try
+                {
+                    await operation().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[ServiceWorker] Detached async operation failed: {ex.Message}");
+                }
+            }, System.Threading.CancellationToken.None, System.Threading.Tasks.TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
+        }        private static FenObject CreatePromise(Func<Task<FenValue>> valueFactory)
         {
             var promise = new FenObject();
-            Task.Run(async () =>
+            _ = RunDetachedAsync(async () =>
             {
                 try
                 {
@@ -164,3 +178,4 @@ namespace FenBrowser.FenEngine.Workers
         }
     }
 }
+

@@ -52,11 +52,25 @@ namespace FenBrowser.FenEngine.Workers
              DispatchEventToHandlers(type, evtObj);
         }
 
-        // --- Promise Helper ---
+
+        private static Task RunDetachedAsync(Func<Task> operation)
+        {
+            return Task.Factory.StartNew(async () =>
+            {
+                try
+                {
+                    await operation().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[ServiceWorker] Detached async operation failed: {ex.Message}");
+                }
+            }, System.Threading.CancellationToken.None, System.Threading.Tasks.TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
+        }        // --- Promise Helper ---
         private FenObject CreatePromise(Func<Task<FenValue>> valueFactory)
         {
             var promise = new FenObject();
-            Task.Run(async () =>
+            _ = RunDetachedAsync(async () =>
             {
                 try { var r = await valueFactory(); ResolvePromise(promise, r); }
                 catch (Exception ex) { RejectPromise(promise, ex.Message); }
@@ -108,3 +122,4 @@ namespace FenBrowser.FenEngine.Workers
         }
     }
 }
+

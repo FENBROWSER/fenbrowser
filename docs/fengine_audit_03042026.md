@@ -1506,3 +1506,25 @@ ew SK*): 196
 - Verification:
   - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass.
   - Targeted tests: `EventInvariantTests|JsEngineImprovementsTests` => `31/31` passed.
+
+## Recheck Pass 49 (2026-03-05, ServiceWorker promise scheduler hardening)
+
+- Focus area: remove residual direct `Task.Run(async ...)` usage in Service Worker promise bridge helpers.
+- Files hardened:
+  - FenBrowser.FenEngine/Workers/ServiceWorkerContainer.cs
+  - FenBrowser.FenEngine/Workers/ServiceWorkerGlobalScope.cs
+  - FenBrowser.FenEngine/Workers/ServiceWorkerRegistration.cs
+  - FenBrowser.FenEngine/Workers/ServiceWorkerClients.cs
+- Changes:
+  - Added centralized detached scheduler helper in each file:
+    - `RunDetachedAsync(Func<Task>)`
+  - Replaced `CreatePromise(...)` direct `Task.Run(async ...)` execution with helper-backed detached scheduling.
+  - Preserved promise resolve/reject semantics and centralized detached fault logging.
+- Verification:
+  - Static check:
+    - `ServiceWorkerContainer.cs` direct `Task.Run` count `1 -> 0`.
+    - `ServiceWorkerGlobalScope.cs` direct `Task.Run` count `1 -> 0`.
+    - `ServiceWorkerRegistration.cs` direct `Task.Run` count `1 -> 0`.
+    - `ServiceWorkerClients.cs` direct `Task.Run` count `1 -> 0`.
+  - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass.
+  - Targeted tests: `ServiceWorkerLifecycleTests|ServiceWorkerCacheTests|WorkerTests` => `27/27` passed.
