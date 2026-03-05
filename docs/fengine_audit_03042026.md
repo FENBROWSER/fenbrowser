@@ -1475,3 +1475,18 @@ ew SK*): 196
   - Static check: `WorkerGlobalScope.cs` direct `Task.Run` count `2 -> 0`.
   - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass (`0` errors).
   - Targeted tests: `WorkerTimerTests|WorkerTests` => `26/26` passed.
+
+## Recheck Pass 47 (2026-03-05, JavaScriptEngine microtask pump scheduler hardening)
+
+- Focus area: remove residual unstructured `Task.Run` scheduling from JS microtask pumping path.
+- Files hardened:
+  - FenBrowser.FenEngine/Scripting/JavaScriptEngine.Methods.cs
+- Changes:
+  - Replaced `Task.Run(() => PumpMicrotasks())` scheduling in `EnqueueMicrotaskInternal(...)` with existing detached scheduler helper path:
+    - `_ = RunDetached(PumpMicrotasks)`
+  - Replaced reschedule path inside `PumpMicrotasks()` with helper-backed detached scheduling as well.
+  - Net effect: no direct `Task.Run` call sites remain in `JavaScriptEngine.Methods.cs`.
+- Verification:
+  - Static check: `JavaScriptEngine.Methods.cs` direct `Task.Run` count `2 -> 0`.
+  - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass (`0` errors).
+  - Targeted tests: `JsEngineImprovementsTests|WebApiPromiseTests` => `39/39` passed.
