@@ -1425,3 +1425,21 @@ ew SK*): 196
   - Static check: removed `TODO: Support media rules nesting for DevTools inspection` marker.
   - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass (`0` errors).
   - Targeted tests: `CssMediaRangeQueryTests|CascadeModernTests` => `6/6` passed.
+
+## Recheck Pass 44 (2026-03-05, FetchApi detached scheduler consolidation)
+
+- Focus area: eliminate unstructured fire-and-forget `Task.Run` usage in fetch/web-response promise bridges.
+- Files hardened:
+  - FenBrowser.FenEngine/WebAPIs/FetchApi.cs
+- Changes:
+  - Added centralized detached scheduler helper:
+    - `RunDetachedAsync(Func<Task>)`
+  - Replaced direct `Task.Run(async ...)` call sites in:
+    - global `fetch(...)` promise executor flow,
+    - `JsResponse.text()`,
+    - `JsResponse.json()`.
+  - Preserved existing resolve/reject behavior while adding a final detached fault logging safety net.
+- Verification:
+  - Static check: `FetchApi.cs` direct `Task.Run` count `3 -> 0`.
+  - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass (`0` errors).
+  - Targeted tests: `FetchApiTests|FetchHardeningTests` => `6/6` passed.
