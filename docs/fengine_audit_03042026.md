@@ -1645,3 +1645,22 @@ ew SK*): 196
 - Verification:
   - Targeted tests: `RenderBoxFlexLayoutTests` => `2/2` passed.
   - Regression tests: `Engine.FlexLayoutTests|Layout.FlexLayoutTests` => `26/26` passed.
+
+## Recheck Pass 55 (2026-03-05, ModuleLoader fallback observability hardening)
+
+- Focus area: remove silent exception swallow paths in module resolution to improve production diagnostics and policy-audit visibility.
+- Files hardened:
+  - FenBrowser.FenEngine/Core/ModuleLoader.cs
+- Changes:
+  - `Resolve(...)`:
+    - replaced broad silent catch fallback with warning-logged fallback that preserves existing non-throw resolution behavior.
+  - `ResolveNodeModules(...)`:
+    - replaced silent catch path with warning-logged fallback when node_modules traversal/parsing errors occur.
+  - Net effect: module resolution failures no longer disappear silently; they now emit actionable diagnostics in JavaScript log category.
+- State update:
+  - Capability: module resolution fallback/error surfacing.
+  - Previous state: `partial`.
+  - Current state: `full`.
+  - Score: `90/100`.
+- Verification:
+  - Targeted tests: `ModuleLoaderTests` => `7/7` passed.
