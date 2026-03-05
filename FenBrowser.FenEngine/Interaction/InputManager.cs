@@ -193,7 +193,8 @@ namespace FenBrowser.FenEngine.Interaction
                         point.RadiusX,
                         point.RadiusY,
                         point.RotationAngle,
-                        point.Force))
+                        point.Force,
+                        context))
                     .ToList();
 
                 if (touches.Count > 0)
@@ -239,4 +240,7 @@ namespace FenBrowser.FenEngine.Interaction
             };
     }
 }
+
+
+
 

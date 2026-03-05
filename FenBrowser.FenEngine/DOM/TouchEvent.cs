@@ -22,13 +22,15 @@ namespace FenBrowser.FenEngine.DOM
         public double RadiusY { get; }
         public double RotationAngle { get; }
         public double Force { get; }
+        private readonly IExecutionContext _context;
 
         public Touch(long identifier, Element target, 
             double clientX, double clientY, 
             double screenX, double screenY,
             double pageX, double pageY,
             double radiusX = 0, double radiusY = 0, 
-            double rotationAngle = 0, double force = 0)
+            double rotationAngle = 0, double force = 0,
+            IExecutionContext context = null)
         {
             Identifier = identifier;
             Target = target;
@@ -42,6 +44,7 @@ namespace FenBrowser.FenEngine.DOM
             RadiusY = radiusY;
             RotationAngle = rotationAngle;
             Force = force;
+            _context = context;
 
             InitializeProperties();
         }
@@ -49,8 +52,15 @@ namespace FenBrowser.FenEngine.DOM
         private void InitializeProperties()
         {
             Set("identifier", FenValue.FromNumber(Identifier));
-            // TODO: Proper Element wrapping for JS exposure
-            Set("target", FenValue.Null); 
+            if (Target != null && _context != null)
+            {
+                Set("target", FenValue.FromObject(new ElementWrapper(Target, _context)));
+            }
+            else
+            {
+                Set("target", FenValue.Null);
+            }
+
             Set("clientX", FenValue.FromNumber(ClientX));
             Set("clientY", FenValue.FromNumber(ClientY));
             Set("screenX", FenValue.FromNumber(ScreenX));
@@ -150,3 +160,7 @@ namespace FenBrowser.FenEngine.DOM
         }
     }
 }
+
+
+
+

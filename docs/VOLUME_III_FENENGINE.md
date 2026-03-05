@@ -2731,3 +2731,14 @@ Verification snapshot (2026-03-05):
 - Static scan: `FetchApi.cs` direct `Task.Run` count `3 -> 0`.
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass.
 - Targeted tests (`FetchApiTests|FetchHardeningTests`): `6/6` pass.
+
+### 2.49 Runtime Hardening (2026-03-05, TouchEvent target wrapper completion)
+- DOM/TouchEvent.cs
+  - `Touch` upgraded with optional execution-context injection and concrete `target` exposure via `ElementWrapper` when context is available.
+  - Removed placeholder/null-only target exposure path.
+- Interaction/InputManager.cs
+  - Touch object construction now passes active execution context into `Touch`, enabling consistent JS-visible target wrapping during dispatched touch events.
+
+Verification snapshot (2026-03-05):
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass.
+- Targeted tests (`InputEventTests|EventInvariantTests`): `11/11` pass.

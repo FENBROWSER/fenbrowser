@@ -1443,3 +1443,18 @@ ew SK*): 196
   - Static check: `FetchApi.cs` direct `Task.Run` count `3 -> 0`.
   - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass (`0` errors).
   - Targeted tests: `FetchApiTests|FetchHardeningTests` => `6/6` passed.
+
+## Recheck Pass 45 (2026-03-05, TouchEvent target wrapper productionization)
+
+- Focus area: remove TODO/stub behavior in touch-event target exposure.
+- Files hardened:
+  - FenBrowser.FenEngine/DOM/TouchEvent.cs
+  - FenBrowser.FenEngine/Interaction/InputManager.cs
+- Changes:
+  - `Touch` now accepts optional `IExecutionContext` and stores it for JS exposure wiring.
+  - `Touch.InitializeProperties()` now exposes `target` as `ElementWrapper(Target, context)` when target/context are available (instead of unconditional `null`).
+  - Input dispatch (`InputManager`) now passes the active execution context when creating `Touch` objects.
+  - Removed explicit non-production TODO marker in `TouchEvent` implementation.
+- Verification:
+  - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass.
+  - Targeted tests: `InputEventTests|EventInvariantTests` => `11/11` passed.
