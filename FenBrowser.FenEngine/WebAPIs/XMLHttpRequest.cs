@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Net.Http;
 using System.Threading.Tasks;
 using FenBrowser.FenEngine.Core.Interfaces;
@@ -70,7 +70,7 @@ namespace FenBrowser.FenEngine.WebAPIs
         private static readonly HashSet<string> _allowedMethods = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             { "GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH" };
 
-        // SECURITY: WHATWG forbidden request headers â€” must never be set by scripts
+        // SECURITY: WHATWG forbidden request headers - must never be set by scripts
         private static readonly HashSet<string> _forbiddenHeaders = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "accept-charset", "accept-encoding", "access-control-request-headers",
@@ -93,7 +93,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 return FenValue.FromError($"SecurityError: '{rawMethod}' is not an allowed HTTP method.");
             _method = rawMethod;
 
-            // SECURITY: Validate URL scheme â€” only http/https permitted
+            // SECURITY: Validate URL scheme - only http/https permitted
             _url = args[1].ToString();
             if (!Uri.TryCreate(_url, UriKind.Absolute, out var parsedUri) ||
                 (parsedUri.Scheme != "http" && parsedUri.Scheme != "https"))
@@ -122,6 +122,20 @@ namespace FenBrowser.FenEngine.WebAPIs
             return FenValue.Undefined;
         }
 
+        private static Task RunDetachedAsync(Func<Task> operation)
+        {
+            return Task.Factory.StartNew(async () =>
+            {
+                try
+                {
+                    await operation().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[XMLHttpRequest] Detached async operation failed: {ex.Message}", LogCategory.JavaScript);
+                }
+            }, System.Threading.CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
+        }
         private FenValue Send(FenValue[] args, FenValue thisVal)
         {
             if (_readyState != OPENED) return FenValue.FromError("InvalidStateError");
@@ -129,7 +143,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             string body = args.Length > 0 ? args[0].ToString() : null;
             
             // Execute request
-            Task.Run(async () =>
+            _ = RunDetachedAsync(async () =>
             {
                 try
                 {

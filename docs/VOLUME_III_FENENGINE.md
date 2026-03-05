@@ -2794,3 +2794,29 @@ Verification snapshot (2026-03-05):
   - `ServiceWorkerClients.cs` direct `Task.Run` count `1 -> 0`.
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass.
 - Targeted tests (`ServiceWorkerLifecycleTests|ServiceWorkerCacheTests|WorkerTests`): `27/27` pass.
+
+### 2.54 Runtime Hardening (2026-03-05, WebAPI detached scheduler convergence)
+- WebAPIs/WebAudioAPI.cs
+  - Added `RunDetachedAsync(Func<Task>)` helper and replaced direct `Task.Run(async ...)` decode-audio promise path.
+- WebAPIs/WebRTCAPI.cs
+  - Added `RunDetachedAsync(Func<Task>)` helper and replaced direct `Task.Run(async ...)` data-channel open simulation path.
+- WebAPIs/Cache.cs
+  - Added `RunDetachedAsync(Func<Task>)` helper and replaced direct `Task.Run(async ...)` in internal promise executor.
+- WebAPIs/CacheStorage.cs
+  - Added `RunDetachedAsync(Func<Task>)` helper and replaced direct `Task.Run(async ...)` in internal promise executor.
+- WebAPIs/IndexedDBService.cs
+  - Added `RunDetachedAsync(Func<Task>)` helper and replaced direct `Task.Run(async ...)` for async open request dispatch.
+- WebAPIs/XMLHttpRequest.cs
+  - Added `RunDetachedAsync(Func<Task>)` helper and replaced direct `Task.Run(async ...)` send pipeline dispatch.
+- Net effect: all six WebAPI components now have zero direct `Task.Run` call sites.
+
+Verification snapshot (2026-03-05):
+- Static scan:
+  - `WebAudioAPI.cs` direct `Task.Run` count `1 -> 0`.
+  - `WebRTCAPI.cs` direct `Task.Run` count `1 -> 0`.
+  - `Cache.cs` direct `Task.Run` count `1 -> 0`.
+  - `CacheStorage.cs` direct `Task.Run` count `1 -> 0`.
+  - `IndexedDBService.cs` direct `Task.Run` count `1 -> 0`.
+  - `XMLHttpRequest.cs` direct `Task.Run` count `1 -> 0`.
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass (`0` errors).
+- Targeted tests (`FetchApiTests|FetchHardeningTests|WorkerTests|ServiceWorkerCacheTests|WebApiPromiseTests`): `40/40` pass.

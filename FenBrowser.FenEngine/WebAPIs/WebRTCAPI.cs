@@ -15,7 +15,20 @@ namespace FenBrowser.FenEngine.WebAPIs
     public static class WebRTCAPI
     {
         private static int _connectionIdCounter = 0;
-
+        private static Task RunDetachedAsync(Func<Task> operation)
+        {
+            return Task.Factory.StartNew(async () =>
+            {
+                try
+                {
+                    await operation().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[WebRTC] Detached async operation failed: {ex.Message}", LogCategory.JavaScript);
+                }
+            }, System.Threading.CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
+        }
         /// <summary>
         /// Creates the RTCPeerConnection constructor
         /// </summary>
@@ -29,7 +42,6 @@ namespace FenBrowser.FenEngine.WebAPIs
             })));
             return constructor;
         }
-
         /// <summary>
         /// Creates an RTCPeerConnection instance
         /// </summary>
@@ -244,7 +256,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             })));
 
             // Simulate channel opening
-            Task.Run(async () =>
+            _ = RunDetachedAsync(async () =>
             {
                 await Task.Delay(100);
                 dc.Set("readyState", FenValue.FromString("open"));
@@ -298,7 +310,6 @@ namespace FenBrowser.FenEngine.WebAPIs
 
             return sender;
         }
-
         /// <summary>
         /// Creates the MediaStream constructor
         /// </summary>
@@ -362,3 +373,4 @@ namespace FenBrowser.FenEngine.WebAPIs
         }
     }
 }
+
