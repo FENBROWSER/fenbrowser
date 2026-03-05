@@ -2638,3 +2638,36 @@ Verification snapshot (2026-03-04):
 Verification snapshot (2026-03-04):
 - Build: `FenBrowser.FenEngine` and `FenBrowser.Tests` pass.
 - Targeted suites (`BytecodeExecutionTests`, `JsParserReproTests`, `FenRuntimeBytecodeExecutionTests`): `137/137` pass.
+
+### 2.41 Runtime Hardening (2026-03-05, P0 unsupported-path typing + history Go async hygiene)
+- Core/ModuleLoader.cs
+  - Replaced default module fetcher unsupported host throw with JS-facing `FenTypeError` for non-file URI fetch attempts.
+  - Bytecode-only unsupported compile path now throws `FenSyntaxError` instead of host-level unsupported-operation exception.
+- Core/Bytecode/Compiler/BytecodeCompiler.cs
+  - Callable-body `with` unsupported guard now throws typed `FenSyntaxError`.
+- Rendering/BrowserApi.cs
+  - Replaced `Task.Run(async ...)` history `Go(int delta)` path with `GoAsync(int delta)` and guarded error logging, removing fire-and-forget task wrapper in this API surface.
+
+Verification snapshot (2026-03-05):
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass.
+- Targeted tests (`BytecodeExecutionTests|ModuleLoaderTests|HistoryApiTests`): `136` pass, `1` fail (`Bytecode_WithStatement_RespectsUnscopables`, open semantics gap).
+
+### 2.42 Runtime Hardening (2026-03-05, with-unscopables compatibility)
+- Core/FenEnvironment.cs
+  - Added `TryGetUnscopablesObject()` and restored compatibility fallback for string-keyed unscopables (`"Symbol.unscopables"`) while retaining preferred `%Symbol.unscopables%` probe.
+  - `IsUnscopable(...)` now uses ordered object resolution and consistent boolean coercion.
+
+Verification snapshot (2026-03-05):
+- Targeted tests (`Bytecode_WithStatement_RespectsUnscopables|ModuleLoaderTests|HistoryApiTests`): `15/15` pass.
+
+### 2.43 Runtime Hardening (2026-03-05, eval typing cleanup + scheduler path tightening)
+- Core/FenRuntime.cs
+  - Removed remaining host-generic `throw new Exception(...)` sites in eval error propagation; switched to typed `FenInternalError` with `EvalError:` context.
+- Core/ModuleLoader.cs
+  - Removed stale `NotImplementedException` remap wrapper in `ExecuteModuleBytecode(...)` to preserve direct typed exception propagation.
+- Scripting/JavaScriptEngine.cs
+  - Replaced callback scheduler `Task.Run(async ()=>Task.Delay...)` wrapper with dedicated `ScheduleCallbackAsync(...)` path and explicit fault logging.
+
+Verification snapshot (2026-03-05):
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass (`359` warnings, `0` errors).
+- Targeted tests (`Bytecode_WithStatement_RespectsUnscopables|ModuleLoaderTests|HistoryApiTests`): `15/15` pass.

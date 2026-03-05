@@ -1,4 +1,4 @@
-using FenBrowser.Core.Css;
+﻿using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
@@ -507,14 +507,14 @@ namespace FenBrowser.FenEngine.Rendering
                 TryInvokeRepaintReady(elem);
             };
 
-            // Wire ElementStateManager.OnStateChanged → CSS re-cascade.
+            // Wire ElementStateManager.OnStateChanged â†’ CSS re-cascade.
             // Hover/focus/active state changes require re-running the selector cascade so that
             // rules like  a:hover { color: red }  are applied.  We schedule a single re-cascade
             // per state-change burst; ScheduleRecascade() ignores overlapping calls.
             ElementStateManager.Instance.OnStateChanged += _ => _engine.ScheduleRecascade();
 
             // Wire DOM attribute mutations (class/id/style changes from JS or DOM manipulation)
-            // → CSS re-cascade.  e.g. element.classList.add('active') must reflect in selectors.
+            // â†’ CSS re-cascade.  e.g. element.classList.add('active') must reflect in selectors.
             FenBrowser.Core.Dom.V2.Element.StyleAttributeChanged += () => _engine.ScheduleRecascade();
 
             _engine.DomReady += (s, dom) =>
@@ -625,7 +625,7 @@ namespace FenBrowser.FenEngine.Rendering
                     var scriptResult = await _resources.FetchTextDetailedAsync(u, referer: _current, accept: null, secFetchDest: "script").ConfigureAwait(false);
                     if (scriptResult.Status != FenBrowser.Core.FetchStatus.Success) return null;
 
-                    // X-Content-Type-Options: nosniff — block script if Content-Type is not a JS MIME type
+                    // X-Content-Type-Options: nosniff â€” block script if Content-Type is not a JS MIME type
                     if (scriptResult.Headers != null && scriptResult.Headers.TryGetValues("X-Content-Type-Options", out var xctoVals))
                     {
                         var xcto = string.Join(",", xctoVals).Trim().ToLowerInvariant();
@@ -635,7 +635,7 @@ namespace FenBrowser.FenEngine.Rendering
                             bool isJsMime = scriptCt.Contains("javascript") || scriptCt.Contains("ecmascript");
                             if (!isJsMime)
                             {
-                                FenLogger.Warn($"[nosniff] Blocked script — Content-Type '{scriptResult.ContentType}' is not a JS MIME type: {u}", LogCategory.JavaScript);
+                                FenLogger.Warn($"[nosniff] Blocked script â€” Content-Type '{scriptResult.ContentType}' is not a JS MIME type: {u}", LogCategory.JavaScript);
                                 return null;
                             }
                         }
@@ -2018,7 +2018,7 @@ pre {{
             {
                 var doc = el.OwnerDocument;
                 var role = FenBrowser.Core.Accessibility.AccessibilityRole.ResolveRole(el, doc);
-                // None / Generic → empty string (no meaningful ARIA role)
+                // None / Generic â†’ empty string (no meaningful ARIA role)
                 if (role == FenBrowser.Core.Accessibility.AriaRole.None ||
                     role == FenBrowser.Core.Accessibility.AriaRole.Generic)
                     return Task.FromResult("");
@@ -2660,7 +2660,7 @@ pre {{
         {
             if (target == null)
             {
-                // Don't clear focus when target is null — this typically means the
+                // Don't clear focus when target is null â€” this typically means the
                 // InputManager's hit test failed (stale/empty render context), NOT
                 // that the user clicked on empty space. The BrowserIntegration fallback
                 // HandleElementClick handles proper focus management with the correct
@@ -2830,7 +2830,7 @@ pre {{
             {
                 allowDefaultActivation = true;
             }
-            // Handle summary clicks — toggle parent details[open]
+            // Handle summary clicks â€” toggle parent details[open]
             if (tag == "summary")
             {
                 var detailsEl = element.ParentElement;
@@ -3618,61 +3618,63 @@ pre {{
                 FenLogger.Error($"[BrowserHost] ReplaceState failed: {ex.Message}", LogCategory.JavaScript);
             }
         }
-
         public void Go(int delta)
         {
-            // Async void is generally bad, but this is an interface method called from JS bridge
-            // We'll wrap it in Task.Run to fire and forget
-            Task.Run(async () =>
+            _ = GoAsync(delta);
+        }
+
+        private async Task GoAsync(int delta)
+        {
+            try
             {
                 int targetIndex = _historyIndex + delta;
-                if (targetIndex >= 0 && targetIndex < _history.Count)
+                if (targetIndex < 0 || targetIndex >= _history.Count)
                 {
-                    // Update: Determine direction
-                    if (delta == 0) 
-                    {
-                         await RefreshAsync();
-                         return;
-                    }
-                    
-                    // For single steps, use GoBack/Forward
-                    if (delta == -1) await GoBackAsync();
-                    else if (delta == 1) await GoForwardAsync();
-                    else
-                    {
-                        // Walk step-by-step through intermediate history entries,
-                        // firing popstate for pushState entries and navigating for real entries.
-                        int step = delta > 0 ? 1 : -1;
-                        while (_historyIndex != targetIndex)
-                        {
-                            _historyIndex += step;
-                            var entry = _history[_historyIndex];
-                            if (entry.IsPushState)
-                            {
-                                _current = entry.Url;
-                                _engine.NotifyPopState(entry.State);
-                                TryInvokeNavigated(_current);
-                            }
-                            else
-                            {
-                                await NavigateAsync(entry.Url.AbsoluteUri);
-                                // After a real navigation, stop traversing — the page reloaded
-                                break;
-                            }
-                        }
-                    }
+                    return;
                 }
-            });
+
+                if (delta == 0)
+                {
+                    await RefreshAsync();
+                    return;
+                }
+
+                if (delta == -1)
+                {
+                    await GoBackAsync();
+                    return;
+                }
+
+                if (delta == 1)
+                {
+                    await GoForwardAsync();
+                    return;
+                }
+
+                // Walk step-by-step through intermediate history entries,
+                // firing popstate for pushState entries and navigating for real entries.
+                int step = delta > 0 ? 1 : -1;
+                while (_historyIndex != targetIndex)
+                {
+                    _historyIndex += step;
+                    var entry = _history[_historyIndex];
+                    if (entry.IsPushState)
+                    {
+                        _current = entry.Url;
+                        _engine.NotifyPopState(entry.State);
+                        TryInvokeNavigated(_current);
+                        continue;
+                    }
+
+                    await NavigateAsync(entry.Url.AbsoluteUri);
+                    // After a real navigation, stop traversing - the page reloaded.
+                    break;
+                }
+            }
+            catch (Exception ex)
+            {
+                TryLogWarn($"[BrowserHost] Go(delta={delta}) failed: {ex.Message}", LogCategory.Navigation);
+            }
         }
     }
 }
-
-
-
-
-
-
-
-
-
-

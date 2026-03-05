@@ -69,7 +69,7 @@ namespace FenBrowser.FenEngine.Core
         private static string DefaultFileFetcher(Uri uri)
         {
             if (uri.IsFile) return File.ReadAllText(uri.LocalPath);
-            throw new NotSupportedException($"Default loader only supports file://. Requested: {uri}");
+            throw new FenTypeError($"Module fetcher only supports file:// URIs. Requested: {uri}");
         }
 
         public string Resolve(string specifier, string referrer)
@@ -477,22 +477,15 @@ namespace FenBrowser.FenEngine.Core
 
         private void ExecuteModuleBytecode(Program program, FenEnvironment moduleEnv)
         {
-            try
-            {
-                var compiler = new Bytecode.Compiler.BytecodeCompiler();
-                var codeBlock = compiler.Compile(program);
-                var vm = new Bytecode.VM.VirtualMachine();
-                var evalResult = vm.Execute(codeBlock, moduleEnv);
+            var compiler = new Bytecode.Compiler.BytecodeCompiler();
+            var codeBlock = compiler.Compile(program);
+            var vm = new Bytecode.VM.VirtualMachine();
+            var evalResult = vm.Execute(codeBlock, moduleEnv);
 
-                if (ThrowOnEvaluationError &&
-                    evalResult.Type == Interfaces.ValueType.Error)
-                {
-                    throw new FenInternalError($"Module evaluation failed: {evalResult}");
-                }
-            }
-            catch (NotImplementedException ex)
+            if (ThrowOnEvaluationError &&
+                evalResult.Type == Interfaces.ValueType.Error)
             {
-                throw new NotSupportedException($"Bytecode-only mode: module compilation unsupported. {ex.Message}", ex);
+                throw new FenInternalError($"Module evaluation failed: {evalResult}");
             }
         }
 
@@ -522,6 +515,7 @@ namespace FenBrowser.FenEngine.Core
         }
     }
 }
+
 
 
 
