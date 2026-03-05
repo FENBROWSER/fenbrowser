@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using FenBrowser.FenEngine.Core.Interfaces;
 
@@ -377,28 +377,44 @@ namespace FenBrowser.FenEngine.Core
 
             return !IsUnscopable(name);
         }
-
         private bool IsUnscopable(string name)
         {
             if (_withObject == null)
             {
                 return false;
             }
-            // Spec-observable behavior: with-environment performs a single Get on %Symbol.unscopables%.
-            var unscopables = _withObject.Get("Symbol(Symbol.unscopables)");
 
-            if (!unscopables.IsObject)
-            {
-                return false;
-            }
-
-            var unscopablesObj = unscopables.AsObject();
+            var unscopablesObj = TryGetUnscopablesObject();
             if (unscopablesObj == null || !unscopablesObj.Has(name))
             {
                 return false;
             }
 
             return unscopablesObj.Get(name).ToBoolean();
+        }
+
+        private IObject TryGetUnscopablesObject()
+        {
+            if (_withObject == null)
+            {
+                return null;
+            }
+
+            // Preferred lookup: %Symbol.unscopables%.
+            var symbolUnscopables = _withObject.Get("Symbol(Symbol.unscopables)");
+            if (symbolUnscopables.IsObject)
+            {
+                return symbolUnscopables.AsObject();
+            }
+
+            // Compatibility fallback for legacy/string-keyed setups.
+            var legacyUnscopables = _withObject.Get("Symbol.unscopables");
+            if (legacyUnscopables.IsObject)
+            {
+                return legacyUnscopables.AsObject();
+            }
+
+            return null;
         }
     }
 }

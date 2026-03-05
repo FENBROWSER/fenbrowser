@@ -133,18 +133,16 @@ namespace FenBrowser.FenEngine.Scripting
             };
             
             // Configure callbacks to run via EventLoop
-            context.ScheduleCallback = (action, delay) => 
+            context.ScheduleCallback = (action, delay) =>
             {
                 FenLogger.Debug($"[ScheduleCallback] Scheduled for {delay}ms", LogCategory.JavaScript);
-                Task.Run(async () => 
+                _ = ScheduleCallbackAsync(action, delay).ContinueWith(t =>
                 {
-                    await Task.Delay(delay);
-                    FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance.EnqueueTask(() => 
+                    if (t.IsFaulted)
                     {
-                        FenLogger.Debug("[EventLoop] Executing scheduled callback", LogCategory.JavaScript);
-                        action?.Invoke();
-                    });
-                });
+                        FenLogger.Warn($"[JavaScriptEngine] ScheduleCallbackAsync failed: {t.Exception?.GetBaseException().Message}", LogCategory.JavaScript);
+                    }
+                }, TaskContinuationOptions.OnlyOnFaulted);
             };
 
             // Configure Microtasks (Promises)
@@ -190,6 +188,15 @@ namespace FenBrowser.FenEngine.Scripting
             });
         }
         
+        private static async Task ScheduleCallbackAsync(Action action, int delay)
+        {
+            await Task.Delay(delay).ConfigureAwait(false);
+            FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance.EnqueueTask(() =>
+            {
+                FenLogger.Debug("[EventLoop] Executing scheduled callback", LogCategory.JavaScript);
+                action?.Invoke();
+            });
+        }
         // IDomBridge Implementation
         public FenValue GetElementById(string id)
         {
@@ -3862,6 +3869,8 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
     }
 
 }
+
+
 
 
 

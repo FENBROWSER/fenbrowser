@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using FenBrowser.FenEngine.Core.Types;
@@ -1457,7 +1457,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     char next = pattern[i + 1];
                     if (next == 'x')
                     {
-                        // \xNN — valid only if followed by exactly 2 hex digits
+                        // \xNN â€” valid only if followed by exactly 2 hex digits
                         bool valid = i + 3 < pattern.Length
                             && IsHexDigit(pattern[i + 2]) && IsHexDigit(pattern[i + 3]);
                         if (valid)
@@ -1466,13 +1466,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                         }
                         else
                         {
-                            // Annex B identity escape: \x → x
+                            // Annex B identity escape: \x â†’ x
                             sb.Append('x'); i += 2;
                         }
                     }
                     else if (next == 'u')
                     {
-                        // \uNNNN — valid only if followed by exactly 4 hex digits
+                        // \uNNNN â€” valid only if followed by exactly 4 hex digits
                         bool hasCurly = i + 2 < pattern.Length && pattern[i + 2] == '{';
                         bool valid4 = i + 5 < pattern.Length
                             && IsHexDigit(pattern[i + 2]) && IsHexDigit(pattern[i + 3])
@@ -1483,20 +1483,20 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                         }
                         else
                         {
-                            // Annex B identity escape: \u → u
+                            // Annex B identity escape: \u â†’ u
                             sb.Append('u'); i += 2;
                         }
                     }
                     else if (next == 'k' && i + 2 < pattern.Length && pattern[i + 2] == '<')
                     {
-                        // \k<name> — invalid if named group doesn't exist
+                        // \k<name> â€” invalid if named group doesn't exist
                         int closeIdx = pattern.IndexOf('>', i + 3);
                         if (closeIdx >= 0)
                         {
                             string groupName = pattern.Substring(i + 3, closeIdx - (i + 3));
                             if (!namedGroups.Contains(groupName))
                             {
-                                // Identity escape: \k → k, keep <name> as literal
+                                // Identity escape: \k â†’ k, keep <name> as literal
                                 sb.Append('k');
                                 sb.Append('<');
                                 sb.Append(groupName);
@@ -2716,7 +2716,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         /// </summary>
         private void EmitUpdateVarByName(string variableName)
         {
-            // Local slots are always in the current frame's environment — StoreLocal is correct for assignment too.
+            // Local slots are always in the current frame's environment â€” StoreLocal is correct for assignment too.
             if (TryGetLocalSlot(variableName, out int slotIndex))
             {
                 Emit(OpCode.StoreLocal);
@@ -3350,7 +3350,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         {
             if (ContainsWithStatement(body))
             {
-                throw new NotSupportedException($"Compiler: {nodeKind} with 'with' statement is not supported in bytecode-only function bodies.");
+                throw new FenSyntaxError($"Compiler: {nodeKind} with 'with' statement is not supported in bytecode-only function bodies.");
             }
         }
 
@@ -3875,6 +3875,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         }
     }
 }
+
 
 
 

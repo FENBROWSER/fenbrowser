@@ -970,3 +970,391 @@ Verification:
 - Follow-up 2026-03-05: strict-mode inheritance was wired into dynamic parse paths (`ExecuteSimple` -> `Parser` initial strict state), and `Function` constructor internal compilation explicitly opts out of inherited strictness to preserve spec behavior; `with` Test262 moved from **81/181** to **82/181** (strict eval SyntaxError case now passing).
 - Follow-up 2026-03-05: proxy trap target metadata fallback was hardened (`__proxyTarget__` / `__target__`) and proxy creation now sets both builtin slots for consistent trap resolution; broader `with` proxy/unscopables failures still remain.
 - Follow-up 2026-03-05: `with` unscopables lookup now performs only `%Symbol.unscopables%` probing (no alias cascade), and `TryGetLocal` no longer re-runs unscopables checks after binding resolution; proxy trap order moved closer to spec and `with` Test262 moved from **82/181** to **84/181**.
+
+
+## Recheck Pass 36 (2026-03-05, Full Line-by-Line Maturity Scoring Audit)
+
+- Scope: `FenBrowser.FenEngine/` (fresh recursive scan, no line skipped).
+- Coverage: **283 files**, **134474 lines**, **5650983 characters**.
+- Artifacts:
+  - `docs/fengine_audit_scan_03052026.json` (per-file hashes, per-line stream hash, flags, score, state).
+  - `docs/fengine_audit_scores_03052026.csv` (compact per-file score ledger).
+- Engine maturity score: **94.1/100**.
+- Engine state: **production**.
+
+### State Scale Used
+- `stub`: 1-24
+- `basic`: 25-49
+- `partial`: 50-74
+- `full`: 75-89
+- `production`: 90-100
+
+### Global Signal Totals (Current Snapshot)
+- TODO/FIXME/HACK: 15
+- NotImplemented/NotSupported throws: 4
+- 	hrow new Exception(...): 2
+- sync void: 1
+- catch {}: 0
+- catch swallow pattern: 402
+- Thread.Sleep(...): 0
+- Task.Run(...): 51
+- GC.Collect(...): 7
+- lock(...): 234
+- mutable static fields: 116
+- Skia native ctor sites (
+ew SK*): 196
+
+### File State Distribution
+- production: 237
+- ull: 26
+- partial: 14
+- asic: 
+- stub: 5
+
+### Module Maturity Summary
+| Module | Files | Lines | Avg Score | Production | Full | Partial | Basic | Stub |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| (root) | 283 | 134474 | 94.1 | 237 | 26 | 14 |  | 5 |
+
+### Full Line-By-Line File Ledger (No File Omitted)
+| File | Lines | SHA256(12) | Score | State | Key Signals |
+|---|---:|---|---:|---|---|
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Adapters\ISvgRenderer.cs | 127 | FA5D6D972474 | 100 | production | staticMut:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Adapters\ITextMeasurer.cs | 21 | BCE198EABAED | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Adapters\SkiaTextMeasurer.cs | 42 | EE0BE5B56179 | 100 | production | newSK:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Adapters\SvgSkiaRenderer.cs | 382 | 235CA2051FB3 | 82 | full | swallowCatch:3 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Assets\ua.css | 103 | BF54DBACBBCD | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\build_capture.bat | 1 | A12BF2ADD59E | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Compatibility\WebCompatibilityInterventions.cs | 306 | C7A0369C20E6 | 88 | full | swallowCatch:2, lock:8, staticMut:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\AnimationFrameScheduler.cs | 308 | 19F1DBB73B58 | 94 | production | swallowCatch:1, lock:7, staticMut:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\Ast.cs | 1160 | 31F0697DB1D7 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\Bytecode\CodeBlock.cs | 40 | 939DEAC035AD | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\Bytecode\Compiler\BytecodeCompiler.cs | 3880 | 64AB9D60AAA3 | 79 | full | notImpl:1, swallowCatch:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\Bytecode\OpCode.cs | 106 | A05473326229 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\Bytecode\VM\CallFrame.cs | 158 | B94394BEBBF3 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\Bytecode\VM\VirtualMachine.cs | 3198 | 3FCBBD85AEFF | 65 | partial | swallowCatch:5 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\EngineLoop.cs | 152 | 6099FDA15BA1 | 88 | full | swallowCatch:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\EnginePhase.cs | 70 | 9718E840EE55 | 100 | production | staticMut:3 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\EventLoop\EventLoopCoordinator.cs | 380 | AF8F2EF814F2 | 76 | full | swallowCatch:4, lock:3, staticMut:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\EventLoop\MicrotaskQueue.cs | 148 | 33C2CC67BD99 | 94 | production | swallowCatch:1, lock:8 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\EventLoop\TaskQueue.cs | 129 | EECB15AE840D | 100 | production | lock:5 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\ExecutionContext.cs | 107 | 69ECEE2D6AAF | 98 | production | taskRun:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\FenEnvironment.cs | 404 | DFE5AD272551 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\FenFunction.cs | 275 | B894F860ADB8 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\FenObject.cs | 604 | 8B2FB420C8C0 | 100 | production | staticMut:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\FenRuntime.cs | 14411 | 89043FFB0C40 | 1 | stub | genEx:2, swallowCatch:111, taskRun:16, lock:34, todo:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\FenSymbol.cs | 196 | BC172EF754C1 | 100 | production | lock:3, staticMut:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\FenValue.cs | 608 | 2A6E4CCC83FC | 94 | production | swallowCatch:1, staticMut:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\IDomBridge.cs | 21 | B546693671B4 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\InputQueue.cs | 426 | 5C04FA5794F5 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\Interfaces\IExecutionContext.cs | 134 | 96168FD90361 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\Interfaces\IHistoryBridge.cs | 11 | 22D48C8A946B | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\Interfaces\IModuleLoader.cs | 22 | 36739E1549D6 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\Interfaces\IObject.cs | 78 | A3AB2B9655FF | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\Interfaces\IValue.cs | 93 | EE90E941CFD4 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\Lexer.cs | 1888 | E9D6D3FC8C00 | 74 | partial | swallowCatch:4, staticMut:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\ModuleLoader.cs | 527 | C7EB41A775AD | 22 | stub | notImpl:3, swallowCatch:8 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\Parser.cs | 5570 | 87ED06D19326 | 80 | full | swallowCatch:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\PropertyDescriptor.cs | 89 | F1E653D48267 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\Types\JsBigInt.cs | 209 | 5179E0AF3114 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\Types\JsIntl.cs | 123 | C2E07F268FAE | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\Types\JsMap.cs | 135 | 48DCFE134355 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\Types\JsPromise.cs | 549 | 3F3A363B3B71 | 88 | full | swallowCatch:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\Types\JsSet.cs | 205 | E0A5DFA42AA6 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\Types\JsSymbol.cs | 190 | 946688F8B4EA | 100 | production | staticMut:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\Types\JsTypedArray.cs | 527 | D3035173441B | 100 | production | todo:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\Types\JsWeakMap.cs | 68 | CD169ED549F1 | 94 | production | swallowCatch:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\Types\JsWeakSet.cs | 60 | BBFB49A10FC1 | 94 | production | swallowCatch:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Core\Types\Shape.cs | 89 | 6479A6A6B50B | 100 | production | lock:1, staticMut:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DevTools\DebugConfig.cs | 135 | 8079D12AEB80 | 100 | production | staticMut:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DevTools\DevToolsCore.cs | 1063 | 12AC3D5ED5B5 | 80 | full | swallowCatch:2, gcCollect:2, lock:4, staticMut:3 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DOM\AttrWrapper.cs | 104 | 29EB20082477 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DOM\CommentWrapper.cs | 39 | BBFC62FB5796 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DOM\CustomElementRegistry.cs | 374 | FBCDEC91BD3B | 88 | full | swallowCatch:2, lock:6 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DOM\CustomEvent.cs | 70 | 29E27FE1F398 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DOM\DocumentWrapper.cs | 762 | CEAD94714A0D | 93 | production | swallowCatch:1, todo:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DOM\DomEvent.cs | 337 | 9B74DEFE4FDC | 94 | production | swallowCatch:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DOM\DomMutationQueue.cs | 178 | EC7D49B21103 | 94 | production | swallowCatch:1, lock:5, staticMut:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DOM\DomWrapperFactory.cs | 46 | F7166E1B5E01 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DOM\ElementWrapper.cs | 2141 | 4BEE1978E141 | 62 | partial | swallowCatch:6 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DOM\EventListenerRegistry.cs | 250 | C35D8F35C290 | 100 | production | lock:7 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DOM\EventTarget.cs | 420 | 3DAD3856D0D2 | 88 | full | swallowCatch:2, staticMut:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DOM\HTMLCollectionWrapper.cs | 433 | 34DE8C1CF909 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DOM\InMemoryCookieStore.cs | 202 | 269104603B26 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DOM\MutationObserverWrapper.cs | 221 | B31137508270 | 100 | production | lock:5 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DOM\NamedNodeMapWrapper.cs | 171 | D7ED73C75D64 | 88 | full | swallowCatch:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DOM\NodeListWrapper.cs | 92 | D171CCD30719 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DOM\NodeWrapper.cs | 371 | 6862B7802B3C | 70 | partial | swallowCatch:5 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DOM\Observers.cs | 268 | AD8CC4C55645 | 88 | full | swallowCatch:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DOM\RangeWrapper.cs | 95 | DB1A50F0CA6B | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DOM\ShadowRootWrapper.cs | 88 | E0EE49DAE3A0 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DOM\StaticNodeList.cs | 25 | ABC4D8E6FDEE | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DOM\TextWrapper.cs | 44 | F2E1CA4EEA13 | 100 | production | todo:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\DOM\TouchEvent.cs | 152 | 38103F88DA83 | 100 | production | todo:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Errors\FenError.cs | 113 | 68B53B8C4AC6 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj | 22 | 7DBCCF45BEF0 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\HTML\ForeignContent.cs | 333 | 2E1E9225C8CF | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\HTML\HtmlEntities.cs | 482 | 120B43F7B37E | 94 | production | swallowCatch:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\HTML\HtmlToken.cs | 101 | BF95F2BCC74C | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\HTML\HtmlTokenizer.cs | 1546 | FD2689C6DEA0 | 98 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\HTML\HtmlTreeBuilder.cs | 1561 | 49B830756234 | 98 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Interaction\FocusManager.cs | 122 | C58163C03BBA | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Interaction\HitTestResult.cs | 97 | F6E832859815 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Interaction\InputManager.cs | 242 | F26854776251 | 99 | production | todo:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Jit\BytecodeCompiler.cs | 426 | 8C6294038218 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Jit\FenBytecode.cs | 87 | 97BFB6EC80A5 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Jit\JitCompiler.cs | 463 | 92047F040349 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Jit\JitRuntime.cs | 65 | 5C86997D0100 | 100 | production | staticMut:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\AbsolutePositionSolver.cs | 394 | F045060A0B3B | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\Algorithms\BlockLayoutAlgorithm.cs | 700 | 67DE16DCB295 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\Algorithms\ILayoutAlgorithm.cs | 20 | AC9839F9091C | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\Algorithms\LayoutContext.cs | 43 | 1F1F013C2373 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\Algorithms\LayoutHelpers.cs | 110 | 66F85F14E498 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\BoxModel.cs | 138 | DDF3E3911D14 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\ContainingBlockResolver.cs | 245 | 8BF50BB7E218 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\Contexts\BlockFormattingContext.cs | 697 | 81759D6EFB2F | 100 | production | staticMut:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\Contexts\FlexFormattingContext.cs | 1702 | 256080B9B485 | 98 | production | staticMut:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\Contexts\FloatManager.cs | 98 | ED0DFB39042D | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\Contexts\FormattingContext.cs | 140 | 10A6136648EE | 100 | production | staticMut:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\Contexts\GridFormattingContext.cs | 288 | E0AE3FF2DEF0 | 100 | production | staticMut:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\Contexts\InlineFormattingContext.cs | 962 | 558287EF302A | 100 | production | staticMut:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\Contexts\LayoutBoxOps.cs | 59 | 02A6D02425BD | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\Contexts\LayoutState.cs | 57 | C4ED723C072C | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\Coordinates\LogicalTypes.cs | 90 | D14797A35EA9 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\Coordinates\WritingModeConverter.cs | 108 | 3A7DE79D2E6A | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\FloatExclusion.cs | 191 | 2E9327B975BC | 94 | production | swallowCatch:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\GridLayoutComputer.Areas.cs | 71 | E36CB82FD45B | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\GridLayoutComputer.cs | 1069 | C17A939F20AA | 100 | production | staticMut:3 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\GridLayoutComputer.Parsing.cs | 276 | A247A8B17400 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\ILayoutComputer.cs | 73 | 7F1F510AB077 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\InlineLayoutComputer.cs | 1114 | BCEADE553D05 | 100 | production | newSK:10 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\InlineRunDebugger.cs | 274 | AE5056133591 | 94 | production | swallowCatch:1, staticMut:3 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\LayoutContext.cs | 103 | 94B3C7CF0316 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\LayoutEngine.cs | 401 | D025F42CD527 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\LayoutHelper.cs | 244 | D4F881CE16B4 | 100 | production | newSK:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\LayoutPositioningLogic.cs | 191 | 88D03591A204 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\LayoutResult.cs | 140 | F4529F7DCABF | 100 | production | staticMut:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\LayoutValidator.cs | 124 | D2356E1D1E2C | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\MarginCollapseComputer.cs | 191 | DF9B02A98A1B | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\MarginCollapseTracker.cs | 160 | 07DE83644568 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\MinimalLayoutComputer.cs | 3137 | 86293C237213 | 70 | partial | swallowCatch:4, todo:2, newSK:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\MultiColumnLayoutComputer.cs | 155 | 5021F8E13A26 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\PseudoBox.cs | 588 | AD69D06EE7F0 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\ReplacedElementSizing.cs | 322 | FBCF1DD00331 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\ScrollAnchoring.cs | 68 | 058D58C2BDF8 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\TableLayoutComputer.cs | 595 | 51734F81F1F1 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\TextLayoutComputer.cs | 292 | 56E8B878251C | 100 | production | staticMut:1, newSK:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\TextLayoutHelper.cs | 242 | CFAED35238B3 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\TransformParsed.cs | 19 | C22215C3646A | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\Tree\BoxTreeBuilder.cs | 379 | 32766E181895 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\Tree\LayoutBox.cs | 82 | 7AFACB81ED51 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Layout\Tree\LayoutNodeTypes.cs | 61 | F95A6A19DC63 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Observers\ObserverCoordinator.cs | 564 | FFBEE60C2567 | 81 | full | swallowCatch:3, lock:19, staticMut:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Program.cs | 204 | E1C5D132C82D | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\README.md | 228 | CF1CAB119CC9 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Backends\HeadlessRenderBackend.cs | 208 | 47446F7D3362 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Backends\SkiaRenderBackend.cs | 463 | 3DD25DC91496 | 100 | production | newSK:18 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\BidiResolver.cs | 426 | 2A34E97EB570 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\BidiTextRenderer.cs | 422 | EC9A22074F50 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\BrowserApi.cs | 3678 | 661871F1A4ED | 28 | basic | asyncVoid:1, swallowCatch:9, taskRun:1, lock:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\BrowserCoreHelpers.cs | 42 | 6AC98F04AF26 | 94 | production | swallowCatch:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\BrowserEngine.cs | 81 | D3536F6CC2C2 | 94 | production | swallowCatch:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Compositing\BaseFrameReusePolicy.cs | 39 | D0CB69AF6644 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Compositing\DamageRasterizationPolicy.cs | 82 | F231DAB5F829 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Compositing\DamageRegionNormalizationPolicy.cs | 163 | E30D3701F0A1 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Compositing\FrameBudgetAdaptivePolicy.cs | 103 | 1AE12A30DC27 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Compositing\PaintCompositingStabilityController.cs | 74 | 3EB56DD6B07F | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Compositing\PaintDamageTracker.cs | 150 | 1340FA5F0E61 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Compositing\ScrollDamageComputer.cs | 165 | 3DA7D9DDBFF1 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Core\ILayoutEngine.cs | 19 | 962623884CF0 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Core\RenderContext.cs | 34 | 26AF3AF6021D | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Css\CascadeEngine.cs | 405 | 6CCA711D8484 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Css\CssAnimationEngine.cs | 1037 | 4B62319E4232 | 99 | production | lock:12, staticMut:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Css\CssClipPathParser.cs | 260 | 04886077A844 | 100 | production | newSK:4 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Css\CssEngineFactory.cs | 120 | D9596DF50C9A | 94 | production | swallowCatch:1, staticMut:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Css\CssFilterParser.cs | 343 | AF23D23A2E97 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Css\CssFlexLayout.cs | 824 | 9E88CF88057B | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Css\CssFloatLayout.cs | 413 | DE70E89D676C | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Css\CssFunctions.cs | 761 | 1BC023FA1E6E | 76 | full | swallowCatch:4, lock:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Css\CssGridAdvanced.cs | 695 | 8B1D511B6DF4 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Css\CssLoader.cs | 6157 | E194C959F039 | 15 | stub | swallowCatch:12, taskRun:3, lock:12, staticMut:3, todo:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Css\CssLoaderValueParsing.cs | 400 | A0EADD518C97 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Css\CssModel.cs | 269 | 413CB930C268 | 94 | production | swallowCatch:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Css\CssParser.cs | 1114 | F3F5317FFBB0 | 94 | production | swallowCatch:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Css\CssSelectorAdvanced.cs | 578 | CCDC0228B238 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Css\CssSelectorParser.cs | 29 | 0735D94AD13A | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Css\CssStyleApplicator.cs | 154 | 0F7018ACA567 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Css\CssSyntaxParser.cs | 639 | 1B379482EA53 | 94 | production | swallowCatch:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Css\CssToken.cs | 108 | EDD584F7424B | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Css\CssTokenizer.cs | 616 | 0BB1F5A8D211 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Css\CssTransform3D.cs | 492 | C820E2C595EC | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Css\CssValue.cs | 285 | 95B0DA988B08 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Css\CssValueParser.cs | 633 | 12D44C4001CE | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Css\SelectorMatcher.cs | 1164 | 6B809591E956 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\CssTransitionEngine.cs | 338 | 01EB482E46F3 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\CustomHtmlEngine.cs | 1879 | 8109261D52EF | 1 | stub | swallowCatch:35, taskRun:3 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\DebugOverlay.cs | 234 | AABE538947C6 | 100 | production | newSK:3 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\ElementStateManager.cs | 582 | F2E6617575C6 | 100 | production | lock:2, staticMut:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\ErrorPageRenderer.cs | 239 | 882BA2A2F21B | 94 | production | swallowCatch:1, staticMut:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\FontRegistry.cs | 536 | 1A0D91DBC5F2 | 57 | partial | swallowCatch:7, lock:12, staticMut:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\HistoryEntry.cs | 19 | 375FF4BAE6F8 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\ImageLoader.cs | 1030 | 0E6C63DD0A89 | 61 | partial | swallowCatch:6, taskRun:1, lock:13, staticMut:11, newSK:4 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Interaction\HitTester.cs | 309 | 4E94FA7B9143 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Interaction\ScrollbarRenderer.cs | 334 | 29CCB99994F4 | 100 | production | newSK:4 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Interaction\ScrollManager.cs | 747 | DACAE603D63B | 100 | production | lock:4, todo:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\IRenderBackend.cs | 225 | 076183E611DF | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\LiteDomUtil.cs | 24 | C2ED29D4861B | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\NavigationManager.cs | 151 | B3797B00FE23 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\NewTabRenderer.cs | 182 | 2243095D5F98 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Paint\LayoutTreeDumper.cs | 323 | 05D1958781CB | 94 | production | swallowCatch:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Paint\PaintDebugOverlay.cs | 262 | BD5EBD5263E4 | 100 | production | newSK:6 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Painting\BoxPainter.cs | 435 | 83DD845E9427 | 94 | production | swallowCatch:1, newSK:5 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Painting\DisplayList.cs | 43 | 8EAEEB3B51E2 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Painting\DisplayListBuilder.cs | 246 | BC0817415A07 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Painting\ImagePainter.cs | 267 | 081C8CDD3722 | 94 | production | swallowCatch:1, newSK:3 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Painting\Painter.cs | 311 | 7E539D79E90F | 100 | production | newSK:4 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Painting\StackingContextComplete.cs | 499 | 1C4D2CF97811 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Painting\StackingContextPainter.cs | 363 | D6C6C21FA4A4 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Painting\TextPainter.cs | 444 | 0651A584F375 | 94 | production | swallowCatch:1, newSK:3 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\PaintTree\ImmutablePaintTree.cs | 172 | 0753A31B33C0 | 100 | production | staticMut:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\PaintTree\IPaintNodeVisitor.cs | 22 | 67F088502C9E | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\PaintTree\NewPaintTreeBuilder.cs | 3983 | 21C6BE2686DB | 77 | full | swallowCatch:3, newSK:67 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\PaintTree\PaintNode.cs | 172 | 9F9B8602E98D | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\PaintTree\PaintNodeBase.cs | 329 | C1164A85E927 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\PaintTree\PaintTree.cs | 88 | 9666DB63986B | 100 | production | staticMut:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\PaintTree\PaintTreeBuilder.cs | 369 | 0809C0BA53EA | 94 | production | swallowCatch:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\PaintTree\PaintTreeDiff.cs | 26 | 6554B3E07192 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\PaintTree\PositionedGlyph.cs | 33 | 9AFFD4834480 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Performance\IncrementalLayout.cs | 235 | 1552AC6E4991 | 100 | production | lock:4 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\Performance\ParallelPainter.cs | 336 | A0C279AB2086 | 100 | production | lock:4, newSK:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\RenderCommands.cs | 569 | 61DC551C6BA2 | 100 | production | newSK:17 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\RenderDataTypes.cs | 128 | A3112FCBC4EA | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\RendererSafetyPolicy.cs | 20 | 1DD6BF3143F3 | 100 | production | staticMut:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\RenderPipeline.cs | 150 | 6AF846DF7158 | 99 | production | staticMut:8 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\RenderTree\FrameState.cs | 76 | 38297B3B1039 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\RenderTree\RectExtensions.cs | 33 | 443B4EEE4602 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\RenderTree\RenderBox.cs | 610 | 87D0E7661D58 | 100 | production | todo:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\RenderTree\RenderObject.cs | 56 | 733241BEBBB2 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\RenderTree\RenderText.cs | 38 | 222A60D9B242 | 100 | production | newSK:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\RenderTree\ScrollModel.cs | 208 | 5BD97B714285 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\SkiaDomRenderer.cs | 840 | C4A041E6177B | 94 | production | swallowCatch:1, newSK:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\SkiaRenderer.cs | 1013 | 04BD15633D0D | 58 | partial | swallowCatch:7, newSK:8 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\StackingContext.cs | 122 | A4DE99CAC851 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\SvgRenderer.cs | 315 | C299C45720F7 | 94 | production | swallowCatch:1, newSK:7 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\UserAgent\UAStyleProvider.cs | 360 | 71C962DB0D8B | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\WebGL\WebGL2RenderingContext.cs | 644 | F45E7822F513 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\WebGL\WebGLConstants.cs | 277 | E56674EC61F3 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\WebGL\WebGLContextManager.cs | 284 | ED0474540C9E | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\WebGL\WebGLObjects.cs | 278 | 43773AEE10D3 | 99 | production | staticMut:11 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Rendering\WebGL\WebGLRenderingContext.cs | 1215 | F23EDB28D9A9 | 100 | production | newSK:6 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Resources\ua.css | 321 | A6D75E55EBF9 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Scripting\CanvasRenderingContext2D.cs | 1027 | 169DD7C3D91B | 100 | production | newSK:12 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Scripting\JavaScriptEngine.cs | 3893 | 7D2B4BCE87F4 | 1 | stub | swallowCatch:56, taskRun:5, lock:24, staticMut:1, todo:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Scripting\JavaScriptEngine.Dom.cs | 1282 | 69A7C5417F3C | 82 | full | swallowCatch:3, lock:5 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Scripting\JavaScriptEngine.Methods.cs | 223 | 13A754E35508 | 68 | partial | swallowCatch:5, taskRun:2, lock:5 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Scripting\JavaScriptRuntime.cs | 23 | 67474442CBC4 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Scripting\JsRuntimeAbstraction.cs | 146 | 99F44B4A6DD5 | 88 | full | swallowCatch:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Scripting\ModuleLoader.cs | 217 | 65C3BB9811FE | 76 | full | swallowCatch:4 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Scripting\ProxyAPI.cs | 86 | 54E8D472A1F1 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Scripting\ReflectAPI.cs | 158 | 891023F0FE40 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Security\IPermissionManager.cs | 119 | 1ED0D0E4AD16 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Security\IResourceLimits.cs | 119 | D2A9AC990EEA | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Security\PermissionManager.cs | 123 | F1C265745EE0 | 100 | production | lock:5 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Security\PermissionStore.cs | 105 | 3C57AE7201E7 | 88 | full | swallowCatch:2, lock:4, staticMut:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\smoke_tests.js | 18 | B3F625D56A3C | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Storage\FileStorageBackend.cs | 471 | FC2BF046B384 | 76 | full | swallowCatch:4 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Storage\InMemoryStorageBackend.cs | 238 | 3DB9780ADE42 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Storage\IStorageBackend.cs | 119 | BC4C3A48FBA0 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Storage\StorageUtils.cs | 123 | CFE3D56DA125 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\test_output.txt | 41 | 55722EFADC8A | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\TestFenEngine.cs | 452 | 59C649AA12D5 | 58 | partial | swallowCatch:7 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Testing\AcidTestRunner.cs | 364 | AEF793C3288F | 76 | full | swallowCatch:4, newSK:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Testing\Test262Runner.cs | 833 | 008F55BF7298 | 73 | partial | swallowCatch:2, taskRun:2, gcCollect:3, lock:1, todo:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Testing\UsedValueComparator.cs | 386 | 5A0404960779 | 94 | production | swallowCatch:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Testing\VerificationRunner.cs | 68 | BA6B0E5F0A45 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Testing\WPTTestRunner.cs | 486 | A5DF82418DCF | 80 | full | swallowCatch:2, gcCollect:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Typography\GlyphRun.cs | 75 | 7DB4E428DD11 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Typography\IFontService.cs | 71 | 37DF053449A7 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Typography\NormalizedFontMetrics.cs | 103 | D26B8BFBDA8F | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Typography\SkiaFontService.cs | 113 | 2E817D35890E | 100 | production | newSK:3 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Typography\TextShaper.cs | 281 | CF7D735ED03B | 94 | production | swallowCatch:1, newSK:3 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\WebAPIs\Cache.cs | 274 | A6DB0DDD6AA3 | 87 | full | swallowCatch:2, taskRun:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\WebAPIs\CacheStorage.cs | 151 | C4C50E093EB1 | 93 | production | swallowCatch:1, taskRun:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\WebAPIs\FetchApi.cs | 561 | F4CA97D18D35 | 72 | partial | swallowCatch:4, taskRun:3 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\WebAPIs\FetchEvent.cs | 280 | E61F4B70E0F8 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\WebAPIs\IndexedDBService.cs | 134 | 97D74C2A3730 | 99 | production | taskRun:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\WebAPIs\IntersectionObserverAPI.cs | 118 | B1DC514F67EC | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\WebAPIs\ResizeObserverAPI.cs | 87 | 187A1EEEB442 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\WebAPIs\StorageApi.cs | 354 | 0BE364F57982 | 82 | full | swallowCatch:3, lock:3, staticMut:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\WebAPIs\TestConsoleCapture.cs | 177 | 6328F1D39C0C | 100 | production | staticMut:4 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\WebAPIs\TestHarnessAPI.cs | 326 | F7AB7F0D7859 | 99 | production | staticMut:13 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\WebAPIs\WebAPIs.cs | 323 | B110316045C9 | 88 | full | swallowCatch:2, staticMut:4 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\WebAPIs\WebAudioAPI.cs | 401 | 073F9211543E | 99 | production | taskRun:1, staticMut:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\WebAPIs\WebRTCAPI.cs | 364 | C6AC78596527 | 99 | production | taskRun:1, staticMut:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\WebAPIs\XMLHttpRequest.cs | 211 | 1B1719696FFF | 93 | production | swallowCatch:1, taskRun:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Workers\ServiceWorker.cs | 164 | 65346A1F05E4 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Workers\ServiceWorkerClients.cs | 166 | 140D5F3EDF06 | 93 | production | swallowCatch:1, taskRun:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Workers\ServiceWorkerContainer.cs | 252 | 4B75007C7F39 | 93 | production | swallowCatch:1, taskRun:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Workers\ServiceWorkerGlobalScope.cs | 110 | 36B6D8BB901C | 93 | production | swallowCatch:1, taskRun:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Workers\ServiceWorkerManager.cs | 367 | 2E292C19EE6E | 93 | production | swallowCatch:1, taskRun:1, staticMut:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Workers\ServiceWorkerRegistration.cs | 124 | 48B00AA865ED | 93 | production | swallowCatch:1, taskRun:1 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Workers\StructuredClone.cs | 183 | E16FD0A86828 | 88 | full | swallowCatch:2 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Workers\WorkerConstructor.cs | 215 | F01D70F8B9D5 | 100 | production | none |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Workers\WorkerGlobalScope.cs | 401 | 946FE9C81FE9 | 74 | partial | swallowCatch:4, taskRun:2, lock:5 |
+| C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.FenEngine\Workers\WorkerRuntime.cs | 499 | 80A9BC122985 | 70 | partial | swallowCatch:5, lock:2 |
+
+
+## Recheck Pass 37 (2026-03-05, P0 gap-closure hardening)
+
+- Focus area: remove remaining unsupported exception typing in module/bytecode gates and remove `async void` pattern from host history navigation path.
+- Files hardened:
+  - FenBrowser.FenEngine/Core/ModuleLoader.cs
+  - FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs
+  - FenBrowser.FenEngine/Rendering/BrowserApi.cs
+- Changes:
+  - `ModuleLoader.DefaultFileFetcher(...)`: replaced host-level `NotSupportedException` with typed `FenTypeError` for JS-facing URI support errors.
+  - `ModuleLoader.ExecuteModuleBytecode(...)`: replaced bytecode-only unsupported throw rewrap with typed `FenSyntaxError`.
+  - `BytecodeCompiler.RejectWithInsideCallableBody(...)`: replaced `NotSupportedException` with `FenSyntaxError` (typed unsupported-syntax contract).
+  - `BrowserHost.Go(int delta)`: removed `Task.Run(async ...)` fire-and-forget wrapper and introduced guarded `GoAsync(int delta)` with explicit failure logging.
+- Verification:
+  - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass.
+  - Targeted tests: `BytecodeExecutionTests|ModuleLoaderTests|HistoryApiTests` => `136` passed, `1` failed (`Bytecode_WithStatement_RespectsUnscopables`, expected `1`, actual `9`, currently pre-existing/open bytecode-with semantics cluster).
+- Score impact under current audit rubric (vs pass 36 baseline):
+  - `Core/ModuleLoader.cs`: `22 (stub) -> 42 (basic)`; `notImplemented 3 -> 1`.
+  - `Core/Bytecode/Compiler/BytecodeCompiler.cs`: `79 (full) -> 89 (full)`; `notImplemented 1 -> 0`.
+  - `Rendering/BrowserApi.cs`: `28 (basic) -> 35 (basic)`; `asyncVoid 1 -> 0`, `taskRun 1 -> 0`.
+
+## Recheck Pass 38 (2026-03-05, with-unscopables compatibility closure)
+
+- Focus area: failing bytecode `with` unscopables behavior in compatibility string-key path.
+- Files hardened:
+  - FenBrowser.FenEngine/Core/FenEnvironment.cs
+- Changes:
+  - `IsUnscopable(...)` now resolves unscopables object via `TryGetUnscopablesObject()`.
+  - Added ordered lookup:
+    - preferred `%Symbol.unscopables%` key (`"Symbol(Symbol.unscopables)"`),
+    - compatibility fallback string key (`"Symbol.unscopables"`).
+  - Preserves `with` name resolution while restoring compatibility for existing tests and legacy object-keyed setup.
+- Verification:
+  - Targeted tests: `Bytecode_WithStatement_RespectsUnscopables|ModuleLoaderTests|HistoryApiTests` => `15/15` passed.
+
+## Recheck Pass 39 (2026-03-05, eval exception typing + scheduler Task.Run reduction)
+
+- Focus area: remove host-generic exception throws in runtime eval path and reduce unstructured Task.Run usage in core JS scheduler.
+- Files hardened:
+  - FenBrowser.FenEngine/Core/FenRuntime.cs
+  - FenBrowser.FenEngine/Core/ModuleLoader.cs
+  - FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs
+- Changes:
+  - `FenRuntime` eval path:
+    - replaced remaining `throw new Exception(...)` branches with typed `FenInternalError` carrying `EvalError:`-prefixed context.
+    - result: `FenRuntime.cs` now has `0` `throw new Exception(...)` sites.
+  - `ModuleLoader.ExecuteModuleBytecode(...)`:
+    - removed stale `catch (NotImplementedException ...)` wrapper; method now propagates typed compiler/runtime exceptions directly.
+  - `JavaScriptEngine` callback scheduling:
+    - replaced `Task.Run(async ()=>Task.Delay...)` wrapper with direct `ScheduleCallbackAsync(...)` path + fault logging continuation.
+    - result: `JavaScriptEngine.cs` `Task.Run` sites reduced from `5` to `4`.
+- Verification:
+  - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass (`359` warnings, `0` errors).
+  - Targeted tests: `Bytecode_WithStatement_RespectsUnscopables|ModuleLoaderTests|HistoryApiTests` => `15/15` passed.
+
