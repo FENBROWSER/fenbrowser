@@ -2834,3 +2834,15 @@ Verification snapshot (2026-03-05):
   - `ServiceWorkerManager.cs` direct `Task.Run` count `1 -> 0`.
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass (`0` errors).
 - Targeted tests (`ServiceWorkerLifecycleTests|WorkerTests`): `23/23` pass.
+
+### 2.56 Runtime/Test Hardening (2026-03-05, Test262 scheduler convergence)
+- Testing/Test262Runner.cs
+  - Added `RunBackground<T>(...)` and `RunBackgroundAsync(...)` helpers.
+  - Replaced direct `Task.Run(...)` execution and watchdog scheduling with helper-backed background execution while preserving timeout/cancellation wiring.
+- Net effect: no direct `Task.Run` call sites remain in `FenBrowser.FenEngine`.
+
+Verification snapshot (2026-03-05):
+- Static scan: `Test262Runner.cs` direct `Task.Run` count `2 -> 0`.
+- Static scan: `rg -n "Task.Run(" FenBrowser.FenEngine` => no matches.
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass (`0` errors).
+- Targeted tests (`JsEngineImprovementsTests|WorkerTests|ServiceWorkerLifecycleTests`): `49/49` pass.

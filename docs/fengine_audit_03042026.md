@@ -1580,3 +1580,23 @@ ew SK*): 196
     - `ServiceWorkerManager.cs` direct `Task.Run` count `1 -> 0`.
   - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass (`0` errors).
   - Targeted tests: `ServiceWorkerLifecycleTests|WorkerTests` => `23/23` passed.
+
+## Recheck Pass 52 (2026-03-05, Test262 runner scheduler hardening)
+
+- Focus area: remove final direct `Task.Run` usage in Test262 execution harness path.
+- Files hardened:
+  - FenBrowser.FenEngine/Testing/Test262Runner.cs
+- Changes:
+  - Added background scheduler helpers:
+    - `RunBackground<T>(Func<T>, CancellationToken)`
+    - `RunBackgroundAsync(Func<Task>, CancellationToken)`
+  - Replaced direct `Task.Run(...)` usage in:
+    - module-goal execution branch,
+    - script-goal execution branch,
+    - memory watchdog task.
+  - Preserved cancellation and timeout semantics by passing the active test cancellation token.
+- Verification:
+  - Static check: `Test262Runner.cs` direct `Task.Run` count `2 -> 0`.
+  - Static check: `rg -n "Task.Run(" FenBrowser.FenEngine` => no matches.
+  - Build: `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug` => pass (`0` errors).
+  - Targeted tests: `JsEngineImprovementsTests|WorkerTests|ServiceWorkerLifecycleTests` => `49/49` passed.

@@ -13,6 +13,7 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Linq;
 using System.Collections.Concurrent;
+using System.Threading;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
@@ -158,6 +159,17 @@ namespace FenBrowser.FenEngine.Testing
         /// Default: 1.5 GB
         /// </summary>
         public long MemoryThresholdBytes { get; set; } = 8_000_000_000L;
+
+
+        private static Task<T> RunBackground<T>(Func<T> operation, CancellationToken cancellationToken = default)
+        {
+            return Task.Factory.StartNew(operation, cancellationToken, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
+        }
+
+        private static Task RunBackgroundAsync(Func<Task> operation, CancellationToken cancellationToken = default)
+        {
+            return Task.Factory.StartNew(operation, cancellationToken, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
+        }
 
         public async Task<TestResult> RunSingleTestAsync(string testFile)
         {
@@ -386,7 +398,7 @@ namespace FenBrowser.FenEngine.Testing
                     Task<FenBrowser.FenEngine.Core.Interfaces.IValue> executionTask;
                     if (isModuleGoal)
                     {
-                        executionTask = Task.Run<FenBrowser.FenEngine.Core.Interfaces.IValue>(() =>
+                        executionTask = RunBackground<FenBrowser.FenEngine.Core.Interfaces.IValue>(() =>
                         {
                             if (runtime.Context?.ModuleLoader == null)
                                 throw new InvalidOperationException("Module loader is not available");
@@ -398,15 +410,15 @@ namespace FenBrowser.FenEngine.Testing
                             }
                             runtime.Context.ModuleLoader.LoadModuleSrc(content, testFile);
                             return FenValue.Undefined;
-                        });
+                        }, token);
                     }
                     else
                     {
-                        executionTask = Task.Run(() => runtime.ExecuteSimple(fullScript, allowReturn: true, cancellationToken: token));
+                        executionTask = RunBackground(() => runtime.ExecuteSimple(fullScript, allowReturn: true, cancellationToken: token), token);
                     }
 
                     // Memory watchdog: check every 500ms, cancel if memory grows > 500MB for this test
-                    var memoryWatchdog = Task.Run(async () =>
+                    var memoryWatchdog = RunBackgroundAsync(async () =>
                     {
                         while (!cts.Token.IsCancellationRequested)
                         {
@@ -829,5 +841,4 @@ namespace FenBrowser.FenEngine.Testing
         }
     }
 }
-
 
