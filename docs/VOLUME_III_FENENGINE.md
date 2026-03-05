@@ -2720,3 +2720,14 @@ Verification snapshot (2026-03-05):
 - Static scan: media-nesting TODO removed from `CssLoader.GetMatchedRules`.
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass.
 - Targeted tests (`CssMediaRangeQueryTests|CascadeModernTests`): `6/6` pass.
+
+### 2.48 Runtime Hardening (2026-03-05, FetchApi detached scheduler consolidation)
+- WebAPIs/FetchApi.cs
+  - Introduced `RunDetachedAsync(Func<Task>)` helper for detached fetch/response async operations.
+  - Replaced all direct `Task.Run(async ...)` usage in `fetch(...)`, `JsResponse.text()`, and `JsResponse.json()` with helper-backed scheduling.
+  - Retained promise resolve/reject semantics and added centralized detached-fault logging fallback.
+
+Verification snapshot (2026-03-05):
+- Static scan: `FetchApi.cs` direct `Task.Run` count `3 -> 0`.
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass.
+- Targeted tests (`FetchApiTests|FetchHardeningTests`): `6/6` pass.

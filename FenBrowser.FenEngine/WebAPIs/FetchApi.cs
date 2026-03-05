@@ -26,7 +26,21 @@ namespace FenBrowser.FenEngine.WebAPIs
             global.Set("Response", FenValue.FromFunction(new FenFunction("Response", JsResponse.Constructor)));
         }
 
-        private static FenValue Fetch(FenValue[] args, FenValue thisVal, IExecutionContext context, Func<HttpRequestMessage, Task<HttpResponseMessage>> fetchHandler)
+
+        internal static Task RunDetachedAsync(Func<Task> operation)
+        {
+            return Task.Factory.StartNew(async () =>
+            {
+                try
+                {
+                    await operation().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[FetchApi] Detached async operation failed: {ex.Message}", LogCategory.JavaScript);
+                }
+            }, System.Threading.CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
+        }        private static FenValue Fetch(FenValue[] args, FenValue thisVal, IExecutionContext context, Func<HttpRequestMessage, Task<HttpResponseMessage>> fetchHandler)
         {
             if (args.Length < 1) return FenValue.Undefined;
 
@@ -51,7 +65,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                  var resolve = execArgs[0].AsFunction();
                  var reject = execArgs[1].AsFunction();
 
-                 Task.Run(async () => 
+                 _ = FetchApi.RunDetachedAsync(async () => 
                  {
                      try
                      {
@@ -474,7 +488,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 var resolve = executorArgs[0].AsFunction();
                 var reject = executorArgs[1].AsFunction();
 
-                Task.Run(async () =>
+                _ = FetchApi.RunDetachedAsync(async () =>
                 {
                     try 
                     {
@@ -499,7 +513,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 var resolve = executorArgs[0].AsFunction();
                 var reject = executorArgs[1].AsFunction();
 
-                Task.Run(async () =>
+                _ = FetchApi.RunDetachedAsync(async () =>
                 {
                     try 
                     {
@@ -558,4 +572,6 @@ namespace FenBrowser.FenEngine.WebAPIs
         }
     }
 }
+
+
 
