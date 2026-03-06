@@ -69,6 +69,39 @@ public interface ISandbox : IDisposable
     /// <summary>Queries the current health and resource usage of the sandbox.</summary>
     /// <returns>A snapshot of sandbox health metrics.</returns>
     SandboxHealthStatus GetHealth();
+
+    /// <summary>
+    /// Gets a value indicating whether the sandbox must spawn the child process itself
+    /// rather than relying on <see cref="System.Diagnostics.Process.Start"/>.
+    /// </summary>
+    /// <remarks>
+    /// This is <c>true</c> for the Windows AppContainer sandbox because AppContainer
+    /// process creation requires a <c>PROC_THREAD_ATTRIBUTE_LIST</c> that cannot be
+    /// attached via <see cref="System.Diagnostics.ProcessStartInfo"/>.  When this
+    /// property is <c>true</c>, callers must use <see cref="SpawnProcess"/> instead of
+    /// <see cref="System.Diagnostics.Process.Start"/>.
+    /// </remarks>
+    bool RequiresCustomSpawn { get; }
+
+    /// <summary>
+    /// Spawns the child process inside the sandbox boundary.
+    /// </summary>
+    /// <remarks>
+    /// Only valid when <see cref="RequiresCustomSpawn"/> is <c>true</c>.
+    /// Implementations that do not require custom spawning should throw
+    /// <see cref="NotSupportedException"/>.
+    /// </remarks>
+    /// <param name="psi">
+    /// The <see cref="ProcessStartInfo"/> describing the child executable and arguments.
+    /// </param>
+    /// <returns>
+    /// A <see cref="System.Diagnostics.Process"/> object representing the spawned child.
+    /// The caller owns the returned process and must dispose it when done.
+    /// </returns>
+    /// <exception cref="NotSupportedException">
+    /// Thrown when <see cref="RequiresCustomSpawn"/> is <c>false</c>.
+    /// </exception>
+    System.Diagnostics.Process SpawnProcess(ProcessStartInfo psi);
 }
 
 /// <summary>

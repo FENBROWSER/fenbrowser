@@ -110,4 +110,15 @@ public interface IPlatformLayer
     /// process has exited or the caller lacks permission to query it).
     /// </returns>
     long GetProcessMemoryBytes(int pid);
+
+    /// <summary>
+    /// Creates an <see cref="IOsSandboxFactory"/> appropriate for the current host OS.
+    /// </summary>
+    /// <remarks>
+    /// On Windows this returns a <c>WindowsOsSandboxFactory</c> that produces
+    /// AppContainer + Job Object sandboxes.  On unsupported platforms a factory that
+    /// always returns <see cref="NullSandbox"/> is returned.
+    /// </remarks>
+    /// <returns>An <see cref="IOsSandboxFactory"/> ready for use by the caller.</returns>
+    IOsSandboxFactory CreateSandboxFactory();
 }

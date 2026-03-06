@@ -97,6 +97,27 @@ public sealed class WindowsJobObjectSandbox : ISandbox
     public bool IsActive => !_disposed && _jobHandle is { IsInvalid: false };
 
     /// <inheritdoc/>
+    /// <remarks>
+    /// Always <c>false</c> for <see cref="WindowsJobObjectSandbox"/>: the Job Object is
+    /// attached via <see cref="AttachToProcess"/> after a standard
+    /// <see cref="System.Diagnostics.Process.Start"/> call.
+    /// </remarks>
+    public bool RequiresCustomSpawn => false;
+
+    /// <inheritdoc/>
+    /// <remarks>
+    /// Always throws <see cref="NotSupportedException"/> because Job Object sandboxes do
+    /// not require custom process spawning.  Use <see cref="System.Diagnostics.Process.Start"/>
+    /// followed by <see cref="AttachToProcess"/> instead.
+    /// </remarks>
+    public Process SpawnProcess(ProcessStartInfo psi)
+    {
+        throw new NotSupportedException(
+            "WindowsJobObjectSandbox does not require custom process spawning. " +
+            "Use Process.Start followed by AttachToProcess.");
+    }
+
+    /// <inheritdoc/>
     public void ApplyToProcessStartInfo(ProcessStartInfo psi)
     {
         if (psi == null) throw new ArgumentNullException(nameof(psi));
