@@ -85,6 +85,25 @@ public sealed class NullSandbox : ISandbox
 
     /// <inheritdoc/>
     /// <remarks>
+    /// Always <c>false</c> for <see cref="NullSandbox"/>: no custom process spawning
+    /// is required because no OS sandbox is applied.
+    /// </remarks>
+    public bool RequiresCustomSpawn => false;
+
+    /// <inheritdoc/>
+    /// <remarks>
+    /// Always throws <see cref="NotSupportedException"/> because <see cref="NullSandbox"/>
+    /// does not perform custom process spawning.
+    /// </remarks>
+    public Process SpawnProcess(ProcessStartInfo psi)
+    {
+        throw new NotSupportedException(
+            "NullSandbox does not support custom process spawning. " +
+            "Use Process.Start directly when RequiresCustomSpawn is false.");
+    }
+
+    /// <inheritdoc/>
+    /// <remarks>
     /// Returns a <see cref="SandboxHealthStatus"/> indicating that the sandbox is
     /// unhealthy (because it is not enforcing any constraints).
     /// </remarks>

@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 using FenBrowser.Core.Platform.Windows;
+using FenBrowser.Core.Security.Sandbox;
 
 namespace FenBrowser.Core.Platform;
 
@@ -129,5 +130,35 @@ internal sealed class UnsupportedPlatformLayer : IPlatformLayer
         {
             return -1;
         }
+    }
+
+    /// <inheritdoc/>
+    /// <remarks>
+    /// Returns a <see cref="NullSandboxFactory"/> because sandboxing is not supported
+    /// on this platform.  All created sandboxes will be no-ops.
+    /// </remarks>
+    public IOsSandboxFactory CreateSandboxFactory()
+    {
+        return new NullSandboxFactory();
+    }
+}
+
+// =============================================================================
+//  Null sandbox factory for unsupported platforms
+// =============================================================================
+
+/// <summary>
+/// <see cref="IOsSandboxFactory"/> stub used on platforms where no real sandboxing
+/// implementation is available.  Always returns <see cref="NullSandbox"/> instances.
+/// </summary>
+internal sealed class NullSandboxFactory : IOsSandboxFactory
+{
+    /// <inheritdoc/>
+    public bool IsSandboxingSupported => false;
+
+    /// <inheritdoc/>
+    public ISandbox Create(OsSandboxProfile profile)
+    {
+        return new NullSandbox(profile);
     }
 }

@@ -121,6 +121,17 @@ public sealed class WindowsPlatformLayer : IPlatformLayer
 
     /// <inheritdoc/>
     /// <remarks>
+    /// Returns a <see cref="WindowsOsSandboxFactory"/> which produces
+    /// <see cref="WindowsAppContainerSandbox"/> instances for renderer and utility
+    /// processes, and a <see cref="NullSandbox"/> for the broker process.
+    /// </remarks>
+    public IOsSandboxFactory CreateSandboxFactory()
+    {
+        return new WindowsOsSandboxFactory();
+    }
+
+    /// <inheritdoc/>
+    /// <remarks>
     /// Uses <see cref="Process.GetProcessById"/> and reads
     /// <see cref="Process.WorkingSet64"/> (private working set on Windows).
     /// Returns <c>-1</c> when the process is not accessible or has exited.
