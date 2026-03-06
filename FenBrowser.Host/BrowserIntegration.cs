@@ -42,6 +42,9 @@ public class BrowserIntegration
     private readonly object _frameLock = new object();
     private readonly SKPictureRecorder _recorder = new SKPictureRecorder();
     private bool _hasLoggedFrameNull = false; // To reduce warning spam
+    // Remote frame bitmap delivered from a brokered renderer child via shared memory.
+    private SKBitmap _remoteFrameBitmap;
+    private readonly object _remoteFrameLock = new object();
     
     // Last hit test result (for status bar display)
     private HitTestResult _lastHitTest = HitTestResult.None;
@@ -200,8 +203,68 @@ public class BrowserIntegration
     {
         if (OwnerTab != null && OwnerTab.Id != tabId) return;
 
+        // If the payload carries raw BGRA pixels (from shared memory), decode into an SKBitmap
+        // so Render() can composite it directly.
+        if (payload?.PixelData != null && payload.PixelData.Length > 0 &&
+            payload.SurfaceWidth > 0 && payload.SurfaceHeight > 0)
+        {
+            int w = (int)payload.SurfaceWidth;
+            int h = (int)payload.SurfaceHeight;
+            int expectedBytes = w * h * 4;
+
+            if (payload.PixelData.Length >= expectedBytes)
+            {
+                try
+                {
+                    // Wrap the raw BGRA bytes in a GCHandle so SkiaSharp can reference them
+                    // without an additional copy, then rasterize into an owned SKBitmap.
+                    var imageInfo = new SKImageInfo(w, h, SKColorType.Bgra8888, SKAlphaType.Premul);
+                    SKBitmap newBitmap;
+                    var handle = System.Runtime.InteropServices.GCHandle.Alloc(payload.PixelData, System.Runtime.InteropServices.GCHandleType.Pinned);
+                    try
+                    {
+                        var ptr = handle.AddrOfPinnedObject();
+                        // FromPixels copies the data into an owned bitmap so we can free the pin immediately.
+                        newBitmap = SKBitmap.Decode(SKData.Create(ptr, expectedBytes))
+                            ?? InstallPixelsCopy(imageInfo, ptr);
+                    }
+                    finally
+                    {
+                        handle.Free();
+                    }
+
+                    lock (_remoteFrameLock)
+                    {
+                        _remoteFrameBitmap?.Dispose();
+                        _remoteFrameBitmap = newBitmap;
+                    }
+
+                    FenLogger.Debug($"[BrowserIntegration] Remote frame decoded: {w}x{h} seq={payload.FrameSequenceNumber} for tab={tabId}", LogCategory.Rendering);
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[BrowserIntegration] Failed to decode remote frame pixels for tab={tabId}: {ex.Message}", LogCategory.Rendering);
+                }
+            }
+        }
+
         _needsRepaint = true;
         NeedsRepaint?.Invoke();
+    }
+
+    /// <summary>
+    /// Creates an owned SKBitmap by copying raw BGRA pixels from an unmanaged pointer.
+    /// Used as a fallback when SKBitmap.Decode cannot interpret raw pixel data.
+    /// </summary>
+    private static SKBitmap InstallPixelsCopy(SKImageInfo imageInfo, IntPtr src)
+    {
+        var bm = new SKBitmap(imageInfo);
+        unsafe
+        {
+            int bytes = imageInfo.BytesSize;
+            Buffer.MemoryCopy((void*)src, (void*)bm.GetPixels(), bytes, bytes);
+        }
+        return bm;
     }
 
     public void HighlightElement(Element? element)
@@ -236,18 +299,16 @@ public class BrowserIntegration
         NeedsRepaint?.Invoke();
     }
     
-    public object EvaluateScript(string script)
+    public async Task<object?> EvaluateScriptAsync(string script)
     {
         try
         {
-            // Bridge legacy sync API onto async runtime without deadlock-prone Wait/Result usage.
-            var task = _browser.ExecuteScriptAsync(script);
-            var completed = Task.WhenAny(task, Task.Delay(2000)).GetAwaiter().GetResult();
-            if (completed == task)
-            {
-                return task.GetAwaiter().GetResult();
-            }
-
+            return await _browser.ExecuteScriptAsync(script)
+                .WaitAsync(TimeSpan.FromSeconds(2))
+                .ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
             return "Error: Script execution failed or timed out.";
         }
         catch (Exception ex)
@@ -514,9 +575,26 @@ public class BrowserIntegration
     /// <summary>
     /// Render the current display list (picture) to the UI canvas.
     /// This is called on the UI thread and is extremely fast.
+    /// In brokered mode, draws the remote frame bitmap delivered via shared memory.
     /// </summary>
     public void Render(SKCanvas canvas, SKRect viewport)
     {
+        // Brokered renderer path: draw the bitmap received from the child process.
+        if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
+        {
+            lock (_remoteFrameLock)
+            {
+                if (_remoteFrameBitmap != null)
+                {
+                    canvas.DrawBitmap(_remoteFrameBitmap, 0, 0);
+                    return;
+                }
+            }
+            // No remote frame yet; draw placeholder while waiting for first delivery.
+            DrawPlaceholder(canvas, viewport);
+            return;
+        }
+
         lock (_frameLock)
         {
             if (_currentFrame != null)
@@ -524,7 +602,7 @@ public class BrowserIntegration
                 canvas.DrawPicture(_currentFrame);
                 return;
             }
-            else 
+            else
             {
                  // Log only once per session to avoid spam during startup
                  if (!_hasLoggedFrameNull)
@@ -534,7 +612,7 @@ public class BrowserIntegration
                  }
             }
         }
-        
+
         // If no frame exists, draw placeholder
         DrawPlaceholder(canvas, viewport);
     }
