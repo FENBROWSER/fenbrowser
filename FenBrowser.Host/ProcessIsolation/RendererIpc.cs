@@ -58,6 +58,17 @@ namespace FenBrowser.Host.ProcessIsolation
         public float SurfaceHeight { get; set; }
         public int DirtyRegionCount { get; set; }
         public bool HasDamage { get; set; }
+        /// <summary>
+        /// Monotonically increasing frame counter. Allows the host to detect stale frames
+        /// and discard out-of-order deliveries.
+        /// </summary>
+        public uint FrameSequenceNumber { get; set; }
+        /// <summary>
+        /// Raw BGRA pixel bytes copied out of shared memory by the host-side reader.
+        /// Null when transmitted over IPC (pixels travel via shared memory, not the pipe).
+        /// Set by <see cref="RendererChildSession"/> after reading from <see cref="FrameSharedMemory"/>.
+        /// </summary>
+        public byte[] PixelData { get; set; }
     }
 
     internal static class RendererIpc
@@ -126,6 +137,8 @@ namespace FenBrowser.Host.ProcessIsolation
         private Task _readLoop;
         private DateTime _lastFrameRequestUtc = DateTime.MinValue;
         private const int MaxPendingOutboundMessages = 128;
+        private FrameSharedMemory _frameSharedMemory;
+        private readonly int _parentPid = Environment.ProcessId;
 
         public event Action<int, RendererFrameReadyPayload> FrameReceived;
 
@@ -302,6 +315,39 @@ namespace FenBrowser.Host.ProcessIsolation
 
                         if (payload != null)
                         {
+                            // Lazily open the shared memory region on first FrameReady.
+                            if (_frameSharedMemory == null)
+                            {
+                                try
+                                {
+                                    _frameSharedMemory = FrameSharedMemory.OpenForReader(TabId, _parentPid);
+                                }
+                                catch (Exception ex)
+                                {
+                                    FenLogger.Warn($"[ProcessIsolation] Failed to open FrameSharedMemory for tab {TabId}: {ex.Message}", LogCategory.General);
+                                }
+                            }
+
+                            if (_frameSharedMemory != null)
+                            {
+                                try
+                                {
+                                    var frameData = _frameSharedMemory.TryReadFrame();
+                                    if (frameData.HasValue)
+                                    {
+                                        payload.PixelData = frameData.Value.pixels;
+                                        payload.FrameSequenceNumber = frameData.Value.seq;
+                                        // Use dimensions from shared memory header (authoritative).
+                                        payload.SurfaceWidth = frameData.Value.width;
+                                        payload.SurfaceHeight = frameData.Value.height;
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    FenLogger.Warn($"[ProcessIsolation] FrameSharedMemory read failed for tab {TabId}: {ex.Message}", LogCategory.General);
+                                }
+                            }
+
                             FrameReceived?.Invoke(TabId, payload);
                         }
                     }
@@ -413,6 +459,8 @@ namespace FenBrowser.Host.ProcessIsolation
             try { _reader?.Dispose(); } catch { }
             try { _pipe?.Dispose(); } catch { }
             try { _cts.Dispose(); } catch { }
+            try { _frameSharedMemory?.Dispose(); } catch { }
+            _frameSharedMemory = null;
         }
     }
 }

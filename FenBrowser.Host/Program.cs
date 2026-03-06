@@ -20,7 +20,50 @@ namespace FenBrowser.Host
     /// </summary>
     public class Program
     {
-        public static void Main(string[] args)
+        public enum StartupMode
+        {
+            Browser,
+            RendererChild,
+            Test262,
+            Wpt,
+            Acid2,
+            WebDriver
+        }
+
+        public static StartupMode ResolveStartupMode(string[] args, Func<string, string> getEnvironmentVariable = null)
+        {
+            getEnvironmentVariable ??= Environment.GetEnvironmentVariable;
+
+            if (args.Any(a => string.Equals(a, "--renderer-child", StringComparison.OrdinalIgnoreCase)) ||
+                string.Equals(getEnvironmentVariable("FEN_RENDERER_CHILD"), "1", StringComparison.Ordinal))
+            {
+                return StartupMode.RendererChild;
+            }
+
+            if (args.Length >= 2 && args[0] == "--test262")
+            {
+                return StartupMode.Test262;
+            }
+
+            if (args.Length >= 2 && args[0] == "--wpt")
+            {
+                return StartupMode.Wpt;
+            }
+
+            if (args.Length >= 1 && args[0] == "--acid2")
+            {
+                return StartupMode.Acid2;
+            }
+
+            if (args.Any(a => a.StartsWith("--port=", StringComparison.Ordinal)))
+            {
+                return StartupMode.WebDriver;
+            }
+
+            return StartupMode.Browser;
+        }
+
+        public static async Task Main(string[] args)
         {
             // Enable High-DPI Awareness (Per-Monitor V2)
             if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows))
@@ -43,16 +86,17 @@ namespace FenBrowser.Host
                     e.SetObserved();
                 };
 
+                var startupMode = ResolveStartupMode(args);
+
                 // Process-isolation renderer child mode.
-                if (args.Any(a => string.Equals(a, "--renderer-child", StringComparison.OrdinalIgnoreCase)) ||
-                    string.Equals(Environment.GetEnvironmentVariable("FEN_RENDERER_CHILD"), "1", StringComparison.Ordinal))
+                if (startupMode == StartupMode.RendererChild)
                 {
-                    RunRendererChildLoop(args);
+                    await RunRendererChildLoopAsync(args).ConfigureAwait(false);
                     return;
                 }
 
                 // 0. CLI Tooling Interception
-                if (args.Length >= 2 && args[0] == "--test262")
+                if (startupMode == StartupMode.Test262)
                 {
                     AttachConsole(ATTACH_PARENT_PROCESS);
                     
@@ -64,7 +108,7 @@ namespace FenBrowser.Host
                     {
                         // Run Single File
                         Console.WriteLine($"Running Test262 File: {Path.GetFileName(input)}");
-                        var result = runner.RunSingleTestAsync(input).GetAwaiter().GetResult();
+                        var result = await runner.RunSingleTestAsync(input).ConfigureAwait(false);
                         
                         Console.WriteLine($"Result: {(result.Passed ? "PASS" : "FAIL")}");
                         if (!result.Passed)
@@ -82,7 +126,7 @@ namespace FenBrowser.Host
                         Console.WriteLine($"Running Test262 Category: {input}");
                         Console.WriteLine("Starting execution... (this may take a while)");
                         
-                        var results = runner.RunCategoryAsync(input, (filename, count) => {
+                        var results = await runner.RunCategoryAsync(input, (filename, count) => {
                             if (count % 100 == 0)
                             {
                                 // Pad output to overwrite previous lines completely if needed
@@ -90,7 +134,7 @@ namespace FenBrowser.Host
                                 if (msg.Length < 70) msg = msg.PadRight(70);
                                 Console.Write(msg);
                             }
-                        }).GetAwaiter().GetResult();
+                        }).ConfigureAwait(false);
                         
                         Console.WriteLine($"\rProcessed: {results.Count} tests. Done.");
                         
@@ -125,7 +169,7 @@ namespace FenBrowser.Host
 
                     return; // Exit after running test
                 }
-                else if (args.Length >= 2 && args[0] == "--wpt")
+                else if (startupMode == StartupMode.Wpt)
                 {
                     AttachConsole(ATTACH_PARENT_PROCESS);
                     string input = args[1]; // File path OR category
@@ -216,7 +260,7 @@ namespace FenBrowser.Host
                     wptWm.Run();
                     return;
                 }
-                else if (args.Length >= 1 && args[0] == "--acid2")
+                else if (startupMode == StartupMode.Acid2)
                 {
                     AttachConsole(ATTACH_PARENT_PROCESS);
                     Console.WriteLine("[Acid2] Initializing Headless Engine for Acid2 Test...");
@@ -447,7 +491,7 @@ namespace FenBrowser.Host
             WindowManager.Instance.CopyToClipboard(text);
         }
 
-        private static void RunRendererChildLoop(string[] args)
+        private static async Task RunRendererChildLoopAsync(string[] args)
         {
             LogManager.InitializeFromSettings();
 
@@ -470,6 +514,9 @@ namespace FenBrowser.Host
             var capabilitySet = Environment.GetEnvironmentVariable("FEN_RENDERER_CAPABILITIES");
             var assignmentKey = Environment.GetEnvironmentVariable("FEN_RENDERER_ASSIGNMENT_KEY");
 
+            // Shared memory writer for frame delivery. Created lazily on first FrameRequest.
+            FenBrowser.Host.ProcessIsolation.FrameSharedMemory frameSharedMemory = null;
+
             FenLogger.Info($"[RendererChild] Started for tab={tabId}, parentPid={parentPid}, pipe={pipeName}, assignment={assignmentKey}", LogCategory.General);
 
             if (string.IsNullOrWhiteSpace(pipeName) || string.IsNullOrWhiteSpace(authToken))
@@ -481,7 +528,7 @@ namespace FenBrowser.Host
                     {
                         break;
                     }
-                    Thread.Sleep(500);
+                    await Task.Delay(500).ConfigureAwait(false);
                 }
                 FenLogger.Info($"[RendererChild] Exiting for tab={tabId}", LogCategory.General);
                 return;
@@ -521,13 +568,15 @@ namespace FenBrowser.Host
                     break;
                 }
 
-                var readTask = reader.ReadLineAsync();
-                if (!readTask.Wait(500))
+                var readResult = await RendererChildLoopIo.ReadLineWithTimeoutAsync(
+                    reader,
+                    TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
+                if (!readResult.Completed)
                 {
                     continue;
                 }
 
-                var line = readTask.Result;
+                var line = readResult.Line;
                 if (line == null)
                 {
                     break;
@@ -576,9 +625,9 @@ namespace FenBrowser.Host
                         if (!string.IsNullOrWhiteSpace(url))
                         {
                             if (payload.IsUserInput)
-                                browser.NavigateUserInputAsync(url).GetAwaiter().GetResult();
+                                await browser.NavigateUserInputAsync(url).ConfigureAwait(false);
                             else
-                                browser.NavigateAsync(url).GetAwaiter().GetResult();
+                                await browser.NavigateAsync(url).ConfigureAwait(false);
                         }
 
                         SendRendererEnvelope(writer, new RendererIpcEnvelope
@@ -613,13 +662,13 @@ namespace FenBrowser.Host
                                 case RendererInputEventType.KeyDown:
                                     if (!string.IsNullOrWhiteSpace(input.Key))
                                     {
-                                        browser.HandleKeyPress(MapRendererKey(input.Key)).GetAwaiter().GetResult();
+                                        await browser.HandleKeyPress(MapRendererKey(input.Key)).ConfigureAwait(false);
                                     }
                                     break;
                                 case RendererInputEventType.TextInput:
                                     if (!string.IsNullOrWhiteSpace(input.Text))
                                     {
-                                        browser.HandleKeyPress(input.Text).GetAwaiter().GetResult();
+                                        await browser.HandleKeyPress(input.Text).ConfigureAwait(false);
                                     }
                                     break;
                                 case RendererInputEventType.MouseWheel:
@@ -640,14 +689,80 @@ namespace FenBrowser.Host
                     if (string.Equals(envelope.Type, RendererIpcMessageType.FrameRequest.ToString(), StringComparison.OrdinalIgnoreCase))
                     {
                         var frameRequest = RendererIpc.DeserializePayload<RendererFrameRequestPayload>(envelope);
+                        float vpWidth = frameRequest?.ViewportWidth ?? 1280f;
+                        float vpHeight = frameRequest?.ViewportHeight ?? 720f;
+
+                        // Clamp to sane range.
+                        vpWidth = Math.Max(1f, Math.Min(vpWidth, FenBrowser.Host.ProcessIsolation.FrameSharedMemory.MaxWidth));
+                        vpHeight = Math.Max(1f, Math.Min(vpHeight, FenBrowser.Host.ProcessIsolation.FrameSharedMemory.MaxHeight));
+                        int iWidth = (int)vpWidth;
+                        int iHeight = (int)vpHeight;
+
+                        float actualWidth = vpWidth;
+                        float actualHeight = vpHeight;
+                        uint seqNum = 0;
+
+                        // Lazily create the shared memory writer on first FrameRequest.
+                        if (frameSharedMemory == null)
+                        {
+                            frameSharedMemory = FenBrowser.Host.ProcessIsolation.FrameSharedMemory.CreateForWriter(tabId, parentPid);
+                        }
+
+                        if (frameSharedMemory != null)
+                        {
+                            try
+                            {
+                                var domRoot = browser.GetDomRoot();
+                                var styles = browser.ComputedStyles;
+
+                                if (domRoot != null)
+                                {
+                                    var imageInfo = new SkiaSharp.SKImageInfo(iWidth, iHeight, SkiaSharp.SKColorType.Bgra8888, SkiaSharp.SKAlphaType.Premul);
+                                    using var bitmap = new SkiaSharp.SKBitmap(imageInfo);
+                                    using var canvas = new SkiaSharp.SKCanvas(bitmap);
+                                    canvas.Clear(SkiaSharp.SKColors.White);
+
+                                    var viewport = new SkiaSharp.SKRect(0, 0, vpWidth, vpHeight);
+                                    var childRenderer = new FenBrowser.FenEngine.Rendering.SkiaDomRenderer();
+                                    childRenderer.Render(
+                                        domRoot,
+                                        canvas,
+                                        styles != null ? new System.Collections.Generic.Dictionary<FenBrowser.Core.Dom.V2.Node, FenBrowser.Core.Css.CssComputed>(styles) : new System.Collections.Generic.Dictionary<FenBrowser.Core.Dom.V2.Node, FenBrowser.Core.Css.CssComputed>(),
+                                        viewport,
+                                        browser.CurrentUri?.AbsoluteUri);
+                                    canvas.Flush();
+
+                                    // GetPixelSpan() is a ref struct; copy to byte[] to avoid
+                                    // "ref struct in async method" language restriction.
+                                    int byteCount = iWidth * iHeight * 4;
+                                    var pixelBytes = new byte[byteCount];
+                                    System.Runtime.InteropServices.Marshal.Copy(
+                                        bitmap.GetPixels(), pixelBytes, 0, byteCount);
+                                    frameSharedMemory.WriteFrame(iWidth, iHeight, pixelBytes);
+                                    frameSharedMemory.SignalReady();
+                                    seqNum = 1; // Approximate; actual seq tracked inside WriteFrame.
+                                    FenLogger.Debug($"[RendererChild] Frame written to shared memory: {iWidth}x{iHeight} for tab={tabId}", LogCategory.Rendering);
+                                }
+                                else
+                                {
+                                    FenLogger.Debug($"[RendererChild] No DOM root for tab={tabId}; skipping frame write.", LogCategory.Rendering);
+                                }
+                            }
+                            catch (Exception renderEx)
+                            {
+                                FenLogger.Warn($"[RendererChild] Frame render failed for tab={tabId}: {renderEx.Message}", LogCategory.Rendering);
+                            }
+                        }
+
                         var payload = new RendererFrameReadyPayload
                         {
                             Url = browser.CurrentUri?.AbsoluteUri ?? "about:blank",
                             FrameTimestampUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                            SurfaceWidth = frameRequest?.ViewportWidth ?? 0f,
-                            SurfaceHeight = frameRequest?.ViewportHeight ?? 0f,
+                            SurfaceWidth = actualWidth,
+                            SurfaceHeight = actualHeight,
                             DirtyRegionCount = 1,
-                            HasDamage = true
+                            HasDamage = true,
+                            FrameSequenceNumber = seqNum
                         };
 
                         SendRendererEnvelope(writer, new RendererIpcEnvelope
@@ -689,6 +804,7 @@ namespace FenBrowser.Host
                 }
             }
 
+            frameSharedMemory?.Dispose();
             FenLogger.Info($"[RendererChild] Exiting for tab={tabId}", LogCategory.General);
         }
 
