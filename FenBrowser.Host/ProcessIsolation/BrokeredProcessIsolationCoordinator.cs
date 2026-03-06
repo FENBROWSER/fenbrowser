@@ -5,7 +5,9 @@ using System.Security.Cryptography;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.Core.Platform;
 using FenBrowser.Core.ProcessIsolation;
+using FenBrowser.Core.Security.Sandbox;
 using FenBrowser.Host.Tabs;
 
 namespace FenBrowser.Host.ProcessIsolation
@@ -182,6 +184,10 @@ namespace FenBrowser.Host.ProcessIsolation
                     session.SendShutdown();
                     StopSession(session, $"tab {tab.Id} closed");
                 }
+
+                // Dispose the OS sandbox — this also kills remaining processes via KILL_ON_JOB_CLOSE.
+                state.Sandbox?.Dispose();
+                state.Sandbox = null;
             }
         }
 
@@ -200,6 +206,9 @@ namespace FenBrowser.Host.ProcessIsolation
                     state.Session.SendShutdown();
                     StopSession(state.Session, "host shutdown");
                 }
+
+                state.Sandbox?.Dispose();
+                state.Sandbox = null;
             }
 
             _tabStates.Clear();
@@ -225,13 +234,18 @@ namespace FenBrowser.Host.ProcessIsolation
             var token = CreateAuthToken();
             var session = new RendererChildSession(state.TabId, pipeName, token);
             session.FrameReceived += (tabId, payload) => FrameReceived?.Invoke(tabId, payload);
-            
-            var process = StartRendererChild(state.TabId, pipeName, token, state.AssignmentKey);
+
+            var process = StartRendererChildWithSandbox(state.TabId, pipeName, token, state.AssignmentKey, out var sandbox);
             if (process == null)
             {
+                sandbox?.Dispose();
                 session.Dispose();
                 return false;
             }
+
+            // Dispose the previous sandbox if one exists (e.g. after a crash restart).
+            state.Sandbox?.Dispose();
+            state.Sandbox = sandbox;
 
             process.EnableRaisingEvents = true;
             var startedPid = process.Id;
@@ -328,6 +342,12 @@ namespace FenBrowser.Host.ProcessIsolation
 
         private Process StartRendererChild(int tabId, string pipeName, string authToken, string assignmentKey)
         {
+            return StartRendererChildWithSandbox(tabId, pipeName, authToken, assignmentKey, out _);
+        }
+
+        private Process StartRendererChildWithSandbox(int tabId, string pipeName, string authToken, string assignmentKey, out ISandbox sandbox)
+        {
+            sandbox = null;
             try
             {
                 var exePath = Environment.ProcessPath;
@@ -359,7 +379,75 @@ namespace FenBrowser.Host.ProcessIsolation
                 startInfo.Environment["FEN_RENDERER_CAPABILITIES"] = "navigate,input,frame";
                 startInfo.Environment["FEN_RENDERER_ASSIGNMENT_KEY"] = assignmentKey ?? string.Empty;
 
-                return Process.Start(startInfo);
+                // Obtain the OS sandbox for the renderer profile.
+                ISandbox rendererSandbox = null;
+                try
+                {
+                    var sandboxFactory = PlatformLayerFactory.GetInstance().CreateSandboxFactory();
+                    rendererSandbox = sandboxFactory.Create(OsSandboxProfile.RendererMinimal);
+                    rendererSandbox.ApplyToProcessStartInfo(startInfo);
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn(
+                        $"[ProcessIsolation] Sandbox creation failed for tab {tabId}; falling back to unsandboxed launch: {ex.Message}",
+                        LogCategory.General);
+                    rendererSandbox?.Dispose();
+                    rendererSandbox = null;
+                }
+
+                Process process;
+
+                if (rendererSandbox != null && rendererSandbox.RequiresCustomSpawn)
+                {
+                    // AppContainer (and any future sandbox requiring CreateProcessW) path.
+                    try
+                    {
+                        process = rendererSandbox.SpawnProcess(startInfo);
+                    }
+                    catch (Exception ex)
+                    {
+                        FenLogger.Error(
+                            $"[ProcessIsolation] Sandbox.SpawnProcess failed for tab {tabId}: {ex.Message}; retrying without sandbox.",
+                            LogCategory.General);
+                        rendererSandbox.Dispose();
+                        rendererSandbox = null;
+                        process = Process.Start(startInfo);
+                    }
+                }
+                else
+                {
+                    // Standard .NET process start (Job Object sandbox or NullSandbox).
+                    process = Process.Start(startInfo);
+
+                    if (process != null && rendererSandbox != null)
+                    {
+                        try
+                        {
+                            rendererSandbox.AttachToProcess(process);
+                        }
+                        catch (Exception ex)
+                        {
+                            FenLogger.Warn(
+                                $"[ProcessIsolation] Sandbox.AttachToProcess failed for tab {tabId} pid={process.Id}: {ex.Message}",
+                                LogCategory.General);
+                        }
+                    }
+                }
+
+                if (process != null && rendererSandbox != null)
+                {
+                    FenLogger.Info(
+                        $"[ProcessIsolation] Renderer child sandboxed via '{rendererSandbox.ProfileName}' for tab {tabId}.",
+                        LogCategory.General);
+                    sandbox = rendererSandbox;
+                }
+                else
+                {
+                    rendererSandbox?.Dispose();
+                }
+
+                return process;
             }
             catch (Exception ex)
             {
@@ -439,6 +527,12 @@ namespace FenBrowser.Host.ProcessIsolation
             public int ActivePid { get; set; }
             public bool IsClosed { get; set; }
             public string AssignmentKey { get; set; }
+
+            /// <summary>
+            /// The OS-level sandbox applied to the renderer child process.
+            /// Disposed when the tab is closed or the renderer crashes and is not restarted.
+            /// </summary>
+            public ISandbox Sandbox { get; set; }
 
             public TabProcessState(BrowserTab tab)
             {
