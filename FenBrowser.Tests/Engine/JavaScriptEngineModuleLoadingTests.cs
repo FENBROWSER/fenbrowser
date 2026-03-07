@@ -35,6 +35,29 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public async Task SetDom_DeprecatedSyncWrapper_DoesNotThrowOnAsyncFetchFailure()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser("<html><body><script type=\"module\" src=\"main.js\"></script></body></html>", baseUri);
+            var doc = parser.Parse();
+            var gate = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            var engine = new JavaScriptEngine(CreateHost())
+            {
+                FetchOverride = _ => gate.Task
+            };
+
+            var sw = Stopwatch.StartNew();
+            engine.SetDom(doc.DocumentElement, baseUri);
+            sw.Stop();
+
+            Assert.True(sw.Elapsed < TimeSpan.FromMilliseconds(250), $"Expected non-blocking SetDom wrapper. Elapsed={sw.ElapsedMilliseconds}ms");
+
+            gate.TrySetException(new InvalidOperationException("module-fetch-failed"));
+            await Task.Delay(25);
+        }
+
+        [Fact]
         public async Task SetDomAsync_ModuleGraphPrefetch_LoadsStaticDependenciesWithoutSyncBridge()
         {
             var baseUri = new Uri("https://example.com/index.html");

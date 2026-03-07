@@ -6,6 +6,7 @@ using System.Net.Http;
 using System.Threading.Tasks;
 using System;
 using FenBrowser.FenEngine.Core.Types;
+using FenBrowser.FenEngine.Security;
 
 namespace FenBrowser.Tests.WebAPIs
 {
@@ -29,6 +30,55 @@ namespace FenBrowser.Tests.WebAPIs
             Assert.Equal("POST", request.Method);
             Assert.Equal("test-body", request.Body);
             Assert.Equal("application/json", request.Headers.GetHeader("content-type"));
+        }
+
+        [Fact]
+        public void FetchApi_Register_PreservesUrlConstructorAndAddsBlobStatics()
+        {
+            var context = new FenBrowser.FenEngine.Core.ExecutionContext(new PermissionManager(JsPermissions.StandardWeb))
+            {
+                Environment = new FenEnvironment()
+            };
+            var runtime = new FenRuntime(context);
+
+            FetchApi.Register(runtime.Context, _ => Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)));
+
+            var url = runtime.GlobalEnv.Get("URL");
+            Assert.True(url.IsFunction);
+            Assert.True(url.AsObject().Has("createObjectURL"));
+            Assert.True(url.AsObject().Has("revokeObjectURL"));
+
+            var blob = runtime.GlobalEnv.Get("Blob");
+            Assert.True(blob.IsFunction);
+        }
+
+        [Fact]
+        public void JsRequest_Constructor_ResolvesRelativeUrlAgainstExecutionContext_AndPreservesPatchCasing()
+        {
+            var context = new FenBrowser.FenEngine.Core.ExecutionContext();
+            context.CurrentUrl = new Uri(@"file:///C:/wpt/fetch/api/request/url-encoding.html").AbsoluteUri;
+
+            var options = new FenObject();
+            options.Set("method", FenValue.FromString("patch"));
+
+            var request = new JsRequest("?\u00DF", FenValue.FromObject(options), context);
+
+            Assert.Equal(new Uri(new Uri(context.CurrentUrl), "?\u00DF").AbsoluteUri, request.Url);
+            Assert.Equal("patch", request.Method);
+        }
+
+        [Fact]
+        public void JsResponse_Redirect_ResolvesRelativeLocationAgainstExecutionContext()
+        {
+            var context = new FenBrowser.FenEngine.Core.ExecutionContext();
+            context.CurrentUrl = new Uri(@"file:///C:/wpt/fetch/api/basic/url-parsing.sub.html").AbsoluteUri;
+
+            var redirected = JsResponse.Redirect(new[] { FenValue.FromString("?\u00FF") }, context);
+            var response = Assert.IsType<JsResponse>(redirected.AsObject());
+            var headers = response.Get("headers").AsObject();
+            var location = headers.Get("get").AsFunction().Invoke(new[] { FenValue.FromString("location") }, context);
+
+            Assert.Equal(new Uri(new Uri(context.CurrentUrl), "?\u00FF").AbsoluteUri, location.ToString());
         }
 
         [Fact]

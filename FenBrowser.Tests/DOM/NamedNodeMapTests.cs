@@ -7,6 +7,7 @@ using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Security;
 using FenBrowser.FenEngine.DOM;
+using System.Collections.Generic;
 
 namespace FenBrowser.Tests.DOM
 {
@@ -102,6 +103,51 @@ namespace FenBrowser.Tests.DOM
              
              Assert.Equal("hover-text", _root.GetAttribute("title"));
              Assert.Equal(3, _root.Attributes.Length);
+        }
+
+        [Fact]
+        public void ObjectGetOwnPropertyNames_UsesWrapperOwnPropertyEnumeration()
+        {
+            var runtime = new FenRuntime();
+            var collection = new HTMLCollectionWrapper(Array.Empty<Element>(), runtime.Context);
+            collection.DefineOwnProperty("hidden", new PropertyDescriptor
+            {
+                Value = FenValue.FromString("value"),
+                Enumerable = false,
+                Configurable = true,
+                Writable = true
+            });
+
+            var objectCtor = runtime.GlobalEnv.Get("Object").AsObject();
+            var getOwnPropertyNames = objectCtor.Get("getOwnPropertyNames", runtime.Context).AsFunction();
+            var names = getOwnPropertyNames.Invoke(new[] { FenValue.FromObject(collection) }, runtime.Context).AsObject();
+
+            Assert.Equal(1, names.Get("length", runtime.Context).ToNumber());
+            Assert.Equal("hidden", names.Get("0", runtime.Context).ToString());
+        }
+
+        [Fact]
+        public void NamedNodeMap_GetOwnPropertyNames_ReturnsIndicesBeforeAttributeNames()
+        {
+            var runtime = new FenRuntime();
+            var element = new Element("div");
+            element.SetAttribute("id", "sample");
+            element.SetAttribute("class", "fancy");
+            var wrapper = new ElementWrapper(element, runtime.Context);
+            var attributes = wrapper.Get("attributes", runtime.Context);
+
+            var objectCtor = runtime.GlobalEnv.Get("Object").AsObject();
+            var getOwnPropertyNames = objectCtor.Get("getOwnPropertyNames", runtime.Context).AsFunction();
+            var names = getOwnPropertyNames.Invoke(new[] { attributes }, runtime.Context).AsObject();
+
+            var actual = new List<string>();
+            var length = (int)names.Get("length", runtime.Context).ToNumber();
+            for (var i = 0; i < length; i++)
+            {
+                actual.Add(names.Get(i.ToString(), runtime.Context).ToString());
+            }
+
+            Assert.Equal(new[] { "0", "1", "id", "class" }, actual);
         }
     }
 }

@@ -111,6 +111,56 @@ namespace FenBrowser.Tests.Workers
         }
 
         [Fact]
+        public void WorkerRuntime_AsyncBootstrapWaitsForFetchBeforeExecutingScript()
+        {
+            var fetchStarted = new ManualResetEventSlim(false);
+            var messageEvent = new ManualResetEventSlim(false);
+            var fetchGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            object payload = null;
+
+            var worker = new WorkerRuntime(
+                "https://example.com/worker.js",
+                "https://example.com",
+                new InMemoryStorageBackend(),
+                async _ =>
+                {
+                    fetchStarted.Set();
+                    await fetchGate.Task;
+                    return "postMessage('bootstrapped');";
+                },
+                _ => true);
+
+            try
+            {
+                worker.OnMessage += data =>
+                {
+                    payload = data;
+                    messageEvent.Set();
+                };
+
+                Assert.True(fetchStarted.Wait(1000), "Expected bootstrap fetch to start.");
+                Assert.False(messageEvent.Wait(100), "Bootstrap script should not execute before fetch completes.");
+
+                fetchGate.TrySetResult(true);
+
+                var deadline = DateTime.UtcNow.AddSeconds(3);
+                while (!messageEvent.IsSet && DateTime.UtcNow < deadline)
+                {
+                    EventLoopCoordinator.Instance.ProcessNextTask();
+                    Thread.Sleep(10);
+                }
+
+                Assert.True(messageEvent.IsSet, "Expected bootstrap script to execute after fetch completion.");
+                Assert.Equal("bootstrapped", payload?.ToString());
+            }
+            finally
+            {
+                worker.Terminate();
+                worker.Dispose();
+            }
+        }
+
+        [Fact]
         public void StructuredClone_ClonesPrimitives()
         {
             Assert.Null(StructuredClone.Clone(null));
