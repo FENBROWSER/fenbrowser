@@ -1,0 +1,17 @@
+{
+  "name": "dom_named_collections",
+  "category": "dom",
+  "description": "Historical named-collection and property-descriptor failures from the DOM recovery slice.",
+  "selectors": [
+    "domstringmap-supported-property-names.html",
+    "HTMLCollection-as-prototype.html",
+    "HTMLCollection-iterator.html",
+    "HTMLCollection-supported-property-names.html",
+    "namednodemap-supported-property-names.html",
+    "Event-dispatch-click.html",
+    "Event-dispatch-on-disabled-elements.html",
+    "event-global.html",
+    "Event-propagation.html",
+    "Event-timestamp-safe-resolution.html"
+  ]
+}

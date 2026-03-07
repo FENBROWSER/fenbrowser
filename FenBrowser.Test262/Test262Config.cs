@@ -61,6 +61,12 @@ public sealed class Test262Config
     public bool Verbose { get; set; } = false;
 
     /// <summary>
+    /// Whether run_chunk should execute each test in an isolated child process.
+    /// Useful for capturing hard crashes without taking down the parent runner.
+    /// </summary>
+    public bool IsolateProcess { get; set; } = false;
+
+    /// <summary>
     /// Auto-discover the test262 root path relative to the current executable.
     /// Walks up directory tree looking for the test262/ folder.
     /// </summary>
@@ -99,3 +105,4 @@ public sealed class Test262Config
         return config;
     }
 }
+

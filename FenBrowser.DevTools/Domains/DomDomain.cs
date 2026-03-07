@@ -14,6 +14,7 @@ public class DomDomain : IProtocolHandler
     private readonly INodeRegistry _registry;
     private readonly Func<Node?> _getRootNode;
     private readonly Action<int?>? _onHighlight;
+    private readonly Func<Func<ProtocolResponse>, Task<ProtocolResponse>> _dispatchAsync;
     
     public string Domain => "DOM";
     
@@ -23,11 +24,13 @@ public class DomDomain : IProtocolHandler
     /// <param name="registry">Node registry for ID management</param>
     /// <param name="getRootNode">Function to get the document root node</param>
     /// <param name="onHighlight">Callback when highlight is requested (null to clear)</param>
-    public DomDomain(INodeRegistry registry, Func<Node?> getRootNode, Action<int?>? onHighlight = null)
+    /// <param name="dispatchAsync">Dispatcher used to execute DOM access on the owning thread</param>
+    public DomDomain(INodeRegistry registry, Func<Node?> getRootNode, Action<int?>? onHighlight = null, Func<Func<ProtocolResponse>, Task<ProtocolResponse>>? dispatchAsync = null)
     {
         _registry = registry;
         _getRootNode = getRootNode;
         _onHighlight = onHighlight;
+        _dispatchAsync = dispatchAsync ?? (operation => Task.FromResult(operation()));
     }
     
     public Task<ProtocolResponse> HandleAsync(string method, ProtocolRequest request)
@@ -50,17 +53,18 @@ public class DomDomain : IProtocolHandler
     /// </summary>
     private Task<ProtocolResponse> GetDocumentAsync(ProtocolRequest request)
     {
-        var root = _getRootNode();
-        if (root == null)
+        return DispatchAsync(() =>
         {
-            return Task.FromResult(ProtocolResponse.Failure(request.Id, "No document loaded"));
-        }
-        
-        // Build the full tree (for initial load)
-        var rootDto = BuildNodeDto(root, depth: 4);
-        
-        var result = new GetDocumentResult { Root = rootDto };
-        return Task.FromResult(ProtocolResponse.Success(request.Id, result));
+            var root = _getRootNode();
+            if (root == null)
+            {
+                return ProtocolResponse.Failure(request.Id, "No document loaded");
+            }
+
+            var rootDto = BuildNodeDto(root, depth: 4);
+            var result = new GetDocumentResult { Root = rootDto };
+            return ProtocolResponse.Success(request.Id, result);
+        });
     }
     
     /// <summary>
@@ -77,8 +81,11 @@ public class DomDomain : IProtocolHandler
         try
         {
             var nodeId = request.Params.Value.GetProperty("nodeId").GetInt32();
-            _onHighlight?.Invoke(nodeId);
-            return Task.FromResult(ProtocolResponse.Success(request.Id, new { }));
+            return DispatchAsync(() =>
+            {
+                _onHighlight?.Invoke(nodeId);
+                return ProtocolResponse.Success(request.Id, new { });
+            });
         }
         catch
         {
@@ -91,8 +98,11 @@ public class DomDomain : IProtocolHandler
     /// </summary>
     private Task<ProtocolResponse> HideHighlightAsync(ProtocolRequest request)
     {
-        _onHighlight?.Invoke(null);
-        return Task.FromResult(ProtocolResponse.Success(request.Id, new { }));
+        return DispatchAsync(() =>
+        {
+            _onHighlight?.Invoke(null);
+            return ProtocolResponse.Success(request.Id, new { });
+        });
     }
     
     /// <summary>
@@ -108,18 +118,20 @@ public class DomDomain : IProtocolHandler
         try
         {
             var nodeId = request.Params.Value.GetProperty("nodeId").GetInt32();
-            var node = _registry.GetNode(nodeId);
-            
-            if (node == null)
+            return DispatchAsync(() =>
             {
-                return Task.FromResult(ProtocolResponse.Failure(request.Id, "Node not found"));
-            }
-            
-            var children = node.ChildNodes
-                .Select(child => BuildNodeDto(child, depth: 1))
-                .ToArray();
-            
-            return Task.FromResult(ProtocolResponse.Success(request.Id, new { nodes = children }));
+                var node = _registry.GetNode(nodeId);
+                if (node == null)
+                {
+                    return ProtocolResponse.Failure(request.Id, "Node not found");
+                }
+
+                var children = node.ChildNodes
+                    .Select(child => BuildNodeDto(child, depth: 1))
+                    .ToArray();
+
+                return ProtocolResponse.Success(request.Id, new { nodes = children });
+            });
         }
         catch
         {
@@ -148,14 +160,17 @@ public class DomDomain : IProtocolHandler
                 return Task.FromResult(ProtocolResponse.Failure(request.Id, "Attribute name required"));
             }
             
-            var node = _registry.GetNode(nodeId);
-            if (node is Element element)
+            return DispatchAsync(() =>
             {
-                element.SetAttribute(name, value ?? "");
-                return Task.FromResult(ProtocolResponse.Success(request.Id, new { }));
-            }
-            
-            return Task.FromResult(ProtocolResponse.Failure(request.Id, "Node not found or not an element"));
+                var node = _registry.GetNode(nodeId);
+                if (node is Element element)
+                {
+                    element.SetAttribute(name, value ?? "");
+                    return ProtocolResponse.Success(request.Id, new { });
+                }
+
+                return ProtocolResponse.Failure(request.Id, "Node not found or not an element");
+            });
         }
         catch (Exception ex)
         {
@@ -183,14 +198,17 @@ public class DomDomain : IProtocolHandler
                 return Task.FromResult(ProtocolResponse.Failure(request.Id, "Attribute name required"));
             }
             
-            var node = _registry.GetNode(nodeId);
-            if (node is Element element)
+            return DispatchAsync(() =>
             {
-                element.RemoveAttribute(name);
-                return Task.FromResult(ProtocolResponse.Success(request.Id, new { }));
-            }
-            
-            return Task.FromResult(ProtocolResponse.Failure(request.Id, "Node not found or not an element"));
+                var node = _registry.GetNode(nodeId);
+                if (node is Element element)
+                {
+                    element.RemoveAttribute(name);
+                    return ProtocolResponse.Success(request.Id, new { });
+                }
+
+                return ProtocolResponse.Failure(request.Id, "Node not found or not an element");
+            });
         }
         catch (Exception ex)
         {
@@ -213,14 +231,17 @@ public class DomDomain : IProtocolHandler
             var nodeId = request.Params.Value.GetProperty("nodeId").GetInt32();
             var value = request.Params.Value.GetProperty("value").GetString();
 
-            var node = _registry.GetNode(nodeId);
-            if (node is Text textNode)
+            return DispatchAsync(() =>
             {
-                textNode.Data = value ?? "";
-                return Task.FromResult(ProtocolResponse.Success(request.Id, new { }));
-            }
+                var node = _registry.GetNode(nodeId);
+                if (node is Text textNode)
+                {
+                    textNode.Data = value ?? "";
+                    return ProtocolResponse.Success(request.Id, new { });
+                }
 
-            return Task.FromResult(ProtocolResponse.Failure(request.Id, "Node not found or not a text node"));
+                return ProtocolResponse.Failure(request.Id, "Node not found or not a text node");
+            });
         }
         catch (Exception ex)
         {
@@ -228,6 +249,11 @@ public class DomDomain : IProtocolHandler
         }
     }
     
+    private Task<ProtocolResponse> DispatchAsync(Func<ProtocolResponse> operation)
+    {
+        return _dispatchAsync(operation);
+    }
+
     /// <summary>
     /// Build DTO for a node with specified depth.
     /// </summary>

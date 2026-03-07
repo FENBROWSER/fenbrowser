@@ -25,14 +25,16 @@ public static class ResultsExporter
         OutputFormat format,
         string? category = null,
         TimeSpan? totalDuration = null,
-        int chunkNumber = 0)
+        int chunkNumber = 0,
+        string? packName = null,
+        string? packDescription = null)
     {
         return format switch
         {
-            OutputFormat.Markdown => ExportMarkdown(results, category, totalDuration, chunkNumber),
-            OutputFormat.Json => ExportJson(results, category, totalDuration, chunkNumber),
+            OutputFormat.Markdown => ExportMarkdown(results, category, totalDuration, chunkNumber, packName, packDescription),
+            OutputFormat.Json => ExportJson(results, category, totalDuration, chunkNumber, packName, packDescription),
             OutputFormat.Tap => ExportTap(results),
-            _ => ExportMarkdown(results, category, totalDuration, chunkNumber)
+            _ => ExportMarkdown(results, category, totalDuration, chunkNumber, packName, packDescription)
         };
     }
 
@@ -43,7 +45,9 @@ public static class ResultsExporter
         IReadOnlyList<WPTTestRunner.TestExecutionResult> results,
         string? category = null,
         TimeSpan? totalDuration = null,
-        int chunkNumber = 0)
+        int chunkNumber = 0,
+        string? packName = null,
+        string? packDescription = null)
     {
         var sb = new StringBuilder();
 
@@ -65,6 +69,10 @@ public static class ResultsExporter
             sb.AppendLine($"**Chunk**: {chunkNumber}");
         if (!string.IsNullOrEmpty(category))
             sb.AppendLine($"**Category**: {category}");
+        if (!string.IsNullOrEmpty(packName))
+            sb.AppendLine($"**Regression Pack**: {packName}");
+        if (!string.IsNullOrEmpty(packDescription))
+            sb.AppendLine($"**Pack Description**: {packDescription}");
         sb.AppendLine($"**Date**: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
         sb.AppendLine($"**Duration**: {durationMs}ms ({durationMs / 1000.0:F1}s)");
         sb.AppendLine();
@@ -111,13 +119,17 @@ public static class ResultsExporter
         IReadOnlyList<WPTTestRunner.TestExecutionResult> results,
         string? category = null,
         TimeSpan? totalDuration = null,
-        int chunkNumber = 0)
+        int chunkNumber = 0,
+        string? packName = null,
+        string? packDescription = null)
     {
         var report = new
         {
             timestamp = DateTime.UtcNow.ToString("o"),
             chunk = chunkNumber > 0 ? chunkNumber : (int?)null,
             category = category,
+            pack = packName,
+            packDescription = packDescription,
             total = results.Count,
             passed = results.Count(r => r.Success),
             failed = results.Count(r => !r.Success),

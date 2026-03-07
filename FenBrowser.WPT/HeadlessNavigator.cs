@@ -12,11 +12,48 @@ using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.DOM;
 using FenBrowser.FenEngine.HTML;
 using FenBrowser.FenEngine.WebAPIs;
+using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
 
 namespace FenBrowser.WPT;
 
 public sealed class HeadlessNavigator
 {
+    private const string FatalErrorBridgeScript = @"
+(function () {
+  var g = (typeof globalThis !== 'undefined') ? globalThis : this;
+  if (!g || g.__fenFatalHarnessBridgeInstalled) { return; }
+  g.__fenFatalHarnessBridgeInstalled = true;
+
+  function finish(message) {
+    try {
+      if (typeof testRunner !== 'undefined' && testRunner && typeof testRunner.reportResult === 'function') {
+        testRunner.reportResult('page-script-failure', false, String(message || 'fatal page script failure'));
+      }
+      if (typeof testRunner !== 'undefined' && testRunner && typeof testRunner.reportHarnessStatus === 'function') {
+        testRunner.reportHarnessStatus('complete', String(message || 'fatal page script failure'));
+      }
+      if (typeof testRunner !== 'undefined' && testRunner && typeof testRunner.notifyDone === 'function') {
+        testRunner.notifyDone();
+      }
+    } catch (_) {}
+  }
+
+  if (g.addEventListener) {
+    g.addEventListener('error', function (ev) {
+      var msg = ev && (ev.message || (ev.error && ev.error.message)) ? (ev.message || ev.error.message) : 'Unhandled script error';
+      finish(msg);
+    });
+
+    g.addEventListener('unhandledrejection', function (ev) {
+      var reason = ev && ev.reason;
+      var msg = reason && reason.message ? reason.message : String(reason || 'Unhandled promise rejection');
+      finish(msg);
+    });
+  }
+})();
+";
     private const string MinimalHarnessScript = @"
 var self = (typeof globalThis !== 'undefined') ? globalThis : this;
 var __fenMiniHarnessDoneSignaled = false;
@@ -127,7 +164,7 @@ async function __fenMiniHarnessRun() {
 
       try {
         await __fenMiniHarnessSetupPromise;
-        await Promise.resolve(item.body(ctx));
+        await Promise.resolve(item.body.call(ctx, ctx));
         if (!finished) { ctx.done(); }
       } catch (e) {
         if (!finished) {
@@ -148,10 +185,19 @@ async function __fenMiniHarnessRun() {
 function __fenMiniHarnessKick() {
   if (__fenMiniHarnessRunScheduled) { return; }
   __fenMiniHarnessRunScheduled = true;
-  setTimeout(function () {
+  var schedule = (typeof queueMicrotask === 'function')
+    ? queueMicrotask
+    : function (callback) {
+        if (typeof Promise === 'function' && Promise.resolve) {
+          Promise.resolve().then(callback);
+          return;
+        }
+        setTimeout(callback, 0);
+      };
+  schedule(function () {
     __fenMiniHarnessRunScheduled = false;
     __fenMiniHarnessRun();
-  }, 0);
+  });
 }
 
 function setup(fn) {
@@ -200,6 +246,15 @@ function assert_true(value, message) { if (!value) { throw new Error(message || 
 function assert_false(value, message) { if (value) { throw new Error(message || 'assert_false failed'); } }
 function assert_equals(actual, expected, message) {
   if (actual !== expected) { throw new Error(message || ('assert_equals failed: ' + actual + ' !== ' + expected)); }
+}
+function assert_in_array(actual, expected, message) {
+  if (!expected || typeof expected.length !== 'number') {
+    throw new Error(message || 'assert_in_array failed: expected array-like');
+  }
+  for (var i = 0; i < expected.length; i++) {
+    if (expected[i] === actual) { return; }
+  }
+  throw new Error(message || ('assert_in_array failed: ' + actual + ' not found'));
 }
 function assert_not_equals(actual, expected, message) {
   if (actual === expected) { throw new Error(message || ('assert_not_equals failed: both are ' + actual)); }
@@ -291,6 +346,13 @@ function assert_not_own_property(obj, prop, message) {
     throw new Error(message || ('assert_not_own_property failed: unexpected own property ' + prop));
   }
 }
+function on_event(object, eventName, callback, options) {
+  if (!object || typeof object.addEventListener !== 'function') {
+    throw new Error('on_event target does not support addEventListener');
+  }
+  object.addEventListener(eventName, callback, options || false);
+  return callback;
+}
 function format_value(v) {
   try { return String(v); } catch (_) { return '<unprintable>'; }
 }
@@ -361,6 +423,67 @@ EventWatcher.prototype.wait_for = function (eventName) {
     }
   } catch (e) {}
 })();
+";
+    private const string CssParsingTestCommonShimScript = @"
+'use strict';
+function test_valid_value(property, value, serializedValue, options) {
+  if (arguments.length < 3) serializedValue = value;
+  if (!options) options = {};
+  var stringifiedValue = JSON.stringify(value);
+  test(function () {
+    var div = document.getElementById('target') || document.createElement('div');
+    div.style[property] = '';
+    div.style[property] = value;
+    var readValue = div.style.getPropertyValue(property);
+    assert_not_equals(readValue, '', 'property should be set');
+    if (options.comparisonFunction) {
+      options.comparisonFunction(readValue, serializedValue);
+    } else if (Array.isArray(serializedValue)) {
+      assert_in_array(readValue, serializedValue, 'serialization should be sound');
+    } else {
+      assert_equals(readValue, serializedValue, 'serialization should be canonical');
+    }
+    div.style[property] = readValue;
+    assert_equals(div.style.getPropertyValue(property), readValue, 'serialization should round-trip');
+  }, ""e.style['"" + property + ""'] = "" + stringifiedValue + "" should set the property value"");
+}
+
+function test_invalid_value(property, value) {
+  var stringifiedValue = JSON.stringify(value);
+  test(function () {
+    var div = document.getElementById('target') || document.createElement('div');
+    div.style[property] = '';
+    div.style[property] = value;
+    assert_equals(div.style.getPropertyValue(property), '');
+  }, ""e.style['"" + property + ""'] = "" + stringifiedValue + "" should not set the property value"");
+}
+";
+    private const string CssComputedTestCommonShimScript = @"
+'use strict';
+function test_computed_value(property, specified, computed, titleExtra, options) {
+  if (!computed) computed = specified;
+  if (!options) options = {};
+  test(function () {
+    var target = document.getElementById('target');
+    assert_true(property in getComputedStyle(target), property + "" doesn't seem to be supported in the computed style"");
+    assert_true(CSS.supports(property, specified), ""'"" + specified + ""' is a supported value for "" + property + ""."");
+    target.style[property] = '';
+    target.style[property] = specified;
+    var readValue = getComputedStyle(target)[property];
+    if (options.comparisonFunction) {
+      options.comparisonFunction(readValue, computed);
+    } else if (Array.isArray(computed)) {
+      assert_in_array(readValue, computed);
+    } else {
+      assert_equals(readValue, computed);
+    }
+    if (readValue !== specified) {
+      target.style[property] = '';
+      target.style[property] = readValue;
+      assert_equals(getComputedStyle(target)[property], readValue, 'computed value should round-trip');
+    }
+  }, ""Property "" + property + "" value '"" + specified + ""'"" + (titleExtra ? "" "" + titleExtra : """"));
+}
 ";
     private const string TestDriverShimScript = @"
 /* FenBrowser WPT test_driver shim: accessibility helpers + virtual generic sensors. */
@@ -625,6 +748,12 @@ EventWatcher.prototype.wait_for = function (eventName) {
         Uri? baseUri = null;
         try { baseUri = new Uri(filePath); } catch { }
         runtime.SetDom(document, baseUri);
+        if (baseUri != null)
+        {
+            runtime.NetworkFetchHandler = request => HandleHeadlessFetchAsync(request, filePath);
+            FetchApi.Register(runtime.Context, request => HandleHeadlessFetchAsync(request, filePath));
+            SetRuntimeLocation(runtime, baseUri);
+        }
 
         // Register C# host functions for accessibility (used by TestDriverShimScript).
         runtime.GlobalEnv.Set("__fenGetComputedLabel",
@@ -661,6 +790,9 @@ EventWatcher.prototype.wait_for = function (eventName) {
             TestConsoleCapture.AddEntry(level, msg);
         };
 
+        var pageExecutionUrl = baseUri?.AbsoluteUri ?? "script";
+        TryExecuteScript(runtime, FatalErrorBridgeScript, Math.Min(_timeoutMs, 2_000), "fen-fatal-error-bridge.js", pageExecutionUrl);
+
         var scripts = ExtractScripts(document);
         var scriptOrdinal = 0;
         foreach (var (src, scriptContent, isExternal) in scripts)
@@ -694,6 +826,16 @@ EventWatcher.prototype.wait_for = function (eventName) {
                     code = "/* FenBrowser shim: testdriver support script intentionally no-op */";
                     scriptLabel = "fen-testdriver-support-noop.js";
                 }
+                else if (IsCssParsingTestCommonScript(src))
+                {
+                    code = CssParsingTestCommonShimScript;
+                    scriptLabel = "fen-css-parsing-testcommon.js";
+                }
+                else if (IsCssComputedTestCommonScript(src))
+                {
+                    code = CssComputedTestCommonShimScript;
+                    scriptLabel = "fen-css-computed-testcommon.js";
+                }
                 else
                 {
                     var scriptPath = ResolveExternalScriptPath(src, filePath);
@@ -715,17 +857,48 @@ EventWatcher.prototype.wait_for = function (eventName) {
                 continue;
             }
 
-            if (!TryExecuteScript(runtime, code, _timeoutMs, scriptLabel))
+            var executionUrl = isExternal && !string.IsNullOrWhiteSpace(src)
+                ? CreateExecutionUrl(src, filePath, baseUri)
+                : pageExecutionUrl;
+            if (!TryExecuteScript(runtime, code, _timeoutMs, scriptLabel, executionUrl))
             {
                 break;
             }
 
             // Bridge is idempotent and only activates once testharness APIs exist.
-            TryExecuteScript(runtime, HarnessBridgeScript, Math.Min(_timeoutMs, 2_000), "fen-harness-bridge.js");
+            TryExecuteScript(runtime, HarnessBridgeScript, Math.Min(_timeoutMs, 2_000), "fen-harness-bridge.js", pageExecutionUrl);
         }
 
         // Final bridge attempt for tests that load harness late in the script list.
-        TryExecuteScript(runtime, HarnessBridgeScript, Math.Min(_timeoutMs, 2_000), "fen-harness-bridge.js");
+        TryExecuteScript(runtime, HarnessBridgeScript, Math.Min(_timeoutMs, 2_000), "fen-harness-bridge.js", pageExecutionUrl);
+
+        // Simulate end-of-parse lifecycle events: DOMContentLoaded → load.
+        // This must happen AFTER all scripts run so that listeners registered during
+        // script execution receive the events.
+        FirePostParseLifecycleEvents(runtime, pageExecutionUrl);
+    }
+
+    private static void FirePostParseLifecycleEvents(FenBrowser.FenEngine.Core.FenRuntime runtime, string executionUrl)
+    {
+        // Dispatch DOMContentLoaded + load lifecycle events using a JS snippet so that
+        // listeners registered during script execution are properly notified.
+        const string lifecycleScript = @"
+(function() {
+  try {
+    if (typeof document !== 'undefined' && typeof document.dispatchEvent === 'function') {
+      var domCl = new Event('DOMContentLoaded', {bubbles:true, cancelable:false});
+      document.dispatchEvent(domCl);
+    }
+  } catch(e) {}
+  try {
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+      var loadEvt = new Event('load', {bubbles:false, cancelable:false});
+      window.dispatchEvent(loadEvt);
+    }
+  } catch(e) {}
+})();
+";
+        TryExecuteScript(runtime, lifecycleScript, 2_000, "fen-lifecycle-events.js", executionUrl);
     }
 
     public Func<string, Task> GetNavigatorDelegate()
@@ -812,12 +985,12 @@ EventWatcher.prototype.wait_for = function (eventName) {
         return null;
     }
 
-    private static bool TryExecuteScript(FenRuntime runtime, string code, int timeoutMs, string scriptLabel)
+    private static bool TryExecuteScript(FenRuntime runtime, string code, int timeoutMs, string scriptLabel, string executionUrl)
     {
         try
         {
             using var cts = new CancellationTokenSource(timeoutMs);
-            var result = runtime.ExecuteSimple(code, allowReturn: true, cancellationToken: cts.Token);
+            var result = runtime.ExecuteSimple(code, executionUrl, allowReturn: true, cancellationToken: cts.Token);
             if (result.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Error ||
                 result.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Throw)
             {
@@ -894,6 +1067,131 @@ EventWatcher.prototype.wait_for = function (eventName) {
         var normalized = src.Replace('\\', '/');
         return normalized.EndsWith("/resources/testdriver-vendor.js", StringComparison.OrdinalIgnoreCase)
             || normalized.EndsWith("/resources/testdriver-actions.js", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string CreateExecutionUrl(string src, string testFilePath, Uri? pageUri)
+    {
+        var scriptPath = ResolveExternalScriptPathStatic(src, testFilePath);
+        if (!string.IsNullOrWhiteSpace(scriptPath) && File.Exists(scriptPath))
+        {
+            return new Uri(scriptPath).AbsoluteUri;
+        }
+
+        if (pageUri != null && Uri.TryCreate(pageUri, src, out var resolved))
+        {
+            return resolved.AbsoluteUri;
+        }
+
+        return pageUri?.AbsoluteUri ?? "script";
+    }
+
+    private static string? ResolveExternalScriptPathStatic(string scriptSrc, string testFilePath)
+    {
+        if (string.IsNullOrWhiteSpace(scriptSrc))
+        {
+            return null;
+        }
+
+        var cleaned = scriptSrc;
+        var queryIx = cleaned.IndexOf('?');
+        if (queryIx >= 0) cleaned = cleaned.Substring(0, queryIx);
+        var hashIx = cleaned.IndexOf('#');
+        if (hashIx >= 0) cleaned = cleaned.Substring(0, hashIx);
+
+        if (Uri.TryCreate(cleaned, UriKind.Absolute, out var absoluteUri))
+        {
+            return absoluteUri.IsFile && File.Exists(absoluteUri.LocalPath)
+                ? absoluteUri.LocalPath
+                : null;
+        }
+
+        var normalized = cleaned.Replace('/', Path.DirectorySeparatorChar);
+        var testDir = Path.GetDirectoryName(testFilePath) ?? string.Empty;
+        return Path.GetFullPath(Path.Combine(testDir, normalized));
+    }
+
+    private static void SetRuntimeLocation(FenRuntime runtime, Uri pageUri)
+    {
+        if (runtime.GlobalEnv.Get("location") is not { IsObject: true } locationValue)
+        {
+            return;
+        }
+
+        var location = locationValue.AsObject();
+        location.Set("href", FenValue.FromString(pageUri.AbsoluteUri));
+        location.Set("protocol", FenValue.FromString(pageUri.Scheme + ":"));
+        location.Set("host", FenValue.FromString(pageUri.Authority));
+        location.Set("hostname", FenValue.FromString(pageUri.Host));
+        location.Set("pathname", FenValue.FromString(pageUri.AbsolutePath));
+        location.Set("search", FenValue.FromString(pageUri.Query));
+        location.Set("hash", FenValue.FromString(pageUri.Fragment));
+
+        runtime.Context.CurrentUrl = pageUri.AbsoluteUri;
+    }
+
+    private static async Task<HttpResponseMessage> HandleHeadlessFetchAsync(HttpRequestMessage request, string testFilePath)
+    {
+        var baseUri = new Uri(testFilePath);
+        var requestUri = request.RequestUri ?? baseUri;
+        var resolvedUri = requestUri.IsAbsoluteUri ? requestUri : new Uri(baseUri, requestUri);
+
+        if (!resolvedUri.IsFile)
+        {
+            return new HttpResponseMessage(HttpStatusCode.NotFound)
+            {
+                RequestMessage = new HttpRequestMessage(request.Method, resolvedUri),
+                Content = new StringContent(string.Empty)
+            };
+        }
+
+        var localPath = resolvedUri.LocalPath;
+        if (!File.Exists(localPath))
+        {
+            return new HttpResponseMessage(HttpStatusCode.NotFound)
+            {
+                RequestMessage = new HttpRequestMessage(request.Method, resolvedUri),
+                Content = new StringContent(string.Empty)
+            };
+        }
+
+        var bytes = await File.ReadAllBytesAsync(localPath).ConfigureAwait(false);
+        var response = new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            RequestMessage = new HttpRequestMessage(request.Method, resolvedUri),
+            Content = new ByteArrayContent(bytes)
+        };
+        response.Content.Headers.ContentType = new MediaTypeHeaderValue(GetContentType(localPath));
+        return response;
+    }
+
+    private static string GetContentType(string path)
+    {
+        return Path.GetExtension(path).ToLowerInvariant() switch
+        {
+            ".html" or ".htm" => "text/html",
+            ".js" => "application/javascript",
+            ".json" => "application/json",
+            ".css" => "text/css",
+            ".txt" => "text/plain",
+            ".svg" => "image/svg+xml",
+            _ => "application/octet-stream"
+        };
+    }
+
+    private static bool IsCssParsingTestCommonScript(string src)
+    {
+        if (string.IsNullOrWhiteSpace(src)) return false;
+        var normalized = src.Replace('\\', '/');
+        return normalized.EndsWith("/css/support/parsing-testcommon.js", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("/css/support/parsing-testcommon.js", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsCssComputedTestCommonScript(string src)
+    {
+        if (string.IsNullOrWhiteSpace(src)) return false;
+        var normalized = src.Replace('\\', '/');
+        return normalized.EndsWith("/css/support/computed-testcommon.js", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("/css/support/computed-testcommon.js", StringComparison.OrdinalIgnoreCase);
     }
 
     private static List<(string? Src, string Content, bool IsExternal)> ExtractScripts(Document document)

@@ -25,14 +25,52 @@ namespace FenBrowser.WebDriver.Commands
         {
             _handler = handler;
         }
+
+        private async Task SynchronizeWindowStateAsync(Session session)
+        {
+            if (_handler.Browser == null)
+            {
+                return;
+            }
+
+            var browserHandles = await _handler.Browser.GetWindowHandlesAsync();
+            session.WindowHandles.Clear();
+            if (browserHandles != null)
+            {
+                foreach (var handle in browserHandles.Where(h => !string.IsNullOrWhiteSpace(h)).Distinct(StringComparer.Ordinal))
+                {
+                    session.WindowHandles.Add(handle);
+                }
+            }
+
+            var currentHandle = await _handler.Browser.GetWindowHandleAsync();
+            if (!string.IsNullOrWhiteSpace(currentHandle))
+            {
+                if (!session.WindowHandles.Contains(currentHandle))
+                {
+                    session.WindowHandles.Add(currentHandle);
+                }
+
+                session.CurrentWindowHandle = currentHandle;
+            }
+            else if (session.WindowHandles.Count > 0)
+            {
+                session.CurrentWindowHandle = session.WindowHandles[0];
+            }
+            else
+            {
+                session.CurrentWindowHandle = null;
+            }
+        }
         
         /// <summary>
         /// Get current window handle.
         /// GET /session/{sessionId}/window
         /// </summary>
-        public WebDriverResponse GetWindowHandle(string sessionId)
+        public async Task<WebDriverResponse> GetWindowHandleAsync(string sessionId)
         {
             var session = _handler.GetSession(sessionId);
+            await SynchronizeWindowStateAsync(session);
             return WebDriverResponse.Success(session.CurrentWindowHandle);
         }
         
@@ -40,22 +78,30 @@ namespace FenBrowser.WebDriver.Commands
         /// Close current window.
         /// DELETE /session/{sessionId}/window
         /// </summary>
-        public WebDriverResponse CloseWindow(string sessionId)
+        public async Task<WebDriverResponse> CloseWindowAsync(string sessionId)
         {
             var session = _handler.GetSession(sessionId);
-            
-            if (session.WindowHandles.Count > 0)
+
+            if (_handler.Browser != null)
             {
-                session.WindowHandles.Remove(session.CurrentWindowHandle);
-            }
-            
-            if (session.WindowHandles.Count > 0)
-            {
-                session.CurrentWindowHandle = session.WindowHandles[0];
+                await _handler.Browser.CloseWindowAsync();
+                await SynchronizeWindowStateAsync(session);
             }
             else
             {
-                session.CurrentWindowHandle = null;
+                if (session.WindowHandles.Count > 0)
+                {
+                    session.WindowHandles.Remove(session.CurrentWindowHandle);
+                }
+
+                if (session.WindowHandles.Count > 0)
+                {
+                    session.CurrentWindowHandle = session.WindowHandles[0];
+                }
+                else
+                {
+                    session.CurrentWindowHandle = null;
+                }
             }
             
             return WebDriverResponse.Success(session.WindowHandles);
@@ -65,9 +111,10 @@ namespace FenBrowser.WebDriver.Commands
         /// Get all window handles.
         /// GET /session/{sessionId}/window/handles
         /// </summary>
-        public WebDriverResponse GetWindowHandles(string sessionId)
+        public async Task<WebDriverResponse> GetWindowHandlesAsync(string sessionId)
         {
             var session = _handler.GetSession(sessionId);
+            await SynchronizeWindowStateAsync(session);
             return WebDriverResponse.Success(session.WindowHandles);
         }
         
@@ -127,6 +174,7 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> SwitchToWindowAsync(string sessionId, JsonElement? body)
         {
             var session = _handler.GetSession(sessionId);
+            await SynchronizeWindowStateAsync(session);
             if (!body.HasValue || !body.Value.TryGetProperty("handle", out var handleEl))
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "Window handle is required");
@@ -147,6 +195,7 @@ namespace FenBrowser.WebDriver.Commands
             if (_handler.Browser != null)
             {
                 await _handler.Browser.SwitchToWindowAsync(handle);
+                await SynchronizeWindowStateAsync(session);
             }
 
             return WebDriverResponse.Success(null);
@@ -180,6 +229,7 @@ namespace FenBrowser.WebDriver.Commands
                 session.WindowHandles.Add(handle);
             }
             session.CurrentWindowHandle = handle;
+            await SynchronizeWindowStateAsync(session);
 
             return WebDriverResponse.Success(new { handle, type = windowType });
         }

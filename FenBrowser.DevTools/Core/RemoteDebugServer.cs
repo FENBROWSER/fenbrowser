@@ -25,6 +25,7 @@ public class RemoteDebugServer : IDisposable
     private readonly int _port;
     private readonly string _advertisedHost;
     private readonly string _authToken;
+    private readonly bool _usesEphemeralAuthToken;
     private readonly CancellationTokenSource _cts = new();
     private readonly List<Socket> _clients = new();
     private readonly ConcurrentDictionary<Socket, ConcurrentQueue<string>> _messageQueues = new();
@@ -38,6 +39,7 @@ public class RemoteDebugServer : IDisposable
     public int ConnectionCount => _clients.Count;
     public long MessagesSent { get; private set; }
     public long MessagesReceived { get; private set; }
+    public string AuthToken => _authToken;
 
     public RemoteDebugServer(
         DevToolsServer devToolsServer,
@@ -47,7 +49,7 @@ public class RemoteDebugServer : IDisposable
     {
         _devToolsServer = devToolsServer;
         _port = port;
-        _authToken = string.IsNullOrWhiteSpace(authToken) ? null : authToken.Trim();
+        _authToken = NormalizeAuthToken(authToken, out _usesEphemeralAuthToken);
 
         if (!IPAddress.TryParse(bindAddress, out var bindIp))
             bindIp = IPAddress.Loopback;
@@ -60,14 +62,33 @@ public class RemoteDebugServer : IDisposable
         _devToolsServer.OnJsonOutput(BroadcastToClients);
     }
 
+    private static string NormalizeAuthToken(string authToken, out bool usesEphemeralAuthToken)
+    {
+        if (!string.IsNullOrWhiteSpace(authToken))
+        {
+            usesEphemeralAuthToken = false;
+            return authToken.Trim();
+        }
+
+        usesEphemeralAuthToken = true;
+        return Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+    }
+
     public void Start()
     {
         try
         {
             _listener.Start();
             var endpoint = (IPEndPoint)_listener.LocalEndpoint;
-            var authState = string.IsNullOrEmpty(_authToken) ? "disabled" : "enabled";
-            FenLogger.Info($"[RemoteDebug] TCP Server started on {endpoint.Address}:{endpoint.Port} (auth: {authState})", LogCategory.General);
+            FenLogger.Info($"[RemoteDebug] TCP Server started on {endpoint.Address}:{endpoint.Port} (auth: required)", LogCategory.General);
+            if (_usesEphemeralAuthToken)
+            {
+                FenLogger.Warn($"[RemoteDebug] Generated ephemeral auth token for this session: {_authToken}", LogCategory.General);
+            }
+            else
+            {
+                FenLogger.Info("[RemoteDebug] Using configured auth token from FEN_REMOTE_DEBUG_TOKEN.", LogCategory.General);
+            }
             
             // Start heartbeat timer (10/10)
             StartHeartbeat();
@@ -218,8 +239,9 @@ public class RemoteDebugServer : IDisposable
             path = relUri.AbsolutePath;
         }
 
-        string tokenQuery = string.IsNullOrEmpty(_authToken) ? "" : "?token=" + Uri.EscapeDataString(_authToken);
-        string webSocketUrl = $"ws://{_advertisedHost}:{_port}/devtools/page/1{tokenQuery}";
+        string tokenQuery = BuildTokenQuery();
+        string webSocketUrl = BuildWebSocketDebuggerUrl();
+        string devToolsFrontendUrl = BuildDevToolsFrontendUrl(tokenQuery);
 
         if (string.Equals(path, "/json/version", StringComparison.OrdinalIgnoreCase))
         {
@@ -241,7 +263,7 @@ public class RemoteDebugServer : IDisposable
                  new 
                  {
                       description = "FenBrowser Active Tab",
-                      devtoolsFrontendUrl = $"/devtools/inspector.html?ws={_advertisedHost}:{_port}/devtools/page/1",
+                      devtoolsFrontendUrl = devToolsFrontendUrl,
                       id = "1",
                       title = "FenBrowser Tab",
                       type = "page",
@@ -296,6 +318,16 @@ public class RemoteDebugServer : IDisposable
         }
 
         return headers;
+    }
+
+    private string BuildTokenQuery() => "?token=" + Uri.EscapeDataString(_authToken);
+
+    private string BuildWebSocketDebuggerUrl() => $"ws://{_advertisedHost}:{_port}/devtools/page/1{BuildTokenQuery()}";
+
+    private string BuildDevToolsFrontendUrl(string tokenQuery)
+    {
+        string wsTarget = $"{_advertisedHost}:{_port}/devtools/page/1{tokenQuery}";
+        return $"/devtools/inspector.html?ws={Uri.EscapeDataString(wsTarget)}";
     }
 
     private static string GetTokenFromTarget(string requestTarget)
@@ -357,6 +389,7 @@ public class RemoteDebugServer : IDisposable
         const string body = "{\"error\":\"unauthorized\"}";
         string header =
             "HTTP/1.1 401 Unauthorized\r\n" +
+            "WWW-Authenticate: Bearer realm=\"FenBrowser RemoteDebug\"\r\n" +
             "Content-Type: application/json; charset=UTF-8\r\n" +
             $"Content-Length: {body.Length}\r\n" +
             "Connection: close\r\n\r\n";

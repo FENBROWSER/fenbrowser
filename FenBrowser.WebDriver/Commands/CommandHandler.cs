@@ -150,10 +150,10 @@ namespace FenBrowser.WebDriver.Commands
                 "GetTitle" => await _navigationCommands.GetTitleAsync(match.GetSessionId()),
                 
                 // Window
-                "GetWindowHandle" => _windowCommands.GetWindowHandle(match.GetSessionId()),
-                "CloseWindow" => _windowCommands.CloseWindow(match.GetSessionId()),
+                "GetWindowHandle" => await _windowCommands.GetWindowHandleAsync(match.GetSessionId()),
+                "CloseWindow" => await _windowCommands.CloseWindowAsync(match.GetSessionId()),
                 "SwitchToWindow" => await _windowCommands.SwitchToWindowAsync(match.GetSessionId(), json),
-                "GetWindowHandles" => _windowCommands.GetWindowHandles(match.GetSessionId()),
+                "GetWindowHandles" => await _windowCommands.GetWindowHandlesAsync(match.GetSessionId()),
                 "NewWindow" => await _windowCommands.NewWindowAsync(match.GetSessionId(), json),
                 "SwitchToFrame" => await _windowCommands.SwitchToFrameAsync(match.GetSessionId(), json),
                 "SwitchToParentFrame" => await _windowCommands.SwitchToParentFrameAsync(match.GetSessionId()),
@@ -553,6 +553,9 @@ namespace FenBrowser.WebDriver.Commands
         Task NavigateAsync(string url);
         Task<string> GetCurrentUrlAsync();
         Task<string> GetTitleAsync();
+        Task<string> GetWindowHandleAsync();
+        Task<IReadOnlyList<string>> GetWindowHandlesAsync();
+        Task CloseWindowAsync();
         Task GoBackAsync();
         Task GoForwardAsync();
         Task RefreshAsync();
